@@ -8,7 +8,7 @@ import { fontFamily, renameSubset, tables } from './web-font-sfnt.mjs';
 
 const subsetters = new Map();
 async function subsetter(gjsDir) {
-  const pkg = await realpath(join(gjsDir, 'crates/font-subsetter/pkg'));
+  const pkg = await realpath(join(gjsDir, 'src/shared/font/wasm'));
   // wasm-bindgen's glue caches views of its instance's memory. Rebinding the
   // same glue module to a second instance leaves those views on the first one.
   if (!subsetters.has(pkg)) {

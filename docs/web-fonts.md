@@ -27,7 +27,7 @@ GJS_DIR=../gjs RUSTUP_TOOLCHAIN=nightly scripts/build-web.sh --release
 Configuration paths are relative to the configuration file. `GJS_DIR` is
 relative to the command's working directory. Only subsetting requires gjs;
 full-font delivery works without it. The build tool loads gjs's existing
-`crates/font-subsetter/pkg/font_subsetter_bg.js` and `.wasm`. It uses
+`src/shared/font/wasm/font_subsetter_bg.js` and `.wasm`. It uses
 `subset_font_raw`, with IVS support, to produce uncompressed SFNT fonts that
 GPUI can read. WOFF, WOFF2 and TTC files are not accepted as source files.
 

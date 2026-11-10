@@ -2,25 +2,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { namespaceSubset, DynamicFonts } from '../../www/dynamic-fonts.js';
 import { checksum, fontFamily } from '../../scripts/web-font-sfnt.mjs';
 
-let cachedFixture;
-async function fixture() {
-  if (cachedFixture) return cachedFixture;
-  const pkg = resolve(process.env.GJS_DIR, 'crates/font-subsetter/pkg');
-  const bg = await import(pathToFileURL(join(pkg, 'font_subsetter_bg.js')).href);
-  const { instance } = await WebAssembly.instantiate(await readFile(join(pkg, 'font_subsetter_bg.wasm')), { './font_subsetter_bg.js': bg });
-  bg.__wbg_set_wasm(instance.exports);
-  instance.exports.__wbindgen_start();
-  const source = await readFile(new URL('../../crates/ibis-office-app/fonts/IBMPlexSans-Regular.ttf', import.meta.url));
-  cachedFixture = bg.subset_font_raw(source, 'ABm');
-  return cachedFixture;
-}
+// Produced by the gjs subsetter from the bundled IBM Plex Sans test font.
+const fixture = () => readFile(new URL('./fixtures/gjs-plex-abm.otf', import.meta.url));
 
-test('dynamic gjs responses have independent families and valid checksums', { skip: !process.env.GJS_DIR }, async () => {
+test('dynamic gjs responses have independent families and valid checksums', async () => {
   const raw = await fixture();
   const first = namespaceSubset(raw, 1);
   const second = namespaceSubset(raw, 2);
@@ -31,7 +19,7 @@ test('dynamic gjs responses have independent families and valid checksums', { sk
   assert.throws(() => namespaceSubset(new Uint8Array([1, 2]), 1));
 });
 
-test('dynamic provider batches misses, splits unsupported batches and deduplicates', { skip: !process.env.GJS_DIR }, async () => {
+test('dynamic provider batches misses, splits unsupported batches and deduplicates', async () => {
   const raw = await fixture();
   const calls = [], installed = [];
   let complete;
@@ -53,7 +41,7 @@ test('dynamic provider batches misses, splits unsupported batches and deduplicat
   assert.equal(calls.length, 3);
 });
 
-test('a temporary network failure is retried', { skip: !process.env.GJS_DIR }, async () => {
+test('a temporary network failure is retried', async () => {
   const raw = await fixture();
   let calls = 0;
   let complete;
