@@ -2653,6 +2653,42 @@ pub struct FlowRow {
     /// Kept on one page.
     pub cant_split: bool,
     pub cells: Vec<FlowCell>,
+    /// Additional line segments relative to the row's table width and height.
+    /// Coordinates use ten-thousandths (0..=10000). These display-only lines
+    /// are not represented by ordinary DOCX cell borders.
+    pub lines: Vec<FlowRowLine>,
+}
+
+/// A line segment inside a table row, in normalized row coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlowRowLine {
+    pub x1: u16,
+    pub y1: u16,
+    pub x2: u16,
+    pub y2: u16,
+    pub border: FlowBorder,
+}
+
+impl FlowRowLine {
+    /// Place the segment in a row's current, potentially fitted, dimensions.
+    pub fn points(&self, width: f32, height: f32) -> ((f32, f32), (f32, f32)) {
+        let x = |n: u16| width * f32::from(n.min(10_000)) / 10_000.0;
+        let y = |n: u16| height * f32::from(n.min(10_000)) / 10_000.0;
+        ((x(self.x1), y(self.y1)), (x(self.x2), y(self.y2)))
+    }
+}
+
+#[cfg(test)]
+mod flow_row_line_tests {
+    use super::{BorderStyle, FlowBorder, FlowRowLine};
+    use crate::Rgb;
+
+    #[test]
+    fn row_segments_follow_fitted_dimensions_and_are_bounded() {
+        let line = FlowRowLine { x1: 2500, y1: 5000, x2: 15_000, y2: 10_000, border: FlowBorder { width: 6350, color: Rgb::BLACK, style: BorderStyle::Single, space: 0, art: None } };
+        assert_eq!(line.points(200.0, 40.0), ((50.0, 20.0), (200.0, 40.0)));
+        assert_eq!(line.points(80.0, 20.0), ((20.0, 10.0), (80.0, 20.0)));
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -29,7 +29,7 @@ without permission.
 | Paragraph and character formatting | `FlowParagraph`, `FlowRunStyle`, `RunFormat` | Not decoded; defaults are used. |
 | Page breaks | `FlowRunKind::PageBreak` | An observed break immediately following a text run is imported. Other break forms are not decoded. |
 | Ruby and tate-chu-yoko | `FlowRunKind::Ruby`, `FlowRunStyle` | A specific observed base/reading pair is mapped to ruby; font size and positioning use approximate Word defaults. Other ruby forms and tate-chu-yoko are not decoded. |
-| Tables and borders | `FlowTable`, `FlowRow`, `FlowCell`, `FlowBorder` | Validated 008f records supply full-height cell edges and some full-width bottom rules; other geometry uses the earlier approximate grid. Empty ruled rows can preserve a preceding table edge. Widths, half rules, mid-line and partial rules, line styles and logical merges remain incomplete. See [format notes](jtd-format-notes.md). |
+| Tables and borders | `FlowTable`, `FlowRow`, `FlowCell`, `FlowBorder` | Validated 008f records supply full-height cell edges and some full-width bottom rules; other geometry uses the earlier approximate grid. Empty ruled rows can preserve a preceding table edge. Some half-height, mid-line and partial rules are displayed as row-relative segments. DOCX export currently omits these segments. Widths, line styles, pagination and logical merges remain incomplete. See [format notes](jtd-format-notes.md). |
 | Images and drawings | media, shapes | Not decoded. |
 | Headers, footers, section breaks | `FlowDocument` and section/page layout | Not decoded. |
 

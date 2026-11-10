@@ -4015,7 +4015,7 @@ fn edit_table(mut t: FlowTable, edit: TableEdit, next: &mut u32, styles: &FlowSt
         TableEdit::InsertRow { row, below } => {
             let source = t.rows.get(row).ok_or(EditError::IndexOutOfRange)?.clone();
             *next += 1;
-            let mut new = FlowRow { id: *next - 1, height: source.height, header: false, cant_split: source.cant_split, cells: Vec::new() };
+            let mut new = FlowRow { id: *next - 1, height: source.height, header: false, cant_split: source.cant_split, cells: Vec::new(), ..FlowRow::default() };
             for cell in &source.cells {
                 new.cells.push(empty_like(cell, next, styles));
             }
@@ -4153,6 +4153,7 @@ fn edit_table(mut t: FlowTable, edit: TableEdit, next: &mut u32, styles: &FlowSt
                 header: false,
                 cant_split: last_row_template.cant_split,
                 cells: Vec::new(),
+                ..FlowRow::default()
             };
 
             let col_count = t.columns.len().max(1);

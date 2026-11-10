@@ -3196,7 +3196,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                 self.blocks(tc, &tc_path, rels, style_id.as_deref(), &mut blocks);
                 cells.push(FlowCell { id: cell_id, own_borders, span, merge, blocks, borders: [None; 4], shading, shading_fill, shading_pattern, shading_color, anchor, margins: cell_margin, diagonals, style_fill: None, direction: tc_pr.and_then(|p| wval(p, "textDirection")).map_or_default(ibis_doc_model::CellDirection::from_name), no_wrap: tc_pr.and_then(|p| toggle(p, "noWrap")).unwrap_or(false) });
             }
-            rows.push(FlowRow { id: row_id, height, header, cant_split, cells });
+            rows.push(FlowRow { id: row_id, height, header, cant_split, cells, ..FlowRow::default() });
         }
         // The model's indent is to the table's left edge, as Word 2013 and
         // later read `w:tblInd`; before, it is to the first cell's text.

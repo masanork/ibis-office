@@ -10,8 +10,8 @@
 //! These are incomplete research notes, not a complete specification.
 use crate::{Error, Kind};
 use ibis_doc_model::{
-    Block, BorderStyle, CellDirection, FlowBorder, FlowCell, FlowRow, FlowRun, FlowRunKind,
-    FlowRunStyle, FlowTable, Presentation, Rgb, RubyAlign,
+    Block, BorderStyle, CellDirection, FlowBorder, FlowCell, FlowRow, FlowRowLine, FlowRun,
+    FlowRunKind, FlowRunStyle, FlowTable, Presentation, Rgb, RubyAlign,
 };
 
 const MAX_FILE: usize = 64 * 1024 * 1024;
@@ -116,6 +116,12 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     id: next_id,
                     ..FlowRow::default()
                 };
+                if let Some(rules) = &rules {
+                    row.lines = rule_extra_lines(rules, total as u16, line);
+                    // Line segments are relative to one display row and
+                    // cannot yet be split across pages without clipping.
+                    row.cant_split = !row.lines.is_empty();
+                }
                 next_id += 1;
                 for (left, right, contents) in cells {
                     let mut cell_para = template.clone();
@@ -532,6 +538,84 @@ fn rule_cell_borders(
         Some(bottom.then_some(line)),
         Some(l.and_then(|(_, p)| full(p).then_some(line))),
     ]
+}
+
+/// Keep source-supported line fragments that cannot be represented as a
+/// DOCX cell edge. Coordinates are relative to the entire display row.
+fn rule_extra_lines(layout: &RuleLayout, width: u16, line: FlowBorder) -> Vec<FlowRowLine> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let scale = |position: u32| -> u16 {
+        ((position.min(u32::from(width)) * 10_000) / u32::from(width)) as u16
+    };
+    let mut result = Vec::new();
+    for (index, point) in layout.points.iter().enumerate() {
+        let x = scale(u32::from(point.position));
+        if point.flags & 0x30 != 0 {
+            let vertical = match point.flags & 3 {
+                1 => Some((0, 5_000)),
+                2 => Some((5_000, 10_000)),
+                _ => None,
+            };
+            if let Some((y1, y2)) = vertical {
+                result.push(FlowRowLine {
+                    x1: x,
+                    y1,
+                    x2: x,
+                    y2,
+                    border: line,
+                });
+            }
+        }
+        if let Some(next) = layout.points.get(index + 1) {
+            let end = scale(u32::from(next.position));
+            if point.link & 0x04 != 0 && end > x {
+                result.push(FlowRowLine {
+                    x1: x,
+                    y1: 5_000,
+                    x2: end,
+                    y2: 5_000,
+                    border: line,
+                });
+            }
+            // Whole bottom edges are already represented on cells. When a
+            // partial span prevents that mapping, keep the linked segment.
+            if point.partial != 0 && point.link & 0x08 != 0 && end > x {
+                result.push(FlowRowLine {
+                    x1: x,
+                    y1: 10_000,
+                    x2: end,
+                    y2: 10_000,
+                    border: line,
+                });
+            }
+        }
+        if point.partial != 0 {
+            let end = scale(u32::from(point.position) + u32::from(point.partial) + 1);
+            if end > x {
+                if point.flags & 0x04 != 0 && point.link & 0x04 == 0 {
+                    result.push(FlowRowLine {
+                        x1: x,
+                        y1: 5_000,
+                        x2: end,
+                        y2: 5_000,
+                        border: line,
+                    });
+                }
+                if point.flags & 0x08 != 0 && point.link & 0x08 == 0 {
+                    result.push(FlowRowLine {
+                        x1: x,
+                        y1: 10_000,
+                        x2: end,
+                        y2: 10_000,
+                        border: line,
+                    });
+                }
+            }
+        }
+    }
+    result
 }
 
 fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
@@ -959,6 +1043,49 @@ mod tests {
             "a middle line is not a bottom edge"
         );
     }
+
+    #[test]
+    fn half_and_middle_rules_become_bounded_row_lines() {
+        let layout = RuleLayout {
+            points: vec![
+                RulePoint {
+                    position: 4,
+                    flags: 0x16,
+                    partial: 0,
+                    link: 0x14,
+                },
+                RulePoint {
+                    position: 96,
+                    flags: 0x11,
+                    partial: 0,
+                    link: 0,
+                },
+            ],
+        };
+        let line = FlowBorder {
+            width: 6350,
+            color: Rgb::BLACK,
+            style: BorderStyle::Single,
+            space: 0,
+            art: None,
+        };
+        let lines = rule_extra_lines(&layout, 100, line);
+        let coordinates: Vec<_> = lines
+            .iter()
+            .map(|line| (line.x1, line.y1, line.x2, line.y2))
+            .collect();
+        assert_eq!(
+            coordinates,
+            [
+                (400, 5000, 400, 10000),
+                (400, 5000, 9600, 5000),
+                (9600, 0, 9600, 5000)
+            ]
+        );
+        assert_eq!(lines[1].points(200.0, 40.0), ((8.0, 20.0), (192.0, 20.0)));
+        assert_eq!(lines[1].points(100.0, 20.0), ((4.0, 10.0), (96.0, 10.0)));
+        assert!(rule_extra_lines(&layout, 0, line).is_empty());
+    }
     fn fixture(text: &str) -> Vec<u8> {
         let mut s = b"SsmgV.01".to_vec();
         for n in [0x001c_u16, 0x0010, 7, 7, 0, 0x0010, 0x001f]
@@ -1342,6 +1469,30 @@ mod tests {
         }
         if let Ok(minimum) = std::env::var("IBIS_JTD_MIN_TABLES") {
             assert!(tables >= minimum.parse().unwrap(), "tables: {tables}");
+        }
+        if let Ok(minimum) = std::env::var("IBIS_JTD_MIN_ROW_LINES") {
+            let count: usize = flow
+                .body
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Table(t) => Some(t.rows.iter().map(|r| r.lines.len()).sum::<usize>()),
+                    _ => None,
+                })
+                .sum();
+            assert!(count >= minimum.parse().unwrap(), "row segments: {count}");
+            assert!(
+                saved
+                    .body
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::Table(t) =>
+                            Some(t.rows.iter().map(|r| r.lines.len()).sum::<usize>()),
+                        _ => None,
+                    })
+                    .all(|count| count == 0),
+                "DOCX must not imply these display-only lines survived"
+            );
+            eprintln!("row segments: {count}");
         }
         let text = texts.join("\n");
         assert!(!text.trim().is_empty());
