@@ -2,6 +2,8 @@
 /www/pkg
 /www/assets
 /www/main.js
+/www/font-loader.js
+/www/fonts.json
 /node_modules
 /test/private/
 __pycache__/

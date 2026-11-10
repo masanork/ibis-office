@@ -2,7 +2,8 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { run, set_embed_options } from './pkg/ibis_office_app.js';
+import init, { configure_fonts, run, set_embed_options } from './pkg/ibis_office_app.js';
+import { loadWebFonts } from './font-loader.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -272,7 +273,11 @@ if (!('gpu' in navigator)) {
     : 'This browser does not support WebGPU. Please use the latest Chrome, Edge or Safari.');
 } else {
   try {
-    const [, file] = await Promise.all([init({ module_or_path: fetchWasm() }), initialFile()]);
+    const [, file, fonts] = await Promise.all([
+      init({ module_or_path: fetchWasm() }), initialFile(),
+      loadWebFonts(new URL('./fonts.json', import.meta.url)),
+    ]);
+    if (fonts) configure_fonts(fonts.data, fonts.aliases, fonts.defaultFamily, fonts.browserFallback);
     // Icons load from <base>/assets/icons/*.svg, next to this page (the site
     // may live under a path, as on GitHub Pages). The base must be absolute:
     // the icon loader fetches with reqwest, which rejects relative URLs.

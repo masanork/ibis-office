@@ -812,6 +812,9 @@ const TYPEFACE_ALIASES: &[(&str, &str)] = &[
 /// Hiragino, wrapped).
 #[cfg(target_family = "wasm")]
 fn browser_fallbacks(style: &TextStyle) -> Option<FontFallbacks> {
+    if let Some(fallbacks) = crate::web::font_fallbacks() {
+        return Some(fallbacks);
+    }
     let names = browser_fallback_names(style);
     (!names.is_empty()).then(|| FontFallbacks::from_fonts(names))
 }
@@ -891,6 +894,12 @@ const BUNDLED_FONTS: &[&[u8]] = &[
 const BUNDLED_FONTS: &[&[u8]] = &[];
 /// The family of `BUNDLED_FONTS`.
 const BUNDLED_FAMILY: &str = "Carlito";
+
+fn default_font_family() -> SharedString {
+    #[cfg(target_family = "wasm")]
+    if let Some(family) = crate::web::default_font_family() { return family; }
+    ".SystemUIFont".into()
+}
 
 /// For tests only: the fonts in the folders `IBIS_EXTRA_FONT_DIRS` names
 /// (separated by `:`), e.g. the ones the real Office apps ship, so the
@@ -1635,10 +1644,14 @@ impl Fonts {
                 log::warn!("bundled fonts could not be loaded: {err}");
             }
         }
-        let east_asian_fallback = ["Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans CJK JP", "IPAexGothic"]
+        #[cfg(target_family = "wasm")]
+        let supplied_default = crate::web::default_font_family();
+        #[cfg(not(target_family = "wasm"))]
+        let supplied_default: Option<SharedString> = None;
+        let east_asian_fallback = supplied_default.or_else(|| ["Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans CJK JP", "IPAexGothic"]
             .into_iter()
             .find(|f| installed.contains(*f))
-            .map(SharedString::from);
+            .map(SharedString::from));
         Self {
             installed,
             embedded_index: OpenTypeIndex::default(),
@@ -1656,7 +1669,7 @@ impl Fonts {
     fn font(&self, style: &TextStyle) -> Font {
         let (family, mut weight) = match &style.font {
             Some(name) => self.family(name),
-            None => (SharedString::from(".SystemUIFont"), FontWeight::NORMAL),
+            None => (default_font_family(), FontWeight::NORMAL),
         };
         // A typeface named for its weight ("Poppins SemiBold", "Segoe UI Semilight")
         // is its own family to PowerPoint, whose bold member is usually the same face,
@@ -1698,6 +1711,10 @@ impl Fonts {
     /// ("Poppins SemiBold" is Poppins at 600, "Segoe UI Semilight" is
     /// Segoe UI at 350).
     fn available(&self, name: &str) -> Option<(SharedString, FontWeight)> {
+        #[cfg(target_family = "wasm")]
+        if let Some(family) = crate::web::font_alias(name) {
+            return Some((family, FontWeight::NORMAL));
+        }
         let name = self.resolve(name);
         resolve_font_with_index(name, &self.installed, Some(&self.embedded_index), true)
             .map(|(family, weight, _)| (family, weight))
@@ -1732,7 +1749,7 @@ impl Fonts {
             }
             _ if is_serif_latin_typeface(name) => match ["Times New Roman", "Liberation Serif", "Tinos", "Georgia"].into_iter().find(|f| self.installed.contains(*f)) {
                 Some(serif) => (serif.into(), weight),
-                None => (".SystemUIFont".into(), weight),
+                None => (default_font_family(), weight),
             },
             // Humanist sans-serifs whose widths match Calibri (`Carlito`) closer than Arial.
             _ if name.starts_with("Meta") && self.installed.contains(BUNDLED_FAMILY) => (BUNDLED_FAMILY.into(), weight),
@@ -1762,7 +1779,7 @@ impl Fonts {
             // (the system UI font is wider than most: a line takes 13% more room).
             _ => match ["Arial", "Helvetica", "Liberation Sans"].into_iter().find(|f| self.installed.contains(*f)) {
                 Some(common) => (common.into(), weight),
-                None => (".SystemUIFont".into(), weight),
+                None => (default_font_family(), weight),
             },
         }
     }
