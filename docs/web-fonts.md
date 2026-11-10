@@ -68,10 +68,30 @@ GPUI can read. WOFF, WOFF2 and TTC files are not accepted as source files.
   it to `true` to allow the existing local-browser CJK/emoji fallback for missing
   glyphs. Without `fonts.json` (HTTP 404), the previous browser behavior remains.
 
-Subsets are prepared at build time. Include all characters required by the UI,
-documents and subsequent edits, or supply a full font. New characters are not
-fetched automatically. No document text or font bytes are sent to the gjs API.
-This mechanism is for the browser build; native font discovery is unchanged.
+To supply missing characters while editing, configure a gjs subset endpoint:
+
+```json
+"dynamic": { "endpoint": "https://your-gjs.example/api/font/subset", "font": "ipamjm" }
+```
+
+Add this property to the top level of the configuration and set
+`browserFallback` to `false`. The configured gjs service must have the named
+font and allow CORS. The browser requests missing grapheme clusters, in batches,
+using gjs's `format=otf` API and registers the responses as fallback fonts.
+The missing characters and a Latin `m` are sent in the request URL to the configured
+service. GPUI requires `m` to accept a font, so the chosen font must cover it;
+otherwise gjs may select its own fallback or return no font. The service the service and intermediate servers can see and log them. Select a
+service appropriate for the document's confidentiality.
+
+This is fallback for missing glyphs: GPUI's notification does not identify the
+original face, so one configured gjs font supplies them across all typefaces.
+If another loaded font already covers a character, it will be used without a
+request. Detection is based on missing glyph IDs and may not detect an absent
+variation selector when its base glyph exists. A 204 response means the service
+could not supply the character; network failures are logged to the console.
+The browser accumulates subsets for the session. Full fonts can still be supplied
+when comprehensive or face-specific coverage is needed. This mechanism is for
+the browser build; native font discovery is unchanged.
 
 The loader verifies each file's SHA-256 and resolves font URLs relative to the
 manifest, including deployments under a subpath. Failed font downloads,

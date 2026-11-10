@@ -1133,6 +1133,8 @@ mod web {
 
     thread_local! {
         static APPLICATION: RefCell<Option<ApplicationHandle>> = const { RefCell::new(None) };
+        static MISSING_SUBSCRIPTION: RefCell<Option<Subscription>> = const { RefCell::new(None) };
+        static DYNAMIC_ENABLED: RefCell<bool> = const { RefCell::new(false) };
         static SUPPLIED_FONTS: RefCell<Option<SuppliedFonts>> = const { RefCell::new(None) };
     }
 
@@ -1198,6 +1200,52 @@ mod web {
 
     pub(crate) fn font_fallbacks() -> Option<FontFallbacks> {
         SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref().map(|fonts| FontFallbacks::from_fonts(fonts.families.clone())))
+    }
+
+    #[wasm_bindgen]
+    pub fn enable_dynamic_fonts() -> Result<(), JsValue> {
+        if APPLICATION.with(|app| app.borrow().is_some()) {
+            return Err(JsValue::from_str("Dynamic fonts must be enabled before run"));
+        }
+        DYNAMIC_ENABLED.with(|enabled| *enabled.borrow_mut() = true);
+        Ok(())
+    }
+
+    #[wasm_bindgen]
+    pub fn add_dynamic_font(data: Vec<u8>) -> Result<(), JsValue> {
+        let family = ibis_eot::family_name(&data).ok_or_else(|| JsValue::from_str("Invalid dynamic font"))?;
+        APPLICATION.with(|app| {
+            let app = app.borrow();
+            let app = app.as_ref().ok_or_else(|| JsValue::from_str("Editor is not running"))?;
+            app.update(|cx| {
+                cx.text_system().add_fonts(vec![Cow::Owned(data)])
+                    .map_err(|e| JsValue::from_str(&format!("Dynamic font: {e}")))?;
+                if !cx.text_system().all_font_names().contains(&family) {
+                    return Err(JsValue::from_str("Dynamic font could not be registered"));
+                }
+                SUPPLIED_FONTS.with(|fonts| {
+                    if let Some(fonts) = fonts.borrow_mut().as_mut() { fonts.families.push(family); }
+                });
+                crate::docx::flow_layout::clear_layout_caches();
+                for window in cx.windows() {
+                    if let Some(root) = window.downcast::<gpui_kit::component::Root>() {
+                        let _ = root.update(cx, |root, window, cx| {
+                            if let Ok(editor) = root.view().clone().downcast::<crate::shell::editor::SlideEditor>() {
+                                editor.update(cx, |editor, cx| editor.relayout_now(cx));
+                            }
+                            window.refresh();
+                        });
+                    }
+                }
+                Ok(())
+            })
+        })
+    }
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_name = ibisOfficeMissingGlyphs)]
+        fn missing_glyphs_js(glyphs: js_sys::Array);
     }
 
     /// UI font bundled with the app. The browser has no system fonts GPUI can
@@ -1273,6 +1321,14 @@ mod web {
         }
         let handle = app.run_embedded(|cx| {
             super::init(cx);
+            if DYNAMIC_ENABLED.with(|enabled| *enabled.borrow()) {
+                let subscription = cx.on_missing_glyphs(|glyphs, _| {
+                    let values = js_sys::Array::new();
+                    for glyph in glyphs { values.push(&JsValue::from_str(glyph.grapheme())); }
+                    missing_glyphs_js(values);
+                });
+                MISSING_SUBSCRIPTION.with(|slot| *slot.borrow_mut() = Some(subscription));
+            }
             Theme::global_mut(cx).font_family = default_font_family().unwrap_or_else(|| "IBM Plex Sans".into());
             super::open_editor(document, None, cx);
         });

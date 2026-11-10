@@ -5,6 +5,7 @@ export interface WebFonts {
   aliases: Record<string, string>;
   defaultFamily: string;
   browserFallback: boolean;
+  dynamic?: { endpoint: string; font: string };
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -53,5 +54,15 @@ export async function loadWebFonts(url: URL, fetcher: typeof fetch = fetch): Pro
     if (hex !== font.sha256) throw new Error(`Font ${font.family}: SHA-256 mismatch`);
     return new Uint8Array(buffer);
   }));
-  return { data, aliases: Object.fromEntries(aliases), defaultFamily, browserFallback: manifest.browserFallback };
+  let dynamic: WebFonts['dynamic'];
+  if (manifest.dynamic !== undefined) {
+    const settings = object(manifest.dynamic);
+    const endpoint = new URL(name(settings.endpoint));
+    const font = name(settings.font);
+    if (!['http:', 'https:'].includes(endpoint.protocol) || !/^[A-Za-z][A-Za-z0-9]+$/.test(font) || manifest.browserFallback) {
+      throw new Error('Invalid dynamic font configuration');
+    }
+    dynamic = { endpoint: endpoint.href, font };
+  }
+  return { data, aliases: Object.fromEntries(aliases), defaultFamily, browserFallback: manifest.browserFallback, dynamic };
 }

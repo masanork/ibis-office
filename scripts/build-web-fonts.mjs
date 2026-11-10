@@ -75,6 +75,13 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
     }
     fonts.push(font);
   }
+  if (config.dynamic !== undefined) {
+    if (!config.dynamic || typeof config.dynamic.endpoint !== 'string' || !/^https?:\/\//.test(config.dynamic.endpoint)
+        || typeof config.dynamic.font !== 'string' || !/^[A-Za-z][A-Za-z0-9]+$/.test(config.dynamic.font)) {
+      throw new Error('dynamic requires an HTTP(S) endpoint and a gjs font ID');
+    }
+    if (config.browserFallback === true) throw new Error('dynamic fonts require browserFallback: false');
+  }
   const defaultFamily = ids.get(config.defaultFont ?? config.fonts[0].id);
   if (!defaultFamily) throw new Error('defaultFont must name a configured font id');
   // Validate everything before publishing the manifest. Old content-addressed
@@ -82,7 +89,7 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
   const assetDir = join(outDir, 'assets/fonts');
   await mkdir(assetDir, { recursive: true });
   for (const [name, data] of artifacts) await writeFile(join(assetDir, name), data);
-  const manifest = { version: 1, defaultFamily, browserFallback: config.browserFallback ?? false, fonts };
+  const manifest = { version: 1, defaultFamily, browserFallback: config.browserFallback ?? false, fonts, ...(config.dynamic && { dynamic: config.dynamic }) };
   await writeFile(join(outDir, 'fonts.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }

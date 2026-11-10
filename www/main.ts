@@ -2,8 +2,9 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { configure_fonts, run, set_embed_options } from './pkg/ibis_office_app.js';
+import init, { configure_fonts, enable_dynamic_fonts, add_dynamic_font, run, set_embed_options } from './pkg/ibis_office_app.js';
 import { loadWebFonts } from './font-loader.js';
+import { DynamicFonts } from './dynamic-fonts.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -278,6 +279,11 @@ if (!('gpu' in navigator)) {
       loadWebFonts(new URL('./fonts.json', import.meta.url)),
     ]);
     if (fonts) configure_fonts(fonts.data, fonts.aliases, fonts.defaultFamily, fonts.browserFallback);
+    if (fonts?.dynamic) {
+      const provider = new DynamicFonts(fonts.dynamic, add_dynamic_font);
+      Object.assign(window, { ibisOfficeMissingGlyphs: (glyphs: string[]) => provider.request(glyphs) });
+      enable_dynamic_fonts();
+    }
     // Icons load from <base>/assets/icons/*.svg, next to this page (the site
     // may live under a path, as on GitHub Pages). The base must be absolute:
     // the icon loader fetches with reqwest, which rejects relative URLs.
