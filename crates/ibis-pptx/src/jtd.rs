@@ -60,6 +60,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     let mut paragraph = template.clone();
     paragraph.runs.clear();
     let mut next_id = 1u32;
+    let mut last_table_key: Option<u16> = None;
     for segment in segments {
         match segment {
             Segment::Table {
@@ -74,6 +75,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     paragraph = template.clone();
                     paragraph.runs.clear();
                 }
+                let table_key = if strips { Some(total) } else { None };
                 let total = total as i64;
                 let width = (flow.page.size.width - flow.page.left - flow.page.right).max(1);
                 let mut boundaries = vec![0i64];
@@ -175,17 +177,30 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 }
                 table.rows.push(row);
                 table.resolve_borders();
-                if let Some(Block::Table(previous)) = flow.body.last_mut()
-                    && previous.columns == table.columns
-                    && previous.borders == table.borders
-                {
-                    previous.rows.extend(table.rows);
-                } else {
+                let mut combined = false;
+                if paragraph.runs.is_empty() {
+                    if let Some(Block::Table(previous)) = flow.body.last_mut() {
+                        if previous.columns == table.columns && previous.borders == table.borders {
+                            previous.rows.extend(table.rows.clone());
+                            combined = true;
+                        } else if table_key.is_some()
+                            && table_key == last_table_key
+                            && previous.borders == table.borders
+                        {
+                            combined = merge_table_grids(previous, &table);
+                        }
+                    }
+                }
+                if !combined {
                     flow.body.push(Block::Table(table));
                 }
+                last_table_key = table_key;
             }
-            Segment::RowStart(_) | Segment::CellStart(_, _) | Segment::RowEnd => {}
+            Segment::RowStart(_) | Segment::CellStart(_, _) | Segment::RowEnd => {
+                last_table_key = None;
+            }
             Segment::Text(text) => {
+                last_table_key = None;
                 let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
                 let mut lines = normalized.split('\n').peekable();
                 while let Some(line) = lines.next() {
@@ -213,11 +228,15 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     }
                 }
             }
-            Segment::PageBreak => paragraph.runs.push(FlowRun::new(
-                FlowRunKind::PageBreak,
-                FlowRunStyle::default(),
-            )),
+            Segment::PageBreak => {
+                last_table_key = None;
+                paragraph.runs.push(FlowRun::new(
+                    FlowRunKind::PageBreak,
+                    FlowRunStyle::default(),
+                ));
+            }
             Segment::Ruby { base, reading } => {
+                last_table_key = None;
                 // Typography is a Word default approximation; JTD's ruby
                 // size and positioning have not yet been decoded.
                 paragraph.runs.push(FlowRun::new(
@@ -244,6 +263,66 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
         }
     }
     Ok(presentation)
+}
+
+/// Align two adjacent observed display-line grids using spans. This retains
+/// every original cell boundary; it does not infer logical JTD merges.
+fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
+    fn edges(columns: &[i64]) -> Option<Vec<i64>> {
+        let mut out = vec![0i64];
+        for &width in columns {
+            out.push(out.last()?.checked_add(width)?);
+        }
+        Some(out)
+    }
+    let Some(a) = edges(&previous.columns) else {
+        return false;
+    };
+    let Some(b) = edges(&next.columns) else {
+        return false;
+    };
+    if a.last() != b.last() {
+        return false;
+    }
+    let mut grid = a.clone();
+    grid.extend_from_slice(&b);
+    grid.sort_unstable();
+    grid.dedup();
+    if grid.len() > 33 {
+        return false;
+    }
+    fn remap(rows: &mut [FlowRow], old: &[i64], grid: &[i64]) -> bool {
+        for row in rows {
+            let mut at = 0usize;
+            for cell in &mut row.cells {
+                let end = at + cell.span.max(1) as usize;
+                if end >= old.len() {
+                    return false;
+                }
+                let (Ok(start), Ok(stop)) =
+                    (grid.binary_search(&old[at]), grid.binary_search(&old[end]))
+                else {
+                    return false;
+                };
+                cell.span = (stop - start) as u32;
+                at = end;
+            }
+            if at != old.len() - 1 {
+                return false;
+            }
+        }
+        true
+    }
+    let mut merged = previous.clone();
+    let mut incoming = next.rows.clone();
+    if !remap(&mut merged.rows, &a, &grid) || !remap(&mut incoming, &b, &grid) {
+        return false;
+    }
+    merged.columns = grid.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    merged.rows.extend(incoming);
+    merged.resolve_borders();
+    *previous = merged;
+    true
 }
 
 /// Export the currently recognized model as DOCX. Unsupported JTD features
@@ -660,6 +739,48 @@ mod tests {
         assert!(
             matches!(&result[..], [Segment::Table { cells, strips: false, .. }] if cells.len() == 4)
         );
+    }
+
+    #[test]
+    fn adjacent_grids_preserve_cell_boundaries_as_spans() {
+        fn table(columns: &[i64]) -> FlowTable {
+            FlowTable {
+                columns: columns.to_vec(),
+                rows: vec![FlowRow {
+                    cells: columns
+                        .iter()
+                        .map(|_| FlowCell {
+                            span: 1,
+                            ..FlowCell::default()
+                        })
+                        .collect(),
+                    ..FlowRow::default()
+                }],
+                ..FlowTable::default()
+            }
+        }
+        let mut first = table(&[50, 50]);
+        assert!(merge_table_grids(&mut first, &table(&[25, 25, 50])));
+        assert_eq!(first.columns, [25, 25, 50]);
+        assert_eq!(
+            first.rows[0]
+                .cells
+                .iter()
+                .map(|c| c.span)
+                .collect::<Vec<_>>(),
+            [2, 1]
+        );
+        assert_eq!(
+            first.rows[1]
+                .cells
+                .iter()
+                .map(|c| c.span)
+                .collect::<Vec<_>>(),
+            [1, 1, 1]
+        );
+        let before = first.clone();
+        assert!(!merge_table_grids(&mut first, &table(&[40, 40])));
+        assert_eq!(first, before);
     }
 
     #[test]
