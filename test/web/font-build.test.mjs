@@ -112,3 +112,19 @@ test('gjs retains both BMP and supplementary variation selectors', { skip: !proc
   assert.ok(variants.get(0xe0103) > 0);
   assert.equal(checksum(data), 0xb1b0afba);
 });
+
+test('large full fonts are divided into verified assets without altering the source', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ibis-font-large-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const large = Buffer.alloc(20 * 1024 * 1024 + 127);
+  bytes.copy(large);
+  const input = join(dir, 'large.ttf'), config = join(dir, 'config.json');
+  await writeFile(input, large);
+  await writeFile(config, JSON.stringify({ fonts: [{ id: 'large', path: input }] }));
+  const result = await buildWebFonts(config, { outDir: dir });
+  const font = result.fonts[0];
+  assert.equal(font.parts.length, 2);
+  assert.equal(font.size, large.length);
+  const output = Buffer.concat(await Promise.all(font.parts.map(part => readFile(new URL(part.url, `file://${dir}/fonts.json`)))));
+  assert.deepEqual(output, large);
+});

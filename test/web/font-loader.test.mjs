@@ -67,3 +67,23 @@ test('validates optional dynamic endpoint and requires strict font fallback', as
   value.dynamic.endpoint = 'javascript:alert(1)';
   await assert.rejects(loadWebFonts(manifestURL, fetcher), /dynamic font/);
 });
+
+test('loads and verifies ordered font chunks and rejects corrupt data', async () => {
+  const parts = [bytes.subarray(0, 4000), bytes.subarray(4000)];
+  const hash = data => createHash('sha256').update(data).digest('hex');
+  const value = manifest();
+  delete value.fonts[0].url;
+  value.fonts[0].size = bytes.length;
+  value.fonts[0].parts = parts.map((data, i) => ({ url: `./assets/fonts/${i}.fontchunk`, size: data.length, sha256: hash(data) }));
+  const fetcher = async url => url.href === manifestURL.href ? Response.json(value) : new Response(parts[Number(url.pathname.match(/(\d)\.fontchunk$/)[1])]);
+  const loaded = await loadWebFonts(manifestURL, fetcher);
+  assert.deepEqual(loaded.data[0], new Uint8Array(bytes));
+  value.fonts[0].parts.reverse();
+  await assert.rejects(loadWebFonts(manifestURL, fetcher), /TTF\/OTF|SHA-256/);
+  value.fonts[0].parts.reverse();
+  value.fonts[0].parts[0].sha256 = '0'.repeat(64);
+  await assert.rejects(loadWebFonts(manifestURL, fetcher), /invalid part/);
+  value.fonts[0].parts[0].sha256 = hash(parts[0]);
+  value.fonts[0].size++;
+  await assert.rejects(loadWebFonts(manifestURL, fetcher), /font size/);
+});

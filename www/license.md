@@ -1,5 +1,7 @@
 # サードパーティのライセンス（Web 版）
 
+ibis.sorane.dev の追加フォントは [フォントのライセンス](./font-notices.html) を参照してください。
+
 ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品と、そのライセンスが求める表示です。このファイルは `scripts/gen-web-licenses.py` で生成しています。
 
 ## 同梱しているデータ・フォント・アイコン

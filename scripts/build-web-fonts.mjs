@@ -57,7 +57,6 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
       throw new Error(`${entry.id}: family may only rename a subset`);
     }
     const sha256 = digest(data);
-    const filename = `${entry.id}-${sha256}.otf`;
     const names = entry.aliases ?? [];
     if (!Array.isArray(names) || names.some(n => typeof n !== 'string' || !n.trim())) throw new Error(`${entry.id}: aliases must be nonempty strings`);
     for (const name of [family, originalFamily, ...names]) {
@@ -65,8 +64,23 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
       aliases.set(name, family);
     }
     ids.set(entry.id, family);
-    const font = { url: `./assets/fonts/${filename}`, family, sha256, aliases: [...new Set([originalFamily, ...names])] };
-    artifacts.push([filename, data]);
+    const font = { family, sha256, aliases: [...new Set([originalFamily, ...names])] };
+    const chunkSize = 20 * 1024 * 1024;
+    if (data.length > chunkSize) {
+      font.size = data.length;
+      font.parts = [];
+      for (let offset = 0; offset < data.length; offset += chunkSize) {
+        const part = data.subarray(offset, Math.min(offset + chunkSize, data.length));
+        const partHash = digest(part);
+        const filename = `${entry.id}-${partHash}.fontchunk`;
+        font.parts.push({ url: `./assets/fonts/${filename}`, size: part.length, sha256: partHash });
+        artifacts.push([filename, part]);
+      }
+    } else {
+      const filename = `${entry.id}-${sha256}.otf`;
+      font.url = `./assets/fonts/${filename}`;
+      artifacts.push([filename, data]);
+    }
     if (entry.licenseFile !== undefined) {
       const license = await readFile(resolve(base, entry.licenseFile));
       const name = `${entry.id}-${digest(license)}.license.txt`;

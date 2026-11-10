@@ -93,8 +93,11 @@ The browser accumulates subsets for the session. Full fonts can still be supplie
 when comprehensive or face-specific coverage is needed. This mechanism is for
 the browser build; native font discovery is unchanged.
 
-The loader verifies each file's SHA-256 and resolves font URLs relative to the
-manifest, including deployments under a subpath. Failed font downloads,
+Full fonts larger than 20 MiB are split into content-addressed chunks. The
+loader verifies each part and reassembles the original font, then verifies its
+whole-file SHA-256. This keeps each Cloudflare Static Asset below its size limit.
+The loader resolves font URLs relative to the manifest, including deployments
+under a subpath. Failed font downloads,
 invalid manifests, and unregistered families stop startup with a visible error.
 After changing the font configuration, rebuild the assets and reload the page.
 To remove a configured font set, remove the deployed `fonts.json` too.
@@ -105,3 +108,24 @@ Validation:
 npm run test:fonts
 GJS_DIR=../gjs npm run test:fonts  # also exercise the actual gjs subsetter
 ```
+
+## ibis.sorane.dev font set
+
+`scripts/web-fonts.sorane.json` supplies IPAmj Mincho as the default, the
+Digital Agency's additional administrative Mincho as a separate fallback,
+and Noto Sans CJK JP for Gothic aliases. All three are distributed as their
+original font files; see `/font-notices.html` for attribution and licenses.
+The large IPAmj file is split only for transport and reconstructed byte-for-byte.
+Build and validate with:
+
+```sh
+IBIS_WEB_FONTS_CONFIG=scripts/web-fonts.sorane.json GJS_DIR=../gjs \
+  RUSTUP_TOOLCHAIN=nightly scripts/build-web.sh --release
+npm run test:web
+npx wrangler deploy --dry-run
+```
+
+The supplemental font intentionally lacks Latin characters. The pinned
+`gpui-pre-wgpu` fork permits this specific face without treating it as a
+broken Latin font. The live dynamic gjs endpoint is configured explicitly;
+its request privacy and limitations are described above.

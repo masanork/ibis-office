@@ -221,6 +221,7 @@ def write(build):
     where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）"}[build]
     md = [f"# サードパーティのライセンス（{label}）",
           "",
+          *(["ibis.sorane.dev の追加フォントは [フォントのライセンス](./font-notices.html) を参照してください。", ""] if build == "web" else []),
           f"ibisOffice の{where}に含まれる、ibisOffice 以外の部品と、そのライセンスが求める表示です。"
           "このファイルは `scripts/gen-web-licenses.py` で生成しています。",
           "",
