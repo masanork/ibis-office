@@ -4,25 +4,44 @@
   "browserFallback": false,
   "dynamic": {
     "endpoint": "https://gjs-api.masanork.workers.dev/api/font/subset",
-    "font": "ipamjm"
+    "font": "ipamjm",
+    "strategy": "faces"
   },
   "fonts": [
     {
       "id": "ipamj",
       "path": "../../gjs/data/sources/fonts/ipamjm.ttf",
-      "aliases": ["游明朝", "Yu Mincho", "YuMincho", "MS Mincho", "ＭＳ 明朝", "ＭＳ Ｐ明朝", "MS PMincho", "Hiragino Mincho ProN"],
-      "licenseFile": "../../gjs/licenses/IPA_FONT_LICENSE.md"
-    },
-    {
-      "id": "administrative",
-      "path": "../../gjs/data/sources/fonts/acgjm.ttf",
-      "licenseFile": "../../gjs/licenses/acgjm/OFL.txt"
+      "aliases": [
+        "游明朝",
+        "Yu Mincho",
+        "YuMincho",
+        "MS Mincho",
+        "ＭＳ 明朝",
+        "ＭＳ Ｐ明朝",
+        "MS PMincho",
+        "Hiragino Mincho ProN"
+      ],
+      "licenseFile": "../../gjs/licenses/IPA_FONT_LICENSE.md",
+      "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
     },
     {
       "id": "noto-gothic",
       "path": "../../gjs/data/sources/fonts/NotoSansCJKjp-Regular.otf",
-      "aliases": ["游ゴシック", "Yu Gothic", "YuGothic", "MS Gothic", "ＭＳ ゴシック", "ＭＳ Ｐゴシック", "MS PGothic", "メイリオ", "Meiryo", "Hiragino Sans", "Noto Sans JP"],
-      "licenseFile": "../../gjs/licenses/OFL-1.1.txt"
+      "aliases": [
+        "游ゴシック",
+        "Yu Gothic",
+        "YuGothic",
+        "MS Gothic",
+        "ＭＳ ゴシック",
+        "ＭＳ Ｐゴシック",
+        "MS PGothic",
+        "メイリオ",
+        "Meiryo",
+        "Hiragino Sans",
+        "Noto Sans JP"
+      ],
+      "licenseFile": "../../gjs/licenses/OFL-1.1.txt",
+      "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
     }
   ]
 }

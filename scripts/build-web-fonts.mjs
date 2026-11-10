@@ -95,6 +95,7 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
       throw new Error('dynamic requires an HTTP(S) endpoint and a gjs font ID');
     }
     if (config.browserFallback === true) throw new Error('dynamic fonts require browserFallback: false');
+    if (config.dynamic.strategy !== undefined && config.dynamic.strategy !== 'faces') throw new Error('Invalid dynamic strategy');
   }
   const defaultFamily = ids.get(config.defaultFont ?? config.fonts[0].id);
   if (!defaultFamily) throw new Error('defaultFont must name a configured font id');

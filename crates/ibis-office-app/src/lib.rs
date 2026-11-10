@@ -1145,6 +1145,8 @@ mod web {
         default_family: String,
         ui_family: String,
         browser_fallback: bool,
+        face_mode: bool,
+        face_fonts: Vec<(String, String)>,
     }
 
     /// Supply self-hosted TTF/OTF data before `run`, so the first document and
@@ -1193,6 +1195,7 @@ mod web {
         }
         SUPPLIED_FONTS.with(|fonts| *fonts.borrow_mut() = Some(SuppliedFonts {
             data, families, aliases: mapping, default_family, ui_family, browser_fallback,
+            face_mode: false, face_fonts: Vec::new(),
         }));
         Ok(())
     }
@@ -1209,8 +1212,32 @@ mod web {
         SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref().map(|fonts| fonts.ui_family.clone().into()))
     }
 
-    pub(crate) fn font_fallbacks() -> Option<FontFallbacks> {
-        SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref().map(|fonts| FontFallbacks::from_fonts(fonts.families.clone())))
+    pub(crate) fn font_fallbacks(requested: Option<&str>) -> Option<FontFallbacks> {
+        SUPPLIED_FONTS.with(|fonts| {
+            let fonts = fonts.borrow();
+            let fonts = fonts.as_ref()?;
+            if !fonts.face_mode { return Some(FontFallbacks::from_fonts(fonts.families.clone())); }
+            let gothic = fonts.aliases.get("Noto Sans CJK JP");
+            let requested_family = requested.and_then(|name| fonts.aliases.get(name));
+            let category = if gothic.is_some() && requested_family == gothic { "NotoSansCJKJP" } else { "ipamjm" };
+            let mut families: Vec<String> = fonts.face_fonts.iter()
+                .filter(|(face, _)| face == "acgjm")
+                .chain(fonts.face_fonts.iter().filter(|(face, _)| face == category))
+                .map(|(_, family)| family.clone()).collect();
+            let primary = if category == "NotoSansCJKJP" { gothic } else { Some(&fonts.default_family) };
+            if let Some(primary) = primary { families.insert(0, primary.clone()); }
+            Some(FontFallbacks::from_fonts(families))
+        })
+    }
+
+    #[wasm_bindgen]
+    pub fn enable_face_fonts() -> Result<(), JsValue> {
+        SUPPLIED_FONTS.with(|fonts| {
+            let mut fonts = fonts.borrow_mut();
+            let fonts = fonts.as_mut().ok_or_else(|| JsValue::from_str("Fonts are not configured"))?;
+            fonts.face_mode = true;
+            Ok(())
+        })
     }
 
     #[wasm_bindgen]
@@ -1224,6 +1251,18 @@ mod web {
 
     #[wasm_bindgen]
     pub fn add_dynamic_font(data: Vec<u8>) -> Result<(), JsValue> {
+        install_dynamic_font(data, None)
+    }
+
+    #[wasm_bindgen]
+    pub fn add_face_font(data: Vec<u8>, face: String) -> Result<(), JsValue> {
+        if !matches!(face.as_str(), "ipamjm" | "NotoSansCJKJP" | "acgjm") {
+            return Err(JsValue::from_str("Unknown dynamic face"));
+        }
+        install_dynamic_font(data, Some(face))
+    }
+
+    fn install_dynamic_font(data: Vec<u8>, face: Option<String>) -> Result<(), JsValue> {
         let family = ibis_eot::family_name(&data).ok_or_else(|| JsValue::from_str("Invalid dynamic font"))?;
         APPLICATION.with(|app| {
             let app = app.borrow();
@@ -1235,7 +1274,10 @@ mod web {
                     return Err(JsValue::from_str("Dynamic font could not be registered"));
                 }
                 SUPPLIED_FONTS.with(|fonts| {
-                    if let Some(fonts) = fonts.borrow_mut().as_mut() { fonts.families.push(family); }
+                    if let Some(fonts) = fonts.borrow_mut().as_mut() {
+                        if let Some(face) = face { fonts.face_fonts.push((face, family.clone())); }
+                        fonts.families.push(family);
+                    }
                 });
                 crate::docx::flow_layout::clear_layout_caches();
                 for window in cx.windows() {

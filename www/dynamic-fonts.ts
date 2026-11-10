@@ -110,3 +110,89 @@ export class DynamicFonts {
     } finally { this.running = false; }
   }
 }
+
+/** Fetch independent subsets for each requested face; never let an API
+ * fallback silently replace an entire batch in the requested typeface. */
+export class FaceSubsetProvider {
+  private readonly pending = new Set<string>();
+  private readonly resolved = new Set<string>();
+  private readonly faceResolved = new Set<string>();
+  private readonly adminCovered = new Set<string>();
+  private sequence = 0;
+  private running = false;
+  constructor(private readonly endpoint: string,
+              private readonly install: (data: Uint8Array, face: string) => void,
+              private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) {}
+
+  request(glyphs: string[]): void {
+    for (const glyph of glyphs) if (glyph && !this.resolved.has(glyph)) this.pending.add(glyph);
+    if (!this.running && this.pending.size) {
+      this.running = true;
+      setTimeout(() => { void this.flush(); }, 40);
+    }
+  }
+
+  private async fetchGroup(face: string, glyphs: string[]): Promise<void> {
+    glyphs = glyphs.filter(glyph => !this.faceResolved.has(`${face}\0${glyph}`));
+    if (!glyphs.length) return;
+    const url = new URL(this.endpoint);
+    url.searchParams.set('font', face);
+    url.searchParams.set('format', 'otf');
+    // The administrative font intentionally contains no Latin characters.
+    url.searchParams.set('text', glyphs.join('') + (face === 'acgjm' ? '' : 'm'));
+    const response = await this.fetcher(url);
+    if (response.status === 429) {
+      const seconds = Number(response.headers.get('Retry-After')) || 5;
+      await new Promise(resolve => setTimeout(resolve, Math.min(Math.max(seconds, 1), 60) * 1000));
+    }
+    if (!response.ok && response.status !== 204) throw new Error(`Dynamic font: HTTP ${response.status}`);
+    const actual = response.headers.get('X-Font-Id');
+    if (response.status !== 204 && !actual) throw new Error('Dynamic font: missing source font header');
+    if ((response.status === 204 || actual !== face) && glyphs.length > 1) {
+      const mid = Math.floor(glyphs.length / 2);
+      await this.fetchGroup(face, glyphs.slice(0, mid));
+      await this.fetchGroup(face, glyphs.slice(mid));
+      return;
+    }
+    if (response.status !== 204 && !(face === 'acgjm' && actual !== face)) {
+      this.install(namespaceSubset(new Uint8Array(await response.arrayBuffer()), ++this.sequence), face);
+      if (face === 'acgjm') for (const glyph of glyphs) this.adminCovered.add(glyph);
+    }
+    for (const glyph of glyphs) this.faceResolved.add(`${face}\0${glyph}`);
+  }
+
+  private async flush(): Promise<void> {
+    try {
+      while (this.pending.size) {
+        const batch: string[] = [];
+        let count = 0;
+        for (const glyph of this.pending) {
+          const length = Array.from(glyph).length;
+          if (batch.length && count + length > 127) break;
+          this.pending.delete(glyph); batch.push(glyph); count += length;
+        }
+        const work = batch.filter(glyph => !this.resolved.has(glyph)).sort();
+        if (!work.length) continue;
+        const administrative = work.filter(glyph => [...glyph].some(c => {
+          const cp = c.codePointAt(0)!; return cp >= 0x100000 && cp <= 0x10fffd;
+        }));
+        let complete = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await this.fetchGroup('acgjm', administrative);
+            const ordinary = work.filter(glyph => !this.adminCovered.has(glyph));
+            // UI fallback also uses registered faces; register the UI's sans
+            // face first while document runs keep their explicit face chains.
+            await this.fetchGroup('NotoSansCJKJP', ordinary);
+            await this.fetchGroup('ipamjm', ordinary);
+            complete = true; break;
+          } catch (error) {
+            if (attempt === 2) console.error('Could not load a dynamic font', error);
+            else await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+          }
+        }
+        if (complete) for (const glyph of work) this.resolved.add(glyph);
+      }
+    } finally { this.running = false; }
+  }
+}

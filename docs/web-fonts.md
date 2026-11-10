@@ -113,14 +113,16 @@ GJS_DIR=../gjs npm run test:fonts  # also exercise the actual gjs subsetter
 
 ## ibis.sorane.dev font set
 
-`scripts/web-fonts.sorane.json` selects Noto Sans CJK JP for the UI (`uiFont`),
-IPAmj Mincho for document fallback (`defaultFont`) and Mincho aliases such as
-MS Mincho and Yu Mincho, and Noto Sans CJK JP for Gothic aliases. The Digital
-Agency's additional administrative Mincho is a separate fallback.
-All three are distributed as their
-original font files; see `/font-notices.html` for attribution and licenses.
-The large IPAmj file is split only for transport and reconstructed byte-for-byte.
-Build and validate with:
+`scripts/web-fonts.sorane.json` uses small bootstrap subsets of IPAmj Mincho
+and Noto Sans CJK JP (also used for the UI), then obtains missing glyphs on demand from the gjs API.
+Administrative Plane 16 characters are requested from the Digital Agency font
+without adding Latin characters. Distinct subsets are kept in separate fallback
+chains for Mincho and Gothic. The response may contain a different fallback
+font when the requested font lacks a character. See `/font-notices.html` for
+attribution and licenses. Missing graphemes are sent to the configured API;
+this exposes those characters to its operator and network logs. The current
+missing-glyph reporting does not detect every variation sequence when its base
+character is already available.
 
 ```sh
 IBIS_WEB_FONTS_CONFIG=scripts/web-fonts.sorane.json GJS_DIR=../gjs \
@@ -128,8 +130,3 @@ IBIS_WEB_FONTS_CONFIG=scripts/web-fonts.sorane.json GJS_DIR=../gjs \
 npm run test:web
 npx wrangler deploy --dry-run
 ```
-
-The supplemental font intentionally lacks Latin characters. The pinned
-`gpui-pre-wgpu` fork permits this specific face without treating it as a
-broken Latin font. The live dynamic gjs endpoint is configured explicitly;
-its request privacy and limitations are described above.

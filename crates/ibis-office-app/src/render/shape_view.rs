@@ -812,7 +812,7 @@ const TYPEFACE_ALIASES: &[(&str, &str)] = &[
 /// Hiragino, wrapped).
 #[cfg(target_family = "wasm")]
 fn browser_fallbacks(style: &TextStyle) -> Option<FontFallbacks> {
-    if let Some(fallbacks) = crate::web::font_fallbacks() {
+    if let Some(fallbacks) = crate::web::font_fallbacks(style.font.as_deref().or(style.fallback_font.as_deref())) {
         return Some(fallbacks);
     }
     let names = browser_fallback_names(style);

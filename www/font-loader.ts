@@ -6,7 +6,7 @@ export interface WebFonts {
   defaultFamily: string;
   uiFamily: string;
   browserFallback: boolean;
-  dynamic?: { endpoint: string; font: string };
+  dynamic?: { endpoint: string; font: string; strategy?: 'faces' };
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -98,7 +98,8 @@ export async function loadWebFonts(url: URL, fetcher: typeof fetch = fetch): Pro
     if (!['http:', 'https:'].includes(endpoint.protocol) || !/^[A-Za-z][A-Za-z0-9]+$/.test(font) || manifest.browserFallback) {
       throw new Error('Invalid dynamic font configuration');
     }
-    dynamic = { endpoint: endpoint.href, font };
+    if (settings.strategy !== undefined && settings.strategy !== 'faces') throw new Error('Invalid dynamic strategy');
+    dynamic = { endpoint: endpoint.href, font, ...(settings.strategy === 'faces' && { strategy: 'faces' as const }) };
   }
   return { data, aliases: Object.fromEntries(aliases), defaultFamily, uiFamily, browserFallback: manifest.browserFallback, dynamic };
 }

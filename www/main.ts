@@ -2,10 +2,10 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { configure_fonts, enable_dynamic_fonts, add_dynamic_font, run, set_embed_options } from './pkg/ibis_office_app.js';
+import init, { configure_fonts, enable_dynamic_fonts, enable_face_fonts, add_dynamic_font, add_face_font, run, set_embed_options } from './pkg/ibis_office_app.js';
 import { loadWebFonts } from './font-loader.js';
 import { loadWasm } from './wasm-loader.js';
-import { DynamicFonts } from './dynamic-fonts.js';
+import { DynamicFonts, FaceSubsetProvider } from './dynamic-fonts.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -244,7 +244,10 @@ if (!('gpu' in navigator)) {
     ]);
     if (fonts) configure_fonts(fonts.data, fonts.aliases, fonts.defaultFamily, fonts.browserFallback, fonts.uiFamily);
     if (fonts?.dynamic) {
-      const provider = new DynamicFonts(fonts.dynamic, add_dynamic_font);
+      if (fonts.dynamic.strategy === 'faces') enable_face_fonts();
+      const provider = fonts.dynamic.strategy === 'faces'
+        ? new FaceSubsetProvider(fonts.dynamic.endpoint, add_face_font)
+        : new DynamicFonts(fonts.dynamic, add_dynamic_font);
       Object.assign(window, { ibisOfficeMissingGlyphs: (glyphs: string[]) => provider.request(glyphs) });
       enable_dynamic_fonts();
     }
