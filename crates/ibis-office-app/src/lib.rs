@@ -1143,18 +1143,21 @@ mod web {
         families: Vec<String>,
         aliases: HashMap<String, String>,
         default_family: String,
+        ui_family: String,
         browser_fallback: bool,
     }
 
     /// Supply self-hosted TTF/OTF data before `run`, so the first document and
     /// every later one share the same fonts. `aliases` maps Office typeface
     /// names to the actual families in the supplied font files.
+    /// The optional UI family does not change document aliases or fallback.
     #[wasm_bindgen]
     pub fn configure_fonts(
         fonts: js_sys::Array,
         aliases: js_sys::Object,
         default_family: String,
         browser_fallback: bool,
+        ui_family: Option<String>,
     ) -> Result<(), JsValue> {
         if APPLICATION.with(|app| app.borrow().is_some()) {
             return Err(JsValue::from_str("Fonts must be configured before run"));
@@ -1174,6 +1177,10 @@ mod web {
         if !available.contains(&default_family) {
             return Err(JsValue::from_str("Default font is not supplied"));
         }
+        let ui_family = ui_family.unwrap_or_else(|| default_family.clone());
+        if !available.contains(&ui_family) {
+            return Err(JsValue::from_str("UI font is not supplied"));
+        }
         let mut mapping = HashMap::new();
         for entry in js_sys::Object::entries(&aliases) {
             let pair = js_sys::Array::from(&entry);
@@ -1185,7 +1192,7 @@ mod web {
             mapping.insert(source, target);
         }
         SUPPLIED_FONTS.with(|fonts| *fonts.borrow_mut() = Some(SuppliedFonts {
-            data, families, aliases: mapping, default_family, browser_fallback,
+            data, families, aliases: mapping, default_family, ui_family, browser_fallback,
         }));
         Ok(())
     }
@@ -1196,6 +1203,10 @@ mod web {
 
     pub(crate) fn default_font_family() -> Option<SharedString> {
         SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref().map(|fonts| fonts.default_family.clone().into()))
+    }
+
+    fn ui_font_family() -> Option<SharedString> {
+        SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref().map(|fonts| fonts.ui_family.clone().into()))
     }
 
     pub(crate) fn font_fallbacks() -> Option<FontFallbacks> {
@@ -1339,7 +1350,7 @@ mod web {
                 });
                 MISSING_SUBSCRIPTION.with(|slot| *slot.borrow_mut() = Some(subscription));
             }
-            Theme::global_mut(cx).font_family = default_font_family().unwrap_or_else(|| "IBM Plex Sans".into());
+            Theme::global_mut(cx).font_family = ui_font_family().unwrap_or_else(|| "IBM Plex Sans".into());
             if let Some((presentation, name, data)) = jtd_document {
                 super::open_window_with(cx, move |editor, window, cx| editor.load_jtd(presentation, name, data, window, cx));
             } else if let Some(error) = open_error {

@@ -47,10 +47,12 @@ GPUI can read. WOFF, WOFF2 and TTC files are not accepted as source files.
 }
 ```
 
-- `id` uniquely identifies each face. `defaultFont` selects one of these IDs;
-  if omitted, the first face is the default for the UI and unresolved document
-  typefaces. Aliases affect display, leaving the document's stored typeface names
-  unchanged.
+- `id` uniquely identifies each face. `defaultFont` selects the fallback for
+  unresolved document typefaces; if omitted, it uses the first face.
+  `uiFont` independently selects the editor's menus, toolbar and other UI text.
+  Without `uiFont`, the UI uses `defaultFont`, preserving existing configurations.
+  Both IDs must name supplied fonts. Aliases affect display, leaving the
+  document's stored typeface names unchanged.
 - `text` and/or UTF-8 `textFile` select the subset repertoire. Neither is
   normalized or deduplicated, preserving base characters and their variation
   selectors. Without either field the original font is copied intact.
@@ -111,9 +113,11 @@ GJS_DIR=../gjs npm run test:fonts  # also exercise the actual gjs subsetter
 
 ## ibis.sorane.dev font set
 
-`scripts/web-fonts.sorane.json` supplies IPAmj Mincho as the default, the
-Digital Agency's additional administrative Mincho as a separate fallback,
-and Noto Sans CJK JP for Gothic aliases. All three are distributed as their
+`scripts/web-fonts.sorane.json` selects Noto Sans CJK JP for the UI (`uiFont`),
+IPAmj Mincho for document fallback (`defaultFont`) and Mincho aliases such as
+MS Mincho and Yu Mincho, and Noto Sans CJK JP for Gothic aliases. The Digital
+Agency's additional administrative Mincho is a separate fallback.
+All three are distributed as their
 original font files; see `/font-notices.html` for attribution and licenses.
 The large IPAmj file is split only for transport and reconstructed byte-for-byte.
 Build and validate with:

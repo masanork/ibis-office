@@ -4,6 +4,7 @@ export interface WebFonts {
   data: Uint8Array[];
   aliases: Record<string, string>;
   defaultFamily: string;
+  uiFamily: string;
   browserFallback: boolean;
   dynamic?: { endpoint: string; font: string };
 }
@@ -28,6 +29,7 @@ export async function loadWebFonts(url: URL, fetcher: typeof fetch = fetch): Pro
   if (manifest.version !== 1 || !Array.isArray(manifest.fonts) || manifest.fonts.length === 0) throw new Error('Unsupported font manifest');
   if (typeof manifest.browserFallback !== 'boolean') throw new Error('Invalid browserFallback');
   const defaultFamily = name(manifest.defaultFamily);
+  const uiFamily = manifest.uiFamily === undefined ? defaultFamily : name(manifest.uiFamily);
   const aliases = new Map<string, string>();
   const entries = manifest.fonts.map(value => {
     const font = object(value);
@@ -59,6 +61,7 @@ export async function loadWebFonts(url: URL, fetcher: typeof fetch = fetch): Pro
     return { source, parts, family, sha256: font.sha256 };
   });
   if (!entries.some(font => font.family === defaultFamily)) throw new Error('Unknown default font family');
+  if (!entries.some(font => font.family === uiFamily)) throw new Error('Unknown UI font family');
   const data = await Promise.all(entries.map(async font => {
     const sha256 = async (bytes: Uint8Array): Promise<string> => {
       const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>));
@@ -97,5 +100,5 @@ export async function loadWebFonts(url: URL, fetcher: typeof fetch = fetch): Pro
     }
     dynamic = { endpoint: endpoint.href, font };
   }
-  return { data, aliases: Object.fromEntries(aliases), defaultFamily, browserFallback: manifest.browserFallback, dynamic };
+  return { data, aliases: Object.fromEntries(aliases), defaultFamily, uiFamily, browserFallback: manifest.browserFallback, dynamic };
 }

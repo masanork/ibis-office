@@ -1,5 +1,6 @@
 {
   "defaultFont": "ipamj",
+  "uiFont": "noto-gothic",
   "browserFallback": false,
   "dynamic": {
     "endpoint": "https://gjs-api.masanork.workers.dev/api/font/subset",

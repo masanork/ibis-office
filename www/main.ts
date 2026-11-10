@@ -242,7 +242,7 @@ if (!('gpu' in navigator)) {
       init({ module_or_path: fetchWasm() }), initialFile(),
       loadWebFonts(new URL('./fonts.json', import.meta.url)),
     ]);
-    if (fonts) configure_fonts(fonts.data, fonts.aliases, fonts.defaultFamily, fonts.browserFallback);
+    if (fonts) configure_fonts(fonts.data, fonts.aliases, fonts.defaultFamily, fonts.browserFallback, fonts.uiFamily);
     if (fonts?.dynamic) {
       const provider = new DynamicFonts(fonts.dynamic, add_dynamic_font);
       Object.assign(window, { ibisOfficeMissingGlyphs: (glyphs: string[]) => provider.request(glyphs) });

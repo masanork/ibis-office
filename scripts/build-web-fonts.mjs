@@ -98,12 +98,14 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
   }
   const defaultFamily = ids.get(config.defaultFont ?? config.fonts[0].id);
   if (!defaultFamily) throw new Error('defaultFont must name a configured font id');
+  const uiFamily = config.uiFont === undefined ? defaultFamily : ids.get(config.uiFont);
+  if (!uiFamily) throw new Error('uiFont must name a configured font id');
   // Validate everything before publishing the manifest. Old content-addressed
   // assets remain valid for tabs that still have an older manifest.
   const assetDir = join(outDir, 'assets/fonts');
   await mkdir(assetDir, { recursive: true });
   for (const [name, data] of artifacts) await writeFile(join(assetDir, name), data);
-  const manifest = { version: 1, defaultFamily, browserFallback: config.browserFallback ?? false, fonts, ...(config.dynamic && { dynamic: config.dynamic }) };
+  const manifest = { version: 1, defaultFamily, uiFamily, browserFallback: config.browserFallback ?? false, fonts, ...(config.dynamic && { dynamic: config.dynamic }) };
   await writeFile(join(outDir, 'fonts.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }

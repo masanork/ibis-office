@@ -28,6 +28,21 @@ test('verifies binary fonts under a deployment subpath before supplying aliases'
   assert.deepEqual(fonts.data[0], new Uint8Array(bytes));
   assert.equal(fonts.aliases['Office Font'], 'IBM Plex Sans');
   assert.equal(fonts.browserFallback, false);
+  assert.equal(fonts.uiFamily, fonts.defaultFamily);
+});
+
+test('loads an independent UI face without changing document aliases', async () => {
+  const carlito = await readFile(new URL('../../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
+  const value = manifest();
+  value.defaultFamily = 'Carlito';
+  value.uiFamily = 'IBM Plex Sans';
+  value.fonts.push({ url: './assets/fonts/carlito.ttf', family: 'Carlito', aliases: ['MS Mincho'], sha256: createHash('sha256').update(carlito).digest('hex') });
+  const loaded = await loadWebFonts(manifestURL, async url => url.href === manifestURL.href
+    ? Response.json(value) : new Response(url.pathname.endsWith('carlito.ttf') ? carlito : bytes));
+  assert.equal(loaded.uiFamily, 'IBM Plex Sans');
+  assert.equal(loaded.defaultFamily, 'Carlito');
+  assert.equal(loaded.aliases['MS Mincho'], 'Carlito');
+  assert.deepEqual(loaded.data[1], new Uint8Array(carlito));
 });
 
 test('corrupt data and HTML/WOFF responses cannot silently use browser fonts', async () => {
@@ -43,6 +58,7 @@ test('rejects ambiguous aliases and unknown defaults before fetching fonts', asy
   for (const change of [
     m => { m.fonts.push({ ...m.fonts[0], family: 'Other Family' }); },
     m => { m.defaultFamily = 'Missing'; },
+    m => { m.uiFamily = 'Missing'; },
     m => { m.fonts[0].sha256 = 'bad'; },
     m => { m.browserFallback = 'false'; },
     m => { m.version = 2; },

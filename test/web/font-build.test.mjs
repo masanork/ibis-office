@@ -33,6 +33,7 @@ test('full font mode needs no gjs checkout and preserves the original bytes', as
   await writeFile(config, JSON.stringify({ fonts: [{ id: 'plex', path: source, aliases: ['Office Font'] }] }));
   const manifest = await buildWebFonts(config, { gjsDir: '/no/gjs', outDir: join(dir, 'www') });
   assert.equal(manifest.defaultFamily, 'IBM Plex Sans');
+  assert.equal(manifest.uiFamily, 'IBM Plex Sans');
   assert.equal(manifest.browserFallback, false);
   assert.deepEqual(await readFile(new URL(manifest.fonts[0].url, `file://${dir}/www/fonts.json`)), bytes);
 });
@@ -46,6 +47,9 @@ test('invalid default and duplicate aliases leave the previous manifest intact',
   await writeFile(config, JSON.stringify({ defaultFont: 'missing', fonts: [{ id: 'plex', path: source }] }));
   await assert.rejects(buildWebFonts(config, { outDir: dir }), /defaultFont/);
   assert.equal(await readFile(output, 'utf8'), 'previous');
+  await writeFile(config, JSON.stringify({ uiFont: 'missing', fonts: [{ id: 'plex', path: source }] }));
+  await assert.rejects(buildWebFonts(config, { outDir: dir }), /uiFont/);
+  assert.equal(await readFile(output, 'utf8'), 'previous');
   const carlito = fileURLToPath(new URL('../../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
   await writeFile(config, JSON.stringify({ fonts: [
     { id: 'plex', path: source, aliases: ['Shared Alias'] },
@@ -53,6 +57,21 @@ test('invalid default and duplicate aliases leave the previous manifest intact',
   ] }));
   await assert.rejects(buildWebFonts(config, { outDir: dir }), /Conflicting font alias/);
   assert.equal(await readFile(output, 'utf8'), 'previous');
+});
+
+test('UI selection preserves a different document default and named aliases', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ibis-font-ui-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const config = join(dir, 'fonts.json');
+  const carlito = fileURLToPath(new URL('../../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
+  await writeFile(config, JSON.stringify({ defaultFont: 'document', uiFont: 'ui', fonts: [
+    { id: 'document', path: carlito, aliases: ['Document Face'] },
+    { id: 'ui', path: source },
+  ] }));
+  const manifest = await buildWebFonts(config, { outDir: join(dir, 'www') });
+  assert.equal(manifest.defaultFamily, 'Carlito');
+  assert.equal(manifest.uiFamily, 'IBM Plex Sans');
+  assert.deepEqual(manifest.fonts[0].aliases, ['Carlito', 'Document Face']);
 });
 
 // Opt in to the sibling gjs checkout; normal CI has no external font dependency.
