@@ -1,5 +1,13 @@
 # Experimental JTD preview
 
+**Known decoding defects (2026-11-10):** the current importer drops ordinary
+text after inline records, scans physical storage without reconstructing the
+block directory, and misses ruled headers with preceding TLV items. A local
+JTD/PDF pair exposed 496 missing base-text characters. Existing round-trip
+tests did not detect this. See the [decoding audit](jtd-decoding-audit.md).
+The feature descriptions below describe attempted mappings, not verified
+fidelity or complete text recovery.
+
 The browser can open `.jtd` files locally as a read-only text preview. Recognized view-style direction flags enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
 It reads the observed `DocumentText` stream into ibisOffice's document model;
 most formatting, exact layout, pictures and some text controls are not reproduced.
