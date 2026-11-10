@@ -1,6 +1,11 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "ibis-office-cf",
+  "name": "ibis-office-jtd-layout-20261111",
+  "account_id": "4b749427a0c80c547e726a42aff4b6fc",
   "compatibility_date": "2026-11-10",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "ibis.sorane.dev", "custom_domain": true, "zone_name": "sorane.dev" }
+  ],
   "assets": { "directory": "./www" }
 }

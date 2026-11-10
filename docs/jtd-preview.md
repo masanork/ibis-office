@@ -1,5 +1,12 @@
 # Experimental JTD preview
 
+This fork's published editor is available at <https://ibis.sorane.dev>.
+`wrangler.jsonc` attaches that Custom Domain to the existing
+`ibis-office-jtd-layout-20261111` Worker. Its `workers.dev` URL remains
+available for previously shared links. Deploy this branch with the
+project-local `node_modules/.bin/wrangler deploy` after building and checking
+the assets; keep the Custom Domain in the configuration on subsequent deploys.
+
 **Layout follow-up (2026-11-11):** agreeing explicit default-font references
 are imported, DOCX grid pitch survives half-point size rounding, body ruby
 keeps its base formatting, and uncovered full or mixed border segments are
