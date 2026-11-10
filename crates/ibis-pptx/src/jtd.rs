@@ -62,7 +62,11 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     let mut next_id = 1u32;
     for segment in segments {
         match segment {
-            Segment::Table(cells) => {
+            Segment::Table {
+                cells,
+                total,
+                strips,
+            } => {
                 if !paragraph.runs.is_empty() || flow.body.is_empty() {
                     paragraph.id = next_id;
                     next_id += 1;
@@ -70,7 +74,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     paragraph = template.clone();
                     paragraph.runs.clear();
                 }
-                let total = cells.last().unwrap().1 as i64;
+                let total = total as i64;
                 let width = (flow.page.size.width - flow.page.left - flow.page.right).max(1);
                 let mut boundaries = vec![0i64];
                 for pair in cells.windows(2) {
@@ -84,9 +88,16 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     space: 0,
                     art: None,
                 };
+                let mut borders = [Some(Some(line)); 6];
+                // In this observed layout, the records describe successive
+                // display lines, not proven logical table rows. Do not draw a
+                // horizontal rule for each line merely because it has cells.
+                if strips {
+                    borders[4] = Some(None);
+                }
                 let mut table = FlowTable {
                     id: next_id,
-                    borders: [Some(Some(line)); 6],
+                    borders,
                     columns: boundaries
                         .windows(2)
                         .map(|p| ((p[1] - p[0]) * width / total).max(635))
@@ -166,6 +177,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 table.resolve_borders();
                 if let Some(Block::Table(previous)) = flow.body.last_mut()
                     && previous.columns == table.columns
+                    && previous.borders == table.borders
                 {
                     previous.rows.extend(table.rows);
                 } else {
@@ -258,12 +270,19 @@ fn observed_vertical(data: &[u8]) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Segment {
     Text(String),
-    Ruby { base: String, reading: String },
+    Ruby {
+        base: String,
+        reading: String,
+    },
     PageBreak,
     RowStart(u16),
     CellStart(u16, u16),
     RowEnd,
-    Table(Vec<(u16, u16, Vec<Segment>)>),
+    Table {
+        cells: Vec<(u16, u16, Vec<Segment>)>,
+        total: u16,
+        strips: bool,
+    },
 }
 
 fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
@@ -412,7 +431,7 @@ fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
         | Segment::RowStart(_)
         | Segment::CellStart(_, _)
         | Segment::RowEnd
-        | Segment::Table(_) => false,
+        | Segment::Table { .. } => false,
     }) {
         return Err(Error::new("対応するJTD本文を読み取れませんでした"));
     }
@@ -474,7 +493,33 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
                 })
             })
         {
-            out.push(Segment::Table(cells));
+            // Thin, empty outer strips in the paired comparison-table
+            // pattern carry edge geometry, not independent text columns.
+            // Keep all other narrow or content-bearing cells unchanged.
+            let empty = |items: &[Segment]| {
+                items.iter().all(|part| match part {
+                    Segment::Text(t) => t.trim().is_empty(),
+                    _ => false,
+                })
+            };
+            let first = &cells[0];
+            let last = cells.last().unwrap();
+            let strips = cells.len() >= 4
+                && first.0 == 0
+                && first.1 <= 6
+                && last.1 == total
+                && last.1 - last.0 <= 6
+                && empty(&first.2)
+                && empty(&last.2);
+            if strips {
+                cells.pop();
+                cells.remove(0);
+            }
+            out.push(Segment::Table {
+                cells,
+                total,
+                strips,
+            });
         } else {
             out.extend(original);
         }
@@ -587,9 +632,33 @@ mod tests {
                 Segment::Text("a".into())
             ])
             .iter()
-            .filter(|s| matches!(s, Segment::Table(_)))
+            .filter(|s| matches!(s, Segment::Table { .. }))
             .count(),
             0
+        );
+    }
+
+    #[test]
+    fn paired_empty_edge_strips_are_not_text_columns() {
+        let row = vec![
+            Segment::RowStart(100),
+            Segment::CellStart(0, 2),
+            Segment::CellStart(6, 48),
+            Segment::Text("left".into()),
+            Segment::CellStart(52, 90),
+            Segment::Text("right".into()),
+            Segment::CellStart(94, 100),
+            Segment::RowEnd,
+        ];
+        let result = table_candidates(row.clone());
+        assert!(
+            matches!(&result[..], [Segment::Table { cells, total: 100, strips: true }] if cells.len() == 2)
+        );
+        let mut with_edge_text = row;
+        with_edge_text.insert(2, Segment::Text("edge".into()));
+        let result = table_candidates(with_edge_text);
+        assert!(
+            matches!(&result[..], [Segment::Table { cells, strips: false, .. }] if cells.len() == 4)
         );
     }
 
@@ -674,6 +743,9 @@ mod tests {
         let bytes = std::fs::read(path).unwrap();
         let result = read(&bytes).unwrap();
         let word = export_docx(&result).unwrap();
+        if let Some(path) = std::env::var_os("IBIS_JTD_DOCX_OUT") {
+            std::fs::write(path, &word).unwrap();
+        }
         let reopened = crate::read(&word).unwrap();
         let flow = result.flow.unwrap();
         let saved = reopened.flow.unwrap();

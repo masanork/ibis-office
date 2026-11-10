@@ -29,7 +29,7 @@ without permission.
 | Paragraph and character formatting | `FlowParagraph`, `FlowRunStyle`, `RunFormat` | Not decoded; defaults are used. |
 | Page breaks | `FlowRunKind::PageBreak` | An observed break immediately following a text run is imported. Other break forms are not decoded. |
 | Ruby and tate-chu-yoko | `FlowRunKind::Ruby`, `FlowRunStyle` | A specific observed base/reading pair is mapped to ruby; font size and positioning use approximate Word defaults. Other ruby forms and tate-chu-yoko are not decoded. |
-| Tables and borders | `FlowTable`, `FlowRow`, `FlowCell`, `FlowBorder` | Ordered cell-boundary candidates in a specific observed row form are reconstructed as tables. Column proportions and single black grid lines are approximations, not decoded JTD dimensions, border presence, or styles. Merges and other row forms are not decoded. |
+| Tables and borders | `FlowTable`, `FlowRow`, `FlowCell`, `FlowBorder` | Ordered cell-boundary candidates in a specific observed row form are reconstructed as tables. Column proportions and black rules are approximations, not decoded JTD dimensions, border presence, or styles. For one observed comparison-table pattern, narrow empty edge strips are not treated as text columns and display lines do not receive automatic row borders. Merges and other row forms are not decoded; the layout may still differ substantially from the original. |
 | Images and drawings | media, shapes | Not decoded. |
 | Headers, footers, section breaks | `FlowDocument` and section/page layout | Not decoded. |
 
