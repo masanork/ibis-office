@@ -1147,11 +1147,21 @@ mod web {
     /// cannot be read) the editor shows the start view.
     #[wasm_bindgen]
     pub fn run(asset_base: Option<String>, file_name: Option<String>, file: Option<Vec<u8>>) -> Result<(), JsValue> {
-        let document = file.and_then(|data| match ibis_pptx::read(&data) {
-            Ok(presentation) => Some((presentation, file_name.unwrap_or_default().into())),
-            Err(err) => {
-                log::error!("{err}");
+        let mut jtd_document = None;
+        let mut open_error = None;
+        let document = file.and_then(|data| {
+            let name = file_name.unwrap_or_default();
+            if name.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case("jtd")) || ibis_pptx::jtd::is_jtd(&data) {
+                match ibis_pptx::jtd::read(&data) {
+                    Ok(presentation) => jtd_document = Some((presentation, name.into(), data)),
+                    Err(err) => open_error = Some(format!("{name}: {err}")),
+                }
                 None
+            } else {
+                match ibis_pptx::read(&data) {
+                    Ok(presentation) => Some((presentation, name.into())),
+                    Err(err) => { open_error = Some(format!("{name}: {err}")); None }
+                }
             }
         });
         gpui_kit::platform::web_init();
@@ -1186,7 +1196,13 @@ mod web {
                 .expect("failed to load the UI font");
             super::init(cx);
             Theme::global_mut(cx).font_family = "IBM Plex Sans".into();
-            super::open_editor(document, None, cx);
+            if let Some((presentation, name, data)) = jtd_document {
+                super::open_window_with(cx, move |editor, window, cx| editor.load_jtd(presentation, name, data, window, cx));
+            } else if let Some(error) = open_error {
+                super::open_window_with(cx, move |editor, _, cx| editor.fail_loading(error, cx));
+            } else {
+                super::open_editor(document, None, cx);
+            }
         });
         APPLICATION.with(|app| *app.borrow_mut() = Some(handle));
         Ok(())

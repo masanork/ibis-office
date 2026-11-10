@@ -44,8 +44,13 @@ pub fn stream(data: &[u8], name: &str) -> Result<Vec<u8>, Error> {
     if !is_cfb(data) {
         return Err(bad());
     }
-    let sector_size = 1usize << u16_at(data, 30).ok_or_else(bad)?;
-    let mini_size = 1usize << u16_at(data, 32).ok_or_else(bad)?;
+    let sector_shift = u16_at(data, 30).ok_or_else(bad)?;
+    let mini_shift = u16_at(data, 32).ok_or_else(bad)?;
+    if !matches!(sector_shift, 9 | 12) || mini_shift != 6 { return Err(bad()); }
+    let sector_size = 1usize << sector_shift;
+    let mini_size = 1usize << mini_shift;
+    let sector_count = data.len() / sector_size;
+    if sector_count == 0 { return Err(bad()); }
     let dir_start = u32_at(data, 48).ok_or_else(bad)?;
     let mini_cutoff = u32_at(data, 56).ok_or_else(bad)? as u64;
     let mini_fat_start = u32_at(data, 60).ok_or_else(bad)?;
@@ -57,26 +62,28 @@ pub fn stream(data: &[u8], name: &str) -> Result<Vec<u8>, Error> {
     // The sectors of the FAT: 109 in the header, then the DIFAT's chain.
     let mut fat_sectors: Vec<u32> = (0..109).filter_map(|i| u32_at(data, 76 + i * 4)).filter(|&s| s < FREE).collect();
     let mut next = difat_start;
-    let mut guard = 0;
-    while next < FREE && guard < 100_000 {
+    let mut visited_difat = std::collections::HashSet::new();
+    while next < FREE {
+        if next as usize >= sector_count || !visited_difat.insert(next) { return Err(bad()); }
         let s = sector(next).ok_or_else(bad)?;
         let per = sector_size / 4;
         fat_sectors.extend((0..per - 1).filter_map(|i| u32_at(s, i * 4)).filter(|&x| x < FREE));
         next = u32_at(s, (per - 1) * 4).ok_or_else(bad)?;
-        guard += 1;
+        if fat_sectors.len() > sector_count { return Err(bad()); }
     }
+    let mut seen_fat = std::collections::HashSet::new();
     let mut fat: Vec<u32> = Vec::new();
     for s in fat_sectors {
+        if s as usize >= sector_count || !seen_fat.insert(s) { return Err(bad()); }
         let b = sector(s).ok_or_else(bad)?;
         fat.extend((0..sector_size / 4).filter_map(|i| u32_at(b, i * 4)));
     }
     let chain = |start: u32, table: &[u32]| -> Result<Vec<u32>, Error> {
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         let mut s = start;
         while s < FREE {
-            if out.len() > table.len() {
-                return Err(bad());
-            }
+            if !seen.insert(s) { return Err(bad()); }
             out.push(s);
             s = *table.get(s as usize).ok_or_else(bad)?;
         }
@@ -400,6 +407,20 @@ mod tests {
         let data = bytes(9_000_000, 9);
         let file = write(&[Item::stream("EncryptedPackage", data.clone())]);
         assert_eq!(stream(&file, "EncryptedPackage").unwrap(), data);
+    }
+
+    #[test]
+    fn rejects_invalid_sector_shift_and_cyclic_directory_chain() {
+        let original = write(&[Item::stream("DocumentText", bytes(100, 1))]);
+        let mut invalid = original.clone();
+        invalid[30..32].copy_from_slice(&255u16.to_le_bytes());
+        assert!(stream(&invalid, "DocumentText").is_err());
+        let mut cyclic = original;
+        let directory = u32_at(&cyclic, 48).unwrap();
+        let fat = u32_at(&cyclic, 76).unwrap();
+        let offset = (fat as usize + 1) * 512 + directory as usize * 4;
+        cyclic[offset..offset + 4].copy_from_slice(&directory.to_le_bytes());
+        assert!(stream(&cyclic, "DocumentText").is_err());
     }
 
     #[test]

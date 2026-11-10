@@ -105,6 +105,10 @@ impl SlideEditor {
     /// The download button: the document as it is now, in its own format, goes to the embedding page.
     pub(crate) fn embed_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);
+        if let Some(bytes) = self.jtd_original.as_ref() {
+            embed_action_js("download", self.file_name.as_deref().unwrap_or(""), Some(bytes.to_vec()));
+            return;
+        }
         let Some(source) = self.source.clone() else {
             self.status = Some(crate::shell::i18n::text("_shell.saving-new-documents-is-not-yet-supported").into());
             return cx.notify();

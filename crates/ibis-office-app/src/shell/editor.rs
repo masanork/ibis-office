@@ -584,6 +584,8 @@ pub struct SlideEditor {
     pub(crate) repair_report: Option<ibis_pptx::repair::RepairReport>,
     /// Whether this document is opened in read-only / viewing mode (--read-only or ?view=1).
     pub(crate) read_only: bool,
+    /// Original JTD bytes: presence makes this document permanently read-only.
+    pub(crate) jtd_original: Option<std::sync::Arc<[u8]>>,
     /// The password to modify the file (書き込みパスワード) was given, or set here; until then a file that has one is read-only.
     pub(crate) modify_unlocked: bool,
     /// Whether the menu bar is shown (false by default when ?view=1 unless ?menuBar=1).
@@ -860,6 +862,7 @@ impl SlideEditor {
             read_only: crate::shell::embed::is_view_only(),
             #[cfg(not(target_arch = "wasm32"))]
             read_only: false,
+            jtd_original: None,
             modify_unlocked: false,
             #[cfg(target_arch = "wasm32")]
             show_menu_bar: crate::shell::embed::show_menu_bar(),
@@ -890,12 +893,26 @@ impl SlideEditor {
 
     /// Whether this editor is currently in read-only / viewing mode (either via `--read-only` or during CSV streaming).
     pub(crate) fn is_read_only(&self) -> bool {
-        self.read_only || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+        self.read_only || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+    }
+
+    pub(crate) fn is_jtd_read_only(&self) -> bool {
+        self.jtd_original.is_some()
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn load_jtd(&mut self, presentation: Presentation, name: SharedString, bytes: Vec<u8>, window: &mut Window, cx: &mut Context<Self>) {
+        self.load(presentation, name, window, cx);
+        self.jtd_original = Some(bytes.into());
+        self.document.set_read_only(true);
+        self.sidebar_open = false;
+        self.set_status(crate::shell::i18n::text("jtd.read-only-notice").to_string(), cx);
     }
 
     /// Replace the open presentation, dropping undo history and selection.
     pub(crate) fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.end_slideshow(window, cx);
+        self.jtd_original = None;
         self.modify_unlocked = false;
         self.zoom_menu_open = false;
         self.editing = None;
@@ -1063,6 +1080,18 @@ impl SlideEditor {
             // Let the empty document show before reading the file, which
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("jtd")) || ibis_pptx::jtd::is_jtd(&data);
+            if is_jtd {
+                let result = ibis_pptx::jtd::read(&data).map_err(|e| e.to_string());
+                this.update_in(cx, |this, window, cx| {
+                    if this.closed != closed { return; }
+                    match result {
+                        Ok(presentation) => this.load_jtd(presentation, name, data, window, cx),
+                        Err(err) => this.fail_loading(crate::shell::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                    }
+                }).ok();
+                return;
+            }
             let result = ibis_pptx::open(data).map_err(|e| e.to_string());
             this.update_in(cx, |this, window, cx| match result {
                 // Closed (ファイル > 閉じる) while it was read.
@@ -1963,6 +1992,7 @@ impl SlideEditor {
             let name = self.file_name.clone().unwrap_or_else(|| crate::shell::i18n::text("_shell.document-1-docx").into());
             let path = self.file_path();
             let source = self.source.clone();
+            let jtd_original = self.jtd_original.clone();
             let current = self.current_slide;
             let current_zoom = self.zoom;
             let existing_count = Self::count_matching_document_windows(doc_id, cx) + 1;
@@ -1976,6 +2006,7 @@ impl SlideEditor {
                 editor.document_memory=document_memory.clone();
                 editor.set_file_path(path);
                 editor.source = source;
+                editor.jtd_original = jtd_original;
                 editor.document_id = doc_id;
                 editor.window_number = Some(new_num);
                 editor.current_slide = current;

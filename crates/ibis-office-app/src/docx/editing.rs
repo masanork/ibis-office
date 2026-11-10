@@ -1032,6 +1032,10 @@ impl SlideEditor {
     // ----- Editing ----------------------------------------------------------
 
     pub(crate) fn run_flow(&mut self, commands: Vec<FlowCommand>, cx: &mut Context<Self>) -> bool {
+        if self.is_jtd_read_only() && commands.iter().any(|c| !matches!(c, FlowCommand::SetViewMode(_))) {
+            self.set_status(crate::shell::i18n::text("jtd.read-only").to_string(), cx);
+            return false;
+        }
         // Edits move the offsets the other ranges of a selection hold.
         if let Some(state) = self.doc_state_mut() {
             state.extra_selections.clear();

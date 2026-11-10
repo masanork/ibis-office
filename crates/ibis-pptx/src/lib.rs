@@ -74,6 +74,8 @@ mod xlsb_formula;
 mod ods_write;
 mod xls;
 mod msdoc;
+/// Read-only Ichitaro text import.
+pub mod jtd;
 pub mod odp;
 mod odp_anim;
 mod odp_shape;
@@ -191,6 +193,7 @@ impl std::error::Error for Error {}
 /// `.docx` document (see [`read_docx`]): which one is told by the package's
 /// main part.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
+    if jtd::is_jtd(data) { return jtd::read(data); }
     // An old workbook (.xls) is read as the .xlsx made from it.
     let converted;
     let data = if ppt::is_ppt(data) {
