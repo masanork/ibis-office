@@ -21,6 +21,26 @@ pub(crate) fn vertical_glyph(c: char) -> bool {
     )
 }
 
+/// Unicode vertical presentation forms for browser Canvas fallback. The
+/// document text is unchanged; these are used only when font bytes are not
+/// available for OpenType vertical shaping. Unsupported characters stay as-is.
+#[cfg(any(target_family = "wasm", test))]
+pub(crate) fn vertical_presentation(c: char) -> Option<char> {
+    Some(match c {
+        '、' => '\u{fe11}', '。' => '\u{fe12}',
+        '（' => '\u{fe35}', '）' => '\u{fe36}',
+        '｛' => '\u{fe37}', '｝' => '\u{fe38}',
+        '〔' => '\u{fe39}', '〕' => '\u{fe3a}',
+        '【' => '\u{fe3b}', '】' => '\u{fe3c}',
+        '《' => '\u{fe3d}', '》' => '\u{fe3e}',
+        '〈' => '\u{fe3f}', '〉' => '\u{fe40}',
+        '「' => '\u{fe41}', '」' => '\u{fe42}',
+        '『' => '\u{fe43}', '』' => '\u{fe44}',
+        '［' => '\u{fe47}', '］' => '\u{fe48}',
+        _ => return None,
+    })
+}
+
 /// East Asian Width "Ambiguous" (UAX #11) at or above U+2000: the quotes, arrows, math and
 /// geometric symbols that Word sets in the run's East Asian font (ECMA-376 17.18.41 `w:hint`
 /// "eastAsia"). Word keeps a character that took that font upright in vertical text and gives it
@@ -148,6 +168,29 @@ pub(crate) fn paint_glyph(
         .is_ok()
 }
 
+/// Rotate a browser-backed glyph when the original font bytes cannot be
+/// inspected and Unicode has no appropriate presentation-form character.
+#[cfg(target_family = "wasm")]
+pub(crate) fn paint_canvas_rotated(
+    window: &mut gpui_kit::Window,
+    origin: gpui_kit::Point<gpui_kit::Pixels>,
+    font: gpui_kit::FontId,
+    glyph: gpui_kit::GlyphId,
+    c: char,
+    size: f32,
+    color: gpui_kit::Hsla,
+) -> bool {
+    use gpui_kit::{Radians, ScaledPixels, TransformationMatrix, point, px};
+    let Ok(bounds) = window.text_system().typographic_bounds(font, px(size), c) else { return false; };
+    let center = origin + bounds.origin + point(bounds.size.width / 2., bounds.size.height / 2.);
+    let scale = window.scale_factor();
+    let pivot = point(ScaledPixels(f32::from(center.x) * scale), ScaledPixels(f32::from(center.y) * scale));
+    let transform = TransformationMatrix::unit().translate(pivot)
+        .rotate(Radians(std::f32::consts::FRAC_PI_2))
+        .translate(point(ScaledPixels(-pivot.x.0), ScaledPixels(-pivot.y.0)));
+    window.paint_glyph_transformed(origin, font, glyph, px(size), color, transform).is_ok()
+}
+
 pub(crate) fn marked(text: String, face: Font, size_px: f32) -> gpui_kit::AnyElement {
     use gpui_kit::*;
     let count = text.chars().count();
@@ -194,7 +237,17 @@ pub(crate) fn marked(text: String, face: Font, size_px: f32) -> gpui_kit::AnyEle
 
 #[cfg(test)]
 mod tests {
-    use super::{upright, vertical_glyph};
+    use super::{upright, vertical_glyph, vertical_presentation};
+
+    #[test]
+    fn browser_vertical_punctuation_uses_presentation_forms() {
+        for (input, expected) in [('、', '︑'), ('。', '︒'), ('（', '︵'), ('）', '︶'), ('「', '﹁'), ('」', '﹂')] {
+            assert_eq!(vertical_presentation(input), Some(expected));
+            assert!(vertical_glyph(input));
+        }
+        assert_eq!(vertical_presentation('漢'), None);
+        assert_eq!(vertical_presentation('A'), None);
+    }
 
     // Word's PDF of issue 54 (vertical page, four typefaces): these stay upright.
     #[test]

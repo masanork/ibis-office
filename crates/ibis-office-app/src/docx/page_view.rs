@@ -146,12 +146,33 @@ pub(crate) fn page_element(document: &Arc<FlowDocument>, index: usize, frame: Em
                                     continue;
                                 }
                                 let run = TextRun { len: s.len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
-                                let shaped = window.text_system().shape_line(SharedString::from(s.to_string()), px(size_px), &[run], None);
+                                let mut shaped = window.text_system().shape_line(SharedString::from(s.to_string()), px(size_px), &[run.clone()], None);
                                 if font.features.tag_value_list().iter().any(|(tag,value)|tag=="vert" && *value==1)
                                     && let Some(run)=shaped.runs.first()
                                     && crate::render::vertical_text::paint_glyph(window,point(o.x+px((x+dx)*k),o.y+px(y*k)),run.font_id,c,size_px,*color)
                                 {
                                     continue;
+                                }
+                                #[cfg(target_family = "wasm")]
+                                if c == 'ー' && s.chars().count() == 1
+                                    && font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1)
+                                    && let Some(run) = shaped.runs.first()
+                                    && window.text_system().font_data(run.font_id).is_none()
+                                    && run.glyphs.len() == 1
+                                    && crate::render::vertical_text::paint_canvas_rotated(window, point(o.x + px((x + dx) * k), o.y + px(y * k)), run.font_id, run.glyphs[0].id, c, size_px, *color)
+                                {
+                                    continue;
+                                }
+                                #[cfg(target_family = "wasm")]
+                                if s.chars().count() == 1
+                                    && font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1)
+                                    && shaped.runs.first().is_some_and(|run| window.text_system().font_data(run.font_id).is_none())
+                                    && let Some(vertical) = crate::render::vertical_text::vertical_presentation(c)
+                                {
+                                    let display = vertical.to_string();
+                                    let mut fallback_run = run.clone();
+                                    fallback_run.len = display.len();
+                                    shaped = window.text_system().shape_line(display.into(), px(size_px), &[fallback_run], None);
                                 }
                                 if matches!(c, '☐' | '☑' | '☒') && f32::from(shaped.width) < size_px * 0.85 {
                                     let box_run = TextRun { len: "□".len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
@@ -205,7 +226,18 @@ pub(crate) fn page_element(document: &Arc<FlowDocument>, index: usize, frame: Em
                             // The glyph squeezed about where it starts.
                             let color = &dark_color(*color, dark);
                             let run = TextRun { len: text.len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
-                            let shaped = window.text_system().shape_line(text.clone(), px(font_size * k), &[run], None);
+                            let mut shaped = window.text_system().shape_line(text.clone(), px(font_size * k), &[run.clone()], None);
+                            #[cfg(target_family = "wasm")]
+                            if text.chars().count() == 1
+                                && font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1)
+                                && shaped.runs.first().is_some_and(|run| window.text_system().font_data(run.font_id).is_none())
+                                && let Some(vertical) = text.chars().next().and_then(crate::render::vertical_text::vertical_presentation)
+                            {
+                                let display = vertical.to_string();
+                                let mut fallback_run = run;
+                                fallback_run.len = display.len();
+                                shaped = window.text_system().shape_line(display.into(), px(font_size * k), &[fallback_run], None);
+                            }
                             let start = point(o.x + px(x * k), o.y + px(y * k));
                             let scale = window.scale_factor();
                             let pivot = point(ScaledPixels(f32::from(start.x) * scale), ScaledPixels(f32::from(start.y) * scale));

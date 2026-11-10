@@ -9,7 +9,7 @@
 	url = https://github.com/ibisjp/gpui-pre-macos.git
 [submodule "forks/gpui-pre-web"]
 	path = forks/gpui-pre-web
-	url = https://github.com/ibisjp/gpui-pre-web.git
+	url = https://github.com/masanork/gpui-pre-web.git
 [submodule "forks/gpui-pre-windows"]
 	path = forks/gpui-pre-windows
 	url = https://github.com/ibisjp/gpui-pre-windows.git
