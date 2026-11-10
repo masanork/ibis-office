@@ -10,7 +10,9 @@
 //! These are incomplete research notes, not a complete specification.
 use crate::{Error, Kind};
 mod decode;
+mod font;
 pub use decode::{DecodedText, Diagnostic, Piece, Record, RecordKind, StyleSpan};
+pub use font::FontRecord;
 use ibis_doc_model::{
     Block, BorderStyle, CellDirection, FlowBorder, FlowCell, FlowRow, FlowRowLine, FlowRun,
     FlowRunKind, FlowRunStyle, FlowTable, Presentation, Rgb, RowHeight, RubyAlign,
@@ -23,6 +25,8 @@ fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
     // Drawn style alone is transient: resolving paragraph styles or saving
     // DOCX uses direct RunFormat. Preserve every attribute decoded here.
     let format = ibis_doc_model::RunFormat {
+        font: style.font.clone(),
+        east_asian_font: style.east_asian_font.clone(),
         size: Some(style.size),
         bold: Some(style.bold),
         italic: Some(style.italic),
@@ -43,6 +47,41 @@ fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
 /// Identify a supported JTD by its container and named document stream.
 pub fn is_jtd(data: &[u8]) -> bool {
     checked_stream(data).is_ok_and(|s| s.starts_with(b"SsmgV.01"))
+}
+
+/// Decode the font table without assuming that inline character selectors
+/// use the same index namespace.
+pub fn inspect_fonts(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
+    checked_stream(data)?;
+    font_table(data)
+}
+
+fn font_table(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
+    let bytes = ibis_ooxml::cfb::stream(data, "Font")
+        .map_err(|_| Error::new("JTDのフォント表がありません"))?;
+    font::parse(&bytes)
+}
+
+fn default_font<'a>(styles: &[u8], fonts: &'a [FontRecord]) -> Option<&'a FontRecord> {
+    let records = view_records(styles)?;
+    let mut settings = records.iter().filter(|(tag, _)| *tag == 0x1006);
+    let record = settings.next()?.1;
+    if settings.next().is_some() || record.first()? & 6 != 6 {
+        return None;
+    }
+    let at = 1 + 4 * usize::from(record[0] & 1 != 0);
+    let a = u16::from_be_bytes(record.get(at..at + 2)?.try_into().ok()?);
+    let b = u16::from_be_bytes(record.get(at + 2..at + 4)?.try_into().ok()?);
+    let primary = fonts.iter().find(|font| font.index == a)?;
+    let secondary = fonts.iter().find(|font| font.index == b)?;
+    // Their separate roles are not established. Apply a shared face only
+    // when both explicitly stored references resolve to the same typography.
+    (primary.face == secondary.face
+        && primary.weight == secondary.weight
+        && primary.italic == secondary.italic
+        && primary.style == secondary.style
+        && primary.charset == secondary.charset)
+        .then_some(primary)
 }
 
 fn checked_stream(data: &[u8]) -> Result<Vec<u8>, Error> {
@@ -99,8 +138,25 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     flow.page.line_pitch = Some(cross_axis / i64::from(page_lines));
     flow.page.doc_grid_type = ibis_doc_model::DocGridType::Lines;
     let typography = ibis_ooxml::cfb::stream(data, "DocumentViewStyles").unwrap_or_default();
-    let defaults = view_typography(&typography, &mut flow.page);
-    std::sync::Arc::make_mut(&mut flow.styles).defaults_run.size = Some(defaults.size);
+    let mut defaults = view_typography(&typography, &mut flow.page);
+    if let Ok(fonts) = font_table(data) {
+        if let Some(font) = default_font(&typography, &fonts) {
+            defaults.font = Some(font.face.clone());
+            defaults.east_asian_font = Some(font.face.clone());
+            defaults.bold = font.weight >= 700;
+            defaults.italic = font.italic;
+        }
+    }
+    {
+        let styles = std::sync::Arc::make_mut(&mut flow.styles);
+        styles.defaults_run.size = Some(defaults.size);
+        if defaults.font.is_some() {
+            styles.defaults_run.font = defaults.font.clone();
+            styles.defaults_run.east_asian_font = defaults.east_asian_font.clone();
+            styles.defaults_run.bold = Some(defaults.bold);
+            styles.defaults_run.italic = Some(defaults.italic);
+        }
+    }
     let segments = table_candidates(extract_decoded(&decoded, &defaults, flow.page.line_pitch)?);
     let mut template = match flow.body.first() {
         Some(Block::Paragraph(p)) => p.clone(),
@@ -178,7 +234,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                             _ => pitch,
                         });
                     }
-                    row.lines = rule_extra_lines(rules, total as u16, line);
+                    row.lines = rule_row_lines(rules, total as u16, line, &cells, &boundaries);
                     // Line segments are relative to one display row and
                     // cannot yet be split across pages without clipping.
                     row.cant_split = !row.lines.is_empty();
@@ -344,7 +400,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                         raise: style.size * 9 / 10,
                         align: RubyAlign::Center,
                     },
-                    defaults.clone(),
+                    *style,
                 ));
             }
         }
@@ -368,27 +424,29 @@ fn text_axis_width(page: &ibis_doc_model::PageSetup) -> i64 {
     }
 }
 
+fn view_records(data: &[u8]) -> Option<Vec<(u16, &[u8])>> {
+    if data.get(..6)? != [0, 1, 0, 2, 0x10, 0] {
+        return None;
+    }
+    let length = u32::from_be_bytes(data.get(6..10)?.try_into().ok()?) as usize;
+    let end = 10usize.checked_add(length)?;
+    let mut at = 10;
+    let mut records = Vec::new();
+    while at + 4 <= end {
+        let tag = u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?);
+        let size = u16::from_be_bytes(data.get(at + 2..at + 4)?.try_into().ok()?) as usize;
+        at += 4;
+        let stop = at.checked_add(size).filter(|n| *n <= end)?;
+        records.push((tag, data.get(at..stop)?));
+        at = stop;
+    }
+    (at == end).then_some(records)
+}
+
 fn view_typography(data: &[u8], page: &mut ibis_doc_model::PageSetup) -> FlowRunStyle {
     let mut result = FlowRunStyle::default();
     let mut columns = Some(80);
-    let records = (|| {
-        if data.get(..6)? != [0, 1, 0, 2, 0x10, 0] {
-            return None;
-        }
-        let length = u32::from_be_bytes(data.get(6..10)?.try_into().ok()?) as usize;
-        let end = 10usize.checked_add(length)?;
-        let mut at = 10;
-        let mut records = Vec::new();
-        while at + 4 <= end {
-            let tag = u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?);
-            let size = u16::from_be_bytes(data.get(at + 2..at + 4)?.try_into().ok()?) as usize;
-            at += 4;
-            let stop = at.checked_add(size).filter(|n| *n <= end)?;
-            records.push((tag, data.get(at..stop)?));
-            at = stop;
-        }
-        (at == end).then_some(records)
-    })();
+    let records = view_records(data);
     for (tag, value) in records.unwrap_or_default() {
         match tag {
             0x1006 if value.first().is_some_and(|mask| mask & 1 != 0) => {
@@ -625,9 +683,17 @@ fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
 /// cannot be represented and the resulting file is not a lossless conversion.
 pub fn export_docx(presentation: &Presentation) -> Result<Vec<u8>, Error> {
     let blank = crate::open(crate::blank_file(Kind::Document)?)?;
-    blank
-        .source
-        .save(presentation, crate::SaveOptions::default())
+    let mut exported = presentation.clone();
+    if let Some(flow) = exported.flow.as_mut() {
+        let flow = std::sync::Arc::make_mut(flow);
+        if let (Some(space), Some(size)) = (flow.page.char_space, flow.styles.defaults_run.size) {
+            // Word stores the default size in half-points. Preserve the
+            // source's full-width grid pitch after that unavoidable rounding.
+            let rounded = (size + 25) / 50 * 50;
+            flow.page.char_space = Some(space + (i64::from(size) - i64::from(rounded)) * 127);
+        }
+    }
+    blank.source.save(&exported, crate::SaveOptions::default())
 }
 
 /// Prefer the documented direction flag; the initial record remains an
@@ -1046,6 +1112,73 @@ fn rule_extra_lines(layout: &RuleLayout, width: u16, line: FlowBorder) -> Vec<Fl
     result
 }
 
+/// Every source rule must be represented either by a cell edge or a row
+/// segment. A full rule can sit inside a declared cell, and a cell's bottom
+/// can consist of multiple line types; neither is a single cell border.
+fn rule_row_lines(
+    layout: &RuleLayout,
+    width: u16,
+    line: FlowBorder,
+    cells: &[GridCell],
+    grid: &[u16],
+) -> Vec<FlowRowLine> {
+    let mut lines = rule_extra_lines(layout, width, line);
+    if width == 0 {
+        return lines;
+    }
+    let scale = |p: u16| (u32::from(p) * 10_000 / u32::from(width)) as u16;
+    let edges: Vec<_> = cells
+        .iter()
+        .map(|(left, right, start, stop, _)| {
+            (
+                grid[*start],
+                grid[*stop],
+                rule_cell_borders(layout, *left, *right, line),
+            )
+        })
+        .collect();
+    for (i, point) in layout.points.iter().enumerate() {
+        let x = scale(point.position);
+        if point.flags & 0x30 != 0 && point.flags & 3 == 3 && point.types[0] == point.types[1] {
+            let border = typed_border(line, point.types[0]);
+            let covered = edges.iter().any(|(left, right, borders)| {
+                *left == point.position && borders[3] == Some(Some(border))
+                    || *right == point.position && borders[1] == Some(Some(border))
+            });
+            if !covered {
+                lines.push(FlowRowLine {
+                    x1: x,
+                    y1: 0,
+                    x2: x,
+                    y2: 10_000,
+                    border,
+                });
+            }
+        }
+        let attached = point.link & 0x30 != 0 && point.link & 3 != 0;
+        if point.partial == 0 && point.link & 8 != 0 && !attached {
+            if let Some(next) = layout.points.get(i + 1) {
+                let border = typed_border(line, point.linked_types[3]);
+                let covered = edges.iter().any(|(left, right, borders)| {
+                    *left <= point.position
+                        && *right >= next.position
+                        && borders[2] == Some(Some(border))
+                });
+                if !covered {
+                    lines.push(FlowRowLine {
+                        x1: x,
+                        y1: 10_000,
+                        x2: scale(next.position),
+                        y2: 10_000,
+                        border,
+                    });
+                }
+            }
+        }
+    }
+    lines
+}
+
 /// Decode the logical store before interpreting any text or record.
 #[cfg(test)]
 fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
@@ -1408,6 +1541,148 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_and_mixed_rules_are_drawn_once_even_inside_a_cell() {
+        let point = |position, link, bottom| RulePoint {
+            position,
+            flags: 0x13,
+            partial: 0,
+            link,
+            types: [1; 4],
+            linked_types: [1, 1, 1, bottom],
+        };
+        let mut layout = RuleLayout {
+            points: vec![point(10, 8, 1), point(30, 8, 2), point(50, 0, 1)],
+        };
+        let line = FlowBorder {
+            width: 7620,
+            color: Rgb::BLACK,
+            style: BorderStyle::Single,
+            space: 0,
+            art: None,
+        };
+        let cells = vec![(12, 48, 0, 2, Vec::new())];
+        let grid = [10, 30, 50];
+        let lines = rule_row_lines(&layout, 100, line, &cells, &grid);
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines
+                .iter()
+                .any(|l| (l.x1, l.y1, l.x2, l.y2) == (3000, 0, 3000, 10000))
+        );
+        let bottoms: Vec<_> = lines
+            .iter()
+            .filter(|l| l.y1 == 10000 && l.y2 == 10000)
+            .collect();
+        assert_eq!(bottoms.len(), 2);
+        assert_ne!(bottoms[0].border.width, bottoms[1].border.width);
+        layout.points[1].linked_types[3] = 1;
+        let lines = rule_row_lines(&layout, 100, line, &cells, &grid);
+        assert_eq!(
+            lines.len(),
+            1,
+            "the uniform bottom is already a cell border"
+        );
+    }
+
+    fn font_styles(primary: u16, secondary: u16) -> Vec<u8> {
+        let mut value = vec![7];
+        value.extend(393u32.to_be_bytes());
+        value.extend(primary.to_be_bytes());
+        value.extend(secondary.to_be_bytes());
+        let mut record = vec![0x10, 6];
+        record.extend((value.len() as u16).to_be_bytes());
+        record.extend(value);
+        let mut styles = vec![0, 1, 0, 2, 0x10, 0];
+        styles.extend((record.len() as u32).to_be_bytes());
+        styles.extend(record);
+        styles
+    }
+
+    #[test]
+    fn explicitly_agreeing_font_references_survive_word_export() {
+        let data = ibis_ooxml::cfb::write(&[
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&[0x7532])),
+            ibis_ooxml::cfb::Item::stream(
+                "Font",
+                font::fixture(&[
+                    (0, "ＭＳ ゴシック", 400, false),
+                    (9, "ＭＳ 明朝", 400, false),
+                ]),
+            ),
+            ibis_ooxml::cfb::Item::stream("DocumentViewStyles", font_styles(9, 9)),
+        ]);
+        let model = read(&data).unwrap();
+        let saved = crate::read(&export_docx(&model).unwrap()).unwrap();
+        for doc in [&model, &saved] {
+            let flow = doc.flow.as_ref().unwrap();
+            assert_eq!(
+                flow.styles.defaults_run.east_asian_font.as_deref(),
+                Some("ＭＳ 明朝")
+            );
+            let Block::Paragraph(p) = &flow.body[0] else {
+                panic!("paragraph")
+            };
+            assert_eq!(
+                p.runs[0].style.east_asian_font.as_deref(),
+                Some("ＭＳ 明朝")
+            );
+        }
+        let fonts = inspect_fonts(&data).unwrap();
+        assert!(default_font(&font_styles(0, 9), &fonts).is_none());
+        assert!(default_font(&font_styles(9, 0xfffe), &fonts).is_none());
+    }
+
+    #[test]
+    fn word_size_rounding_does_not_change_character_grid_pitch_or_accumulate() {
+        let mut model = read(&fixture("甲")).unwrap();
+        let flow = std::sync::Arc::make_mut(model.flow.as_mut().unwrap());
+        std::sync::Arc::make_mut(&mut flow.styles).defaults_run.size = Some(1114);
+        flow.page.char_space = Some(910);
+        let expected = 1114 * 127 + 910;
+        let first = crate::read(&export_docx(&model).unwrap()).unwrap();
+        let second = crate::read(&export_docx(&first).unwrap()).unwrap();
+        for doc in [&first, &second] {
+            let flow = doc.flow.as_ref().unwrap();
+            let pitch = i64::from(flow.styles.defaults_run.size.unwrap()) * 127
+                + flow.page.char_space.unwrap();
+            assert!(
+                (pitch - expected).abs() <= 4,
+                "full-width pitch changed: {pitch}"
+            );
+        }
+        assert_eq!(model.flow.as_ref().unwrap().page.char_space, Some(910));
+    }
+
+    #[test]
+    fn body_ruby_keeps_its_base_attributes_and_colour() {
+        let units = [
+            0x1c, 1, 7, 0, 0, 3, 0x1d, 0x6f22, 0x1e, 5, 0, 1, 0x1f, 0x1c, 1, 7, 0, 1, 0x82, 0x1d,
+            0x304b, 0x3093, 0x1e, 5, 0, 1, 0x1f,
+        ];
+        let mut styles = vec![0];
+        styles.extend(7u32.to_be_bytes());
+        styles.extend([0xfe, 20, 4, 0x84, 0, 0, 0, 15, 4, 0, 0, 0, 0xff, 0xff, 0]);
+        styles.push(0);
+        styles.extend(((units.len() - 8) as u32).to_be_bytes());
+        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture_with_styles(&units, &styles),
+        )]);
+        let model = read(&data).unwrap();
+        let saved = crate::read(&export_docx(&model).unwrap()).unwrap();
+        for doc in [&model, &saved] {
+            let Block::Paragraph(p) = &doc.flow.as_ref().unwrap().body[0] else {
+                panic!("paragraph")
+            };
+            assert!(
+                matches!(&p.runs[0].kind, FlowRunKind::Ruby { base, text, .. } if base == "漢" && text == "かん")
+            );
+            assert!(p.runs[0].style.bold);
+            assert_eq!(p.runs[0].style.color, Rgb::from_rgb(255, 0, 0));
+        }
+    }
 
     #[test]
     fn observed_direction_field_with_signed_prefix_is_decoded_without_guessing_from_paper() {

@@ -470,13 +470,19 @@ impl DecodedText {
 
 #[cfg(test)]
 pub(super) fn fixture(units: &[u16]) -> Vec<u8> {
+    let mut styles = vec![0];
+    styles.extend_from_slice(&(units.len() as u32).to_be_bytes());
+    fixture_with_styles(units, &styles)
+}
+
+#[cfg(test)]
+pub(super) fn fixture_with_styles(units: &[u16], styles: &[u8]) -> Vec<u8> {
     let mut text = b"TextV.01".to_vec();
     text.extend_from_slice(&(units.len() as u32).to_be_bytes());
     for n in units {
         text.extend_from_slice(&n.to_be_bytes());
     }
-    text.push(0);
-    text.extend_from_slice(&(units.len() as u32).to_be_bytes());
+    text.extend_from_slice(styles);
     let length = text.len();
     let n = length.div_ceil(256);
     text.resize(n * 256, 0);

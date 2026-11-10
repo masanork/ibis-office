@@ -1,5 +1,13 @@
 # Experimental JTD preview
 
+**Layout follow-up (2026-11-11):** agreeing explicit default-font references
+are imported, DOCX grid pitch survives half-point size rounding, body ruby
+keeps its base formatting, and uncovered full or mixed border segments are
+drawn with their line styles. Actual browser table screenshots have now been
+checked against the corresponding local PDF. Cell text distribution and
+DOCX row-segment export remain incomplete. See
+[validation and limitations](jtd-layout-compatibility.md).
+
 **Structured decoding (2026-11-10):** the defects recorded in the
 [decoding audit](jtd-decoding-audit.md) are fixed: the block directory and
 piece lists are reconstructed, inline footers resume ordinary text, and

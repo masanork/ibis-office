@@ -5,6 +5,8 @@ from pathlib import Path
 import struct
 import sys
 import unittest
+import tempfile
+import zipfile
 
 spec = importlib.util.spec_from_file_location("audit_jtd", Path(__file__).with_name("audit-jtd.py"))
 audit = importlib.util.module_from_spec(spec)
@@ -86,6 +88,33 @@ def write_probes(destination):
 
 
 class AuditTests(unittest.TestCase):
+    def test_pdf_advance_groups_glyphs_even_when_each_has_its_own_line(self):
+        class Page:
+            def get_text(self, mode):
+                self.mode = mode
+                lines = []
+                for y in [0, 11.16, 22.44, 33.60]:
+                    lines.append({'dir': (0, 1), 'spans': [{'font': 'Mincho', 'size': 11.16,
+                        'chars': [{'origin': (100, y), 'c': '甲'}]}]})
+                return {'blocks': [{'lines': lines}]}
+        result = audit.pdf_advances([Page()])
+        self.assertEqual(result['modal_band_pairs'], 3)
+        self.assertAlmostEqual(result['modal_band_mean_pt'], 11.2)
+
+    def test_docx_grid_pitch_uses_the_saved_default_size_and_grid_adjustment(self):
+        uri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+        document = f'<w:document xmlns:w="{uri}"><w:body><w:p><w:r><w:t>甲</w:t></w:r></w:p><w:sectPr><w:docGrid w:type="linesAndChars" w:charSpace="867"/></w:sectPr></w:body></w:document>'
+        styles = f'<w:styles xmlns:w="{uri}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="ＭＳ 明朝" w:eastAsia="ＭＳ 明朝"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'probe.docx'
+            with zipfile.ZipFile(path, 'w') as archive:
+                archive.writestr('word/document.xml', document)
+                archive.writestr('word/styles.xml', styles)
+            text, result = audit.docx_text(path)
+        self.assertEqual(text, '甲')
+        self.assertEqual(result['default_fonts']['eastAsia'], 'ＭＳ 明朝')
+        self.assertAlmostEqual(result['default_grid_pitch_pt'], 11 + 867 / 4096)
+
     def test_physical_order_and_padding_cannot_change_text(self):
         units = list("甲乙丙".encode("utf-16-be"))
         units = list(struct.unpack(">3H", bytes(units)))

@@ -5686,6 +5686,15 @@ impl<'r> Layouter<'r> {
             // vertical page by the same transform as all other strokes.
             for line in &row.lines {
                 let ((x1, y1), (x2, y2)) = line.points(total, heights[r]);
+                if x1 == x2 || y1 == y2 {
+                    let horizontal = y1 == y2;
+                    let (at, from, to) = if horizontal { (y1, x0 + x1.min(x2), x0 + x1.max(x2)) }
+                        else { (x0 + x1, y1.min(y2), y1.max(y2)) };
+                    // Partial rules have the same line-type semantics as
+                    // cell borders, including dashed and compound strokes.
+                    items.extend(border_items(&line.border, horizontal, true, at, from, to, false, false));
+                    continue;
+                }
                 items.push(Item::Stroke {
                     x: x0 + x1, y: y1, x2: x0 + x2, y2,
                     w: pt(line.border.width).max(0.25),

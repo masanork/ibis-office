@@ -37,6 +37,8 @@ def qualify(binary, samples):
             results.append({"file": path.name, "ok": comparison["same_sequence"] and ruby["same_sequence"] and headers_match and rows_match,
                 "comparison": comparison, "ruby_comparison": ruby, "ruled_headers_match": headers_match,
                 "display_rows_match": rows_match,
+                "docx_default_fonts": source['docx']['default_fonts'],
+                "docx_default_grid_pitch_pt": source['docx']['default_grid_pitch_pt'],
                 "rust": stats, "docx_rows": source["docx"]["rows"]})
     return results
 

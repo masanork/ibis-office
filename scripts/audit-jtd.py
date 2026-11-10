@@ -243,9 +243,17 @@ def compare(a, b):
 
 
 def docx_text(path):
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     with zipfile.ZipFile(path) as z:
         root = ET.fromstring(z.read("word/document.xml"))
-    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        styles = ET.fromstring(z.read("word/styles.xml")) if 'word/styles.xml' in z.namelist() else None
+    size = styles.find('.//w:docDefaults/w:rPrDefault/w:rPr/w:sz', ns) if styles is not None else None
+    fonts = styles.find('.//w:docDefaults/w:rPrDefault/w:rPr/w:rFonts', ns) if styles is not None else None
+    grids = root.findall('.//w:sectPr/w:docGrid', ns)
+    grid = grids[-1] if grids else None
+    value = lambda node, key: node.get('{' + ns['w'] + '}' + key) if node is not None else None
+    size_pt = float(value(size, 'val')) / 2 if value(size, 'val') is not None else None
+    space = float(value(grid, 'charSpace')) / 4096 if value(grid, 'charSpace') is not None else None
     # Ruby annotations are excluded from the base-text comparison.
     for annotation in root.findall(".//w:rt", ns):
         annotation.clear()
@@ -253,7 +261,47 @@ def docx_text(path):
     return "".join(t.text or "" for t in root.findall(".//w:t", ns)), {
         "tables": len(root.findall(".//w:tbl", ns)), "rows": len(rows),
         "cells_per_row_distribution": dict(sorted(Counter(len(row.findall("w:tc", ns)) for row in rows).items())),
+        "default_fonts": {key: value(fonts, key) for key in ['ascii', 'eastAsia']},
+        "default_grid_pitch_pt": size_pt + space if size_pt is not None and space is not None else None,
     }
+
+
+def pdf_advances(document):
+    """Estimate the dominant full-width advance independently of JTD/DOCX.
+
+    Ichitaro's PDFs may put every glyph in its own PDF text line. Group by
+    baseline, font and size before measuring. This is a summary of the modal
+    band, not proof that every glyph has the same advance.
+    """
+    advances = Counter()
+    for page in document:
+        groups = {}
+        for block in page.get_text('rawdict')['blocks']:
+            for line in block.get('lines', []):
+                dx, dy = line['dir']
+                if not (abs(dx) > 0.999 or abs(dy) > 0.999):
+                    continue
+                vertical = abs(dy) > abs(dx)
+                for span in line['spans']:
+                    for char in span['chars']:
+                        x, y = char['origin']
+                        key = (vertical, round(x if vertical else y, 2), span['font'], round(span['size'], 2))
+                        groups.setdefault(key, []).append((y if vertical else x, char['c']))
+        for chars in groups.values():
+            chars.sort(key=lambda c: c[0])
+            for (a, ca), (b, cb) in zip(chars, chars[1:]):
+                if unicodedata.east_asian_width(ca) in ('W', 'F') and unicodedata.east_asian_width(cb) in ('W', 'F'):
+                    delta = b - a
+                    if 1 < delta < 50:
+                        advances[round(delta, 3)] += 1
+    if not advances:
+        return None
+    mode = advances.most_common(1)[0][0]
+    band = [(pitch, count) for pitch, count in advances.items() if abs(pitch - mode) <= 0.25]
+    count = sum(n for _, n in band)
+    return {'mode_pt': mode, 'modal_band_pairs': count,
+            'modal_band_mean_pt': sum(p * n for p, n in band) / count,
+            'most_common_pt': advances.most_common(6)}
 
 
 def audit(path, pdf=None, docx=None, external_json=None):
@@ -305,6 +353,10 @@ def audit(path, pdf=None, docx=None, external_json=None):
                 "page_sizes_points": sorted(set((p.rect.width, p.rect.height) for p in document)),
                 "font_size_char_counts": dict(sorted(sizes.items())),
                 "comparison_including_ruby": compare(text + ruby, extracted)}
+            result['pdf']['fullwidth_advance'] = pdf_advances(document)
+            if docx and result['docx']['default_grid_pitch_pt'] is not None and result['pdf']['fullwidth_advance']:
+                result['docx_grid_minus_pdf_advance_pt'] = (result['docx']['default_grid_pitch_pt']
+                    - result['pdf']['fullwidth_advance']['modal_band_mean_pt'])
     return result
 
 
