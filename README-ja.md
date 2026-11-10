@@ -196,6 +196,8 @@ cargo build --release
 
 ## 実装済み機能
 
+ブラウザへ任意のフォントを供給し、gjsでサブセット化する設定は [Web fonts](docs/web-fonts.md) を参照してください。
+
 ibisOffice は、Word (.docx)・Excel (.xlsx)・PowerPoint (.pptx) の 3 大形式について、ECMA-376 規格に準拠した広範な機能を実装しています。
 
 全フォーマットにわたる詳細な実装済み機能の一覧（1,800 項目以上）は、以下をご覧ください：
