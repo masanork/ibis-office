@@ -3359,6 +3359,16 @@ impl Writer<'_> {
                     let e = self.doc.append_element(tc_pr, &w("gridSpan"));
                     self.doc.set_attr(e, "w:val", &cell.span.to_string());
                 }
+                // A newly constructed table may have per-cell rules even
+                // when its table-level grid is absent (for example, an
+                // imported document with different borders on each row).
+                if cell.own_borders.iter().any(Option::is_some) {
+                    let borders = self.doc.append_element(tc_pr, &w("tcBorders"));
+                    const EDGES: &[&str] = &["top", "start", "left", "bottom", "end", "right", "insideH", "insideV", "tl2br", "tr2bl"];
+                    for (i, name) in ["top", "right", "bottom", "left"].into_iter().enumerate() {
+                        self.border_property(borders, name, cell.own_borders[i], EDGES);
+                    }
+                }
                 if cell.direction != ibis_doc_model::CellDirection::LrTb {
                     let d = match cell.direction {
                         ibis_doc_model::CellDirection::TbRl => "tbRl",

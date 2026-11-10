@@ -6,6 +6,7 @@
 //! Format observations: OpenJTD RFC 0003 and 0009 at cfb44c9ac53126e00808c49709fb4dade8a4daae,
 //! https://github.com/OpenJTD/rjtd/tree/cfb44c9ac53126e00808c49709fb4dade8a4daae/openjtd-spec/rfc
 //! Table candidates also use local RFC 0009 observations at 28927abb6b103dc70453f6443a7da961acfccb92.
+//! Rule data follows the independent observations documented in docs/jtd-format-notes.md.
 //! These are incomplete research notes, not a complete specification.
 use crate::{Error, Kind};
 use ibis_doc_model::{
@@ -67,6 +68,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 cells,
                 total,
                 strips,
+                rules,
             } => {
                 if !paragraph.runs.is_empty() || flow.body.is_empty() {
                     paragraph.id = next_id;
@@ -94,7 +96,9 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 // In this observed layout, the records describe successive
                 // display lines, not proven logical table rows. Do not draw a
                 // horizontal rule for each line merely because it has cells.
-                if strips {
+                if rules.is_some() {
+                    borders = [Some(None); 6];
+                } else if strips {
                     borders[4] = Some(None);
                 }
                 let mut table = FlowTable {
@@ -113,7 +117,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     ..FlowRow::default()
                 };
                 next_id += 1;
-                for (_, _, contents) in cells {
+                for (left, right, contents) in cells {
                     let mut cell_para = template.clone();
                     cell_para.id = next_id;
                     next_id += 1;
@@ -167,9 +171,13 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                             _ => {}
                         }
                     }
+                    let own_borders = rules.as_ref().map_or([None; 4], |rules| {
+                        rule_cell_borders(rules, left, right, line)
+                    });
                     row.cells.push(FlowCell {
                         id: next_id,
                         span: 1,
+                        own_borders,
                         blocks: vec![Block::Paragraph(cell_para)],
                         ..FlowCell::default()
                     });
@@ -196,7 +204,10 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 }
                 last_table_key = table_key;
             }
-            Segment::RowStart(_) | Segment::CellStart(_, _) | Segment::RowEnd => {
+            Segment::RowStart(_)
+            | Segment::RowRules(_)
+            | Segment::CellStart(_, _)
+            | Segment::RowEnd => {
                 last_table_key = None;
             }
             Segment::Text(text) => {
@@ -355,13 +366,102 @@ enum Segment {
     },
     PageBreak,
     RowStart(u16),
+    RowRules(RuleLayout),
     CellStart(u16, u16),
     RowEnd,
     Table {
         cells: Vec<(u16, u16, Vec<Segment>)>,
         total: u16,
         strips: bool,
+        rules: Option<RuleLayout>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RuleLayout {
+    points: Vec<RulePoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RulePoint {
+    position: u16,
+    flags: u16,
+    partial: u16,
+    link: u16,
+}
+
+/// Parse the documented 008f form only when all lengths and the final width
+/// agree. Unknown variants are left to the existing conservative preview.
+fn parse_rules(payload: &[u16]) -> Option<RuleLayout> {
+    if payload.len() < 7 || payload[0] == 0 || payload[1] != 0 || !payload.ends_with(&[0xffff, 0]) {
+        return None;
+    }
+    let width = payload[0] as u32;
+    let mut position = u32::from(payload[2]).checked_add(1)?;
+    let values = &payload[3..payload.len() - 2];
+    if values.is_empty() || values.len() % 4 != 0 && values.len() % 4 != 2 {
+        return None;
+    }
+    let mut points = Vec::new();
+    let mut i = 0;
+    while i < values.len() {
+        if position > width || points.len() >= 64 {
+            return None;
+        }
+        let (flags, partial, link, advance, step) = if values.len() - i == 2 {
+            (values[i], 0, 0, u32::from(values[i + 1]) + 1, 2)
+        } else {
+            (
+                values[i],
+                values[i + 1],
+                values[i + 2],
+                u32::from(values[i + 1]) + u32::from(values[i + 3]) + 2,
+                4,
+            )
+        };
+        points.push(RulePoint {
+            position: position.try_into().ok()?,
+            flags,
+            partial,
+            link,
+        });
+        position = position.checked_add(advance)?;
+        i += step;
+    }
+    (position == width).then_some(RuleLayout { points })
+}
+
+/// Map only whole-height and whole-cell lines. Mid-line, partial and
+/// half-height rules need a different representation and are not invented.
+fn rule_cell_borders(
+    layout: &RuleLayout,
+    left: u16,
+    right: u16,
+    line: FlowBorder,
+) -> [Option<Option<FlowBorder>>; 4] {
+    let nearest = |edge: u16| {
+        layout
+            .points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.position.abs_diff(edge) <= 2)
+            .min_by_key(|(_, p)| p.position.abs_diff(edge))
+    };
+    let l = nearest(left);
+    let r = nearest(right);
+    let full = |point: &RulePoint| point.flags & 0x30 != 0 && point.flags & 0x03 == 0x03;
+    let bottom = match (l, r) {
+        (Some((li, _)), Some((ri, _))) if ri > li => layout.points[li..ri]
+            .iter()
+            .all(|point| point.partial == 0 && point.link & 0x08 != 0),
+        _ => false,
+    };
+    [
+        Some(None),
+        Some(r.and_then(|(_, p)| full(p).then_some(line))),
+        Some(bottom.then_some(line)),
+        Some(l.and_then(|(_, p)| full(p).then_some(line))),
+    ]
 }
 
 fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
@@ -473,6 +573,9 @@ fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
                 && units[i + 6] > 0
             {
                 out.push(Segment::RowStart(units[i + 6]));
+                if let Some(rules) = parse_rules(&units[i + 6..end - 4]) {
+                    out.push(Segment::RowRules(rules));
+                }
             } else if class == 0x30
                 && count == 12
                 && units[i + 3] == 0
@@ -508,6 +611,7 @@ fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
         Segment::Ruby { base, .. } => !base.trim().is_empty(),
         Segment::PageBreak
         | Segment::RowStart(_)
+        | Segment::RowRules(_)
         | Segment::CellStart(_, _)
         | Segment::RowEnd
         | Segment::Table { .. } => false,
@@ -539,6 +643,7 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
             }
         }
         let mut cells: Vec<(u16, u16, Vec<Segment>)> = Vec::new();
+        let mut rules = None;
         let mut valid = matches!(original.last(), Some(Segment::RowEnd));
         for part in &original[1..] {
             match part {
@@ -552,6 +657,9 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
                     }
                     cells.push((*a, *b, Vec::new()));
                 }
+                Segment::RowRules(value) if cells.is_empty() && rules.is_none() => {
+                    rules = Some(value.clone());
+                }
                 Segment::RowEnd => {}
                 Segment::Text(_) | Segment::Ruby { .. } | Segment::PageBreak => {
                     if let Some(cell) = cells.last_mut() {
@@ -563,15 +671,35 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
                 _ => valid = false,
             }
         }
-        if valid
-            && cells.len() >= 2
-            && cells.iter().any(|c| {
-                c.2.iter().any(|s| {
-                    matches!(s, Segment::Text(t) if !t.trim().is_empty())
-                        || matches!(s, Segment::Ruby { .. })
-                })
+        let visible = cells.iter().any(|c| {
+            c.2.iter().any(|s| {
+                matches!(s, Segment::Text(t) if !t.trim().is_empty())
+                    || matches!(s, Segment::Ruby { .. })
             })
+        });
+        if valid
+            && (cells.len() >= 2 && visible || rules.is_some() && !cells.is_empty() && !visible)
         {
+            // Some empty ruled lines contain only the edge strips. Preserve
+            // their empty interior so a line beneath it has a cell to attach
+            // to; otherwise the top edge of the following box disappears.
+            if !visible && rules.is_some() && cells.iter().all(|cell| cell.2.is_empty()) {
+                let mut expanded: Vec<(u16, u16, Vec<Segment>)> =
+                    Vec::with_capacity(cells.len() * 2);
+                for cell in cells {
+                    if let Some((_, prior_end, _)) = expanded.last() {
+                        if let Some(gap_start) = prior_end.checked_add(4) {
+                            if let Some(gap_end) = cell.0.checked_sub(4) {
+                                if gap_start < gap_end {
+                                    expanded.push((gap_start, gap_end, Vec::new()));
+                                }
+                            }
+                        }
+                    }
+                    expanded.push(cell);
+                }
+                cells = expanded;
+            }
             // Thin, empty outer strips in the paired comparison-table
             // pattern carry edge geometry, not independent text columns.
             // An empty two-unit strip inside the same bounded pattern is
@@ -585,7 +713,7 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
             };
             let first = &cells[0];
             let last = cells.last().unwrap();
-            let strips = cells.len() >= 4
+            let strips = (cells.len() >= 4 || !visible && rules.is_some() && cells.len() >= 3)
                 && first.0 == 0
                 && first.1 <= 6
                 && last.1 == total
@@ -608,6 +736,7 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
                 cells,
                 total,
                 strips,
+                rules,
             });
         } else {
             out.extend(original);
@@ -619,6 +748,147 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rule_header_maps_only_complete_cell_edges_and_survives_docx() {
+        let mut units: Vec<u16> = vec![
+            0x1c, 0x10, 27, 0, 0x8f, 15, 100, 0, 3, 0x2b, 0, 8, 42, 0x23, 0, 0, 42, 0x23, 0, 0, 6,
+            0xffff, 0, 27, 0, 0x10, 0x1f,
+        ];
+        units.extend([0x1c, 0x30, 12, 0, 0, 2, 0xff, 0, 12, 0, 0x30, 0x1f]);
+        units.extend([0x1c, 0x30, 12, 0, 6, 46, 0xff, 0, 12, 0, 0x30, 0x1f]);
+        units.extend("甲".encode_utf16());
+        units.extend([0x1c, 0x30, 12, 0, 50, 90, 0xff, 0, 12, 0, 0x30, 0x1f]);
+        units.extend("乙".encode_utf16());
+        units.extend([0x1c, 0x30, 12, 0, 94, 100, 0xff, 0, 12, 0, 0x30, 0x1f]);
+        units.extend([0x0e, 0, 0, 0, 0, 0, 0, 0]);
+        let mut stream = b"SsmgV.01".to_vec();
+        for unit in units {
+            stream.extend_from_slice(&unit.to_be_bytes());
+        }
+        let input =
+            ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("DocumentText", stream)]);
+        let imported = read(&input).unwrap();
+        let saved = crate::read(&export_docx(&imported).unwrap()).unwrap();
+        for doc in [&imported, &saved] {
+            let table = doc
+                .flow
+                .as_ref()
+                .unwrap()
+                .body
+                .iter()
+                .find_map(|b| match b {
+                    Block::Table(t) => Some(t),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(table.rows[0].cells.len(), 2);
+            let a = &table.rows[0].cells[0];
+            let b = &table.rows[0].cells[1];
+            assert!(a.borders[3].is_some() && a.borders[1].is_some());
+            assert!(a.borders[2].is_some());
+            assert!(b.borders[2].is_none());
+            assert!(b.borders[1].is_some());
+        }
+    }
+
+    #[test]
+    fn malformed_rule_records_are_not_promoted() {
+        let good = [
+            100, 0, 3, 0x2b, 0, 8, 42, 0x23, 0, 0, 42, 0x23, 0, 0, 6, 0xffff, 0,
+        ];
+        let layout = parse_rules(&good).unwrap();
+        assert_eq!(
+            layout.points.iter().map(|p| p.position).collect::<Vec<_>>(),
+            [4, 48, 92]
+        );
+        let short_last = [21, 0, 0, 0x13, 0, 0, 8, 0x13, 9, 0xffff, 0];
+        assert_eq!(
+            parse_rules(&short_last)
+                .unwrap()
+                .points
+                .iter()
+                .map(|p| p.position)
+                .collect::<Vec<_>>(),
+            [1, 11]
+        );
+        let mut bad = good;
+        bad[0] = 99;
+        assert!(parse_rules(&bad).is_none());
+        bad = good;
+        bad[15] = 0;
+        assert!(parse_rules(&bad).is_none());
+        assert!(parse_rules(&good[..10]).is_none());
+    }
+
+    #[test]
+    fn empty_rule_line_keeps_its_interior_and_bottom_edge() {
+        let layout = RuleLayout {
+            points: vec![
+                RulePoint {
+                    position: 4,
+                    flags: 0x2b,
+                    partial: 0,
+                    link: 8,
+                },
+                RulePoint {
+                    position: 96,
+                    flags: 0x23,
+                    partial: 0,
+                    link: 0,
+                },
+            ],
+        };
+        let segments = table_candidates(vec![
+            Segment::RowStart(100),
+            Segment::RowRules(layout.clone()),
+            Segment::CellStart(0, 2),
+            Segment::CellStart(98, 100),
+            Segment::RowEnd,
+        ]);
+        let [
+            Segment::Table {
+                cells,
+                rules: Some(parsed),
+                ..
+            },
+        ] = segments.as_slice()
+        else {
+            panic!("expected empty ruled table")
+        };
+        assert_eq!(cells.len(), 1);
+        assert_eq!((cells[0].0, cells[0].1), (6, 94));
+        let line = FlowBorder {
+            width: 6350,
+            color: Rgb::BLACK,
+            style: BorderStyle::Single,
+            space: 0,
+            art: None,
+        };
+        assert!(
+            rule_cell_borders(parsed, cells[0].0, cells[0].1, line)[2]
+                .unwrap()
+                .is_some()
+        );
+        let mut partial = layout;
+        partial.points[0].partial = 1;
+        assert!(
+            rule_cell_borders(&partial, 6, 94, line)[2]
+                .unwrap()
+                .is_none()
+        );
+        partial.points[0].flags = 0x21;
+        partial.points[0].link = 0x24;
+        let borders = rule_cell_borders(&partial, 6, 94, line);
+        assert!(
+            borders[3].unwrap().is_none(),
+            "half-height is not a full cell edge"
+        );
+        assert!(
+            borders[2].unwrap().is_none(),
+            "a middle line is not a bottom edge"
+        );
+    }
     fn fixture(text: &str) -> Vec<u8> {
         let mut s = b"SsmgV.01".to_vec();
         for n in [0x001c_u16, 0x0010, 7, 7, 0, 0x0010, 0x001f]
@@ -741,7 +1011,7 @@ mod tests {
         ];
         let result = table_candidates(row.clone());
         assert!(
-            matches!(&result[..], [Segment::Table { cells, total: 100, strips: true }] if cells.len() == 2)
+            matches!(&result[..], [Segment::Table { cells, total: 100, strips: true, .. }] if cells.len() == 2)
         );
         let mut with_edge_text = row;
         with_edge_text.insert(2, Segment::Text("edge".into()));
