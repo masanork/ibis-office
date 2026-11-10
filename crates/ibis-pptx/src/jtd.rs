@@ -9,6 +9,8 @@
 //! Rule data follows the independent observations documented in docs/jtd-format-notes.md.
 //! These are incomplete research notes, not a complete specification.
 use crate::{Error, Kind};
+mod decode;
+pub use decode::{DecodedText, Diagnostic, Piece, Record, RecordKind, StyleSpan};
 use ibis_doc_model::{
     Block, BorderStyle, CellDirection, FlowBorder, FlowCell, FlowRow, FlowRowLine, FlowRun,
     FlowRunKind, FlowRunStyle, FlowTable, Presentation, Rgb, RowHeight, RubyAlign,
@@ -16,6 +18,27 @@ use ibis_doc_model::{
 
 const MAX_FILE: usize = 64 * 1024 * 1024;
 const MAX_STREAM: usize = 32 * 1024 * 1024;
+
+fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
+    // Drawn style alone is transient: resolving paragraph styles or saving
+    // DOCX uses direct RunFormat. Preserve every attribute decoded here.
+    let format = ibis_doc_model::RunFormat {
+        size: Some(style.size),
+        bold: Some(style.bold),
+        italic: Some(style.italic),
+        underline: Some(style.underline),
+        underline_style: Some(style.underline_style),
+        color: Some(style.color),
+        highlight: Some(style.highlight),
+        spacing: Some(style.spacing),
+        scale: Some(style.scale),
+        ..Default::default()
+    };
+    FlowRun {
+        format,
+        ..FlowRun::new(kind, style)
+    }
+}
 
 /// Identify a supported JTD by its container and named document stream.
 pub fn is_jtd(data: &[u8]) -> bool {
@@ -45,7 +68,7 @@ fn checked_stream(data: &[u8]) -> Result<Vec<u8>, Error> {
 /// and must never be used as the source of a JTD save.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     let stream = checked_stream(data)?;
-    let segments = table_candidates(extract(&stream)?);
+    let decoded = decode::decode(&stream)?;
     let mut presentation = crate::read(&crate::blank_file(Kind::Document)?)?;
     let flow = std::sync::Arc::make_mut(
         presentation
@@ -53,44 +76,69 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
             .as_mut()
             .ok_or_else(|| Error::new("文書モデルを作成できません"))?,
     );
+    // Missing view-style fields inherit Ichitaro's defaults, not the
+    // unrelated margins/grid of the blank Word template.
+    flow.page.top = 30 * 36_000;
+    flow.page.bottom = 30 * 36_000;
+    flow.page.left = 30 * 36_000;
+    flow.page.right = 30 * 36_000;
+    let mut page_lines = 40;
     // Page geometry must be installed before table widths are derived.
     if let Ok(styles) = ibis_ooxml::cfb::stream(data, "DocumentViewStyles") {
         apply_view_page(&styles, &mut flow.page);
         if observed_vertical(&styles) {
             flow.page.direction = CellDirection::TbRl;
         }
-        if let Some(lines) = view_style_lines(&styles) {
-            let cross_axis = if flow.page.direction.vertical() {
-                flow.page.size.width - flow.page.left - flow.page.right
-            } else {
-                flow.page.size.height - flow.page.top - flow.page.bottom
-            };
-            let pitch = cross_axis / i64::from(lines);
-            if (25_400..=1_270_000).contains(&pitch) {
-                flow.page.line_pitch = Some(pitch);
-                flow.page.doc_grid_type = ibis_doc_model::DocGridType::Lines;
-            }
-        }
+        page_lines = view_style_lines(&styles).unwrap_or(40);
     }
-    let template = match flow.body.first() {
+    let cross_axis = if flow.page.direction.vertical() {
+        flow.page.size.width - flow.page.left - flow.page.right
+    } else {
+        flow.page.size.height - flow.page.top - flow.page.bottom
+    };
+    flow.page.line_pitch = Some(cross_axis / i64::from(page_lines));
+    flow.page.doc_grid_type = ibis_doc_model::DocGridType::Lines;
+    let typography = ibis_ooxml::cfb::stream(data, "DocumentViewStyles").unwrap_or_default();
+    let defaults = view_typography(&typography, &mut flow.page);
+    std::sync::Arc::make_mut(&mut flow.styles).defaults_run.size = Some(defaults.size);
+    let segments = table_candidates(extract_decoded(&decoded, &defaults, flow.page.line_pitch)?);
+    let mut template = match flow.body.first() {
         Some(Block::Paragraph(p)) => p.clone(),
         _ => return Err(Error::new("文書の段落を作成できません")),
     };
+    template.mark = defaults.clone();
     flow.body.clear();
     let mut paragraph = template.clone();
     paragraph.runs.clear();
-    let mut next_id = 1u32;
+    // Retain the blank source's paragraph anchor on the first real body
+    // paragraph (or the required trailing paragraph after tables).
+    let mut original_paragraph_available = true;
+    let mut next_id = 2u32;
     let mut last_table_key: Option<u16> = None;
     for segment in segments {
         match segment {
+            Segment::ParagraphFormat(format) => {
+                template.direct.overlay(&format);
+                let direct = template.direct.clone();
+                direct.apply_to(&mut template);
+                if paragraph.runs.is_empty() {
+                    paragraph.direct.overlay(&format);
+                    let direct = paragraph.direct.clone();
+                    direct.apply_to(&mut paragraph);
+                }
+            }
             Segment::Table {
                 cells,
                 total,
                 strips,
                 rules,
             } => {
-                if !paragraph.runs.is_empty() || flow.body.is_empty() {
-                    paragraph.id = next_id;
+                if !paragraph.runs.is_empty() {
+                    paragraph.id = if std::mem::replace(&mut original_paragraph_available, false) {
+                        1
+                    } else {
+                        next_id
+                    };
                     next_id += 1;
                     flow.body.push(Block::Paragraph(paragraph));
                     paragraph = template.clone();
@@ -99,33 +147,21 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 let table_key = if strips { Some(total) } else { None };
                 let total = total as i64;
                 let width = text_axis_width(&flow.page);
-                let mut boundaries = vec![0i64];
-                for pair in cells.windows(2) {
-                    boundaries.push((pair[0].1 as i64 + pair[1].0 as i64) / 2);
-                }
-                boundaries.push(total);
+                let (boundaries, cells) = table_grid(cells, rules.as_ref(), total as u16);
                 let line = FlowBorder {
-                    width: 6_350,
+                    width: 7_620,
                     color: Rgb::BLACK,
                     style: BorderStyle::Single,
                     space: 0,
                     art: None,
                 };
-                let mut borders = [Some(Some(line)); 6];
-                // In this observed layout, the records describe successive
-                // display lines, not proven logical table rows. Do not draw a
-                // horizontal rule for each line merely because it has cells.
-                if rules.is_some() {
-                    borders = [Some(None); 6];
-                } else if strips {
-                    borders[4] = Some(None);
-                }
+                let borders = [Some(None); 6];
                 let mut table = FlowTable {
                     id: next_id,
                     borders,
                     columns: boundaries
                         .windows(2)
-                        .map(|p| ((p[1] - p[0]) * width / total).max(635))
+                        .map(|p| i64::from(p[1]) * width / total - i64::from(p[0]) * width / total)
                         .collect(),
                     fit_to_page: true,
                     ..FlowTable::default()
@@ -137,7 +173,10 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 };
                 if let Some(rules) = &rules {
                     if let Some(pitch) = flow.page.line_pitch {
-                        row.height = RowHeight::AtLeast(pitch);
+                        row.height = RowHeight::Exact(match template.line {
+                            ibis_doc_model::LineHeight::Exact(feed) => feed,
+                            _ => pitch,
+                        });
                     }
                     row.lines = rule_extra_lines(rules, total as u16, line);
                     // Line segments are relative to one display row and
@@ -145,22 +184,23 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     row.cant_split = !row.lines.is_empty();
                 }
                 next_id += 1;
-                for (left, right, contents) in cells {
+                for (left, right, start, stop, contents) in cells {
                     let mut cell_para = template.clone();
                     cell_para.id = next_id;
                     next_id += 1;
                     cell_para.runs.clear();
                     for item in contents {
                         match item {
-                            Segment::Text(text) => {
+                            item @ (Segment::Text(_) | Segment::StyledText(..)) => {
+                                let (text, style) = item.into_text(&defaults);
                                 let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
                                 let mut pending = String::new();
                                 for ch in normalized.chars() {
                                     if matches!(ch, '\n' | '\t') {
                                         if !pending.is_empty() {
-                                            cell_para.runs.push(FlowRun::new(
+                                            cell_para.runs.push(import_run(
                                                 FlowRunKind::Text(std::mem::take(&mut pending)),
-                                                FlowRunStyle::default(),
+                                                style.clone(),
                                             ));
                                         }
                                         let kind = if ch == '\n' {
@@ -168,34 +208,36 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                                         } else {
                                             FlowRunKind::Tab
                                         };
-                                        cell_para
-                                            .runs
-                                            .push(FlowRun::new(kind, FlowRunStyle::default()));
+                                        cell_para.runs.push(import_run(kind, style.clone()));
                                     } else {
                                         pending.push(ch);
                                     }
                                 }
                                 if !pending.is_empty() {
-                                    cell_para.runs.push(FlowRun::new(
+                                    cell_para.runs.push(import_run(
                                         FlowRunKind::Text(pending),
-                                        FlowRunStyle::default(),
+                                        style.clone(),
                                     ));
                                 }
                             }
-                            Segment::Ruby { base, reading } => cell_para.runs.push(FlowRun::new(
+                            Segment::Ruby {
+                                base,
+                                reading,
+                                style,
+                                ruby_size,
+                            } => cell_para.runs.push(import_run(
                                 FlowRunKind::Ruby {
                                     base,
                                     text: reading,
-                                    size: 525,
-                                    raise: 950,
+                                    size: ruby_size,
+                                    raise: style.size * 9 / 10,
                                     align: RubyAlign::Center,
                                 },
-                                FlowRunStyle::default(),
+                                *style,
                             )),
-                            Segment::PageBreak => cell_para.runs.push(FlowRun::new(
-                                FlowRunKind::PageBreak,
-                                FlowRunStyle::default(),
-                            )),
+                            Segment::PageBreak => cell_para
+                                .runs
+                                .push(import_run(FlowRunKind::PageBreak, defaults.clone())),
                             _ => {}
                         }
                     }
@@ -204,7 +246,13 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     });
                     row.cells.push(FlowCell {
                         id: next_id,
-                        span: 1,
+                        span: (stop - start) as u32,
+                        margins: [
+                            0,
+                            (i64::from(boundaries[stop]) - i64::from(right)).max(0) * width / total,
+                            0,
+                            (i64::from(left) - i64::from(boundaries[start])).max(0) * width / total,
+                        ],
                         own_borders,
                         blocks: vec![Block::Paragraph(cell_para)],
                         ..FlowCell::default()
@@ -238,7 +286,8 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
             | Segment::RowEnd => {
                 last_table_key = None;
             }
-            Segment::Text(text) => {
+            item @ (Segment::Text(_) | Segment::StyledText(..)) => {
+                let (text, style) = item.into_text(&defaults);
                 last_table_key = None;
                 let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
                 let mut lines = normalized.split('\n').peekable();
@@ -247,17 +296,22 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                         if index > 0 {
                             paragraph
                                 .runs
-                                .push(FlowRun::new(FlowRunKind::Tab, FlowRunStyle::default()));
+                                .push(import_run(FlowRunKind::Tab, style.clone()));
                         }
                         if !part.is_empty() {
-                            paragraph.runs.push(FlowRun::new(
+                            paragraph.runs.push(import_run(
                                 FlowRunKind::Text(part.to_string()),
-                                FlowRunStyle::default(),
+                                style.clone(),
                             ));
                         }
                     }
                     if lines.peek().is_some() {
-                        paragraph.id = next_id;
+                        paragraph.id =
+                            if std::mem::replace(&mut original_paragraph_available, false) {
+                                1
+                            } else {
+                                next_id
+                            };
                         next_id = next_id
                             .checked_add(1)
                             .ok_or_else(|| Error::new("段落が多すぎます"))?;
@@ -269,29 +323,37 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
             }
             Segment::PageBreak => {
                 last_table_key = None;
-                paragraph.runs.push(FlowRun::new(
-                    FlowRunKind::PageBreak,
-                    FlowRunStyle::default(),
-                ));
+                paragraph
+                    .runs
+                    .push(import_run(FlowRunKind::PageBreak, defaults.clone()));
             }
-            Segment::Ruby { base, reading } => {
+            Segment::Ruby {
+                base,
+                reading,
+                style,
+                ruby_size,
+            } => {
                 last_table_key = None;
                 // Typography is a Word default approximation; JTD's ruby
                 // size and positioning have not yet been decoded.
-                paragraph.runs.push(FlowRun::new(
+                paragraph.runs.push(import_run(
                     FlowRunKind::Ruby {
                         base,
                         text: reading,
-                        size: 525,
-                        raise: 950,
+                        size: ruby_size,
+                        raise: style.size * 9 / 10,
                         align: RubyAlign::Center,
                     },
-                    FlowRunStyle::default(),
+                    defaults.clone(),
                 ));
             }
         }
     }
-    paragraph.id = next_id;
+    paragraph.id = if std::mem::replace(&mut original_paragraph_available, false) {
+        1
+    } else {
+        next_id
+    };
     flow.body.push(Block::Paragraph(paragraph));
     flow.id_floor = next_id;
     Ok(presentation)
@@ -304,6 +366,65 @@ fn text_axis_width(page: &ibis_doc_model::PageSetup) -> i64 {
     } else {
         (page.size.width - page.left - page.right).max(1)
     }
+}
+
+fn view_typography(data: &[u8], page: &mut ibis_doc_model::PageSetup) -> FlowRunStyle {
+    let mut result = FlowRunStyle::default();
+    let mut columns = Some(80);
+    let records = (|| {
+        if data.get(..6)? != [0, 1, 0, 2, 0x10, 0] {
+            return None;
+        }
+        let length = u32::from_be_bytes(data.get(6..10)?.try_into().ok()?) as usize;
+        let end = 10usize.checked_add(length)?;
+        let mut at = 10;
+        let mut records = Vec::new();
+        while at + 4 <= end {
+            let tag = u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?);
+            let size = u16::from_be_bytes(data.get(at + 2..at + 4)?.try_into().ok()?) as usize;
+            at += 4;
+            let stop = at.checked_add(size).filter(|n| *n <= end)?;
+            records.push((tag, data.get(at..stop)?));
+            at = stop;
+        }
+        (at == end).then_some(records)
+    })();
+    for (tag, value) in records.unwrap_or_default() {
+        match tag {
+            0x1006 if value.first().is_some_and(|mask| mask & 1 != 0) => {
+                if let Some(bytes) = value.get(1..5) {
+                    let size = u32::from_be_bytes(bytes.try_into().unwrap());
+                    if (35..=35_278).contains(&size) {
+                        result.size = (u64::from(size) * 7200 / 2540) as u32;
+                    }
+                }
+            }
+            0x100b
+                if value
+                    .first()
+                    .is_some_and(|mask| mask & 0x80 != 0 && mask & !0xd7 == 0) =>
+            {
+                let mask = value[0];
+                let at = 1
+                    + usize::from(mask & 1 != 0)
+                    + 2 * usize::from(mask & 2 != 0)
+                    + [2, 4, 6]
+                        .iter()
+                        .filter(|bit| mask & (1 << **bit) != 0)
+                        .count();
+                if let Some(bytes) = value.get(at..at + 2) {
+                    columns = Some(u16::from_be_bytes([bytes[0], bytes[1]]));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(columns) = columns.filter(|n| (2..=2000).contains(n)) {
+        let pitch = text_axis_width(page) * 2 / i64::from(columns);
+        page.char_space = Some(pitch - i64::from(result.size) * 127);
+        page.doc_grid_type = ibis_doc_model::DocGridType::LinesAndChars;
+    }
+    result
 }
 
 /// Apply the documented paper and margin fields only when their enclosing
@@ -463,7 +584,7 @@ fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
     grid.extend_from_slice(&b);
     grid.sort_unstable();
     grid.dedup();
-    if grid.len() > 33 {
+    if grid.len() > 1025 {
         return false;
     }
     fn remap(rows: &mut [FlowRow], old: &[i64], grid: &[i64]) -> bool {
@@ -512,18 +633,7 @@ pub fn export_docx(presentation: &Presentation) -> Result<Vec<u8>, Error> {
 /// Prefer the documented direction flag; the initial record remains an
 /// imperfect compatibility heuristic for variants that cannot be decoded.
 fn observed_vertical(data: &[u8]) -> bool {
-    if let Some(vertical) = view_style_direction(data) {
-        return vertical;
-    }
-    // Retain the old observed candidate only where the 1002 groups cannot
-    // yet be decoded; a 1001 record itself does not prove vertical writing.
-    if data.len() < 14 || data[..8] != [0, 1, 0, 2, 0x10, 0, 0, 0] {
-        return false;
-    }
-    let group_len = u16::from_be_bytes([data[8], data[9]]) as usize;
-    let kind = u16::from_be_bytes([data[10], data[11]]);
-    let len = u16::from_be_bytes([data[12], data[13]]) as usize;
-    kind == 0x1001 && group_len >= 4 && group_len <= data.len() - 10 && len <= group_len - 4
+    view_style_direction(data).unwrap_or(false)
 }
 
 /// Decode only the documented subset of the 1002 field masks. An unknown
@@ -567,8 +677,17 @@ fn view_style_direction(data: &[u8]) -> Option<bool> {
                     .count();
             let m3 = *record.get(at)?;
             at += 1;
-            if m3 & !0x50 != 0 {
+            if m3 & !0x51 != 0 {
                 return None;
+            }
+            if m3 & 1 != 0 {
+                // Six paired/local documents carry a signed 32-bit field
+                // before the direction byte. Its meaning remains unknown.
+                let value = i32::from_be_bytes(record.get(at..at + 4)?.try_into().ok()?);
+                if !matches!(value, -3 | -1 | 0) {
+                    return None;
+                }
+                at += 4;
             }
             let vertical = if m3 & 0x10 != 0 {
                 let value = *record.get(at)?;
@@ -594,9 +713,13 @@ fn view_style_direction(data: &[u8]) -> Option<bool> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Segment {
     Text(String),
+    StyledText(String, Box<FlowRunStyle>),
+    ParagraphFormat(ibis_doc_model::ParaFormat),
     Ruby {
         base: String,
         reading: String,
+        style: Box<FlowRunStyle>,
+        ruby_size: u32,
     },
     PageBreak,
     RowStart(u16),
@@ -611,6 +734,16 @@ enum Segment {
     },
 }
 
+impl Segment {
+    fn into_text(self, defaults: &FlowRunStyle) -> (String, FlowRunStyle) {
+        match self {
+            Self::Text(text) => (text, defaults.clone()),
+            Self::StyledText(text, style) => (text, *style),
+            _ => unreachable!("text segment"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RuleLayout {
     points: Vec<RulePoint>,
@@ -622,6 +755,67 @@ struct RulePoint {
     flags: u16,
     partial: u16,
     link: u16,
+    types: [u16; 4],
+    linked_types: [u16; 4],
+}
+
+type SourceCell = (u16, u16, Vec<Segment>);
+type GridCell = (u16, u16, usize, usize, Vec<Segment>);
+
+/// Adapt source spans to a rectangular Word grid without deleting narrow
+/// spans or changing their text. Empty gap cells are representation padding,
+/// not inferred source cells. Original declarations remain in inspect().
+fn table_grid(
+    cells: Vec<SourceCell>,
+    rules: Option<&RuleLayout>,
+    width: u16,
+) -> (Vec<u16>, Vec<GridCell>) {
+    let centers: Vec<u16> = rules
+        .map(|r| r.points.iter().map(|p| p.position).collect())
+        .unwrap_or_default();
+    let mut grid = vec![0, width];
+    let mut mapped = Vec::new();
+    for (left, right, contents) in cells {
+        let a = centers
+            .iter()
+            .copied()
+            .filter(|c| *c <= left && left - c <= 2)
+            .max()
+            .unwrap_or(left);
+        let b = centers
+            .iter()
+            .copied()
+            .filter(|c| *c >= right && c - right <= 2)
+            .min()
+            .unwrap_or(right);
+        grid.extend([a, b]);
+        mapped.push((left, right, a, b, contents));
+    }
+    for i in 1..mapped.len() {
+        if mapped[i - 1].3 > mapped[i].2 {
+            mapped[i - 1].3 = mapped[i - 1].1;
+            mapped[i].2 = mapped[i].0;
+        }
+    }
+    grid.extend(mapped.iter().flat_map(|(_, _, a, b, _)| [*a, *b]));
+    grid.extend(centers.into_iter().filter(|c| *c <= width));
+    grid.sort_unstable();
+    grid.dedup();
+    let mut result = Vec::new();
+    let mut cursor = 0;
+    for (left, right, a, b, contents) in mapped {
+        let start = grid.binary_search(&a).unwrap();
+        let stop = grid.binary_search(&b).unwrap();
+        if start > cursor {
+            result.push((grid[cursor], grid[start], cursor, start, Vec::new()));
+        }
+        result.push((left, right, start, stop, contents));
+        cursor = stop;
+    }
+    if cursor < grid.len() - 1 {
+        result.push((grid[cursor], width, cursor, grid.len() - 1, Vec::new()));
+    }
+    (grid, result)
 }
 
 /// Parse the documented 008f form only when all lengths and the final width
@@ -658,6 +852,8 @@ fn parse_rules(payload: &[u16]) -> Option<RuleLayout> {
             flags,
             partial,
             link,
+            types: [1; 4],
+            linked_types: [1; 4],
         });
         position = position.checked_add(advance)?;
         i += step;
@@ -685,17 +881,61 @@ fn rule_cell_borders(
     let r = nearest(right);
     let full = |point: &RulePoint| point.flags & 0x30 != 0 && point.flags & 0x03 == 0x03;
     let bottom = match (l, r) {
-        (Some((li, _)), Some((ri, _))) if ri > li => layout.points[li..ri]
-            .iter()
-            .all(|point| point.partial == 0 && point.link & 0x08 != 0),
-        _ => false,
+        (Some((li, _)), Some((ri, _))) if ri > li => {
+            let kind = layout.points[li].linked_types[3];
+            layout.points[li..ri]
+                .iter()
+                .all(|point| {
+                    point.partial == 0 && point.link & 0x08 != 0 && point.linked_types[3] == kind
+                })
+                .then(|| typed_border(line, kind))
+        }
+        _ => None,
     };
     [
         Some(None),
-        Some(r.and_then(|(_, p)| full(p).then_some(line))),
-        Some(bottom.then_some(line)),
-        Some(l.and_then(|(_, p)| full(p).then_some(line))),
+        Some(r.and_then(|(_, p)| {
+            (full(p) && p.types[0] == p.types[1]).then(|| typed_border(line, p.types[0]))
+        })),
+        Some(bottom),
+        Some(l.and_then(|(_, p)| {
+            (full(p) && p.types[0] == p.types[1]).then(|| typed_border(line, p.types[0]))
+        })),
     ]
+}
+
+fn rule_types(document: &DecodedText, position: usize) -> [u16; 4] {
+    [1, 2, 3, 8].map(|id| {
+        document
+            .style(position)
+            .and_then(|properties| properties.get(&id))
+            .filter(|value| value.len() == 2)
+            .map(|v| u16::from_be_bytes([v[0], v[1]]))
+            .filter(|value| (1..=16).contains(value))
+            .unwrap_or(1)
+    })
+}
+
+fn typed_border(mut line: FlowBorder, kind: u16) -> FlowBorder {
+    // Names are decoded; widths beyond the default are preview approximations.
+    line.style = match kind {
+        4..=6 | 9 => BorderStyle::Dashed,
+        7 => BorderStyle::Double,
+        8 => BorderStyle::Dotted,
+        10 | 11 => BorderStyle::DotDash,
+        12 | 13 => BorderStyle::Wave,
+        14 => BorderStyle::DoubleWave,
+        _ => BorderStyle::Single,
+    };
+    line.width *= match kind {
+        2 | 5 => 2,
+        3 | 6 => 3,
+        _ => 1,
+    };
+    if kind == 16 {
+        line.width = (line.width / 3).max(1);
+    }
+    line
 }
 
 /// Keep source-supported line fragments that cannot be represented as a
@@ -714,6 +954,7 @@ fn rule_extra_lines(layout: &RuleLayout, width: u16, line: FlowBorder) -> Vec<Fl
             let vertical = match point.flags & 3 {
                 1 => Some((0, 5_000)),
                 2 => Some((5_000, 10_000)),
+                3 if point.types[0] != point.types[1] => Some((0, 5_000)),
                 _ => None,
             };
             if let Some((y1, y2)) = vertical {
@@ -722,52 +963,81 @@ fn rule_extra_lines(layout: &RuleLayout, width: u16, line: FlowBorder) -> Vec<Fl
                     y1,
                     x2: x,
                     y2,
-                    border: line,
+                    border: typed_border(line, point.types[if y1 == 0 { 0 } else { 1 }]),
                 });
+                if point.flags & 3 == 3 {
+                    result.push(FlowRowLine {
+                        x1: x,
+                        y1: 5_000,
+                        x2: x,
+                        y2: 10_000,
+                        border: typed_border(line, point.types[1]),
+                    });
+                }
             }
         }
+        let attached_rule = point.link & 0x30 != 0 && point.link & 3 != 0;
         if let Some(next) = layout.points.get(index + 1) {
             let end = scale(u32::from(next.position));
-            if point.link & 0x04 != 0 && end > x {
+            if !attached_rule && point.link & 0x04 != 0 && end > x {
                 result.push(FlowRowLine {
                     x1: x,
                     y1: 5_000,
                     x2: end,
                     y2: 5_000,
-                    border: line,
+                    border: typed_border(line, point.linked_types[2]),
                 });
             }
             // Whole bottom edges are already represented on cells. When a
             // partial span prevents that mapping, keep the linked segment.
-            if point.partial != 0 && point.link & 0x08 != 0 && end > x {
+            if !attached_rule && point.partial != 0 && point.link & 0x08 != 0 && end > x {
                 result.push(FlowRowLine {
                     x1: x,
                     y1: 10_000,
                     x2: end,
                     y2: 10_000,
-                    border: line,
+                    border: typed_border(line, point.linked_types[3]),
                 });
             }
         }
         if point.partial != 0 {
             let end = scale(u32::from(point.position) + u32::from(point.partial) + 1);
             if end > x {
-                if point.flags & 0x04 != 0 && point.link & 0x04 == 0 {
+                if point.flags & 0x04 != 0 && (attached_rule || point.link & 0x04 == 0) {
                     result.push(FlowRowLine {
                         x1: x,
                         y1: 5_000,
                         x2: end,
                         y2: 5_000,
-                        border: line,
+                        border: typed_border(line, point.types[2]),
                     });
                 }
-                if point.flags & 0x08 != 0 && point.link & 0x08 == 0 {
+                if point.flags & 0x08 != 0 && (attached_rule || point.link & 0x08 == 0) {
                     result.push(FlowRowLine {
                         x1: x,
                         y1: 10_000,
                         x2: end,
                         y2: 10_000,
-                        border: line,
+                        border: typed_border(line, point.types[3]),
+                    });
+                }
+            }
+        }
+        // `b` can carry a vertical-rule class at the end of an item's own
+        // line, independently of the next rule item.
+        if point.link & 0x30 != 0 {
+            let attached = scale(u32::from(point.position) + u32::from(point.partial) + 1);
+            for (bit, y1, y2, kind) in [
+                (1, 0, 5_000, point.linked_types[0]),
+                (2, 5_000, 10_000, point.linked_types[1]),
+            ] {
+                if point.link & bit != 0 {
+                    result.push(FlowRowLine {
+                        x1: attached,
+                        y1,
+                        x2: attached,
+                        y2,
+                        border: typed_border(line, kind),
                     });
                 }
             }
@@ -776,158 +1046,266 @@ fn rule_extra_lines(layout: &RuleLayout, width: u16, line: FlowBorder) -> Vec<Fl
     result
 }
 
+/// Decode the logical store before interpreting any text or record.
+#[cfg(test)]
 fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
-    if !bytes.starts_with(b"SsmgV.01") || bytes.len() % 2 != 0 {
-        return Err(Error::new("JTD本文形式が未対応か壊れています"));
+    extract_decoded(&decode::decode(bytes)?, &FlowRunStyle::default(), None)
+}
+
+/// Inspect original logical units and record ranges without applying table
+/// inference. Unknown properties and undecoded style tails remain available.
+pub fn inspect(data: &[u8]) -> Result<DecodedText, Error> {
+    decode::decode(&checked_stream(data)?)
+}
+
+fn run_style(document: &DecodedText, position: usize, defaults: &FlowRunStyle) -> FlowRunStyle {
+    let mut result = defaults.clone();
+    let Some(properties) = document.style(position) else {
+        return result;
+    };
+    let value = |id| {
+        properties
+            .get(&id)
+            .and_then(|bytes| match bytes.as_slice() {
+                [a, b] => Some(u16::from_be_bytes([*a, *b]) as u32),
+                [a, b, c, d] => Some(u32::from_be_bytes([*a, *b, *c, *d])),
+                _ => None,
+            })
+    };
+    let flags = value(20).unwrap_or(0);
+    if flags & 0x8000_0000 == 0 {
+        return result;
     }
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|b| u16::from_be_bytes([b[0], b[1]]))
-        .collect();
-    let mut out = Vec::new();
-    // Observed TextV.01 plain-text record: 32-bit BE number of UTF-16 units.
-    if bytes.get(20..28) == Some(b"TextV.01") && bytes.len() >= 32 {
-        let count = u32::from_be_bytes(bytes[28..32].try_into().unwrap()) as usize;
-        if count > 0 && count <= (bytes.len() - 32) / 2 && units.get(16).is_some_and(|x| *x >= 0x20)
+    if let Some(size) = value(2).filter(|size| (35..=35_278).contains(size)) {
+        result.size = (u64::from(size) * 7200 / 2540) as u32;
+    }
+    result.bold = matches!((flags >> 26) & 3, 1 | 2);
+    result.italic = matches!((flags >> 28) & 3, 1 | 2);
+    result.underline = flags & 0x10 != 0 && value(13).is_some_and(|n| matches!(n, 1 | 2));
+    if value(13) == Some(2) {
+        result.underline_style = ibis_doc_model::UnderlineStyle::Thick;
+    }
+    if let Some(color) = value(15).filter(|v| *v != u32::MAX) {
+        result.color = Rgb::from_rgb(color as u8, (color >> 8) as u8, (color >> 16) as u8);
+    }
+    if flags & 8 != 0 {
+        result.color = Rgb::WHITE;
+        result.highlight = Some(Rgb::BLACK);
+    }
+    result
+}
+
+fn append_text(
+    document: &DecodedText,
+    range: std::ops::Range<usize>,
+    defaults: &FlowRunStyle,
+    out: &mut Vec<Segment>,
+) -> Result<(), Error> {
+    if document.units[range.clone()]
+        .iter()
+        .any(|n| *n < 0x20 && !matches!(n, 9 | 10 | 13))
+    {
+        return Ok(());
+    }
+    let mut at = range.start;
+    while at < range.end {
+        let style = run_style(document, at, defaults);
+        let index = document.styles.partition_point(|span| span.units.end <= at);
+        let mut end = document.styles.get(index).map_or(range.end, |span| {
+            if span.units.contains(&at) {
+                span.units.end.min(range.end)
+            } else {
+                span.units.start.min(range.end)
+            }
+        });
+        // A style boundary cannot divide a UTF-16 surrogate pair.
+        if end < range.end
+            && (0xd800..=0xdbff).contains(&document.units[end - 1])
+            && (0xdc00..=0xdfff).contains(&document.units[end])
         {
-            let s = String::from_utf16(&units[16..16 + count])
-                .map_err(|_| Error::new("JTD文字列が壊れています"))?;
-            if s.chars()
-                .all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
-            {
-                out.push(Segment::Text(s));
+            end += 1;
+        }
+        let text = document.text(at..end)?;
+        if !text.is_empty() {
+            if style == FlowRunStyle::default() {
+                out.push(Segment::Text(text));
+            } else {
+                out.push(Segment::StyledText(text, Box::new(style)));
             }
         }
+        at = end;
     }
-    if out.is_empty() {
-        let mut i = 4;
-        while i + 7 <= units.len() {
-            if units[i] == 0x000e {
-                out.push(Segment::RowEnd);
-                i += 1;
-                continue;
+    Ok(())
+}
+
+fn extract_decoded(
+    document: &DecodedText,
+    defaults: &FlowRunStyle,
+    normal_pitch: Option<i64>,
+) -> Result<Vec<Segment>, Error> {
+    use decode::RecordKind;
+    let mut out = Vec::new();
+    let mut records = document.records.iter().peekable();
+    while let Some(record) = records.next() {
+        match &record.kind {
+            RecordKind::Text => append_text(document, record.units.clone(), defaults, &mut out)?,
+            RecordKind::Inline {
+                selector: [0, 1 | 3],
+                text,
+            } => {
+                if let Some(next) = records.peek() {
+                    if let RecordKind::Inline {
+                        selector: [1, 0x82],
+                        text: reading,
+                    } = &next.kind
+                    {
+                        let base_style = run_style(document, text.start, defaults);
+                        let reading_style = run_style(document, reading.start, defaults);
+                        let valid = text
+                            .clone()
+                            .chain(reading.clone())
+                            .all(|i| document.units[i] >= 0x20);
+                        if valid {
+                            let explicit_reading_size =
+                                document.style(reading.start).is_some_and(|p| {
+                                    p.get(&2)
+                                        .is_some_and(|v| v.len() == 2 && v.as_slice() != [0, 0])
+                                        && p.get(&20)
+                                            .is_some_and(|v| v.len() == 4 && v[0] & 0x80 != 0)
+                                });
+                            let ruby_size = if explicit_reading_size {
+                                reading_style.size
+                            } else {
+                                base_style.size / 2
+                            };
+                            out.push(Segment::Ruby {
+                                base: document.text(text.clone())?,
+                                reading: document.text(reading.clone())?,
+                                style: Box::new(base_style),
+                                ruby_size,
+                            });
+                        } else {
+                            append_text(document, text.clone(), defaults, &mut out)?;
+                        }
+                        records.next();
+                        continue;
+                    }
+                }
+                append_text(document, text.clone(), defaults, &mut out)?;
             }
-            if units[i] != 0x001c {
-                i += 1;
-                continue;
-            }
-            let class = units[i + 1];
-            let count = units[i + 2] as usize;
-            if class == 1 && count == 7 && units[i + 6] == 0x001d {
-                // Only the observed visible base/placeholder selectors. Other
-                // inline payloads may be ruby or control data, so omit them.
-                let visible = units[i + 4] == 0 && matches!(units[i + 5], 1 | 3);
-                let start = i + 7;
-                let end = (start..units.len().min(start + 256)).find(|&n| units[n] == 0x001e);
-                if let Some(end) = end {
-                    if visible {
-                        let value = String::from_utf16(&units[start..end])
-                            .map_err(|_| Error::new("JTD文字列が壊れています"))?;
-                        if value
-                            .chars()
-                            .all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
-                        {
-                            // Correlated in local files: the base is followed
-                            // by the four-word separator and a ruby annotation.
-                            let next = end + 1;
-                            let paired = units.get(next..next + 11)
-                                == Some(&[5, 0, 1, 0x1f, 0x1c, 1, 7, 0, 1, 0x82, 0x1d]);
-                            if paired {
-                                let reading_start = next + 11;
-                                let reading_end = (reading_start
-                                    ..units.len().min(reading_start + 256))
-                                    .find(|&n| units[n] == 0x001e);
-                                if let Some(reading_end) = reading_end {
-                                    let reading =
-                                        String::from_utf16(&units[reading_start..reading_end])
-                                            .map_err(|_| Error::new("JTDルビが壊れています"))?;
-                                    if !value.is_empty()
-                                        && !reading.is_empty()
-                                        && !value.chars().any(char::is_control)
-                                        && !reading.chars().any(char::is_control)
-                                    {
-                                        out.push(Segment::Ruby {
-                                            base: value,
-                                            reading,
-                                        });
-                                        i = reading_end + 1;
-                                        continue;
-                                    }
+            RecordKind::Record {
+                class: 0x10,
+                payload,
+            } => {
+                // Some old documents have empty ordinary headers. Keep their
+                // source ranges; only complete TLV lists supply layout fields.
+                if let Ok(items) = document.tlv(payload.clone()) {
+                    let mut format = ibis_doc_model::ParaFormat::default();
+                    for (tag, range) in &items {
+                        let values = &document.units[range.clone()];
+                        match (*tag, values) {
+                            (0x24, [value]) => {
+                                format.align = match value {
+                                    0 => Some(ibis_doc_model::FlowAlign::Left),
+                                    1 => Some(ibis_doc_model::FlowAlign::Center),
+                                    2 => Some(ibis_doc_model::FlowAlign::Right),
+                                    _ => None,
                                 }
                             }
-                            out.push(Segment::Text(value));
+                            (0x26, [unit, left, right, first, _]) => match unit {
+                                0 => {
+                                    format.left_chars = Some(i32::from(*left) * 50);
+                                    format.right_chars = Some(i32::from(*right) * 50);
+                                    format.first_line_chars =
+                                        Some((i32::from(*first) - i32::from(*left)) * 50);
+                                }
+                                1 => {
+                                    format.left = Some(i64::from(*left) * 360);
+                                    format.right = Some(i64::from(*right) * 360);
+                                    format.first_line =
+                                        Some((i64::from(*first) - i64::from(*left)) * 360);
+                                }
+                                _ => {}
+                            },
+                            (0x20, [kind, value, _, _]) => {
+                                let pitch = normal_pitch.unwrap_or(i64::from(defaults.size) * 127);
+                                let feed = match kind {
+                                    1 => Some(0),
+                                    2 => Some(pitch / 2),
+                                    3 => Some(pitch / 3),
+                                    4 => Some(pitch / 4),
+                                    5 => Some(pitch * 2 / 3),
+                                    6 => Some(pitch * 3 / 4),
+                                    8 => Some(i64::from(*value) * 360),
+                                    9 => Some(pitch * i64::from(*value) / 1000),
+                                    _ => None,
+                                };
+                                format.line = feed.map(ibis_doc_model::LineHeight::Exact);
+                                if format.line.is_some() {
+                                    format.snap = Some(false);
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    i = end + 1;
-                    continue;
+                    if format != ibis_doc_model::ParaFormat::default() {
+                        out.push(Segment::ParagraphFormat(format));
+                    }
+                    for (tag, range) in items {
+                        if tag == 0x8f {
+                            let values = &document.units[range.clone()];
+                            if let Some(width) = values.first().filter(|n| **n > 0) {
+                                out.push(Segment::RowStart(*width));
+                                // The TLV terminator belongs to the list, not
+                                // the rule value. Legacy rule helper expects it.
+                                let mut rules = values.to_vec();
+                                rules.extend([0xffff, 0]);
+                                if let Some(mut layout) = parse_rules(&rules) {
+                                    let mut at = range.start + 3;
+                                    for point in &mut layout.points {
+                                        point.types = rule_types(document, at);
+                                        if at + 3 < range.end {
+                                            point.linked_types = rule_types(document, at + 2);
+                                        }
+                                        at += if range.end - at == 2 { 2 } else { 4 };
+                                    }
+                                    out.push(Segment::RowRules(layout));
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            let end = match i.checked_add(count) {
-                Some(end) if count >= 7 && end <= units.len() => end,
-                _ => {
-                    i += 1;
-                    continue;
-                }
-            };
-            if !matches!(class, 0 | 0x10 | 0x20 | 0x30)
-                || units[end - 4] as usize != count
-                || units[end - 3] != 0
-                || units[end - 2] != class
-                || units[end - 1] != 0x001f
-            {
-                i += 1;
-                continue;
-            }
-            if class == 0x10
-                && count >= 12
-                && units[i + 4] == 0x008f
-                && units[i + 5] as usize + 12 == count
-                && units[i + 6] > 0
-            {
-                out.push(Segment::RowStart(units[i + 6]));
-                if let Some(rules) = parse_rules(&units[i + 6..end - 4]) {
-                    out.push(Segment::RowRules(rules));
-                }
-            } else if class == 0x30
-                && count == 12
-                && units[i + 3] == 0
-                && units[i + 6] == 0xff
-                && units[i + 7] == 0
-            {
-                out.push(Segment::CellStart(units[i + 4], units[i + 5]));
-            }
-            i = end;
-            let start = i;
-            while i < units.len()
-                && (units[i] >= 0x00a0
-                    || matches!(units[i], 0x09 | 0x0a | 0x0d)
-                    || (0x20..0x7f).contains(&units[i]))
-            {
-                i += 1;
-            }
-            if start != i {
-                let text = String::from_utf16(&units[start..i])
-                    .map_err(|_| Error::new("JTD文字列が壊れています"))?;
-                out.push(Segment::Text(text));
-                // An observed break directly after body text. Do not infer
-                // break semantics from the same value inside binary headers.
-                if units.get(i) == Some(&0x000c) {
-                    out.push(Segment::PageBreak);
-                    i += 1;
+            RecordKind::Record {
+                class: 0x30,
+                payload,
+            } => {
+                let values = &document.units[payload.clone()];
+                // Flags describe continuation/closure, not whether a source
+                // span exists. Retain all declared coordinates. The exact
+                // flags remain available in the inspected source record.
+                if let [0, left, right, _, _] = values {
+                    out.push(Segment::CellStart(*left, *right));
                 }
             }
+            RecordKind::Control(14) => out.push(Segment::RowEnd),
+            RecordKind::Control(12) => out.push(Segment::PageBreak),
+            RecordKind::Control(9 | 10 | 13) => out.push(Segment::Text(
+                char::from_u32(u32::from(document.units[record.units.start]))
+                    .unwrap()
+                    .to_string(),
+            )),
+            _ => {}
         }
     }
-    if !out.iter().any(|segment| match segment {
-        Segment::Text(text) => !text.trim().is_empty(),
-        Segment::Ruby { base, .. } => !base.trim().is_empty(),
-        Segment::PageBreak
-        | Segment::RowStart(_)
-        | Segment::RowRules(_)
-        | Segment::CellStart(_, _)
-        | Segment::RowEnd
-        | Segment::Table { .. } => false,
-    }) {
+    if !document.units.is_empty()
+        && !out.iter().any(|segment| match segment {
+            Segment::Text(text) | Segment::StyledText(text, _) => !text.trim().is_empty(),
+            Segment::Ruby { base, .. } => !base.trim().is_empty(),
+            Segment::RowRules(_) => true,
+            _ => false,
+        })
+    {
         return Err(Error::new("対応するJTD本文を読み取れませんでした"));
     }
     Ok(out)
@@ -960,7 +1338,7 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
         for part in &original[1..] {
             match part {
                 Segment::CellStart(a, b) => {
-                    if a >= b
+                    if a > b
                         || *b > total
                         || cells.last().is_some_and(|c| c.1 > *a)
                         || cells.len() >= 64
@@ -973,7 +1351,10 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
                     rules = Some(value.clone());
                 }
                 Segment::RowEnd => {}
-                Segment::Text(_) | Segment::Ruby { .. } | Segment::PageBreak => {
+                Segment::Text(_)
+                | Segment::StyledText(..)
+                | Segment::Ruby { .. }
+                | Segment::PageBreak => {
                     if let Some(cell) = cells.last_mut() {
                         cell.2.push(part.clone());
                     } else {
@@ -985,69 +1366,36 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
         }
         let visible = cells.iter().any(|c| {
             c.2.iter().any(|s| {
-                matches!(s, Segment::Text(t) if !t.trim().is_empty())
+                matches!(s, Segment::Text(t) | Segment::StyledText(t, _) if !t.trim().is_empty())
                     || matches!(s, Segment::Ruby { .. })
             })
         });
-        if valid
-            && (cells.len() >= 2 && visible || rules.is_some() && !cells.is_empty() && !visible)
-        {
-            // Some empty ruled lines contain only the edge strips. Preserve
-            // their empty interior so a line beneath it has a cell to attach
-            // to; otherwise the top edge of the following box disappears.
-            if !visible && rules.is_some() && cells.iter().all(|cell| cell.2.is_empty()) {
-                let mut expanded: Vec<(u16, u16, Vec<Segment>)> =
-                    Vec::with_capacity(cells.len() * 2);
-                for cell in cells {
-                    if let Some((_, prior_end, _)) = expanded.last() {
-                        if let Some(gap_start) = prior_end.checked_add(4) {
-                            if let Some(gap_end) = cell.0.checked_sub(4) {
-                                if gap_start < gap_end {
-                                    expanded.push((gap_start, gap_end, Vec::new()));
-                                }
-                            }
-                        }
-                    }
-                    expanded.push(cell);
-                }
-                cells = expanded;
+        // Zero-width empty declarations are cursor/blank-line markers. They
+        // do not define a zero-width Word cell, but the display row remains.
+        cells.retain(|(left, right, content)| {
+            if left != right { return true; }
+            if content.iter().any(|s| !matches!(s, Segment::Text(t) | Segment::StyledText(t, _) if t.trim().is_empty())) {
+                valid = false;
             }
-            // Thin, empty outer strips in the paired comparison-table
-            // pattern carry edge geometry, not independent text columns.
-            // An empty two-unit strip inside the same bounded pattern is
-            // likewise a boundary candidate, not a text column. Keep every
-            // content-bearing cell, including whitespace and controls.
-            let empty = |items: &[Segment]| {
-                items.iter().all(|part| match part {
-                    Segment::Text(t) => t.trim().is_empty(),
-                    _ => false,
-                })
-            };
-            let first = &cells[0];
-            let last = cells.last().unwrap();
-            let strips = (cells.len() >= 4 || !visible && rules.is_some() && cells.len() >= 3)
-                && first.0 == 0
-                && first.1 <= 6
-                && last.1 == total
-                && last.1 - last.0 <= 6
-                && empty(&first.2)
-                && empty(&last.2);
-            if strips {
-                cells.pop();
-                cells.remove(0);
-                if cells
-                    .iter()
-                    .filter(|(left, right, content)| right - left > 2 || !content.is_empty())
-                    .count()
-                    >= 2
-                {
-                    cells.retain(|(left, right, content)| right - left > 2 || !content.is_empty());
-                }
+            false
+        });
+        if valid && rules.is_some() {
+            if cells.is_empty() {
+                cells.push((0, total, Vec::new()));
             }
             out.push(Segment::Table {
                 cells,
                 total,
-                strips,
+                strips: true,
+                rules,
+            });
+            continue;
+        }
+        if valid && cells.len() >= 2 && visible {
+            out.push(Segment::Table {
+                cells,
+                total,
+                strips: false,
                 rules,
             });
         } else {
@@ -1060,6 +1408,176 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observed_direction_field_with_signed_prefix_is_decoded_without_guessing_from_paper() {
+        for signed in [-3i32, -1, 0] {
+            let mut value = vec![0, 0, 0x51];
+            value.extend(signed.to_be_bytes());
+            value.push(1);
+            for _ in 0..10 {
+                value.extend(700u16.to_be_bytes());
+            }
+            let mut records = vec![0x10, 2];
+            records.extend((value.len() as u16).to_be_bytes());
+            records.extend(value);
+            let mut styles = vec![0, 1, 0, 2, 0x10, 0];
+            styles.extend((records.len() as u32).to_be_bytes());
+            styles.extend(records);
+            assert_eq!(view_style_direction(&styles), Some(true));
+        }
+    }
+
+    #[test]
+    fn paragraph_alignment_hanging_indent_and_fixed_feed_survive_docx() {
+        let payload = [
+            0, 0x24, 1, 1, 0x26, 5, 0, 4, 0, 2, 0, 0x20, 4, 8, 500, 0, 0, 0xffff, 0,
+        ];
+        let length = (payload.len() + 7) as u16;
+        let mut units = vec![0x1c, 0x10, length];
+        units.extend(payload);
+        units.extend([length, 0, 0x10, 0x1f, 0x7532]);
+        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
+        let model = read(&data).unwrap();
+        let saved = crate::read(&export_docx(&model).unwrap()).unwrap();
+        for doc in [&model, &saved] {
+            let Block::Paragraph(p) = &doc.flow.as_ref().unwrap().body[0] else {
+                panic!("paragraph")
+            };
+            assert_eq!(p.align, ibis_doc_model::FlowAlign::Center);
+            assert_eq!(p.left_chars, Some(200));
+            assert_eq!(p.first_line_chars, Some(-100));
+            assert!(
+                matches!(p.line, ibis_doc_model::LineHeight::Exact(feed) if (feed - 180_000).abs() < 635)
+            );
+        }
+    }
+
+    #[test]
+    fn blank_document_and_zero_width_blank_ruled_line_are_kept() {
+        let empty = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&[]),
+        )]);
+        let blank = read(&empty).unwrap();
+        assert_eq!(blank.flow.as_ref().unwrap().page.top, 30 * 36_000);
+        assert_eq!(
+            blank.flow.as_ref().unwrap().page.doc_grid_type,
+            ibis_doc_model::DocGridType::LinesAndChars
+        );
+        let layout = parse_rules(&[100, 0, 0, 8, 0, 0, 97, 0xffff, 0]).unwrap();
+        let rows = table_candidates(vec![
+            Segment::RowStart(100),
+            Segment::RowRules(layout),
+            Segment::CellStart(0, 0),
+            Segment::RowEnd,
+        ]);
+        assert!(
+            matches!(&rows[..], [Segment::Table { cells, .. }] if cells.len() == 1 && cells[0].0 == 0 && cells[0].1 == 100)
+        );
+    }
+
+    #[test]
+    fn tlv_rule_item_after_another_item_is_not_lost() {
+        let values = [100, 0, 3, 0x23, 0, 0, 90, 0x23, 3];
+        let mut payload = vec![0, 0x2a, 2, 0x1234, 0, 0x8f, values.len() as u16];
+        payload.extend(values);
+        payload.extend([0xffff, 0]);
+        let length = (payload.len() + 7) as u16;
+        let mut units = vec![0x1c, 0x10, length];
+        units.extend(payload);
+        units.extend([length, 0, 0x10, 0x1f, 0x7532]);
+        let segments = extract(&decode::fixture(&units)).unwrap();
+        assert!(segments.iter().any(|s| matches!(s, Segment::RowStart(100))));
+        assert!(segments.iter().any(|s| matches!(s, Segment::RowRules(_))));
+    }
+
+    #[test]
+    fn character_attributes_require_the_enable_flag() {
+        use std::{collections::BTreeMap, sync::Arc};
+        let mut document = decode::decode(&decode::fixture(&[0x7532])).unwrap();
+        let mut properties = BTreeMap::from([
+            (2, vec![1, 0xa7]),
+            (13, vec![0, 2]),
+            (15, vec![0, 0x33, 0x22, 0x11]),
+            (20, vec![0x94, 0, 0, 0x10]),
+        ]);
+        document.styles = vec![StyleSpan {
+            units: 0..1,
+            properties: Arc::new(properties.clone()),
+        }];
+        let style = run_style(&document, 0, &FlowRunStyle::default());
+        assert_eq!(style.size, 1199);
+        assert!(style.bold && style.italic && style.underline);
+        assert_eq!(style.underline_style, ibis_doc_model::UnderlineStyle::Thick);
+        assert_eq!(style.color, Rgb::from_rgb(0x11, 0x22, 0x33));
+        let mut model = read(&fixture("甲")).unwrap();
+        let flow = std::sync::Arc::make_mut(model.flow.as_mut().unwrap());
+        let Block::Paragraph(p) = &mut flow.body[0] else {
+            panic!("paragraph")
+        };
+        p.runs[0] = import_run(FlowRunKind::Text("甲".into()), style.clone());
+        let reopened = crate::read(&export_docx(&model).unwrap()).unwrap();
+        let Block::Paragraph(p) = &reopened.flow.as_ref().unwrap().body[0] else {
+            panic!("paragraph")
+        };
+        assert!(p.runs[0].style.bold && p.runs[0].style.italic && p.runs[0].style.underline);
+        assert_eq!(p.runs[0].style.color, style.color);
+        assert_eq!(p.runs[0].style.size, 1200);
+
+        properties.insert(20, vec![0x3c, 0, 0, 0]);
+        document.styles[0].properties = Arc::new(properties);
+        assert_eq!(
+            run_style(&document, 0, &FlowRunStyle::default()),
+            FlowRunStyle::default()
+        );
+    }
+
+    #[test]
+    fn document_default_size_is_saved_in_styles_not_just_individual_runs() {
+        let mut model = read(&fixture("甲")).unwrap();
+        let flow = std::sync::Arc::make_mut(model.flow.as_mut().unwrap());
+        std::sync::Arc::make_mut(&mut flow.styles).defaults_run.size = Some(1400);
+        let reopened = crate::read(&export_docx(&model).unwrap()).unwrap();
+        assert_eq!(reopened.flow.unwrap().styles.defaults_run.size, Some(1400));
+    }
+
+    #[test]
+    fn numeric_inline_fields_are_preserved_but_not_serialized_as_xml_controls() {
+        let bytes = decode::fixture(&[0x1c, 1, 7, 0, 0, 1, 0x1d, 5, 0x1e, 5, 0, 1, 0x1f, 0x7532]);
+        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("DocumentText", bytes)]);
+        let decoded = inspect(&data).unwrap();
+        assert_eq!(decoded.units[7], 5);
+        assert_eq!(decoded.diagnostics.len(), 1);
+        let reopened = crate::read(&export_docx(&read(&data).unwrap()).unwrap()).unwrap();
+        assert!(matches!(&reopened.flow.unwrap().body[0], Block::Paragraph(p) if p.text() == "甲"));
+    }
+
+    #[test]
+    fn attached_rule_is_at_its_partial_endpoint_not_at_the_next_item() {
+        let layout = parse_rules(&[100, 0, 0, 0x14, 1, 0x16, 96, 0xffff, 0]).unwrap();
+        let line = FlowBorder {
+            width: 6350,
+            color: Rgb::BLACK,
+            style: BorderStyle::Single,
+            space: 0,
+            art: None,
+        };
+        let lines = rule_extra_lines(&layout, 100, line);
+        assert!(
+            lines
+                .iter()
+                .any(|l| (l.x1, l.y1, l.x2, l.y2) == (100, 5000, 300, 5000))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| (l.x1, l.y1, l.x2, l.y2) == (300, 5000, 300, 10000))
+        );
+    }
 
     #[test]
     fn rule_header_maps_only_complete_cell_edges_and_survives_docx() {
@@ -1078,8 +1596,14 @@ mod tests {
         for unit in units {
             stream.extend_from_slice(&unit.to_be_bytes());
         }
-        let input =
-            ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("DocumentText", stream)]);
+        let units: Vec<u16> = stream[8..]
+            .chunks_exact(2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .collect();
+        let input = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
         let imported = read(&input).unwrap();
         let saved = crate::read(&export_docx(&imported).unwrap()).unwrap();
         for doc in [&imported, &saved] {
@@ -1094,9 +1618,9 @@ mod tests {
                     _ => None,
                 })
                 .unwrap();
-            assert_eq!(table.rows[0].cells.len(), 2);
-            let a = &table.rows[0].cells[0];
-            let b = &table.rows[0].cells[1];
+            assert_eq!(table.rows[0].cells.len(), 4);
+            let a = &table.rows[0].cells[1];
+            let b = &table.rows[0].cells[2];
             assert!(a.borders[3].is_some() && a.borders[1].is_some());
             assert!(a.borders[2].is_some());
             assert!(b.borders[2].is_none());
@@ -1142,12 +1666,16 @@ mod tests {
                     flags: 0x2b,
                     partial: 0,
                     link: 8,
+                    types: [1; 4],
+                    linked_types: [1; 4],
                 },
                 RulePoint {
                     position: 96,
                     flags: 0x23,
                     partial: 0,
                     link: 0,
+                    types: [1; 4],
+                    linked_types: [1; 4],
                 },
             ],
         };
@@ -1168,8 +1696,11 @@ mod tests {
         else {
             panic!("expected empty ruled table")
         };
-        assert_eq!(cells.len(), 1);
-        assert_eq!((cells[0].0, cells[0].1), (6, 94));
+        assert_eq!(cells.len(), 2);
+        assert_eq!((cells[0].0, cells[0].1), (0, 2));
+        let (grid, mapped) = table_grid(cells.clone(), Some(parsed), 100);
+        assert_eq!(grid, [0, 4, 96, 100]);
+        assert_eq!((mapped[1].0, mapped[1].1), (4, 96));
         let line = FlowBorder {
             width: 6350,
             color: Rgb::BLACK,
@@ -1178,7 +1709,7 @@ mod tests {
             art: None,
         };
         assert!(
-            rule_cell_borders(parsed, cells[0].0, cells[0].1, line)[2]
+            rule_cell_borders(parsed, mapped[1].0, mapped[1].1, line)[2]
                 .unwrap()
                 .is_some()
         );
@@ -1211,12 +1742,16 @@ mod tests {
                     flags: 0x16,
                     partial: 0,
                     link: 0x14,
+                    types: [1; 4],
+                    linked_types: [1; 4],
                 },
                 RulePoint {
                     position: 96,
                     flags: 0x11,
                     partial: 0,
                     link: 0,
+                    types: [1; 4],
+                    linked_types: [1; 4],
                 },
             ],
         };
@@ -1253,7 +1788,14 @@ mod tests {
         {
             s.extend_from_slice(&n.to_be_bytes());
         }
-        ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("DocumentText", s)])
+        let units: Vec<u16> = s[8..]
+            .chunks_exact(2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .collect();
+        ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )])
     }
     #[test]
     fn reads_text_and_does_not_treat_jtd_as_xls() {
@@ -1294,8 +1836,14 @@ mod tests {
         for u in units {
             stream.extend_from_slice(&u.to_be_bytes());
         }
-        let input =
-            ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("DocumentText", stream)]);
+        let units: Vec<u16> = stream[8..]
+            .chunks_exact(2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .collect();
+        let input = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
         let doc = read(&input).unwrap();
         let flow = doc.flow.as_ref().unwrap();
         let table = flow
@@ -1306,8 +1854,8 @@ mod tests {
                 _ => None,
             })
             .expect("table");
-        assert_eq!(table.rows[0].cells.len(), 2);
-        assert!(table.borders.iter().all(|b| b.is_some()));
+        assert_eq!(table.rows[0].cells.len(), 3);
+        assert!(table.borders.iter().all(|b| *b == Some(None)));
         let reopened = crate::read(&export_docx(&doc).unwrap()).unwrap();
         let saved = reopened.flow.unwrap();
         let table = saved
@@ -1318,14 +1866,14 @@ mod tests {
                 _ => None,
             })
             .expect("saved table");
-        assert_eq!(table.rows[0].cells.len(), 2);
+        assert_eq!(table.rows[0].cells.len(), 3);
         assert!(
             matches!(&table.rows[0].cells[0].blocks[0], Block::Paragraph(p) if p.text() == "甲")
         );
         assert!(
-            matches!(&table.rows[0].cells[1].blocks[0], Block::Paragraph(p) if p.text() == "乙")
+            matches!(&table.rows[0].cells[2].blocks[0], Block::Paragraph(p) if p.text() == "乙")
         );
-        assert!(table.borders.iter().all(|b| b.is_some()));
+        assert!(table.borders.iter().all(|b| *b == Some(None)));
     }
 
     #[test]
@@ -1353,7 +1901,7 @@ mod tests {
     }
 
     #[test]
-    fn paired_empty_edge_strips_are_not_text_columns() {
+    fn empty_edge_declarations_are_preserved() {
         let row = vec![
             Segment::RowStart(100),
             Segment::CellStart(0, 2),
@@ -1366,7 +1914,7 @@ mod tests {
         ];
         let result = table_candidates(row.clone());
         assert!(
-            matches!(&result[..], [Segment::Table { cells, total: 100, strips: true, .. }] if cells.len() == 2)
+            matches!(&result[..], [Segment::Table { cells, total: 100, strips: false, .. }] if cells.len() == 4)
         );
         let mut with_edge_text = row;
         with_edge_text.insert(2, Segment::Text("edge".into()));
@@ -1377,7 +1925,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_narrow_inner_strips_are_removed_without_dropping_content() {
+    fn narrow_inner_declarations_are_preserved() {
         let row = vec![
             Segment::RowStart(100),
             Segment::CellStart(0, 2),
@@ -1393,8 +1941,8 @@ mod tests {
         ];
         let result = table_candidates(row);
         assert!(
-            matches!(&result[..], [Segment::Table { cells, strips: true, .. }]
-            if cells.len() == 3 && cells[1].0 == 40 && matches!(&cells[1].2[..], [Segment::Text(t)] if t == "※"))
+            matches!(&result[..], [Segment::Table { cells, strips: false, .. }]
+            if cells.len() == 6 && cells[3].0 == 40 && matches!(&cells[3].2[..], [Segment::Text(t)] if t == "※"))
         );
     }
 
@@ -1443,7 +1991,7 @@ mod tests {
     #[test]
     fn view_direction_needs_valid_evidence() {
         let mut record = vec![0, 1, 0, 2, 0x10, 0, 0, 0, 0, 6, 0x10, 1, 0, 2, 0, 0];
-        assert!(observed_vertical(&record));
+        assert!(!observed_vertical(&record));
         record[11] = 2;
         assert!(!observed_vertical(&record));
         record[11] = 1;
@@ -1549,7 +2097,14 @@ mod tests {
         ] {
             s.extend_from_slice(&unit.to_be_bytes());
         }
-        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("DocumentText", s)]);
+        let units: Vec<u16> = s[8..]
+            .chunks_exact(2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .collect();
+        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
         let model = read(&data).unwrap();
         assert!(
             matches!(&model.flow.as_ref().unwrap().body[0], Block::Paragraph(p) if p.runs.iter().any(|r| matches!(r.kind, FlowRunKind::PageBreak)))
@@ -1565,11 +2120,18 @@ mod tests {
         let mut s = b"SsmgV.01".to_vec();
         for unit in [
             0x1c_u16, 1, 7, 0, 0, 3, 0x1d, 0x6f22, 0x1e, 5, 0, 1, 0x1f, 0x1c, 1, 7, 0, 1, 0x82,
-            0x1d, 0x304b, 0x3093, 0x1e,
+            0x1d, 0x304b, 0x3093, 0x1e, 5, 0, 1, 0x1f,
         ] {
             s.extend_from_slice(&unit.to_be_bytes());
         }
-        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("DocumentText", s)]);
+        let units: Vec<u16> = s[8..]
+            .chunks_exact(2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .collect();
+        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
         let model = read(&data).unwrap();
         let flow = model.flow.as_ref().unwrap();
         assert!(
@@ -1583,23 +2145,25 @@ mod tests {
     }
 
     #[test]
-    fn raw_text_and_inline_selectors_are_bounded() {
-        let mut raw = b"SsmgV.01".to_vec();
-        raw.extend_from_slice(&[0; 12]);
-        raw.extend_from_slice(b"TextV.01");
-        raw.extend_from_slice(&2u32.to_be_bytes());
-        for unit in "文章".encode_utf16() {
-            raw.extend_from_slice(&unit.to_be_bytes());
-        }
-        assert_eq!(extract(&raw).unwrap(), vec![Segment::Text("文章".into())]);
-        let mut data = b"SsmgV.01".to_vec();
-        for unit in [
-            0x1c_u16, 1, 7, 0, 0, 3, 0x1d, 0x6587, 0x001e, 0x1c, 1, 7, 0, 1, 0x82, 0x1d, 0x3088,
-            0x001e,
-        ] {
-            data.extend_from_slice(&unit.to_be_bytes());
-        }
-        assert_eq!(extract(&data).unwrap(), vec![Segment::Text("文".into())]);
+    fn inline_footer_resumes_plain_text_without_a_new_record() {
+        let data = decode::fixture(&[
+            0x1c, 1, 7, 0, 0, 3, 0x1d, 0x7532, 0x1e, 5, 0, 1, 0x1f, 0x4e59, 0x4e19,
+        ]);
+        let plain: String = extract(&data)
+            .unwrap()
+            .into_iter()
+            .filter_map(|s| match s {
+                Segment::Text(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plain, "甲乙丙");
+        assert_eq!(
+            extract(&decode::fixture(&"文章".encode_utf16().collect::<Vec<_>>())).unwrap(),
+            vec![Segment::Text("文章".into())]
+        );
+        let broken = decode::fixture(&[0x1c, 1, 7, 0, 0, 3, 0x1d, 0x7532, 0x1e]);
+        assert!(extract(&broken).is_err());
     }
 
     #[test]
@@ -1613,7 +2177,7 @@ mod tests {
                 if let Segment::Table { cells, .. } = segment {
                     for (left, right, content) in cells {
                         let visible = content.iter().any(|s| match s {
-                            Segment::Text(t) => !t.trim().is_empty(),
+                            Segment::Text(t) | Segment::StyledText(t, _) => !t.trim().is_empty(),
                             Segment::Ruby { .. } => true,
                             _ => false,
                         });
@@ -1694,7 +2258,7 @@ mod tests {
                 .flatten()
                 .filter(|row| !row.lines.is_empty())
             {
-                assert_eq!(row.height, RowHeight::AtLeast(pitch));
+                assert_eq!(row.height, RowHeight::Exact(pitch));
             }
             let original_tables = flow.body.iter().filter_map(|block| match block {
                 Block::Table(t) => Some(t),
@@ -1709,7 +2273,7 @@ mod tests {
                 for (before, after) in original.rows.iter().zip(&saved_table.rows) {
                     if !before.lines.is_empty() {
                         assert!(
-                            matches!(after.height, RowHeight::AtLeast(h) if (h - pitch).abs() <= 635)
+                            matches!(after.height, RowHeight::Exact(h) if (h - pitch).abs() <= 635)
                         );
                     }
                 }
@@ -1801,7 +2365,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter_map(|s| match s {
-                Segment::Text(t) => Some(t),
+                Segment::Text(t) | Segment::StyledText(t, _) => Some(t),
                 Segment::Ruby { base, .. } => Some(base),
                 _ => None,
             })

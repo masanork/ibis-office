@@ -150,7 +150,7 @@ def tokenize(units):
     i, text, ruby = 0, [], []
     records, controls, tags = Counter(), Counter(), Counter()
     rules, rejected_rules, legacy_rules, points, attached = 0, 0, 0, 0, 0
-    inline_tails, tail_units = 0, []
+    inline_tails, tail_units, inline_controls = 0, [], Counter()
     while i < len(units):
         u = units[i]
         if u == 0x1c:
@@ -164,6 +164,9 @@ def tokenize(units):
                 if units[end:end + 5] != [0x1e, 5, 0, 1, 0x1f]:
                     raise ValueError(f"invalid inline footer at unit {end}")
                 value = text_value(units[i + 7:end])
+                inline_controls.update(ord(c) for c in value if ord(c) < 0x20 and c not in '\t\n\r')
+                if any(ord(c) < 0x20 and c not in '\t\n\r' for c in value):
+                    value = ''  # Preserve/count field controls; do not invent visible text.
                 selector = units[i + 4:i + 6]
                 if selector in ([0, 1], [0, 3]):
                     text.append(value)
@@ -223,6 +226,7 @@ def tokenize(units):
         "invalid_rule_payloads": rejected_rules, "rule_items": points,
         "attached_vertical_rules": attached, "inline_footers_followed_by_plain_text": inline_tails,
         "plain_text_after_inline_chars": len(normalized(text_value(tail_units))),
+        "inline_control_units": {f"{k:04x}": v for k, v in sorted(inline_controls.items())},
     }
 
 
@@ -263,7 +267,12 @@ def audit(path, pdf=None, docx=None, external_json=None):
               "base_chars": len(normalized(text)), "ruby_chars": len(normalized(ruby))}
     if docx:
         converted, model = docx_text(docx)
-        result["docx"] = {**model, "base_text_comparison": compare(text, converted)}
+        with zipfile.ZipFile(docx) as archive:
+            document = ET.fromstring(archive.read("word/document.xml"))
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        readings = ''.join(n.text or '' for n in document.findall('.//w:rt//w:t', ns))
+        result["docx"] = {**model, "base_text_comparison": compare(text, converted),
+                          "ruby_text_comparison": compare(ruby, readings)}
     if external_json:
         external = json.loads(Path(external_json).read_text())
         def texts(value):

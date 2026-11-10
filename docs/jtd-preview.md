@@ -1,12 +1,11 @@
 # Experimental JTD preview
 
-**Known decoding defects (2026-11-10):** the current importer drops ordinary
-text after inline records, scans physical storage without reconstructing the
-block directory, and misses ruled headers with preceding TLV items. A local
-JTD/PDF pair exposed 496 missing base-text characters. Existing round-trip
-tests did not detect this. See the [decoding audit](jtd-decoding-audit.md).
-The feature descriptions below describe attempted mappings, not verified
-fidelity or complete text recovery.
+**Structured decoding (2026-11-10):** the defects recorded in the
+[decoding audit](jtd-decoding-audit.md) are fixed: the block directory and
+piece lists are reconstructed, inline footers resume ordinary text, and
+paragraph headers are parsed as TLV lists. Independent text and display-row
+qualification covers 22 local documents. This does not establish visual
+fidelity. See [implementation and remaining gaps](jtd-structured-import.md).
 
 The browser can open `.jtd` files locally as a read-only text preview. Recognized view-style direction flags enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
 It reads the observed `DocumentText` stream into ibisOffice's document model;
@@ -32,9 +31,9 @@ without permission.
 
 | JTD feature | ibisOffice Word model / layout | Current JTD import |
 | --- | --- | --- |
-| Writing direction | `PageSetup.direction` and `flow_layout` page rotation | Recognized `DocumentViewStyles` direction flags select vertical-rl. Unknown field layouts fall back to the earlier heuristic and may be misclassified. |
-| Page size, margins and grid | `PageSetup` | Bounded paper-size, margin and lines-per-page fields are imported when recognized. Table width follows the vertical or horizontal text axis; character pitch and columns remain incomplete. |
-| Paragraph and character formatting | `FlowParagraph`, `FlowRunStyle`, `RunFormat` | Not decoded; defaults are used. |
+| Writing direction | `PageSetup.direction` and `flow_layout` page rotation | Recognized `DocumentViewStyles` flags select vertical-rl. The paper-record heuristic was removed. Unknown layouts remain unsupported. |
+| Page size, margins and grid | `PageSetup` | Known paper size, margins, character and line grids are imported, using Ichitaro defaults for omitted fields. Table width follows the text axis. Multi-column sections remain incomplete. |
+| Paragraph and character formatting | `FlowParagraph`, `FlowRunStyle`, `RunFormat` | Known alignment, indents, feed, size, bold, italic, underline and colour are imported. Font selectors and further properties remain incomplete. |
 | Page breaks | `FlowRunKind::PageBreak` | An observed break immediately following a text run is imported. Other break forms are not decoded. |
 | Ruby and tate-chu-yoko | `FlowRunKind::Ruby`, `FlowRunStyle` | A specific observed base/reading pair is mapped to ruby; font size and positioning use approximate Word defaults. Other ruby forms and tate-chu-yoko are not decoded. |
 | Tables and borders | `FlowTable`, `FlowRow`, `FlowCell`, `FlowBorder` | Validated 008f records supply full-height cell edges and some full-width bottom rules; other geometry uses the earlier approximate grid. Empty ruled rows can preserve a preceding table edge. Some half-height, mid-line and partial rules are displayed as row-relative segments. DOCX export currently omits these segments. Widths, line styles, pagination and logical merges remain incomplete. See [format notes](jtd-format-notes.md). |
