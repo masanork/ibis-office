@@ -574,7 +574,9 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
         {
             // Thin, empty outer strips in the paired comparison-table
             // pattern carry edge geometry, not independent text columns.
-            // Keep all other narrow or content-bearing cells unchanged.
+            // An empty two-unit strip inside the same bounded pattern is
+            // likewise a boundary candidate, not a text column. Keep every
+            // content-bearing cell, including whitespace and controls.
             let empty = |items: &[Segment]| {
                 items.iter().all(|part| match part {
                     Segment::Text(t) => t.trim().is_empty(),
@@ -593,6 +595,14 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
             if strips {
                 cells.pop();
                 cells.remove(0);
+                if cells
+                    .iter()
+                    .filter(|(left, right, content)| right - left > 2 || !content.is_empty())
+                    .count()
+                    >= 2
+                {
+                    cells.retain(|(left, right, content)| right - left > 2 || !content.is_empty());
+                }
             }
             out.push(Segment::Table {
                 cells,
@@ -742,6 +752,28 @@ mod tests {
     }
 
     #[test]
+    fn empty_narrow_inner_strips_are_removed_without_dropping_content() {
+        let row = vec![
+            Segment::RowStart(100),
+            Segment::CellStart(0, 2),
+            Segment::CellStart(6, 30),
+            Segment::Text("A".into()),
+            Segment::CellStart(34, 36),
+            Segment::CellStart(40, 42),
+            Segment::Text("※".into()),
+            Segment::CellStart(46, 90),
+            Segment::Text("B".into()),
+            Segment::CellStart(94, 100),
+            Segment::RowEnd,
+        ];
+        let result = table_candidates(row);
+        assert!(
+            matches!(&result[..], [Segment::Table { cells, strips: true, .. }]
+            if cells.len() == 3 && cells[1].0 == 40 && matches!(&cells[1].2[..], [Segment::Text(t)] if t == "※"))
+        );
+    }
+
+    #[test]
     fn adjacent_grids_preserve_cell_boundaries_as_spans() {
         fn table(columns: &[i64]) -> FlowTable {
             FlowTable {
@@ -862,6 +894,24 @@ mod tests {
     fn local_sample_can_be_read() {
         let path = std::env::var_os("IBIS_JTD_SAMPLE").expect("IBIS_JTD_SAMPLE");
         let bytes = std::fs::read(path).unwrap();
+        if std::env::var_os("IBIS_JTD_TABLE_STATS").is_some() {
+            let mut stats = std::collections::BTreeMap::new();
+            for segment in table_candidates(extract(&checked_stream(&bytes).unwrap()).unwrap()) {
+                if let Segment::Table { cells, .. } = segment {
+                    for (left, right, content) in cells {
+                        let visible = content.iter().any(|s| match s {
+                            Segment::Text(t) => !t.trim().is_empty(),
+                            Segment::Ruby { .. } => true,
+                            _ => false,
+                        });
+                        *stats
+                            .entry((right - left, visible, content.is_empty()))
+                            .or_insert(0usize) += 1;
+                    }
+                }
+            }
+            eprintln!("cell width, visible: {stats:?}");
+        }
         let result = read(&bytes).unwrap();
         let word = export_docx(&result).unwrap();
         if let Some(path) = std::env::var_os("IBIS_JTD_DOCX_OUT") {
