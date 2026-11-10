@@ -11,7 +11,7 @@
 use crate::{Error, Kind};
 use ibis_doc_model::{
     Block, BorderStyle, CellDirection, FlowBorder, FlowCell, FlowRow, FlowRowLine, FlowRun,
-    FlowRunKind, FlowRunStyle, FlowTable, Presentation, Rgb, RubyAlign,
+    FlowRunKind, FlowRunStyle, FlowTable, Presentation, Rgb, RowHeight, RubyAlign,
 };
 
 const MAX_FILE: usize = 64 * 1024 * 1024;
@@ -53,6 +53,25 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
             .as_mut()
             .ok_or_else(|| Error::new("文書モデルを作成できません"))?,
     );
+    // Page geometry must be installed before table widths are derived.
+    if let Ok(styles) = ibis_ooxml::cfb::stream(data, "DocumentViewStyles") {
+        apply_view_page(&styles, &mut flow.page);
+        if observed_vertical(&styles) {
+            flow.page.direction = CellDirection::TbRl;
+        }
+        if let Some(lines) = view_style_lines(&styles) {
+            let cross_axis = if flow.page.direction.vertical() {
+                flow.page.size.width - flow.page.left - flow.page.right
+            } else {
+                flow.page.size.height - flow.page.top - flow.page.bottom
+            };
+            let pitch = cross_axis / i64::from(lines);
+            if (25_400..=1_270_000).contains(&pitch) {
+                flow.page.line_pitch = Some(pitch);
+                flow.page.doc_grid_type = ibis_doc_model::DocGridType::Lines;
+            }
+        }
+    }
     let template = match flow.body.first() {
         Some(Block::Paragraph(p)) => p.clone(),
         _ => return Err(Error::new("文書の段落を作成できません")),
@@ -79,7 +98,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 }
                 let table_key = if strips { Some(total) } else { None };
                 let total = total as i64;
-                let width = (flow.page.size.width - flow.page.left - flow.page.right).max(1);
+                let width = text_axis_width(&flow.page);
                 let mut boundaries = vec![0i64];
                 for pair in cells.windows(2) {
                     boundaries.push((pair[0].1 as i64 + pair[1].0 as i64) / 2);
@@ -117,6 +136,9 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     ..FlowRow::default()
                 };
                 if let Some(rules) = &rules {
+                    if let Some(pitch) = flow.page.line_pitch {
+                        row.height = RowHeight::AtLeast(pitch);
+                    }
                     row.lines = rule_extra_lines(rules, total as u16, line);
                     // Line segments are relative to one display row and
                     // cannot yet be split across pages without clipping.
@@ -272,14 +294,150 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     paragraph.id = next_id;
     flow.body.push(Block::Paragraph(paragraph));
     flow.id_floor = next_id;
-    // Candidate observed in independently generated horizontal/vertical pairs;
-    // unsupported record layouts remain horizontal and are not guessed.
-    if let Ok(styles) = ibis_ooxml::cfb::stream(data, "DocumentViewStyles") {
-        if observed_vertical(&styles) {
-            flow.page.direction = CellDirection::TbRl;
-        }
-    }
     Ok(presentation)
+}
+
+/// The table grid is laid out along the text axis before the page is turned.
+fn text_axis_width(page: &ibis_doc_model::PageSetup) -> i64 {
+    if page.direction.vertical() {
+        (page.size.height - page.top - page.bottom).max(1)
+    } else {
+        (page.size.width - page.left - page.right).max(1)
+    }
+}
+
+/// Apply the documented paper and margin fields only when their enclosing
+/// records and preceding mask fields can be read without guessing.
+fn apply_view_page(data: &[u8], page: &mut ibis_doc_model::PageSetup) {
+    const EMU_PER_HUNDREDTH_MM: i64 = 360;
+    if data.get(..6) != Some(&[0, 1, 0, 2, 0x10, 0]) {
+        return;
+    }
+    let Some(length_bytes) = data.get(6..10) else {
+        return;
+    };
+    let length = u32::from_be_bytes(length_bytes.try_into().unwrap()) as usize;
+    let Some(end) = 10usize.checked_add(length).filter(|end| *end <= data.len()) else {
+        return;
+    };
+    let mut candidate = page.clone();
+    let mut cursor = 10;
+    while cursor + 4 <= end {
+        let tag = u16::from_be_bytes([data[cursor], data[cursor + 1]]);
+        let len = u16::from_be_bytes([data[cursor + 2], data[cursor + 3]]) as usize;
+        cursor += 4;
+        let Some(record_end) = cursor
+            .checked_add(len)
+            .filter(|end_record| *end_record <= end)
+        else {
+            return;
+        };
+        let record = &data[cursor..record_end];
+        if tag == 0x1001 {
+            if let Some(&mask) = record.first().filter(|&&mask| mask & 1 == 0) {
+                let mut at = 1;
+                for bit in [1, 2] {
+                    if mask & (1 << bit) != 0 {
+                        let Some(raw) = record.get(at..at + 4) else {
+                            return;
+                        };
+                        let value = u32::from_be_bytes(raw.try_into().unwrap());
+                        if !(1_000..=200_000).contains(&value) {
+                            return;
+                        }
+                        if bit == 1 {
+                            candidate.size.width = i64::from(value) * EMU_PER_HUNDREDTH_MM;
+                        } else {
+                            candidate.size.height = i64::from(value) * EMU_PER_HUNDREDTH_MM;
+                        }
+                        at += 4;
+                    }
+                }
+            }
+        } else if tag == 0x1002 {
+            let Some(&first) = record.first().filter(|&&mask| mask & !0x90 == 0) else {
+                cursor = record_end;
+                continue;
+            };
+            let mut at = 1 + 2 * ((first & 0x10 != 0) as usize + (first & 0x80 != 0) as usize);
+            let Some(&mask) = record.get(at).filter(|&&mask| mask & !0xf9 == 0) else {
+                cursor = record_end;
+                continue;
+            };
+            at += 1;
+            if mask & 1 != 0 {
+                if record.get(at).is_none() {
+                    return;
+                }
+                at += 1;
+            }
+            for bit in [3, 4, 5, 6, 7] {
+                if mask & (1 << bit) == 0 {
+                    continue;
+                }
+                let Some(raw) = record.get(at..at + 2) else {
+                    return;
+                };
+                let value = i64::from(u16::from_be_bytes([raw[0], raw[1]])) * EMU_PER_HUNDREDTH_MM;
+                match bit {
+                    3 => candidate.top = value,
+                    4 => candidate.bottom = value,
+                    5 => candidate.left = value,
+                    6 => candidate.right = value,
+                    _ => {}
+                }
+                at += 2;
+            }
+        }
+        cursor = record_end;
+    }
+    if cursor != end
+        || candidate.size.width <= candidate.left + candidate.right + 360_000
+        || candidate.size.height <= candidate.top + candidate.bottom + 360_000
+    {
+        return;
+    }
+    *page = candidate;
+}
+
+/// Read the explicitly stored lines-per-page field, without assuming a
+/// default for unsupported record variants.
+fn view_style_lines(data: &[u8]) -> Option<u16> {
+    if data.get(..6)? != [0, 1, 0, 2, 0x10, 0] {
+        return None;
+    }
+    let length = u32::from_be_bytes(data.get(6..10)?.try_into().ok()?) as usize;
+    let end = 10usize.checked_add(length)?;
+    if end > data.len() {
+        return None;
+    }
+    let mut at = 10;
+    let mut found = None;
+    while at + 4 <= end {
+        let tag = u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?);
+        let len = u16::from_be_bytes(data.get(at + 2..at + 4)?.try_into().ok()?) as usize;
+        at += 4;
+        let stop = at.checked_add(len)?;
+        if stop > end {
+            return None;
+        }
+        if tag == 0x100d {
+            let record = data.get(at..stop)?;
+            let mask = *record.first()?;
+            if mask & 0x02 == 0 || mask & !0x03 != 0 || found.is_some() {
+                return None;
+            }
+            let offset = 1 + usize::from(mask & 1 != 0);
+            let bytes = record.get(offset..offset + 2)?;
+            let lines = u16::from_be_bytes([bytes[0], bytes[1]]);
+            if !(2..=500).contains(&lines) {
+                return None;
+            }
+            found = Some(lines);
+        }
+        at = stop;
+    }
+    (at == end).then_some(found).flatten()
 }
 
 /// Align two adjacent observed display-line grids using spans. This retains
@@ -1323,6 +1481,66 @@ mod tests {
     }
 
     #[test]
+    fn page_geometry_is_bounded_and_uses_the_vertical_text_axis() {
+        let mut paper = vec![0x06];
+        paper.extend_from_slice(&14_800u32.to_be_bytes());
+        paper.extend_from_slice(&21_000u32.to_be_bytes());
+        let margins = [0, 0x78, 0x06, 0x40, 0x06, 0x40, 0x07, 0xd0, 0x07, 0xd0, 0];
+        let mut records = Vec::new();
+        for (tag, payload) in [
+            (0x1001u16, paper.as_slice()),
+            (0x1002u16, margins.as_slice()),
+            (0x100du16, [0x02, 0, 26].as_slice()),
+        ] {
+            records.extend_from_slice(&tag.to_be_bytes());
+            records.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            records.extend_from_slice(payload);
+        }
+        let mut styles = vec![0, 1, 0, 2, 0x10, 0];
+        styles.extend_from_slice(&(records.len() as u32).to_be_bytes());
+        styles.extend(records);
+        assert_eq!(view_style_lines(&styles), Some(26));
+        let mut page = ibis_doc_model::PageSetup::default();
+        apply_view_page(&styles, &mut page);
+        assert_eq!(
+            (page.size.width, page.size.height),
+            (14_800 * 360, 21_000 * 360)
+        );
+        assert_eq!(
+            (page.top, page.bottom, page.left, page.right),
+            (1600 * 360, 1600 * 360, 2000 * 360, 2000 * 360)
+        );
+        assert_eq!(text_axis_width(&page), (14_800 - 4000) * 360);
+        page.direction = CellDirection::TbRl;
+        assert_eq!(text_axis_width(&page), (21_000 - 3200) * 360);
+        let original = page.clone();
+        styles.pop();
+        apply_view_page(&styles, &mut page);
+        assert_eq!(
+            page, original,
+            "a truncated group cannot partially change the page"
+        );
+        assert_eq!(view_style_lines(&styles), None);
+    }
+
+    #[test]
+    fn page_line_count_requires_complete_known_fields() {
+        fn styles(payload: &[u8]) -> Vec<u8> {
+            let mut records = vec![0x10, 0x0d, 0, payload.len() as u8];
+            records.extend_from_slice(payload);
+            let mut result = vec![0, 1, 0, 2, 0x10, 0];
+            result.extend_from_slice(&(records.len() as u32).to_be_bytes());
+            result.extend(records);
+            result
+        }
+        assert_eq!(view_style_lines(&styles(&[0x02, 0, 26])), Some(26));
+        assert_eq!(view_style_lines(&styles(&[0x03, 7, 0, 45])), Some(45));
+        assert_eq!(view_style_lines(&styles(&[0x02, 0, 0])), None);
+        assert_eq!(view_style_lines(&styles(&[0x06, 0, 26])), None);
+        assert_eq!(view_style_lines(&styles(&[0x03, 7, 0])), None);
+    }
+
+    #[test]
     fn observed_page_break_is_preserved_in_docx() {
         let mut s = b"SsmgV.01".to_vec();
         for unit in [
@@ -1416,6 +1634,87 @@ mod tests {
         let flow = result.flow.unwrap();
         let saved = reopened.flow.unwrap();
         assert_eq!(flow.page.direction, saved.page.direction);
+        if let Ok(expected) = std::env::var("IBIS_JTD_PAGE_MM") {
+            let values: Vec<i64> = expected
+                .split(',')
+                .map(|s| s.parse::<i64>().unwrap() * 36_000)
+                .collect();
+            assert_eq!(values.len(), 6);
+            for page in [&flow.page, &saved.page] {
+                for (actual, expected) in [
+                    page.size.width,
+                    page.size.height,
+                    page.top,
+                    page.bottom,
+                    page.left,
+                    page.right,
+                ]
+                .into_iter()
+                .zip(&values)
+                {
+                    assert!(
+                        (actual - expected).abs() <= 635,
+                        "page value differs by more than one twip"
+                    );
+                }
+            }
+            if let Some(table) = flow.body.iter().find_map(|block| match block {
+                Block::Table(t) => Some(t),
+                _ => None,
+            }) {
+                let width: i64 = table.columns.iter().sum();
+                assert!(
+                    (width - text_axis_width(&flow.page)).abs() < 5_000,
+                    "table width must follow the text axis"
+                );
+            }
+        }
+        if let Ok(expected) = std::env::var("IBIS_JTD_PAGE_LINES") {
+            let count: i64 = expected.parse().unwrap();
+            let cross_axis = if flow.page.direction.vertical() {
+                flow.page.size.width - flow.page.left - flow.page.right
+            } else {
+                flow.page.size.height - flow.page.top - flow.page.bottom
+            };
+            let pitch = cross_axis / count;
+            assert_eq!(flow.page.line_pitch, Some(pitch));
+            assert!(
+                saved
+                    .page
+                    .line_pitch
+                    .is_some_and(|saved_pitch| (saved_pitch - pitch).abs() <= 635)
+            );
+            for row in flow
+                .body
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Table(t) => Some(t.rows.as_slice()),
+                    _ => None,
+                })
+                .flatten()
+                .filter(|row| !row.lines.is_empty())
+            {
+                assert_eq!(row.height, RowHeight::AtLeast(pitch));
+            }
+            let original_tables = flow.body.iter().filter_map(|block| match block {
+                Block::Table(t) => Some(t),
+                _ => None,
+            });
+            let saved_tables = saved.body.iter().filter_map(|block| match block {
+                Block::Table(t) => Some(t),
+                _ => None,
+            });
+            for (original, saved_table) in original_tables.zip(saved_tables) {
+                assert_eq!(original.rows.len(), saved_table.rows.len());
+                for (before, after) in original.rows.iter().zip(&saved_table.rows) {
+                    if !before.lines.is_empty() {
+                        assert!(
+                            matches!(after.height, RowHeight::AtLeast(h) if (h - pitch).abs() <= 635)
+                        );
+                    }
+                }
+            }
+        }
         fn visit(
             blocks: &[Block],
             texts: &mut Vec<String>,

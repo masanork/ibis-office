@@ -25,7 +25,7 @@ without permission.
 | JTD feature | ibisOffice Word model / layout | Current JTD import |
 | --- | --- | --- |
 | Writing direction | `PageSetup.direction` and `flow_layout` page rotation | Recognized `DocumentViewStyles` direction flags select vertical-rl. Unknown field layouts fall back to the earlier heuristic and may be misclassified. |
-| Page size, margins and columns | `PageSetup` | Not decoded; Word defaults are used. |
+| Page size, margins and grid | `PageSetup` | Bounded paper-size, margin and lines-per-page fields are imported when recognized. Table width follows the vertical or horizontal text axis; character pitch and columns remain incomplete. |
 | Paragraph and character formatting | `FlowParagraph`, `FlowRunStyle`, `RunFormat` | Not decoded; defaults are used. |
 | Page breaks | `FlowRunKind::PageBreak` | An observed break immediately following a text run is imported. Other break forms are not decoded. |
 | Ruby and tate-chu-yoko | `FlowRunKind::Ruby`, `FlowRunStyle` | A specific observed base/reading pair is mapped to ruby; font size and positioning use approximate Word defaults. Other ruby forms and tate-chu-yoko are not decoded. |
