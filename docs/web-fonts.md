@@ -80,8 +80,8 @@ font and allow CORS. The browser requests missing grapheme clusters, in batches,
 using gjs's `format=otf` API and registers the responses as fallback fonts.
 The missing characters and a Latin `m` are sent in the request URL to the configured
 service. GPUI requires `m` to accept a font, so the chosen font must cover it;
-otherwise gjs may select its own fallback or return no font. The service the service and intermediate servers can see and log them. Select a
-service appropriate for the document's confidentiality.
+otherwise gjs may select its own fallback or return no font. The service and intermediate servers can see and log these characters. Select
+a service appropriate for the document's confidentiality.
 
 This is fallback for missing glyphs: GPUI's notification does not identify the
 original face, so one configured gjs font supplies them across all typefaces.
