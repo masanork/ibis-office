@@ -345,9 +345,14 @@ pub fn export_docx(presentation: &Presentation) -> Result<Vec<u8>, Error> {
         .save(presentation, crate::SaveOptions::default())
 }
 
-/// The initial view-style record is an observed indicator, not a universal
-/// specification. The enclosing header and record length must be valid.
+/// Prefer the documented direction flag; the initial record remains an
+/// imperfect compatibility heuristic for variants that cannot be decoded.
 fn observed_vertical(data: &[u8]) -> bool {
+    if let Some(vertical) = view_style_direction(data) {
+        return vertical;
+    }
+    // Retain the old observed candidate only where the 1002 groups cannot
+    // yet be decoded; a 1001 record itself does not prove vertical writing.
     if data.len() < 14 || data[..8] != [0, 1, 0, 2, 0x10, 0, 0, 0] {
         return false;
     }
@@ -355,6 +360,71 @@ fn observed_vertical(data: &[u8]) -> bool {
     let kind = u16::from_be_bytes([data[10], data[11]]);
     let len = u16::from_be_bytes([data[12], data[13]]) as usize;
     kind == 0x1001 && group_len >= 4 && group_len <= data.len() - 10 && len <= group_len - 4
+}
+
+/// Decode only the documented subset of the 1002 field masks. An unknown
+/// preceding field makes the direction ambiguous instead of guessing its size.
+fn view_style_direction(data: &[u8]) -> Option<bool> {
+    if data.get(..6)? != [0, 1, 0, 2, 0x10, 0] {
+        return None;
+    }
+    let length = u32::from_be_bytes(data.get(6..10)?.try_into().ok()?) as usize;
+    let end = 10usize.checked_add(length)?;
+    if end > data.len() {
+        return None;
+    }
+    let mut cursor = 10;
+    while cursor + 4 <= end {
+        let tag = u16::from_be_bytes(data.get(cursor..cursor + 2)?.try_into().ok()?);
+        let len = u16::from_be_bytes(data.get(cursor + 2..cursor + 4)?.try_into().ok()?) as usize;
+        cursor += 4;
+        let record_end = cursor.checked_add(len)?;
+        if record_end > end {
+            return None;
+        }
+        if tag == 0x1002 {
+            let record = data.get(cursor..record_end)?;
+            let mut at = 0usize;
+            let m1 = *record.get(at)?;
+            at += 1;
+            if m1 & !0x90 != 0 {
+                return None;
+            }
+            at += 2 * ((m1 & 0x10 != 0) as usize + (m1 & 0x80 != 0) as usize);
+            let m2 = *record.get(at)?;
+            at += 1;
+            if m2 & !0xf9 != 0 {
+                return None;
+            }
+            at += (m2 & 1 != 0) as usize
+                + 2 * [3, 4, 5, 6, 7]
+                    .iter()
+                    .filter(|&&bit| m2 & (1 << bit) != 0)
+                    .count();
+            let m3 = *record.get(at)?;
+            at += 1;
+            if m3 & !0x50 != 0 {
+                return None;
+            }
+            let vertical = if m3 & 0x10 != 0 {
+                let value = *record.get(at)?;
+                at += 1;
+                match value {
+                    0 => false,
+                    1 => true,
+                    _ => return None,
+                }
+            } else {
+                false
+            };
+            if m3 & 0x40 != 0 && record.get(at..at.checked_add(20)?).is_none() {
+                return None;
+            }
+            return Some(vertical);
+        }
+        cursor = record_end;
+    }
+    None
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1095,6 +1165,34 @@ mod tests {
         record[13] = 3;
         assert!(!observed_vertical(&record));
         assert!(!observed_vertical(&record[..12]));
+    }
+
+    #[test]
+    fn direction_flag_overrides_the_first_record_heuristic() {
+        fn styles(vertical: bool) -> Vec<u8> {
+            let mut records = vec![0x10, 0x01, 0, 2, 0, 0];
+            let value = if vertical {
+                vec![0, 0, 0x10, 1]
+            } else {
+                vec![0, 0, 0]
+            };
+            records.extend([0x10, 0x02, 0, value.len() as u8]);
+            records.extend(value);
+            let mut out = vec![0, 1, 0, 2, 0x10, 0];
+            out.extend_from_slice(&(records.len() as u32).to_be_bytes());
+            out.extend(records);
+            out
+        }
+        assert_eq!(view_style_direction(&styles(false)), Some(false));
+        assert!(!observed_vertical(&styles(false)));
+        assert_eq!(view_style_direction(&styles(true)), Some(true));
+        assert!(observed_vertical(&styles(true)));
+        let mut broken = styles(true);
+        broken.pop();
+        assert_eq!(view_style_direction(&broken), None);
+        let mut missing_fields = styles(false);
+        *missing_fields.last_mut().unwrap() = 0x40;
+        assert_eq!(view_style_direction(&missing_fields), None);
     }
 
     #[test]

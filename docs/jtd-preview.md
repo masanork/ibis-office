@@ -1,6 +1,6 @@
 # Experimental JTD preview
 
-The browser can open `.jtd` files locally as a read-only text preview. An observed view-style pattern may enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
+The browser can open `.jtd` files locally as a read-only text preview. Recognized view-style direction flags enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
 It reads the observed `DocumentText` stream into ibisOffice's document model;
 most formatting, exact layout, pictures and some text controls are not reproduced.
 Unsupported or encrypted variants may not open. `.jtt` and `.jttc` are not supported.
@@ -24,7 +24,7 @@ without permission.
 
 | JTD feature | ibisOffice Word model / layout | Current JTD import |
 | --- | --- | --- |
-| Writing direction | `PageSetup.direction` and `flow_layout` page rotation | A bounded `DocumentViewStyles` record pattern selects vertical-rl. This is an observed candidate, not verified for every JTD variant. |
+| Writing direction | `PageSetup.direction` and `flow_layout` page rotation | Recognized `DocumentViewStyles` direction flags select vertical-rl. Unknown field layouts fall back to the earlier heuristic and may be misclassified. |
 | Page size, margins and columns | `PageSetup` | Not decoded; Word defaults are used. |
 | Paragraph and character formatting | `FlowParagraph`, `FlowRunStyle`, `RunFormat` | Not decoded; defaults are used. |
 | Page breaks | `FlowRunKind::PageBreak` | An observed break immediately following a text run is imported. Other break forms are not decoded. |
