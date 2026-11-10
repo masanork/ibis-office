@@ -190,6 +190,8 @@ cargo build --release
 - Linux では `scripts/bundle-linux.sh --release` で AppImage が `target/dist/ibisOffice-<版>-Linux.AppImage` に、`scripts/bundle-flatpak.sh --release` で Flatpak が `target/dist/ibisOffice-<版>-Linux-<アーキテクチャ>.flatpak` に作られます（Flatpak には `flatpak-builder` が要ります）。
 - ブラウザ版は `scripts/build-web.sh --release` でビルドし、`www/` を配信します（WebGPU に対応したブラウザ：Chrome・Edge・Safari 26 以降）。
 
+  ビルドには Python 3 が必要です。Wasm は20 MiB以下のハッシュ付きファイルに分割され、ブラウザで検証・結合されます。HTTPS または localhost で配信してください。Cloudflare Workers Static Assets で配信する場合は `python3 scripts/check-web-assets.py` と `npx wrangler deploy --dry-run` で確認し、`wrangler.jsonc` の Worker 名とアカウントを確認してから `npx wrangler deploy` を実行してください。配信対象はエディターで、playground は含みません。
+
 ## 実装済み機能
 
 ibisOffice は、Word (.docx)・Excel (.xlsx)・PowerPoint (.pptx) の 3 大形式について、ECMA-376 規格に準拠した広範な機能を実装しています。

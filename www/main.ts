@@ -3,6 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
 import init, { run, set_embed_options } from './pkg/ibis_office_app.js';
+import { loadWasm } from './wasm-loader.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -177,68 +178,20 @@ const statusText = document.getElementById('status-text');
 const progress = document.getElementById('progress');
 const progressFill = progress?.firstElementChild as HTMLElement | null;
 
-/**
- * The wasm's uncompressed size, written next to it by build-web.sh, or 0.
- */
-async function wasmSize(): Promise<number> {
-  try {
-    const response = await fetch(new URL('./pkg/ibis_office_app_bg.wasm.size', import.meta.url));
-    return response.ok ? Number((await response.text()).trim()) || 0 : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Download the app's wasm, filling the progress bar against its size: the
- * size build-web.sh wrote (the bytes the browser hands over are the
- * uncompressed ones, while a server that compresses, as GitHub Pages does,
- * counts the compressed ones in Content-Length), else Content-Length when the
- * transfer is not compressed. The bar stays hidden when neither is known.
- */
+/** Download and verify the module before starting wasm-bindgen. */
 async function fetchWasm(): Promise<Response> {
-  const url = new URL('./pkg/ibis_office_app_bg.wasm', import.meta.url);
-  const [response, size] = await Promise.all([fetch(url), wasmSize()]);
-  if (!response.ok) {
-    throw new Error(`${url.pathname}: HTTP ${response.status}`);
-  }
-  const compressed = response.headers.has('Content-Encoding');
-  const total = size > 0 ? size : compressed ? 0 : Number(response.headers.get('Content-Length'));
-  if (!response.body || !(total > 0)) {
-    return response;
-  }
-  if (progress) {
-    progress.style.display = 'block';
-  }
-  const reader = response.body.getReader();
-  const chunks: BlobPart[] = [];
-  let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    chunks.push(value);
-    loaded += value.length;
-    if (progressFill) {
-      progressFill.style.width = `${Math.min(100, (loaded / total) * 100)}%`;
-    }
-  }
-  // Downloaded; compiling and starting the app can take a few more seconds.
-  // Fill the bar right away (the download may end short of Content-Length
-  // by a few bytes, and the bar's transition would lag behind).
+  const response = await loadWasm(new URL('./pkg/ibis_office_app_bg.manifest.json', import.meta.url), (loaded, total) => {
+    if (progress) progress.style.display = 'block';
+    if (progressFill) progressFill.style.width = `${Math.min(100, (loaded / total) * 100)}%`;
+  });
   if (progressFill) {
     progressFill.style.transition = 'none';
     progressFill.style.width = '100%';
   }
   progress?.classList.add('starting');
-  if (statusText) {
-    statusText.textContent = ja ? 'ibisOffice を起動しています…' : 'Starting ibisOffice…';
-  }
-  // Let the browser paint the full bar and the new text before the page
-  // gets busy compiling and starting the app.
+  if (statusText) statusText.textContent = ja ? 'ibisOffice を起動しています…' : 'Starting ibisOffice…';
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  return new Response(new Blob(chunks), { headers: { 'Content-Type': 'application/wasm' } });
+  return response;
 }
 
 /** Japanese when the viewer chose it on the playground page, or when the browser prefers it. */

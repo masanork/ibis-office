@@ -1,0 +1,6 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ibis-office-cf",
+  "compatibility_date": "2026-11-10",
+  "assets": { "directory": "./www" }
+}

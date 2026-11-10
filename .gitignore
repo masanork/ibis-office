@@ -6,3 +6,6 @@
 /test/private/
 __pycache__/
 .DS_Store
+
+/www/wasm-loader.js
+/.wrangler

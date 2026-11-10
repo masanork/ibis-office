@@ -43,10 +43,8 @@ if [[ "$PROFILE" == release ]] && command -v wasm-opt >/dev/null; then
     www/pkg/ibis_office_app_bg.wasm -o www/pkg/ibis_office_app_bg.wasm
 fi
 
-# The wasm's size, for the download's progress bar: a server that compresses
-# it (GitHub Pages sends gzip) gives Content-Length of the compressed bytes,
-# while the browser hands main.ts the uncompressed ones.
-stat -f %z www/pkg/ibis_office_app_bg.wasm > www/pkg/ibis_office_app_bg.wasm.size
+# Split the optimized module for static hosts with per-file limits.
+python3 scripts/split-web-wasm.py www/pkg/ibis_office_app_bg.wasm
 
 # main.ts imports the typings wasm-bindgen just wrote.
 if [[ ! -x node_modules/.bin/tsc ]]; then
@@ -56,7 +54,7 @@ fi
 node_modules/.bin/tsc -p www
 
 # Icons are fetched on demand from /assets/icons/*.svg.
-ASSETS_DIR=$(cargo metadata --format-version 1 | python3 -c '
+ASSETS_DIR=$(cargo metadata --filter-platform wasm32-unknown-unknown --format-version 1 | python3 -c '
 import json, os, sys
 meta = json.load(sys.stdin)
 pkg = next(p for p in meta["packages"] if p["name"] == "gpui-kit-assets")
@@ -71,5 +69,7 @@ rm -rf www/assets/artborders
 mkdir -p www/assets/artborders
 unzip -q -o crates/ibis-office-app/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip -d www/assets/artborders
 cp crates/ibis-office-app/data/artborders/ECMA-NOTICE.txt www/assets/artborders/
+
+python3 scripts/check-web-assets.py www
 
 echo "Built www/ ($PROFILE). Serve it, e.g.: python3 -m http.server -d www 8080"
