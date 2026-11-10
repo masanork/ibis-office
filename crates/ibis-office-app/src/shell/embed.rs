@@ -92,6 +92,8 @@ extern "C" {
     /// `"download"` with the file's name and bytes).
     #[wasm_bindgen(js_name = ibisOfficeEmbedAction)]
     fn embed_action_js(kind: &str, name: &str, bytes: Option<Vec<u8>>);
+    #[wasm_bindgen(js_name = ibisOfficeDownloadDocx)]
+    fn download_docx_js(name: &str, bytes: Vec<u8>);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -100,6 +102,20 @@ impl SlideEditor {
     pub(crate) fn embed_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);
         embed_action_js("close", "", None);
+    }
+
+    /// Download only the content currently recognized from the read-only JTD.
+    pub(crate) fn export_jtd_docx(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_jtd_read_only() { return; }
+        match ibis_pptx::jtd::export_docx(self.presentation()) {
+            Ok(bytes) => {
+                let name = self.file_name.as_deref().unwrap_or("document.jtd");
+                let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+                download_docx_js(&format!("{stem}.docx"), bytes);
+                self.set_status(crate::shell::i18n::text("jtd.docx-exported").to_string(), cx);
+            }
+            Err(err) => self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &err.to_string())]), cx),
+        }
     }
 
     /// The download button: the document as it is now, in its own format, goes to the embedding page.

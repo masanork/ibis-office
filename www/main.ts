@@ -43,6 +43,8 @@ declare global {
   interface Window {
     /** Called from Rust for ファイル → 開く. */
     ibisOfficePickFile: () => Promise<PickedFile | null>;
+    /** Download a locally generated DOCX without sending the document to a server. */
+    ibisOfficeDownloadDocx: (name: string, bytes: Uint8Array) => void;
     /** Called from Rust when the close or the download button is pressed. */
     ibisOfficeEmbedAction: (kind: string, name: string, bytes?: Uint8Array) => void;
     /** Set by the embedding page before main.js. */
@@ -215,6 +217,15 @@ function showStatus(text: string): void {
     progress.style.display = 'none';
   }
 }
+
+window.ibisOfficeDownloadDocx = (name, bytes) => {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+};
 
 window.ibisOfficePickFile = pickFile;
 window.ibisOfficeEmbedAction = embedAction;

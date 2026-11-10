@@ -918,5 +918,7 @@ shell.menu-search.history	History
 shell.menu-search.commands	Commands
 file.modify-locked-no-overwrite	This file needs its password to modify, so it cannot be overwritten. Use Save As
 start.update	Update ibisOffice
-jtd.read-only-notice	JTD: Read-only text preview. Formatting and images are not reproduced.
+jtd.read-only-notice	JTD: Read-only preview with limited vertical text and ruby. Formatting and images are omitted.
 jtd.read-only	JTD documents are read-only
+jtd.export-docx	Word (preview content only)
+jtd.docx-exported	Converted to Word. Unsupported formatting and images are omitted.

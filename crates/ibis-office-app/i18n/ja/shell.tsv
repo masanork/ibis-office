@@ -916,5 +916,7 @@ shell.menu-search.history	履歴
 shell.menu-search.commands	コマンド
 file.modify-locked-no-overwrite	書き込みパスワードが必要なため、このファイルには上書きできません。名前を付けて保存してください
 start.update	ibisOffice を更新する
-jtd.read-only-notice	JTD: 読み取り専用。テキストのみを表示し、書式や画像は再現されません。
+jtd.read-only-notice	JTD: 読み取り専用。一部の縦書きとルビに対応。書式や画像は再現されません。
 jtd.read-only	JTDは読み取り専用です
+jtd.export-docx	Word（表示中の内容のみ）
+jtd.docx-exported	Wordに変換しました。未対応の書式や画像は含まれません。
