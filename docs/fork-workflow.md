@@ -62,6 +62,6 @@ python3 scripts/check-web-assets.py
 
 `npm run test:fonts`は、このrepoのsubsetterをビルドして合成フォントで検証する。
 追加フォントの取得・R2への配置は[Web fonts](web-fonts.md)を参照。
-配信先は<https://ibis.sorane.dev>。配信時はこのブランチの`wrangler.jsonc`を使い、
+配信先は<https://docs.sorane.dev>（既存の<https://ibis.sorane.dev>も維持）。配信時はこのブランチの`wrangler.jsonc`を使い、
 dry-runの後にdeployし、公開されたmanifestとWASMのhash、ブラウザー動作を確認する。
 単なるブランチ整理では、検証中の別作業による配信を上書きしない。

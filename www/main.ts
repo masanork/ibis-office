@@ -196,7 +196,7 @@ async function fetchWasm(): Promise<Response> {
     progressFill.style.width = '100%';
   }
   progress?.classList.add('starting');
-  if (statusText) statusText.textContent = ja ? 'ibisOffice を起動しています…' : 'Starting ibisOffice…';
+  if (statusText) statusText.textContent = ja ? 'Sorane Docs を起動しています…' : 'Starting Sorane Docs…';
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return response;
 }

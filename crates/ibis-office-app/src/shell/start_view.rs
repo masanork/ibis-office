@@ -76,11 +76,11 @@ const REQUEST_TEXT_SIZE: f32 = 14.0 * 1.2;
 /// The width a start window opens at: the column, the panel and the space right of it.
 pub(crate) const START_WINDOW_WIDTH: f32 = COLUMN_WIDTH + REQUEST_WIDTH + COLUMN_PADDING;
 /// Where 協力のお願い asks for reports.
-const ISSUES_URL: &str = "https://github.com/ibisjp/ibis-office/issues";
+const ISSUES_URL: &str = "https://github.com/masanork/ibis-office/issues";
 
 /// The window's title while no file is open: the app and its version.
 pub(crate) fn start_title() -> String {
-    format!("ibisOffice {}", env!("IBIS_VERSION"))
+    format!("Sorane Docs {}", env!("IBIS_VERSION"))
 }
 
 /// 協力のお願い, right of the column: what ibisOffice aims at, and a link to

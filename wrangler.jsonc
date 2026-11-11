@@ -6,7 +6,8 @@
   "compatibility_date": "2026-11-10",
   "workers_dev": true,
   "routes": [
-    { "pattern": "ibis.sorane.dev", "custom_domain": true, "zone_name": "sorane.dev" }
+    { "pattern": "ibis.sorane.dev", "custom_domain": true, "zone_name": "sorane.dev" },
+    { "pattern": "docs.sorane.dev", "custom_domain": true, "zone_name": "sorane.dev" }
   ],
   "assets": { "directory": "./www", "binding": "ASSETS", "run_worker_first": ["/api/font/*"] },
   "r2_buckets": [{ "binding": "FONT_SOURCES", "bucket_name": "ibis-office-fonts" }],

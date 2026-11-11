@@ -32,7 +32,7 @@ tools.settings	Settings…
 help.search	Search Menus
 help.help	Help
 help.shortcuts	Keyboard Shortcuts
-help.about	About ibisOffice
+help.about	About Sorane Docs
 file.new.document	Document
 file.new.workbook	Spreadsheet
 file.new.presentation	Presentation
@@ -117,7 +117,7 @@ settings.general	General
 settings.language	Language
 settings.language.system	Use System Setting
 settings.language.note	The language of the menus, toolbars and panes. It changes at once.
-app.quit	Quit ibisOffice
+app.quit	Quit Sorane Docs
 app.file.new	New Document
 app.file.open	Open…
 app.file.save	Save
@@ -512,7 +512,7 @@ _shell.accessibility	Accessibility
 _shell.settings	Settings…
 _shell.search-menus-2	Search Menus
 _shell.keyboard-shortcuts	Keyboard Shortcuts
-_shell.about-ibisoffice	About ibisOffice
+_shell.about-ibisoffice	About Sorane Docs
 _shell.document	Document
 _shell.spreadsheet	Spreadsheet
 _shell.presentation	Presentation
@@ -638,7 +638,7 @@ _shell.paste-special	Paste Special
 _shell.general	General
 _shell.use-system-setting	Use System Setting
 _shell.the-language-of-the-menus-toolbars-and-panes-it	The language of the menus, toolbars and panes. It changes at once.
-_shell.quit-ibisoffice	Quit ibisOffice
+_shell.quit-ibisoffice	Quit Sorane Docs
 _shell.new-document	New Document
 _shell.legend	Legend
 file.cannot-write	Can't write to {path}: {error}
@@ -699,7 +699,7 @@ start.open	Open…
 start.recent	Recent Files
 start.recent-none	No Recent Files
 start.request	We Need Your Help
-start.request-body	ibisOffice is a free office suite. Its goal is complete accuracy with Word, Excel and PowerPoint files, both in the layout of what it draws and in the compatibility of the file structure.
+start.request-body	Sorane Docs is a free office suite. Its goal is complete accuracy with Word, Excel and PowerPoint files, both in the layout of what it draws and in the compatibility of the file structure.
 start.request-report	If you find a bug or have a request, we would be grateful if you could report it on {link}.
 start.request-link	GitHub Issues
 _shell.stem-slide-slide-index-png	{stem}-Slide{slide_index}.png

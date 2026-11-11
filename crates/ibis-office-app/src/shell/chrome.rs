@@ -1093,36 +1093,20 @@ pub(crate) fn hover_row_actions(index: usize, entries: Vec<MenuEntry>, editor: &
         .child(Dropdown::with_button("row-actions",button,entries,false,index,editor).reveal_on_hover("row-actions")).into_any_element()
 }
 
-/// One logo renderer for the start panel and all editing menu bars.
-pub(crate) fn brand_logo(id:&'static str,height:f32,full_width:bool)->Stateful<Div>{
-    let root=div().id(id).relative().flex_none();
-    let root=if full_width{root.w_full().aspect_ratio(LOGO_ASPECT)}else{root.w(px(height*LOGO_ASPECT)).h(px(height))};
-    let root=root.child(img(app_logo_for_height(height)).absolute().inset_0().size_full().object_fit(ObjectFit::Contain));
+/// Sorane Docs wordmark, shared by the start panel and editor bars.
+pub(crate) fn brand_logo(id: &'static str, height: f32, full_width: bool) -> Stateful<Div> {
+    let root = div().id(id).flex().items_center().gap(px(height * 0.22)).flex_none();
+    let root = if full_width { root.w_full().h(px(height)) } else { root.w(px(height * LOGO_ASPECT)).h(px(height)) };
+    let mark = div().flex().items_center().justify_center().size(px(height * 0.9))
+        .rounded(px(height * 0.2)).bg(gpui_kit::rgb(0x2563a6))
+        .text_color(gpui_kit::rgb(0xffffff)).text_size(px(height * 0.62)).font_weight(FontWeight::BOLD).child("S");
+    let root = root.child(mark).child(div().text_size(px(height * 0.72)).font_weight(FontWeight::BOLD).child("Sorane Docs"));
     #[cfg(all(feature="scenarios",any(target_os="macos",target_os="linux")))]
-    let root=super::scenario::button_probe::observe_control(root,id.into());
+    let root = super::scenario::button_probe::observe_control(root,id.into());
     root
 }
 
-/// The ibisOffice logo (the mark and the name, logo/ibisOffice_logo.svg) as
-/// the start view's title row shows it: its height in pixels, and its width
-/// over its height. The SVG's own size is this size (99.25×22): GPUI draws
-/// an SVG picture at twice its own size and scales that to the element, and
-/// scaled down from its 600×133 it came out jagged.
-pub(crate) const LOGO_HEIGHT: f32 = 22.0;
-pub(crate) const LOGO_ASPECT: f32 = 600.0 / 133.0;
-
-pub(crate) fn app_logo() -> std::sync::Arc<Image> { app_logo_for_height(LOGO_HEIGHT) }
-/// Size the SVG raster source to its use, so a large start logo stays sharp.
-pub(crate) fn app_logo_for_height(height:f32)->std::sync::Arc<Image>{
-    static CACHE:std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(u32,bool),std::sync::Arc<Image>>>>=std::sync::OnceLock::new();
-    let height=height.ceil().max(1.)as u32;let dark=crate::shell::palette::is_dark();
-    let mut cache=CACHE.get_or_init(Default::default).lock().unwrap();
-    cache.entry((height,dark)).or_insert_with(||{
-        let mut svg=include_str!("../../logo/ibisOffice_logo.svg").replacen("width=\"99.25\" height=\"22\"",&format!("width=\"{}\" height=\"{height}\"",height as f32*LOGO_ASPECT),1);
-        if dark {svg=svg.replace("rgb(0,40,76)","rgb(232,238,246)").replace("rgb(0,40,77)","rgb(232,238,246)");}
-        std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg,svg.into_bytes()))
-    }).clone()
-}
+pub(crate) const LOGO_ASPECT: f32 = 5.4;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn office_app_logo(kind: ibis_pptx::Kind) -> std::sync::Arc<Image> {

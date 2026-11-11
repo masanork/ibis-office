@@ -106,7 +106,7 @@ fn about_body(cx: &App) -> Div {
         .items_center()
         .justify_center()
         .gap_2()
-        .child(img(crate::shell::chrome::app_logo()).h(px(34.)).w(px(34.0 * crate::shell::chrome::LOGO_ASPECT)))
+        .child(crate::shell::chrome::brand_logo("about-app-logo", 34., false))
         .child(div().text_color(theme.muted_foreground).child(version_line()))
         // A newer version was found at start-up: a link-like button (no frame, no underline) asks the question again.
         .when(update_available(), |d| {
