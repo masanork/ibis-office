@@ -3,8 +3,9 @@
 This Worker is a separately deployable OIDC relying party and sample service.
 It uses Mikaki's confidential-client Authorization Code flow with PKCE. A valid
 Mikaki login is not an administrator grant: `sample_admin` must also contain
-that issuer and this RP's pairwise subject. A logged-in account can see its own
-subject on `/admin` to request operator enrollment; it does not enroll itself.
+that issuer and this RP's pairwise subject. A logged-in account can redeem a
+short-lived, single-use invitation created by the operator; authentication alone
+does not grant access.
 
 This is not configured for production. The local Wrangler configuration uses
 only local D1 and R2. Do not substitute production database IDs, credentials or
@@ -29,9 +30,12 @@ an external env file. Run `npx wrangler dev --local --config wrangler.local.json
 `http://localhost:18877`. Test credentials and local subjects must never be
 reused for production.
 
-The operator explicitly adds an intended subject to `sample_admin`; no public
-first-user or invitation endpoint grants access. Determine production enrollment
-and recovery before activating the service. Changes to the production OP client
+The operator creates a 32-byte random invitation token outside the repository,
+stores only its SHA-256 base64url digest and expiry in `sample_admin_invite`,
+and conveys it securely to the intended person. A signed-in person redeems it
+via a CSRF-protected POST. Both enrollment and deletion of the token run in one
+D1 transaction. There is no public first-user grant. Determine production token
+delivery, auditing, operator enrollment and recovery before activation. Changes to the production OP client
 inventory, D1, R2, routes, or Worker secrets are separate deployment steps.
 
 ## Scope and remaining work
