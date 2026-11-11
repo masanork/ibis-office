@@ -18,3 +18,6 @@ __pycache__/
 /worker-configuration.d.ts
 
 /www/font-coverage.js
+/apps/sorane-docs/admin/node_modules/
+/apps/sorane-docs/admin/.wrangler/
+/apps/sorane-docs/admin/.dev.vars*

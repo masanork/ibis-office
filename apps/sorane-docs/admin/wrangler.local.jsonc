@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sorane-docs-admin-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-30",
+  "workers_dev": false,
+  "vars": {
+    "LOCAL_ONLY": "true",
+    "ISSUER": "http://localhost:18877",
+    "RP_ORIGIN": "http://127.0.0.1:18879",
+    "CLIENT_ID": "sorane-local"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sorane-admin-local",
+      "database_id": "00000000-0000-0000-0000-000000000005",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SAMPLES",
+      "bucket_name": "sorane-samples-local"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "AUTH_LIMITER",
+      "namespace_id": "2026111101",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    }
+  ]
+}
