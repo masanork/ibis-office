@@ -56,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/bundle-macos.sh --release
-          app=target/release/Sorane Docs.app
+          app="target/release/Sorane Docs.app"
           codesign --verify --deep --strict --verbose=2 "$app"
           plutil -lint "$app/Contents/Info.plist"
           file "$app/Contents/MacOS/ibisOffice" | grep -q 'arm64'

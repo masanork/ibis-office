@@ -37,7 +37,7 @@ fi
 VERSION=$(awk -F'\t' '$1 == "macOS" { sub(/\r$/, "", $2); print $2 }' version.txt)
 [[ -n $VERSION ]] || { echo "version.txt has no macOS line" >&2; exit 1; }
 
-APP=target/$PROFILE/Sorane Docs.app
+APP="target/$PROFILE/Sorane Docs.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/ibisOffice" "$APP/Contents/MacOS/ibisOffice"
