@@ -109,6 +109,9 @@ jobs:
     timeout-minutes: 90
     container:
       image: ubuntu:20.04
+      # Hosted runner DNS can fail inside this container; use a public resolver.
+      # apt continues to verify Ubuntu repository signatures.
+      options: --dns 1.1.1.1
       env:
         DEBIAN_FRONTEND: noninteractive
     steps:

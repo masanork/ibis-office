@@ -63,10 +63,17 @@ or deleting them. This is a fail-closed preservation measure, not automated
 crash recovery. Linux AppImage replacement follows a different path and is not
 covered by the folder rollback implementation.
 
-The local fixture journey exercises the shared signature/hash verification
-and folder swap/rollback functions using synthetic bytes. It does not test the
-app's HTTP download path, platform signature verification, GUI, real updater
-process, application launch or machine-interruption recovery.
+A local HTTPS fixture exercises the app's shared curl transport, signed metadata
+selection, bounded download, artifact hash verification, and folder swap and
+rollback using synthetic bytes. Its CA override is private to the unit test;
+the public transport has no CA override parameter, disables curl configuration
+files, and enforces HTTPS for initial requests and redirects. The test checks
+untrusted TLS, downgrade redirects, malformed signatures and altered, truncated
+or oversized downloads. The fixture simulates extraction and launch failure. It does not test a real
+archive, GUI, OS code-signing checks, updater process, actual application
+launch, machine-interruption recovery, or a public release service. On Unix,
+the local HTTPS test runs when `SORANE_TEST_OPENSSL` names OpenSSL 3; the
+update-verifier CI sets it to `openssl`.
 
 ## Gates before activation
 

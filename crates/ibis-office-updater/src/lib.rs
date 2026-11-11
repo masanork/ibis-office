@@ -21,3 +21,6 @@ pub mod signed_manifest;
 
 /// Offline verification of a complete signed update candidate.
 pub mod release_candidate;
+
+/// Bounded HTTPS transport shared by the desktop update client and tests.
+pub mod update_transport;

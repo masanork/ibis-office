@@ -34,6 +34,16 @@ pub struct Artifact {
     pub sha256: String,
 }
 
+pub(crate) fn safe_filename(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 180
+        && !name.starts_with('.')
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// Verify signature and policy before exposing any release information.
 /// `now` is Unix time in seconds; an incorrect system clock fails closed.
 pub fn verify_manifest(
@@ -78,14 +88,7 @@ pub fn verify_manifest(
                 | "linux-arm64-appimage"
         ) || !targets.insert(a.target.as_str())
             || !filenames.insert(a.filename.as_str())
-            || a.filename.is_empty()
-            || a.filename.len() > 180
-            || !a
-                .filename
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-            || a.filename.starts_with('.')
-            || a.filename.contains("..")
+            || !safe_filename(&a.filename)
             || a.size == 0
             || a.size > MAX_ARTIFACT_BYTES
             || a.sha256.len() != 64
