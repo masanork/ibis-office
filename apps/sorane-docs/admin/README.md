@@ -30,9 +30,11 @@ an external env file. Run `npx wrangler dev --local --config wrangler.local.json
 `http://localhost:18877`. Test credentials and local subjects must never be
 reused for production.
 
-The operator creates a 32-byte random invitation token outside the repository,
-stores only its SHA-256 base64url digest and expiry in `sample_admin_invite`,
-and conveys it securely to the intended person. A signed-in person redeems it
+The operator can run `node scripts/prepare-invitation.mjs` from this directory
+to prepare private temporary files containing a 32-byte random token and its
+SQL digest, with a 15-minute expiry. This does not apply the SQL or transmit
+the token. Only the digest and expiry belong in `sample_admin_invite`; convey
+the token securely to the intended person and remove the temporary files. A signed-in person redeems it
 via a CSRF-protected POST. Both enrollment and deletion of the token run in one
 D1 transaction. There is no public first-user grant. Determine production token
 delivery, auditing, operator enrollment and recovery before activation. Changes to the production OP client
