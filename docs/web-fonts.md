@@ -105,6 +105,9 @@ GET parameters are `font`, `text` (1–1024 Unicode code points), and `format`
 text, font ID, source ETag, engine hash and format, with a one-hour lifetime.
 Unsupported glyphs return 204 without silently changing the face.
 Busy/rate-limited requests return 429 with Retry-After.
+The Worker keeps an in-flight font operation alive through tab cancellation.
+Its shared WASM resource has a 30-second recoverable lease: an expired owner is
+freed once, and a late stream cannot write to a replacement owner's memory.
 
 The config preserves `ibis.sorane.dev`, enables tracing and error events,
 and disables automatic invocation logs. Serving code omits requested characters
@@ -152,6 +155,7 @@ The 1024-codepoint maximum keeps worst-case encoded URLs below Cloudflare's
 [16 KiB URL limit](https://developers.cloudflare.com/workers/platform/limits/).
 Requests retain the existing retry and exact-text cache behavior. A failed
 prefetch is reported before replacing the document, so it can be retried.
+Each fetch has a 30-second timeout, including its response body.
 
 File bytes stay in the browser. The API receives the deduplicated required
 characters in GET URLs, including those outside the current viewport; the

@@ -13,7 +13,7 @@ const serveFont = createFontService(sources.fonts, build.sha256, size => new sub
 export default {
   async fetch(request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> {
     if (new URL(request.url).pathname !== '/api/font/subset') return env.ASSETS.fetch(request);
-    return serveFont(request, {
+    const work = serveFont(request, {
       store: {
         head: key => env.FONT_SOURCES.head(key),
         async read(key, etag) {
@@ -25,5 +25,9 @@ export default {
       allowed: async () => (await env.FONT_LIMITER.limit({ key: request.headers.get('CF-Connecting-IP') ?? 'local' })).success,
       waitUntil: work => ctx.waitUntil(work),
     });
+    // Finish the bounded R2/WASM operation even when a tab closes while the
+    // font is loading, so shared memory and its lease are always released.
+    ctx.waitUntil(work.then(() => {}, () => {}));
+    return work;
   },
 } satisfies ExportedHandler<CloudflareEnv>;

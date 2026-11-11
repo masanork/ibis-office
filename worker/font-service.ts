@@ -40,8 +40,16 @@ const hash = async (data: string | Uint8Array) => [...new Uint8Array(await crypt
 /** Owns only the shared WASM resource, never an environment, request or I/O
  * promise. One active source prevents simultaneous large-font allocations. */
 export function createFontService(fonts: readonly FontSpec[], version: string,
-                                  create: (size: number) => SubsetEngine) {
-  let busy = false;
+                                  create: (size: number) => SubsetEngine,
+                                  now: () => number = Date.now) {
+  type Lease = { expires: number; engine?: SubsetEngine };
+  let active: Lease | undefined;
+  const release = (lease: Lease) => {
+    const engine = lease.engine;
+    lease.engine = undefined;
+    if (active === lease) active = undefined;
+    engine?.free();
+  };
   return async (request: Request, context: FontRequestContext): Promise<Response> => {
     if (request.method === 'OPTIONS') return new Response(null, { headers: {
       ...cors, 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Max-Age': '86400',
@@ -56,8 +64,7 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
     if (!['otf', 'woff2'].includes(format)) return error('Unsupported font format', 400);
     if (!await context.allowed()) return error('Too many font requests', 429, { 'Retry-After': '1' });
 
-    let engine: SubsetEngine | undefined;
-    let locked = false;
+    let lease: Lease | undefined;
     try {
       const info = await context.store.head(font.key);
       if (!info) return error('Source font is unavailable', 503);
@@ -69,16 +76,24 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
         response.headers.set('X-Cache', 'HIT');
         return response;
       }
-      if (busy) return error('Font engine is busy', 429, { 'Retry-After': '1' });
-      busy = true; locked = true;
+      // Request cancellation can skip its JS finally block. Keep the WASM
+      // resource recoverable without retaining request-owned I/O globally.
+      if (active && now() >= active.expires) release(active);
+      if (active) return error('Font engine is busy', 429, { 'Retry-After': '1' });
+      lease = { expires: now() + 30_000 };
+      active = lease;
+      const assertActive = () => { if (active !== lease) throw new Error('Font engine lease expired'); };
       const stream = await context.store.read(font.key, info.etag);
       if (!stream) return error('Source font changed; retry', 503, { 'Retry-After': '1' });
       const reader = stream.getReader();
       let count = 0;
       try {
-        engine = create(info.size);
+        assertActive();
+        const engine = create(info.size);
+        lease.engine = engine;
         for (;;) {
           const { done, value } = await reader.read();
+          assertActive();
           if (done) break;
           count += value.byteLength;
           if (count > info.size) throw new Error('Font stream exceeds source size');
@@ -89,6 +104,8 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
         throw failure;
       } finally { reader.releaseLock(); }
       if (count !== info.size) throw new Error('Incomplete source font stream');
+      assertActive();
+      const engine = lease.engine!;
       if (!engine.has_glyphs(text)) return new Response(null, { status: 204, headers: {
         ...cors, 'X-Font-Id': font.id, 'Cache-Control': 'no-store',
       } });
@@ -114,7 +131,7 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
         message: failure instanceof Error ? failure.message : 'Subset engine error' }));
       return error('Font subset failed', 503, { 'Retry-After': '1' });
     } finally {
-      try { engine?.free(); } finally { if (locked) busy = false; }
+      if (lease) release(lease);
     }
   };
 }

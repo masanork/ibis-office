@@ -102,7 +102,7 @@ export class DynamicFonts {
     // GPUI's font loader rejects faces without a Latin 'm'. Include it in
     // each subset so the returned face can be loaded as a fallback.
     url.searchParams.set('text', glyphs.join('') + 'm');
-    const response = await this.fetcher(url);
+    const response = await this.fetcher(url, { signal: AbortSignal.timeout(30_000) });
     if (response.status === 204 && glyphs.length > 1) {
       for (const glyph of glyphs) await this.fetchGroup([glyph]);
       return;
@@ -192,7 +192,7 @@ export class FaceSubsetProvider {
     url.searchParams.set('format', 'otf');
     // The administrative font intentionally contains no Latin characters.
     url.searchParams.set('text', glyphs.join('') + (face === 'acgjm' ? '' : 'm'));
-    const response = await this.fetcher(url);
+    const response = await this.fetcher(url, { signal: AbortSignal.timeout(30_000) });
     if (response.status === 429) {
       const seconds = Number(response.headers.get('Retry-After')) || 5;
       await new Promise(resolve => setTimeout(resolve, Math.min(Math.max(seconds, 1), 60) * 1000));

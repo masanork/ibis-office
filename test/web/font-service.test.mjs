@@ -140,3 +140,28 @@ test('large font allocations are serialized without sharing request-owned I/O', 
   assert.equal((await first).status, 200);
   assert.equal(s.reads, 1);
 });
+
+test('an abandoned font lease is freed and a late stream cannot affect its replacement', async () => {
+  const s = setup();
+  let now = 0, controller, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const serve = createFontService(fonts, 'lease-engine', size => {
+    const engine = s.factory(size), append = engine.append;
+    return { ...engine, append(chunk) { append(chunk); started(); } };
+  }, () => now);
+  const original = s.context.store.read;
+  s.context.store.read = async () => new ReadableStream({
+    start(value) { controller = value; value.enqueue(bytes.slice(0, 100)); },
+  });
+  const abandoned = serve(request('Am'), s.context);
+  await ready;
+  now = 30_001;
+  s.context.store.read = original;
+  assert.equal((await serve(request('Bm'), s.context)).status, 200);
+  assert.equal(s.frees, 2, 'expired and replacement engines each freed once');
+  controller.enqueue(bytes.slice(100)); controller.close();
+  assert.equal((await abandoned).status, 503);
+  assert.equal(s.frees, 2, 'late completion does not double-free the old engine');
+  assert.equal((await serve(request('Am'), s.context)).status, 200);
+  assert.equal(s.frees, 3);
+});
