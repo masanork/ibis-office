@@ -99,11 +99,25 @@ fn split_dib(dib: &[u8]) -> Option<(&[u8], &[u8])> {
         (u32::from(u16_at(dib, 14)?), u32_at(dib, 32)?, u32_at(dib, 16)?)
     };
     let entries = if used != 0 { used as usize } else if bits <= 8 { 1usize << bits } else { 0 };
-    let mut info = header + entries * if header == 12 { 3 } else { 4 };
+    let mut info = header.checked_add(entries.checked_mul(if header == 12 { 3 } else { 4 })?)?;
     if header == 40 && (compression == 3 || compression == 6) {
-        info += if compression == 3 { 12 } else { 16 };
+        info = info.checked_add(if compression == 3 { 12 } else { 16 })?;
     }
     Some((dib.get(..info)?, dib.get(info..)?))
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::split_dib;
+
+    #[test]
+    fn rejects_palette_count_larger_than_the_input() {
+        let mut dib = vec![0u8; 40];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[14..16].copy_from_slice(&8u16.to_le_bytes());
+        dib[32..36].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(split_dib(&dib).is_none());
+    }
 }
 
 /// The SVG a Windows Metafile draws, or `None` when it is not one or draws nothing.
@@ -129,8 +143,9 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
     }
     // EMF object handles are one more than the WMF indexes. The WMF table fills its lowest free slot.
     let mut slots: Vec<bool> = Vec::new();
-    let take = |slots: &mut Vec<bool>| -> u32 {
-        let i = slots.iter().position(|used| !used).unwrap_or_else(|| {
+    let mut free_slots = std::collections::BinaryHeap::<std::cmp::Reverse<usize>>::new();
+    let take = |slots: &mut Vec<bool>, free: &mut std::collections::BinaryHeap<std::cmp::Reverse<usize>>| -> u32 {
+        let i = free.pop().map(|std::cmp::Reverse(i)| i).unwrap_or_else(|| {
             slots.push(false);
             slots.len() - 1
         });
@@ -143,8 +158,8 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
     let mut mode_set = false;
     let mut at = start + header_size;
     while let Some(words) = u32_at(wmf, at) {
-        let size = words as usize * 2;
-        if size < 6 || at + size > wmf.len() {
+        let size = usize::try_from(words).ok()?.checked_mul(2)?;
+        if size < 6 || at.checked_add(size)? > wmf.len() {
             break;
         }
         let r = &wmf[at..at + size];
@@ -190,6 +205,7 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
             0x0416 => out.ints(0x1E, &[p(3), p(2), p(1), p(0)]),
             0x0324 | 0x0325 => {
                 let n = usize::from(u16_at(r, 6).unwrap_or(0));
+                if 8usize.checked_add(n.checked_mul(4)?)? > r.len() { return None; }
                 let mut v = vec![0, 0, 0, 0, n as i32];
                 for i in 0..n {
                     v.push(i16_at(r, 8 + i * 4).unwrap_or(0));
@@ -207,11 +223,13 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
             }
             0x0538 => {
                 let n = usize::from(u16_at(r, 6).unwrap_or(0));
+                let base = 8usize.checked_add(n.checked_mul(2)?)?;
+                if base > r.len() { return None; }
                 let counts: Vec<usize> = (0..n).map(|i| usize::from(u16_at(r, 8 + i * 2).unwrap_or(0))).collect();
-                let total: usize = counts.iter().sum();
+                let total = counts.iter().try_fold(0usize, |sum, &count| sum.checked_add(count))?;
+                if base.checked_add(total.checked_mul(4)?)? > r.len() { return None; }
                 let mut v = vec![0, 0, 0, 0, n as i32, total as i32];
                 v.extend(counts.iter().map(|&c| c as i32));
-                let base = 8 + n * 2;
                 for i in 0..total {
                     v.push(i16_at(r, base + i * 4).unwrap_or(0));
                     v.push(i16_at(r, base + i * 4 + 2).unwrap_or(0));
@@ -231,25 +249,25 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
                 out.ints(kind, &[p(7), p(6), p(5), p(4), p(3), p(2), p(1), p(0)]);
             }
             0x00F7 | 0x0142 | 0x01F9 | 0x06FF => {
-                let handle = take(&mut slots);
+                let handle = take(&mut slots, &mut free_slots);
                 out.ints(0x7A, &[handle as i32]);
             }
             0x02FA => {
                 // A pen: style, width (x), colour.
-                let handle = take(&mut slots);
+                let handle = take(&mut slots, &mut free_slots);
                 let style = u32::from(u16_at(r, 6).unwrap_or(0));
                 let width = p(1);
                 let color = u32_at(r, 12).unwrap_or(0);
                 out.ints(0x26, &[handle as i32, style as i32, width, 0, color as i32]);
             }
             0x02FC => {
-                let handle = take(&mut slots);
+                let handle = take(&mut slots, &mut free_slots);
                 let style = u32::from(u16_at(r, 6).unwrap_or(0));
                 let color = u32_at(r, 8).unwrap_or(0);
                 out.ints(0x27, &[handle as i32, style as i32, color as i32, u32::from(u16_at(r, 12).unwrap_or(0)) as i32]);
             }
             0x02FB => {
-                let handle = take(&mut slots);
+                let handle = take(&mut slots, &mut free_slots);
                 let mut body = vec![0u8; 4 + 92];
                 body[0..4].copy_from_slice(&handle.to_le_bytes());
                 // Height, width, escapement, orientation, weight, italic, underline, strike, charset...
@@ -282,13 +300,17 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
             0x01F0 => {
                 let index = usize::from(u16_at(r, 6).unwrap_or(0));
                 if let Some(slot) = slots.get_mut(index) {
-                    *slot = false;
+                    if *slot {
+                        *slot = false;
+                        free_slots.push(std::cmp::Reverse(index));
+                    }
                 }
                 out.ints(0x28, &[index as i32 + 1]);
             }
             0x0521 | 0x0A32 => {
                 let (x, y, bytes, dx) = if func == 0x0521 {
                     let len = usize::from(u16_at(r, 6).unwrap_or(0));
+                    if 8usize.checked_add(len)?.checked_add(len % 2)?.checked_add(4)? > r.len() { return None; }
                     let s = r.get(8..8 + len).unwrap_or(&[]);
                     let after = 8 + len + len % 2;
                     (i16_at(r, after + 2).unwrap_or(0), i16_at(r, after).unwrap_or(0), s.to_vec(), Vec::new())
@@ -296,6 +318,7 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
                     let len = usize::from(u16_at(r, 10).unwrap_or(0));
                     let options = u16_at(r, 12).unwrap_or(0);
                     let s = if options & 6 != 0 { 22 } else { 14 };
+                    if s + len > r.len() { return None; }
                     let text = r.get(s..s + len).unwrap_or(&[]).to_vec();
                     let after = s + len + len % 2;
                     let dx: Vec<i32> = (0..len).filter_map(|i| i16_at(r, after + i * 2)).collect();

@@ -124,6 +124,39 @@ fn wmf(records: &[Vec<u8>]) -> Vec<u8> {
     v
 }
 
+#[test]
+fn rejects_wmf_records_whose_counts_exceed_the_record() {
+    let drawing = wmf_record(0x041B, &[0, 0, 0, 0, 10, 0, 10, 0]);
+    // One polygon claims 65,535 points but contains none.
+    let polygon = wmf_record(0x0538, &[1, 0, 0xff, 0xff]);
+    assert!(wmf_to_svg(&wmf(&[polygon, drawing.clone()])).is_none());
+    let polyline = wmf_record(0x0325, &[0xff, 0xff]);
+    assert!(wmf_to_svg(&wmf(&[polyline, drawing.clone()])).is_none());
+    let text = wmf_record(0x0521, &[0xff, 0xff]);
+    assert!(wmf_to_svg(&wmf(&[text, drawing])).is_none());
+}
+
+#[test]
+fn deleting_an_unused_wmf_handle_does_not_duplicate_the_free_slot() {
+    let brush = |color: u32| {
+        let mut p = 0u16.to_le_bytes().to_vec();
+        p.extend(color.to_le_bytes());
+        p.extend(0u16.to_le_bytes());
+        wmf_record(0x02FC, &p)
+    };
+    let data = wmf(&[
+        wmf_record(0x020C, &[100, 0, 100, 0]),
+        brush(0x0000FF00),
+        wmf_record(0x01F0, &[0, 0]),
+        wmf_record(0x01F0, &[0, 0]),
+        brush(0x00FF0000),
+        brush(0x000000FF),
+        wmf_record(0x012D, &[1, 0]),
+        wmf_record(0x041B, &[0, 0, 0, 0, 10, 0, 10, 0]),
+    ]);
+    assert!(wmf_to_svg(&data).unwrap().contains("#FF0000"));
+}
+
 // 日本語 and the face "ＭＳ ゴシック" in Shift_JIS.
 const NIHONGO_SJIS: [u8; 6] = [0x93, 0xFA, 0x96, 0x7B, 0x8C, 0xEA];
 const FACE_SJIS: [u8; 13] = [0x82, 0x6C, 0x82, 0x72, 0x20, 0x83, 0x53, 0x83, 0x56, 0x83, 0x62, 0x83, 0x4E];
