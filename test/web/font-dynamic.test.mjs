@@ -3,12 +3,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { namespaceSubset, DynamicFonts } from '../../www/dynamic-fonts.js';
+import { loadSubsetter } from '../../scripts/font-subsetter.mjs';
 import { checksum, fontFamily } from '../../scripts/web-font-sfnt.mjs';
 
-// Produced by the gjs subsetter from the bundled IBM Plex Sans test font.
-const fixture = () => readFile(new URL('./fixtures/gjs-plex-abm.otf', import.meta.url));
+const bg = await loadSubsetter();
+const plex = await readFile(new URL('../../crates/ibis-office-app/fonts/IBMPlexSans-Regular.ttf', import.meta.url));
+const fixture = async () => bg.subset_font_raw(plex, 'ABm');
 
-test('dynamic gjs responses have independent families and valid checksums', async () => {
+test('own engine responses have independent families and valid checksums', async () => {
   const raw = await fixture();
   const first = namespaceSubset(raw, 1);
   const second = namespaceSubset(raw, 2);
@@ -17,6 +19,14 @@ test('dynamic gjs responses have independent families and valid checksums', asyn
   assert.equal(checksum(first), 0xb1b0afba);
   assert.equal(checksum(second), 0xb1b0afba);
   assert.throws(() => namespaceSubset(new Uint8Array([1, 2]), 1));
+});
+
+
+test('legacy subset responses remain readable without an external repository', async () => {
+  const raw = await readFile(new URL('./fixtures/gjs-plex-abm.otf', import.meta.url));
+  const renamed = namespaceSubset(raw, 1);
+  assert.equal(fontFamily(renamed), 'IBS 000001');
+  assert.equal(checksum(renamed), 0xb1b0afba);
 });
 
 test('dynamic provider batches misses, splits unsupported batches and deduplicates', async () => {
