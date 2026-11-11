@@ -196,7 +196,7 @@ cargo build --release
 
 ## Implemented Features
 
-For self-hosted browser fonts and optional gjs subsetting, see [Web fonts](docs/web-fonts.md).
+For self-hosted browser fonts and the built-in subset engine, see [Web fonts](docs/web-fonts.md).
 
 ibisOffice implements a comprehensive set of features for Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) documents, strictly compliant with the ECMA-376 specification.
 

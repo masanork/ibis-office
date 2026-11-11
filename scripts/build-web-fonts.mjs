@@ -1,32 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Uses gjs's existing WASM subsetter at build time; no gjs service is required.
-import { readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
+// Uses the source-built ibisOffice subsetter; no external repository is required.
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { fontFamily, renameSubset, tables } from './web-font-sfnt.mjs';
+import { loadSubsetter } from './font-subsetter.mjs';
 
-const subsetters = new Map();
-async function subsetter(gjsDir) {
-  const pkg = await realpath(join(gjsDir, 'src/shared/font/wasm'));
-  // wasm-bindgen's glue caches views of its instance's memory. Rebinding the
-  // same glue module to a second instance leaves those views on the first one.
-  if (!subsetters.has(pkg)) {
-    const ready = (async () => {
-      const bg = await import(pathToFileURL(join(pkg, 'font_subsetter_bg.js')).href);
-      const wasm = await readFile(join(pkg, 'font_subsetter_bg.wasm'));
-      const { instance } = await WebAssembly.instantiate(wasm, { './font_subsetter_bg.js': bg });
-      bg.__wbg_set_wasm(instance.exports);
-      instance.exports.__wbindgen_start?.();
-      return bg;
-    })();
-    subsetters.set(pkg, ready);
-    ready.catch(() => subsetters.delete(pkg));
-  }
-  return subsetters.get(pkg);
-}
-
-export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), outDir = resolve('www') } = {}) {
+export async function buildWebFonts(configPath, { outDir = resolve('www') } = {}) {
   const config = JSON.parse(await readFile(configPath, 'utf8'));
   if (!Array.isArray(config.fonts) || config.fonts.length === 0) throw new Error('fonts must be a nonempty array');
   if (config.browserFallback !== undefined && typeof config.browserFallback !== 'boolean') throw new Error('browserFallback must be boolean');
@@ -48,7 +29,7 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
       if (entry.text !== undefined && typeof entry.text !== 'string') throw new Error(`${entry.id}: text must be a string`);
       const text = (entry.text ?? '') + (entry.textFile === undefined ? '' : await readFile(resolve(base, entry.textFile), 'utf8'));
       if (!text.trim()) throw new Error(`${entry.id}: subset text is empty`);
-      bg ??= await subsetter(resolve(gjsDir));
+      bg ??= await loadSubsetter();
       if (!bg.font_has_glyphs(data, text.replace(/[\r\n\t]/g, ''))) throw new Error(`${entry.id}: source font lacks requested characters`);
       family = entry.family ?? `Ibis Subset ${entry.id}`;
       if (typeof family !== 'string' || !family.trim() || family.length > 100) throw new Error(`${entry.id}: invalid subset family`);
@@ -90,9 +71,9 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
     fonts.push(font);
   }
   if (config.dynamic !== undefined) {
-    if (!config.dynamic || typeof config.dynamic.endpoint !== 'string' || !/^https?:\/\//.test(config.dynamic.endpoint)
+    if (!config.dynamic || typeof config.dynamic.endpoint !== 'string' || !(/^(https?:\/\/|\/(?!\/))/.test(config.dynamic.endpoint))
         || typeof config.dynamic.font !== 'string' || !/^[A-Za-z][A-Za-z0-9]+$/.test(config.dynamic.font)) {
-      throw new Error('dynamic requires an HTTP(S) endpoint and a gjs font ID');
+      throw new Error('dynamic requires an HTTP(S) or same-origin endpoint and a font ID');
     }
     if (config.browserFallback === true) throw new Error('dynamic fonts require browserFallback: false');
     if (config.dynamic.strategy !== undefined && config.dynamic.strategy !== 'faces') throw new Error('Invalid dynamic strategy');
@@ -112,13 +93,13 @@ export async function buildWebFonts(configPath, { gjsDir = resolve('../gjs'), ou
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [config, gjsDir, outDir] = process.argv.slice(2);
+  const [config, outDir] = process.argv.slice(2);
   if (!config) {
-    console.error('Usage: node scripts/build-web-fonts.mjs CONFIG.json [GJS_DIR] [WWW_DIR]');
+    console.error('Usage: node scripts/build-web-fonts.mjs CONFIG.json [WWW_DIR]');
     process.exitCode = 1;
   } else {
     try {
-      const result = await buildWebFonts(resolve(config), { gjsDir, outDir });
+      const result = await buildWebFonts(resolve(config), { outDir });
       console.log(`Prepared ${result.fonts.length} font(s); default: ${result.defaultFamily}`);
     } catch (error) {
       console.error(error.message);

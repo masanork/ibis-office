@@ -26,12 +26,12 @@ test('renaming keeps shaping, glyph, and license data, with valid SFNT checksums
   }
 });
 
-test('full font mode needs no gjs checkout and preserves the original bytes', async t => {
+test('full font mode preserves the original bytes', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'ibis-font-full-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const config = join(dir, 'fonts.json');
   await writeFile(config, JSON.stringify({ fonts: [{ id: 'plex', path: source, aliases: ['Office Font'] }] }));
-  const manifest = await buildWebFonts(config, { gjsDir: '/no/gjs', outDir: join(dir, 'www') });
+  const manifest = await buildWebFonts(config, { outDir: join(dir, 'www') });
   assert.equal(manifest.defaultFamily, 'IBM Plex Sans');
   assert.equal(manifest.uiFamily, 'IBM Plex Sans');
   assert.equal(manifest.browserFallback, false);
@@ -74,9 +74,9 @@ test('UI selection preserves a different document default and named aliases', as
   assert.deepEqual(manifest.fonts[0].aliases, ['Carlito', 'Document Face']);
 });
 
-// Opt in to the sibling gjs checkout; normal CI has no external font dependency.
-test('gjs subsets two distinct fonts without a family collision', { skip: !process.env.GJS_DIR }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'ibis-font-gjs-'));
+// Both fonts and the subset engine come from this repository.
+test('source-built engine subsets two distinct fonts without a family collision', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ibis-font-subset-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const config = join(dir, 'config.json');
   const carlito = fileURLToPath(new URL('../../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
@@ -85,7 +85,7 @@ test('gjs subsets two distinct fonts without a family collision', { skip: !proce
     { id: 'plex', path: source, textFile: 'text.txt' },
     { id: 'carlito', path: carlito, textFile: 'text.txt', aliases: ['Calibri'] },
   ] }));
-  const manifest = await buildWebFonts(config, { gjsDir: process.env.GJS_DIR, outDir: dir });
+  const manifest = await buildWebFonts(config, { outDir: dir });
   assert.notEqual(manifest.fonts[0].family, manifest.fonts[1].family);
   for (const font of manifest.fonts) {
     const data = await readFile(new URL(font.url, `file://${dir}/fonts.json`));
@@ -95,20 +95,15 @@ test('gjs subsets two distinct fonts without a family collision', { skip: !proce
   }
 });
 
-test('gjs retains both BMP and supplementary variation selectors', { skip: !process.env.GJS_DIR }, async t => {
-  const sourceFont = join(process.env.GJS_DIR, 'data/sources/fonts/ipamjm.ttf');
-  try { await readFile(sourceFont); } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    t.skip('Optional IPAmj font is not downloaded');
-    return;
-  }
+test('source-built engine retains BMP and supplementary variation selectors', async t => {
+  const sourceFont = fileURLToPath(new URL('../../crates/ibis-font-subsetter/tests/fonts/ivs.ttf', import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), 'ibis-font-ivs-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const config = join(dir, 'config.json');
   await writeFile(config, JSON.stringify({ fonts: [
-    { id: 'ivs', path: resolve(sourceFont), text: '侮\uFE00侮\u{E0103}侮' },
+    { id: 'ivs', path: resolve(sourceFont), text: 'A\uFE00A\u{E0100}A' },
   ] }));
-  const manifest = await buildWebFonts(config, { gjsDir: process.env.GJS_DIR, outDir: dir });
+  const manifest = await buildWebFonts(config, { outDir: dir });
   const data = await readFile(new URL(manifest.fonts[0].url, `file://${dir}/fonts.json`));
   const cmap = tables(data).get('cmap');
   const variants = new Map();
@@ -123,12 +118,12 @@ test('gjs retains both BMP and supplementary variation selectors', { skip: !proc
       const start = offset + nondefault;
       for (let k = 0; k < cmap.readUInt32BE(start); k++) {
         const at = start + 4 + k * 5;
-        if (cmap.readUIntBE(at, 3) === 0x4fae) variants.set(selector, cmap.readUInt16BE(at + 3));
+        if (cmap.readUIntBE(at, 3) === 0x41) variants.set(selector, cmap.readUInt16BE(at + 3));
       }
     }
   }
   assert.ok(variants.get(0xfe00) > 0);
-  assert.ok(variants.get(0xe0103) > 0);
+  assert.ok(variants.get(0xe0100) > 0);
   assert.equal(checksum(data), 0xb1b0afba);
 });
 

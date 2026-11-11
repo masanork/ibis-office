@@ -6,9 +6,13 @@
 /www/dynamic-fonts.js
 /www/fonts.json
 /node_modules
+/crates/ibis-font-subsetter/pkg
+/data/fonts
+/worker/*.js
 /test/private/
 __pycache__/
 .DS_Store
 
 /www/wasm-loader.js
 /.wrangler
+/worker-configuration.d.ts

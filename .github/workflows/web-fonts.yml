@@ -9,7 +9,7 @@ permissions:
 jobs:
   web-fonts:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,9 +19,20 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: npm run test:fonts
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-10-28
           targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-bindgen
+            ~/.cargo/bin/wasm-bindgen-test-runner
+            ~/.cargo/bin/wasm2es6js
+          key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
+      - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - run: cargo test --locked -p ibis-font-subsetter
+      - run: npm run test:web
+      - run: npm run check:worker
+      - run: npx wrangler deploy --dry-run
       - run: cargo check --locked -p ibis-office-app --lib --target wasm32-unknown-unknown

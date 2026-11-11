@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Each gjs response has the same family name. Give each response a distinct
+// Each subset response has the same family name. Give each response a distinct
 // family so fontdb can retain and search all of the independent subsets.
 export function namespaceSubset(input: Uint8Array, sequence: number): Uint8Array {
   if (sequence < 1 || sequence > 999999) throw new Error('Dynamic font limit reached');
   const data = new Uint8Array(input);
   const view = new DataView(data.buffer);
-  if (data.length < 12 || ![0x00010000, 0x4f54544f].includes(view.getUint32(0))) throw new Error('Invalid gjs font');
+  if (data.length < 12 || ![0x00010000, 0x4f54544f].includes(view.getUint32(0))) throw new Error('Invalid subset font');
   const n = view.getUint16(4);
   if (12 + n * 16 > data.length) throw new Error('Invalid font directory');
   let nameRecord = -1, nameStart = 0, nameLength = 0, head = -1, headRecord = -1, headLength = 0;
@@ -26,15 +26,17 @@ export function namespaceSubset(input: Uint8Array, sequence: number): Uint8Array
     for (let i = nameStart; i <= nameStart + nameLength - a.length; i++) {
       if (a.every((v, j) => data[i + j] === v)) {
         data.set(b, i); i += a.length - 1;
-        if (from === 'GJS Subset') families++;
+        if (from.endsWith(' Subset')) families++;
       }
     }
   };
   for (const wide of [true, false]) {
-    replace('GJS Subset', `IBS ${id}`, wide);
-    replace('GJSSubset', `IBS${id}`, wide);
+    for (const prefix of ['IBS', 'GJS']) {
+      replace(`${prefix} Subset`, `IBS ${id}`, wide);
+      replace(`${prefix}Subset`, `IBS${id}`, wide);
+    }
   }
-  if (!families) throw new Error('Unexpected gjs subset family');
+  if (!families) throw new Error('Unexpected subset family');
   const checksum = (start: number, length: number): number => {
     let sum = 0;
     for (let i = 0; i < length; i += 4) {
@@ -92,7 +94,7 @@ export class DynamicFonts {
         let count = 0;
         for (const glyph of this.pending) {
           const length = Array.from(glyph).length;
-          if (batch.length && count + length > 128) break;
+          if (batch.length && count + length > 127) break;
           this.pending.delete(glyph); batch.push(glyph); count += length;
         }
         const unresolved = batch.filter(glyph => !this.resolved.has(glyph));

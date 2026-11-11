@@ -1,0 +1,27 @@
+# ibisOffice font subsetter
+
+An IVS-aware TTF/CFF OpenType subsetter, built and maintained in this workspace.
+The code is AGPL-3.0-only; see [ORIGIN.md](ORIGIN.md) for its provenance and
+retained original notice. Font and dependency licenses remain independent.
+
+`subset_font_raw` produces SFNT, `subset_font` produces WOFF2, and
+`font_has_glyphs` checks coverage. `FontSubsetter` accepts a known-size source
+in chunks, owns it in WASM memory, and exposes `free()` to release it.
+Incomplete inputs and sources above 50 MiB are rejected. Sources must be single
+TTF/OTF fonts, not WOFF, WOFF2 or collections. Selected variation sequences,
+composite dependencies, metrics and attribution/license names are retained.
+Derivative fonts are renamed `IBS Subset`.
+
+```sh
+cargo test --locked -p ibis-font-subsetter
+scripts/build-font-subsetter.sh
+npm run test:fonts
+```
+
+The build uses locked dependencies and the matching wasm-bindgen CLI.
+Generated `pkg/` files are ignored. Original synthetic TTF/CFF fixtures in
+`tests/fonts/` need no downloads. Their optional generator needs fontTools.
+
+The Node wrapper is `scripts/font-subsetter.mjs`; the Worker wrapper is
+`worker/index.ts`. See [web-fonts.md](../../docs/web-fonts.md) for provisioning
+and request limits. Neither wrapper needs a GJS checkout or hosted service.

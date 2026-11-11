@@ -1,11 +1,15 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "ibis-office-jtd-layout-20261111",
+  "main": "worker/index.ts",
   "account_id": "4b749427a0c80c547e726a42aff4b6fc",
   "compatibility_date": "2026-11-10",
   "workers_dev": true,
   "routes": [
     { "pattern": "ibis.sorane.dev", "custom_domain": true, "zone_name": "sorane.dev" }
   ],
-  "assets": { "directory": "./www" }
+  "assets": { "directory": "./www", "binding": "ASSETS", "run_worker_first": ["/api/font/*"] },
+  "r2_buckets": [{ "binding": "FONT_SOURCES", "bucket_name": "ibis-office-fonts" }],
+  "ratelimits": [{ "name": "FONT_LIMITER", "namespace_id": "81511211", "simple": { "limit": 600, "period": 60 } }],
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false }, "traces": { "enabled": true } }
 }

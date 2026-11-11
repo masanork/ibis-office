@@ -93,7 +93,7 @@ export async function loadWebFonts(url: URL, fetcher: typeof fetch = fetch): Pro
   let dynamic: WebFonts['dynamic'];
   if (manifest.dynamic !== undefined) {
     const settings = object(manifest.dynamic);
-    const endpoint = new URL(name(settings.endpoint));
+    const endpoint = new URL(name(settings.endpoint), url);
     const font = name(settings.font);
     if (!['http:', 'https:'].includes(endpoint.protocol) || !/^[A-Za-z][A-Za-z0-9]+$/.test(font) || manifest.browserFallback) {
       throw new Error('Invalid dynamic font configuration');

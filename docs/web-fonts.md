@@ -1,132 +1,126 @@
-# Self-hosted fonts in the browser
+# Self-hosted browser fonts
 
-The web editor can load supplied TTF/OTF files into GPUI before opening a
-document. GPUI shapes and rasterizes these fonts itself. This also makes the
-font's real metrics available to document layout. CSS `@font-face` is not used.
+The editor loads TTF/OTF into GPUI before opening documents. GPUI shapes and
+rasterizes them itself and uses their metrics for layout. CSS `@font-face`
+is not used. The subset engine and serving code live in this repo; no GJS
+checkout, generated binary or hosted GJS API is required.
 
-Generate `www/fonts.json` and its content-addressed font assets with:
+## Build
 
-```sh
-npm run build:fonts -- scripts/web-fonts.example.json ../gjs
-RUSTUP_TOOLCHAIN=nightly scripts/build-web.sh --release
-```
-
-The example uses a full Noto Sans CJK JP from the sibling gjs checkout and an
-ASCII subset of the bundled Carlito mapped to Calibri. Download/populate gjs's
-source fonts first, or change `path` to your own font files. Generated fonts and
-the manifest are ignored by Git; deploy them with the rest of `www/`.
-
-For a single build command, set `IBIS_WEB_FONTS_CONFIG` to the configuration
-file and optionally `GJS_DIR` to the gjs checkout:
+Install Node dependencies and the wasm-bindgen CLI matching `Cargo.lock`:
 
 ```sh
-IBIS_WEB_FONTS_CONFIG=scripts/web-fonts.example.json \
-GJS_DIR=../gjs RUSTUP_TOOLCHAIN=nightly scripts/build-web.sh --release
+npm ci
+cargo install wasm-bindgen-cli --version 0.2.128 --locked
+python3 scripts/fetch-web-fonts.py
+IBIS_WEB_FONTS_CONFIG=scripts/web-fonts.sorane.json \
+  RUSTUP_TOOLCHAIN=nightly-2026-10-28 scripts/build-web.sh --release
 ```
 
-Configuration paths are relative to the configuration file. `GJS_DIR` is
-relative to the command's working directory. Only subsetting requires gjs;
-full-font delivery works without it. The build tool loads gjs's existing
-`src/shared/font/wasm/font_subsetter_bg.js` and `.wasm`. It uses
-`subset_font_raw`, with IVS support, to produce uncompressed SFNT fonts that
-GPUI can read. WOFF, WOFF2 and TTC files are not accepted as source files.
+The script installs its pinned Rust toolchain if missing. `fonts/sources.json`
+pins source URLs, extracted font SHA-256, object keys and attribution. The fetcher
+checks hashes before writing ignored `data/fonts/`. Original license texts are
+in `fonts/licenses/`. Fonts retain their own licenses; the engine is
+AGPL-3.0-only. Its provenance is in `crates/ibis-font-subsetter/ORIGIN.md`.
+
+The build compiles the engine, then creates `www/fonts.json` and
+content-addressed font/license assets. Alternatively run `npm run build:font-engine`
+and `npm run build:fonts -- CONFIG.json WWW_DIR`. When using your own source
+fonts, downloading the catalog fonts is unnecessary.
+
+## Font configuration
+
+Paths are relative to the configuration file:
 
 ```json
 {
   "defaultFont": "mincho",
+  "uiFont": "gothic",
   "browserFallback": false,
+  "dynamic": { "endpoint": "/api/font/subset", "font": "ipamjm", "strategy": "faces" },
   "fonts": [
-    {
-      "id": "mincho",
-      "path": "./MyFont.ttf",
-      "textFile": "./repertoire.txt",
-      "aliases": ["游明朝", "Yu Mincho"],
-      "licenseFile": "./LICENSE.txt"
-    }
+    { "id": "mincho", "path": "./Mincho.ttf", "text": "ABCm", "aliases": ["游明朝"], "licenseFile": "./LICENSE.txt" },
+    { "id": "gothic", "path": "./Gothic.otf", "aliases": ["游ゴシック"] }
   ]
 }
 ```
 
-- `id` uniquely identifies each face. `defaultFont` selects the fallback for
-  unresolved document typefaces; if omitted, it uses the first face.
-  `uiFont` independently selects the editor's menus, toolbar and other UI text.
-  Without `uiFont`, the UI uses `defaultFont`, preserving existing configurations.
-  Both IDs must name supplied fonts. Aliases affect display, leaving the
-  document's stored typeface names unchanged.
-- `text` and/or UTF-8 `textFile` select the subset repertoire. Neither is
-  normalized or deduplicated, preserving base characters and their variation
-  selectors. Without either field the original font is copied intact.
-- gjs names all subsets `GJS Subset`. The build tool assigns each subset a unique
-  `Ibis Subset <id>` family so independent fonts cannot collide. For regular,
-  bold and italic faces of the same family, set the same optional `family` in
-  their subset entries. Original copyright and license name records are retained.
-- `aliases` maps Office typeface names to the supplied family. The original
-  family name is also mapped automatically. Conflicting mappings fail the build.
-- `licenseFile`, when present, is copied alongside the font and linked from its
-  manifest entry. Use fonts you can redistribute and include their required
-  notices.
-- With a manifest, `browserFallback` defaults to `false` in the build tool.
-  All text, including emoji, then depends on supplied and bundled fonts. Set
-  it to `true` to allow the existing local-browser CJK/emoji fallback for missing
-  glyphs. Without `fonts.json` (HTTP 404), the previous browser behavior remains.
+- `id` uniquely names an entry. `defaultFont` selects the unresolved document
+  face; `uiFont` independently selects menus and toolbars. Omitted `uiFont`
+  uses the document default. Aliases affect display without rewriting stored
+  typeface names. Conflicting aliases fail the build.
+- `text` and/or UTF-8 `textFile` select the subset repertoire. Variation
+  selectors are retained. With neither field the source is copied intact.
+  Subsets receive separate `Ibis Subset <id>` families. Optional `family` can
+  group regular/bold/italic entries. Attribution/license records are retained.
+- `licenseFile` is copied and linked from the manifest. Use redistributable
+  fonts and include their required notices.
+- `browserFallback` defaults to false with a manifest. Set true to allow local
+  browser CJK/emoji fallback. Without a manifest, legacy behavior remains.
+- `dynamic.endpoint` accepts a same-origin path or HTTP(S) URL. Dynamic loading
+  requires strict (`false`) browser fallback. Without `strategy: "faces"`, the
+  legacy missing-glyph fallback provider is used.
 
-To supply missing characters while editing, configure a gjs subset endpoint:
+Full fonts above 20 MiB are split into verified assets, then reassembled without
+alteration. Hashes are checked for parts and complete fonts. Invalid assets or
+families stop startup visibly. Rebuild and reload after configuration changes;
+remove `fonts.json` to remove a deployed font set.
 
-```json
-"dynamic": { "endpoint": "https://your-gjs.example/api/font/subset", "font": "ipamjm" }
-```
+## Own font API and deployment
 
-Add this property to the top level of the configuration and set
-`browserFallback` to `false`. The configured gjs service must have the named
-font and allow CORS. The browser requests missing grapheme clusters, in batches,
-using gjs's `format=otf` API and registers the responses as fallback fonts.
-The missing characters and a Latin `m` are sent in the request URL to the configured
-service. GPUI requires `m` to accept a font, so the chosen font must cover it;
-otherwise gjs may select its own fallback or return no font. The service and intermediate servers can see and log these characters. Select
-a service appropriate for the document's confidentiality.
-
-This is fallback for missing glyphs: GPUI's notification does not identify the
-original face, so one configured gjs font supplies them across all typefaces.
-If another loaded font already covers a character, it will be used without a
-request. Detection is based on missing glyph IDs and may not detect an absent
-variation selector when its base glyph exists. A 204 response means the service
-could not supply the character; network failures are logged to the console.
-The browser accumulates subsets for the session. Full fonts can still be supplied
-when comprehensive or face-specific coverage is needed. This mechanism is for
-the browser build; native font discovery is unchanged.
-
-Full fonts larger than 20 MiB are split into content-addressed chunks. The
-loader verifies each part and reassembles the original font, then verifies its
-whole-file SHA-256. This keeps each Cloudflare Static Asset below its size limit.
-The loader resolves font URLs relative to the manifest, including deployments
-under a subpath. Failed font downloads,
-invalid manifests, and unregistered families stop startup with a visible error.
-After changing the font configuration, rebuild the assets and reload the page.
-To remove a configured font set, remove the deployed `fonts.json` too.
-
-Validation:
+`worker/index.ts` serves `/api/font/subset` and forwards other paths to static
+assets. It streams fonts from this project's `FONT_SOURCES` R2 binding into
+its WASM engine. One active allocation bounds concurrent memory use. The
+allowlist has IPAmj Mincho (`ipamjm`), Noto Sans CJK JP (`NotoSansCJKJP`) and
+the additional administrative Mincho (`acgjm`).
 
 ```sh
-npm run test:fonts
-GJS_DIR=../gjs npm run test:fonts  # also exercise the actual gjs subsetter
+# Once per account, when the bucket does not exist:
+npx wrangler r2 bucket create ibis-office-fonts
+# Local runtime qualification:
+python3 scripts/upload-web-fonts.py
+npx wrangler dev --compatibility-date 2026-10-30
+# Production source provisioning and deployment:
+python3 scripts/upload-web-fonts.py --remote
+npx wrangler deploy --dry-run
+npx wrangler deploy
 ```
 
-## ibis.sorane.dev font set
+The pinned local runtime supports dates through 2026-10-30, so local dev uses
+that CLI override; production keeps its existing 2026-11-10 date.
 
-`scripts/web-fonts.sorane.json` uses small bootstrap subsets of IPAmj Mincho
-and Noto Sans CJK JP (also used for the UI), then obtains missing glyphs on demand from the gjs API.
-Administrative Plane 16 characters are requested from the Digital Agency font
-without adding Latin characters. Distinct subsets are kept in separate fallback
-chains for Mincho and Gothic. The response may contain a different fallback
-font when the requested font lacks a character. See `/font-notices.html` for
-attribution and licenses. Missing graphemes are sent to the configured API;
-this exposes those characters to its operator and network logs. The current
-missing-glyph reporting does not detect every variation sequence when its base
-character is already available.
+GET parameters are `font`, `text` (1–128 Unicode code points), and `format`
+(`otf` or `woff2`, default `otf`). Responses include `X-Font-Id`,
+`X-Font-License`, `X-Original-Font`, ETag and `X-Cache`. Cache keys include exact
+text, font ID, source ETag, engine hash and format, with a one-hour lifetime.
+Unsupported glyphs return 204 without silently changing the face.
+Busy/rate-limited requests return 429 with Retry-After.
+
+The config preserves `ibis.sorane.dev`, enables tracing and error events,
+and disables automatic invocation logs. Serving code omits requested characters
+and request URLs from logs. Missing characters are still sent in the GET URL,
+so the operator and network intermediaries can see them. Choose a service
+appropriate for document confidentiality.
+
+## ibis.sorane.dev behavior
+
+`scripts/web-fonts.sorane.json` bootstraps ASCII from IPAmj and Noto. Noto is
+used for UI; document Mincho and Gothic keep separate on-demand fallback chains.
+Administrative Plane 16 characters request `acgjm` without Latin padding.
+Current reporting does not detect every absent variation sequence when its
+base glyph is available. This migration does not expand the three source fonts'
+coverage or import GJS's other fonts/fallbacks. `/font-notices.html` has font
+terms and attribution.
+
+## Verification
 
 ```sh
-IBIS_WEB_FONTS_CONFIG=scripts/web-fonts.sorane.json GJS_DIR=../gjs \
-  RUSTUP_TOOLCHAIN=nightly scripts/build-web.sh --release
+cargo test --locked -p ibis-font-subsetter
 npm run test:web
+npm run check:worker
 npx wrangler deploy --dry-run
 ```
+
+Tests build the actual WASM and exercise IVS, CFF, composite glyphs, Plane 16,
+cache isolation, stream failures and resource release. Original tiny synthetic
+fixtures make CI independent of external repositories, font downloads and APIs.

@@ -73,10 +73,11 @@ test('rejects ambiguous aliases and unknown defaults before fetching fonts', asy
 
 test('validates optional dynamic endpoint and requires strict font fallback', async () => {
   const value = manifest();
-  value.dynamic = { endpoint: 'https://example.test/api/font/subset', font: 'ipamjm' };
+  value.dynamic = { endpoint: '/api/font/subset', font: 'ipamjm' };
   const fetcher = async url => url.href === manifestURL.href ? Response.json(value) : new Response(bytes);
   const loaded = await loadWebFonts(manifestURL, fetcher);
   assert.equal(loaded.dynamic.font, 'ipamjm');
+  assert.equal(loaded.dynamic.endpoint, 'https://example.test/api/font/subset');
   value.browserFallback = true;
   await assert.rejects(loadWebFonts(manifestURL, fetcher), /dynamic font/);
   value.browserFallback = false;

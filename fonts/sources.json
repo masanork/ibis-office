@@ -1,0 +1,34 @@
+{
+  "fonts": [
+    {
+      "id": "ipamjm",
+      "filename": "ipamjm.ttf",
+      "key": "fonts/ipamjm.ttf",
+      "url": "https://dforest.watch.impress.co.jp/library/i/ipamjfont/10750/ipamjm00601.zip",
+      "archive": true,
+      "sha256": "a3e84f495f3c388db7a1473bf1985c1c076d0c814100f10a027ca6853eb1e8cb",
+      "license": "LicenseRef-IPA-1.0",
+      "originalUrl": "https://moji.or.jp/mojikiban/font/"
+    },
+    {
+      "id": "acgjm",
+      "filename": "acgjm.ttf",
+      "key": "fonts/acgjm.ttf",
+      "url": "https://www.digital.go.jp/assets/contents/node/basic_page/field_ref_resources/f3a1de20-1f15-44fd-ade8-4e0e9eb52e8b/b5f08c73/20260818_policies_local_govarnments_outline_01.zip",
+      "archive": true,
+      "sha256": "8e660718fb4480a044f0848a83d718d16cd016b53ada4476e587f328ae39dd85",
+      "license": "OFL-1.1",
+      "originalUrl": "https://www.digital.go.jp/policies/local_governments/character-specification#mincho-font"
+    },
+    {
+      "id": "NotoSansCJKJP",
+      "filename": "NotoSansCJKjp-Regular.otf",
+      "key": "fonts/NotoSansCJKjp-Regular.otf",
+      "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf",
+      "archive": false,
+      "sha256": "68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5",
+      "license": "OFL-1.1",
+      "originalUrl": "https://github.com/notofonts/noto-cjk/tree/Sans2.004"
+    }
+  ]
+}

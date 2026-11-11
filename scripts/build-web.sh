@@ -27,10 +27,12 @@ PROFILE=debug
 FLAGS=()
 if [[ "${1:-}" == "--release" ]]; then PROFILE=release; FLAGS=(--release); fi
 
+scripts/build-font-subsetter.sh
+
 # Optional self-hosted fonts, prepared before the app starts. Relative font and
 # text paths are resolved against the configuration file, not this script.
 if [[ -n "${IBIS_WEB_FONTS_CONFIG:-}" ]]; then
-  node scripts/build-web-fonts.mjs "$IBIS_WEB_FONTS_CONFIG" "${GJS_DIR:-../gjs}" www
+  node scripts/build-web-fonts.mjs "$IBIS_WEB_FONTS_CONFIG" www
 fi
 
 # A deep UI tree needs more than wasm-ld's default 1 MiB stack in debug builds

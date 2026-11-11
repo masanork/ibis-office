@@ -33,8 +33,8 @@ BUILDS = {
     "linux": (os.path.join(ROOT, "crates", "ibis-office-app", "linux", "license.md"), "x86_64-unknown-linux-gnu", "Linux 版"),
 }
 # What each build ships besides the app: the AppImage's runtime is in the Linux one.
-EXTRA_PACKAGES = {"linux": ["ibis-appimage"]}
-OWN = {"ibis-office-app", "ibis-doc-model", "ibis-pptx", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
+EXTRA_PACKAGES = {"web": ["ibis-font-subsetter"], "linux": ["ibis-appimage"]}
+OWN = {"ibis-font-subsetter", "ibis-office-app", "ibis-doc-model", "ibis-pptx", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
 
 
 def run(*args):
@@ -51,7 +51,7 @@ def crates(target, extra=()):
         m = re.match(r"(\S+) v(\S+)", line.strip())
         if m:
             names.add((m.group(1), m.group(2)))
-    meta = json.loads(run("cargo", "metadata", "--locked", "--format-version", "1"))
+    meta = json.loads(run("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", target))
     by_id = {(p["name"], p["version"]): p for p in meta["packages"]}
     out = []
     for name, version in sorted(names):
@@ -198,7 +198,7 @@ def write(build):
     ecma_art = open(os.path.join(ROOT, "crates", "ibis-office-app", "data", "artborders", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
     plex = open(os.path.join(ROOT, "crates", "ibis-office-app", "fonts", "OFL.txt"), encoding="utf-8").read().strip()
     carlito = open(os.path.join(ROOT, "crates", "ibis-office-app", "fonts", "carlito", "OFL.txt"), encoding="utf-8").read().strip()
-    assets = json.loads(run("cargo", "metadata", "--locked", "--format-version", "1"))
+    assets = json.loads(run("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", target))
     lucide_dir = next(os.path.dirname(p["manifest_path"]) for p in assets["packages"] if p["name"] == "gpui-kit-assets")
     lucide = open(os.path.join(lucide_dir, "LICENSE-LUCIDE"), encoding="utf-8").read().strip()
 
@@ -258,6 +258,11 @@ def write(build):
           "Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本文」の Apache-2.0）。" + (f" {material_source}。" if material_source else ""),
           "ファイル名から寸法の接尾辞（`_20px`）を除き、塗りつぶし版は `_fill` と名付けた。図形は変えていない。",
           "",
+          *(["### ibisOffice font subset engine", "",
+             "Imported from masanork/gjs (9173a4d90addf8b6c7e3563473c9195e3acbdb5e).",
+             "Copyright (c) 2026 Digital Agency, Government of Japan / Masanori Kusunoki.",
+             "The donation is distributed under AGPL-3.0-only. The original MIT notice is retained in",
+             "[ORIGIN.md](https://github.com/masanork/ibis-office/blob/masanork/crates/ibis-font-subsetter/ORIGIN.md); the MIT license text appears below.", ""] if build == "web" else []),
           "### Rust の部品",
           "",
           "各部品のライセンス ファイルにある著作権表示です（ライセンス ファイルに表示がない部品は、上の一覧のライセンスと入手先に従います）。",

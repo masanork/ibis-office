@@ -65,7 +65,7 @@ export function checksum(bytes) {
   return sum;
 }
 
-/** gjs names every subset "GJS Subset". Give separate faces distinct families,
+/** The engine names every subset "IBS Subset". Give separate faces distinct families,
  * preserving copyright/license records and every non-name table (including cmap14).
  */
 export function renameSubset(bytes, family) {

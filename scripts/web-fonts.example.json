@@ -4,14 +4,23 @@
   "fonts": [
     {
       "id": "gothic",
-      "path": "../../gjs/data/sources/fonts/NotoSansCJKjp-Regular.otf",
-      "aliases": ["游ゴシック", "Yu Gothic", "MS Gothic", "ＭＳ ゴシック", "メイリオ", "Meiryo"]
+      "path": "../data/fonts/NotoSansCJKjp-Regular.otf",
+      "aliases": [
+        "游ゴシック",
+        "Yu Gothic",
+        "MS Gothic",
+        "ＭＳ ゴシック",
+        "メイリオ",
+        "Meiryo"
+      ]
     },
     {
       "id": "latin",
       "path": "../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf",
       "text": " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:;!?+-*/=()[]{}%#@&_\"'<>\\|~`^$",
-      "aliases": ["Calibri"],
+      "aliases": [
+        "Calibri"
+      ],
       "licenseFile": "../crates/ibis-office-app/fonts/carlito/OFL.txt"
     }
   ]
