@@ -472,6 +472,8 @@ pub(crate) struct Layouter<'r> {
     /// The same, as this pass lays them out.
     page_anchors: std::cell::RefCell<std::collections::HashMap<usize, usize>>,
     body_section: std::cell::Cell<usize>,
+    /// Sections whose horizontal layout will be rotated into right-to-left vertical writing.
+    vertical_sections: Vec<bool>,
     /// The footnotes' and endnotes' numbers (by the order of their marks),
     /// as shown.
     note_numbers: std::collections::HashMap<(bool, u32), String>,
@@ -767,10 +769,12 @@ struct LineDecorations {
 }
 
 impl LineDecorations {
-    fn finish(self, line: &mut LineBox) {
+    fn finish(self, line: &mut LineBox, vertical_right: bool) {
         let mut b_items = self.highlights;
         for u in self.underlines {
-            b_items.extend(underline_items(u.style, u.size, u.x, u.w, u.baseline, u.color));
+            let mut items = underline_items(u.style, u.size, u.x, u.w, u.baseline, u.color);
+            if vertical_right { mirror_vertical_underline(&mut items, u.baseline, u.size); }
+            b_items.extend(items);
         }
         for b in self.borders {
             let extra_bw = (pt(b.border.total()) - pt(b.border.width)).max(0.0);
@@ -3179,7 +3183,7 @@ impl<'r> Layouter<'r> {
                         }
                     }
                     flush(&mut run, &mut line, &mut dec);
-                    dec.finish(&mut line);
+                    dec.finish(&mut line, self.vertical_underline_right());
                     let end = positions.get(seg.e).map_or(p.len(), |&(position, _)| position);
                     stops.push((end, x - line_x));
                     line.items.push(Item::Line { para: p.id, x: line_x, y: 0.0, h: line.height, stops: stops.into(), vertical: false });
@@ -3991,7 +3995,7 @@ impl<'r> Layouter<'r> {
                 }
             }
             flush(&mut run, &mut line, &mut dec);
-            dec.finish(&mut line);
+            dec.finish(&mut line, self.vertical_underline_right());
             // Where the line's text ends: the next line's first position.
             let end = positions.get(e).map_or(p.len(), |&(position, _)| position);
             stops.push((end, x - line_x));
@@ -4031,9 +4035,14 @@ struct LineSettings {
     default_tab_stop: Option<Emu>,
     char_grid: bool,
     char_space: Option<Emu>,
+    vertical_underline_right: bool,
 }
 
 impl Layouter<'_> {
+    fn vertical_underline_right(&self) -> bool {
+        self.vertical_sections.get(self.body_section.get()).copied().unwrap_or(false)
+    }
+
     fn line_settings(&self) -> LineSettings {
         LineSettings {
             compat_mode: self.doc.compat_mode,
@@ -4046,6 +4055,7 @@ impl Layouter<'_> {
             default_tab_stop: self.doc.default_tab_stop,
             char_grid: self.char_grid.get(),
             char_space: self.char_space.get(),
+            vertical_underline_right: self.vertical_underline_right(),
         }
     }
 }
@@ -7465,6 +7475,8 @@ fn paginate_whole(doc: &FlowDocument, res: &Resources) -> Pagination {
             anchor_pages: anchors,
             page_anchors: std::cell::RefCell::new(std::collections::HashMap::new()),
             body_section: std::cell::Cell::new(0),
+            vertical_sections: ids.iter().map(|id| ibis_doc_model::flow_command::section_setup(doc, *id)
+                .is_some_and(|setup| setup.page.direction == ibis_doc_model::CellDirection::TbRl)).collect(),
             note_numbers: known_notes.unwrap_or_else(|| note_numbers(doc)),
             current_note: std::cell::RefCell::new(String::new()),
             contextual: contextual_spacing(doc),
@@ -7784,6 +7796,19 @@ pub(crate) fn expand_pages(presentation: &mut ibis_doc_model::Presentation, res:
     presentation.slides = slides;
 }
 
+
+/// Mirror underline geometry around the vertical text cell before the page is
+/// rotated clockwise. Ordinary rectangles and strikes are intentionally untouched.
+fn mirror_vertical_underline(items: &mut [Item], baseline: f32, size: f32) {
+    let twice_axis = 2.0 * baseline - 0.85 * size;
+    for item in items {
+        match item {
+            Item::Rect { y, h, .. } => *y = twice_axis - *y - *h,
+            Item::Stroke { y, y2, .. } => { *y = twice_axis - *y; *y2 = twice_axis - *y2; }
+            _ => {}
+        }
+    }
+}
 
 /// The rectangles of an underline `w` long from `x`, under text of `size`
 /// points whose baseline is at `baseline` (measured on Word's PDF: a single
@@ -8153,6 +8178,28 @@ fn turn_page_items(items: Vec<Item>, direction: ibis_doc_model::CellDirection, w
 mod turn_japanese_tests {
     use super::{Item, turn_japanese};
     use std::sync::Arc;
+
+    #[test]
+    fn vertical_page_underlines_follow_the_right_side_of_the_text() {
+        use ibis_doc_model::{CellDirection, UnderlineStyle};
+        let text = Item::Text { x: 10.0, y: 20.0, text: "縦".into(), offsets: Arc::from([0.0f32]), font: gpui_kit::font("Test"), size: 10.0, color: gpui_kit::black() };
+        for style in [UnderlineStyle::Single, UnderlineStyle::Double, UnderlineStyle::Dotted, UnderlineStyle::Wave] {
+            let mut decoration = super::underline_items(style, 10.0, 10.0, 10.0, 20.0, gpui_kit::black());
+            super::mirror_vertical_underline(&mut decoration, 20.0, 10.0);
+            let mut input = vec![text.clone()]; input.extend(decoration);
+            let out = super::turn_page_items(input, CellDirection::TbRl, 800.0, 600.0);
+            let Item::Text { x, size, .. } = &out[0] else { panic!("vertical text missing") };
+            let right = *x + *size;
+            for item in &out[1..] {
+                let line_x = match item {
+                    Item::Rect { x, .. } => *x,
+                    Item::Stroke { x, x2, .. } => x.min(*x2),
+                    _ => panic!("unexpected decoration"),
+                };
+                assert!(line_x > right, "{style:?}: line {line_x} should be right of {right}");
+            }
+        }
+    }
 
     // `lrTbV` turns its Japanese characters left, including the ones squeezed one by one (bold fixed-width font, `w:w`, `fitText`).
     #[test]
