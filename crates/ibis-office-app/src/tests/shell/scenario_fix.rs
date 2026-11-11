@@ -551,7 +551,9 @@ fn about_shows_powered_by() {
     assert!((f32::from(pc.x) - f32::from(bc.x)).abs() < 1.0 && (f32::from(pc.y) - f32::from(bc.y)).abs() < 1.0);
     assert_eq!(crate::shell::about_window::POWERED_BY, "Powered by ibisOffice");
     assert_eq!(crate::shell::about_window::PROJECT_URL, "https://github.com/ibisjp/ibis-office");
-    assert_eq!(crate::shell::about_window::version_line(), format!("バージョン {}", env!("IBIS_VERSION")));
+    let version = format!("バージョン {}", env!("IBIS_VERSION"));
+    let expected = option_env!("IBIS_BUILD_IDENTITY").map_or_else(|| version.clone(), |identity| format!("{version} · {identity}"));
+    assert_eq!(crate::shell::about_window::version_line(), expected);
     s.screenshot_of(handle.into(), "about");
 }
 

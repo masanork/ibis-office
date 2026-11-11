@@ -187,6 +187,7 @@ cargo build --release
 
 - On Windows, build with `cargo build --release -p ibis-office-app` (the whole workspace includes a Linux-only crate); the app is `target\release\ibisOffice.exe`.
 - On macOS, `scripts/bundle-macos.sh --release` builds the app at `target/release/ibisOffice.app`.
+- The About dialog shows the Git branch and commit for builds from a checkout. `dirty` means tracked files or submodules have uncommitted changes; untracked files are not included. Set `IBIS_BUILD_BRANCH` to the source branch when building a detached checkout in CI. Source archives without Git show only the version.
 - On Linux, `scripts/bundle-linux.sh --release` builds an AppImage at `target/dist/ibisOffice-<version>-Linux.AppImage`, and `scripts/bundle-flatpak.sh --release` a Flatpak bundle at `target/dist/ibisOffice-<version>-Linux-<arch>.flatpak` (needs `flatpak-builder`).
 - For the browser edition, build with `scripts/build-web.sh --release` and serve `www/` (browsers with WebGPU: Chrome, Edge, Safari 26 or later).
 
