@@ -28,7 +28,7 @@ async function enroll(request: Request, env: Env): Promise<Response> {
   // conditional on the previous INSERT, so a valid invite grants exactly one
   // account even when two redemption requests race.
   const results = await env.DB.batch([
-    env.DB.prepare('INSERT INTO sample_admin(issuer,sub,created_at) SELECT ?,?,? FROM sample_admin_invite WHERE token_hash=? AND expires_at>?').bind(env.ISSUER,session.sub,timestamp,digest,timestamp),
+    env.DB.prepare('INSERT INTO sample_admin(issuer,sub,created_at,invite_hash) SELECT ?,?,?,? FROM sample_admin_invite WHERE token_hash=? AND expires_at>?').bind(env.ISSUER,session.sub,timestamp,digest,digest,timestamp),
     env.DB.prepare('DELETE FROM sample_admin_invite WHERE token_hash=? AND changes()=1').bind(digest),
   ]);
   if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) fail(403, 'invalid_invitation');
