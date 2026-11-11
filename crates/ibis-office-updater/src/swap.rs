@@ -68,8 +68,20 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 /// Put `new` in place of `old`. `check` looks at the copy (made next to `old`) before anything is replaced. On an error `old` is as it was.
 pub fn install(old: &Path, new: &Path, check: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
     let (staged, backup) = (staged_of(old), backup_of(old));
-    let _ = std::fs::remove_dir_all(&staged);
-    let _ = std::fs::remove_dir_all(&backup);
+    // A previous attempt may have been interrupted after moving the old
+    // copy aside. Never discard either recovery candidate automatically.
+    for path in [&staged, &backup] {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => return Err(format!("recovery path already exists: {}", path.display())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {},
+            Err(err) => return Err(format!("checking {}: {err}", path.display())),
+        }
+    }
+    if !old.is_dir() || !new.is_dir() {
+        return Err("installed and new copies must both be directories".into());
+    }
+    // Claim a fresh stage, so an existing path is never overwritten.
+    std::fs::create_dir(&staged).map_err(|e| format!("creating {}: {e}", staged.display()))?;
     if let Err(err) = copy_tree(new, &staged) {
         let _ = std::fs::remove_dir_all(&staged);
         return Err(format!("copying {} to {}: {err}", new.display(), staged.display()));
@@ -154,6 +166,46 @@ mod tests {
         rollback(&dir.join("old")).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("old/app.exe")).unwrap(), "old");
         assert!(!backup_of(&dir.join("old")).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interrupted_backup_is_never_deleted_by_a_retry() {
+        let dir = tree("interrupted-backup");
+        let old = dir.join("old");
+        let backup = backup_of(&old);
+        std::fs::rename(&old, &backup).unwrap();
+        assert!(install(&old, &dir.join("new"), &|_| Ok(())).is_err());
+        assert_eq!(std::fs::read_to_string(backup.join("app.exe")).unwrap(), "old");
+        assert!(!old.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_backup_or_stage_is_not_overwritten() {
+        let dir = tree("existing-recovery");
+        let old = dir.join("old");
+        for recovery in [backup_of(&old), staged_of(&old)] {
+            std::fs::create_dir(&recovery).unwrap();
+            std::fs::write(recovery.join("keep"), "recovery").unwrap();
+            assert!(install(&old, &dir.join("new"), &|_| Ok(())).is_err());
+            assert_eq!(std::fs::read_to_string(recovery.join("keep")).unwrap(), "recovery");
+            assert_eq!(std::fs::read_to_string(old.join("app.exe")).unwrap(), "old");
+            std::fs::remove_dir_all(&recovery).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_recovery_symlink_is_preserved() {
+        let dir = tree("dangling-recovery");
+        let old = dir.join("old");
+        let backup = backup_of(&old);
+        std::os::unix::fs::symlink(dir.join("missing"), &backup).unwrap();
+        assert!(install(&old, &dir.join("new"), &|_| Ok(())).is_err());
+        assert!(std::fs::symlink_metadata(&backup).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(old.join("app.exe")).unwrap(), "old");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
