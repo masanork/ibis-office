@@ -245,13 +245,13 @@ impl Kind {
         match extension.to_ascii_lowercase().as_str() {
             "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" => Some(Kind::Presentation),
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" => Some(Kind::Workbook),
-            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "jtd" | "jtt" => Some(Kind::Document),
+            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "jtd" | "jtt" | "jttc" => Some(Kind::Document),
             _ => None,
         }
     }
 
     /// The extensions of the files that can be opened (what `from_extension` knows), for the file dialog.
-    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt"];
+    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc"];
 
     /// The kind of document contained in `presentation`.
     pub fn of(presentation: &Presentation) -> Self {

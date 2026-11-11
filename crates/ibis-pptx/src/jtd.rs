@@ -11,6 +11,7 @@
 use crate::{Error, Kind};
 mod decode;
 mod font;
+mod compressed;
 pub use decode::{DecodedText, Diagnostic, Piece, Record, RecordKind, StyleSpan};
 pub use font::FontRecord;
 use ibis_doc_model::{
@@ -21,9 +22,15 @@ use ibis_doc_model::{
 const MAX_FILE: usize = 64 * 1024 * 1024;
 const MAX_STREAM: usize = 32 * 1024 * 1024;
 
-/// Uncompressed Ichitaro document or template extension (case-insensitive).
+/// Supported Ichitaro document or template extension (case-insensitive).
 pub fn is_extension(extension: &str) -> bool {
-    extension.eq_ignore_ascii_case("jtd") || extension.eq_ignore_ascii_case("jtt")
+    extension.eq_ignore_ascii_case("jtd") || extension.eq_ignore_ascii_case("jtt") || extension.eq_ignore_ascii_case("jttc")
+}
+
+/// Never label a DOCX conversion as a native Ichitaro format, even if this
+/// importer does not currently offer that compressed variant in the picker.
+pub fn is_native_extension(extension: &str) -> bool {
+    is_extension(extension) || extension.eq_ignore_ascii_case("jtdc")
 }
 
 fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
@@ -52,13 +59,32 @@ fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
 /// Identify a supported JTD by its container and named document stream.
 pub fn is_jtd(data: &[u8]) -> bool {
     checked_stream(data).is_ok_and(|s| s.starts_with(b"SsmgV.01"))
+        || (data.len() <= MAX_FILE && ibis_ooxml::cfb::stream_path(data, "JSCompDocument").is_ok_and(|s| compressed::is_wrapper(&s)))
+}
+
+fn source_document(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, Error> {
+    if data.len() > MAX_FILE { return Err(Error::new("一太郎ファイルが大きすぎます")); }
+    let entries = ibis_ooxml::cfb::directory(data).map_err(|_| Error::new("対応する一太郎コンテナではありません"))?;
+    if entries.iter().any(|entry| !entry.is_storage && entry.path == "DocumentText") {
+        // A malformed or over-limit root stream must not silently fall back
+        // to a second, unrelated compressed document in the same container.
+        checked_stream(data)?;
+        return Ok(std::borrow::Cow::Borrowed(data));
+    }
+    let stream = ibis_ooxml::cfb::stream_path(data, "JSCompDocument")
+        .map_err(|_| Error::new("一太郎本文がないか、暗号化・未対応の形式です"))?;
+    if stream.len() > MAX_STREAM { return Err(Error::new("圧縮一太郎文書が大きすぎます")); }
+    let inner = compressed::decompress(&stream, MAX_FILE)?;
+    checked_stream(&inner)?;
+    Ok(std::borrow::Cow::Owned(inner))
 }
 
 /// Decode the font table without assuming that inline character selectors
 /// use the same index namespace.
 pub fn inspect_fonts(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
-    checked_stream(data)?;
-    font_table(data)
+    let data = source_document(data)?;
+    checked_stream(&data)?;
+    font_table(&data)
 }
 
 fn font_table(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
@@ -117,8 +143,8 @@ pub struct OmittedContent {
 }
 
 pub fn omitted_content(data: &[u8]) -> Result<OmittedContent, Error> {
-    checked_stream(data)?;
-    let entries = ibis_ooxml::cfb::directory(data).map_err(|e| Error::new(e.to_string()))?;
+    let data = source_document(data)?;
+    let entries = ibis_ooxml::cfb::directory(&data).map_err(|e| Error::new(e.to_string()))?;
     let mut result = OmittedContent::default();
     for entry in entries {
         let path = entry.path.as_str();
@@ -139,6 +165,8 @@ pub fn omitted_content(data: &[u8]) -> Result<OmittedContent, Error> {
 /// Import only confirmed text into the existing document model. This is lossy
 /// and must never be used as the source of a JTD save.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
+    let data = source_document(data)?;
+    let data = data.as_ref();
     let stream = checked_stream(data)?;
     let decoded = decode::decode(&stream)?;
     let mut presentation = crate::read(&crate::blank_file(Kind::Document)?)?;
@@ -1252,7 +1280,8 @@ fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
 /// Inspect original logical units and record ranges without applying table
 /// inference. Unknown properties and undecoded style tails remain available.
 pub fn inspect(data: &[u8]) -> Result<DecodedText, Error> {
-    decode::decode(&checked_stream(data)?)
+    let data = source_document(data)?;
+    decode::decode(&checked_stream(&data)?)
 }
 
 fn run_style(document: &DecodedText, position: usize, defaults: &FlowRunStyle) -> FlowRunStyle {
@@ -1507,7 +1536,7 @@ fn extract_decoded(
             _ => false,
         })
     {
-        return Err(Error::new("対応するJTD本文を読み取れませんでした"));
+        return Err(Error::new("表示できる一太郎本文を読み取れませんでした。画像・図形・埋め込みは現在未対応です"));
     }
     Ok(out)
 }
@@ -1690,6 +1719,48 @@ mod tests {
         let decoded = inspect(&data).unwrap();
         assert!(decoded.units.contains(&0x7532));
         assert!(!decoded.units.contains(&0x4e59));
+    }
+
+    #[test]
+    fn compressed_template_imports_text_and_preserves_omission_diagnostics() {
+        use ibis_ooxml::cfb::Item;
+        let inner = ibis_ooxml::cfb::write(&[
+            Item::stream("DocumentText", decode::fixture(&[0x7532, 0x4e59])),
+            Item::storage("Embedding 1"),
+        ]);
+        let wrapper = compressed::fixture(&inner);
+        let outer = ibis_ooxml::cfb::write(&[Item::stream("JSCompDocument", wrapper)]);
+        assert!(is_extension("JTTC"));
+        assert!(is_jtd(&outer));
+        assert_eq!(inspect(&outer).unwrap().units, vec![0x7532, 0x4e59]);
+        assert_eq!(omitted_content(&outer).unwrap().embedded_objects, 1);
+        let doc = read(&outer).unwrap();
+        let docx = export_docx(&doc).unwrap();
+        let reopened = crate::read(&docx).unwrap();
+        assert!(reopened.flow.unwrap().body.iter().any(|block| matches!(block, Block::Paragraph(p) if p.text().contains("甲乙"))));
+    }
+
+    #[test]
+    fn image_only_document_reports_that_embedded_content_is_unsupported() {
+        use ibis_ooxml::cfb::Item;
+        let inner = ibis_ooxml::cfb::write(&[
+            Item::stream("DocumentText", decode::fixture(&[10, 10])),
+            Item::storage("Embedding 1"),
+        ]);
+        let outer = ibis_ooxml::cfb::write(&[Item::stream("JSCompDocument", compressed::fixture(&inner))]);
+        let error = match read(&outer) { Ok(_) => panic!("must not present a blank preview as a successful import"), Err(error) => error };
+        assert!(error.to_string().contains("埋め込み"));
+    }
+
+    #[test]
+    fn oversized_root_text_does_not_fall_back_to_compressed_content() {
+        use ibis_ooxml::cfb::Item;
+        let inner = ibis_ooxml::cfb::write(&[Item::stream("DocumentText", decode::fixture(&[0x7532]))]);
+        let data = ibis_ooxml::cfb::write(&[
+            Item::stream("DocumentText", vec![0; MAX_STREAM + 1]),
+            Item::stream("JSCompDocument", compressed::fixture(&inner)),
+        ]);
+        assert!(source_document(&data).is_err());
     }
 
     #[test]

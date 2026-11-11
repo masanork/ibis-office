@@ -133,7 +133,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn copy_to(&self, path: &std::path::Path) -> Result<(), String> {
         if self.is_jtd_read_only() { return Err(crate::shell::i18n::text("jtd.read-only").to_string()); }
-        if self.jtd_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::jtd::is_extension)) {
+        if self.jtd_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::jtd::is_native_extension)) {
             return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
         }
         let source = self.source.clone().ok_or(crate::shell::i18n::text("_shell.this-file-cannot-be-saved-yet").to_string())?;

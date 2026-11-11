@@ -922,6 +922,6 @@ jtd.omitted-objects	 埋め込み関連の格納領域{count}件は表示・変�
 jtd.read-only	一太郎文書は読み取り専用です
 jtd.edit-as-docx	Word文書に変換して編集
 jtd.editable-notice	Word文書に変換しました。未対応の書式・画像や一部の罫線は失われます。元の一太郎文書とは別に保存してください。
-jtd.source-protected	JTD・JTT形式には保存できません。元のファイルとは別に保存してください。
+jtd.source-protected	一太郎形式には保存できません。元のファイルとは別に保存してください。
 jtd.export-docx	Word（表示中の内容、途中の罫線を除く）
 jtd.docx-exported	Wordに変換しました。途中の罫線、未対応の書式や画像は含まれません。

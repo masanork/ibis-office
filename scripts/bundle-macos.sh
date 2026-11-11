@@ -91,7 +91,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
 			<key>CFBundleTypeName</key><string>Ichitaro document</string>
 			<key>CFBundleTypeRole</key><string>Viewer</string>
 			<key>LSHandlerRank</key><string>Alternate</string>
-			<key>CFBundleTypeExtensions</key><array><string>jtd</string><string>jtt</string></array>
+			<key>CFBundleTypeExtensions</key><array><string>jtd</string><string>jtt</string><string>jttc</string></array>
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
