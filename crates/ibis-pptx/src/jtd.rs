@@ -188,6 +188,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 total,
                 strips,
                 rules,
+                row_alignment,
             } => {
                 if !paragraph.runs.is_empty() {
                     paragraph.id = if std::mem::replace(&mut original_paragraph_available, false) {
@@ -245,6 +246,15 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     cell_para.id = next_id;
                     next_id += 1;
                     cell_para.runs.clear();
+                    // A ruled display row starts a new source paragraph. Its
+                    // alignment must not inherit a preceding paragraph's
+                    // right/centre alignment. Preserve a value explicitly
+                    // present in this row's own header.
+                    if flow.page.direction.vertical() && rules.is_some() {
+                        let align = row_alignment.unwrap_or_default();
+                        cell_para.align = align;
+                        cell_para.direct.align = Some(align);
+                    }
                     // A JTD ruled display row is one source line. On a vertical
                     // page its fixed row height becomes the column width. If
                     // the paragraph keeps Word's automatic line height, the
@@ -355,6 +365,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                 last_table_key = table_key;
             }
             Segment::RowStart(_)
+            | Segment::RowAlignment(_)
             | Segment::RowRules(_)
             | Segment::CellStart(_, _)
             | Segment::RowEnd => {
@@ -807,6 +818,7 @@ enum Segment {
     },
     PageBreak,
     RowStart(u16),
+    RowAlignment(ibis_doc_model::FlowAlign),
     RowRules(RuleLayout),
     CellStart(u16, u16),
     RowEnd,
@@ -815,6 +827,7 @@ enum Segment {
         total: u16,
         strips: bool,
         rules: Option<RuleLayout>,
+        row_alignment: Option<ibis_doc_model::FlowAlign>,
     },
 }
 
@@ -1399,6 +1412,7 @@ fn extract_decoded(
                             _ => {}
                         }
                     }
+                    let row_alignment = format.align;
                     if format != ibis_doc_model::ParaFormat::default() {
                         out.push(Segment::ParagraphFormat(format));
                     }
@@ -1407,6 +1421,9 @@ fn extract_decoded(
                             let values = &document.units[range.clone()];
                             if let Some(width) = values.first().filter(|n| **n > 0) {
                                 out.push(Segment::RowStart(*width));
+                                if let Some(align) = row_alignment {
+                                    out.push(Segment::RowAlignment(align));
+                                }
                                 // The TLV terminator belongs to the list, not
                                 // the rule value. Legacy rule helper expects it.
                                 let mut rules = values.to_vec();
@@ -1485,6 +1502,7 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
         }
         let mut cells: Vec<(u16, u16, Vec<Segment>)> = Vec::new();
         let mut rules = None;
+        let mut row_alignment = None;
         let mut valid = matches!(original.last(), Some(Segment::RowEnd));
         for part in &original[1..] {
             match part {
@@ -1500,6 +1518,9 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
                 }
                 Segment::RowRules(value) if cells.is_empty() && rules.is_none() => {
                     rules = Some(value.clone());
+                }
+                Segment::RowAlignment(value) if cells.is_empty() && row_alignment.is_none() => {
+                    row_alignment = Some(*value);
                 }
                 Segment::RowEnd => {}
                 Segment::Text(_)
@@ -1539,6 +1560,7 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
                 total,
                 strips: true,
                 rules,
+                row_alignment,
             });
             continue;
         }
@@ -1548,6 +1570,7 @@ fn table_candidates(segments: Vec<Segment>) -> Vec<Segment> {
                 total,
                 strips: false,
                 rules,
+                row_alignment,
             });
         } else {
             out.extend(original);
@@ -2222,6 +2245,69 @@ mod tests {
         assert_eq!(table.rows[0].height, RowHeight::Exact(180_000));
         let Block::Paragraph(p) = &table.rows[0].cells[0].blocks[0] else { panic!("explicit cell paragraph") };
         assert_eq!(p.line, ibis_doc_model::LineHeight::Exact(180_000));
+    }
+
+    #[test]
+    fn vertical_ruled_rows_do_not_inherit_a_previous_paragraph_alignment() {
+        use ibis_doc_model::FlowAlign;
+
+        // An ordinary right-aligned paragraph is followed by ruled rows.
+        // The first has no alignment of its own; the others explicitly set it.
+        fn header(items: &[u16]) -> Vec<u16> {
+            let length = (items.len() + 10) as u16;
+            let mut out = vec![0x1c, 0x10, length, 0];
+            out.extend_from_slice(items);
+            out.extend([0xffff, 0, length, 0, 0x10, 0x1f]);
+            out
+        }
+        fn row(alignment: Option<u16>) -> Vec<u16> {
+            let mut items = Vec::new();
+            if let Some(value) = alignment { items.extend([0x24, 1, value]); }
+            items.extend([0x8f, 15, 100, 0, 3, 0x23, 0, 0, 45, 0x23, 0, 0, 45, 0x23, 0, 0, 0]);
+            let mut out = header(&items);
+            out.extend([0x1c, 0x30, 12, 0, 0, 48, 0xff, 0, 12, 0, 0x30, 0x1f]);
+            out.extend("甲".encode_utf16());
+            out.extend([0x1c, 0x30, 12, 0, 52, 100, 0xff, 0, 12, 0, 0x30, 0x1f]);
+            out.extend("乙".encode_utf16());
+            out.push(0x0e);
+            out
+        }
+        let mut units = header(&[0x24, 1, 2]);
+        units.extend("見出し\n".encode_utf16());
+        units.extend(row(None));
+        units.extend(row(Some(1)));
+        units.extend(row(Some(2)));
+        let mut view = vec![0, 1, 0, 2, 0x10, 0];
+        let record = [0x10, 2, 0, 4, 0, 0, 0x10, 1];
+        view.extend((record.len() as u32).to_be_bytes());
+        view.extend(record);
+        let input = ibis_ooxml::cfb::write(&[
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&units)),
+            ibis_ooxml::cfb::Item::stream("DocumentViewStyles", view),
+        ]);
+        let model = read(&input).unwrap();
+        let reopened = crate::read(&export_docx(&model).unwrap()).unwrap();
+        for doc in [&model, &reopened] {
+            let flow = doc.flow.as_ref().unwrap();
+            assert!(matches!(&flow.body[0], Block::Paragraph(p) if p.align == FlowAlign::Right));
+            let rows: Vec<_> = flow.body.iter().filter_map(|b| if let Block::Table(t) = b { Some(t.rows.iter()) } else { None }).flatten().collect();
+            assert_eq!(rows.len(), 3);
+            for (row, expected) in rows.iter().zip([FlowAlign::Left, FlowAlign::Center, FlowAlign::Right]) {
+                let Block::Paragraph(p) = &row.cells[0].blocks[0] else { panic!("cell paragraph") };
+                assert_eq!(p.align, expected);
+            }
+        }
+        // The correction is specific to a vertical page. Horizontal ruled
+        // rows keep their existing inherited paragraph alignment.
+        let horizontal = ibis_ooxml::cfb::write(&[
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&units)),
+        ]);
+        let horizontal = read(&horizontal).unwrap();
+        let table = horizontal.flow.as_ref().unwrap().body.iter().find_map(|b| {
+            if let Block::Table(t) = b { Some(t) } else { None }
+        }).unwrap();
+        let Block::Paragraph(first) = &table.rows[0].cells[0].blocks[0] else { panic!("cell paragraph") };
+        assert_eq!(first.align, FlowAlign::Right);
     }
 
     #[test]
