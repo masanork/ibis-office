@@ -35,6 +35,10 @@ def main() -> None:
     for size in (16, 24, 32, 48, 256):
         install(ROOT / f"crates/ibis-office-app/branding/png/{size}.png",
                 data / f"icons/hicolor/{size}x{size}/apps/{APP_ID}.png", 0o644)
+    # Refresh an existing theme cache so desktop shells can discover the icon.
+    # The per-user hicolor directory need not have its own index.theme.
+    if shutil.which("gtk-update-icon-cache"):
+        subprocess.run(["gtk-update-icon-cache", "-f", "-t", str(data / "icons/hicolor")], check=True)
 
     # Exec values use desktop-entry escaping, then quoted-argument escaping.
     arg = str(binary)
