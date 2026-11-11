@@ -1169,7 +1169,9 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            if initial {
+            // A download-enabled embed needs the original package to write
+            // edits back; ordinary initial previews keep the lighter read path.
+            if initial && !crate::shell::embed::show_download() {
                 let mut result = ibis_pptx::read(&data).map_err(|e| e.to_string());
                 if let Ok(presentation) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {

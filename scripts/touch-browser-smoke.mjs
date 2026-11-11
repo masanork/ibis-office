@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Run against a local build served at IBIS_TOUCH_URL (see docs/touch-browser-test.md).
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
 
 const url = process.env.IBIS_TOUCH_URL ?? 'http://127.0.0.1:8793/editor.html?open=./samples/sorane-welcome.docx';
@@ -68,7 +69,7 @@ try {
   assert(events.includes('pointerdown') && events.includes('pointermove') && events.includes('pointerup'), 'browser must dispatch touch pointer events');
   assert.deepEqual(failures, [], 'touch interactions must not panic');
 
-  await page.close();
+  await page.context().close();
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   phone.on('pageerror', error => failures.push(error.message));
   phone.on('console', message => {
@@ -103,7 +104,62 @@ try {
   await phone.waitForTimeout(1000);
   assert(!beforePopup.equals(await menuPopup()), 'a revealed menu must open on tap');
   assert.deepEqual(failures, [], 'phone interactions must not panic');
-  console.log('PASS: tablet touch and phone fitting, zoom button, and menu scrolling');
+  await phone.context().close();
+
+  // Open from the file picker, whose source is retained for the download action.
+  const editing = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  editing.on('pageerror', error => failures.push(error.message));
+  editing.on('console', message => {
+    if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
+  });
+  await editing.addInitScript(() => window.addEventListener('ibisoffice:download', event => { window.__ibisDownloaded = Array.from(event.detail.bytes); }));
+  const editingUrl = new URL(url);
+  editingUrl.searchParams.set('download', '1');
+  await editing.goto(editingUrl.href);
+  await editing.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
+  await editing.waitForTimeout(3000);
+  const editingCdp = await editing.context().newCDPSession(editing);
+  const editingTouch = (type, touchPoints) => editingCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+  const editingTap = async (id, x, y) => {
+    await editingTouch('touchStart', [pt(id, x, y)]);
+    await editingTouch('touchEnd', []);
+  };
+  const assertDownloadContains = async marker => {
+    await editing.waitForFunction(() => Array.isArray(window.__ibisDownloaded), null, { timeout: 15_000 });
+    const docx = Buffer.from(await editing.evaluate(() => window.__ibisDownloaded));
+    execFileSync('python3', ['-c', "import io,sys,zipfile; z=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())); assert sys.argv[1] in z.read('word/document.xml').decode('utf-8')", marker], { input: docx });
+    await editing.evaluate(() => { delete window.__ibisDownloaded; });
+  };
+  await editingTap(15, 120, 200);
+  await editing.waitForTimeout(500);
+  await editing.keyboard.insertText('初期編集');
+  await editing.waitForTimeout(500);
+  await editingTap(16, 362, 18); // Download the initially opened document.
+  await assertDownloadContains('初期編集');
+
+  await editingTap(10, 43, 49); // File
+  await editing.waitForTimeout(300);
+  const chooser = editing.waitForEvent('filechooser', { timeout: 15_000 });
+  await editingTap(11, 60, 110); // Open
+  await (await chooser).setFiles('www/samples/sorane-welcome.docx');
+  await editing.waitForTimeout(3000);
+  await editingTouch('touchStart', [pt(12, 300, 550)]);
+  await editingTouch('touchMove', [pt(12, 300, 400)]);
+  await editingTouch('touchEnd', []);
+  await editing.waitForTimeout(500);
+  const mirror = editing.locator('textarea');
+  assert.equal(await mirror.getAttribute('inputmode'), 'none', 'a pan must not summon the virtual keyboard');
+  await editingTap(13, 120, 200);
+  await editing.waitForTimeout(500);
+  assert.equal(await mirror.getAttribute('inputmode'), 'text', 'an editable tap must enable the virtual keyboard');
+  assert(await mirror.evaluate(element => document.activeElement === element), 'the IME input must be focused');
+  await editing.keyboard.insertText('Touch検証');
+  await editing.waitForTimeout(500);
+  assert((await mirror.inputValue()).includes('Touch検証'), 'the input mirror must receive inserted text');
+  await editingTap(14, 362, 18); // Embed download
+  await assertDownloadContains('Touch検証');
+  assert.deepEqual(failures, [], 'editing interactions must not panic');
+  console.log('PASS: touch viewing, phone controls, editable tap, and DOCX download');
 } finally {
   await browser.close();
 }
