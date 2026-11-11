@@ -1,43 +1,35 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sorane Docs</title>
-    <link rel="license" href="./font-notices.html">
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100vw; height: 100vh; overflow: hidden; background: #fff; }
-      /* gpui_web draws the whole window into one canvas appended to <body>. */
-      body > canvas { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
-      #status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-                gap: 12px; font: 14px system-ui, sans-serif; color: #555; pointer-events: none; }
-      /* Download progress of the app; shown once the size (Content-Length) is known. */
-      #progress { display: none; width: min(320px, 70vw); height: 4px; border-radius: 2px; background: #e3e7ee; overflow: hidden; }
-      #progress > div { position: relative; width: 0; height: 100%; background: #1a5fd6; transition: width .1s linear; overflow: hidden; }
-      /* Downloaded and starting: a light sweeps to the right over the full bar
-         (moved with transform, so it keeps running while the page is busy). */
-      #progress.starting > div::after {
-        content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 40%;
-        background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.65), rgba(255,255,255,0));
-        animation: ibis-sweep 1.2s linear infinite;
-      }
-      @keyframes ibis-sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
-    </style>
-  </head>
-  <body>
-    <div id="status"><span id="status-text">Loading Sorane Docs…</span><div id="progress"><div></div></div></div>
-    <script>
-      // The same language as the playground page's menu, else the browser's.
-      (() => {
-        let lang = null;
-        try { lang = localStorage.getItem('ibisoffice-lang'); } catch { /* storage blocked */ }
-        if ((lang ?? navigator.language).toLowerCase().startsWith('ja')) {
-          document.documentElement.lang = 'ja';
-          document.getElementById('status-text').textContent = 'Sorane Docs を読み込んでいます…';
-        }
-      })();
-    </script>
-    <script type="module" src="./main.js"></script>
-  </body>
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Sorane Docs は、ブラウザで文書をひらいて、読んで、編集できるアプリです。">
+  <meta name="theme-color" content="#f7f9fc">
+  <title>Sorane Docs — 文書を、もっと身近に。</title>
+  <script>
+    // Existing editor links such as /?open=... and /?local=1 keep working.
+    if (location.search) location.replace('./editor.html' + location.search + location.hash);
+  </script>
+  <link rel="stylesheet" href="./sorane-home.css">
+</head>
+<body>
+  <a class="skip" href="#main">本文へ移動</a>
+  <header class="topbar"><div class="wrap nav">
+    <a class="brand" href="./" aria-label="Sorane Docs ホーム"><span class="brand-mark" aria-hidden="true">S</span><span>Sorane <b>Docs</b></span></a>
+    <nav aria-label="メインナビゲーション"><a href="#samples">サンプル</a><a href="#about">Sorane Docs について</a></nav>
+    <a class="nav-cta" href="./editor.html">エディターを開く <span aria-hidden="true">↗</span></a>
+  </div></header>
+  <main id="main">
+    <section class="hero wrap"><div class="hero-copy">
+      <p class="eyebrow"><span></span> DOCUMENTS, MADE SIMPLE</p>
+      <h1>文書をひらく。<br><em>ひらめきが、広がる。</em></h1>
+      <p class="lead">読みたい文書も、書きかけのアイデアも。<br class="desktop">Sorane Docs なら、ブラウザから気軽にひらけます。</p>
+      <div class="actions"><a class="button primary" href="./editor.html">エディターを開く <span aria-hidden="true">↗</span></a><a class="button secondary" href="#samples">サンプルを試す <span aria-hidden="true">↓</span></a></div>
+      <p class="note"><span aria-hidden="true">✳</span> アカウントを作らずにお試しいただけます。</p>
+    </div><div class="hero-art" aria-hidden="true"><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div><div class="art-spark">✦</div><div class="paper shadow-paper"></div><div class="paper main-paper"><div class="paper-top"><span class="paper-icon">S</span><span class="paper-dots">•••</span></div><div class="paper-label">YOUR NEXT IDEA</div><div class="paper-title">はじめよう、<br>あたらしい文書。</div><div class="paper-line long"></div><div class="paper-line medium"></div><div class="paper-line short"></div><div class="paper-block"><span>✳</span><div><div class="paper-line medium"></div><div class="paper-line short"></div></div></div><div class="paper-footer">SORANE DOCS <span>01 / 01</span></div></div><div class="float-tag"><span>✧</span> ひらめきを、かたちに。</div></div></section>
+    <section class="samples-section" id="samples"><div class="wrap samples-layout"><div><p class="eyebrow"><span></span> GET STARTED</p><h2>まずは、さわってみる。</h2><p class="section-lead">サンプル文書をひらいて、<br>使い心地を確かめてみましょう。</p></div><a class="sample-card" href="./editor.html?open=%2Fsamples%2Fsorane-welcome.docx"><div class="sample-preview" aria-hidden="true"><div class="sample-page"><div class="sample-blue"></div><div class="sample-heading"></div><div class="sample-stroke"></div><div class="sample-stroke small"></div><div class="sample-grid"></div></div></div><div class="sample-content"><div class="sample-type">WORD DOCUMENT <span>DOCX</span></div><h3>Sorane Docs へようこそ</h3><p>文章や表を編集しながら、基本の使い方を試せる文書です。</p><span class="sample-link">サンプルをひらく <span aria-hidden="true">↗</span></span></div></a></div></section>
+    <section class="about wrap" id="about"><div><p class="eyebrow"><span></span> ABOUT SORANE DOCS</p><h2>いつもの文書に、<br>新しい選択肢を。</h2></div><div class="about-copy"><p>Sorane Docs は、ibisOffice をもとに開発している文書アプリです。ブラウザですぐに文書を開き、日本語を含むさまざまな文書に触れられます。</p><p>ファイル形式や機能によっては、表示・編集に制限があります。大切な文書は元のファイルを残してお使いください。</p><a href="https://github.com/masanork/ibis-office">ソースコードとライセンスを見る <span aria-hidden="true">↗</span></a></div></section>
+  </main>
+  <footer><div class="wrap footer-inner"><a class="brand footer-brand" href="./"><span class="brand-mark">S</span><span>Sorane <b>Docs</b></span></a><span>© Sorane Docs · Built on ibisOffice</span><a href="./font-notices.html">フォントとライセンス</a></div></footer>
+</body>
 </html>

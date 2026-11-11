@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sorane Docs</title>
+    <link rel="license" href="./font-notices.html">
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100vw; height: 100vh; overflow: hidden; background: #fff; }
+      /* gpui_web draws the whole window into one canvas appended to <body>. */
+      body > canvas { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+      #status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                gap: 12px; font: 14px system-ui, sans-serif; color: #555; pointer-events: none; }
+      /* Download progress of the app; shown once the size (Content-Length) is known. */
+      #progress { display: none; width: min(320px, 70vw); height: 4px; border-radius: 2px; background: #e3e7ee; overflow: hidden; }
+      #progress > div { position: relative; width: 0; height: 100%; background: #1a5fd6; transition: width .1s linear; overflow: hidden; }
+      /* Downloaded and starting: a light sweeps to the right over the full bar
+         (moved with transform, so it keeps running while the page is busy). */
+      #progress.starting > div::after {
+        content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 40%;
+        background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.65), rgba(255,255,255,0));
+        animation: ibis-sweep 1.2s linear infinite;
+      }
+      @keyframes ibis-sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+    </style>
+  </head>
+  <body>
+    <div id="status"><span id="status-text">Loading Sorane Docs…</span><div id="progress"><div></div></div></div>
+    <script>
+      // The same language as the playground page's menu, else the browser's.
+      (() => {
+        let lang = null;
+        try { lang = localStorage.getItem('ibisoffice-lang'); } catch { /* storage blocked */ }
+        if ((lang ?? navigator.language).toLowerCase().startsWith('ja')) {
+          document.documentElement.lang = 'ja';
+          document.getElementById('status-text').textContent = 'Sorane Docs を読み込んでいます…';
+        }
+      })();
+    </script>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
