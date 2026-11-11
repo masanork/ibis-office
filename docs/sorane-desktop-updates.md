@@ -75,6 +75,23 @@ launch, machine-interruption recovery, or a public release service. On Unix,
 the local HTTPS test runs when `SORANE_TEST_OPENSSL` names OpenSSL 3; the
 update-verifier CI sets it to `openssl`.
 
+## Isolated updater-process fixture
+
+On macOS and Windows, run the real updater executable against synthetic app
+copies under a new temporary directory:
+
+```sh
+SORANE_UPDATER_PROCESS_TEST=1 cargo test --locked -p ibis-office-updater --test updater_process
+```
+
+The test starts a child owned by the test, waits for it to exit, replaces a
+synthetic application, launches a short-lived fixture and checks success or
+rollback after an immediate exit. The macOS fixture is ad-hoc signed and uses
+a symlinked install path to check the path reported by LaunchServices. Desktop
+CI opts into this test on macOS and Windows. It does not test a real Sorane
+Docs install, a Developer ID signature or notarization, a download or archive,
+user-interface confirmation, machine interruption, or Linux AppImage updates.
+
 ## Gates before activation
 
 - Establish and protect a production signing key, review the public key, embed

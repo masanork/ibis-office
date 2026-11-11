@@ -97,8 +97,11 @@ pub fn wait_for_exit(pid: u32, timeout: Duration) -> Exit {
 pub fn is_running(exe: &std::path::Path) -> bool {
     // pgrep -f matches the whole command line with a regular expression: the
     // path, then the end of the line or the first argument.
+    // LaunchServices reports the canonical executable path (for example,
+    // `/private/var/...` even when the app was opened via `/var/...`).
+    let resolved = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
     let mut pattern = String::from("^");
-    for c in exe.to_string_lossy().chars() {
+    for c in resolved.to_string_lossy().chars() {
         if "\\.^$*+?()[]{}|".contains(c) {
             pattern.push('\\');
         }
