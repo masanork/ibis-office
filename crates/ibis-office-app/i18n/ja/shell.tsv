@@ -917,6 +917,8 @@ shell.menu-search.commands	コマンド
 file.modify-locked-no-overwrite	書き込みパスワードが必要なため、このファイルには上書きできません。名前を付けて保存してください
 start.update	ibisOffice を更新する
 jtd.read-only-notice	JTD: 読み取り専用。一部の縦書き・ルビ・表に対応。表の罫線は近似で、書式や画像は再現されません。
+jtd.omitted-sheets	 追加シート{count}件は表示・変換されません。
+jtd.omitted-objects	 埋め込み関連の格納領域{count}件は表示・変換されません。
 jtd.read-only	JTDは読み取り専用です
 jtd.edit-as-docx	Word文書に変換して編集
 jtd.editable-notice	Word文書に変換しました。未対応の書式・画像や一部の罫線は失われます。元のJTDとは別に保存してください。

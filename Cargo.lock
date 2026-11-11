@@ -3463,6 +3463,7 @@ dependencies = [
  "ibis-eot",
  "ibis-office-app",
  "ibis-office-updater",
+ "ibis-ooxml",
  "ibis-pptx",
  "image",
  "js-sys",

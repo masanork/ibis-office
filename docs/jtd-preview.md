@@ -31,6 +31,10 @@ read-only. JTD editing and JTD writing are not implemented.
 It reads the observed `DocumentText` stream into ibisOffice's document model;
 most formatting, exact layout, pictures and some text controls are not reproduced.
 Unsupported or encrypted variants may not open. `.jtt` and `.jttc` are not supported.
+The preview reports detected additional `ObjectSheets/DocSheet/DOCS_*`
+document streams and embedded-object storages in its status message; those
+contents are not imported. This inventory covers observed container patterns
+only and is not proof that all unsupported content has been detected.
 The source bytes remain in the browser; while the JTD preview is open, the
 optional embedding download action returns the original bytes, not a re-created
 JTD. After conversion to an editable Word document, it returns the DOCX instead.

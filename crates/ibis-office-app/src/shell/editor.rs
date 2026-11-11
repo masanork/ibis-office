@@ -905,17 +905,32 @@ impl SlideEditor {
         self.jtd_original.is_some()
     }
 
+    fn jtd_omission_notice(notice: &mut String, omissions: Option<ibis_pptx::jtd::OmittedContent>) {
+        if let Some(omissions) = omissions {
+            if omissions.additional_sheets > 0 {
+                notice.push_str(&crate::shell::i18n::format("jtd.omitted-sheets", &[("count", &omissions.additional_sheets)]));
+            }
+            if omissions.embedded_objects > 0 {
+                notice.push_str(&crate::shell::i18n::format("jtd.omitted-objects", &[("count", &omissions.embedded_objects)]));
+            }
+        }
+    }
+
     pub(crate) fn load_jtd(&mut self, presentation: Presentation, name: SharedString, bytes: Vec<u8>, window: &mut Window, cx: &mut Context<Self>) {
+        let omissions = ibis_pptx::jtd::omitted_content(&bytes).ok();
         self.load(presentation, name, window, cx);
         self.jtd_original = Some(bytes.into());
         self.document.set_read_only(true);
         self.sidebar_open = false;
-        self.set_status(crate::shell::i18n::text("jtd.read-only-notice").to_string(), cx);
+        let mut notice = crate::shell::i18n::text("jtd.read-only-notice").to_string();
+        Self::jtd_omission_notice(&mut notice, omissions);
+        self.set_status(notice, cx);
     }
 
     /// Convert the recognized preview into a separate editable Word document.
     pub(crate) fn edit_jtd_as_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_jtd_read_only() || self.read_only { return; }
+        let omissions = self.jtd_original.as_deref().and_then(|bytes| ibis_pptx::jtd::omitted_content(bytes).ok());
         let result = ibis_pptx::jtd::export_docx(self.presentation()).and_then(ibis_pptx::open);
         match result {
             Ok(opened) => {
@@ -928,7 +943,9 @@ impl SlideEditor {
                 self.set_loaded_source(std::sync::Arc::new(opened.source));
                 #[cfg(not(target_family = "wasm"))]
                 { self.jtd_source_path = original_path; self.document.set_file(None); }
-                self.set_status(crate::shell::i18n::text("jtd.editable-notice").to_string(), cx);
+                let mut notice = crate::shell::i18n::text("jtd.editable-notice").to_string();
+                Self::jtd_omission_notice(&mut notice, omissions);
+                self.set_status(notice, cx);
             }
             Err(error) => self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &error.to_string())]), cx),
         }

@@ -57,7 +57,7 @@ pub fn inspect_fonts(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
 }
 
 fn font_table(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
-    let bytes = ibis_ooxml::cfb::stream(data, "Font")
+    let bytes = ibis_ooxml::cfb::stream_path(data, "Font")
         .map_err(|_| Error::new("JTDのフォント表がありません"))?;
     font::parse(&bytes)
 }
@@ -95,12 +95,40 @@ fn checked_stream(data: &[u8]) -> Result<Vec<u8>, Error> {
     {
         return Err(Error::new("対応するJTDコンテナではありません"));
     }
-    let stream = ibis_ooxml::cfb::stream(data, "DocumentText")
+    let stream = ibis_ooxml::cfb::stream_path(data, "DocumentText")
         .map_err(|_| Error::new("JTD本文がないか、暗号化・未対応の形式です"))?;
     if stream.len() > MAX_STREAM {
         return Err(Error::new("JTD本文が大きすぎます"));
     }
     Ok(stream)
+}
+
+/// Known content that the preview cannot currently import. Counts report
+/// detected container entries, not all possible unsupported JTD constructs.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct OmittedContent {
+    pub additional_sheets: usize,
+    pub embedded_objects: usize,
+}
+
+pub fn omitted_content(data: &[u8]) -> Result<OmittedContent, Error> {
+    checked_stream(data)?;
+    let entries = ibis_ooxml::cfb::directory(data).map_err(|e| Error::new(e.to_string()))?;
+    let mut result = OmittedContent::default();
+    for entry in entries {
+        let path = entry.path.as_str();
+        if !entry.is_storage && path.starts_with("ObjectSheets/DocSheet/") && path.ends_with("/DocumentText") {
+            let sheet = &path["ObjectSheets/DocSheet/".len()..path.len() - "/DocumentText".len()];
+            if sheet.starts_with("DOCS_") && !sheet.contains('/') { result.additional_sheets += 1; }
+        }
+        if entry.is_storage {
+            let name = path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+            if name.starts_with("embedding") || name.starts_with("oleitem") || name == "figuredata" {
+                result.embedded_objects += 1;
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Import only confirmed text into the existing document model. This is lossy
@@ -123,7 +151,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     flow.page.right = 30 * 36_000;
     let mut page_lines = 40;
     // Page geometry must be installed before table widths are derived.
-    if let Ok(styles) = ibis_ooxml::cfb::stream(data, "DocumentViewStyles") {
+    if let Ok(styles) = ibis_ooxml::cfb::stream_path(data, "DocumentViewStyles") {
         apply_view_page(&styles, &mut flow.page);
         if observed_vertical(&styles) {
             flow.page.direction = CellDirection::TbRl;
@@ -137,7 +165,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     };
     flow.page.line_pitch = Some(cross_axis / i64::from(page_lines));
     flow.page.doc_grid_type = ibis_doc_model::DocGridType::Lines;
-    let typography = ibis_ooxml::cfb::stream(data, "DocumentViewStyles").unwrap_or_default();
+    let typography = ibis_ooxml::cfb::stream_path(data, "DocumentViewStyles").unwrap_or_default();
     let mut defaults = view_typography(&typography, &mut flow.page);
     if let Ok(fonts) = font_table(data) {
         if let Some(font) = default_font(&typography, &fonts) {
@@ -1639,6 +1667,24 @@ mod tests {
         styles.extend((record.len() as u32).to_be_bytes());
         styles.extend(record);
         styles
+    }
+
+    #[test]
+    fn root_text_and_omitted_sheets_and_objects_are_identified_separately() {
+        use ibis_ooxml::cfb::Item;
+        let data = ibis_ooxml::cfb::write(&[
+            Item::storage("ObjectSheets"),
+            Item::storage("ObjectSheets/DocSheet"),
+            Item::storage("ObjectSheets/DocSheet/DOCS_0001"),
+            Item::stream("ObjectSheets/DocSheet/DOCS_0001/DocumentText", decode::fixture(&[0x4e59])),
+            Item::stream("DocumentText", decode::fixture(&[0x7532])),
+            Item::storage("Embedding 1"),
+        ]);
+        let omission = omitted_content(&data).unwrap();
+        assert_eq!(omission, OmittedContent { additional_sheets: 1, embedded_objects: 1 });
+        let decoded = inspect(&data).unwrap();
+        assert!(decoded.units.contains(&0x7532));
+        assert!(!decoded.units.contains(&0x4e59));
     }
 
     #[test]

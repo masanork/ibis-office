@@ -4,7 +4,42 @@ use super::Scenario;
 use crate::docx::scenarios::DocSteps;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::native_jtd_open_read_only", open_read_only)]
+    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_omissions", omissions)]
+}
+
+fn omissions() {
+    use ibis_ooxml::cfb::{self, Item};
+    let original = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jtd");
+    let text = cfb::stream_path(original, "DocumentText").unwrap();
+    let bytes = cfb::write(&[
+        Item::storage("ObjectSheets"),
+        Item::storage("ObjectSheets/DocSheet"),
+        Item::storage("ObjectSheets/DocSheet/DOCS_0001"),
+        Item::stream("ObjectSheets/DocSheet/DOCS_0001/DocumentText", text.clone()),
+        Item::storage("Embedding 1"),
+        Item::stream("DocumentText", text),
+    ]);
+    let mut s = Scenario::start_view();
+    let path = s.screenshot_path("jtd-omissions").with_extension("jtd");
+    std::fs::write(&path, bytes).unwrap();
+    s.update(|e, w, cx| e.open_path(path, None, w, cx));
+    for _ in 0..100 {
+        s.wait(50);
+        if s.with(|e, _| e.is_jtd_read_only()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    s.with(|e, _| {
+        let status = e.status.as_deref().unwrap();
+        assert!(status.contains(&crate::shell::i18n::format("jtd.omitted-sheets", &[("count", &1)])));
+        assert!(status.contains(&crate::shell::i18n::format("jtd.omitted-objects", &[("count", &1)])));
+    });
+    s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
+    s.with(|e, _| {
+        assert!(!e.is_jtd_read_only());
+        let status = e.status.as_deref().unwrap();
+        assert!(status.contains(&crate::shell::i18n::format("jtd.omitted-sheets", &[("count", &1)])));
+        assert!(status.contains(&crate::shell::i18n::format("jtd.omitted-objects", &[("count", &1)])));
+    });
 }
 
 fn open_read_only() {

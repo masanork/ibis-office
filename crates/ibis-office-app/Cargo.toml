@@ -19,6 +19,7 @@ unicode-width = "0.2" # MIT OR Apache-2.0: East Asian Width, already in the depe
 ibis-calc.workspace = true
 ibis-doc-model.workspace = true
 ibis-pptx.workspace = true
+ibis-ooxml = { workspace = true, optional = true }
 ibis-emf.workspace = true
 ibis-eot.workspace = true
 gpui-kit.workspace = true
@@ -88,7 +89,7 @@ gpui-pre-windows = { version = "=0.3.6", features = ["test-support"], optional =
 default = ["export"]
 # The scenario tests' driver (`src/shell/scenario.rs`), for tests/scenarios.rs;
 # turned on for this crate's own tests by the dev-dependency below.
-scenarios = ["export"]
+scenarios = ["export", "dep:ibis-ooxml"]
 # `--export png|pdf|pdf-image|ui` on the command line (macOS, Windows and Linux;
 # build.rs sets `cfg(headless_export)` for it).
 export = ["dep:gpui-pre-platform", "dep:gpui-pre-windows", "dep:gpui-pre-wgpu", "dep:image", "dep:miniz_oxide", "dep:krilla", "dep:skrifa", "dep:subsetter", "dep:usvg", "dep:gpui-pre-macos"]
