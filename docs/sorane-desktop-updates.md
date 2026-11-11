@@ -31,6 +31,27 @@ expires; the installed version check rejects downgrades but does not prevent a
 freeze on an older still-valid newer release. Key rotation, revocation,
 persistent anti-rollback and an offline recovery procedure remain to be designed.
 
+## Offline candidate verification
+
+Put the generated `sorane-update.json`, its `.sig`, and each listed package
+in one staging directory. Obtain the expected 32-byte Ed25519 public key as
+64 hex digits through a separately trusted channel, and verify the exact
+staged bytes with the same verifier as the application:
+
+```sh
+cargo run --locked -p ibis-office-updater --example verify_sorane_candidate -- \
+  /path/to/staging PUBLIC_KEY_HEX macos-arm64 windows-x64 linux-x64-appimage
+```
+
+The command requires at least one expected target, checks the signature,
+validity period and all listed files, and fails if a required target is absent,
+a named package is missing, a package is not a regular file, or any hash or
+size is wrong. Keep the staging directory unchanged during verification and
+publication. This does not establish the source or provenance of the packages,
+OS code signing or notarization, availability on GitHub, or successful updates
+on installed apps. The staging key is caller-supplied; it is not a production
+trust anchor. Distinct targets must have distinct package filenames.
+
 ## Gates before activation
 
 - Establish and protect a production signing key, review the public key, embed

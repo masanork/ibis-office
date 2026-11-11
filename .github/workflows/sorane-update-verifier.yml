@@ -1,0 +1,33 @@
+name: Sorane update verifier
+on:
+  push:
+    branches: [masanork]
+  pull_request:
+    branches: [masanork]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sorane-update-verifier-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SORANE_TEST_OPENSSL: openssl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+      - name: Check source identity
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+      - name: Test signing, verification and rollback
+        run: cargo test --locked -p ibis-office-updater
+      - name: Build candidate verifier
+        run: cargo build --locked -p ibis-office-updater --example verify_sorane_candidate

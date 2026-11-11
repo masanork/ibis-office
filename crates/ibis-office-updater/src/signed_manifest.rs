@@ -67,6 +67,7 @@ pub fn verify_manifest(
         return Err("invalid artifact count");
     }
     let mut targets = std::collections::HashSet::new();
+    let mut filenames = std::collections::HashSet::new();
     for a in &m.artifacts {
         if !matches!(
             a.target.as_str(),
@@ -76,6 +77,7 @@ pub fn verify_manifest(
                 | "linux-x64-appimage"
                 | "linux-arm64-appimage"
         ) || !targets.insert(a.target.as_str())
+            || !filenames.insert(a.filename.as_str())
             || a.filename.is_empty()
             || a.filename.len() > 180
             || !a
@@ -233,6 +235,14 @@ mod tests {
             assert!(verify(&bad, 1500).is_err(), "{bad}");
         }
     }
+    #[test]
+    fn rejects_duplicate_artifact_names_across_targets() {
+        let mut json: serde_json::Value = serde_json::from_str(&manifest()).unwrap();
+        let mut second = json["artifacts"][0].clone();
+        second["target"] = "windows-x64".into();
+        json["artifacts"].as_array_mut().unwrap().push(second);
+        assert!(verify(&json.to_string(), 1500).is_err());
+    }
     /// Optional cross-tool test: set SORANE_TEST_OPENSSL to an OpenSSL 3 binary.
     #[test]
     fn signer_output_interoperates_with_verifier() {
@@ -302,6 +312,27 @@ mod tests {
             .as_secs();
         let m = verify_manifest(&data, &sig, &der[12..], now).unwrap();
         verify_artifact(m.artifact("linux-x64-appimage").unwrap(), &b"abc"[..]).unwrap();
+        std::fs::copy(&payload, out.join("fixture.AppImage")).unwrap();
+        let public_key: [u8; 32] = der[12..].try_into().unwrap();
+        assert!(
+            crate::release_candidate::verify_directory(
+                &out,
+                &public_key,
+                now,
+                &["linux-x64-appimage"]
+            )
+            .is_ok()
+        );
+        std::fs::write(out.join("fixture.AppImage"), b"abd").unwrap();
+        assert!(
+            crate::release_candidate::verify_directory(
+                &out,
+                &public_key,
+                now,
+                &["linux-x64-appimage"]
+            )
+            .is_err()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

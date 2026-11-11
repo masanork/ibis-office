@@ -22,13 +22,16 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9]{1,9}(?:\.[0-9]{1,9})*", args.version):
         parser.error("invalid numeric version")
-    artifacts, seen = [], set()
+    artifacts, seen, filenames = [], set(), set()
     for item in args.artifact:
         target, sep, path = item.partition("=")
         file = Path(path)
         if not sep or target not in TARGETS or target in seen or not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,179}", file.name) or ".." in file.name:
             parser.error("invalid target, duplicate target, or unsafe filename")
+        if file.name in filenames:
+            parser.error("artifact filenames must be unique across targets")
         seen.add(target)
+        filenames.add(file.name)
         digest, size = hashlib.sha256(), 0
         with file.open("rb") as src:
             while chunk := src.read(1024 * 1024):
