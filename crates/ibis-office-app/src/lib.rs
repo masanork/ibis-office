@@ -1121,7 +1121,7 @@ pub fn run_native() {
 #[cfg(target_family = "wasm")]
 mod web {
     use std::borrow::Cow;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
     use std::sync::Arc;
@@ -1136,6 +1136,8 @@ mod web {
         static MISSING_SUBSCRIPTION: RefCell<Option<Subscription>> = const { RefCell::new(None) };
         static DYNAMIC_ENABLED: RefCell<bool> = const { RefCell::new(false) };
         static SUPPLIED_FONTS: RefCell<Option<SuppliedFonts>> = const { RefCell::new(None) };
+        static STARTING: Cell<bool> = const { Cell::new(false) };
+        static FONT_PREFETCH_DEPTH: Cell<usize> = const { Cell::new(0) };
     }
 
     struct SuppliedFonts {
@@ -1264,6 +1266,16 @@ mod web {
 
     fn install_dynamic_font(data: Vec<u8>, face: Option<String>) -> Result<(), JsValue> {
         let family = ibis_eot::family_name(&data).ok_or_else(|| JsValue::from_str("Invalid dynamic font"))?;
+        if APPLICATION.with(|app| app.borrow().is_none()) {
+            return SUPPLIED_FONTS.with(|fonts| {
+                let mut fonts = fonts.borrow_mut();
+                let fonts = fonts.as_mut().ok_or_else(|| JsValue::from_str("Fonts are not configured"))?;
+                if let Some(face) = face { fonts.face_fonts.push((face, family.clone())); }
+                fonts.families.push(family);
+                fonts.data.push(data);
+                Ok(())
+            });
+        }
         APPLICATION.with(|app| {
             let app = app.borrow();
             let app = app.as_ref().ok_or_else(|| JsValue::from_str("Editor is not running"))?;
@@ -1279,6 +1291,9 @@ mod web {
                         fonts.families.push(family);
                     }
                 });
+                // A whole-file prefetch may install many subsets. Its caller
+                // lays out the newly opened model once after all are ready.
+                if FONT_PREFETCH_DEPTH.with(|depth| depth.get() != 0) { return Ok(()); }
                 crate::docx::flow_layout::clear_layout_caches();
                 for window in cx.windows() {
                     if let Some(root) = window.downcast::<gpui_kit::component::Root>() {
@@ -1299,6 +1314,28 @@ mod web {
     extern "C" {
         #[wasm_bindgen(js_name = ibisOfficeMissingGlyphs)]
         fn missing_glyphs_js(glyphs: js_sys::Array);
+        #[wasm_bindgen(catch, js_name = ibisOfficePreloadFonts)]
+        fn preload_fonts_js(text: &str) -> Result<js_sys::Promise, JsValue>;
+    }
+
+    pub(crate) async fn preload_document_fonts(presentation: &ibis_doc_model::Presentation, name: &str) -> Result<(), JsValue> {
+        if !DYNAMIC_ENABLED.with(|enabled| *enabled.borrow()) { return Ok(()); }
+        // Existing custom embeddings that only implement reactive loading keep
+        // working; the bundled browser client supplies the preload callback.
+        if !js_sys::Reflect::get(&js_sys::global(), &"ibisOfficePreloadFonts".into()).is_ok_and(|value| value.is_function()) { return Ok(()); }
+        struct Prefetch;
+        impl Drop for Prefetch {
+            fn drop(&mut self) {
+                FONT_PREFETCH_DEPTH.with(|depth| depth.set(depth.get() - 1));
+                crate::docx::flow_layout::clear_layout_caches();
+            }
+        }
+        FONT_PREFETCH_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        let _prefetch = Prefetch;
+        let mut text = ibis_doc_model::repertoire::font_repertoire(presentation);
+        text.push('\n'); text.push_str(name);
+        wasm_bindgen_futures::JsFuture::from(preload_fonts_js(&text)?).await?;
+        Ok(())
     }
 
     /// UI font bundled with the app. The browser has no system fonts GPUI can
@@ -1313,13 +1350,16 @@ mod web {
     /// `file` is a .pptx, .xlsx or .docx to open, named `file_name`; without it (or if it
     /// cannot be read) the editor shows the start view.
     #[wasm_bindgen]
-    pub fn run(asset_base: Option<String>, file_name: Option<String>, file: Option<Vec<u8>>) -> Result<(), JsValue> {
-        if APPLICATION.with(|app| app.borrow().is_some()) {
+    pub async fn run(asset_base: Option<String>, file_name: Option<String>, file: Option<Vec<u8>>) -> Result<(), JsValue> {
+        if APPLICATION.with(|app| app.borrow().is_some()) || STARTING.with(|starting| starting.replace(true)) {
             return Err(JsValue::from_str("The editor is already running"));
         }
-        let mut jtd_document = None;
+        struct Starting;
+        impl Drop for Starting { fn drop(&mut self) { STARTING.with(|starting| starting.set(false)); } }
+        let _starting = Starting;
+        let mut jtd_document: Option<(ibis_doc_model::Presentation, SharedString, Vec<u8>)> = None;
         let mut open_error = None;
-        let document = file.and_then(|data| {
+        let document: Option<(ibis_doc_model::Presentation, SharedString)> = file.and_then(|data| {
             let name = file_name.unwrap_or_default();
             if name.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case("jtd")) || ibis_pptx::jtd::is_jtd(&data) {
                 match ibis_pptx::jtd::read(&data) {
@@ -1334,6 +1374,11 @@ mod web {
                 }
             }
         });
+        if let Some((presentation, name, _)) = &jtd_document {
+            preload_document_fonts(presentation, name).await?;
+        } else if let Some((presentation, name)) = &document {
+            preload_document_fonts(presentation, name).await?;
+        }
         gpui_kit::platform::web_init();
 
         // Single-threaded: needs no SharedArrayBuffer, so no COOP/COEP headers.

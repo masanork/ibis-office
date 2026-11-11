@@ -6,6 +6,7 @@ import init, { configure_fonts, enable_dynamic_fonts, enable_face_fonts, add_dyn
 import { loadWebFonts } from './font-loader.js';
 import { loadWasm } from './wasm-loader.js';
 import { DynamicFonts, FaceSubsetProvider } from './dynamic-fonts.js';
+import { fontCoverage } from './font-coverage.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -45,6 +46,8 @@ declare global {
   interface Window {
     /** Called from Rust for ファイル → 開く. */
     ibisOfficePickFile: () => Promise<PickedFile | null>;
+    /** Awaited by Rust after parsing the complete model, before layout. */
+    ibisOfficePreloadFonts: (text: string) => Promise<void>;
     /** Download a locally generated DOCX without sending the document to a server. */
     ibisOfficeDownloadDocx: (name: string, bytes: Uint8Array) => void;
     /** Called from Rust when the close or the download button is pressed. */
@@ -248,7 +251,25 @@ if (!('gpu' in navigator)) {
       const provider = fonts.dynamic.strategy === 'faces'
         ? new FaceSubsetProvider(fonts.dynamic.endpoint, add_face_font)
         : new DynamicFonts(fonts.dynamic, add_dynamic_font);
-      Object.assign(window, { ibisOfficeMissingGlyphs: (glyphs: string[]) => provider.request(glyphs) });
+      for (let i = 0; i < fonts.data.length; i++) {
+        const covers = fontCoverage(fonts.data[i]);
+        if (provider instanceof FaceSubsetProvider) {
+          const family = fonts.families[i];
+          const gothic = fonts.aliases['Noto Sans CJK JP'] ?? fonts.uiFamily;
+          if (family === fonts.defaultFamily) provider.seed('ipamjm', covers);
+          if (family === gothic) provider.seed('NotoSansCJKJP', covers);
+          if (family !== fonts.defaultFamily && family !== gothic) {
+            provider.seed('ipamjm', covers); provider.seed('NotoSansCJKJP', covers);
+          }
+        } else provider.seed(covers);
+      }
+      Object.assign(window, {
+        ibisOfficeMissingGlyphs: (glyphs: string[]) => provider.request(glyphs),
+        ibisOfficePreloadFonts: async (text: string) => {
+          showStatus(ja ? '文書のフォントを読み込んでいます…' : 'Loading document fonts…');
+          await provider.preload(text);
+        },
+      });
       enable_dynamic_fonts();
     }
     // Icons load from <base>/assets/icons/*.svg, next to this page (the site
@@ -257,7 +278,7 @@ if (!('gpu' in navigator)) {
     const base = new URL('.', location.href).href.replace(/\/$/, '');
     const embed = embedOptions();
     set_embed_options(embed.close, embed.download, embed.view, embed.menuBar, embed.toolBar);
-    run(base, file?.name, file?.bytes);
+    await run(base, file?.name, file?.bytes);
     status?.remove();
   } catch (error) {
     console.error(error);

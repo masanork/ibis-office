@@ -1082,7 +1082,12 @@ impl SlideEditor {
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
             let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("jtd")) || ibis_pptx::jtd::is_jtd(&data);
             if is_jtd {
-                let result = ibis_pptx::jtd::read(&data).map_err(|e| e.to_string());
+                let mut result = ibis_pptx::jtd::read(&data).map_err(|e| e.to_string());
+                if let Ok(presentation) = &result {
+                    if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
+                        result = Err(format!("Document font preload: {error:?}"));
+                    }
+                }
                 this.update_in(cx, |this, window, cx| {
                     if this.closed != closed { return; }
                     match result {
@@ -1092,7 +1097,12 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let result = ibis_pptx::open(data).map_err(|e| e.to_string());
+            let mut result = ibis_pptx::open(data).map_err(|e| e.to_string());
+            if let Ok(opened) = &result {
+                if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {
+                    result = Err(format!("Document font preload: {error:?}"));
+                }
+            }
             this.update_in(cx, |this, window, cx| match result {
                 // Closed (ファイル > 閉じる) while it was read.
                 _ if this.closed != closed => {}

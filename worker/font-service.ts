@@ -51,7 +51,7 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
     const font = fonts.find(f => f.id === (url.searchParams.get('font') ?? 'ipamjm'));
     if (!font) return error('Unknown font', 404);
     const text = url.searchParams.get('text');
-    if (!text || text.length > 512 || [...text].length > 128) return error('text must contain 1 to 128 code points', 400);
+    if (!text || text.length > 2048 || [...text].length > 1024) return error('text must contain 1 to 1024 code points', 400);
     const format = url.searchParams.get('format') ?? 'otf';
     if (!['otf', 'woff2'].includes(format)) return error('Unsupported font format', 400);
     if (!await context.allowed()) return error('Too many font requests', 429, { 'Retry-After': '1' });

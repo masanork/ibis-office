@@ -2,6 +2,7 @@
 /** Fonts are loaded before GPUI creates its first layout and font-name cache. */
 export interface WebFonts {
   data: Uint8Array[];
+  families: string[];
   aliases: Record<string, string>;
   defaultFamily: string;
   uiFamily: string;
@@ -101,5 +102,5 @@ export async function loadWebFonts(url: URL, fetcher: typeof fetch = fetch): Pro
     if (settings.strategy !== undefined && settings.strategy !== 'faces') throw new Error('Invalid dynamic strategy');
     dynamic = { endpoint: endpoint.href, font, ...(settings.strategy === 'faces' && { strategy: 'faces' as const }) };
   }
-  return { data, aliases: Object.fromEntries(aliases), defaultFamily, uiFamily, browserFallback: manifest.browserFallback, dynamic };
+  return { data, families: entries.map(entry => entry.family), aliases: Object.fromEntries(aliases), defaultFamily, uiFamily, browserFallback: manifest.browserFallback, dynamic };
 }

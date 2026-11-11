@@ -31,6 +31,7 @@ jobs:
             ~/.cargo/bin/wasm2es6js
           key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
       - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - run: cargo test --locked -p ibis-doc-model --test repertoire
       - run: cargo test --locked -p ibis-font-subsetter
       - run: npm run test:web
       - run: npm run check:worker

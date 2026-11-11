@@ -90,7 +90,7 @@ test('invalid and rate-limited requests never open font sources; missing glyphs 
   for (const [req, status] of [
     [new Request(request(), { method: 'POST' }), 405],
     [new Request('https://ibis.test/api/font/subset?font=other&text=A'), 404],
-    [request(''), 400], [request('A'.repeat(129)), 400], [request('A', '&format=exe'), 400],
+    [request(''), 400], [request('A'.repeat(1025)), 400], [request('A', '&format=exe'), 400],
   ]) assert.equal((await s.serve(req, s.context)).status, status);
   s.rate(false);
   assert.equal((await s.serve(request(), s.context)).status, 429);
@@ -100,6 +100,15 @@ test('invalid and rate-limited requests never open font sources; missing glyphs 
   assert.equal(missing.status, 204);
   assert.equal(missing.headers.get('x-font-id'), 'test');
   assert.equal(s.frees, 1);
+});
+
+test('whole-file batches accept 1024 code points and reject overflow', async () => {
+  const s = setup();
+  assert.equal((await s.serve(request('A'.repeat(1024)), s.context)).status, 200);
+  assert.equal((await s.serve(request('A'.repeat(1025)), s.context)).status, 400);
+  // Even the worst-case percent-encoded supplementary characters fit the
+  // service's 16 KiB URL budget at the permitted codepoint count.
+  assert.ok(request('\u{100001}'.repeat(1024)).url.length < 16 * 1024);
 });
 
 test('truncated, oversized and failed streams release the engine and allow a later request', async () => {

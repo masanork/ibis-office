@@ -99,7 +99,7 @@ npx wrangler deploy
 The pinned local runtime supports dates through 2026-10-30, so local dev uses
 that CLI override; production keeps its existing 2026-11-10 date.
 
-GET parameters are `font`, `text` (1–128 Unicode code points), and `format`
+GET parameters are `font`, `text` (1–1024 Unicode code points), and `format`
 (`otf` or `woff2`, default `otf`). Responses include `X-Font-Id`,
 `X-Font-License`, `X-Original-Font`, ETag and `X-Cache`. Cache keys include exact
 text, font ID, source ETag, engine hash and format, with a one-hour lifetime.
@@ -127,10 +127,42 @@ base glyph is available. This migration does not expand the three source fonts'
 coverage or import GJS's other fonts/fallbacks. `/font-notices.html` has font
 terms and attribution.
 
+## Whole-document prefetch
+
+Opening a file collects unique graphemes from the already parsed document model,
+including later pages, nested tables, headers/footers, notes, inline shapes,
+slides, cached chart labels, and visible/hidden worksheets. Adjacent styled runs
+are joined before segmentation, preserving IVS split across runs. Uppercase
+variants are included for all-caps/small-caps display. Binary media are excluded;
+the file is parsed once using the existing importers, including JTD.
+
+The browser checks the actual bootstrap fonts' cmap 4/12/14 to skip supplied
+characters independently for Mincho and Gothic. It then awaits the remaining
+subsets before the first document layout. Both startup files and File > Open
+use this path. Subsets arriving before GPUI starts are staged for initial
+registration; an existing editor installs a whole prefetch without repeatedly
+laying out its previous document. Later edits retain reactive missing-glyph
+loading. Unavailable glyphs still depend on the configured source fonts.
+
+Prefetch batches contain up to 1023 code points plus the required Latin `m`;
+administrative characters omit the Latin padding. Requests are serialized to
+respect the Worker's memory bound. Larger batches reduce repeated source-font
+reads; responses from older endpoints with smaller URL/text limits are split.
+The 1024-codepoint maximum keeps worst-case encoded URLs below Cloudflare's
+[16 KiB URL limit](https://developers.cloudflare.com/workers/platform/limits/).
+Requests retain the existing retry and exact-text cache behavior. A failed
+prefetch is reported before replacing the document, so it can be retried.
+
+File bytes stay in the browser. The API receives the deduplicated required
+characters in GET URLs, including those outside the current viewport; the
+operator and network intermediaries can see that inventory. Serving code
+continues to omit these characters and URLs from its logs.
+
 ## Verification
 
 ```sh
 cargo test --locked -p ibis-font-subsetter
+cargo test --locked -p ibis-doc-model --test repertoire
 npm run test:web
 npm run check:worker
 npx wrangler deploy --dry-run

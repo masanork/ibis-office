@@ -8,3 +8,4 @@ publish.workspace = true
 
 [dependencies]
 ibis-calc.workspace = true
+unicode-segmentation = "1"

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Each subset response has the same family name. Give each response a distinct
 // family so fontdb can retain and search all of the independent subsets.
+import type { FontCoverage } from './font-coverage.js';
 export function namespaceSubset(input: Uint8Array, sequence: number): Uint8Array {
   if (sequence < 1 || sequence > 999999) throw new Error('Dynamic font limit reached');
   const data = new Uint8Array(input);
@@ -53,19 +54,45 @@ export function namespaceSubset(input: Uint8Array, sequence: number): Uint8Array
   return data;
 }
 
+export function documentGlyphs(text: string): string[] {
+  const segmenter = new Intl.Segmenter('en', { granularity: 'grapheme' });
+  return [...new Set([...segmenter.segment(text)].map(s => s.segment)
+    .filter(glyph => !/^[\p{Cc}\p{Cf}\s\uFE00-\uFE0F\u{E0100}-\u{E01EF}]+$/u.test(glyph)))];
+}
+
 export class DynamicFonts {
   private readonly pending = new Set<string>();
   private readonly resolved = new Set<string>();
   private running = false;
   private sequence = 0;
+  private job: Promise<void> = Promise.resolve();
+  private batchSize = 127;
+  private readonly bootstrap: FontCoverage[] = [];
   constructor(private readonly config: { endpoint: string; font: string }, private readonly install: (data: Uint8Array) => void, private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) {}
 
   request(glyphs: string[]): void {
-    for (const glyph of glyphs) if (glyph && !this.resolved.has(glyph)) this.pending.add(glyph);
+    for (const glyph of glyphs) if (glyph && !this.resolved.has(glyph)) {
+      if (this.bootstrap.some(covers => covers(glyph))) this.resolved.add(glyph);
+      else this.pending.add(glyph);
+    }
     if (!this.running && this.pending.size) {
       this.running = true;
-      setTimeout(() => { void this.flush(); }, 40);
+      this.job = new Promise<void>(resolve => setTimeout(resolve, 40)).then(() => this.flush());
+      void this.job.catch(error => console.error('Could not load a dynamic font', error));
     }
+  }
+
+  seed(covers: FontCoverage): void { this.bootstrap.push(covers); }
+
+  async preload(text: string): Promise<void> {
+    const glyphs = documentGlyphs(text);
+    // Legacy third-party endpoints may still impose a 128-codepoint limit.
+    this.batchSize = 127;
+    try {
+      this.request(glyphs);
+      await this.job;
+      if (glyphs.some(glyph => !this.resolved.has(glyph))) throw new Error('Document fonts could not be loaded; retry opening the file');
+    } finally { this.batchSize = 127; }
   }
 
   private async fetchGroup(glyphs: string[]): Promise<void> {
@@ -94,7 +121,7 @@ export class DynamicFonts {
         let count = 0;
         for (const glyph of this.pending) {
           const length = Array.from(glyph).length;
-          if (batch.length && count + length > 127) break;
+          if (batch.length && count + length > this.batchSize) break;
           this.pending.delete(glyph); batch.push(glyph); count += length;
         }
         const unresolved = batch.filter(glyph => !this.resolved.has(glyph));
@@ -122,16 +149,39 @@ export class FaceSubsetProvider {
   private readonly adminCovered = new Set<string>();
   private sequence = 0;
   private running = false;
+  private job: Promise<void> = Promise.resolve();
+  private batchSize = 127;
+  private readonly bootstrap = new Map<string, FontCoverage[]>();
   constructor(private readonly endpoint: string,
               private readonly install: (data: Uint8Array, face: string) => void,
               private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) {}
 
   request(glyphs: string[]): void {
-    for (const glyph of glyphs) if (glyph && !this.resolved.has(glyph)) this.pending.add(glyph);
+    for (const glyph of glyphs) if (glyph && !this.resolved.has(glyph)) {
+      for (const [face, covers] of this.bootstrap) if (covers.some(test => test(glyph))) {
+        this.faceResolved.add(`${face}\0${glyph}`);
+        if (face === 'acgjm') this.adminCovered.add(glyph);
+      }
+      if (this.adminCovered.has(glyph) || ['ipamjm', 'NotoSansCJKJP'].every(face => this.faceResolved.has(`${face}\0${glyph}`))) this.resolved.add(glyph);
+      else this.pending.add(glyph);
+    }
     if (!this.running && this.pending.size) {
       this.running = true;
-      setTimeout(() => { void this.flush(); }, 40);
+      this.job = new Promise<void>(resolve => setTimeout(resolve, 40)).then(() => this.flush());
+      void this.job.catch(error => console.error('Could not load a dynamic font', error));
     }
+  }
+
+  seed(face: string, covers: FontCoverage): void { this.bootstrap.set(face, [...this.bootstrap.get(face) ?? [], covers]); }
+
+  async preload(text: string): Promise<void> {
+    const glyphs = documentGlyphs(text);
+    this.batchSize = 1023;
+    try {
+      this.request(glyphs);
+      await this.job;
+      if (glyphs.some(glyph => !this.resolved.has(glyph))) throw new Error('Document fonts could not be loaded; retry opening the file');
+    } finally { this.batchSize = 127; }
   }
 
   private async fetchGroup(face: string, glyphs: string[]): Promise<void> {
@@ -146,6 +196,12 @@ export class FaceSubsetProvider {
     if (response.status === 429) {
       const seconds = Number(response.headers.get('Retry-After')) || 5;
       await new Promise(resolve => setTimeout(resolve, Math.min(Math.max(seconds, 1), 60) * 1000));
+    }
+    if ([400, 413, 414].includes(response.status) && glyphs.length > 1) {
+      const mid = Math.floor(glyphs.length / 2);
+      await this.fetchGroup(face, glyphs.slice(0, mid));
+      await this.fetchGroup(face, glyphs.slice(mid));
+      return;
     }
     if (!response.ok && response.status !== 204) throw new Error(`Dynamic font: HTTP ${response.status}`);
     const actual = response.headers.get('X-Font-Id');
@@ -170,7 +226,7 @@ export class FaceSubsetProvider {
         let count = 0;
         for (const glyph of this.pending) {
           const length = Array.from(glyph).length;
-          if (batch.length && count + length > 127) break;
+          if (batch.length && count + length > this.batchSize) break;
           this.pending.delete(glyph); batch.push(glyph); count += length;
         }
         const work = batch.filter(glyph => !this.resolved.has(glyph)).sort();
