@@ -22,7 +22,8 @@
         "Hiragino Mincho ProN"
       ],
       "licenseFile": "../fonts/licenses/IPA_FONT_LICENSE.md",
-      "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+      "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~",
+      "uiResources": true
     },
     {
       "id": "noto-gothic",

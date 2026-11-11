@@ -18,7 +18,8 @@ export async function buildWebFonts(configPath, { outDir = resolve('www'), uiSou
   const aliases = new Map();
   const artifacts = [];
   const fonts = [];
-  const remainingUi = new Set(config.fonts.some(entry => entry.uiResources === true) ? await uiRepertoire(uiSources) : []);
+  const uiGlyphs = config.fonts.some(entry => entry.uiResources === true) ? await uiRepertoire(uiSources) : [];
+  const remainingUi = new Set(uiGlyphs);
   let bg;
   const digest = data => createHash('sha256').update(data).digest('hex');
   for (const entry of config.fonts) {
@@ -38,7 +39,9 @@ export async function buildWebFonts(configPath, { outDir = resolve('www'), uiSou
         const engine = new bg.FontSubsetter(data.length);
         try {
           engine.append(data);
-          for (const glyph of remainingUi) if (engine.has_glyphs(glyph)) {
+          // Every marked face gets its own supported UI characters. A Gothic
+          // bootstrap must not suppress Mincho requests through global fallback.
+          for (const glyph of uiGlyphs) if (engine.has_glyphs(glyph)) {
             text += glyph;
             remainingUi.delete(glyph);
           }

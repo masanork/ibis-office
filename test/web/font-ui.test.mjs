@@ -53,6 +53,9 @@ test('bootstrap subsets cover the resource union and reject unsupported new UI t
   assert.ok(bg.font_has_glyphs(fonts[0], 'A'));
   assert.ok(!bg.font_has_glyphs(fonts[0], '\u{100001}'));
   assert.ok(bg.font_has_glyphs(fonts[1], '\u{100001}'));
+  // Known text must be available in each marked face, so an already-loaded
+  // Gothic glyph cannot silently replace a document's Mincho face.
+  assert.ok(bg.font_has_glyphs(fonts[1], 'A'));
   const before = await readFile(join(output, 'fonts.json'));
   await writeFile(tsv, 'new\t漢\n');
   await assert.rejects(buildWebFonts(config, { outDir: output, uiSources: [join(dir, 'ja')] }), /UI resources lack bootstrap glyphs: U\+6F22/);

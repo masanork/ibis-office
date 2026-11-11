@@ -51,8 +51,10 @@ Paths are relative to the configuration file:
   typeface names. Conflicting aliases fail the build.
 - `uiResources: true` adds display text from all application `i18n/*/*.tsv`
   catalogs and the component library's English/Japanese locale resource.
-  Entries are processed in configuration order: the primary UI face covers
-  its characters first, then symbol/emoji faces cover the remaining graphemes.
+  Each marked face receives the resource graphemes it supports. Mark both
+  document Mincho and UI Gothic, so already-loaded Gothic glyphs cannot
+  silently replace Mincho through global fallback. Symbol/emoji faces fill
+  the gaps in the initial font set.
   Keys, comments and document samples are excluded. Variation-selector/emoji
   clusters are retained. A missing UI glyph fails the build before publishing
   the manifest. Newly added UI translations therefore enter the next bootstrap
@@ -112,8 +114,8 @@ appropriate for document confidentiality.
 
 ## ibis.sorane.dev behavior
 
-`scripts/web-fonts.sorane.json` bootstraps ASCII from IPAmj and all known UI
-text from Noto Sans CJK JP, supplemented by small Noto Symbols/Emoji subsets.
+`scripts/web-fonts.sorane.json` bootstraps known UI text from both IPAmj and
+Noto Sans CJK JP, supplemented by small Noto Symbols/Emoji subsets.
 UI text is available before GPUI's first layout and does not depend on the
 on-demand endpoint. Document Mincho and Gothic retain their separate on-demand
 fallback chains for content outside the bootstrap set. Additional source fonts
