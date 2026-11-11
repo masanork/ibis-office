@@ -31,6 +31,7 @@ BUILDS = {
     "web": (os.path.join(ROOT, "www", "license.md"), "wasm32-unknown-unknown", "Web 版"),
     "macos": (os.path.join(ROOT, "crates", "ibis-office-app", "macos", "license.md"), "aarch64-apple-darwin", "macOS 版"),
     "linux": (os.path.join(ROOT, "crates", "ibis-office-app", "linux", "license.md"), "x86_64-unknown-linux-gnu", "Linux 版"),
+    "windows": (os.path.join(ROOT, "crates", "ibis-office-app", "windows", "license.md"), "x86_64-pc-windows-msvc", "Windows 版"),
 }
 # What each build ships besides the app: the AppImage's runtime is in the Linux one.
 EXTRA_PACKAGES = {"web": ["ibis-font-subsetter"], "linux": ["ibis-appimage"]}
@@ -218,7 +219,7 @@ def write(build):
     bundled.append(("Material Symbols（Google）", "タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み）", "Apache-2.0"))
     material_readme = open(os.path.join(ROOT, "crates", "ibis-office-app", "icons", "material", "README.md"), encoding="utf-8").read()
     material_source = next((l[2:] for l in material_readme.splitlines() if l.startswith("- 出典")), "")
-    where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）"}[build]
+    where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）", "windows": " Windows 版"}[build]
     md = [f"# サードパーティのライセンス（{label}）",
           "",
           *(["ibis.sorane.dev の追加フォントは [フォントのライセンス](./font-notices.html) を参照してください。", ""] if build == "web" else []),

@@ -65,3 +65,17 @@ python3 scripts/check-web-assets.py
 配信先は<https://docs.sorane.dev>（既存の<https://ibis.sorane.dev>も維持）。配信時はこのブランチの`wrangler.jsonc`を使い、
 dry-runの後にdeployし、公開されたmanifestとWASMのhash、ブラウザー動作を確認する。
 単なるブランチ整理では、検証中の別作業による配信を上書きしない。
+
+## デスクトップ CI
+
+`Desktop build CI` は `masanork` への push、同ブランチ宛て PR、手動実行で
+macOS arm64、Windows x64、Linux x64 AppImage をビルドする。PR はマージ用の
+仮コミットではなく PR head の SHA を checkout し、submodule の状態と Rust の
+版を成果物の `build-info.json` に記録する。各ジョブはパッケージを検証して
+`SHA256SUMS` とともに Actions artifact として14日間保存する。
+
+これらは **CI 検証用**であり、公開リリースではない。macOS は ad-hoc 署名で
+公証されておらず、Windows も配布署名はない。現行の名前・ロゴと upstream の
+自動更新先も配布向けには整理が必要。タグ付けや GitHub Release への自動添付、
+署名鍵、デプロイ権限はこの workflow に含めない。CI の起動テストは異常な引数の
+終了コードやパッケージ構造を確認するもので、GUI 操作の検証ではない。

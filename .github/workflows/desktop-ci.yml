@@ -1,0 +1,162 @@
+# CI artifacts are for validation, not public releases or update feeds.
+name: Desktop build CI
+on:
+  push:
+    branches: [masanork]
+  pull_request:
+    branches: [masanork]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  IBIS_BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
+  CARGO_TERM_COLOR: never
+
+jobs:
+  desktop:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            runner: macos-15
+            platform: macos-arm64
+            python: python3
+          - name: Windows x64
+            runner: windows-2022
+            platform: windows-x64
+            python: python
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned Rust
+        shell: bash
+        run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+      - name: Record clean source and toolchain
+        shell: bash
+        run: ${{ matrix.python }} scripts/desktop-ci-info.py source ci-artifact
+      - name: Test updater
+        run: cargo test --locked -p ibis-office-updater
+      - name: Build and verify macOS app
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/bundle-macos.sh --release
+          app=target/release/ibisOffice.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          plutil -lint "$app/Contents/Info.plist"
+          file "$app/Contents/MacOS/ibisOffice" | grep -q 'arm64'
+          set +e
+          "$app/Contents/MacOS/ibisOffice" --export invalid
+          result=$?
+          set -e
+          test "$result" -eq 1
+          test -s "$app/Contents/Resources/Licenses/license.md"
+          test -s "$app/Contents/Resources/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip"
+          ditto -c -k --keepParent "$app" ci-artifact/desktop-macos-arm64-ci.zip
+          mkdir -p "$RUNNER_TEMP/verify-app"
+          ditto -x -k ci-artifact/desktop-macos-arm64-ci.zip "$RUNNER_TEMP/verify-app"
+          codesign --verify --deep --strict "$RUNNER_TEMP/verify-app/ibisOffice.app"
+      - name: Build and verify Windows package
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --release --locked -p ibis-office-app -p ibis-office-updater
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/gen-web-licenses.py windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dir = 'ci-package/ibisOffice'
+          New-Item -ItemType Directory -Force "$dir/Resources/artborders", "$dir/Resources/Licenses" | Out-Null
+          Copy-Item target/release/ibisOffice.exe,target/release/ibisOfficeUpdater.exe $dir
+          Copy-Item crates/ibis-office-app/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip,crates/ibis-office-app/data/artborders/ECMA-NOTICE.txt "$dir/Resources/artborders"
+          Copy-Item LICENSE,NOTICE,COMMERCIAL-LICENSE.md,crates/ibis-office-app/windows/license.md,crates/ibis-office-app/fonts/carlito/OFL.txt "$dir/Resources/Licenses"
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path "$dir/ibisOffice.exe"))
+          $offset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt32($bytes, $offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, $offset + 4) -ne 0x8664) { throw 'expected x64 PE executable' }
+          $proc = Start-Process -FilePath (Resolve-Path "$dir/ibisOffice.exe") -ArgumentList '--export','invalid' -Wait -PassThru
+          if ($proc.ExitCode -ne 1) { throw "unexpected smoke-test exit: $($proc.ExitCode)" }
+          Compress-Archive -Path $dir -DestinationPath ci-artifact/desktop-windows-x64-ci.zip
+          Expand-Archive ci-artifact/desktop-windows-x64-ci.zip "$env:RUNNER_TEMP/verify-windows"
+          if (!(Test-Path "$env:RUNNER_TEMP/verify-windows/ibisOffice/ibisOffice.exe")) { throw 'missing packaged executable' }
+      - name: Hash deliverables
+        shell: bash
+        run: ${{ matrix.python }} scripts/desktop-ci-info.py artifacts ci-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ci-${{ matrix.platform }}
+          path: ci-artifact/
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux x64 AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates curl git python3 build-essential pkg-config \
+            libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.1
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Record clean source and toolchain
+        run: python3 scripts/desktop-ci-info.py source ci-artifact
+      - name: Test updater and AppImage runtime
+        run: cargo test --locked -p ibis-office-updater -p ibis-appimage
+      - name: Build and verify AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/bundle-linux.sh --release
+          image=$(find target/dist -maxdepth 1 -name '*.AppImage' -type f -print -quit)
+          test -n "$image"
+          (cd target/dist && sha256sum -c "$(basename "$image").sha256")
+          "$image" --appimage-offset | grep -E '^[0-9]+$'
+          mkdir -p "$RUNNER_TEMP/verify-linux"
+          image=$(realpath "$image")
+          (cd "$RUNNER_TEMP/verify-linux" && "$image" --appimage-extract)
+          test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
+          test -s "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/third-party-licenses.md"
+          set +e
+          "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" --export invalid
+          result=$?
+          set -e
+          test "$result" -eq 1
+          cp "$image" ci-artifact/desktop-linux-x64-ci.AppImage
+      - name: Hash deliverables
+        run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ci-linux-x64
+          path: ci-artifact/
+          if-no-files-found: error
+          retention-days: 14
