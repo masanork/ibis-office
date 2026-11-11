@@ -11,6 +11,7 @@ use std::{
     fs,
     io::Cursor,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -27,9 +28,14 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("sorane-journey-{}-{nonce}", std::process::id()));
-        fs::create_dir_all(root.join("installed")).unwrap();
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "sorane-journey-{}-{nonce}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join("installed")).unwrap();
         fs::write(root.join("installed/app"), b"old").unwrap();
         let key = Ed25519KeyPair::from_seed_unchecked(&[27; 32]).unwrap();
         let now = (nonce / 1_000_000_000) as u64;

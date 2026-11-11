@@ -267,19 +267,16 @@ fn check() -> Found {
     let sig_text = match fetch_bounded(&format!("{MANIFEST_URL}.sig"), 256) { Ok(v) => v, Err(_) => return Found::Failed };
     let Some(sig) = decode_hex::<64>(sig_text.trim()) else { return Found::Failed };
     let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) { Ok(v) => v.as_secs(), Err(_) => return Found::Failed };
-    let manifest = match ibis_office_updater::signed_manifest::verify_manifest(manifest_text.as_bytes(), &sig, &key, now) {
-        Ok(v) => v, Err(_) => return Found::Failed,
-    };
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "macos-arm64", ("macos", "x86_64") => "macos-x64",
         ("windows", "x86_64") => "windows-x64", ("linux", "x86_64") => "linux-x64-appimage",
         ("linux", "aarch64") => "linux-arm64-appimage", _ => return Found::Failed,
     };
+    let manifest = match ibis_office_updater::update_transport::select_update(manifest_text.as_bytes(), &sig, &key, now, target, CURRENT) {
+        Ok(Some(v)) => v, Ok(None) => return Found::Nothing, Err(_) => return Found::Failed,
+    };
     let Some(artifact) = manifest.artifact(target) else { return Found::Failed };
     let latest = manifest.version.clone();
-    if !version::is_newer(&latest, CURRENT) {
-        return Found::Nothing;
-    }
     let Some(log) = log_for(&latest) else { return Found::Failed };
     log.ok("check", &format!("a newer version: {latest} (current {CURRENT})"));
 
@@ -409,41 +406,18 @@ fn decode_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     Some(out)
 }
 
-fn curl_bounded(url: &str, limit: u64, seconds: u32, output: impl std::io::Write) -> Result<(), String> {
-    let mut cmd = command("curl");
-    cmd.args(["--fail", "--silent", "--show-error", "--location", "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "10", "--max-time", &seconds.to_string(), "--max-filesize", &limit.to_string(), url]);
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
-    let result = ibis_office_updater::signed_manifest::copy_bounded(child.stdout.take().ok_or("missing curl stdout")?, output, limit);
-    if result.is_err() { let _ = child.kill(); }
-    let status = child.wait().map_err(|e| e.to_string())?;
-    result?;
-    if !status.success() { return Err("download failed".into()); }
-    Ok(())
-}
-
 fn fetch_bounded(url: &str, limit: u64) -> Result<String, String> {
     let mut bytes = Vec::new();
-    curl_bounded(url, limit, 20, &mut bytes)?;
+    ibis_office_updater::update_transport::fetch_to(url, limit, 20, &mut bytes)?;
     String::from_utf8(bytes).map_err(|_| "metadata is not UTF-8".into())
 }
 
 fn download_signed(log: &Log, version: &str, artifact: &ibis_office_updater::signed_manifest::Artifact) -> Result<PathBuf, String> {
     let dir = paths::update_dir(version).ok_or("no folder for update")?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let part = dir.join(format!("{}.part-{}", artifact.filename, std::process::id()));
-    let out = std::fs::OpenOptions::new().write(true).create_new(true).open(&part).map_err(|e| e.to_string())?;
-    let final_path = dir.join(&artifact.filename);
     let url = format!("{RELEASES_URL}/download/v{version}/{}", artifact.filename);
-    let result = (|| {
-        curl_bounded(&url, artifact.size, 1800, out)?;
-        let file = std::fs::File::open(&part).map_err(|e| e.to_string())?;
-        ibis_office_updater::signed_manifest::verify_artifact(artifact, file).map_err(str::to_string)?;
-        std::fs::rename(&part, &final_path).map_err(|e| e.to_string())?;
-        log.ok("verify", "signed size and SHA-256 match");
-        Ok(final_path)
-    })();
-    if result.is_err() { let _ = std::fs::remove_file(&part); }
-    result
+    let file = ibis_office_updater::update_transport::download_verified(&url, artifact, &dir)?;
+    log.ok("verify", "signed size and SHA-256 match");
+    Ok(file)
 }
 
 /// The error stream of a command (codesign writes its report there), whether or not it succeeds.
