@@ -1,42 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! Automatic update (todo-fix #35; macOS, Windows and Linux).
-//!
-//! At startup (ツール > 設定… > 起動時に更新を確かめる, on unless turned off) a
-//! background task reads version.txt on GitHub. If this platform's version
-//! there is newer than the one built in (`IBIS_VERSION`), it downloads that
-//! version's zip and asks 「ibisOffice の新しいバージョンが見つかりました。更新しますか？」.
-//! On 「はい」 the zip is unpacked, the new app is checked, and
-//! `ibisOfficeUpdater` from the new app is started; ibisOffice quits, the
-//! updater swaps the installed copy for the new one and starts it (see
-//! `crates/ibis-office-updater`).
-//!
-//! - macOS: the whole `ibisOffice.app` is replaced (replacing the executable
-//!   alone would break the signature). The unpacked app must be signed by
-//!   ibis inc.'s team and accepted by Gatekeeper (`codesign --verify --deep
-//!   --strict`, `spctl -a -t exec`) before anything in it is run.
-//! - Windows (the code signature is not checked yet): the zip's SHA-256 must
-//!   equal the one in the `.sha256` file beside it on the Releases page.
-//! - Linux: the AppImage (`ibisOffice-<version>-Linux.AppImage`, no zip) must
-//!   match its `.sha256` the same way and be an AppImage; it takes the place
-//!   of the one running (`APPIMAGE`, renamed over it in its folder, which a
-//!   running program allows) and is started; no updater is needed. Its
-//!   runtime unpacks the new version at that start (`crates/ibis-appimage`).
-//! - Not done: from a build run out of `target/` (or on Linux not from its
-//!   AppImage), from a folder the user cannot write to, or from macOS's App
-//!   Translocation (the log says which, and a window asks to install it again
-//!   by hand).
-//! - Two attempts at one version that did not end in that version running
-//!   stop the offers (a window says so once).
-//!
-//! Every step goes to `updater.log` (`ibis_office_updater::log`). Downloading
-//! and unpacking use the system's `curl` and `ditto` (`tar` on Windows; the
-//! hashes `certutil` on Windows, `sha256sum` on Linux).
-//! For the tests: `IBIS_UPDATE_URL_BASE` replaces the GitHub addresses,
-//! `IBIS_UPDATE_DIR` the folders of the files, `IBIS_UPDATE_AUTO_YES=1`
-//! answers 「はい」, and `IBIS_UPDATE_SKIP_SIGNATURE=1` skips the signature
-//! check, only in an app that is not signed by ibis inc. itself.
+//! Sorane Docs desktop updater (currently disabled until release keys and
+//! platform signing are provisioned). Signed metadata and the downloaded
+//! artifact are verified before the inherited replacement logic is entered.
+//! See docs/sorane-desktop-updates.md for activation gates and limitations.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -50,13 +18,16 @@ use crate::shell::{i18n, settings};
 
 /// This build's version (version.txt's line for this platform at build time).
 const CURRENT: &str = env!("IBIS_VERSION");
-const VERSION_URL: &str = "https://raw.githubusercontent.com/ibisjp/ibis-office/main/version.txt";
-const RELEASES_URL: &str = "https://github.com/ibisjp/ibis-office/releases";
+// A release key must be reviewed and embedded before update UI is enabled.
+// Never accept a trust key from the network, environment, or manifest.
+const TRUSTED_UPDATE_KEY_HEX: &str = "";
+const MANIFEST_URL: &str = "https://github.com/masanork/ibis-office/releases/latest/download/sorane-update.json";
+const RELEASES_URL: &str = "https://github.com/masanork/ibis-office/releases";
 /// Attempts at one version after which no more offers are made.
 const MAX_ATTEMPTS: u32 = 2;
-/// ibis inc.'s Apple developer team.
+/// The Sorane Docs Apple developer team, configured before activation.
 #[cfg(target_os = "macos")]
-const TEAM_ID: &str = "SQ8CQKBW45";
+const TEAM_ID: &str = ""; // Set to the Sorane Docs Apple Developer team before enabling updates.
 
 const CHECK_KEY: &str = "check-updates";
 const ATTEMPT_KEY: &str = "update-attempt";
@@ -291,14 +262,21 @@ fn check() -> Found {
     cleanup_old_files();
     clear_attempts_if_updated();
 
-    let url = env("IBIS_UPDATE_URL_BASE").map(|base| format!("{}/version.txt", base.trim_end_matches('/'))).unwrap_or_else(|| VERSION_URL.to_string());
-    let text = match fetch_text(&url) {
-        Ok(text) => text,
-        Err(_) => return Found::Failed,
+    let Some(key) = decode_hex::<32>(TRUSTED_UPDATE_KEY_HEX) else { return Found::Failed };
+    let manifest_text = match fetch_bounded(MANIFEST_URL, 64 * 1024) { Ok(v) => v, Err(_) => return Found::Failed };
+    let sig_text = match fetch_bounded(&format!("{MANIFEST_URL}.sig"), 256) { Ok(v) => v, Err(_) => return Found::Failed };
+    let Some(sig) = decode_hex::<64>(sig_text.trim()) else { return Found::Failed };
+    let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) { Ok(v) => v.as_secs(), Err(_) => return Found::Failed };
+    let manifest = match ibis_office_updater::signed_manifest::verify_manifest(manifest_text.as_bytes(), &sig, &key, now) {
+        Ok(v) => v, Err(_) => return Found::Failed,
     };
-    let Some(latest) = version::find(&text, version::PLATFORM) else {
-        return Found::Failed;
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "macos-arm64", ("macos", "x86_64") => "macos-x64",
+        ("windows", "x86_64") => "windows-x64", ("linux", "x86_64") => "linux-x64-appimage",
+        ("linux", "aarch64") => "linux-arm64-appimage", _ => return Found::Failed,
     };
+    let Some(artifact) = manifest.artifact(target) else { return Found::Failed };
+    let latest = manifest.version.clone();
     if !version::is_newer(&latest, CURRENT) {
         return Found::Nothing;
     }
@@ -314,7 +292,7 @@ fn check() -> Found {
         return if reason.starts_with("a build run") { Found::Failed } else { Found::Manual { version: latest } };
     }
 
-    match download(&log, &latest) {
+    match download_signed(&log, &latest, artifact) {
         Ok(zip) => Found::Ready { version: latest, zip },
         Err(err) => {
             log.fail("download", &err);
@@ -424,109 +402,48 @@ fn run(command: &mut Command) -> Result<String, String> {
     Err(format!("{:?} {}: {} {}", command.get_program(), out.status, stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()))
 }
 
-fn curl(url: &str, max_seconds: u32) -> Command {
-    let mut curl = command("curl");
-    curl.args(["--fail", "--silent", "--show-error", "--location", "--connect-timeout", "10", "--max-time", &max_seconds.to_string()]);
-    if env("IBIS_UPDATE_URL_BASE").is_none() {
-        // Only https, also after a redirect.
-        curl.args(["--proto", "=https", "--proto-redir", "=https"]);
-    }
-    curl.arg(url);
-    curl
+fn decode_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+    if text.len() != N * 2 || !text.is_ascii() { return None; }
+    let mut out = [0u8; N];
+    for (i, b) in out.iter_mut().enumerate() { *b = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok()?; }
+    Some(out)
 }
 
-fn fetch_text(url: &str) -> Result<String, String> {
-    run(&mut curl(url, 20))
+fn curl_bounded(url: &str, limit: u64, seconds: u32, output: impl std::io::Write) -> Result<(), String> {
+    let mut cmd = command("curl");
+    cmd.args(["--fail", "--silent", "--show-error", "--location", "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "10", "--max-time", &seconds.to_string(), "--max-filesize", &limit.to_string(), url]);
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
+    let result = ibis_office_updater::signed_manifest::copy_bounded(child.stdout.take().ok_or("missing curl stdout")?, output, limit);
+    if result.is_err() { let _ = child.kill(); }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    result?;
+    if !status.success() { return Err("download failed".into()); }
+    Ok(())
 }
 
-/// The file of `version` on the Releases page: a zip, or on Linux the AppImage itself.
-fn zip_name(version: &str) -> String {
-    let extension = if cfg!(target_os = "linux") { "AppImage" } else { "zip" };
-    format!("ibisOffice-{version}-{}.{extension}", version::PLATFORM)
+fn fetch_bounded(url: &str, limit: u64) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    curl_bounded(url, limit, 20, &mut bytes)?;
+    String::from_utf8(bytes).map_err(|_| "metadata is not UTF-8".into())
 }
 
-fn zip_url(version: &str) -> String {
-    match env("IBIS_UPDATE_URL_BASE") {
-        Some(base) => format!("{}/{}", base.trim_end_matches('/'), zip_name(version)),
-        None => format!("https://github.com/ibisjp/ibis-office/releases/download/v{version}/{}", zip_name(version)),
-    }
-}
-
-/// The first 64 hex digits in a `.sha256` file (`<hex>  <file name>` or just `<hex>`), lower case.
-fn parse_sha256(text: &str) -> Option<String> {
-    let word = text.split_whitespace().next()?.to_ascii_lowercase();
-    (word.len() == 64 && word.bytes().all(|b| b.is_ascii_hexdigit())).then_some(word)
-}
-
-fn sha256_of(file: &Path) -> Result<String, String> {
-    #[cfg(windows)]
-    let out = run(command("certutil").args(["-hashfile"]).arg(file).arg("SHA256"))?;
-    // coreutils, on every Linux (shasum is Perl's).
-    #[cfg(target_os = "linux")]
-    let out = run(command("sha256sum").arg(file))?;
-    #[cfg(not(any(windows, target_os = "linux")))]
-    let out = run(command("shasum").args(["-a", "256"]).arg(file))?;
-    hash_in_output(&out).ok_or_else(|| format!("no hash in the output: {out}"))
-}
-
-/// The hash in the output of `certutil` (a line of the hash, maybe with
-/// spaces between its bytes, after a heading), `sha256sum` and `shasum`
-/// (the hash, then the file's name).
-fn hash_in_output(out: &str) -> Option<String> {
-    let is_hash = |word: &String| word.len() == 64 && word.bytes().all(|b| b.is_ascii_hexdigit());
-    out.lines().find_map(|line| {
-        let first = line.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
-        let joined = line.split_whitespace().collect::<String>().to_ascii_lowercase();
-        [first, joined].into_iter().find(is_hash)
-    })
-}
-
-/// Download `version`'s zip (Linux: AppImage) into its update folder; on Windows and Linux it must match its `.sha256`.
-fn download(log: &Log, version: &str) -> Result<PathBuf, String> {
-    let dir = paths::update_dir(version).ok_or("no folder for the update")?;
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let zip = dir.join(zip_name(version));
-    let part = dir.join(format!("{}.part", zip_name(version)));
-    let url = zip_url(version);
-    log.start("download", &url);
-    if let Err(err) = run(curl(&url, 1800).arg("--output").arg(&part)) {
-        let _ = std::fs::remove_dir_all(&dir);
-        // curl exit 22 with a 404: the version.txt was pushed before the release was made.
-        let hint = if err.contains("404") { " (not published yet?)" } else { "" };
-        return Err(format!("{err}{hint}"));
-    }
-    let size = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
-    log.ok("download", &format!("{size} bytes"));
-
-    if cfg!(any(windows, target_os = "linux")) {
-        log.start("verify-hash", "SHA-256 against the .sha256 file");
-        let verified = (|| {
-            let expected = parse_sha256(&fetch_text(&format!("{url}.sha256"))?).ok_or("the .sha256 file has no hash")?;
-            let actual = sha256_of(&part)?;
-            if expected == actual { Ok(()) } else { Err(format!("the download's SHA-256 is {actual}, the .sha256 file says {expected}")) }
-        })();
-        if let Err(err) = verified {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(format!("not installing: {err}"));
-        }
-        log.ok("verify-hash", "the hash matches");
-    }
-    std::fs::rename(&part, &zip).map_err(|e| format!("{}: {e}", zip.display()))?;
-    Ok(zip)
-}
-
-// ---- Unpacking and checking --------------------------------------------
-
-/// Whether the signature check may be skipped: asked for with `IBIS_UPDATE_SKIP_SIGNATURE=1` and this app is not itself ibis inc.'s signed one (so a release cannot be told to skip it).
-#[cfg(target_os = "macos")]
-fn signature_check_may_be_skipped() -> bool {
-    if env("IBIS_UPDATE_SKIP_SIGNATURE").as_deref() != Some("1") {
-        return false;
-    }
-    let Ok(exe) = std::env::current_exe() else { return false };
-    let info = run_stderr(command("codesign").args(["-dv", "--verbose=2"]).arg(exe));
-    !info.contains(&format!("TeamIdentifier={TEAM_ID}"))
+fn download_signed(log: &Log, version: &str, artifact: &ibis_office_updater::signed_manifest::Artifact) -> Result<PathBuf, String> {
+    let dir = paths::update_dir(version).ok_or("no folder for update")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let part = dir.join(format!("{}.part-{}", artifact.filename, std::process::id()));
+    let out = std::fs::OpenOptions::new().write(true).create_new(true).open(&part).map_err(|e| e.to_string())?;
+    let final_path = dir.join(&artifact.filename);
+    let url = format!("{RELEASES_URL}/download/v{version}/{}", artifact.filename);
+    let result = (|| {
+        curl_bounded(&url, artifact.size, 1800, out)?;
+        let file = std::fs::File::open(&part).map_err(|e| e.to_string())?;
+        ibis_office_updater::signed_manifest::verify_artifact(artifact, file).map_err(str::to_string)?;
+        std::fs::rename(&part, &final_path).map_err(|e| e.to_string())?;
+        log.ok("verify", "signed size and SHA-256 match");
+        Ok(final_path)
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&part); }
+    result
 }
 
 /// The error stream of a command (codesign writes its report there), whether or not it succeeds.
@@ -586,16 +503,11 @@ fn unpack(log: &Log, version: &str, zip: &Path) -> Result<Unpacked, String> {
         if found.trim() != version {
             return Err(format!("the new app is version {}, not {version}", found.trim()));
         }
-        if signature_check_may_be_skipped() {
-            log.info("verify-app", "the signature check is skipped (IBIS_UPDATE_SKIP_SIGNATURE, an app not signed by ibis inc.)");
-        } else {
-            run(command("codesign").args(["--verify", "--deep", "--strict"]).arg(&app)).map_err(|e| format!("codesign --verify: {e}"))?;
-            let info = run_stderr(command("codesign").args(["-dv", "--verbose=2"]).arg(&app));
-            if !info.contains(&format!("TeamIdentifier={TEAM_ID}")) {
-                return Err(format!("the new app is not signed by team {TEAM_ID}"));
-            }
-            run(command("spctl").args(["-a", "-t", "exec"]).arg(&app)).map_err(|e| format!("spctl: {e}"))?;
-        }
+        if TEAM_ID.is_empty() { return Err("Sorane Docs signing team is not configured".into()); }
+        run(command("codesign").args(["--verify", "--deep", "--strict"]).arg(&app)).map_err(|e| format!("codesign --verify: {e}"))?;
+        let info = run_stderr(command("codesign").args(["-dv", "--verbose=2"]).arg(&app));
+        if !info.contains(&format!("TeamIdentifier={TEAM_ID}")) { return Err("unexpected signing team".into()); }
+        run(command("spctl").args(["-a", "-t", "exec"]).arg(&app)).map_err(|e| format!("spctl: {e}"))?;
         let updater = app.join("Contents/MacOS/ibisOfficeUpdater");
         if !updater.is_file() {
             return Err("the new app has no ibisOfficeUpdater".into());
@@ -660,13 +572,9 @@ async fn offer(cx: &mut AsyncApp, version: String, zip: PathBuf, asked_by_user: 
     while !asked_by_user && cx.update(|cx| any_unsaved(cx)) {
         cx.background_executor().timer(Duration::from_secs(30)).await;
     }
-    let answer = if env("IBIS_UPDATE_AUTO_YES").as_deref() == Some("1") {
-        Some(0)
-    } else {
-        let buttons = vec![PromptButton::ok(i18n::text("fix.update.yes")), PromptButton::cancel(i18n::text("fix.update.no"))];
-        let detail = i18n::format("fix.update.found.detail", &[("version", &version), ("current", &CURRENT)]);
-        prompt(cx, PromptLevel::Info, i18n::text("fix.update.found").to_string(), detail, buttons).await
-    };
+    let buttons = vec![PromptButton::ok(i18n::text("fix.update.yes")), PromptButton::cancel(i18n::text("fix.update.no"))];
+    let detail = i18n::format("fix.update.found.detail", &[("version", &version), ("current", &CURRENT)]);
+    let answer = prompt(cx, PromptLevel::Info, i18n::text("fix.update.found").to_string(), detail, buttons).await;
     if answer != Some(0) {
         if let Some(log) = log_for(&version) {
             log.info("offer", "the user chose not to update now");
@@ -777,30 +685,12 @@ fn start_updater(log: &Log, version: &str, unpacked: &Unpacked) -> Result<(), St
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    use super::decode_hex;
     #[test]
-    fn a_sha256_file_names_the_hash_first() {
-        let hash = "A".repeat(64);
-        assert_eq!(parse_sha256(&format!("{hash}  ibisOffice-0.9.0-Windows.zip\n")), Some("a".repeat(64)));
-        assert_eq!(parse_sha256(&hash), Some("a".repeat(64)));
-        assert_eq!(parse_sha256("not a hash"), None);
-        assert_eq!(parse_sha256(""), None);
-    }
-
-    #[test]
-    fn the_hash_is_found_in_each_tool_s_output() {
-        let hash = "ab".repeat(32);
-        let spaced = hash.as_bytes().chunks(2).map(|b| std::str::from_utf8(b).unwrap()).collect::<Vec<_>>().join(" ");
-        let certutil = format!("SHA256 hash of file x.zip:\r\n{spaced}\r\nCertUtil: -hashfile command completed successfully.\r\n");
-        assert_eq!(hash_in_output(&certutil), Some(hash.clone()));
-        assert_eq!(hash_in_output(&format!("{hash}  /tmp/a b/ibisOffice-0.9.0-Linux.AppImage.part\n")), Some(hash.clone()));
-        assert_eq!(hash_in_output("nothing here\n"), None);
-    }
-
-    #[test]
-    fn the_zip_is_named_for_the_version_and_platform() {
-        let name = zip_name("0.9.0");
-        assert!(name == "ibisOffice-0.9.0-macOS.zip" || name == "ibisOffice-0.9.0-Windows.zip" || name == "ibisOffice-0.9.0-Linux.AppImage");
+    fn hex_requires_exact_length_and_valid_digits() {
+        assert_eq!(decode_hex::<2>("00ff"), Some([0, 255]));
+        assert!(decode_hex::<2>("0f").is_none());
+        assert!(decode_hex::<2>("xxff").is_none());
+        assert!(decode_hex::<2>("éff").is_none());
     }
 }

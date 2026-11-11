@@ -3486,6 +3486,11 @@ dependencies = [
 [[package]]
 name = "ibis-office-updater"
 version = "0.8.0"
+dependencies = [
+ "ring",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "ibis-ooxml"
