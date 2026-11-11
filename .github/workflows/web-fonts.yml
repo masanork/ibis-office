@@ -34,6 +34,7 @@ jobs:
       - run: cargo test --locked -p ibis-doc-model --test repertoire
       - run: cargo test --locked -p ibis-font-subsetter
       - run: 'cargo test --locked -p ibis-pptx --lib jtd::'
+      - run: cargo test --locked -p ibis-pptx --example jtd_embedded
       - run: npm run test:web
       - run: npm run check:worker
       - run: npx wrangler deploy --dry-run

@@ -3526,6 +3526,7 @@ dependencies = [
  "encoding_rs",
  "ibis-calc",
  "ibis-doc-model",
+ "ibis-emf",
  "ibis-ooxml",
  "miniz_oxide 0.8.9",
  "roxmltree 0.21.1",
