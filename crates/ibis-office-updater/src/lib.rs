@@ -18,3 +18,6 @@ pub mod version;
 
 /// Verification of Sorane Docs signed update metadata and artifacts.
 pub mod signed_manifest;
+
+/// Offline verification of a complete signed update candidate.
+pub mod release_candidate;
