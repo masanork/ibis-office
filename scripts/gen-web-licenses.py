@@ -39,7 +39,7 @@ OWN = {"ibis-font-subsetter", "ibis-office-app", "ibis-doc-model", "ibis-pptx", 
 
 
 def run(*args):
-    return subprocess.run(args, cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    return subprocess.run(args, cwd=ROOT, check=True, capture_output=True, text=True, encoding="utf-8").stdout
 
 
 def crates(target, extra=()):
