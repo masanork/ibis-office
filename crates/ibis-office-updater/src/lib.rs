@@ -8,11 +8,13 @@
 //! is left. This library is what it and the app share: the log it writes
 //! (`updater.log`, one line per step), where files go, and version.txt.
 //!
-//! Only std: it must work with nothing else installed, and never runs on
-//! the web.
+//! It is native-only; release signature verification is implemented in Rust.
 
 pub mod log;
 pub mod paths;
 pub mod process;
 pub mod swap;
 pub mod version;
+
+/// Verification of Sorane Docs signed update metadata and artifacts.
+pub mod signed_manifest;

@@ -85,3 +85,5 @@ macOS arm64、Windows x64、Linux x64 AppImage をビルドする。PR はマー
 Desktop builds use the Sorane Docs name and the blue S mark in `crates/ibis-office-app/branding/`. The macOS bundle and Linux desktop application have their own identifiers so they can coexist with ibisOffice. About retains the required Powered by ibisOffice attribution.
 
 Automatic and manual in-app update checks are disabled in this fork: the inherited updater points at upstream ibisOffice releases, not Sorane Docs builds. Do not re-enable it until a separate fork release feed and verification policy are in place. Desktop CI artifacts are validation builds, not an update feed. Windows automatic Open With registration is also disabled until the fork has a distinct executable name; this avoids overwriting an upstream installation’s registration.
+
+Signed update metadata preparation and the remaining production activation gates are documented in [Sorane Docs desktop updates](sorane-desktop-updates.md).
