@@ -597,39 +597,11 @@ async fn offer(cx: &mut AsyncApp, version: String, zip: PathBuf, asked_by_user: 
     }
 }
 
-/// Put the new AppImage in the place of the one running and start it (Linux):
-/// copied beside it, made executable, and renamed over it, so the AppImage is
-/// at every moment either the old one or the new one whole.
+/// Fail closed until the standalone Linux updater is bundled and the signed
+/// artifact is revalidated across the handoff to that process.
 #[cfg(target_os = "linux")]
-fn start_updater(log: &Log, version: &str, unpacked: &Unpacked) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let old = installed_copy()?;
-    count_attempt(version);
-    let folder = old.parent().ok_or("no folder")?;
-    let partial = folder.join(format!(".ibisOffice-{version}.partial-{}", std::process::id()));
-    log.start("replace", &format!("{} -> {}", unpacked.new.display(), old.display()));
-    let replaced = (|| {
-        std::fs::copy(&unpacked.new, &partial).map_err(|e| format!("{}: {e}", partial.display()))?;
-        std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("{}: {e}", partial.display()))?;
-        std::fs::rename(&partial, &old).map_err(|e| format!("{}: {e}", old.display()))
-    })();
-    if let Err(err) = replaced {
-        let _ = std::fs::remove_file(&partial);
-        return Err(err);
-    }
-    log.ok("replace", "the new AppImage is in place");
-    let mut app = command(&old.to_string_lossy());
-    app.current_dir(std::env::temp_dir()).stdout(Stdio::null()).stderr(Stdio::null());
-    // Not the variables this copy's runtime set: the new runtime sets its own.
-    for name in ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] {
-        app.env_remove(name);
-    }
-    app.spawn().map_err(|e| format!("{}: {e}", old.display()))?;
-    if let Some(dir) = paths::update_dir(version) {
-        let _ = std::fs::remove_dir_all(dir);
-    }
-    log.ok("start", "the new version started; ibisOffice quits now");
-    Ok(())
+fn start_updater(_log: &Log, _version: &str, _unpacked: &Unpacked) -> Result<(), String> {
+    Err("Linux AppImage updates are not yet available".into())
 }
 
 #[cfg(not(target_os = "linux"))]
