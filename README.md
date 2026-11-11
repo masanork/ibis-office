@@ -191,7 +191,7 @@ cargo build --release
 - On Linux, `scripts/bundle-linux.sh --release` builds an AppImage at `target/dist/ibisOffice-<version>-Linux.AppImage`, and `scripts/bundle-flatpak.sh --release` a Flatpak bundle at `target/dist/ibisOffice-<version>-Linux-<arch>.flatpak` (needs `flatpak-builder`).
 - For the browser edition, build with `scripts/build-web.sh --release` and serve `www/` (browsers with WebGPU: Chrome, Edge, Safari 26 or later).
 
-  The desktop and browser editions can also open `.jtd` as an experimental read-only preview; formatting and other content may be omitted. Recognized content can be exported to a separate DOCX. See [JTD preview](docs/jtd-preview.md).
+  The desktop and browser editions can also open `.jtd` and uncompressed `.jtt` as an experimental read-only preview; formatting and other content may be omitted. Recognized content can be exported to a separate DOCX. See [Ichitaro preview](docs/jtd-preview.md).
 
   The build requires Python 3 and splits the Wasm into content-addressed files no larger than 20 MiB, which the browser verifies and reassembles. Serve over HTTPS or localhost. For Cloudflare Workers Static Assets, run `python3 scripts/check-web-assets.py` and `npx wrangler deploy --dry-run`, then check the account and Worker name in `wrangler.jsonc` before `npx wrangler deploy`. This publishes the editor, not the separate playground.
 

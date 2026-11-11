@@ -4,7 +4,35 @@ use super::Scenario;
 use crate::docx::scenarios::DocSteps;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_omissions", omissions)]
+    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_omissions", omissions), ("shell::native_jtd_template", template)]
+}
+
+fn template() {
+    let mut s = Scenario::start_view();
+    let path = s.screenshot_path("synthetic-template").with_extension("JTT");
+    let bytes = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jtd");
+    std::fs::write(&path, bytes).unwrap();
+    assert_eq!(ibis_pptx::Kind::from_extension("JTT"), Some(ibis_pptx::Kind::Document));
+    assert!(ibis_pptx::Kind::OPENABLE_EXTENSIONS.contains(&"jtt"));
+    s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
+    for _ in 0..100 {
+        s.wait(50);
+        if s.with(|e, _| e.is_jtd_read_only()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(s.with(|e, _| e.is_jtd_read_only()));
+    assert!(s.paragraph(0).1.contains("日本語 test"));
+    s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
+    assert!(!s.with(|e, _| e.is_jtd_read_only()));
+    assert!(s.update(|e, w, _| e.save_to(path.clone(), w)).is_err());
+    assert!(s.update(|e, w, _| e.save_to(path.with_file_name("other.jtt"), w)).is_err());
+    let docx = path.with_extension("docx");
+    s.update(|e, w, _| e.save_to(docx.clone(), w)).unwrap();
+    assert!(ibis_pptx::read(&std::fs::read(docx).unwrap()).is_ok());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let invalid = path.with_file_name("invalid.jtt");
+    std::fs::write(&invalid, b"not a JTT").unwrap();
+    assert!(crate::read_file(&invalid).is_err());
 }
 
 fn omissions() {

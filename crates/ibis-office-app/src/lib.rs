@@ -810,7 +810,7 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("jtd")) || ibis_pptx::jtd::is_jtd(&data) {
+    if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::jtd::is_extension) || ibis_pptx::jtd::is_jtd(&data) {
         let presentation = ibis_pptx::jtd::read(&data).map_err(|e| e.to_string())?;
         let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
@@ -1361,7 +1361,7 @@ mod web {
         let mut open_error = None;
         let document: Option<(ibis_doc_model::Presentation, SharedString)> = file.and_then(|data| {
             let name = file_name.unwrap_or_default();
-            if name.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case("jtd")) || ibis_pptx::jtd::is_jtd(&data) {
+            if name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::jtd::is_extension(e)) || ibis_pptx::jtd::is_jtd(&data) {
                 match ibis_pptx::jtd::read(&data) {
                     Ok(presentation) => jtd_document = Some((presentation, name.into(), data)),
                     Err(err) => open_error = Some(format!("{name}: {err}")),

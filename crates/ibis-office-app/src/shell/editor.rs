@@ -1124,7 +1124,7 @@ impl SlideEditor {
             // Let the empty document show before reading the file, which
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
-            let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("jtd")) || ibis_pptx::jtd::is_jtd(&data);
+            let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ibis_pptx::jtd::is_extension(ext)) || ibis_pptx::jtd::is_jtd(&data);
             if is_jtd {
                 let mut result = ibis_pptx::jtd::read(&data).map_err(|e| e.to_string());
                 if let Ok(presentation) = &result {
