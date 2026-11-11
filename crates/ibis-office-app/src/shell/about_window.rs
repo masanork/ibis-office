@@ -91,7 +91,11 @@ fn offer_update_again(_cx: &mut App) {
 
 /// The version line, as shown.
 pub(crate) fn version_line() -> String {
-    i18n::format("about.version", &[("version", &env!("IBIS_VERSION"))])
+    let version = i18n::format("about.version", &[("version", &env!("IBIS_VERSION"))]);
+    match option_env!("IBIS_BUILD_IDENTITY") {
+        Some(identity) => format!("{version} · {identity}"),
+        None => version,
+    }
 }
 
 /// The About content (logo, version, the update button, "Powered by ibisOffice" with its link, copyright, license),

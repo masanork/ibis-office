@@ -15,6 +15,7 @@ use std::path::Path;
 
 fn main() {
     app_version();
+    build_identity();
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("icons/material");
     println!("cargo:rerun-if-changed={}", dir.display());
     // The icons drawn for ibisOffice itself (icons/ibis/*.svg: line samples for the border styles, the merge menu) are
@@ -53,6 +54,47 @@ fn main() {
         println!("cargo:rustc-link-arg=/STACK:8388608");
         windows_icon();
     }
+}
+
+/// Embed display-only provenance. A source archive without Git remains buildable.
+fn build_identity() {
+    use std::process::Command;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let git = |args: &[&str]| -> Option<String> {
+        let output = Command::new("git").current_dir(&root).args(args).output().ok()?;
+        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    println!("cargo:rerun-if-env-changed=IBIS_BUILD_BRANCH");
+    let Some(top) = git(&["rev-parse", "--show-toplevel"]) else { return };
+    if std::fs::canonicalize(&root).ok() != std::fs::canonicalize(top).ok() { return; }
+    let Some(commit) = git(&["rev-parse", "--short=12", "HEAD"]) else { return };
+    let branch = std::env::var("IBIS_BUILD_BRANCH").ok().filter(|s| !s.is_empty())
+        .or_else(|| git(&["symbolic-ref", "--quiet", "--short", "HEAD"]))
+        .unwrap_or_else(|| "detached".into());
+    // Git metadata may live outside the worktree (including linked worktrees).
+    for name in ["HEAD", "index"] {
+        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", name]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+    if let Some(reference) = git(&["symbolic-ref", "--quiet", "HEAD"]) {
+        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", &reference]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+    // Track versioned files so Cargo refreshes the dirty indicator when they change.
+    if let Some(files) = git(&["ls-files", "-z"]) {
+        for file in files.split('\0').filter(|file| !file.is_empty()) {
+            println!("cargo:rerun-if-changed={}", root.join(file).display());
+        }
+    }
+    let state = match git(&["status", "--porcelain", "--untracked-files=no"]) {
+        Some(status) if status.is_empty() => "",
+        Some(_) => " · dirty",
+        None => " · status unknown",
+    };
+    let branch = branch.replace(['\r', '\n'], " ");
+    println!("cargo:rustc-env=IBIS_BUILD_IDENTITY={branch} · {commit}{state}");
 }
 
 /// The version the app shows (`IBIS_VERSION`), the one version.txt (at the
