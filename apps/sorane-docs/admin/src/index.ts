@@ -91,11 +91,11 @@ export default {
    if (request.method === 'POST' && url.pathname === '/logout') return await logout(request,env);
    if (request.method === 'POST' && url.pathname === '/backchannel') return await backchannel(request,env);
    if (request.method === 'POST' && url.pathname === '/admin/samples') return await upload(request,env);
-   if (request.method === 'GET' && url.pathname === '/samples') {
+   if (request.method === 'GET' && url.pathname === '/api/samples') {
     const rows = await env.DB.prepare('SELECT id,name,title,size FROM samples ORDER BY created_at DESC LIMIT 100').all();
     return Response.json(rows.results,{headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
    }
-   const samplePath = /^\/samples\/([0-9a-f-]{36})\/([a-zA-Z0-9_-]{1,80}\.(?:docx|xlsx|pptx))$/.exec(url.pathname);
+   const samplePath = /^\/api\/samples\/([0-9a-f-]{36})\/([a-zA-Z0-9_-]{1,80}\.(?:docx|xlsx|pptx))$/.exec(url.pathname);
    if (request.method === 'GET' && samplePath) {
     const row = await env.DB.prepare('SELECT object_key,name FROM samples WHERE id=?').bind(samplePath[1]).first<{object_key:string;name:string}>();
     if (!row || row.name !== samplePath[2]) fail(404,'not_found'); const object = await env.SAMPLES.get(row.object_key); if (!object) fail(404,'not_found');

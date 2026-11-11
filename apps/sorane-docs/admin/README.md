@@ -43,8 +43,8 @@ makes their list and bytes publicly readable. A failed D1 result can leave an
 unreferenced R2 object for later reconciliation, so cleanup needs its own
 safe, separately designed process.
 
-The public home is not yet connected to the dynamic sample list. Production
-requires a same-origin route, separate production resources and credentials,
+The home can render the dynamic sample list, but the production Worker is not
+yet connected to this service. Production requires same-origin routing, separate production resources and credentials,
 operator enrollment, observability, privacy and content review, and an actual
 end-to-end Mikaki login, authorization, upload, readback and logout check. The
 current tests include a mock issuer and do not establish real Passkey behavior.
