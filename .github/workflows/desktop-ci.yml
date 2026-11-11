@@ -49,6 +49,8 @@ jobs:
         shell: bash
         run: ${{ matrix.python }} scripts/desktop-ci-info.py source ci-artifact
       - name: Test updater
+        env:
+          SORANE_UPDATER_PROCESS_TEST: "1"
         run: cargo test --locked -p ibis-office-updater
       - name: Build and verify macOS app
         if: matrix.platform == 'macos-arm64'
