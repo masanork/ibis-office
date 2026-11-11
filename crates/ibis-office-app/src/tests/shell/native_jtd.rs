@@ -46,6 +46,32 @@ fn open_read_only() {
     assert!(imported.flow.unwrap().body.iter().any(|b| matches!(b, ibis_doc_model::Block::Paragraph(p) if p.text().contains("日本語 test"))));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 
+    // Editing begins from a DOCX model, with no path to the original file.
+    s.update(|e, w, cx| { e.read_only = true; e.edit_jtd_as_docx(w, cx); });
+    assert!(s.with(|e, _| e.is_jtd_read_only()));
+    s.update(|e, _, _| e.read_only = false);
+    s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
+    assert!(s.with(|e, _| !e.is_read_only() && !e.is_jtd_read_only()));
+    let (paragraph, _) = s.paragraph(0);
+    s.click_text(ibis_doc_model::FlowPos::new(paragraph, 0));
+    s.type_text("edited");
+    assert!(s.paragraph(0).1.contains("edited"));
+    assert!(s.update(|e, w, _| e.save_to(path.clone(), w)).is_err());
+    assert!(s.with(|e, _| e.copy_to(&path)).is_err());
+    assert!(s.with(|e, _| e.write_pdf(path.clone())).is_err());
+    assert!(s.with(|e, _| e.write_png(path.clone(), None)).is_err());
+    assert!(s.update(|e, w, _| e.save_to(path.with_file_name("other.jtd"), w)).is_err());
+    #[cfg(unix)]
+    {
+        let alias = path.with_file_name("alias.docx");
+        assert!(s.update(|e, w, _| e.save_to(alias, w)).is_err());
+    }
+    let edited_path = path.with_file_name("edited.docx");
+    s.update(|e, w, _| e.save_to(edited_path.clone(), w)).unwrap();
+    let edited = ibis_pptx::read(&std::fs::read(edited_path).unwrap()).unwrap();
+    assert!(edited.flow.unwrap().body.iter().any(|b| matches!(b, ibis_doc_model::Block::Paragraph(p) if p.text().contains("edited"))));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
     // The signature, not just the extension, keeps a renamed JTD read-only.
     let renamed = path.with_extension("docx");
     std::fs::write(&renamed, bytes).unwrap();

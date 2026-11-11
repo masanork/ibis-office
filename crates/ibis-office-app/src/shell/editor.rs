@@ -586,6 +586,9 @@ pub struct SlideEditor {
     pub(crate) read_only: bool,
     /// Original JTD bytes: presence makes this document permanently read-only.
     pub(crate) jtd_original: Option<std::sync::Arc<[u8]>>,
+    /// Source path to protect after converting a JTD to an editable document.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) jtd_source_path: Option<std::path::PathBuf>,
     /// The password to modify the file (書き込みパスワード) was given, or set here; until then a file that has one is read-only.
     pub(crate) modify_unlocked: bool,
     /// Whether the menu bar is shown (false by default when ?view=1 unless ?menuBar=1).
@@ -863,6 +866,8 @@ impl SlideEditor {
             #[cfg(not(target_arch = "wasm32"))]
             read_only: false,
             jtd_original: None,
+            #[cfg(not(target_family = "wasm"))]
+            jtd_source_path: None,
             modify_unlocked: false,
             #[cfg(target_arch = "wasm32")]
             show_menu_bar: crate::shell::embed::show_menu_bar(),
@@ -908,10 +913,33 @@ impl SlideEditor {
         self.set_status(crate::shell::i18n::text("jtd.read-only-notice").to_string(), cx);
     }
 
+    /// Convert the recognized preview into a separate editable Word document.
+    pub(crate) fn edit_jtd_as_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_jtd_read_only() || self.read_only { return; }
+        let result = ibis_pptx::jtd::export_docx(self.presentation()).and_then(ibis_pptx::open);
+        match result {
+            Ok(opened) => {
+                let name = self.file_name.as_deref().unwrap_or("document.jtd");
+                let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+                let name: SharedString = format!("{stem}.docx").into();
+                #[cfg(not(target_family = "wasm"))]
+                let original_path = self.path.clone();
+                self.load(opened.presentation, name, window, cx);
+                self.set_loaded_source(std::sync::Arc::new(opened.source));
+                #[cfg(not(target_family = "wasm"))]
+                { self.jtd_source_path = original_path; self.document.set_file(None); }
+                self.set_status(crate::shell::i18n::text("jtd.editable-notice").to_string(), cx);
+            }
+            Err(error) => self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &error.to_string())]), cx),
+        }
+    }
+
     /// Replace the open presentation, dropping undo history and selection.
     pub(crate) fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.end_slideshow(window, cx);
         self.jtd_original = None;
+        #[cfg(not(target_family = "wasm"))]
+        { self.jtd_source_path = None; }
         self.modify_unlocked = false;
         self.zoom_menu_open = false;
         self.editing = None;
@@ -2006,6 +2034,8 @@ impl SlideEditor {
             let path = self.file_path();
             let source = self.source.clone();
             let jtd_original = self.jtd_original.clone();
+            #[cfg(not(target_family = "wasm"))]
+            let jtd_source_path = self.jtd_source_path.clone();
             let current = self.current_slide;
             let current_zoom = self.zoom;
             let existing_count = Self::count_matching_document_windows(doc_id, cx) + 1;
@@ -2020,6 +2050,8 @@ impl SlideEditor {
                 editor.set_file_path(path);
                 editor.source = source;
                 editor.jtd_original = jtd_original;
+                #[cfg(not(target_family = "wasm"))]
+                { editor.jtd_source_path = jtd_source_path; }
                 editor.document_id = doc_id;
                 editor.window_number = Some(new_num);
                 editor.current_slide = current;
