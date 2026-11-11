@@ -15,6 +15,9 @@ roxmltree = "0.21"
 encoding_rs = "0.8"
 delharc = { version = "0.8", default-features = false }
 
+[dev-dependencies]
+ibis-emf.workspace = true
+
 [[bin]]
 name = "ibis-office-roundtrip"
 path = "src/bin/roundtrip.rs"
