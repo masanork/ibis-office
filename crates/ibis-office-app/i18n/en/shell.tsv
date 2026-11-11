@@ -920,5 +920,8 @@ file.modify-locked-no-overwrite	This file needs its password to modify, so it ca
 start.update	Update ibisOffice
 jtd.read-only-notice	JTD: Read-only preview with limited vertical text, ruby and tables. Table borders are approximate; formatting and images are omitted.
 jtd.read-only	JTD documents are read-only
+jtd.edit-as-docx	Convert to Word and edit
+jtd.editable-notice	Converted to Word. Unsupported formatting, images and some table lines are omitted. Save separately from the original JTD.
+jtd.source-protected	Saving as JTD is not supported. Save separately from the original file.
 jtd.export-docx	Word (preview; partial lines omitted)
 jtd.docx-exported	Converted to Word. Partial table lines, unsupported formatting and images are omitted.

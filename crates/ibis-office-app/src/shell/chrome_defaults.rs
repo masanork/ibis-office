@@ -179,6 +179,9 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
             ];
             if editor.is_jtd_read_only() {
                 entries.push(item("jtd.export-docx", "description").on(|this, window, cx| this.export_jtd_docx(window, cx)).into());
+                if !editor.read_only {
+                    entries.push(item("jtd.edit-as-docx", "edit").on(|this, window, cx| this.edit_jtd_as_docx(window, cx)).into());
+                }
             }
             // A presentation can also be written as an OpenDocument presentation.
             if editor.kind() == Kind::Presentation {

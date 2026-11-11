@@ -133,6 +133,9 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn copy_to(&self, path: &std::path::Path) -> Result<(), String> {
         if self.is_jtd_read_only() { return Err(crate::shell::i18n::text("jtd.read-only").to_string()); }
+        if self.jtd_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, path) || path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jtd"))) {
+            return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
+        }
         let source = self.source.clone().ok_or(crate::shell::i18n::text("_shell.this-file-cannot-be-saved-yet").to_string())?;
         let csv = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"));
         let ods = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ods"));
@@ -294,6 +297,9 @@ impl SlideEditor {
     /// (the slides, handouts, colour, frame).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_pdf_with(&self, pdf: std::path::PathBuf, printing: bool) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        if self.jtd_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &pdf)) {
+            return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
+        }
         if self.is_jtd_read_only() && self.path.as_deref().is_some_and(|p| crate::shell::save::same_file(p, &pdf)) {
             return Err(crate::shell::i18n::text("jtd.read-only").to_string());
         }
@@ -425,6 +431,9 @@ impl SlideEditor {
     /// and drawn by this program's `--export png` (on another thread).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_png(&self, png: std::path::PathBuf, slide: Option<usize>) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        if self.jtd_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &png)) {
+            return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
+        }
         if self.is_jtd_read_only() && self.path.as_deref().is_some_and(|p| crate::shell::save::same_file(p, &png)) {
             return Err(crate::shell::i18n::text("jtd.read-only").to_string());
         }
