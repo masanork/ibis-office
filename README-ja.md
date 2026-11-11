@@ -190,7 +190,7 @@ cargo build --release
 - Linux では `scripts/bundle-linux.sh --release` で AppImage が `target/dist/ibisOffice-<版>-Linux.AppImage` に、`scripts/bundle-flatpak.sh --release` で Flatpak が `target/dist/ibisOffice-<版>-Linux-<アーキテクチャ>.flatpak` に作られます（Flatpak には `flatpak-builder` が要ります）。
 - ブラウザ版は `scripts/build-web.sh --release` でビルドし、`www/` を配信します（WebGPU に対応したブラウザ：Chrome・Edge・Safari 26 以降）。
 
-  デスクトップ版とブラウザー版では `.jtd` も実験的な読み取り専用プレビューとして開けます。書式などは再現されない場合があります。認識できた内容は別の DOCX に書き出せます。詳細は [JTDプレビュー](docs/jtd-preview.md) を参照してください。
+  デスクトップ版とブラウザー版では `.jtd` と非圧縮の `.jtt` も実験的な読み取り専用プレビューとして開けます。書式などは再現されない場合があります。認識できた内容は別の DOCX に書き出せます。詳細は [一太郎プレビュー](docs/jtd-preview.md) を参照してください。
 
   ビルドには Python 3 が必要です。Wasm は20 MiB以下のハッシュ付きファイルに分割され、ブラウザで検証・結合されます。HTTPS または localhost で配信してください。Cloudflare Workers Static Assets で配信する場合は `python3 scripts/check-web-assets.py` と `npx wrangler deploy --dry-run` で確認し、`wrangler.jsonc` の Worker 名とアカウントを確認してから `npx wrangler deploy` を実行してください。配信対象はエディターで、playground は含みません。
 

@@ -191,7 +191,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
         if self.is_jtd_read_only() { return Err(crate::shell::i18n::text("jtd.read-only").to_string()); }
-        if self.jtd_source_path.as_deref().is_some_and(|original| same_file(original, &path) || path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jtd"))) {
+        if self.jtd_source_path.as_deref().is_some_and(|original| same_file(original, &path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::jtd::is_extension)) {
             return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
         }
         // The master view is closed first: what is saved is the file, with what was made in it.

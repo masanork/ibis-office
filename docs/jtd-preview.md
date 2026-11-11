@@ -22,23 +22,26 @@ paragraph headers are parsed as TLV lists. Independent text and display-row
 qualification covers 22 local documents. This does not establish visual
 fidelity. See [implementation and remaining gaps](jtd-structured-import.md).
 
-The browser and desktop app can open `.jtd` files locally as a read-only preview. The original is never saved as JTD; recognized content can be exported separately as DOCX. Recognized view-style direction flags enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
+The browser and desktop app can open `.jtd` and uncompressed `.jtt` files locally as a read-only preview. The original is never saved as JTD or JTT; recognized content can be exported separately as DOCX. Recognized view-style direction flags enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
 File > Export > Convert to Word and edit creates an editable DOCX from the recognized
-preview in memory. Save it separately; the source JTD remains unchanged. The
+preview in memory. Save it separately; the source file remains unchanged. The
 conversion is lossy, including missing images and some table rules, and the
 result is not a substitute for the original. Explicit read-only mode remains
-read-only. JTD editing and JTD writing are not implemented.
+read-only. Editing or writing JTD or JTT is not implemented.
 It reads the observed `DocumentText` stream into ibisOffice's document model;
 most formatting, exact layout, pictures and some text controls are not reproduced.
-Unsupported or encrypted variants may not open. `.jtt` and `.jttc` are not supported.
+Unsupported or encrypted variants may not open. Compressed `.jttc` is not supported.
+Three local JTT files were checked against the independent diagnostic for
+normalized text, ruby and ruled display-row counts. This is not a general JTT
+compatibility or visual-fidelity claim; the files remain local.
 The preview reports detected additional `ObjectSheets/DocSheet/DOCS_*`
 document streams and embedded-object storages in its status message; those
 contents are not imported. This inventory covers observed container patterns
 only and is not proof that all unsupported content has been detected.
-The source bytes remain in the browser; while the JTD preview is open, the
+The source bytes remain in the browser; while the JTD or JTT preview is open, the
 optional embedding download action returns the original bytes, not a re-created
-JTD. After conversion to an editable Word document, it returns the DOCX instead.
-Saving or editing as JTD is
+source file. After conversion to an editable Word document, it returns the DOCX instead.
+Saving or editing as JTD or JTT is
 not supported; exporting a lossy DOCX preview is available.
 
 The independent importer uses format observations in OpenJTD RFC 0003 and

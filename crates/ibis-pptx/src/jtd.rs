@@ -21,6 +21,11 @@ use ibis_doc_model::{
 const MAX_FILE: usize = 64 * 1024 * 1024;
 const MAX_STREAM: usize = 32 * 1024 * 1024;
 
+/// Uncompressed Ichitaro document or template extension (case-insensitive).
+pub fn is_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case("jtd") || extension.eq_ignore_ascii_case("jtt")
+}
+
 fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
     // Drawn style alone is transient: resolving paragraph styles or saving
     // DOCX uses direct RunFormat. Preserve every attribute decoded here.
