@@ -245,6 +245,24 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     cell_para.id = next_id;
                     next_id += 1;
                     cell_para.runs.clear();
+                    // A JTD ruled display row is one source line. On a vertical
+                    // page its fixed row height becomes the column width. If
+                    // the paragraph keeps Word's automatic line height, the
+                    // font's ascent can put the glyph across the row border.
+                    // Match the paragraph's baseline to the source row, but
+                    // preserve an explicitly decoded line spacing.
+                    if flow.page.direction.vertical()
+                        && rules.is_some()
+                        && !matches!(cell_para.line, ibis_doc_model::LineHeight::Exact(_))
+                    {
+                        if let RowHeight::Exact(pitch) = row.height {
+                            if pitch > 0 {
+                                let spacing = ibis_doc_model::LineHeight::Exact(pitch);
+                                cell_para.line = spacing;
+                                cell_para.direct.line = Some(spacing);
+                            }
+                        }
+                    }
                     for item in contents {
                         match item {
                             item @ (Segment::Text(_) | Segment::StyledText(..)) => {
@@ -2149,6 +2167,61 @@ mod tests {
             matches!(&table.rows[0].cells[2].blocks[0], Block::Paragraph(p) if p.text() == "乙")
         );
         assert!(table.borders.iter().all(|b| *b == Some(None)));
+    }
+
+    #[test]
+    fn vertical_ruled_row_uses_its_pitch_for_cell_baselines_and_word_export() {
+        let mut units: Vec<u16> = vec![
+            0x1c, 0x10, 27, 0, 0x8f, 15, 100, 0, 3, 0x23, 0, 0, 45, 0x23, 0, 0, 45, 0x23, 0, 0, 0,
+            0xffff, 0, 27, 0, 0x10, 0x1f,
+        ];
+        units.extend([0x1c, 0x30, 12, 0, 0, 48, 0xff, 0, 12, 0, 0x30, 0x1f]);
+        units.extend("甲乙".encode_utf16());
+        units.extend([0x1c, 0x30, 12, 0, 52, 100, 0xff, 0, 12, 0, 0x30, 0x1f]);
+        units.extend("丙".encode_utf16());
+        units.push(0x0e);
+        let mut view = vec![0, 1, 0, 2, 0x10, 0];
+        let record = [0x10, 2, 0, 4, 0, 0, 0x10, 1];
+        view.extend((record.len() as u32).to_be_bytes());
+        view.extend(record);
+        let input = ibis_ooxml::cfb::write(&[
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&units)),
+            ibis_ooxml::cfb::Item::stream("DocumentViewStyles", view.clone()),
+        ]);
+        let doc = read(&input).unwrap();
+        let flow = doc.flow.as_ref().unwrap();
+        assert_eq!(flow.page.direction, CellDirection::TbRl);
+        let pitch = flow.page.line_pitch.unwrap();
+        let table = flow.body.iter().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+        assert_eq!(table.rows[0].height, RowHeight::Exact(pitch));
+        for cell in &table.rows[0].cells {
+            let Block::Paragraph(p) = &cell.blocks[0] else { panic!("cell paragraph") };
+            assert_eq!(p.line, ibis_doc_model::LineHeight::Exact(pitch));
+            assert_eq!(p.direct.line, Some(ibis_doc_model::LineHeight::Exact(pitch)));
+        }
+        let reopened = crate::read(&export_docx(&doc).unwrap()).unwrap();
+        let table = reopened.flow.as_ref().unwrap().body.iter().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+        for cell in &table.rows[0].cells {
+            let Block::Paragraph(p) = &cell.blocks[0] else { panic!("saved cell paragraph") };
+            assert!(matches!(p.line, ibis_doc_model::LineHeight::Exact(value) if (value - pitch).abs() < 635));
+        }
+
+        // An explicit source line feed still controls both row and paragraph.
+        let payload = [0, 0x20, 4, 8, 500, 0, 0, 0xffff, 0];
+        let length = (payload.len() + 7) as u16;
+        let mut explicit = vec![0x1c, 0x10, length];
+        explicit.extend(payload);
+        explicit.extend([length, 0, 0x10, 0x1f]);
+        explicit.extend(&units);
+        let input = ibis_ooxml::cfb::write(&[
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&explicit)),
+            ibis_ooxml::cfb::Item::stream("DocumentViewStyles", view),
+        ]);
+        let explicit_doc = read(&input).unwrap();
+        let table = explicit_doc.flow.as_ref().unwrap().body.iter().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+        assert_eq!(table.rows[0].height, RowHeight::Exact(180_000));
+        let Block::Paragraph(p) = &table.rows[0].cells[0].blocks[0] else { panic!("explicit cell paragraph") };
+        assert_eq!(p.line, ibis_doc_model::LineHeight::Exact(180_000));
     }
 
     #[test]
