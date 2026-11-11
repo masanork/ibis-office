@@ -1,0 +1,58 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sorane-docs-admin",
+  "main": "src/index.ts",
+  "account_id": "4b749427a0c80c547e726a42aff4b6fc",
+  "compatibility_date": "2026-10-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "ISSUER": "https://auth.mikaki.org",
+    "RP_ORIGIN": "https://docs.sorane.dev",
+    "CLIENT_ID": "6677906b-561d-4745-8a94-459db819082a"
+  },
+  "secrets": {
+    "required": [
+      "RP_PRIVATE_JWK"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sorane-docs-admin",
+      "database_id": "e6cf3f43-1afd-4561-8737-c074749ac5ad",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SAMPLES",
+      "bucket_name": "sorane-docs-samples"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "AUTH_LIMITER",
+      "namespace_id": "2026111102",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/15 * * * *"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    },
+    "traces": {
+      "enabled": true
+    }
+  }
+}
