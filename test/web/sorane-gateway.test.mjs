@@ -13,3 +13,13 @@ test('only admin and published dynamic sample URLs reach the service', async () 
   assert.equal(seen, request); assert.equal(await response.text(), 'admin');
   assert.equal(await dispatchSoraneAdmin(new Request('https://docs.example/editor.html')), null);
 });
+test('legacy domain reads public samples while login uses the canonical origin', async () => {
+  let forwarded;
+  const service = { fetch: async r => {forwarded = r; return new Response('ok');} };
+  const sample = new Request('https://ibis.sorane.dev/api/samples');
+  assert.equal((await dispatchSoraneAdmin(sample, service)).status, 200);
+  assert.equal(forwarded.url, 'https://docs.sorane.dev/api/samples');
+  const admin = await dispatchSoraneAdmin(new Request('https://ibis.sorane.dev/admin'), service);
+  assert.equal(admin.status, 308); assert.equal(admin.headers.get('location'), 'https://docs.sorane.dev/admin');
+  assert.equal((await dispatchSoraneAdmin(new Request('https://ibis.sorane.dev/login',{method:'POST'}), service)).status, 404);
+});
