@@ -12,6 +12,8 @@ use crate::{Error, Kind};
 mod decode;
 mod font;
 mod compressed;
+mod embedded;
+pub use embedded::{EmbeddedMetafile, EmbeddedMetafileInspection, inspect_embedded_metafiles};
 pub use decode::{DecodedText, Diagnostic, Piece, Record, RecordKind, StyleSpan};
 pub use font::FontRecord;
 use ibis_doc_model::{
