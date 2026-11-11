@@ -441,6 +441,8 @@ pub struct SlideEditor {
     /// How many times a file was closed (`close_file`): a file still being
     /// read when the count changes is not opened.
     pub(crate) closed: u32,
+    #[cfg(target_family = "wasm")]
+    web_open_generation: u64,
     /// An empty document stands in for the file being read (`begin_loading`).
     pub(crate) loading: bool,
     /// What only the open document's format has (see `shell/format.rs`).
@@ -786,6 +788,8 @@ impl SlideEditor {
             recent_scroll: ScrollHandle::new(),
             has_document: false,
             closed: 0,
+            #[cfg(target_family = "wasm")]
+            web_open_generation: 0,
             loading: false,
             format,
             sidebar_open: true,
@@ -1113,14 +1117,29 @@ impl SlideEditor {
                     return;
                 }
             };
+            this.update_in(cx, |this, window, cx| this.open_web_bytes(name, data, false, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Show the loading state before parsing and prefetching the complete
+    /// document. Initial links and the file picker use the same safe path.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn open_web_bytes(&mut self, name: String, data: Vec<u8>, initial: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.web_open_generation = self.web_open_generation.wrapping_add(1);
+        let generation = self.web_open_generation;
+        let closed = self.closed;
+        cx.spawn_in(window, async move |this, cx| {
             let name: SharedString = name.into();
-            let closed = this.update(cx, |this, _| this.closed).unwrap_or_default();
             let kind = name.rsplit_once('.').and_then(|(_, e)| ibis_pptx::Kind::from_extension(e));
-            this.update_in(cx, |this, window, cx| match kind {
-                Some(kind) if !this.has_document => this.begin_loading(kind, name.clone(), window, cx),
-                _ => this.set_status(crate::shell::i18n::format("file.opening", &[("name", &name)]), cx),
-            })
-            .ok();
+            let Ok(true) = this.update_in(cx, |this, window, cx| {
+                if this.closed != closed || this.web_open_generation != generation { return false; }
+                match kind {
+                    Some(kind) if !this.has_document => this.begin_loading(kind, name.clone(), window, cx),
+                    _ => this.set_status(crate::shell::i18n::format("file.opening", &[("name", &name)]), cx),
+                }
+                true
+            }) else { return; };
             // Let the empty document show before reading the file, which
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
@@ -1129,13 +1148,29 @@ impl SlideEditor {
                 let mut result = ibis_pptx::jtd::read(&data).map_err(|e| e.to_string());
                 if let Ok(presentation) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
-                        result = Err(format!("Document font preload: {error:?}"));
+                        result = Err(crate::web::font_preload_error(error));
                     }
                 }
                 this.update_in(cx, |this, window, cx| {
-                    if this.closed != closed { return; }
+                    if this.closed != closed || this.web_open_generation != generation { return; }
                     match result {
                         Ok(presentation) => this.load_jtd(presentation, name, data, window, cx),
+                        Err(err) => this.fail_loading(crate::shell::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                    }
+                }).ok();
+                return;
+            }
+            if initial {
+                let mut result = ibis_pptx::read(&data).map_err(|e| e.to_string());
+                if let Ok(presentation) = &result {
+                    if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
+                        result = Err(crate::web::font_preload_error(error));
+                    }
+                }
+                this.update_in(cx, |this, window, cx| {
+                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    match result {
+                        Ok(presentation) => this.load(presentation, name, window, cx),
                         Err(err) => this.fail_loading(crate::shell::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
                     }
                 }).ok();
@@ -1144,12 +1179,12 @@ impl SlideEditor {
             let mut result = ibis_pptx::open(data).map_err(|e| e.to_string());
             if let Ok(opened) = &result {
                 if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {
-                    result = Err(format!("Document font preload: {error:?}"));
+                    result = Err(crate::web::font_preload_error(error));
                 }
             }
             this.update_in(cx, |this, window, cx| match result {
                 // Closed (ファイル > 閉じる) while it was read.
-                _ if this.closed != closed => {}
+                _ if this.closed != closed || this.web_open_generation != generation => {}
                 Ok(opened) => {
                     let is_ppsx = name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::is_slideshow(e));
                     let is_tmpl = name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::is_template(e));
