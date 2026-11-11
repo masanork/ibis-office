@@ -2,6 +2,7 @@
 # Synthetic outlines and variation mappings; no third-party font input.
 from pathlib import Path
 from fontTools.fontBuilder import FontBuilder
+from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
@@ -29,9 +30,17 @@ for truetype in [True, False]:
         fb.setupCFF('IbisSubsetFixture', {}, glyphs, {})
     fb.setupHorizontalMetrics({name: (900, 20) for name in ORDER})
     fb.setupHorizontalHeader(ascent=800, descent=-200)
+    fb.setupVerticalMetrics({name: (1000, 50 + i) for i, name in enumerate(ORDER)})
+    fb.setupVerticalHeader(ascent=500, descent=-500)
     fb.setupNameTable({'familyName': 'Ibis Subset Fixture', 'styleName': 'Regular', 'uniqueFontIdentifier': 'ibis-subset-fixture', 'fullName': 'Ibis Subset Fixture Regular', 'psName': 'IbisSubsetFixture-Regular', 'version': 'Version 1.0', 'copyright': 'Synthetic ibisOffice test outlines, 2026 masanork'})
     fb.setupOS2(sTypoAscender=800, sTypoDescender=-200, usWinAscent=800, usWinDescent=200)
     fb.setupPost()
+    addOpenTypeFeaturesFromString(fb.font, r'''
+        languagesystem DFLT dflt;
+        feature vert { sub \base by bmp; } vert;
+        feature liga { sub \base \base by supplementary; } liga;
+        feature kern { pos \base \base -80; } kern;
+    ''')
     variation = CmapSubtable.newSubtable(14)
     variation.platformID, variation.platEncID, variation.language = 0, 5, 0
     variation.cmap = {}

@@ -101,6 +101,7 @@ fn parse_cmap_format14(data: &[u8]) -> IvsMap {
 /// Generate a cmap format 14 subtable binary from IVS records.
 /// `ivs_records`: non-default UVS entries (vs, base, glyph_id)
 /// `default_uvs`: default UVS entries (vs, base) — tells browser to use the default glyph
+#[cfg(test)]
 fn generate_cmap_format14(ivs_records: &[(u32, u32, u16)], default_uvs: &[(u32, u32)]) -> Vec<u8> {
     // Group non-default by variation selector
     let mut nd_map: BTreeMap<u32, Vec<(u32, u16)>> = BTreeMap::new();
@@ -349,205 +350,6 @@ fn inject_table(font_data: &[u8], table_tag: &[u8; 4], table_data: &[u8]) -> Vec
     }
 
     out
-}
-
-/// Patch cmap format 4 to remap base codepoints to IVS glyph IDs.
-/// This replaces cmap14-based IVS with direct cmap4 remapping so that
-/// browsers render the correct IVS variant glyph without needing cmap14
-/// (which browsers don't support for webfonts in DOM text rendering).
-/// `overrides`: (base_codepoint, new_glyph_id)
-fn patch_cmap4_ivs(font_data: &[u8], overrides: &[(u32, u16)]) -> Vec<u8> {
-    if overrides.is_empty() || font_data.len() < 12 { return font_data.to_vec(); }
-
-    let num_tables = u16be(font_data, 4) as usize;
-    let mut cmap_off = 0usize;
-    let mut cmap_len = 0usize;
-    for i in 0..num_tables {
-        let p = 12 + i * 16;
-        if p + 16 > font_data.len() { continue; }
-        if &font_data[p..p+4] == b"cmap" {
-            cmap_off = u32be(font_data, p + 8) as usize;
-            cmap_len = u32be(font_data, p + 12) as usize;
-            break;
-        }
-    }
-    if cmap_off == 0 || cmap_off + cmap_len > font_data.len() {
-        return font_data.to_vec();
-    }
-
-    let mut out = font_data.to_vec();
-    let cmap = &font_data[cmap_off..cmap_off + cmap_len];
-    let n_sub = u16be(cmap, 2) as usize;
-
-    // Patch ALL cmap subtables (format 4 AND format 12) so allsorts
-    // picks up the override regardless of which subtable it prefers.
-    for i in 0..n_sub {
-        let rec = 4 + i * 8;
-        if rec + 8 > cmap.len() { break; }
-        let sub_off = u32be(cmap, rec + 4) as usize;
-        if sub_off + 2 > cmap_len { continue; }
-        let fmt = u16be(cmap, sub_off);
-
-        if fmt == 4 {
-            let seg_count = u16be(cmap, sub_off + 6) as usize / 2;
-            let end_arr = sub_off + 14;
-            let start_arr = end_arr + seg_count * 2 + 2; // +2 for reservedPad
-            let delta_arr = start_arr + seg_count * 2;
-            let range_arr = delta_arr + seg_count * 2;
-
-            for &(base_cp, new_gid) in overrides {
-                let cp16 = base_cp as u16;
-                for seg in 0..seg_count {
-                    let end_code = u16be(cmap, end_arr + seg * 2);
-                    let start_code = u16be(cmap, start_arr + seg * 2);
-                    if cp16 < start_code || cp16 > end_code { continue; }
-
-                    let range_off_pos = range_arr + seg * 2;
-                    let range_offset = u16be(cmap, range_off_pos);
-
-                    if range_offset == 0 {
-                        let new_delta = (new_gid as i32 - cp16 as i32) as u16;
-                        let abs_pos = cmap_off + delta_arr + seg * 2;
-                        out[abs_pos] = (new_delta >> 8) as u8;
-                        out[abs_pos + 1] = new_delta as u8;
-                    } else {
-                        let idx = (cp16 - start_code) as usize;
-                        let glyph_pos = range_off_pos + range_offset as usize + idx * 2;
-                        if glyph_pos + 1 < cmap_len {
-                            let abs_pos = cmap_off + glyph_pos;
-                            out[abs_pos] = (new_gid >> 8) as u8;
-                            out[abs_pos + 1] = new_gid as u8;
-                        }
-                    }
-                    break;
-                }
-            }
-        } else if fmt == 12 {
-            // Format 12: SequentialMapGroup records
-            // Header: format(2) + reserved(2) + length(4) + language(4) + numGroups(4) = 16 bytes
-            // Each group: startCharCode(4) + endCharCode(4) + startGlyphID(4) = 12 bytes
-            if sub_off + 16 > cmap_len { continue; }
-            let num_groups = u32be(cmap, sub_off + 12) as usize;
-
-            for &(base_cp, new_gid) in overrides {
-                for g in 0..num_groups {
-                    let gp = sub_off + 16 + g * 12;
-                    if gp + 12 > cmap_len { break; }
-                    let start_char = u32be(cmap, gp);
-                    let end_char = u32be(cmap, gp + 4);
-                    if base_cp < start_char || base_cp > end_char { continue; }
-
-                    // Compute what startGlyphID should be so that
-                    // base_cp maps to new_gid:
-                    // gid = startGlyphID + (base_cp - startCharCode)
-                    // new_gid = new_start + (base_cp - start_char)
-                    // new_start = new_gid - (base_cp - start_char)
-                    let new_start = (new_gid as u32).wrapping_sub(base_cp - start_char);
-                    let abs_pos = cmap_off + gp + 8;
-                    out[abs_pos] = (new_start >> 24) as u8;
-                    out[abs_pos + 1] = (new_start >> 16) as u8;
-                    out[abs_pos + 2] = (new_start >> 8) as u8;
-                    out[abs_pos + 3] = new_start as u8;
-                    break;
-                }
-            }
-        }
-    }
-
-    // Recompute checksum for the cmap table
-    for i in 0..num_tables {
-        let p = 12 + i * 16;
-        if &out[p..p+4] == b"cmap" {
-            let cs = checksum(&out[cmap_off..cmap_off + cmap_len]);
-            out[p+4] = (cs >> 24) as u8; out[p+5] = (cs >> 16) as u8;
-            out[p+6] = (cs >> 8) as u8; out[p+7] = cs as u8;
-            break;
-        }
-    }
-
-    out
-}
-
-/// Build a new cmap table with format 14 appended
-fn inject_cmap_format14(font_data: &[u8], f14_data: &[u8]) -> Vec<u8> {
-    if font_data.len() < 12 || f14_data.is_empty() { return font_data.to_vec(); }
-    let num_tables = u16be(font_data, 4) as usize;
-
-    // Find existing cmap
-    let mut cmap_off = 0usize;
-    let mut cmap_len = 0usize;
-    for i in 0..num_tables {
-        let p = 12 + i * 16;
-        if p + 16 > font_data.len() { continue; }
-        if &font_data[p..p+4] == b"cmap" {
-            cmap_off = u32be(font_data, p + 8) as usize;
-            cmap_len = u32be(font_data, p + 12) as usize;
-            break;
-        }
-    }
-    if cmap_off == 0 || cmap_off + cmap_len > font_data.len() {
-        return font_data.to_vec();
-    }
-
-    let old_cmap = &font_data[cmap_off..cmap_off + cmap_len];
-    if old_cmap.len() < 4 { return font_data.to_vec(); }
-    let old_num_subtables = u16be(old_cmap, 2) as usize;
-    if 4 + old_num_subtables * 8 > old_cmap.len() { return font_data.to_vec(); }
-
-    // If the cmap already carries a format 14 subtable, leave it alone — adding
-    // a second one would mean the font ships two conflicting UVS tables.
-    for i in 0..old_num_subtables {
-        let rec_p = 4 + i * 8;
-        let sub_off = u32be(old_cmap, rec_p + 4) as usize;
-        if sub_off + 2 <= old_cmap.len() && u16be(old_cmap, sub_off) == 14 {
-            return font_data.to_vec();
-        }
-    }
-
-    // Build new cmap: old subtables + format 14 (platform 0, encoding 5)
-    let new_num_subtables = old_num_subtables + 1;
-    let new_header_size = 4 + new_num_subtables * 8;
-    let old_data_start = 4 + old_num_subtables * 8;
-    let old_data = &old_cmap[old_data_start..];
-
-    // Shift old subtable offsets by the added encoding record (8 bytes)
-    let shift = 8u32; // one new encoding record
-    let mut new_cmap = vec![0u8; new_header_size + old_data.len() + f14_data.len()];
-
-    // Header
-    new_cmap[0] = 0; new_cmap[1] = 0; // version
-    new_cmap[2] = (new_num_subtables >> 8) as u8;
-    new_cmap[3] = new_num_subtables as u8;
-
-    // Copy old encoding records with adjusted offsets
-    for i in 0..old_num_subtables {
-        let src = 4 + i * 8;
-        let dst = 4 + i * 8;
-        new_cmap[dst..dst+4].copy_from_slice(&old_cmap[src..src+4]); // platform + encoding
-        let old_off = u32be(old_cmap, src + 4);
-        let new_off = old_off + shift;
-        new_cmap[dst+4] = (new_off >> 24) as u8; new_cmap[dst+5] = (new_off >> 16) as u8;
-        new_cmap[dst+6] = (new_off >> 8) as u8; new_cmap[dst+7] = new_off as u8;
-    }
-
-    // Add format 14 encoding record: platform 0, encoding 5
-    let f14_rec_off = 4 + old_num_subtables * 8;
-    new_cmap[f14_rec_off] = 0; new_cmap[f14_rec_off+1] = 0; // platformID = 0
-    new_cmap[f14_rec_off+2] = 0; new_cmap[f14_rec_off+3] = 5; // encodingID = 5
-    let f14_offset = (new_header_size + old_data.len()) as u32;
-    new_cmap[f14_rec_off+4] = (f14_offset >> 24) as u8;
-    new_cmap[f14_rec_off+5] = (f14_offset >> 16) as u8;
-    new_cmap[f14_rec_off+6] = (f14_offset >> 8) as u8;
-    new_cmap[f14_rec_off+7] = f14_offset as u8;
-
-    // Copy old subtable data
-    new_cmap[new_header_size..new_header_size + old_data.len()].copy_from_slice(old_data);
-
-    // Append format 14 data
-    let f14_start = new_header_size + old_data.len();
-    new_cmap[f14_start..f14_start + f14_data.len()].copy_from_slice(f14_data);
-
-    inject_table(font_data, b"cmap", &new_cmap)
 }
 
 // ─── Name table rewriting (license compliance) ─────────
@@ -1001,7 +803,6 @@ fn encode_woff2(font_data: &[u8]) -> Vec<u8> {
 
 use allsorts::binary::read::ReadScope;
 use allsorts::font_data::FontData;
-use allsorts::subset;
 use allsorts::tables::cmap::{Cmap, CmapSubtable, EncodingId, PlatformId};
 use allsorts::tables::FontTableProvider;
 use allsorts::tag;
@@ -1042,250 +843,38 @@ fn find_best_cmap_subtable<'a>(cmap: &Cmap<'a>, cmap_data: &'a [u8]) -> Option<C
         .ok()
 }
 
-/// Map text characters to glyph IDs, also collecting IVS glyph IDs.
-/// Returns: (glyph_ids, ivs_records)
-/// All IVS entries are non-default (explicit glyph ID references) to avoid
-/// browser fallback issues with default UVS.
-fn text_to_glyph_ids(cmap_data: &[u8], text: &str, ivs_map: &IvsMap) -> (Vec<u16>, Vec<(u32, u32, u16)>) {
-    let cmap = match ReadScope::new(cmap_data).read::<Cmap<'_>>() {
-        Ok(c) => c,
-        Err(_) => return (vec![0], Vec::new()),
-    };
-
-    let subtable = match find_best_cmap_subtable(&cmap, cmap_data) {
-        Some(s) => s,
-        None => return (vec![0], Vec::new()),
-    };
-
-    let mut glyph_ids: Vec<u16> = vec![0];
-    let mut ivs_records: Vec<(u32, u32, u16)> = Vec::new(); // (vs, base, gid)
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        let cp = chars[i] as u32;
-        if is_variation_selector(cp) { i += 1; continue; }
-
-        // Add base glyph
-        let has_base_glyph = if let Ok(Some(gid)) = subtable.map_glyph(cp) {
-            if gid != 0 && !glyph_ids.contains(&gid) {
-                glyph_ids.push(gid);
-            }
-            gid != 0
-        } else {
-            false
-        };
-
-        // Check for paired variation selector
-        if i + 1 < chars.len() {
-            let next_cp = chars[i + 1] as u32;
-            if is_variation_selector(next_cp) {
-                // Look up IVS glyph in non-default map
-                let mut found_non_default = false;
-                if let Some(vs_map) = ivs_map.get(&next_cp) {
-                    if let Some(&orig_gid) = vs_map.get(&cp) {
-                        if orig_gid != 0 && !glyph_ids.contains(&orig_gid) {
-                            glyph_ids.push(orig_gid);
-                        }
-                        // Record non-default IVS mapping (will be remapped after subset)
-                        ivs_records.push((next_cp, cp, orig_gid));
-                        found_non_default = true;
-                    }
-                }
-                // If no non-default mapping but base char exists, add as explicit
-                // non-default IVS pointing to the base glyph ID.
-                // NOTE: We intentionally avoid default UVS entries because browsers
-                // (Chrome, Safari) interpret them as "no special glyph in this font"
-                // and fall back to the system font, which may have a different default
-                // glyph (e.g. 円鯖 instead of IPAmj明朝's 月鯖 for U+9BD6).
-                if !found_non_default && has_base_glyph {
-                    let base_gid = subtable.map_glyph(cp).ok().flatten().unwrap_or(0);
-                    if base_gid != 0 {
-                        ivs_records.push((next_cp, cp, base_gid));
-                    }
-                }
-                i += 1; // skip VS
-            }
-        }
-        i += 1;
-    }
-
-    (glyph_ids, ivs_records)
-}
-
 /// Core subsetting logic shared by subset_font and subset_font_raw.
 /// Returns raw OTF data (caller decides whether to WOFF2-compress).
+fn subset_with_layout(font_data: &[u8], text: &str, requested_gids: &[u16]) -> Option<(Vec<u8>, BTreeMap<u16, u16>)> {
+    use read_fonts::{collections::IntSet, types::GlyphId, FontRef, TableProvider};
+    let font = FontRef::new(font_data).ok()?;
+    font.maxp().ok()?;
+    font.cmap().ok()?;
+    // Close over all requested OpenType features, remap glyph IDs, and
+    // preserve vertical metrics. The source cmap is not patched for IVS.
+    let unicodes: IntSet<u32> = text.chars().map(u32::from).collect();
+    let glyphs: IntSet<GlyphId> = requested_gids.iter().map(|&gid| GlyphId::new(gid as u32)).collect();
+    let plan = skera::Plan::new(
+        &glyphs, &unicodes, &font, skera::SubsetFlags::default(),
+        &skera::DEFAULT_DROP_TABLES.iter().copied().collect(),
+        &IntSet::all(), &IntSet::all(), &IntSet::all(), &IntSet::all(),
+    );
+    if plan.unicode_to_old_glyph_mapping().next().is_none() && !requested_gids.iter().any(|&id| id != 0) { return None; }
+    let mapping = plan.old_to_new_glyph_mapping().filter_map(|(old, new)|
+        Some((u16::try_from(old.to_u32()).ok()?, u16::try_from(new.to_u32()).ok()?))).collect();
+    let subset = skera::subset_font(&font, &plan).ok()?;
+    Some((rewrite_name_table(&subset), mapping))
+}
+
 fn do_subset(font_data: &[u8], text: &str) -> Vec<u8> {
-    // Parse IVS mappings from original font's cmap format 14
-    let ivs_map = parse_cmap_format14(font_data);
-
-    // Determine which base codepoints need IVS glyph substitution.
-    // We need to know IVS overrides BEFORE subsetting so we can patch
-    // the original font's cmap4 to point base codepoints at IVS glyph IDs.
-    // This way allsorts will naturally include the correct IVS glyphs
-    // and generate proper cmap4 entries in the subset output.
-    //
-    // NOTE: When the text contains multiple distinct (base, vs) pairs that share
-    // the same base codepoint (e.g. 葛 + E0100 葛 + E0101 in IPAmj parity tests),
-    // patch_cmap4_ivs can only express one of them in cmap4/12, so cmap4 alone
-    // cannot disambiguate the variants. We rebuild a fresh cmap14 below to fix
-    // this — modern browsers (Chrome/Firefox/Safari) honor cmap14 for webfont
-    // text rendering.
-    let ivs_overrides = collect_ivs_overrides(font_data, text, &ivs_map);
-
-    // If there are IVS overrides, patch the original font's cmap4 before subsetting
-    let working_data: std::borrow::Cow<[u8]> = if !ivs_overrides.is_empty() {
-        // patch_cmap4_ivs works with original glyph IDs here (not subset indices)
-        std::borrow::Cow::Owned(patch_cmap4_ivs(font_data, &ivs_overrides))
-    } else {
-        std::borrow::Cow::Borrowed(font_data)
-    };
-
-    let font = match ReadScope::new(&working_data).read::<FontData<'_>>() {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
-    };
-    let provider = match font.table_provider(0) {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
-    };
-    let cmap_cow = match provider.table_data(tag::CMAP) {
-        Ok(Some(data)) => data.into_owned(),
-        _ => return Vec::new(),
-    };
-
-    // Map text → glyph IDs (using the patched cmap4, IVS glyphs are now reachable)
-    let (glyph_ids, _ivs_records) = text_to_glyph_ids(&cmap_cow, text, &ivs_map);
-
-    // Collect the (vs, base) pairs that the source font's cmap14 actually
-    // exposes for the requested text. We deliberately do NOT synthesize entries
-    // for (base, vs) pairs absent from the source's cmap14 — doing so would make
-    // a subset claim ownership of every IVS sequence in the document and cut off
-    // CSS font-family fallback to a font that genuinely owns that variant.
-    let source_ivs_pairs = collect_source_cmap14_pairs(text, &ivs_map);
-
-    // If only .notdef (glyph ID 0) was found, no real glyphs matched.
-    // Return empty rather than passing to allsorts subset which panics on .notdef-only input.
-    if glyph_ids.iter().all(|&id| id == 0) {
-        return Vec::new();
-    }
-
-    let subset_data = match subset::subset(
-        &provider,
-        &glyph_ids,
-        &subset::SubsetProfile::Minimal,
-        subset::CmapTarget::Unicode,
-    ) {
-        Ok(data) => data,
-        Err(_) => return Vec::new(),
-    };
-
-    // Allsorts assigns new GIDs in the order it encountered glyphs in `glyph_ids`
-    // (.notdef=0 first, then each unique entry in input order). We mirror that
-    // mapping to translate IVS records from original GIDs to subset GIDs, then
-    // append a fresh cmap14 subtable to the subset's cmap. This is the piece
-    // that actually lets browsers disambiguate 葛 U+E0100 from 葛 U+E0101 in
-    // a single webfont.
-    let with_ivs = if source_ivs_pairs.is_empty() {
-        subset_data
-    } else {
-        let mut orig_to_new: BTreeMap<u16, u16> = BTreeMap::new();
-        for (i, &orig) in glyph_ids.iter().enumerate() {
-            orig_to_new.entry(orig).or_insert(i as u16);
-        }
-        let mut new_records: Vec<(u32, u32, u16)> = Vec::new();
-        for (vs, base, orig_gid) in source_ivs_pairs {
-            if let Some(&new_gid) = orig_to_new.get(&orig_gid) {
-                if new_gid != 0 {
-                    new_records.push((vs, base, new_gid));
-                }
-            }
-        }
-        if new_records.is_empty() {
-            subset_data
-        } else {
-            let f14 = generate_cmap_format14(&new_records, &[]);
-            if f14.is_empty() { subset_data } else { inject_cmap_format14(&subset_data, &f14) }
-        }
-    };
-
-    // Rewrite the name table for IPA Font License / SIL OFL compliance.
-    // Subset fonts must not use the original font name.
-    rewrite_name_table(&with_ivs)
+    subset_with_layout(font_data, text, &[]).map_or_else(Vec::new, |(subset, _)| subset)
 }
 
-/// Extract the `(vs, base, original_gid)` triples that exist in the source
-/// font's cmap14 for IVS sequences that appear in `text`.
-fn collect_source_cmap14_pairs(text: &str, ivs_map: &IvsMap) -> Vec<(u32, u32, u16)> {
-    let mut out = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let cp = chars[i] as u32;
-        if is_variation_selector(cp) { i += 1; continue; }
-        if i + 1 < chars.len() {
-            let next_cp = chars[i + 1] as u32;
-            if is_variation_selector(next_cp) {
-                if let Some(vs_map) = ivs_map.get(&next_cp) {
-                    if let Some(&orig_gid) = vs_map.get(&cp) {
-                        if orig_gid != 0 {
-                            out.push((next_cp, cp, orig_gid));
-                        }
-                    }
-                }
-                i += 1;
-            }
-        }
-        i += 1;
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-
-/// Subset a font without patching cmap4 for IVS overrides.
-///
-/// Use this when the caller plans to merge multiple subset outputs and
-/// rebuild a unified cmap14 table downstream. IVS variant glyph data is
-/// preserved in glyf because `text_to_glyph_ids` collects those glyph IDs
-/// even without the cmap4 patch — the patch is only needed when serving
-/// subsets directly to browsers (which don't honor cmap14 for fonts that
-/// also have a non-matching cmap4 entry).
-///
+/// Subset a font without replacing base cmap entries with IVS glyphs.
+/// The base cmap and the original variation sequences are kept separately.
 /// Returned bytes are raw OTF/TTF (no WOFF2 compression).
 fn do_subset_no_cmap4_patch(font_data: &[u8], text: &str) -> Vec<u8> {
-    let ivs_map = parse_cmap_format14(font_data);
-
-    let font = match ReadScope::new(font_data).read::<FontData<'_>>() {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
-    };
-    let provider = match font.table_provider(0) {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
-    };
-    let cmap_cow = match provider.table_data(tag::CMAP) {
-        Ok(Some(data)) => data.into_owned(),
-        _ => return Vec::new(),
-    };
-
-    let (glyph_ids, _ivs_records) = text_to_glyph_ids(&cmap_cow, text, &ivs_map);
-    if glyph_ids.iter().all(|&id| id == 0) {
-        return Vec::new();
-    }
-
-    let subset_data = match subset::subset(
-        &provider,
-        &glyph_ids,
-        &subset::SubsetProfile::Minimal,
-        subset::CmapTarget::Unicode,
-    ) {
-        Ok(data) => data,
-        Err(_) => return Vec::new(),
-    };
-
-    rewrite_name_table(&subset_data)
+    do_subset(font_data, text)
 }
 
 /// Subset a font without patching cmap4 for IVS overrides.
@@ -1300,9 +889,7 @@ pub fn subset_font_raw_no_cmap4_patch(font_data: &[u8], text: &str) -> Vec<u8> {
 /// Subset output prepared for downstream font-merge tooling.
 ///
 /// `font_data` is raw OTF/TTF; `unicode_records` and `ivs_records` use the
-/// **new (subset-local)** glyph IDs. Allsorts assigns new GIDs in the order
-/// of the input glyph_ids list (.notdef first, then each unique glyph in
-/// the order encountered in `text`), and we mirror that here.
+/// **new (subset-local)** glyph IDs, obtained from the subset plan's glyph map.
 pub struct SubsetForMerge {
     pub font_data: Vec<u8>,
     /// (codepoint, new_gid) for every base codepoint that mapped to a real glyph.
@@ -1555,20 +1142,7 @@ pub fn subset_for_merge_with_full_aliases(
 
     if glyph_ids.iter().all(|&id| id == 0) { return None; }
 
-    let subset_data = subset::subset(
-        &provider,
-        &glyph_ids,
-        &subset::SubsetProfile::Minimal,
-        subset::CmapTarget::Unicode,
-    ).ok()?;
-    let subset_data = rewrite_name_table(&subset_data);
-
-    // Build orig_gid → new_gid map. Allsorts assigns new GIDs in the order of
-    // the input glyph_ids list (with .notdef at 0).
-    let mut gid_map: BTreeMap<u16, u16> = BTreeMap::new();
-    for (i, &orig) in glyph_ids.iter().enumerate() {
-        gid_map.insert(orig, i as u16);
-    }
+    let (subset_data, gid_map) = subset_with_layout(font_data, text, &glyph_ids)?;
 
     // Merge the regular unicode mappings with the PUA aliases derived from
     // ivs_to_pua. Both lists go through the same gid_map remapping.
@@ -1586,61 +1160,6 @@ pub fn subset_for_merge_with_full_aliases(
         unicode_records,
         ivs_records,
     })
-}
-
-/// Collect IVS overrides: for each base_cp + VS pair in text, return
-/// (base_codepoint, ivs_glyph_id) to patch into the original font's cmap4
-/// before subsetting.
-///
-/// When the same base codepoint appears with multiple distinct variation
-/// selectors (e.g. `葛 U+E0100` and `葛 U+E0101` together), we cannot encode
-/// both in cmap4/12 — there is only one slot per codepoint. In that case we
-/// drop the override entirely and let `append_cmap14_to_subset` provide the
-/// disambiguation; the bare codepoint then keeps its natural default glyph.
-///
-/// Likewise, if the text contains the bare base codepoint (without any VS)
-/// alongside an IVS pair, patching cmap4 would force the bare codepoint to
-/// render with the variant glyph. In that case we also drop the override and
-/// rely on cmap14 alone.
-fn collect_ivs_overrides(_font_data: &[u8], text: &str, ivs_map: &IvsMap) -> Vec<(u32, u16)> {
-    let mut by_base: BTreeMap<u32, Vec<u16>> = BTreeMap::new();
-    let mut bare_bases: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let cp = chars[i] as u32;
-        if is_variation_selector(cp) { i += 1; continue; }
-        let mut consumed_vs = false;
-        if i + 1 < chars.len() {
-            let next_cp = chars[i + 1] as u32;
-            if is_variation_selector(next_cp) {
-                if let Some(vs_map) = ivs_map.get(&next_cp) {
-                    if let Some(&orig_gid) = vs_map.get(&cp) {
-                        if orig_gid != 0 {
-                            let entry = by_base.entry(cp).or_default();
-                            if !entry.contains(&orig_gid) { entry.push(orig_gid); }
-                        }
-                    }
-                }
-                i += 1; // skip VS
-                consumed_vs = true;
-            }
-        }
-        if !consumed_vs {
-            bare_bases.insert(cp);
-        }
-        i += 1;
-    }
-
-    let mut overrides = Vec::new();
-    for (cp, gids) in by_base {
-        if gids.len() == 1 && !bare_bases.contains(&cp) {
-            overrides.push((cp, gids[0]));
-        }
-        // gids.len() > 1 OR bare cp present: ambiguous → leave cmap4 alone,
-        // rely on cmap14.
-    }
-    overrides
 }
 
 /// Subset a font to only include glyphs needed for the given text,

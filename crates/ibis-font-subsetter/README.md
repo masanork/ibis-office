@@ -8,8 +8,10 @@ retained original notice. Font and dependency licenses remain independent.
 `font_has_glyphs` checks coverage. `FontSubsetter` accepts a known-size source
 in chunks, owns it in WASM memory, and exposes `free()` to release it.
 Incomplete inputs and sources above 50 MiB are rejected. Sources must be single
-TTF/OTF fonts, not WOFF, WOFF2 or collections. Selected variation sequences,
-composite dependencies, metrics and attribution/license names are retained.
+TTF/OTF fonts, not WOFF, WOFF2 or collections. Selected variation sequences, composite dependencies, OpenType layout features
+(including GSUB/GPOS/GDEF and vertical substitutions), vertical metrics, and
+attribution/license names are retained. Unsupported legacy tables such as AAT
+layout and legacy `kern` are not guaranteed to survive subsetting.
 Derivative fonts are renamed `IBS Subset`.
 
 ```sh

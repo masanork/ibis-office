@@ -16,7 +16,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | Lucide | アイコン（`assets/icons/`） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 
-## Rust の部品（434 件）
+## Rust の部品（438 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -119,7 +119,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | flume | 0.12.0 | Apache-2.0/MIT | https://github.com/zesterer/flume |
 | foldhash | 0.2.0 | Zlib | https://github.com/orlp/foldhash |
 | font-types | 0.11.3 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
-| font-types | 0.12.5 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
+| font-types | 0.12.7 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | fontdb | 0.23.0 | MIT | https://github.com/RazrFalcon/fontdb |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
 | futf | 0.1.5 | MIT / Apache-2.0 | https://github.com/servo/futf |
@@ -295,6 +295,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | read-fonts | 0.37.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | read-fonts | 0.39.2 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | read-fonts | 0.41.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
+| read-fonts | 0.47.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | reborrow | 0.5.5 | MIT | https://github.com/sarah-ek/reborrow/ |
 | ref-cast | 1.0.27 | MIT OR Apache-2.0 | https://github.com/dtolnay/ref-cast |
 | ref-cast-impl | 1.0.27 | MIT OR Apache-2.0 | https://github.com/dtolnay/ref-cast |
@@ -337,9 +338,11 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | simd-adler32 | 0.3.10 | MIT | https://github.com/mcountryman/simd-adler32 |
 | simplecss | 0.2.2 | Apache-2.0 OR MIT | https://github.com/linebender/simplecss |
 | siphasher | 1.0.3 | MIT/Apache-2.0 | https://github.com/jedisct1/rust-siphash |
+| skera | 0.10.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | skrifa | 0.40.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | skrifa | 0.42.1 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | skrifa | 0.44.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
+| skrifa | 0.50.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | slab | 0.4.12 | MIT | https://github.com/tokio-rs/slab |
 | slotmap | 1.1.1 | Zlib | https://github.com/orlp/slotmap |
 | smallvec | 1.16.1 | MIT OR Apache-2.0 | https://github.com/servo/rust-smallvec |
@@ -435,6 +438,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | wgpu-types | 29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
 | winnow | 0.7.15 | MIT | https://github.com/winnow-rs/winnow |
 | winnow | 1.0.4 | MIT | https://github.com/winnow-rs/winnow |
+| write-fonts | 0.56.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | writeable | 0.6.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | xml5ever | 0.18.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever |
 | xmlwriter | 0.1.0 | MIT | https://github.com/RazrFalcon/xmlwriter |
@@ -805,7 +809,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **flume 0.12.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **foldhash 0.2.0**：Copyright (c) 2024 Orson Peters
 - **font-types 0.11.3**：Copyright 2019 Colin Rothfels / Copyright (c) 2019 Colin Rothfels
-- **font-types 0.12.5**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
+- **font-types 0.12.7**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
 - **fontdb 0.23.0**：Copyright (c) 2020 Yevhenii Reizner
 - **form_urlencoded 1.2.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2013-2016 The rust-url developers
 - **futf 0.1.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 Keegan McAllister
@@ -963,6 +967,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **read-fonts 0.37.0**：Copyright 2019 Colin Rothfels / Copyright (c) 2019 Colin Rothfels
 - **read-fonts 0.39.2**：Copyright 2019 Colin Rothfels / Copyright (c) 2019 Colin Rothfels
 - **read-fonts 0.41.0**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
+- **read-fonts 0.47.0**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
 - **reborrow 0.5.5**：Copyright (c) 2022 sarah
 - **ref-cast 1.0.27**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **ref-cast-impl 1.0.27**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
@@ -1002,9 +1007,11 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **simd-adler32 0.3.10**：Copyright (c) [2021] [Marvin Countryman]
 - **simplecss 0.2.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Reizner Evgeniy
 - **siphasher 1.0.3**：Copyright 2012-2016 The Rust Project Developers. / Copyright 2016-2026 Frank Denis.
+- **skera 0.10.0**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
 - **skrifa 0.40.0**：Copyright 2019 Colin Rothfels / Copyright (c) 2019 Colin Rothfels
 - **skrifa 0.42.1**：Copyright 2019 Colin Rothfels / Copyright (c) 2019 Colin Rothfels
 - **skrifa 0.44.0**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
+- **skrifa 0.50.0**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
 - **slab 0.4.12**：Copyright (c) 2019 Carl Lerche
 - **slotmap 1.1.1**：Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com>
 - **smallvec 1.16.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 The Servo Project Developers
@@ -1096,6 +1103,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **wgpu-hal 29.0.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2025 The gfx-rs developers
 - **wgpu-naga-bridge 29.0.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2025 The gfx-rs developers
 - **wgpu-types 29.0.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2025 The gfx-rs developers
+- **write-fonts 0.56.0**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
 - **writeable 0.6.4**：COPYRIGHT AND PERMISSION NOTICE / Copyright © 2020-2024 Unicode, Inc.
 - **xml5ever 0.18.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The html5ever Project Developers
 - **xmlwriter 0.1.0**：Copyright (c) 2019 Reizner Evgeniy
