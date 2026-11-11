@@ -188,6 +188,7 @@ cargo build --release
 - Windows では `cargo build --release -p ibis-office-app` でビルドします（ワークスペース全体には Linux 専用の crate が含まれるため）。アプリは `target\release\ibisOffice.exe` にできます。
 - macOS のアプリは `scripts/bundle-macos.sh --release` で、`target/release/ibisOffice.app` に作られます。
 - Linux では `scripts/bundle-linux.sh --release` で AppImage が `target/dist/ibisOffice-<版>-Linux.AppImage` に、`scripts/bundle-flatpak.sh --release` で Flatpak が `target/dist/ibisOffice-<版>-Linux-<アーキテクチャ>.flatpak` に作られます（Flatpak には `flatpak-builder` が要ります）。
+- Linux のビルド済みバイナリをユーザー単位でインストールするには `python3 scripts/install-linux.py` を実行します。実行ファイルと、アプリ一覧・ウィンドウのアイコンに必要なデスクトップ登録を配置します。
 - ブラウザ版は `scripts/build-web.sh --release` でビルドし、`www/` を配信します（WebGPU に対応したブラウザ：Chrome・Edge・Safari 26 以降）。
 
   デスクトップ版とブラウザー版では `.jtd`・`.jtt` と一部の圧縮 `.jttc` も実験的な読み取り専用プレビューとして開けます。画像主体の文書など、開けない場合があります。認識できた内容は別の DOCX に書き出せます。詳細は [一太郎プレビュー](docs/jtd-preview.md) を参照してください。
