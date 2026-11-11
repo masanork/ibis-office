@@ -47,7 +47,8 @@ def main():
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk)
             return digest.hexdigest()
-        (out / "SHA256SUMS").write_text("".join(f"{checksum(p)}  {p.name}\n" for p in files), encoding="utf-8")
+        with (out / "SHA256SUMS").open("w", encoding="utf-8", newline="\n") as sums:
+            sums.write("".join(f"{checksum(p)}  {p.name}\n" for p in files))
 
 
 if __name__ == "__main__":
