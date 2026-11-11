@@ -1315,6 +1315,23 @@ pub fn import_doc(data: &[u8]) -> Result<Opened, Error> {
 // 4. HTML (.html / .htm) — DOCX-FILE-012
 // =========================================================================
 
+/// Keep executable or local-protocol links out of an exported HTML page.
+/// Relative references and common web, mail and phone links remain usable.
+fn safe_html_link(url: &str) -> Option<&str> {
+    let url = url.trim();
+    if url.is_empty() || url.chars().any(char::is_control) {
+        return None;
+    }
+    let first_delimiter = url.find(['/', '?', '#']).unwrap_or(url.len());
+    if let Some(colon) = url.find(':').filter(|&colon| colon < first_delimiter) {
+        let scheme = &url[..colon];
+        if !["http", "https", "mailto", "tel"].iter().any(|allowed| scheme.eq_ignore_ascii_case(allowed)) {
+            return None;
+        }
+    }
+    Some(url)
+}
+
 /// Export a `FlowDocument` as a standalone HTML5 document (`.html`).
 pub fn export_html(doc: &FlowDocument) -> String {
     let title = doc
@@ -1383,7 +1400,9 @@ pub fn export_html(doc: &FlowDocument) -> String {
                     run.style.color.0 & 0xFF_FFFF
                 );
             }
-            if let Some(Link::Url(url)) = &run.link {
+            if let Some(Link::Url(url)) = &run.link
+                && let Some(url) = safe_html_link(url)
+            {
                 chunk = format!("<a href=\"{}\">{chunk}</a>", xml_escape(url));
             }
             out.push_str(&chunk);
