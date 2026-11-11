@@ -47,8 +47,9 @@ makes their list and bytes publicly readable. A failed D1 result can leave an
 unreferenced R2 object for later reconciliation, so cleanup needs its own
 safe, separately designed process.
 
-The home can render the dynamic sample list, but the production Worker is not
-yet connected to this service. Production requires same-origin routing, separate production resources and credentials,
+The home can render the dynamic sample list, and `worker/sorane-gateway.ts`
+has a fail-closed service-binding router. No production service binding exists
+yet. Production requires an isolated service binding and resources, separate production resources and credentials,
 operator enrollment, observability, privacy and content review, and an actual
 end-to-end Mikaki login, authorization, upload, readback and logout check. The
 current tests include a mock issuer and do not establish real Passkey behavior.
