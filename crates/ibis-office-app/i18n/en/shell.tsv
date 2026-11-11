@@ -924,6 +924,6 @@ jtd.omitted-objects	 {count} embedded-object storage(s) are not displayed or con
 jtd.read-only	Ichitaro documents are read-only
 jtd.edit-as-docx	Convert to Word and edit
 jtd.editable-notice	Converted to Word. Unsupported formatting, images and some table lines are omitted. Save separately from the original Ichitaro file.
-jtd.source-protected	Saving as JTD or JTT is not supported. Save separately from the original file.
+jtd.source-protected	Saving as an Ichitaro file is not supported. Save separately from the original file.
 jtd.export-docx	Word (preview; partial lines omitted)
 jtd.docx-exported	Converted to Word. Partial table lines, unsupported formatting and images are omitted.

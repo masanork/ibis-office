@@ -1546,6 +1546,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "delharc"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfdcd2bee8dc367afd9064f3b0849156a4c29fc70d98370dae62773594d04dd"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "chrono",
+ "memchr",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3510,6 +3522,7 @@ dependencies = [
 name = "ibis-pptx"
 version = "0.8.0"
 dependencies = [
+ "delharc",
  "encoding_rs",
  "ibis-calc",
  "ibis-doc-model",
