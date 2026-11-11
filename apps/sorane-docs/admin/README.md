@@ -7,9 +7,8 @@ that issuer and this RP's pairwise subject. A logged-in account can redeem a
 short-lived, single-use invitation created by the operator; authentication alone
 does not grant access.
 
-The production configuration references dedicated Sorane Docs resources, but
-the service is not yet active. The local Wrangler configuration uses only local
-D1 and R2. Do not substitute production database IDs, credentials or
+The production configuration references dedicated Sorane Docs resources.
+The local Wrangler configuration uses only local D1 and R2. Do not substitute production database IDs, credentials or
 keys in it. The checked-in OIDC implementation and its MIT licence are pinned
 in `vendor/README.md`.
 
@@ -50,9 +49,9 @@ makes their list and bytes publicly readable. A failed D1 result can leave an
 unreferenced R2 object for later reconciliation, so cleanup needs its own
 safe, separately designed process.
 
-The home can render the dynamic sample list, and `worker/sorane-gateway.ts`
-has a fail-closed service-binding router. The production binding is configured
-but not yet deployed. Activation requires the service deployment and credentials, separate production resources and credentials,
+The home renders the dynamic sample list through the service-binding router in
+`worker/sorane-gateway.ts`. Production activation requires service deployment
+and credentials, separate production resources and credentials,
 operator enrollment, observability, privacy and content review, and an actual
 end-to-end Mikaki login, authorization, upload, readback and logout check. The
 current tests include a mock issuer and do not establish real Passkey behavior.
