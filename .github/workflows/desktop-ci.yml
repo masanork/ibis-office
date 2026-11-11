@@ -128,6 +128,13 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.1
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Trust this checkout inside the container
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r _ path; do
+            git config --global --add safe.directory "$GITHUB_WORKSPACE/$path"
+          done
       - name: Record clean source and toolchain
         run: python3 scripts/desktop-ci-info.py source ci-artifact
       - name: Test updater and AppImage runtime
