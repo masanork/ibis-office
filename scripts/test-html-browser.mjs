@@ -42,6 +42,12 @@ try {
   assert(html.includes('HTML&lt;&amp;検証'), 'download must contain the escaped edit');
   assert(html.includes('Sorane Docs') && html.includes('<table>'), 'document text and table must be present');
   assert((await page.evaluate(() => window.__ibisBlobTypes)).includes('text/html;charset=utf-8'), 'HTML must use an HTML MIME type');
+  await page.context().close();
+  const preview = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+  await preview.setContent(html);
+  assert((await preview.locator('body').innerText()).includes('HTML<&検証'), 'the downloaded HTML must render the edit as text');
+  assert.equal(await preview.locator('table').count(), 1, 'the downloaded table must render');
+  assert(await preview.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'the sample HTML must fit the phone viewport');
   assert.deepEqual(errors, []);
   console.log('PASS: browser downloads edited Word content as HTML');
 } finally {
