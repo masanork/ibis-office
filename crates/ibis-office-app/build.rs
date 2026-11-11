@@ -126,7 +126,7 @@ include!("windows/resource.rs");
 
 /// The Windows app icon (windows/), the design without the plate.
 #[cfg(windows)]
-const WINDOWS_ICON: &str = "ibisOffice_transparent.ico";
+const WINDOWS_ICON: &str = "../branding/sorane-docs.ico";
 
 /// Give the executable the app icon, as icon resource 1 (the one GPUI shows
 /// on the window and the taskbar), from the .ico in windows/: its images as
@@ -160,7 +160,7 @@ fn windows_icon() {
     }
     push_resource(&mut res, RT_GROUP_ICON, 1, &group);
     // And the version, for the 詳細 tab of the file's properties.
-    push_version_resource(&mut res, &windows_version(), "ibisOffice", "ibisOffice.exe");
+    push_version_resource(&mut res, &windows_version(), "Sorane Docs", "ibisOffice.exe");
 
     let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("app-icon.res");
     std::fs::write(&out, res).unwrap();

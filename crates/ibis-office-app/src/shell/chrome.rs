@@ -1233,7 +1233,7 @@ pub(crate) fn apply_title_drag(div: Div, window: &Window) -> Div {
 #[cfg(target_os = "windows")]
 fn system_menu_icon() -> AnyElement {
     static ICON: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
-    let image = ICON.get_or_init(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Png, include_bytes!("../../windows/png/ico/ibisOffice_icon_win_48px_transparent.png").to_vec()))).clone();
+    let image = ICON.get_or_init(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Png, include_bytes!("../../branding/png/48.png").to_vec()))).clone();
     div()
         .id("system-menu")
         .w(px(28.))

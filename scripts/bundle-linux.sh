@@ -15,7 +15,7 @@
 #   AppRun -> usr/bin/ibisOffice
 #   ibisoffice.desktop, ibisoffice.png, .DirIcon   (what AppImage tools read)
 #   usr/bin/ibisOffice
-#   usr/share/icons/hicolor/<n>x<n>/apps/ibisoffice.png   (Windows' icon without its plate)
+#   usr/share/icons/hicolor/<n>x<n>/apps/dev.sorane.Docs.png   (Windows' icon without its plate)
 #   usr/share/ibisOffice/artborders/   (ECMA-376's art borders, unmodified, with its notice)
 #   usr/share/doc/ibisOffice/          (ibisOffice's licences, the third-party ones)
 #
@@ -43,15 +43,15 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/d
 strip -o "$APPDIR/usr/bin/ibisOffice" "target/dist/$PROFILE/ibisOffice"
 ln -s usr/bin/ibisOffice "$APPDIR/AppRun"
 
-cp crates/ibis-office-app/linux/ibisoffice.desktop "$APPDIR/ibisoffice.desktop"
-cp crates/ibis-office-app/linux/ibisoffice.desktop "$APPDIR/usr/share/applications/ibisoffice.desktop"
-ICONS=crates/ibis-office-app/windows/png/ico
+cp crates/ibis-office-app/linux/ibisoffice.desktop "$APPDIR/dev.sorane.Docs.desktop"
+cp crates/ibis-office-app/linux/ibisoffice.desktop "$APPDIR/usr/share/applications/dev.sorane.Docs.desktop"
+ICONS=crates/ibis-office-app/branding/png
 for size in 16 24 32 48 256; do
 	mkdir -p "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps"
-	cp "$ICONS/ibisOffice_icon_win_${size}px_transparent.png" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/ibisoffice.png"
+	cp "$ICONS/${size}.png" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/dev.sorane.Docs.png"
 done
-cp "$ICONS/ibisOffice_icon_win_256px_transparent.png" "$APPDIR/ibisoffice.png"
-ln -s ibisoffice.png "$APPDIR/.DirIcon"
+cp "$ICONS/256.png" "$APPDIR/dev.sorane.Docs.png"
+ln -s dev.sorane.Docs.png "$APPDIR/.DirIcon"
 
 # The pictures of Word's art page borders, read when a document uses one.
 cp crates/ibis-office-app/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip crates/ibis-office-app/data/artborders/ECMA-NOTICE.txt "$APPDIR/usr/share/ibisOffice/artborders/"

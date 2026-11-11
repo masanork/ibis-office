@@ -790,7 +790,7 @@ autocorrect.auto-lists	Make paragraphs that start with * or 1. into lists
 autocorrect.auto-borders	Turn a paragraph of --- or === into a border line with Enter
 _shell.hide-notes-pane	Hide Notes
 _shell.show-notes-pane	Show Notes
-shell.linux-desktop.ask	Add ibisOffice to your list of apps?
+shell.linux-desktop.ask	Add Sorane Docs to your list of apps?
 shell.linux-desktop.ask.detail	You can then start it from the list of apps, and it appears under "Open With Other Application" for Word, Excel and PowerPoint documents. Only your home folder is changed.
 shell.linux-desktop.yes	Add
 shell.linux-desktop.no	Don't Add

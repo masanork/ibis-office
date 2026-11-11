@@ -56,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/bundle-macos.sh --release
-          app=target/release/ibisOffice.app
+          app=target/release/Sorane Docs.app
           codesign --verify --deep --strict --verbose=2 "$app"
           plutil -lint "$app/Contents/Info.plist"
           file "$app/Contents/MacOS/ibisOffice" | grep -q 'arm64'
@@ -70,7 +70,7 @@ jobs:
           ditto -c -k --keepParent "$app" ci-artifact/desktop-macos-arm64-ci.zip
           mkdir -p "$RUNNER_TEMP/verify-app"
           ditto -x -k ci-artifact/desktop-macos-arm64-ci.zip "$RUNNER_TEMP/verify-app"
-          codesign --verify --deep --strict "$RUNNER_TEMP/verify-app/ibisOffice.app"
+          codesign --verify --deep --strict "$RUNNER_TEMP/verify-app/Sorane Docs.app"
       - name: Build and verify Windows package
         if: matrix.platform == 'windows-x64'
         shell: pwsh

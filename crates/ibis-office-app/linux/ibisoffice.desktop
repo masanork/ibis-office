@@ -1,13 +1,13 @@
 [Desktop Entry]
 Type=Application
-Name=ibisOffice
+Name=Sorane Docs
 GenericName=Office Suite
 GenericName[ja]=オフィス スイート
 Comment=Open and edit Word, Excel and PowerPoint documents
 Comment[ja]=Word・Excel・PowerPoint の文書を開いて編集する
 Exec=ibisOffice %F
-Icon=ibisoffice
+Icon=dev.sorane.Docs
 Terminal=false
 Categories=Office;WordProcessor;Spreadsheet;Presentation;
 MimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.ms-word.document.macroEnabled.12;application/vnd.openxmlformats-officedocument.wordprocessingml.template;application/vnd.ms-word.template.macroEnabled.12;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.ms-excel.sheet.macroEnabled.12;application/vnd.ms-excel.sheet.binary.macroEnabled.12;application/vnd.openxmlformats-officedocument.spreadsheetml.template;application/vnd.ms-excel.template.macroEnabled.12;application/vnd.ms-excel;application/vnd.oasis.opendocument.spreadsheet;application/vnd.oasis.opendocument.spreadsheet-template;text/csv;text/tab-separated-values;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/vnd.ms-powerpoint.presentation.macroEnabled.12;application/vnd.openxmlformats-officedocument.presentationml.slideshow;application/vnd.ms-powerpoint.slideshow.macroEnabled.12;application/vnd.openxmlformats-officedocument.presentationml.template;application/vnd.ms-powerpoint.template.macroEnabled.12;application/vnd.ms-powerpoint;application/vnd.oasis.opendocument.presentation;application/vnd.oasis.opendocument.presentation-template;
-StartupWMClass=ibisoffice
+StartupWMClass=dev.sorane.Docs

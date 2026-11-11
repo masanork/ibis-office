@@ -12,7 +12,7 @@ fn main() {
             let mut res = Vec::new();
             // An empty resource first marks the file as 32-bit.
             push_resource(&mut res, 0, 0, &[]);
-            push_version_resource(&mut res, &windows_version(), "ibisOffice Updater", "ibisOfficeUpdater.exe");
+            push_version_resource(&mut res, &windows_version(), "Sorane Docs Updater", "ibisOfficeUpdater.exe");
             let out = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("version.res");
             std::fs::write(&out, res).unwrap();
             println!("cargo:rustc-link-arg-bin=ibisOfficeUpdater={}", out.display());

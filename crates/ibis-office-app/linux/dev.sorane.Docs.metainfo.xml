@@ -1,26 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>jp.ne.ibis.ibisOffice</id>
-  <name>ibisOffice</name>
+  <id>dev.sorane.Docs</id>
+  <name>Sorane Docs</name>
   <summary>Open and edit Word, Excel and PowerPoint documents</summary>
   <summary xml:lang="ja">Word・Excel・PowerPoint の文書を開いて編集する</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-only</project_license>
-  <developer id="jp.ne.ibis">
-    <name>ibis inc.</name>
+  <developer id="dev.sorane">
+    <name>Sorane Docs</name>
   </developer>
   <description>
     <p>
-      ibisOffice is an office suite for viewing, editing and saving Word (.docx),
+      Sorane Docs is an office suite for viewing, editing and saving Word (.docx),
       Excel (.xlsx) and PowerPoint (.pptx) documents, written in Rust and drawn on the GPU.
     </p>
     <p xml:lang="ja">
-      ibisOffice は、Word（.docx）・Excel（.xlsx）・PowerPoint（.pptx）の文書を表示・編集・保存するための、Rust と GPU で作られたオフィス スイートです。
+      Sorane Docs は、Word（.docx）・Excel（.xlsx）・PowerPoint（.pptx）の文書を表示・編集・保存するための、Rust と GPU で作られたオフィス スイートです。
     </p>
   </description>
-  <launchable type="desktop-id">jp.ne.ibis.ibisOffice.desktop</launchable>
-  <url type="homepage">https://github.com/ibisjp/ibis-office</url>
-  <url type="bugtracker">https://github.com/ibisjp/ibis-office/issues</url>
+  <launchable type="desktop-id">dev.sorane.Docs.desktop</launchable>
+  <url type="homepage">https://docs.sorane.dev</url>
+  <url type="bugtracker">https://github.com/masanork/ibis-office/issues</url>
   <content_rating type="oars-1.1" />
   <provides>
     <binary>ibisOffice</binary>

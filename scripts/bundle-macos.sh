@@ -4,8 +4,8 @@
 # Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 # Build the desktop version as a macOS app bundle:
 #
-#   scripts/bundle-macos.sh            debug build   (target/debug/ibisOffice.app)
-#   scripts/bundle-macos.sh --release  release build (target/release/ibisOffice.app)
+#   scripts/bundle-macos.sh            debug build   (target/debug/Sorane Docs.app)
+#   scripts/bundle-macos.sh --release  release build (target/release/Sorane Docs.app)
 #
 # A bare executable opened from Finder starts in Terminal; an .app bundle does not.
 # UI icons and fonts are embedded in the executable; the bundle adds the app icon
@@ -37,7 +37,7 @@ fi
 VERSION=$(awk -F'\t' '$1 == "macOS" { sub(/\r$/, "", $2); print $2 }' version.txt)
 [[ -n $VERSION ]] || { echo "version.txt has no macOS line" >&2; exit 1; }
 
-APP=target/$PROFILE/ibisOffice.app
+APP=target/$PROFILE/Sorane Docs.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/ibisOffice" "$APP/Contents/MacOS/ibisOffice"
@@ -64,11 +64,11 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>ibisOffice</string>
+	<string>Sorane Docs</string>
 	<key>CFBundleDisplayName</key>
-	<string>ibisOffice</string>
+	<string>Sorane Docs</string>
 	<key>CFBundleIdentifier</key>
-	<string>jp.ne.ibis.office</string>
+	<string>dev.sorane.docs</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleExecutable</key>

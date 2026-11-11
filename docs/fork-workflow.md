@@ -79,3 +79,9 @@ macOS arm64、Windows x64、Linux x64 AppImage をビルドする。PR はマー
 自動更新先も配布向けには整理が必要。タグ付けや GitHub Release への自動添付、
 署名鍵、デプロイ権限はこの workflow に含めない。CI の起動テストは異常な引数の
 終了コードやパッケージ構造を確認するもので、GUI 操作の検証ではない。
+
+## Desktop branding and updates
+
+Desktop builds use the Sorane Docs name and the blue S mark in `crates/ibis-office-app/branding/`. The macOS bundle and Linux desktop application have their own identifiers so they can coexist with ibisOffice. About retains the required Powered by ibisOffice attribution.
+
+Automatic and manual in-app update checks are disabled in this fork: the inherited updater points at upstream ibisOffice releases, not Sorane Docs builds. Do not re-enable it until a separate fork release feed and verification policy are in place. Desktop CI artifacts are validation builds, not an update feed. Windows automatic Open With registration is also disabled until the fork has a distinct executable name; this avoids overwriting an upstream installation’s registration.

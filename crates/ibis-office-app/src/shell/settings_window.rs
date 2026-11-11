@@ -154,21 +154,6 @@ impl SettingsWindow {
             apply_scrollbar_mode(cx);
             cx.notify();
         }))));
-        // 起動時に更新を確かめる (no update in the browser).
-        #[cfg(not(target_family = "wasm"))]
-        let detail = detail
-            .child(
-                div().mt_3().child(
-                    Checkbox::new("settings-check-updates")
-                        .label(i18n::text("fix.update.setting"))
-                        .checked(crate::shell::update::check_enabled())
-                        .on_click(cx.listener(|_, checked: &bool, _, cx| {
-                            crate::shell::update::set_check_enabled(*checked);
-                            cx.notify();
-                        })),
-                ),
-            )
-            .child(div().text_sm().text_color(theme.muted_foreground).child(i18n::text("fix.update.setting.note")));
         detail
     }
 

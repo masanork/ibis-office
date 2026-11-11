@@ -6,7 +6,7 @@
 # Stages only the pre-built ibisOffice binary, icons, desktop/metainfo files,
 # ECMA-376 art borders data, and third-party license notices into /app.
 # No external shared libraries (.so) are bundled inside the Flatpak.
-id: jp.ne.ibis.ibisOffice
+id: dev.sorane.Docs
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
@@ -28,12 +28,12 @@ modules:
     buildsystem: simple
     build-commands:
       - install -Dm755 staged/bin/ibisOffice /app/bin/ibisOffice
-      - install -Dm644 staged/share/applications/jp.ne.ibis.ibisOffice.desktop /app/share/applications/jp.ne.ibis.ibisOffice.desktop
-      - install -Dm644 staged/share/metainfo/jp.ne.ibis.ibisOffice.metainfo.xml /app/share/metainfo/jp.ne.ibis.ibisOffice.metainfo.xml
+      - install -Dm644 staged/share/applications/dev.sorane.Docs.desktop /app/share/applications/dev.sorane.Docs.desktop
+      - install -Dm644 staged/share/metainfo/dev.sorane.Docs.metainfo.xml /app/share/metainfo/dev.sorane.Docs.metainfo.xml
       - |
         for size in 16 24 32 48 256; do
-          install -Dm644 "staged/share/icons/hicolor/${size}x${size}/apps/jp.ne.ibis.ibisOffice.png" \
-            "/app/share/icons/hicolor/${size}x${size}/apps/jp.ne.ibis.ibisOffice.png"
+          install -Dm644 "staged/share/icons/hicolor/${size}x${size}/apps/dev.sorane.Docs.png" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/dev.sorane.Docs.png"
         done
       - install -Dm644 staged/share/ibisOffice/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip /app/share/ibisOffice/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip
       - install -Dm644 staged/share/ibisOffice/artborders/ECMA-NOTICE.txt /app/share/ibisOffice/artborders/ECMA-NOTICE.txt

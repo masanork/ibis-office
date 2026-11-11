@@ -788,7 +788,7 @@ autocorrect.auto-lists	* や 1. で始まる段落を箇条書き・段落番号
 autocorrect.auto-borders	--- や === だけの段落を Enter で罫線にする
 _shell.hide-notes-pane	ノートを非表示
 _shell.show-notes-pane	ノートを表示
-shell.linux-desktop.ask	ibisOffice をアプリの一覧に登録しますか？
+shell.linux-desktop.ask	Sorane Docs をアプリの一覧に登録しますか？
 shell.linux-desktop.ask.detail	アプリの一覧から起動できるようになり、Word・Excel・PowerPoint の文書の「別のアプリで開く」にも出ます。登録は自分のホーム フォルダーにだけ書きます。
 shell.linux-desktop.yes	登録する
 shell.linux-desktop.no	登録しない

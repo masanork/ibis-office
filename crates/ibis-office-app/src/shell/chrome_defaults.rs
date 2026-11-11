@@ -99,11 +99,6 @@ pub(crate) fn menus(editor: &SlideEditor) -> Menus {
                     item("help.shortcuts", "keyboard").shortcut("⌘/").into(),
                     SEP,
                 ];
-                // The update's check and log (no update in the browser).
-                #[cfg(not(target_family = "wasm"))]
-                entries.push(item("help.check-update", "download").on(|_, _, cx| crate::shell::update::check_now(cx)).into());
-                #[cfg(not(target_family = "wasm"))]
-                entries.push(item("help.update-log", "description").on(|_, _, cx| crate::shell::update::reveal_log(cx)).into());
                 // The browser has one window only: there the About screen is a dialog inside the window.
                 entries.push(item("help.about", "info").on(|this, window, cx| {
                     if cfg!(target_family = "wasm") {

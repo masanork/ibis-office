@@ -78,7 +78,6 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::about_update_available_button", about_update_available_button),
         ("shell::about_closes_with_escape_and_enter", about_closes_with_escape_and_enter),
         ("shell::about_dialog_in_window_for_the_browser", about_dialog_in_window_for_the_browser),
-        ("shell::help_check_update_item", help_check_update_item),
         ("shell::start_view_new_and_select", start_view_new_and_select),
         ("shell::fix_docx_image_look", fix_docx_image_look),
         ("shell::fix17_print_is_bound", fix17_print_is_bound),
@@ -665,19 +664,6 @@ fn about_update_available_button() {
     // The button is above "Powered by ibisOffice" and below the version line, in link colour, without an underline.
     s.close_window(handle.into());
     update::set_available_for_test(None);
-}
-
-/// Issue #92: ヘルプ > 更新を確認 is in the menu of every screen, and using it makes the user's own check (the setting
-/// 起動時に更新を確かめる off or not; no network in the test).
-fn help_check_update_item() {
-    use crate::shell::update;
-    for path in ["test/editing/xlsx-sales.xlsx"] {
-        let mut s = Scenario::open(path);
-        crate::shell::settings::set("check-updates", "0");
-        let before = update::checked_now_for_test();
-        s.menu("help.check-update");
-        assert_eq!(update::checked_now_for_test(), before + 1, "更新を確認 checks");
-    }
 }
 
 /// DOCX-IMAGE-003/004: the picture at the caret is turned, flipped and cut from

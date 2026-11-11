@@ -491,7 +491,7 @@ fn quit_asking_to_save_now(cx: &mut App) {
 pub(crate) fn set_app_menus(cx: &mut App) {
     use crate::shell::i18n::text;
     cx.set_menus([
-        Menu::new("ibisOffice").items([MenuItem::action(text("help.about"), OpenAbout), MenuItem::separator(), MenuItem::action(text("app.settings"), OpenSettings), MenuItem::separator(), MenuItem::action(text("app.quit"), Quit)]),
+        Menu::new("Sorane Docs").items([MenuItem::action(text("help.about"), OpenAbout), MenuItem::separator(), MenuItem::action(text("app.settings"), OpenSettings), MenuItem::separator(), MenuItem::action(text("app.quit"), Quit)]),
         Menu::new(text("menu.file")).items([
             MenuItem::action(text("file.start-window"), OpenStartWindow),
             MenuItem::separator(),
@@ -542,11 +542,6 @@ pub fn open_editor(document: Option<(ibis_doc_model::Presentation, SharedString)
     }
     // A start window is as wide as its view (shell/start_view.rs).
     let width = if document.is_none() { shell::start_view::START_WINDOW_WIDTH } else { 1280. };
-    // A start window looks for a newer version (its 「ibisOffice を更新する」 button), whatever the setting says.
-    #[cfg(not(target_family = "wasm"))]
-    if document.is_none() {
-        shell::update::check_for_start_window(cx);
-    }
     open_window_sized(width, cx, move |editor, window, cx| {
         if let Some((presentation, name)) = document {
             editor.load(presentation, name, window, cx);
@@ -1030,9 +1025,7 @@ pub fn run_native() {
         // shaped lines for a large workbook) are not freed one by one.
         std::process::exit(0);
     }
-    // Explorer's "Open with" list gets ibisOffice for csv and tsv (Windows).
-    #[cfg(windows)]
-    open_with::register();
+    // The upstream executable name is shared; do not overwrite its Windows Open With registration.
     timing::enable(args.timing);
     timing::mark("main");
     // The file named is read and parsed while the application starts.
@@ -1099,9 +1092,7 @@ pub fn run_native() {
             }
             rest.into_iter().for_each(|p| open_path_in_app(p, cx));
             timing::mark("window");
-            // Look for a newer version in the background (not in the timing runs).
             if !quit_after_first_frame {
-                crate::shell::update::start(cx);
                 // Offer to put the AppImage in the desktop's list of apps (Linux).
                 linux_desktop::start(cx);
             }

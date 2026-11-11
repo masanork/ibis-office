@@ -8,7 +8,7 @@
 //!   (`StartupWMClass`), and the app's icon.
 //! - Run from its AppImage (`APPIMAGE` and `APPDIR` set by its runtime,
 //!   `crates/ibis-appimage`), the first start asks 「アプリの一覧に登録しますか？」;
-//!   「はい」 writes the AppImage's `.desktop` entry (`linux/ibisoffice.desktop`,
+//!   「はい」 writes the AppImage's `.desktop` entry (`linux/dev.sorane.Docs.desktop`,
 //!   with the AppImage as the command) to `~/.local/share/applications/`
 //!   and its icons to `~/.local/share/icons/hicolor/`, which puts ibisOffice
 //!   in the desktop's list of apps and in the 「別のアプリで開く」 list of the
@@ -133,7 +133,7 @@ mod prompt {
 }
 
 /// The app's id on the Linux desktop (`StartupWMClass` in its `.desktop` entry).
-const APP_ID: &str = "ibisoffice";
+const APP_ID: &str = "dev.sorane.Docs";
 
 /// Give a window's options the app's id and icon (Linux).
 pub(crate) fn identify(options: &mut WindowOptions) {
@@ -155,7 +155,7 @@ pub(crate) fn identify(options: &mut WindowOptions) {
 fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
     static ICON: std::sync::OnceLock<Option<std::sync::Arc<image::RgbaImage>>> = std::sync::OnceLock::new();
     ICON.get_or_init(|| {
-        let png = include_bytes!("../windows/png/ico/ibisOffice_icon_win_48px_transparent.png");
+        let png = include_bytes!("../branding/png/48.png");
         image::load_from_memory_with_format(png, image::ImageFormat::Png)
             .map_err(|e| log::warn!("the window icon: {e}"))
             .ok()
@@ -264,7 +264,7 @@ fn data_home() -> std::path::PathBuf {
     env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share"))).unwrap_or_default()
 }
 
-/// The sizes of the icons in the AppImage (`usr/share/icons/hicolor/<n>x<n>/apps/ibisoffice.png`).
+/// The sizes of the icons in the AppImage (`usr/share/icons/hicolor/<n>x<n>/apps/dev.sorane.Docs.png`).
 #[cfg(target_os = "linux")]
 const ICON_SIZES: &[u32] = &[16, 24, 32, 48, 256];
 
@@ -343,19 +343,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let appdir = root.join("AppDir");
         std::fs::create_dir_all(&appdir).unwrap();
-        std::fs::write(appdir.join("ibisoffice.desktop"), include_str!("../linux/ibisoffice.desktop")).unwrap();
+        std::fs::write(appdir.join("dev.sorane.Docs.desktop"), include_str!("../linux/ibisoffice.desktop")).unwrap();
         for size in ICON_SIZES {
             let dir = appdir.join(format!("usr/share/icons/hicolor/{size}x{size}/apps"));
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("ibisoffice.png"), b"png").unwrap();
+            std::fs::write(dir.join("dev.sorane.Docs.png"), b"png").unwrap();
         }
         let data = root.join("share");
         register(std::path::Path::new("/opt/apps/ibisOffice.AppImage"), &appdir, &data).unwrap();
-        let entry = std::fs::read_to_string(data.join("applications/ibisoffice.desktop")).unwrap();
+        let entry = std::fs::read_to_string(data.join("applications/dev.sorane.Docs.desktop")).unwrap();
         assert!(entry.contains("\nExec=\"/opt/apps/ibisOffice.AppImage\" %F\n"));
-        assert!(entry.contains("\nStartupWMClass=ibisoffice\n"));
+        assert!(entry.contains("\nStartupWMClass=dev.sorane.Docs\n"));
         assert!(entry.contains("application/vnd.openxmlformats-officedocument.wordprocessingml.document;"));
-        assert!(data.join("icons/hicolor/256x256/apps/ibisoffice.png").exists());
+        assert!(data.join("icons/hicolor/256x256/apps/dev.sorane.Docs.png").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

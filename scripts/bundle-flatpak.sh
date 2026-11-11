@@ -44,19 +44,17 @@ mkdir -p \
 
 strip -o "$STAGE/bin/ibisOffice" "target/dist/$PROFILE/ibisOffice"
 
-# Desktop entry with Icon matching the Flatpak application ID (jp.ne.ibis.ibisOffice).
-sed 's/^Icon=ibisoffice$/Icon=jp.ne.ibis.ibisOffice/' \
-  crates/ibis-office-app/linux/ibisoffice.desktop \
-  > "$STAGE/share/applications/jp.ne.ibis.ibisOffice.desktop"
+# Desktop entry with Icon matching the Flatpak application ID (dev.sorane.Docs).
+cp crates/ibis-office-app/linux/ibisoffice.desktop "$STAGE/share/applications/dev.sorane.Docs.desktop"
 
-cp crates/ibis-office-app/linux/jp.ne.ibis.ibisOffice.metainfo.xml \
-  "$STAGE/share/metainfo/jp.ne.ibis.ibisOffice.metainfo.xml"
+cp crates/ibis-office-app/linux/dev.sorane.Docs.metainfo.xml \
+  "$STAGE/share/metainfo/dev.sorane.Docs.metainfo.xml"
 
-ICONS=crates/ibis-office-app/windows/png/ico
+ICONS=crates/ibis-office-app/branding/png
 for size in 16 24 32 48 256; do
   mkdir -p "$STAGE/share/icons/hicolor/${size}x${size}/apps"
-  cp "$ICONS/ibisOffice_icon_win_${size}px_transparent.png" \
-    "$STAGE/share/icons/hicolor/${size}x${size}/apps/jp.ne.ibis.ibisOffice.png"
+  cp "$ICONS/${size}.png" \
+    "$STAGE/share/icons/hicolor/${size}x${size}/apps/dev.sorane.Docs.png"
 done
 
 cp crates/ibis-office-app/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip \
@@ -73,11 +71,11 @@ cp "$LIC/COMMERCIAL-LICENSE.md" "$DOC/COMMERCIAL-LICENSE.md"
 cp crates/ibis-office-app/linux/license.md "$DOC/third-party-licenses.md"
 cp crates/ibis-office-app/fonts/carlito/OFL.txt "$DOC/Carlito-OFL.txt"
 
-cp crates/ibis-office-app/linux/jp.ne.ibis.ibisOffice.yml "$WORK/jp.ne.ibis.ibisOffice.yml"
+cp crates/ibis-office-app/linux/dev.sorane.Docs.yml "$WORK/dev.sorane.Docs.yml"
 
 (
   cd "$WORK"
-  flatpak-builder --force-clean --repo=repo build-dir jp.ne.ibis.ibisOffice.yml
+  flatpak-builder --force-clean --repo=repo build-dir dev.sorane.Docs.yml
 )
 
 # Verify that no shared libraries (.so) were bundled into /app.
@@ -90,7 +88,7 @@ fi
 
 OUT="target/dist/ibisOffice-$VERSION-Linux-$ARCH.flatpak"
 rm -f "$OUT"
-flatpak build-bundle "$WORK/repo" "$OUT" jp.ne.ibis.ibisOffice \
+flatpak build-bundle "$WORK/repo" "$OUT" dev.sorane.Docs \
   --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
 
 (cd target/dist && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256")
