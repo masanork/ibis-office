@@ -123,6 +123,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn current_bytes(&self) -> Result<Vec<u8>, String> {
         if self.is_jtd_read_only() {
+            if self.jtd_gallery { return Err(crate::shell::i18n::text("jtd.gallery-export-disabled").to_string()); }
             return ibis_pptx::jtd::export_docx(self.presentation()).map_err(|e| e.to_string());
         }
         let source = self.source.clone().ok_or(crate::shell::i18n::text("_shell.this-file-cannot-be-saved-yet").to_string())?;
@@ -178,7 +179,7 @@ impl SlideEditor {
     /// Export the recognized JTD content as a separate, editable DOCX.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn export_jtd_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_jtd_read_only() { return; }
+        if !self.is_jtd_read_only() || self.jtd_gallery { return; }
         let (stem, _) = self.name_parts();
         self.ask_path(format!("{stem}.docx"), window, cx, |this, path, _, cx| {
             let result = this.export_jtd_docx_to(&path)
@@ -190,7 +191,7 @@ impl SlideEditor {
 
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn export_jtd_docx_to(&self, path: &std::path::Path) -> Result<(), String> {
-        if !self.is_jtd_read_only() || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("docx"))
+        if !self.is_jtd_read_only() || self.jtd_gallery || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("docx"))
             || self.path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, path)) {
             return Err(crate::shell::i18n::text("jtd.read-only").to_string());
         }
