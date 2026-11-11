@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Opt-in process tests use synthetic executables in an isolated temp folder.
 //! No Sorane Docs installation, signing key, update feed, or network is used.
-#![cfg(any(target_os = "macos", windows))]
+#![cfg(any(target_os = "macos", target_os = "linux", windows))]
 
 use std::{
     fs,
@@ -85,6 +85,16 @@ impl Fixture {
             );
             app
         }
+        #[cfg(target_os = "linux")]
+        {
+            let image = self.root.join(format!("{name}.AppImage"));
+            self.executable(&image, mode, marker);
+            // ELF padding contains the AppImage type 2 marker. Linux ignores it.
+            let mut bytes = fs::read(&image).unwrap();
+            bytes[8..11].copy_from_slice(b"AI\x02");
+            fs::write(&image, bytes).unwrap();
+            image
+        }
         #[cfg(windows)]
         {
             let dir = self.root.join(name);
@@ -97,6 +107,10 @@ impl Fixture {
         #[cfg(target_os = "macos")]
         {
             app.join("Contents/MacOS/ibisOffice")
+        }
+        #[cfg(target_os = "linux")]
+        {
+            app.to_path_buf()
         }
         #[cfg(windows)]
         {
@@ -167,6 +181,17 @@ impl Drop for Fixture {
     }
 }
 
+fn backup_of(path: &Path) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        ibis_office_updater::appimage_swap::backup_of(path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        ibis_office_updater::swap::backup_of(path)
+    }
+}
+
 #[test]
 fn updater_process_installs_and_keeps_running_fixture() {
     if std::env::var_os("SORANE_UPDATER_PROCESS_TEST").as_deref() != Some(std::ffi::OsStr::new("1"))
@@ -182,7 +207,7 @@ fn updater_process_installs_and_keeps_running_fixture() {
     assert!(status.success(), "updater status {status}: {log}");
     f.wait_marker("new-marker");
     assert_eq!(fs::read(Fixture::app_binary(&old)).unwrap(), expected);
-    assert!(!ibis_office_updater::swap::backup_of(&old).exists());
+    assert!(!backup_of(&old).exists());
     let log = fs::read_to_string(f.root.join("updater.log")).unwrap();
     assert!(log.contains(" check-running ok "), "{log}");
     // The synthetic process exits after seven seconds; don't leave it running.
@@ -203,7 +228,63 @@ fn updater_process_rolls_back_after_fixture_exits() {
     f.wait_marker("new-marker");
     f.wait_marker("old-marker");
     assert_eq!(fs::read(Fixture::app_binary(&old)).unwrap(), expected);
-    assert!(!ibis_office_updater::swap::backup_of(&old).exists());
+    assert!(!backup_of(&old).exists());
     let log = fs::read_to_string(f.root.join("updater.log")).unwrap();
     assert!(log.contains(" rollback ok "), "{log}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stale_backup_is_preserved() {
+    if std::env::var_os("SORANE_UPDATER_PROCESS_TEST").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let f = Fixture::new();
+    let old = f.app("Installed", "old", &f.root.join("old-marker"));
+    let new = f.app("Candidate", "new-running", &f.root.join("new-marker"));
+    let before = fs::read(&old).unwrap();
+    fs::write(backup_of(&old), b"recovery data").unwrap();
+    assert!(!f.run(&old, &new).success());
+    assert_eq!(fs::read(&old).unwrap(), before);
+    assert_eq!(fs::read(backup_of(&old)).unwrap(), b"recovery data");
+    assert!(!f.root.join("new-marker").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn live_parent_is_not_terminated() {
+    if std::env::var_os("SORANE_UPDATER_PROCESS_TEST").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let f = Fixture::new();
+    let old = f.app("Installed", "old", &f.root.join("old-marker"));
+    let new = f.app("Candidate", "new-running", &f.root.join("new-marker"));
+    let before = fs::read(&old).unwrap();
+    let parent = f.root.join("parent");
+    f.executable(&parent, "new-running", &f.root.join("parent-marker"));
+    let mut child = Command::new(parent).spawn().unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_ibisOfficeUpdater"))
+        .args([
+            "--pid",
+            &child.id().to_string(),
+            "--version",
+            "2.0.0",
+            "--old",
+        ])
+        .arg(&old)
+        .arg("--new")
+        .arg(&new)
+        .arg("--log")
+        .arg(f.root.join("updater.log"))
+        .args(["--wait-secs", "1"])
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    assert!(child.try_wait().unwrap().is_none());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(fs::read(&old).unwrap(), before);
+    assert!(!backup_of(&old).exists());
 }
