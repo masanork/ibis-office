@@ -38,6 +38,7 @@ jobs:
         run: |
           rustc --edition 2024 --test forks/gpui-pre-web/src/touch_pinch.rs -o "$RUNNER_TEMP/touch-pinch-test"
           "$RUNNER_TEMP/touch-pinch-test"
+      - run: cargo test --locked -p ibis-pptx --example jtd_embedded
       - run: npm run test:web
       - run: npm run check:worker
       - run: npx wrangler deploy --dry-run

@@ -1338,6 +1338,12 @@ mod web {
         Ok(())
     }
 
+    pub(crate) fn font_preload_error(error: JsValue) -> String {
+        error.as_string().or_else(|| js_sys::Reflect::get(&error, &JsValue::from_str("message"))
+            .ok().and_then(|message| message.as_string()))
+            .unwrap_or_else(|| "Document fonts could not be loaded; retry opening the file".to_string())
+    }
+
     /// UI font bundled with the app. The browser has no system fonts GPUI can
     /// load, and GPUI's `.SystemUIFont` alias resolves to IBM Plex Sans on web.
     const UI_FONT: &[u8] = include_bytes!("../fonts/IBMPlexSans-Regular.ttf");
@@ -1357,28 +1363,7 @@ mod web {
         struct Starting;
         impl Drop for Starting { fn drop(&mut self) { STARTING.with(|starting| starting.set(false)); } }
         let _starting = Starting;
-        let mut jtd_document: Option<(ibis_doc_model::Presentation, SharedString, Vec<u8>)> = None;
-        let mut open_error = None;
-        let document: Option<(ibis_doc_model::Presentation, SharedString)> = file.and_then(|data| {
-            let name = file_name.unwrap_or_default();
-            if name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::jtd::is_extension(e)) || ibis_pptx::jtd::is_jtd(&data) {
-                match ibis_pptx::jtd::read(&data) {
-                    Ok(presentation) => jtd_document = Some((presentation, name.into(), data)),
-                    Err(err) => open_error = Some(format!("{name}: {err}")),
-                }
-                None
-            } else {
-                match ibis_pptx::read(&data) {
-                    Ok(presentation) => Some((presentation, name.into())),
-                    Err(err) => { open_error = Some(format!("{name}: {err}")); None }
-                }
-            }
-        });
-        if let Some((presentation, name, _)) = &jtd_document {
-            preload_document_fonts(presentation, name).await?;
-        } else if let Some((presentation, name)) = &document {
-            preload_document_fonts(presentation, name).await?;
-        }
+        let initial_file = file.map(|data| (file_name.unwrap_or_default(), data));
         gpui_kit::platform::web_init();
 
         // Single-threaded: needs no SharedArrayBuffer, so no COOP/COEP headers.
@@ -1438,12 +1423,10 @@ mod web {
                 MISSING_SUBSCRIPTION.with(|slot| *slot.borrow_mut() = Some(subscription));
             }
             Theme::global_mut(cx).font_family = ui_font_family().unwrap_or_else(|| "IBM Plex Sans".into());
-            if let Some((presentation, name, data)) = jtd_document {
-                super::open_window_with(cx, move |editor, window, cx| editor.load_jtd(presentation, name, data, window, cx));
-            } else if let Some(error) = open_error {
-                super::open_window_with(cx, move |editor, _, cx| editor.fail_loading(error, cx));
+            if let Some((name, data)) = initial_file {
+                super::open_window_with(cx, move |editor, window, cx| editor.open_web_bytes(name, data, true, window, cx));
             } else {
-                super::open_editor(document, None, cx);
+                super::open_editor(None, None, cx);
             }
         });
         APPLICATION.with(|app| *app.borrow_mut() = Some(handle));
