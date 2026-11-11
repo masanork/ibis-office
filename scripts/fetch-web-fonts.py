@@ -37,7 +37,8 @@ def fetch(spec):
 
 
 if __name__ == '__main__':
-    sources = json.loads((ROOT / 'fonts/sources.json').read_text())['fonts']
+    catalog = json.loads((ROOT / 'fonts/sources.json').read_text())
+    sources = catalog['fonts'] + catalog.get('bootstrapFonts', [])
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         for result in pool.map(fetch, sources):
             print(result, flush=True)

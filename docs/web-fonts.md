@@ -49,8 +49,16 @@ Paths are relative to the configuration file:
   face; `uiFont` independently selects menus and toolbars. Omitted `uiFont`
   uses the document default. Aliases affect display without rewriting stored
   typeface names. Conflicting aliases fail the build.
+- `uiResources: true` adds display text from all application `i18n/*/*.tsv`
+  catalogs and the component library's English/Japanese locale resource.
+  Entries are processed in configuration order: the primary UI face covers
+  its characters first, then symbol/emoji faces cover the remaining graphemes.
+  Keys, comments and document samples are excluded. Variation-selector/emoji
+  clusters are retained. A missing UI glyph fails the build before publishing
+  the manifest. Newly added UI translations therefore enter the next bootstrap
+  set automatically. Optional fallback entries with nothing to add are omitted.
 - `text` and/or UTF-8 `textFile` select the subset repertoire. Variation
-  selectors are retained. With neither field the source is copied intact.
+  selectors are retained. Without these fields or `uiResources`, the source is copied intact.
   Subsets receive separate `Ibis Subset <id>` families. Optional `family` can
   group regular/bold/italic entries. Attribution/license records are retained.
 - `licenseFile` is copied and linked from the manifest. Use redistributable
@@ -104,8 +112,13 @@ appropriate for document confidentiality.
 
 ## ibis.sorane.dev behavior
 
-`scripts/web-fonts.sorane.json` bootstraps ASCII from IPAmj and Noto. Noto is
-used for UI; document Mincho and Gothic keep separate on-demand fallback chains.
+`scripts/web-fonts.sorane.json` bootstraps ASCII from IPAmj and all known UI
+text from Noto Sans CJK JP, supplemented by small Noto Symbols/Emoji subsets.
+UI text is available before GPUI's first layout and does not depend on the
+on-demand endpoint. Document Mincho and Gothic retain their separate on-demand
+fallback chains for content outside the bootstrap set. Additional source fonts
+are pinned in `bootstrapFonts` in the catalog and do not require R2 upload or
+expand the font API allowlist.
 Administrative Plane 16 characters request `acgjm` without Latin padding.
 Current reporting does not detect every absent variation sequence when its
 base glyph is available. This migration does not expand the three source fonts'
@@ -121,6 +134,7 @@ npm run check:worker
 npx wrangler deploy --dry-run
 ```
 
-Tests build the actual WASM and exercise IVS, CFF, composite glyphs, Plane 16,
+Tests build the actual WASM and exercise resource-driven bootstrap coverage,
+IVS, CFF, composite glyphs, Plane 16,
 cache isolation, stream failures and resource release. Original tiny synthetic
 fixtures make CI independent of external repositories, font downloads and APIs.

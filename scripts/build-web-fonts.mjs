@@ -6,30 +6,47 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { fontFamily, renameSubset, tables } from './web-font-sfnt.mjs';
 import { loadSubsetter } from './font-subsetter.mjs';
+import { uiRepertoire } from './ui-font-repertoire.mjs';
 
-export async function buildWebFonts(configPath, { outDir = resolve('www') } = {}) {
+export async function buildWebFonts(configPath, { outDir = resolve('www'), uiSources } = {}) {
   const config = JSON.parse(await readFile(configPath, 'utf8'));
   if (!Array.isArray(config.fonts) || config.fonts.length === 0) throw new Error('fonts must be a nonempty array');
   if (config.browserFallback !== undefined && typeof config.browserFallback !== 'boolean') throw new Error('browserFallback must be boolean');
   const base = dirname(resolve(configPath));
   const ids = new Map();
+  const configuredIds = new Set();
   const aliases = new Map();
   const artifacts = [];
   const fonts = [];
+  const remainingUi = new Set(config.fonts.some(entry => entry.uiResources === true) ? await uiRepertoire(uiSources) : []);
   let bg;
   const digest = data => createHash('sha256').update(data).digest('hex');
   for (const entry of config.fonts) {
-    if (typeof entry.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(entry.id) || ids.has(entry.id)) throw new Error('Each font needs a unique id using letters, digits, _ or -');
+    if (typeof entry.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(entry.id) || configuredIds.has(entry.id)) throw new Error('Each font needs a unique id using letters, digits, _ or -');
+    configuredIds.add(entry.id);
     if (typeof entry.path !== 'string') throw new Error(`${entry.id}: path is required`);
     let data = await readFile(resolve(base, entry.path));
     tables(data);
     const originalFamily = fontFamily(data);
     let family = originalFamily;
-    if (entry.text !== undefined || entry.textFile !== undefined) {
+    if (entry.uiResources !== undefined && typeof entry.uiResources !== 'boolean') throw new Error(`${entry.id}: uiResources must be boolean`);
+    if (entry.text !== undefined || entry.textFile !== undefined || entry.uiResources) {
       if (entry.text !== undefined && typeof entry.text !== 'string') throw new Error(`${entry.id}: text must be a string`);
-      const text = (entry.text ?? '') + (entry.textFile === undefined ? '' : await readFile(resolve(base, entry.textFile), 'utf8'));
-      if (!text.trim()) throw new Error(`${entry.id}: subset text is empty`);
+      let text = (entry.text ?? '') + (entry.textFile === undefined ? '' : await readFile(resolve(base, entry.textFile), 'utf8'));
       bg ??= await loadSubsetter();
+      if (entry.uiResources) {
+        const engine = new bg.FontSubsetter(data.length);
+        try {
+          engine.append(data);
+          for (const glyph of remainingUi) if (engine.has_glyphs(glyph)) {
+            text += glyph;
+            remainingUi.delete(glyph);
+          }
+        } finally { engine.free(); }
+        // An optional symbol face can become unnecessary after a UI update.
+        if (!text.trim()) continue;
+      }
+      if (!text.trim()) throw new Error(`${entry.id}: subset text is empty`);
       if (!bg.font_has_glyphs(data, text.replace(/[\r\n\t]/g, ''))) throw new Error(`${entry.id}: source font lacks requested characters`);
       family = entry.family ?? `Ibis Subset ${entry.id}`;
       if (typeof family !== 'string' || !family.trim() || family.length > 100) throw new Error(`${entry.id}: invalid subset family`);
@@ -70,6 +87,8 @@ export async function buildWebFonts(configPath, { outDir = resolve('www') } = {}
     }
     fonts.push(font);
   }
+  if (remainingUi.size) throw new Error('UI resources lack bootstrap glyphs: ' + [...remainingUi]
+    .map(glyph => [...glyph].map(c => 'U+' + c.codePointAt(0).toString(16).toUpperCase()).join('+')).join(', '));
   if (config.dynamic !== undefined) {
     if (!config.dynamic || typeof config.dynamic.endpoint !== 'string' || !(/^(https?:\/\/|\/(?!\/))/.test(config.dynamic.endpoint))
         || typeof config.dynamic.font !== 'string' || !/^[A-Za-z][A-Za-z0-9]+$/.test(config.dynamic.font)) {

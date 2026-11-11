@@ -41,7 +41,26 @@
         "Noto Sans JP"
       ],
       "licenseFile": "../fonts/licenses/OFL-1.1.txt",
-      "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+      "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~",
+      "uiResources": true
+    },
+    {
+      "id": "noto-ui-symbols2",
+      "path": "../data/fonts/NotoSansSymbols2-Regular.ttf",
+      "licenseFile": "../fonts/licenses/NotoSansSymbols2-OFL.txt",
+      "uiResources": true
+    },
+    {
+      "id": "noto-ui-symbols",
+      "path": "../data/fonts/NotoSansSymbols[wght].ttf",
+      "licenseFile": "../fonts/licenses/notosanssymbols-OFL.txt",
+      "uiResources": true
+    },
+    {
+      "id": "noto-ui-emoji",
+      "path": "../data/fonts/NotoEmoji[wght].ttf",
+      "licenseFile": "../fonts/licenses/notoemoji-OFL.txt",
+      "uiResources": true
     }
   ]
 }

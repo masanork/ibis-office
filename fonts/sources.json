@@ -30,5 +30,34 @@
       "license": "OFL-1.1",
       "originalUrl": "https://github.com/notofonts/noto-cjk/tree/Sans2.004"
     }
+  ],
+  "bootstrapFonts": [
+    {
+      "id": "noto-ui-symbols2",
+      "filename": "NotoSansSymbols2-Regular.ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf",
+      "archive": false,
+      "sha256": "7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21",
+      "license": "OFL-1.1",
+      "originalUrl": "https://github.com/google/fonts/tree/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notosanssymbols2"
+    },
+    {
+      "id": "noto-ui-symbols",
+      "filename": "NotoSansSymbols[wght].ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notosanssymbols/NotoSansSymbols%5Bwght%5D.ttf",
+      "archive": false,
+      "sha256": "f7e7e04b4a24b6c78893d50cbfd2b2f6cae49617ab047bfef668d252adb128f7",
+      "license": "OFL-1.1",
+      "originalUrl": "https://github.com/google/fonts/tree/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notosanssymbols"
+    },
+    {
+      "id": "noto-ui-emoji",
+      "filename": "NotoEmoji[wght].ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf",
+      "archive": false,
+      "sha256": "de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551",
+      "license": "OFL-1.1",
+      "originalUrl": "https://github.com/google/fonts/tree/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoemoji"
+    }
   ]
 }
