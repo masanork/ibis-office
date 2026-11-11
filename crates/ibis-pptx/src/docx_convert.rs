@@ -1341,7 +1341,7 @@ pub fn export_html(doc: &FlowDocument) -> String {
         .filter(|t| !t.is_empty())
         .unwrap_or("Document");
     let mut out = format!(
-        "<!DOCTYPE html>\n<html lang=\"ja\">\n<head>\n<meta charset=\"UTF-8\">\n<title>{}</title>\n<style>body{{font-family:'Yu Gothic',Calibri,sans-serif;line-height:1.5;margin:2em;}}table{{border-collapse:collapse;width:100%;margin:1em 0;}}td,th{{border:1px solid #888;padding:6px 8px;}}</style>\n</head>\n<body>\n",
+        "<!DOCTYPE html>\n<html lang=\"ja\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>body{{font-family:'Yu Gothic',Calibri,sans-serif;line-height:1.5;margin:2em;}}table{{border-collapse:collapse;width:100%;margin:1em 0;}}td,th{{border:1px solid #888;padding:6px 8px;}}</style>\n</head>\n<body>\n",
         xml_escape(title)
     );
 

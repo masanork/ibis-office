@@ -25,6 +25,7 @@ fn html_escapes_text_and_omits_unsafe_links() {
         ..FlowDocument::default()
     };
     let html = export_html(&doc);
+    assert!(html.contains("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"));
     assert!(html.contains("<a href=\"https://example.test/?a=1&amp;b=2\">safe&lt;&amp;</a>"));
     assert!(html.contains("<a href=\"#section\">fragment</a>"));
     assert!(html.contains("<a href=\"folder/page.html\">relative</a>"));
