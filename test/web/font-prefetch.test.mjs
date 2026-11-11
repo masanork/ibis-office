@@ -90,6 +90,55 @@ test('large prefetch batches adapt to older endpoints with smaller text limits',
   for (const face of ['NotoSansCJKJP', 'ipamjm']) for (const glyph of glyphs) assert.ok(supplied.get(face).includes(glyph));
 });
 
+test('partial coverage loads supported glyphs together and does not retry missing glyphs', async () => {
+  const calls = [], installed = [];
+  const provider = new FaceSubsetProvider('https://ibis.test/api/font/subset', (_data, face) => installed.push(face), async url => {
+    calls.push([url.searchParams.get('font'), url.searchParams.get('text'), url.searchParams.get('partial')]);
+    return new Response(raw, { headers: { 'X-Font-Id': url.searchParams.get('font'), 'X-Font-Missing': '1', 'X-Font-Boundaries': '1,2,3,4' } });
+  });
+  await provider.preload('A漢B');
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call[2] === '1'));
+  assert.deepEqual(installed, ['NotoSansCJKJP', 'ipamjm']);
+  await provider.preload('A漢B');
+  assert.equal(calls.length, 2);
+});
+
+test('invalid partial coverage is rejected and may be retried', async () => {
+  let valid = false;
+  const provider = new FaceSubsetProvider('https://ibis.test/api/font/subset', () => {}, async url => new Response(raw, {
+    headers: { 'X-Font-Id': url.searchParams.get('font'), 'X-Font-Missing': valid ? '1' : '9999', 'X-Font-Boundaries': '1,2,3,4' },
+  }));
+  await assert.rejects(provider.preload('A漢B'), /Document fonts could not be loaded/);
+  valid = true;
+  await provider.preload('A漢B');
+});
+
+test('different server segmentation retries the strict protocol', async () => {
+  const modes = [];
+  const provider = new FaceSubsetProvider('https://ibis.test/api/font/subset', () => {}, async url => {
+    const partial = url.searchParams.get('partial'); modes.push(partial);
+    const headers = { 'X-Font-Id': url.searchParams.get('font') };
+    if (partial) Object.assign(headers, { 'X-Font-Missing': '1', 'X-Font-Boundaries': '2,3' });
+    return new Response(raw, { headers });
+  });
+  await provider.preload('A漢');
+  assert.deepEqual(modes, ['1', null, '1', null]);
+});
+
+test('partial administrative font coverage falls back only for missing characters', async () => {
+  const a = '\u{100001}', b = '\u{100002}', calls = [];
+  const provider = new FaceSubsetProvider('https://ibis.test/api/font/subset', () => {}, async url => {
+    const face = url.searchParams.get('font'), text = url.searchParams.get('text');
+    calls.push([face, text]);
+    const headers = { 'X-Font-Id': face };
+    if (face === 'acgjm') Object.assign(headers, { 'X-Font-Missing': '1', 'X-Font-Boundaries': '2,4' });
+    return new Response(raw, { headers });
+  });
+  await provider.preload(a + b);
+  assert.deepEqual(calls, [['acgjm', a + b], ['NotoSansCJKJP', b + 'm'], ['ipamjm', b + 'm']]);
+});
+
 test('legacy fallback provider also awaits whole-file loading and skips supplied glyphs', async () => {
   const calls = [];
   const provider = new DynamicFonts({ endpoint: 'https://ibis.test/api/font/subset', font: 'test' }, () => {}, async url => {

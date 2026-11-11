@@ -1,5 +1,6 @@
 /pkg/*.chunk
   Cache-Control: public, max-age=31536000, immutable
+  Content-Type: application/wasm
 
 /assets/fonts/*.fontchunk
   Cache-Control: public, max-age=31536000, immutable

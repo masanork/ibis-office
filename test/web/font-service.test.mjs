@@ -111,6 +111,21 @@ test('whole-file batches accept 1024 code points and reject overflow', async () 
   assert.ok(request('\u{100001}'.repeat(1024)).url.length < 16 * 1024);
 });
 
+test('partial subsets report missing grapheme clusters without losing IVS mappings', async () => {
+  const s = setup();
+  const response = await s.serve(request('A\u{E0100}漢Bm', '&partial=1'), s.context);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-font-missing'), '1');
+  assert.equal(response.headers.get('x-font-boundaries'), '3,4,5,6');
+  const result = new Uint8Array(await response.arrayBuffer());
+  assert.ok(tables(result).get('cmap').includes(Buffer.from([0x0e, 0x01, 0x00])));
+  const none = await s.serve(request('漢字', '&partial=1'), s.context);
+  assert.equal(none.status, 204);
+  assert.equal(none.headers.get('x-font-missing'), '0,1');
+  assert.equal(none.headers.get('x-font-boundaries'), '1,2');
+  assert.equal((await s.serve(request('A\u{E0100}漢Bm'), s.context)).status, 204, 'legacy API remains strict');
+});
+
 test('truncated, oversized and failed streams release the engine and allow a later request', async () => {
   const s = setup();
   s.stream(bytes.slice(0, 100));

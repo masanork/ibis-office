@@ -184,7 +184,7 @@ export class FaceSubsetProvider {
     } finally { this.batchSize = 127; }
   }
 
-  private async fetchGroup(face: string, glyphs: string[]): Promise<void> {
+  private async fetchGroup(face: string, glyphs: string[], allowPartial = true): Promise<void> {
     glyphs = glyphs.filter(glyph => !this.faceResolved.has(`${face}\0${glyph}`));
     if (!glyphs.length) return;
     const url = new URL(this.endpoint);
@@ -192,6 +192,12 @@ export class FaceSubsetProvider {
     url.searchParams.set('format', 'otf');
     // The administrative font intentionally contains no Latin characters.
     url.searchParams.set('text', glyphs.join('') + (face === 'acgjm' ? '' : 'm'));
+    // The partial protocol indexes grapheme clusters. Only opt in when the
+    // joined text preserves the exact requested cluster boundaries.
+    const segments = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(url.searchParams.get('text')!)].map(item => item.segment);
+    const expected = face === 'acgjm' ? glyphs : [...glyphs, 'm'];
+    const partial = allowPartial && segments.length === expected.length && segments.every((segment, index) => segment === expected[index]);
+    if (partial) url.searchParams.set('partial', '1');
     const response = await this.fetcher(url, { signal: AbortSignal.timeout(30_000) });
     if (response.status === 429) {
       const seconds = Number(response.headers.get('Retry-After')) || 5;
@@ -206,6 +212,27 @@ export class FaceSubsetProvider {
     if (!response.ok && response.status !== 204) throw new Error(`Dynamic font: HTTP ${response.status}`);
     const actual = response.headers.get('X-Font-Id');
     if (response.status !== 204 && !actual) throw new Error('Dynamic font: missing source font header');
+    const missingHeader = partial && actual === face ? response.headers.get('X-Font-Missing') : null;
+    let offset = 0;
+    const boundaries = expected.map(segment => offset += segment.length).join(',');
+    if (missingHeader !== null && response.headers.get('X-Font-Boundaries') !== boundaries) {
+      // Different Unicode segmentation versions must not silently assign a
+      // missing result to the wrong grapheme. Retry the strict protocol.
+      return this.fetchGroup(face, glyphs, false);
+    }
+    if (missingHeader !== null && response.headers.get('X-Font-Boundaries') === boundaries) {
+      const missing = missingHeader === '' ? [] : missingHeader.split(',').map(Number);
+      if (missing.some(index => !Number.isSafeInteger(index) || index < 0 || index >= expected.length) || new Set(missing).size !== missing.length) throw new Error('Invalid font coverage');
+      // A subset without the Latin loader glyph cannot be installed by GPUI.
+      if (face !== 'acgjm' && missing.includes(glyphs.length)) throw new Error('Font lacks loader glyph');
+      const absent = new Set(missing);
+      if (response.status !== 204) {
+        this.install(namespaceSubset(new Uint8Array(await response.arrayBuffer()), ++this.sequence), face);
+        if (face === 'acgjm') glyphs.forEach((glyph, index) => { if (!absent.has(index)) this.adminCovered.add(glyph); });
+      } else if (missing.length !== expected.length) throw new Error('Invalid empty font coverage');
+      for (const glyph of glyphs) this.faceResolved.add(`${face}\0${glyph}`);
+      return;
+    }
     if ((response.status === 204 || actual !== face) && glyphs.length > 1) {
       const mid = Math.floor(glyphs.length / 2);
       await this.fetchGroup(face, glyphs.slice(0, mid));

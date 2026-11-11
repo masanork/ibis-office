@@ -29,7 +29,7 @@ export interface FontRequestContext {
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Expose-Headers': 'X-Font-Id, X-Font-License, X-Original-Font, ETag, X-Cache',
+  'Access-Control-Expose-Headers': 'X-Font-Id, X-Font-License, X-Original-Font, X-Font-Missing, X-Font-Boundaries, ETag, X-Cache',
 };
 const error = (message: string, status: number, extra = {}) => Response.json(
   { error: message }, { status, headers: { ...cors, 'Cache-Control': 'no-store', ...extra } });
@@ -62,6 +62,7 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
     if (!text || text.length > 2048 || [...text].length > 1024) return error('text must contain 1 to 1024 code points', 400);
     const format = url.searchParams.get('format') ?? 'otf';
     if (!['otf', 'woff2'].includes(format)) return error('Unsupported font format', 400);
+    const partial = url.searchParams.get('partial') === '1';
     if (!await context.allowed()) return error('Too many font requests', 429, { 'Retry-After': '1' });
 
     let lease: Lease | undefined;
@@ -69,7 +70,7 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
       const info = await context.store.head(font.key);
       if (!info) return error('Source font is unavailable', 503);
       if (!Number.isSafeInteger(info.size) || info.size < 12 || info.size > 50 * 1024 * 1024) return error('Source font size is unsupported', 503);
-      const key = new Request(url.origin + '/__font-cache/' + await hash(JSON.stringify([version, font.id, info.etag, format, text])));
+      const key = new Request(url.origin + '/__font-cache/' + await hash(JSON.stringify([version, font.id, info.etag, format, text, partial])));
       const cached = await context.cache.match(key);
       if (cached) {
         const response = new Response(cached.body, cached);
@@ -106,10 +107,27 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
       if (count !== info.size) throw new Error('Incomplete source font stream');
       assertActive();
       const engine = lease.engine!;
-      if (!engine.has_glyphs(text)) return new Response(null, { status: 204, headers: {
-        ...cors, 'X-Font-Id': font.id, 'Cache-Control': 'no-store',
-      } });
-      const output = new Uint8Array(engine.subset(text, format === 'woff2'));
+      let subsetText = text;
+      let missing: string | undefined;
+      let boundaries: string | undefined;
+      if (!engine.has_glyphs(text)) {
+        if (!partial) return new Response(null, { status: 204, headers: {
+          ...cors, 'X-Font-Id': font.id, 'Cache-Control': 'no-store',
+        } });
+        const segments = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(text)].map(item => item.segment);
+        let offset = 0;
+        boundaries = segments.map(segment => offset += segment.length).join(',');
+        const absent: number[] = [];
+        subsetText = segments.filter((segment, index) => {
+          if (engine.has_glyphs(segment)) return true;
+          absent.push(index); return false;
+        }).join('');
+        missing = absent.join(',');
+        if (!subsetText) return new Response(null, { status: 204, headers: {
+          ...cors, 'X-Font-Id': font.id, 'X-Font-Missing': missing, 'X-Font-Boundaries': boundaries, 'Cache-Control': 'no-store',
+        } });
+      }
+      const output = new Uint8Array(engine.subset(subsetText, format === 'woff2'));
       if (!output.length) throw new Error('Font subsetting produced no output');
       const response = new Response(output, { headers: {
         ...cors,
@@ -117,6 +135,8 @@ export function createFontService(fonts: readonly FontSpec[], version: string,
         'Cache-Control': 'public, max-age=3600',
         ETag: '"' + await hash(output) + '"',
         'X-Font-Id': font.id,
+        ...(missing === undefined ? {} : { 'X-Font-Missing': missing }),
+        ...(boundaries === undefined ? {} : { 'X-Font-Boundaries': boundaries }),
         'X-Font-License': font.license,
         'X-Original-Font': font.originalUrl,
         'X-Cache': 'MISS',
