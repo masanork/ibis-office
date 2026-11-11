@@ -10,10 +10,10 @@
 //! ```
 //!
 //! `installed` and `unpacked` are the `.app` folders on macOS and the folders
-//! holding `ibisOffice.exe` on Windows. The steps, each logged as it starts
+//! holding `ibisOffice.exe` on Windows, and AppImage files on Linux. The steps, each logged as it starts
 //! and as it succeeds or fails:
 //!
-//! 1. `wait-exit`: wait for ibisOffice to quit (30 s; then end it).
+//! 1. `wait-exit`: wait for ibisOffice to quit (Linux aborts on timeout).
 //! 2. `install`: replace the installed copy (`swap`: the new one copied
 //!    next to it and checked, the old one moved aside, the copy moved into
 //!    place). The old copy is kept aside.
@@ -29,7 +29,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use ibis_office_updater::log::Log;
-use ibis_office_updater::process::{self, Exit};
+#[cfg(not(target_os = "linux"))]
+use ibis_office_updater::process::Exit;
+use ibis_office_updater::process;
 
 struct Args {
     pid: u32,
@@ -50,13 +52,19 @@ fn parse() -> Result<Args, String> {
     }
     let get = |key: &str| map.get(key).cloned().ok_or(format!("{key} is missing"));
     Ok(Args {
-        pid: get("--pid")?.parse().map_err(|_| "--pid is not a number".to_string())?,
+        pid: get("--pid")?
+            .parse()
+            .map_err(|_| "--pid is not a number".to_string())?,
         old: PathBuf::from(get("--old")?),
         new: PathBuf::from(get("--new")?),
         version: get("--version")?,
         log: PathBuf::from(get("--log")?),
         workdir: map.get("--workdir").map(PathBuf::from),
-        wait: Duration::from_secs(map.get("--wait-secs").and_then(|s| s.parse().ok()).unwrap_or(30)),
+        wait: Duration::from_secs(
+            map.get("--wait-secs")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+        ),
     })
 }
 
@@ -73,14 +81,33 @@ fn main() {
 }
 
 fn run(args: &Args, log: &Log) -> i32 {
-    log.start("update", &format!("ibisOfficeUpdater {}, {} -> {}", env!("CARGO_PKG_VERSION"), args.new.display(), args.old.display()));
+    log.start(
+        "update",
+        &format!(
+            "ibisOfficeUpdater {}, {} -> {}",
+            env!("CARGO_PKG_VERSION"),
+            args.new.display(),
+            args.old.display()
+        ),
+    );
 
     log.start("wait-exit", &format!("pid {}", args.pid));
+    #[cfg(target_os = "linux")]
+    if let Err(err) = process::wait_for_linux_exit(args.pid, args.wait) {
+        log.fail("wait-exit", &err);
+        return 1;
+    } else {
+        log.ok("wait-exit", "ibisOffice quit");
+    }
+    #[cfg(not(target_os = "linux"))]
     match process::wait_for_exit(args.pid, args.wait) {
         Exit::Quit => log.ok("wait-exit", "ibisOffice quit"),
         Exit::Ended => log.ok("wait-exit", "ibisOffice did not quit in time and was ended"),
         Exit::Running => {
-            log.fail("wait-exit", "ibisOffice is still running; nothing was changed");
+            log.fail(
+                "wait-exit",
+                "ibisOffice is still running; nothing was changed",
+            );
             return 1;
         }
     }
@@ -91,13 +118,19 @@ fn run(args: &Args, log: &Log) -> i32 {
         relaunch_old(args, log);
         return 1;
     }
-    log.ok("install", "the new copy is in place; the old one is kept aside");
+    log.ok(
+        "install",
+        "the new copy is in place; the old one is kept aside",
+    );
 
     log.start("launch", &args.old.display().to_string());
     match platform::launch(&args.old) {
         Ok(mut started) => {
             log.ok("launch", "started");
-            log.start("check-running", "ibisOffice must keep running for a few seconds");
+            log.start(
+                "check-running",
+                "ibisOffice must keep running for a few seconds",
+            );
             if let Err(err) = platform::check_running(&args.old, &mut started) {
                 log.fail("check-running", &err);
                 rollback_and_relaunch(args, log);
@@ -139,8 +172,19 @@ fn remove_dir(dir: &Path) -> std::io::Result<()> {
             {
                 // This program is in that folder: a program running cannot be deleted, so a command removes the folder a few seconds after this one has ended.
                 use std::os::windows::process::CommandExt as _;
-                let line = format!("ping -n 4 127.0.0.1 >nul & rmdir /S /Q \"{}\"", dir.display());
-                if Command::new("cmd").args(["/C", &line]).creation_flags(0x0800_0008).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok() {
+                let line = format!(
+                    "ping -n 4 127.0.0.1 >nul & rmdir /S /Q \"{}\"",
+                    dir.display()
+                );
+                if Command::new("cmd")
+                    .args(["/C", &line])
+                    .creation_flags(0x0800_0008)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .is_ok()
+                {
                     return Ok(());
                 }
             }
@@ -153,10 +197,12 @@ fn remove_dir(dir: &Path) -> std::io::Result<()> {
 fn rollback_and_relaunch(args: &Args, log: &Log) {
     log.start("rollback", "putting the old copy back");
     match platform::rollback(&args.old, &args.new) {
-        Ok(()) => log.ok("rollback", "the old copy is back"),
+        Ok(()) => {
+            log.ok("rollback", "the old copy is back");
+            relaunch_old(args, log);
+        }
         Err(err) => log.fail("rollback", &err),
     }
-    relaunch_old(args, log);
 }
 
 fn relaunch_old(args: &Args, log: &Log) {
@@ -170,12 +216,24 @@ fn relaunch_old(args: &Args, log: &Log) {
 /// Run a command; its output is the error text when it fails (macOS: `open`, `codesign`).
 #[cfg(target_os = "macos")]
 fn run_command(command: &mut Command) -> Result<(), String> {
-    let out = command.stdin(Stdio::null()).output().map_err(|e| format!("{:?}: {e}", command.get_program()))?;
+    let out = command
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{:?}: {e}", command.get_program()))?;
     if out.status.success() {
         return Ok(());
     }
-    let text = format!("{} {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    Err(format!("{:?} {}: {}", command.get_program(), out.status, text.trim()))
+    let text = format!(
+        "{} {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Err(format!(
+        "{:?} {}: {}",
+        command.get_program(),
+        out.status,
+        text.trim()
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -187,7 +245,11 @@ mod platform {
 
     /// The copy must be a whole, validly signed app before it replaces anything.
     fn check(app: &Path) -> Result<(), String> {
-        run_command(Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(app))
+        run_command(
+            Command::new("/usr/bin/codesign")
+                .args(["--verify", "--deep", "--strict"])
+                .arg(app),
+        )
     }
 
     pub fn install(old: &Path, new: &Path) -> Result<(), String> {
@@ -218,7 +280,11 @@ mod platform {
             std::thread::sleep(Duration::from_millis(200));
         }
         std::thread::sleep(Duration::from_secs(3));
-        if process::is_running(&exe) { Ok(()) } else { Err("ibisOffice quit within 3 seconds of starting".into()) }
+        if process::is_running(&exe) {
+            Ok(())
+        } else {
+            Err("ibisOffice quit within 3 seconds of starting".into())
+        }
     }
 }
 
@@ -245,7 +311,14 @@ mod platform {
     pub fn launch(dir: &Path) -> Result<Started, String> {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         let exe = dir.join("ibisOffice.exe");
-        Command::new(&exe).current_dir(dir).creation_flags(DETACHED_PROCESS).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| format!("{}: {e}", exe.display()))
+        Command::new(&exe)
+            .current_dir(dir)
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("{}: {e}", exe.display()))
     }
 
     /// Still running 3 seconds after it was started.
@@ -253,13 +326,53 @@ mod platform {
         std::thread::sleep(Duration::from_secs(3));
         match child.try_wait() {
             Ok(None) => Ok(()),
-            Ok(Some(status)) => Err(format!("ibisOffice quit within 3 seconds of starting ({status})")),
+            Ok(Some(status)) => Err(format!(
+                "ibisOffice quit within 3 seconds of starting ({status})"
+            )),
             Err(err) => Err(format!("cannot tell whether ibisOffice runs: {err}")),
         }
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+mod platform {
+    use super::*;
+    use ibis_office_updater::appimage_swap;
+    pub type Started = std::process::Child;
+    pub fn install(old: &Path, new: &Path) -> Result<(), String> {
+        appimage_swap::install(old, new)
+    }
+    pub fn rollback(old: &Path, _: &Path) -> Result<(), String> {
+        appimage_swap::rollback(old)
+    }
+    pub fn cleanup(old: &Path, _: &Path) -> Result<(), String> {
+        appimage_swap::cleanup(old)
+    }
+    pub fn launch(app: &Path) -> Result<Started, String> {
+        let mut command = Command::new(app);
+        command
+            .current_dir(std::env::temp_dir())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for name in ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] {
+            command.env_remove(name);
+        }
+        command
+            .spawn()
+            .map_err(|e| format!("{}: {e}", app.display()))
+    }
+    pub fn check_running(_: &Path, child: &mut Started) -> Result<(), String> {
+        std::thread::sleep(Duration::from_secs(3));
+        match child.try_wait() {
+            Ok(None) => Ok(()),
+            Ok(Some(status)) => Err(format!("ibisOffice quit within 3 seconds ({status})")),
+            Err(e) => Err(format!("cannot inspect started process: {e}")),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod platform {
     use super::*;
 
