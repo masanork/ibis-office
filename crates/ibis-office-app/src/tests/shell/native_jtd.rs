@@ -4,7 +4,72 @@ use super::Scenario;
 use crate::docx::scenarios::DocSteps;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_omissions", omissions), ("shell::native_jtd_template", template), ("shell::native_jtd_compressed_template", compressed_template)]
+    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_omissions", omissions), ("shell::native_jtd_template", template), ("shell::native_jtd_compressed_template", compressed_template), ("shell::native_jtd_unplaced_images", unplaced_images)]
+}
+
+fn unplaced_images() {
+    use ibis_ooxml::cfb::{self, Item};
+    assert_eq!(crate::jtd_preview::inspection_size(u32::MAX, 1), ibis_doc_model::EmuSize::new(5 * 914_400, 1));
+    // A one-unit, whitespace-only TextV.01 in an SsmgV.01 store.
+    let mut text = b"TextV.01".to_vec();
+    text.extend_from_slice(&1u32.to_be_bytes());
+    text.extend_from_slice(&10u16.to_be_bytes());
+    text.push(0);
+    text.extend_from_slice(&1u32.to_be_bytes());
+    let len = text.len() as u32;
+    text.resize(256, 0);
+    let mut body = b"SsmgV.01".to_vec();
+    for value in [1u32, 256, 1] { body.extend_from_slice(&value.to_be_bytes()); }
+    body.extend(text);
+    for value in [0u32, 0, len, 1, 1, 0, 0] { body.extend_from_slice(&value.to_be_bytes()); }
+    let wmf = &include_bytes!("../../../../ibis-emf/tests/fixtures/shapes.wmf")[22..];
+    let mut press = vec![0u8; 48];
+    press[..8].copy_from_slice(b"METAFILE");
+    press.extend_from_slice(wmf);
+    let bytes = cfb::write(&[
+        Item::stream("DocumentText", body),
+        Item::storage("EmbedItems"), Item::storage("EmbedItems/Embedding 7"),
+        Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", press),
+    ]);
+    let mut s = Scenario::start_view();
+    let path = s.screenshot_path("jtd-unplaced-source").with_extension("jtd");
+    std::fs::write(&path, &bytes).unwrap();
+    let loaded = crate::read_file(&path).unwrap();
+    assert!(loaded.jtd_gallery);
+    assert_eq!(loaded.presentation.media.len(), 1);
+    s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
+    for _ in 0..100 {
+        s.wait(50);
+        if s.with(|e, _| e.is_jtd_read_only()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    s.with(|e, _| {
+        assert!(e.is_jtd_read_only() && e.jtd_gallery);
+        assert!(e.status.as_deref().unwrap().contains(&*crate::shell::i18n::text("jtd.gallery-notice")));
+        assert!(e.current_bytes().is_err());
+        assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
+    });
+    s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && e.jtd_gallery));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    s.screenshot("jtd-unplaced-images");
+    // Optional, locally owned sample; never part of a distributable fixture.
+    if let Some(sample) = std::env::var_os("IBIS_JTD_GALLERY_SAMPLE").map(std::path::PathBuf::from) {
+        let loaded = crate::read_file(&sample).unwrap();
+        assert!(loaded.jtd_gallery && !loaded.presentation.media.is_empty());
+        if let Ok(expected) = std::env::var("IBIS_JTD_GALLERY_EXPECT") {
+            assert_eq!(loaded.presentation.media.len(), expected.parse::<usize>().unwrap());
+        }
+        s.update(|e, w, cx| e.open_path(sample.clone(), None, w, cx));
+        for _ in 0..100 {
+            s.wait(50);
+            if s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd_gallery) { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd_gallery));
+        s.wait(1000);
+        s.screenshot("jtd-local-unplaced-images");
+    }
 }
 
 fn compressed_template() {

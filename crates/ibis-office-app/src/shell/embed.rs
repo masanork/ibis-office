@@ -106,7 +106,7 @@ impl SlideEditor {
 
     /// Download only the content currently recognized from the read-only JTD.
     pub(crate) fn export_jtd_docx(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_jtd_read_only() { return; }
+        if !self.is_jtd_read_only() || self.jtd_gallery { return; }
         match ibis_pptx::jtd::export_docx(self.presentation()) {
             Ok(bytes) => {
                 let name = self.file_name.as_deref().unwrap_or("document.jtd");
