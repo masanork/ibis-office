@@ -52,6 +52,22 @@ OS code signing or notarization, availability on GitHub, or successful updates
 on installed apps. The staging key is caller-supplied; it is not a production
 trust anchor. Distinct targets must have distinct package filenames.
 
+## Recovery boundary
+
+For the macOS and Windows folder-swap implementation, an existing
+`.update-backup` or `.update-new` beside the install now causes a retry to
+stop without deleting either path. An interruption after the old folder has
+been moved aside can leave the original location absent. Preserve both paths;
+inspect and recover the old copy manually rather than starting another update
+or deleting them. This is a fail-closed preservation measure, not automated
+crash recovery. Linux AppImage replacement follows a different path and is not
+covered by the folder rollback implementation.
+
+The local fixture journey exercises the shared signature/hash verification
+and folder swap/rollback functions using synthetic bytes. It does not test the
+app's HTTP download path, platform signature verification, GUI, real updater
+process, application launch or machine-interruption recovery.
+
 ## Gates before activation
 
 - Establish and protect a production signing key, review the public key, embed
