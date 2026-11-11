@@ -320,6 +320,8 @@ pub struct SlideEditor {
     /// Focus of the slide list.
     pub(crate) list_focus: FocusHandle,
     pub(crate) list_scroll: ScrollHandle,
+    /// Horizontal menu access on narrow windows.
+    pub(crate) menu_bar_scroll: ScrollHandle,
     /// Trackpad scrolling not yet turned into a page, in pixels.
     wheel: f32,
     /// The menu of the menu bar that is open (shell/menu_bar.rs).
@@ -723,6 +725,7 @@ impl SlideEditor {
             focus_handle: cx.focus_handle(),
             list_focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
+            menu_bar_scroll: ScrollHandle::new(),
             wheel: 0.0,
             open_menu: None,
             menu_dismissed_at: None,
@@ -1004,6 +1007,12 @@ impl SlideEditor {
             self.protection_password = None;
         }
         self.zoom = with_format!(self, initial_zoom(self));
+        // A narrow browser starts a document at page width so its contents
+        // are visible without requiring a horizontal pan immediately.
+        #[cfg(target_family = "wasm")]
+        if self.is_document() && window.viewport_size().width < px(600.) {
+            self.zoom = None;
+        }
         self.workspace_scroll.set_offset(Point::default());
         self.sidebar_scroll.set_offset(Point::default());
         self.doc_split = None;
@@ -4477,7 +4486,7 @@ impl SlideEditor {
                     .child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::shell::input::input_region(cx)))
                     .children(sidebar),
             )
-            .when(!focus, |d| d.child(self.render_status_bar(cx)))
+            .when(!focus, |d| d.child(self.render_status_bar(window, cx)))
     }
 
     /// Apply a font size (in points) chosen or typed in the toolbar font size pulldown (#120).

@@ -67,7 +67,37 @@ try {
   const events = await page.evaluate(() => window.__ibisTouchEvents);
   assert(events.includes('pointerdown') && events.includes('pointermove') && events.includes('pointerup'), 'browser must dispatch touch pointer events');
   assert.deepEqual(failures, [], 'touch interactions must not panic');
-  console.log('PASS: browser touch tap, pinch in/out, and single-finger scroll');
+
+  await page.close();
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  phone.on('pageerror', error => failures.push(error.message));
+  phone.on('console', message => {
+    if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
+  });
+  await phone.goto(url);
+  await phone.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
+  await phone.waitForTimeout(3000);
+  const pixel = x => phone.screenshot({ clip: { x, y: 180, width: 1, height: 1 } });
+  assert((await pixel(25)).equals(await pixel(385)), 'phone document should fit between the page margins');
+  const phoneCdp = await phone.context().newCDPSession(phone);
+  const phoneTouch = (type, touchPoints) => phoneCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+  const phoneZoom = () => phone.screenshot({ clip: { x: 303, y: 808, width: 58, height: 36 } });
+  const beforeTap = await phoneZoom();
+  await phoneTouch('touchStart', [pt(7, 277, 826)]);
+  await phoneTouch('touchEnd', []);
+  await phone.waitForTimeout(1000);
+  assert(!beforeTap.equals(await phoneZoom()), 'phone zoom-in button must be visible and tappable');
+  const menuStrip = () => phone.screenshot({ clip: { x: 0, y: 34, width: 390, height: 30 } });
+  const beforeMenu = await menuStrip();
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
+  await phoneTouch('touchStart', [pt(8, 350, 49)]);
+  await phoneTouch('touchMove', [pt(8, 80, 49)]);
+  await phoneTouch('touchEnd', []);
+  await phone.waitForTimeout(1000);
+  assert(!beforeMenu.equals(await menuStrip()), 'phone menu bar must scroll horizontally');
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
+  assert.deepEqual(failures, [], 'phone interactions must not panic');
+  console.log('PASS: tablet touch and phone fitting, zoom button, and menu scrolling');
 } finally {
   await browser.close();
 }
