@@ -774,6 +774,8 @@ pub(crate) struct Loaded {
     /// The password a protected file was opened with: saving protects it again.
     pub(crate) password: Option<String>,
     pub(crate) csv_stream: Option<std::sync::mpsc::Receiver<ibis_pptx::CsvProgressiveChunk>>,
+    /// JTD is a lossy import and must remain read-only, irrespective of its filename.
+    pub(crate) jtd_original: Option<Vec<u8>>,
 }
 
 /// What `read_file` says when the file is protected and needs its password.
@@ -813,6 +815,13 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("jtd")) || ibis_pptx::jtd::is_jtd(&data) {
+        let presentation = ibis_pptx::jtd::read(&data).map_err(|e| e.to_string())?;
+        let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
+        let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
+        render::preload::Preload::start_for_next(&presentation);
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, csv_stream: None, jtd_original: Some(data) });
+    }
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     timing::mark("read");
     let mut used = None;
@@ -838,7 +847,7 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
     let total_file_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     eprintln!("ibisOffice timing: read_file total: {total_file_ms:.1} ms (fs::read: {read_fs_ms:.1} ms, open: {open_ms:.1} ms)");
     render::preload::Preload::start_for_next(&opened.presentation);
-    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream })
+    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, jtd_original: None })
 }
 
 /// The file at `path`, read and parsed, with its name.

@@ -85,6 +85,10 @@ impl SlideEditor {
             this.update_in(cx, |this, window, cx| match result {
                 _ if this.closed != closed => {}
                 Ok(loaded) => {
+                    if loaded.jtd_original.is_some() {
+                        this.fail_loading(crate::shell::i18n::text("jtd.read-only").to_string(), cx);
+                        return;
+                    }
                     let name: SharedString = new_file_name(ibis_pptx::Kind::of(&loaded.presentation));
                     this.load(loaded.presentation, name, window, cx);
                     this.set_loaded_source(loaded.source);
@@ -118,6 +122,9 @@ impl SlideEditor {
     /// The open file as it would be saved now.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn current_bytes(&self) -> Result<Vec<u8>, String> {
+        if self.is_jtd_read_only() {
+            return ibis_pptx::jtd::export_docx(self.presentation()).map_err(|e| e.to_string());
+        }
         let source = self.source.clone().ok_or(crate::shell::i18n::text("_shell.this-file-cannot-be-saved-yet").to_string())?;
         source.save(self.presentation(), ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())
     }
@@ -125,6 +132,7 @@ impl SlideEditor {
     /// Write the file as it is now to `path`, leaving the file's own path.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn copy_to(&self, path: &std::path::Path) -> Result<(), String> {
+        if self.is_jtd_read_only() { return Err(crate::shell::i18n::text("jtd.read-only").to_string()); }
         let source = self.source.clone().ok_or(crate::shell::i18n::text("_shell.this-file-cannot-be-saved-yet").to_string())?;
         let csv = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"));
         let ods = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ods"));
@@ -162,6 +170,29 @@ impl SlideEditor {
             _ => bytes,
         };
         crate::shell::save::write_replacing(path, &bytes).map_err(|e| crate::shell::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)]))
+    }
+
+    /// Export the recognized JTD content as a separate, editable DOCX.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn export_jtd_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_jtd_read_only() { return; }
+        let (stem, _) = self.name_parts();
+        self.ask_path(format!("{stem}.docx"), window, cx, |this, path, _, cx| {
+            let result = this.export_jtd_docx_to(&path)
+                .map(|()| crate::shell::i18n::text("jtd.docx-exported").to_string())
+                .map_err(|error| crate::shell::i18n::format("file.save-failed", &[("error", &error)]));
+            this.report(result, cx);
+        });
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn export_jtd_docx_to(&self, path: &std::path::Path) -> Result<(), String> {
+        if !self.is_jtd_read_only() || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("docx"))
+            || self.path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, path)) {
+            return Err(crate::shell::i18n::text("jtd.read-only").to_string());
+        }
+        let bytes = ibis_pptx::jtd::export_docx(self.presentation()).map_err(|e| e.to_string())?;
+        crate::shell::save::write_replacing(path, &bytes).map_err(|e| e.to_string())
     }
 
     /// ファイル > パスワードで保護…: the window that sets the password (or takes it off).
@@ -235,6 +266,10 @@ impl SlideEditor {
     /// ファイル > コピーを作成…: save the file as it is now to another
     /// path; the window keeps the file's own path.
     pub(crate) fn save_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_jtd_read_only() {
+            self.set_status(crate::shell::i18n::text("jtd.read-only").to_string(), cx);
+            return;
+        }
         self.commit_edit(window, cx);
         #[cfg(not(target_family = "wasm"))]
         {
@@ -259,6 +294,9 @@ impl SlideEditor {
     /// (the slides, handouts, colour, frame).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_pdf_with(&self, pdf: std::path::PathBuf, printing: bool) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        if self.is_jtd_read_only() && self.path.as_deref().is_some_and(|p| crate::shell::save::same_file(p, &pdf)) {
+            return Err(crate::shell::i18n::text("jtd.read-only").to_string());
+        }
         let (bytes, slides, docx_print_args) = if self.presentation().flow.is_some() {
             let b = self.current_bytes()?;
             if printing {
@@ -301,7 +339,8 @@ impl SlideEditor {
             let b = self.current_bytes()?;
             (b, None, None)
         };
-        let (stem, ext) = self.name_parts();
+        let (stem, mut ext) = self.name_parts();
+        if self.is_jtd_read_only() { ext = "docx".into(); }
         let print_bg = self.is_print_backgrounds();
         let print_hidden = self.is_print_hidden_text();
         let print_markup = self.is_print_markup();
@@ -386,8 +425,13 @@ impl SlideEditor {
     /// and drawn by this program's `--export png` (on another thread).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_png(&self, png: std::path::PathBuf, slide: Option<usize>) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        if self.is_jtd_read_only() && self.path.as_deref().is_some_and(|p| crate::shell::save::same_file(p, &png)) {
+            return Err(crate::shell::i18n::text("jtd.read-only").to_string());
+        }
         let bytes = self.current_bytes()?;
-        let (stem, ext) = self.name_parts();
+        let jtd_original_path = self.is_jtd_read_only().then(|| self.path.clone()).flatten();
+        let (stem, mut ext) = self.name_parts();
+        if self.is_jtd_read_only() { ext = "docx".into(); }
         let print_bg = self.is_print_backgrounds();
         let print_hidden = self.is_print_hidden_text();
         let print_markup = self.is_print_markup();
@@ -435,6 +479,9 @@ impl SlideEditor {
                 let target_stem = png.file_stem().and_then(|s| s.to_str()).unwrap_or(&stem);
                 for (idx, p) in made.iter().enumerate() {
                     let dest = parent.join(format!("{target_stem}-{:02}.png", idx + 1));
+                    if jtd_original_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &dest)) {
+                        return Err(crate::shell::i18n::text("jtd.read-only").to_string());
+                    }
                     let data = std::fs::read(p).map_err(|e| e.to_string())?;
                     crate::shell::save::write_replacing(&dest, &data).map_err(|e| crate::shell::i18n::format("file.cannot-write", &[("path", &dest.display()), ("error", &e)]))?;
                 }

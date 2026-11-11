@@ -88,6 +88,12 @@ cat > "$APP/Contents/Info.plist" <<EOF
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
+			<key>CFBundleTypeName</key><string>Ichitaro document</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>CFBundleTypeExtensions</key><array><string>jtd</string></array>
+		</dict>
+		<dict>
 			<key>CFBundleTypeName</key>
 			<string>Office document</string>
 			<key>CFBundleTypeRole</key>

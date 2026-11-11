@@ -900,7 +900,6 @@ impl SlideEditor {
         self.jtd_original.is_some()
     }
 
-    #[cfg(target_family = "wasm")]
     pub(crate) fn load_jtd(&mut self, presentation: Presentation, name: SharedString, bytes: Vec<u8>, window: &mut Window, cx: &mut Context<Self>) {
         self.load(presentation, name, window, cx);
         self.jtd_original = Some(bytes.into());
@@ -1174,7 +1173,11 @@ impl SlideEditor {
                 _ if this.closed != closed => {}
                 Ok(loaded) => {
                     let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
-                    if is_tmpl {
+                    if let Some(bytes) = loaded.jtd_original {
+                        this.load_jtd(loaded.presentation, name, bytes, window, cx);
+                        this.set_file_path(Some(path.clone()));
+                        this.watch.known = stamp_before_read;
+                    } else if is_tmpl {
                         let tmpl_name = crate::shell::file_actions::new_file_name(ibis_pptx::Kind::of(&loaded.presentation));
                         this.load(loaded.presentation, tmpl_name, window, cx);
                         this.set_loaded_source(loaded.source);

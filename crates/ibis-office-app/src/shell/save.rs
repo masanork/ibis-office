@@ -19,6 +19,10 @@ impl SlideEditor {
     /// ⌘S: save to the file it was opened from (or ask where, for a file
     /// that has no path yet).
     pub(crate) fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_jtd_read_only() {
+            self.set_status(crate::shell::i18n::text("jtd.read-only").to_string(), cx);
+            return;
+        }
         self.commit_edit(window, cx);
         #[cfg(not(target_family = "wasm"))]
         // A file opened read-only for its password to modify is not written over: 名前を付けて保存 (as Office does).
@@ -44,6 +48,10 @@ impl SlideEditor {
 
     /// ⌘⇧S, and then, once the file is written, `then`. A cancelled or failed save does not go on to `then`.
     pub(crate) fn save_as_then(&mut self, window: &mut Window, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) {
+        if self.is_jtd_read_only() {
+            self.set_status(crate::shell::i18n::text("jtd.read-only").to_string(), cx);
+            return;
+        }
         self.commit_edit(window, cx);
         if self.source.is_none() {
             self.status = Some(crate::shell::i18n::text("_shell.saving-new-documents-is-not-yet-supported").into());
@@ -99,6 +107,10 @@ impl SlideEditor {
     /// save confirmation's 保存: close afterwards). A cancelled or failed save does not go on to `then`. What is being
     /// typed in a cell is put in first, so it is saved too.
     pub(crate) fn save_then(&mut self, window: &mut Window, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) {
+        if self.is_jtd_read_only() {
+            self.set_status(crate::shell::i18n::text("jtd.read-only").to_string(), cx);
+            return;
+        }
         self.commit_cell_edit(cx);
         self.commit_edit(window, cx);
         #[cfg(not(target_family = "wasm"))]
@@ -178,6 +190,7 @@ impl SlideEditor {
     /// Save to `path`, and make it the file's path.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
+        if self.is_jtd_read_only() { return Err(crate::shell::i18n::text("jtd.read-only").to_string()); }
         // The master view is closed first: what is saved is the file, with what was made in it.
         if self.is_master_view() || self.is_page_view() {
             return Err(crate::shell::i18n::text("_shell.close-slide-master-view-and-notes-formatting-bef").to_string());
@@ -297,6 +310,6 @@ pub(crate) fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> std::io::
 
 /// Whether `a` and `b` are one file (the same path, or one that links to the other).
 #[cfg(not(target_family = "wasm"))]
-fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+pub(crate) fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
     a == b || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }

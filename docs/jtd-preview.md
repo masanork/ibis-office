@@ -22,7 +22,7 @@ paragraph headers are parsed as TLV lists. Independent text and display-row
 qualification covers 22 local documents. This does not establish visual
 fidelity. See [implementation and remaining gaps](jtd-structured-import.md).
 
-The browser can open `.jtd` files locally as a read-only text preview. Recognized view-style direction flags enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
+The browser and desktop app can open `.jtd` files locally as a read-only preview. The original is never saved as JTD; recognized content can be exported separately as DOCX. Recognized view-style direction flags enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
 It reads the observed `DocumentText` stream into ibisOffice's document model;
 most formatting, exact layout, pictures and some text controls are not reproduced.
 Unsupported or encrypted variants may not open. `.jtt` and `.jttc` are not supported.

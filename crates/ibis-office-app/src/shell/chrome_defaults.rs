@@ -182,7 +182,6 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 item("file.export.gif", "animation").on(|this, window, cx| this.export_gif(window, cx)).into(),
                 item("file.export.svg", "draw").into(),
             ];
-            #[cfg(target_arch = "wasm32")]
             if editor.is_jtd_read_only() {
                 entries.push(item("jtd.export-docx", "description").on(|this, window, cx| this.export_jtd_docx(window, cx)).into());
             }
