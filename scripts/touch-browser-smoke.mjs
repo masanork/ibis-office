@@ -75,6 +75,11 @@ try {
   if (process.env.IBIS_TOUCH_CPU_THROTTLE) await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.IBIS_TOUCH_CPU_THROTTLE) });
   const pt = (id, x, y) => ({ id, x, y, radiusX: 4, radiusY: 4, force: 1 });
   const touch = (type, touchPoints) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+  // Queue both commands together. Awaiting the start acknowledgement first
+  // can turn a tap into a long press on a slow software renderer.
+  const tap = async (send, id, x, y) => {
+    await Promise.all([send('touchStart', [pt(id, x, y)]), send('touchEnd', [])]);
+  };
   const zoomLabel = () => page.screenshot({ clip: { x: 937, y: 742, width: 50, height: 26 } });
   const workspace = () => page.screenshot({ clip: { x: 40, y: 150, width: 800, height: 500 } });
   const settle = () => page.waitForTimeout(1000);
@@ -108,8 +113,7 @@ try {
   await touch('touchEnd', []);
   await waitForZoom(initialZoom, true, 'inverse pinch must restore the displayed zoom');
 
-  await touch('touchStart', [pt(5, 916, 755)]);
-  await touch('touchEnd', []);
+  await tap(touch, 5, 916, 755);
   await waitForZoom(initialZoom, false, 'one-finger tap must activate the zoom button');
 
   const beforeScroll = await workspace();
@@ -138,8 +142,7 @@ try {
   const phoneTouch = (type, touchPoints) => phoneCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
   const phoneZoom = () => phone.screenshot({ clip: { x: 303, y: 808, width: 58, height: 36 } });
   const beforeTap = await phoneZoom();
-  await phoneTouch('touchStart', [pt(7, 277, 826)]);
-  await phoneTouch('touchEnd', []);
+  await tap(phoneTouch, 7, 277, 826);
   await phone.waitForTimeout(1000);
   assert(!beforeTap.equals(await phoneZoom()), 'phone zoom-in button must be visible and tappable');
   const documentView = () => phone.screenshot({ clip: { x: 50, y: 170, width: 290, height: 520 } });
@@ -154,8 +157,7 @@ try {
     await phone.waitForTimeout(500);
   };
   for (let i = 0; i < 5; i++) {
-    await phoneTouch('touchStart', [pt(30 + i, 277, 826)]);
-    await phoneTouch('touchEnd', []);
+    await tap(phoneTouch, 30 + i, 277, 826);
     await phone.waitForTimeout(150);
   }
   await phone.waitForTimeout(500);
@@ -221,8 +223,7 @@ try {
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
   const menuPopup = () => phone.screenshot({ clip: { x: 150, y: 66, width: 230, height: 300 } });
   const beforePopup = await menuPopup();
-  await phoneTouch('touchStart', [pt(9, 360, 49)]);
-  await phoneTouch('touchEnd', []);
+  await tap(phoneTouch, 9, 360, 49);
   await phone.waitForTimeout(1000);
   assert(!beforePopup.equals(await menuPopup()), 'a revealed menu must open on tap');
   assert.deepEqual(failures, [], 'phone interactions must not panic');
@@ -243,10 +244,7 @@ try {
   await editing.waitForTimeout(1000);
   const editingCdp = await editing.context().newCDPSession(editing);
   const editingTouch = (type, touchPoints) => editingCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
-  const editingTap = async (id, x, y) => {
-    await editingTouch('touchStart', [pt(id, x, y)]);
-    await editingTouch('touchEnd', []);
-  };
+  const editingTap = (id, x, y) => tap(editingTouch, id, x, y);
   const assertDownloadContains = async marker => {
     await editing.waitForFunction(() => Array.isArray(window.__ibisDownloaded), null, { timeout: 15_000 });
     const docx = Buffer.from(await editing.evaluate(() => window.__ibisDownloaded));
