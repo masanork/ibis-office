@@ -75,7 +75,7 @@ enum Found {
     /// not update itself (run out of `target/`). Silent at start-up; the user's own check says so.
     Failed,
     /// The zip of `version` is downloaded.
-    Ready { version: String, zip: PathBuf },
+    Ready { version: String, zip: PathBuf, artifact: Option<ibis_office_updater::signed_manifest::Artifact> },
     /// There is a newer version this copy cannot update to by itself.
     Manual { version: String },
 }
@@ -105,7 +105,7 @@ pub(crate) fn available_version() -> Option<String> {
 /// For the tests (no network): what the start-up check would have found.
 #[cfg(any(test, feature = "scenarios"))]
 pub(crate) fn set_available_for_test(version: Option<&str>) {
-    AVAILABLE.with(|a| *a.borrow_mut() = version.map(|v| Found::Ready { version: v.to_string(), zip: PathBuf::new() }));
+    AVAILABLE.with(|a| *a.borrow_mut() = version.map(|v| Found::Ready { version: v.to_string(), zip: PathBuf::new(), artifact: None }));
 }
 
 /// For the tests: how many times 更新を確認 was used.
@@ -134,7 +134,7 @@ pub(crate) fn offer_again(cx: &mut App) {
     }
     #[allow(unreachable_code)]
     cx.spawn(async move |cx: &mut AsyncApp| match found {
-        Found::Ready { version, zip } => offer(cx, version, zip, true).await,
+        Found::Ready { version, zip, artifact } => offer(cx, version, zip, artifact, true).await,
         Found::Manual { .. } => show_failed(cx).await,
         Found::Nothing | Found::Failed => {}
     })
@@ -167,7 +167,7 @@ pub(crate) fn check_now(cx: &mut App) {
                 AVAILABLE.with(|a| *a.borrow_mut() = Some(found.clone()));
             }
             match found {
-                Found::Ready { version, zip } => offer(cx, version, zip, true).await,
+                Found::Ready { version, zip, artifact } => offer(cx, version, zip, artifact, true).await,
                 Found::Manual { .. } => show_failed(cx).await,
                 Found::Nothing => {
                     let detail = i18n::format("fix.update.latest.detail", &[("current", &CURRENT)]);
@@ -250,7 +250,7 @@ fn background_check(cx: &mut App, ask: bool, delay: Duration) {
                         show_failed(cx).await;
                     }
                 }
-                Found::Ready { version, zip } => offer(cx, version, zip, false).await,
+                Found::Ready { version, zip, artifact } => offer(cx, version, zip, artifact, false).await,
             }
         })
         .detach();
@@ -290,7 +290,7 @@ fn check() -> Found {
     }
 
     match download_signed(&log, &latest, artifact) {
-        Ok(zip) => Found::Ready { version: latest, zip },
+        Ok(zip) => Found::Ready { version: latest, zip, artifact: Some(artifact.clone()) },
         Err(err) => {
             log.fail("download", &err);
             Found::Failed
@@ -430,7 +430,7 @@ fn run_stderr(command: &mut Command) -> String {
 struct Unpacked {
     /// The new `.app` (macOS), folder (Windows) or AppImage (Linux).
     new: PathBuf,
-    /// None on Linux, where ibisOffice puts the new AppImage in place itself.
+    /// Empty on Linux, where the helper comes from the currently running AppImage.
     #[cfg_attr(target_os = "linux", allow(dead_code))]
     updater: PathBuf,
 }
@@ -540,7 +540,7 @@ async fn show_failed(cx: &mut AsyncApp) {
     }
 }
 
-async fn offer(cx: &mut AsyncApp, version: String, zip: PathBuf, asked_by_user: bool) {
+async fn offer(cx: &mut AsyncApp, version: String, zip: PathBuf, artifact: Option<ibis_office_updater::signed_manifest::Artifact>, asked_by_user: bool) {
     // Not while there is work not saved: the app quits when the update starts. (Not at the user's own click: the question is
     // shown at once, and saying はい with work unsaved is turned away below.)
     while !asked_by_user && cx.update(|cx| any_unsaved(cx)) {
@@ -580,7 +580,7 @@ async fn offer(cx: &mut AsyncApp, version: String, zip: PathBuf, asked_by_user: 
     let version_for_start = version.clone();
     let started = cx.update(|cx| {
         let log = log_for(&version_for_start)?;
-        match start_updater(&log, &version_for_start, &unpacked) {
+        match start_updater(&log, &version_for_start, &unpacked, artifact.as_ref()) {
             Ok(()) => {
                 // The updater waits for this process to end.
                 cx.quit();
@@ -597,15 +597,29 @@ async fn offer(cx: &mut AsyncApp, version: String, zip: PathBuf, asked_by_user: 
     }
 }
 
-/// Fail closed until the standalone Linux updater is bundled and the signed
-/// artifact is revalidated across the handoff to that process.
+/// Start the helper from the current AppImage, never from the candidate.
 #[cfg(target_os = "linux")]
-fn start_updater(_log: &Log, _version: &str, _unpacked: &Unpacked) -> Result<(), String> {
-    Err("Linux AppImage updates are not yet available".into())
+fn start_updater(log: &Log, version: &str, unpacked: &Unpacked, artifact: Option<&ibis_office_updater::signed_manifest::Artifact>) -> Result<(), String> {
+    let artifact = artifact.ok_or("missing verified artifact metadata")?;
+    let old = installed_copy()?;
+    let workdir = paths::update_dir(version).ok_or("no update folder")?;
+    let appdir = std::env::var_os("APPDIR").ok_or("APPDIR is not set")?;
+    let helper = PathBuf::from(appdir).join("usr/bin/ibisOfficeUpdater");
+    if !std::fs::symlink_metadata(&helper).map_err(|e| format!("{}: {e}", helper.display()))?.file_type().is_file() { return Err("updater is not a regular file".into()); }
+    count_attempt(version);
+    log.start("start-updater", &format!("{} for {} -> {}", helper.display(), unpacked.new.display(), old.display()));
+    let mut updater = command(&helper.to_string_lossy());
+    updater.args(["--pid", &std::process::id().to_string(), "--version", version, "--old"])
+        .arg(&old).arg("--new").arg(&unpacked.new).arg("--log").arg(log.path())
+        .arg("--workdir").arg(workdir).args(["--size", &artifact.size.to_string(), "--sha256", &artifact.sha256])
+        .current_dir(std::env::temp_dir()).stdout(Stdio::null()).stderr(Stdio::null());
+    updater.spawn().map_err(|e| format!("{}: {e}", helper.display()))?;
+    log.ok("start-updater", "started; ibisOffice quits now");
+    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn start_updater(log: &Log, version: &str, unpacked: &Unpacked) -> Result<(), String> {
+fn start_updater(log: &Log, version: &str, unpacked: &Unpacked, _artifact: Option<&ibis_office_updater::signed_manifest::Artifact>) -> Result<(), String> {
     let old = installed_copy()?;
     let workdir = paths::update_dir(version).ok_or("no update folder")?;
     count_attempt(version);

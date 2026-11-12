@@ -65,8 +65,12 @@ installed file, keeps a hard-linked backup, and restores it if startup fails.
 It refuses stale stage or backup paths, symlinked files, and filesystems that
 cannot create the backup hard link. An interruption can leave recovery files;
 preserve and inspect them manually. File syncing and rename do not establish
-power-loss recovery. The application does not yet invoke this helper: its former
-self-overwriting Linux path now fails closed.
+power-loss recovery. The application starts the helper bundled with the current AppImage and passes
+the size and SHA-256 from verified metadata. The helper bounds the copy and
+checks the staged file against those values immediately before replacement.
+The helper trusts the parent-provided values; this is an integrity handoff, not
+independent signature verification or a defense against a compromised local
+account. Older AppImages without the helper cannot perform this update.
 
 A local HTTPS fixture exercises the app's shared curl transport, signed metadata
 selection, bounded download, artifact hash verification, and folder swap and
@@ -110,8 +114,8 @@ confirmation, machine interruption, or a real AppImage update.
 - macOS requires the Sorane Docs Developer ID team and signed/notarized app;
   the inherited ibis inc. team identifier must never be used as the fork's.
   Windows release signing and verification also require a distribution policy.
-- Bundle and connect the Linux helper and revalidate the signed artifact across
-  the process handoff before enabling the Linux update path.
+- Validate the complete Linux app-to-helper handoff on installed AppImages,
+  including upgrades from versions that contain the helper.
 - Exercise the entire download, verification, replacement, rollback and restart
   flow on installed copies of each platform, including interruptions, untrusted
   keys, corrupted files and unwritable installs. CI packaging alone is not proof.

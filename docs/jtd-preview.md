@@ -41,6 +41,12 @@ are unknown. Unsupported candidates are omitted, with inspection capped at
 32 candidates and 8 MiB. Word conversion/export is disabled in this mode;
 the original source remains available through the original download action.
 Images are not placed in ordinary text previews or converted documents.
+When a document has readable text, View > Show Ichitaro embedded images opens
+the same explicitly unplaced image list separately; View > Return to Ichitaro
+body preview returns to the read-only body and its normal DOCX conversion.
+Only the observed `EmbeddedPress` WMF candidates are shown; other embedded
+content can still be omitted. If no candidate is displayable, the body preview
+stays open with a message.
 Three local JTT files were checked against the independent diagnostic for
 normalized text, ruby and ruled display-row counts. This is not a general JTT
 compatibility or visual-fidelity claim; the files remain local.
