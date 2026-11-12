@@ -29,9 +29,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use ibis_office_updater::log::Log;
+use ibis_office_updater::process;
 #[cfg(not(target_os = "linux"))]
 use ibis_office_updater::process::Exit;
-use ibis_office_updater::process;
 
 struct Args {
     pid: u32,
@@ -41,6 +41,8 @@ struct Args {
     log: PathBuf,
     workdir: Option<PathBuf>,
     wait: Duration,
+    #[cfg(target_os = "linux")]
+    expected: ibis_office_updater::signed_manifest::Artifact,
 }
 
 fn parse() -> Result<Args, String> {
@@ -51,7 +53,31 @@ fn parse() -> Result<Args, String> {
         map.insert(key, value);
     }
     let get = |key: &str| map.get(key).cloned().ok_or(format!("{key} is missing"));
+    #[cfg(target_os = "linux")]
+    let expected = {
+        let sha256 = get("--sha256")?;
+        let size: u64 = get("--size")?
+            .parse()
+            .map_err(|_| "invalid size".to_string())?;
+        if size == 0
+            || size > 2 * 1024 * 1024 * 1024
+            || sha256.len() != 64
+            || !sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid expected artifact".into());
+        }
+        ibis_office_updater::signed_manifest::Artifact {
+            target: String::new(),
+            filename: String::new(),
+            size,
+            sha256,
+        }
+    };
     Ok(Args {
+        #[cfg(target_os = "linux")]
+        expected,
         pid: get("--pid")?
             .parse()
             .map_err(|_| "--pid is not a number".to_string())?,
@@ -113,7 +139,11 @@ fn run(args: &Args, log: &Log) -> i32 {
     }
 
     log.start("install", "replacing the installed copy");
-    if let Err(err) = platform::install(&args.old, &args.new) {
+    #[cfg(target_os = "linux")]
+    let installed = platform::install(&args.old, &args.new, &args.expected);
+    #[cfg(not(target_os = "linux"))]
+    let installed = platform::install(&args.old, &args.new);
+    if let Err(err) = installed {
         log.fail("install", &err);
         relaunch_old(args, log);
         return 1;
@@ -339,8 +369,12 @@ mod platform {
     use super::*;
     use ibis_office_updater::appimage_swap;
     pub type Started = std::process::Child;
-    pub fn install(old: &Path, new: &Path) -> Result<(), String> {
-        appimage_swap::install(old, new)
+    pub fn install(
+        old: &Path,
+        new: &Path,
+        expected: &ibis_office_updater::signed_manifest::Artifact,
+    ) -> Result<(), String> {
+        appimage_swap::install(old, new, expected)
     }
     pub fn rollback(old: &Path, _: &Path) -> Result<(), String> {
         appimage_swap::rollback(old)

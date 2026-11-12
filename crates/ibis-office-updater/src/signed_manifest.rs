@@ -25,7 +25,7 @@ pub struct Manifest {
     pub artifacts: Vec<Artifact>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
     pub target: String,
