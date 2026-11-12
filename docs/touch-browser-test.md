@@ -4,7 +4,9 @@ This optional smoke test opens the bundled sample in a local browser and sends
 synthetic touch input through Chrome's DevTools protocol. It checks a tap,
 two-finger zoom in and out, one-finger scrolling, phone page fitting, the
 phone zoom button and menu scrolling, a text edit followed by a DOCX download,
-and browser-side panics. It
+and browser-side panics. On a phone-sized viewport it also zooms the document
+until it overflows, swipes in both directions, and checks the displacement of
+rendered document pixels; a stationary image is a negative control. It
 requires a Chrome-compatible browser with WebGPU and does not substitute for
 testing on physical iOS and Android devices.
 
@@ -20,6 +22,10 @@ IBIS_CHROME_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' 
 the default local sample URL; the test expects the sample document's workspace
 and zoom control at 1024×768 and 390×844. The script uses Chrome's software GPU
 flags so it can run headlessly where available.
+
+The `touch-browser` CI job builds the Web app and runs this test in Linux
+Chrome. Synthetic Chrome input cannot establish real Safari, mobile keyboard,
+device GPU, system gesture or physical touchscreen behavior.
 
 The input check uses Chrome's synthetic text insertion rather than a real
 mobile keyboard or IME. It checks downloaded OOXML content both for the initial

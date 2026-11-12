@@ -88,6 +88,74 @@ try {
   await phoneTouch('touchEnd', []);
   await phone.waitForTimeout(1000);
   assert(!beforeTap.equals(await phoneZoom()), 'phone zoom-in button must be visible and tappable');
+  const documentView = () => phone.screenshot({ clip: { x: 50, y: 170, width: 290, height: 520 } });
+  const pan = async (id, startY, endY) => {
+    await phoneTouch('touchStart', [pt(id, 200, startY)]);
+    for (let step = 1; step <= 10; step++) {
+      await phoneTouch('touchMove', [pt(id, 200, startY + (endY - startY) * step / 10)]);
+      await phone.waitForTimeout(60);
+    }
+    await phone.waitForTimeout(100); // release at rest, without a fling
+    await phoneTouch('touchEnd', []);
+    await phone.waitForTimeout(500);
+  };
+  for (let i = 0; i < 5; i++) {
+    await phoneTouch('touchStart', [pt(30 + i, 277, 826)]);
+    await phoneTouch('touchEnd', []);
+    await phone.waitForTimeout(150);
+  }
+  await phone.waitForTimeout(500);
+  const startView = await documentView();
+  await pan(20, 600, 420);
+  const downView = await documentView();
+  await pan(21, 420, 600);
+  const restoredView = await documentView();
+  // Look for translated document pixels, not merely different screenshots:
+  // a blinking caret or other animation can change an image without scrolling.
+  const displacement = async (before, after, direction) => phone.evaluate(async ({ before, after, direction }) => {
+    const pixels = async data => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${data}`;
+      await img.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const context = canvas.getContext('2d');
+      context.drawImage(img, 0, 0);
+      const rgba = context.getImageData(0, 0, img.width, img.height).data;
+      return { width: img.width, height: img.height, dark: Uint8Array.from({ length: img.width * img.height }, (_, i) => rgba[i * 4] < 170 && rgba[i * 4 + 1] < 170 && rgba[i * 4 + 2] < 170 ? 1 : 0) };
+    };
+    const a = await pixels(before);
+    const b = await pixels(after);
+    let best = { shift: 0, score: 0, foreground: 0 };
+    for (let magnitude = 130; magnitude <= 220; magnitude++) {
+      const shift = direction * magnitude;
+      let intersection = 0, union = 0;
+      for (let y = Math.max(0, -shift); y < Math.min(a.height, a.height - shift); y++) {
+        for (let x = 0; x < a.width; x++) {
+          const first = a.dark[y * a.width + x];
+          const second = b.dark[(y + shift) * a.width + x];
+          intersection += first & second;
+          union += first | second;
+        }
+      }
+      const score = union ? intersection / union : 0;
+      if (score > best.score) best = { shift, score, foreground: union };
+    }
+    return best;
+  }, { before: before.toString('base64'), after: after.toString('base64'), direction });
+  if (process.env.IBIS_TOUCH_ARTIFACTS) {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(`${process.env.IBIS_TOUCH_ARTIFACTS}/scroll-start.png`, startView);
+    await writeFile(`${process.env.IBIS_TOUCH_ARTIFACTS}/scroll-down.png`, downView);
+    await writeFile(`${process.env.IBIS_TOUCH_ARTIFACTS}/scroll-restored.png`, restoredView);
+  }
+  const forward = await displacement(startView, downView, -1);
+  const reverse = await displacement(downView, restoredView, 1);
+  const stationary = await displacement(startView, startView, -1);
+  assert(forward.score > 0.5 && forward.foreground > 1000, `phone swipe up must move document pixels upward: ${JSON.stringify(forward)}`);
+  assert(reverse.score > 0.5 && reverse.foreground > 1000, `phone swipe down must move document pixels downward: ${JSON.stringify(reverse)}`);
+  assert(stationary.score < 0.5, `stationary document pixels must not count as a scroll: ${JSON.stringify(stationary)}`);
   const menuStrip = () => phone.screenshot({ clip: { x: 0, y: 34, width: 390, height: 30 } });
   const beforeMenu = await menuStrip();
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
