@@ -54,9 +54,13 @@ try {
   });
   await page.addInitScript(() => {
     window.__ibisTouchEvents = [];
+    window.__ibisTouchTrace = [];
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
       document.addEventListener(type, event => {
-        if (event.pointerType === 'touch') window.__ibisTouchEvents.push(type);
+        if (event.pointerType === 'touch') {
+          window.__ibisTouchEvents.push(type);
+          window.__ibisTouchTrace.push({ type, id: event.pointerId, x: event.clientX, y: event.clientY, time: event.timeStamp });
+        }
       }, true);
     }
   });
@@ -68,6 +72,7 @@ try {
   await waitForEditorFrame(page);
   await page.waitForTimeout(1000);
   const cdp = await page.context().newCDPSession(page);
+  if (process.env.IBIS_TOUCH_CPU_THROTTLE) await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.IBIS_TOUCH_CPU_THROTTLE) });
   const pt = (id, x, y) => ({ id, x, y, radiusX: 4, radiusY: 4, force: 1 });
   const touch = (type, touchPoints) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
   const zoomLabel = () => page.screenshot({ clip: { x: 937, y: 742, width: 50, height: 26 } });
@@ -80,6 +85,7 @@ try {
       await page.waitForTimeout(250);
     } while (Date.now() < deadline);
     if (process.env.IBIS_TOUCH_ARTIFACTS) await page.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/zoom-failure.png` });
+    console.error('Touch event trace:', JSON.stringify(await page.evaluate(() => window.__ibisTouchTrace)));
     assert.fail(message);
   };
 
