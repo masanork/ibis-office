@@ -26,8 +26,13 @@ extrapolate this inventory to independently maintained GPUI mobile backends.
    upstream Wayland and X11 currently compute `new_absolute_scale - old_absolute_scale`.
    For absolute scales `1 -> 2 -> 3`, the former yields `1, 0.5` and the latter
    `1, 1`. This is a source-level discrepancy, not proof of a user-visible bug;
-   inspect consumers and test real events before choosing a contract. Avoid
-   silently changing existing platform behaviour as part of an unrelated patch.
+   inspect consumers and test real events before choosing a contract. The
+   upstream [image viewer](https://github.com/zed-industries/zed/blob/6ceb6fee8738274589b59139df27efc191ec2231/crates/image_viewer/src/image_viewer.rs#L354-L357)
+   multiplies the current zoom by `1 + delta`: on this example it would
+   produce factors of `4` and `3`, respectively, before zoom limits. This is
+   a mathematical consequence of the code, not a physical-device observation.
+   Avoid silently changing existing platform behaviour as part of an unrelated
+   patch.
 2. **Arbitration.** The prototype immediately cancels an active pan, long
    press, or even a claimed touch drag when a second contact starts. Decide
    whether a claimed drag retains ownership, whether a movement threshold is
