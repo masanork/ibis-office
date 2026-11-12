@@ -1,0 +1,62 @@
+--- a/crates/gpui_web/src/events.rs
++++ b/crates/gpui_web/src/events.rs
+@@ -115,0 +116,4 @@
++
++    fn len(&self) -> usize {
++        self.active.len()
++    }
+@@ -262,3 +266,7 @@
+-                let Some(touch_id) = this.touch_ids.borrow_mut().start(event.pointer_id()) else {
+-                    log::error!("exhausted touch identifiers");
+-                    return;
++                let (touch_id, active_count) = {
++                    let mut touch_ids = this.touch_ids.borrow_mut();
++                    let Some(touch_id) = touch_ids.start(event.pointer_id()) else {
++                        log::error!("exhausted touch identifiers");
++                        return;
++                    };
++                    (touch_id, touch_ids.len())
+@@ -265,0 +274,4 @@
++                if active_count > 1 {
++                    this.touch_multi_sequence.set(true);
++                    this.touch_tap_candidate.set(None);
++                }
+@@ -267 +279 @@
+-                if this.touch_tap_candidate.get().is_none() {
++                if !this.touch_multi_sequence.get() && this.touch_tap_candidate.get().is_none() {
+@@ -330,2 +342,6 @@
+-                let Some(touch_id) = this.touch_ids.borrow_mut().end(event.pointer_id()) else {
+-                    return;
++                let (touch_id, remaining) = {
++                    let mut touch_ids = this.touch_ids.borrow_mut();
++                    let Some(touch_id) = touch_ids.end(event.pointer_id()) else {
++                        return;
++                    };
++                    (touch_id, touch_ids.len())
+@@ -350,0 +367,3 @@
++                if remaining == 0 {
++                    this.touch_multi_sequence.set(false);
++                }
+@@ -448,2 +467,6 @@
+-                let Some(touch_id) = this.touch_ids.borrow_mut().end(event.pointer_id()) else {
+-                    return;
++                let (touch_id, remaining) = {
++                    let mut touch_ids = this.touch_ids.borrow_mut();
++                    let Some(touch_id) = touch_ids.end(event.pointer_id()) else {
++                        return;
++                    };
++                    (touch_id, touch_ids.len())
+@@ -462,0 +486,3 @@
++                if remaining == 0 {
++                    this.touch_multi_sequence.set(false);
++                }
+@@ -498 +524 @@
+-        if !self.touch_input {
++        if !self.touch_input || self.touch_multi_sequence.get() {
+--- a/crates/gpui_web/src/window.rs
++++ b/crates/gpui_web/src/window.rs
+@@ -65,0 +66,2 @@
++    /// A multi-touch sequence remains active until all contacts leave.
++    pub(crate) touch_multi_sequence: Cell<bool>,
+@@ -219,0 +222 @@
++            touch_multi_sequence: Cell::new(false),
