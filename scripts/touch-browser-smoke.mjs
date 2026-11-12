@@ -73,6 +73,15 @@ try {
   const zoomLabel = () => page.screenshot({ clip: { x: 937, y: 742, width: 50, height: 26 } });
   const workspace = () => page.screenshot({ clip: { x: 40, y: 150, width: 800, height: 500 } });
   const settle = () => page.waitForTimeout(1000);
+  const waitForZoom = async (baseline, equal, message) => {
+    const deadline = Date.now() + 30_000;
+    do {
+      if ((await zoomLabel()).equals(baseline) === equal) return;
+      await page.waitForTimeout(250);
+    } while (Date.now() < deadline);
+    if (process.env.IBIS_TOUCH_ARTIFACTS) await page.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/zoom-failure.png` });
+    assert.fail(message);
+  };
 
   const initialZoom = await zoomLabel();
   if (process.env.IBIS_TOUCH_ARTIFACTS) await page.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/pinch-before.png` });
@@ -81,7 +90,7 @@ try {
   await touch('touchMove', [pt(1, 400, 400), pt(2, 600, 400)]);
   await touch('touchEnd', [pt(1, 400, 400)]);
   await touch('touchEnd', []);
-  await settle();
+  await waitForZoom(initialZoom, false, 'pinch out must change the displayed zoom');
   const zoomed = await zoomLabel();
   if (process.env.IBIS_TOUCH_ARTIFACTS) await page.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/pinch-after.png` });
   assert(!initialZoom.equals(zoomed), 'pinch out must change the displayed zoom');
@@ -91,13 +100,11 @@ try {
   await touch('touchMove', [pt(3, 450, 400), pt(4, 550, 400)]);
   await touch('touchEnd', [pt(3, 450, 400)]);
   await touch('touchEnd', []);
-  await settle();
-  assert(initialZoom.equals(await zoomLabel()), 'inverse pinch must restore the displayed zoom');
+  await waitForZoom(initialZoom, true, 'inverse pinch must restore the displayed zoom');
 
   await touch('touchStart', [pt(5, 916, 755)]);
   await touch('touchEnd', []);
-  await settle();
-  assert(!initialZoom.equals(await zoomLabel()), 'one-finger tap must activate the zoom button');
+  await waitForZoom(initialZoom, false, 'one-finger tap must activate the zoom button');
 
   const beforeScroll = await workspace();
   await touch('touchStart', [pt(6, 750, 600)]);
