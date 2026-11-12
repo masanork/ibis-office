@@ -43,4 +43,5 @@ IBIS_CHROME_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' 
 `IBIS_HTML_TEST_URL` and `IBIS_HTML_TEST_ROOT` override the respective default
 URLs. The headless Chrome tests edit the fixtures, use the export menu, inspect
 the downloaded HTML and render it at phone width. This is not a physical-device
-or full Office visual-fidelity test.
+or full Office visual-fidelity test. The `html-browser` job in Web font tests
+builds the Web app and runs both smoke tests in CI.

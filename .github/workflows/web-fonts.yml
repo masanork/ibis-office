@@ -41,3 +41,35 @@ jobs:
       - run: npm run check:worker
       - run: npx wrangler deploy --dry-run
       - run: cargo check --locked -p ibis-office-app --lib --target wasm32-unknown-unknown
+  html-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-28
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-bindgen
+            ~/.cargo/bin/wasm-bindgen-test-runner
+            ~/.cargo/bin/wasm2es6js
+          key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
+      - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - run: scripts/build-web.sh
+      - name: Exercise HTML downloads in Chrome
+        run: |
+          export IBIS_CHROME_PATH="$(command -v google-chrome)"
+          python3 -m http.server 8794 --bind 127.0.0.1 --directory www > /tmp/ibis-html-www.log 2>&1 &
+          python3 -m http.server 8795 --bind 127.0.0.1 --directory . > /tmp/ibis-html-root.log 2>&1 &
+          npm run test:html-browser
+          npm run test:office-html-browser
