@@ -37,6 +37,7 @@ try {
   const settle = () => page.waitForTimeout(1000);
 
   const initialZoom = await zoomLabel();
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await page.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/pinch-before.png` });
   await touch('touchStart', [pt(1, 450, 400)]);
   await touch('touchStart', [pt(1, 450, 400), pt(2, 550, 400)]);
   await touch('touchMove', [pt(1, 400, 400), pt(2, 600, 400)]);
@@ -44,6 +45,7 @@ try {
   await touch('touchEnd', []);
   await settle();
   const zoomed = await zoomLabel();
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await page.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/pinch-after.png` });
   assert(!initialZoom.equals(zoomed), 'pinch out must change the displayed zoom');
 
   await touch('touchStart', [pt(3, 400, 400)]);

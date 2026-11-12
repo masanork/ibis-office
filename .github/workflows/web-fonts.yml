@@ -72,5 +72,12 @@ jobs:
       - name: Exercise touch input in Chrome
         run: |
           export IBIS_CHROME_PATH="$(command -v google-chrome)"
+          export IBIS_TOUCH_ARTIFACTS="$RUNNER_TEMP/ibis-touch-artifacts"
+          mkdir -p "$IBIS_TOUCH_ARTIFACTS"
           python3 -m http.server 8793 --bind 127.0.0.1 --directory www > /tmp/ibis-touch-www.log 2>&1 &
           npm run test:touch-browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: touch-browser-failure-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ibis-touch-artifacts
