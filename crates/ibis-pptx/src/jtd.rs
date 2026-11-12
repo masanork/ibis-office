@@ -13,7 +13,9 @@ mod decode;
 mod font;
 mod compressed;
 mod embedded;
+mod frame;
 pub use embedded::{EmbeddedMetafile, EmbeddedMetafileInspection, inspect_embedded_metafiles};
+pub use frame::{FrameCandidate, FrameLink, inspect_frame_links};
 pub use decode::{DecodedText, Diagnostic, Piece, Record, RecordKind, StyleSpan};
 pub use font::FontRecord;
 use ibis_doc_model::{
