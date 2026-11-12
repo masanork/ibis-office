@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! An explicitly unplaced image list for JTD files with no readable body.
+//! An explicitly unplaced image list for JTD documents.
 use ibis_doc_model::{
     Block, EmuSize, FlowParagraph, FlowRun, FlowRunKind, FlowRunStyle, MediaFormat, PictureLook,
     Presentation,
@@ -24,11 +24,13 @@ fn gallery(mut images: ibis_pptx::jtd::EmbeddedMetafileInspection, empty_key: &s
     let bytes = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
     let mut document = ibis_pptx::read(&bytes).map_err(|e| e.to_string())?;
     images.metafiles.sort_by_key(|entry| entry.embedding_index);
+    let candidate_count = images.metafiles.len() + images.rejected;
     let mut blocks = vec![paragraph(
         1,
         FlowRunKind::Text(crate::shell::i18n::text("jtd.gallery-heading").to_string()),
     )];
     let mut inspected_bytes = 0usize;
+    let mut displayed = 0usize;
     for image in images.metafiles.into_iter().take(32) {
         inspected_bytes = inspected_bytes.saturating_add(image.wmf.len());
         if inspected_bytes > 8 * 1024 * 1024 {
@@ -43,6 +45,10 @@ fn gallery(mut images: ibis_pptx::jtd::EmbeddedMetafileInspection, empty_key: &s
         let size = inspection_size(width, height);
         let media = document.add_media(MediaFormat::Wmf, image.wmf);
         let id = blocks.len() as u32 + 1;
+        blocks.push(paragraph(id, FlowRunKind::Text(crate::shell::i18n::format(
+            "jtd.gallery-item", &[("index", &image.embedding_index)],
+        ))));
+        let id = blocks.len() as u32 + 1;
         blocks.push(paragraph(
             id,
             FlowRunKind::Picture {
@@ -51,10 +57,15 @@ fn gallery(mut images: ibis_pptx::jtd::EmbeddedMetafileInspection, empty_key: &s
                 look: PictureLook::default(),
             },
         ));
+        displayed += 1;
     }
     if blocks.len() == 1 {
         return Err(crate::shell::i18n::text(empty_key).to_string());
     }
+    let summary = crate::shell::i18n::format("jtd.gallery-count", &[
+        ("displayed", &displayed), ("candidates", &candidate_count),
+    ]);
+    blocks.insert(1, paragraph(blocks.len() as u32 + 1, FlowRunKind::Text(summary)));
     let flow = document.flow.as_mut().ok_or("cannot create image list")?;
     std::sync::Arc::make_mut(flow).body = blocks;
     Ok(document)

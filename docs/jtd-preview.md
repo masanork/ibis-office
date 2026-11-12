@@ -47,6 +47,9 @@ body preview returns to the read-only body and its normal DOCX conversion.
 Only the observed `EmbeddedPress` WMF candidates are shown; other embedded
 content can still be omitted. If no candidate is displayable, the body preview
 stays open with a message.
+Each image is labelled with its observed embedding index, which is not a page
+number or evidence of source order. The list reports how many recognized stream
+candidates were displayed; it does not count other embedded formats.
 Three local JTT files were checked against the independent diagnostic for
 normalized text, ruby and ruled display-row counts. This is not a general JTT
 compatibility or visual-fidelity claim; the files remain local.
