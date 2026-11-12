@@ -118,6 +118,14 @@ impl Fixture {
         }
     }
     fn run(&self, installed: &Path, candidate: &Path) -> std::process::ExitStatus {
+        self.run_with_hash(installed, candidate, false)
+    }
+    fn run_with_hash(
+        &self,
+        installed: &Path,
+        candidate: &Path,
+        _wrong_hash: bool,
+    ) -> std::process::ExitStatus {
         let parent = self.root.join(if cfg!(windows) {
             "parent.exe"
         } else {
@@ -131,7 +139,8 @@ impl Fixture {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let result = Command::new(env!("CARGO_BIN_EXE_ibisOfficeUpdater"))
+        let mut updater = Command::new(env!("CARGO_BIN_EXE_ibisOfficeUpdater"));
+        updater
             .args([
                 "--pid",
                 &child.id().to_string(),
@@ -144,9 +153,10 @@ impl Fixture {
             .arg(candidate)
             .arg("--log")
             .arg(self.root.join("updater.log"))
-            .args(["--wait-secs", "15"])
-            .status()
-            .unwrap();
+            .args(["--wait-secs", "15"]);
+        #[cfg(target_os = "linux")]
+        add_expected(&mut updater, candidate, _wrong_hash);
+        let result = updater.status().unwrap();
         let _ = child.wait();
         result
     }
@@ -179,6 +189,23 @@ impl Drop for Fixture {
         }
         eprintln!("fixture cleanup failed: {}", self.root.display());
     }
+}
+
+#[cfg(target_os = "linux")]
+fn add_expected(command: &mut Command, candidate: &Path, wrong: bool) {
+    let bytes = fs::read(candidate).unwrap();
+    let hash = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    let hex: String = hash.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    command.args([
+        "--size",
+        &bytes.len().to_string(),
+        "--sha256",
+        if wrong {
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        } else {
+            &hex
+        },
+    ]);
 }
 
 fn backup_of(path: &Path) -> PathBuf {
@@ -265,7 +292,8 @@ fn live_parent_is_not_terminated() {
     let parent = f.root.join("parent");
     f.executable(&parent, "new-running", &f.root.join("parent-marker"));
     let mut child = Command::new(parent).spawn().unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_ibisOfficeUpdater"))
+    let mut updater = Command::new(env!("CARGO_BIN_EXE_ibisOfficeUpdater"));
+    updater
         .args([
             "--pid",
             &child.id().to_string(),
@@ -278,13 +306,32 @@ fn live_parent_is_not_terminated() {
         .arg(&new)
         .arg("--log")
         .arg(f.root.join("updater.log"))
-        .args(["--wait-secs", "1"])
-        .status()
-        .unwrap();
+        .args(["--wait-secs", "1"]);
+    add_expected(&mut updater, &new, false);
+    let status = updater.status().unwrap();
     assert!(!status.success());
     assert!(child.try_wait().unwrap().is_none());
     child.kill().unwrap();
     child.wait().unwrap();
     assert_eq!(fs::read(&old).unwrap(), before);
     assert!(!backup_of(&old).exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn updater_rejects_changed_candidate() {
+    if std::env::var_os("SORANE_UPDATER_PROCESS_TEST").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let f = Fixture::new();
+    let old = f.app("Installed", "old", &f.root.join("old-marker"));
+    let new = f.app("Candidate", "new-running", &f.root.join("new-marker"));
+    let original = fs::read(&old).unwrap();
+    assert!(!f.run_with_hash(&old, &new, true).success());
+    assert_eq!(fs::read(&old).unwrap(), original);
+    assert!(!f.root.join("new-marker").exists());
+    assert!(!backup_of(&old).exists());
+    let log = fs::read_to_string(f.root.join("updater.log")).unwrap();
+    assert!(log.contains("artifact hash mismatch"), "{log}");
 }

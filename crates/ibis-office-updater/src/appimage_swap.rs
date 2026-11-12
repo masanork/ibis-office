@@ -38,7 +38,11 @@ fn absent(path: &Path) -> Result<(), String> {
     }
 }
 /// Stage and check the image, then preserve and replace the installed file.
-pub fn install(old: &Path, new: &Path) -> Result<(), String> {
+pub fn install(
+    old: &Path,
+    new: &Path,
+    expected: &crate::signed_manifest::Artifact,
+) -> Result<(), String> {
     let metadata = regular(old)?;
     regular(new)?;
     let backup = backup_of(old);
@@ -53,11 +57,13 @@ pub fn install(old: &Path, new: &Path) -> Result<(), String> {
         .open(&stage)
         .map_err(|e| format!("{}: {e}", stage.display()))?;
     let staged = (|| -> Result<(), String> {
-        std::io::copy(&mut input, &mut out).map_err(|e| e.to_string())?;
+        crate::signed_manifest::copy_bounded(&mut input, &mut out, expected.size)?;
         out.flush().map_err(|e| e.to_string())?;
         out.set_permissions(fs::Permissions::from_mode(metadata.permissions().mode()))
             .map_err(|e| e.to_string())?;
         out.sync_all().map_err(|e| e.to_string())?;
+        let staged = File::open(&stage).map_err(|e| e.to_string())?;
+        crate::signed_manifest::verify_artifact(expected, staged).map_err(str::to_string)?;
         let mut header = [0; 11];
         File::open(&stage)
             .and_then(|mut f| f.read_exact(&mut header))
@@ -120,6 +126,15 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    fn expected(bytes: &[u8]) -> crate::signed_manifest::Artifact {
+        let hash = ring::digest::digest(&ring::digest::SHA256, bytes);
+        crate::signed_manifest::Artifact {
+            target: "linux-x64-appimage".into(),
+            filename: "fixture.AppImage".into(),
+            size: bytes.len() as u64,
+            sha256: hash.as_ref().iter().map(|b| format!("{b:02x}")).collect(),
+        }
+    }
     #[test]
     fn install_and_restore_original_bytes() {
         let t = Temp::new();
@@ -127,7 +142,7 @@ mod tests {
         let new = t.0.join("new");
         fs::write(&old, b"original").unwrap();
         fs::write(&new, b"\x7fELF\0\0\0\0AI\x02new").unwrap();
-        install(&old, &new).unwrap();
+        install(&old, &new, &expected(&fs::read(&new).unwrap())).unwrap();
         assert_eq!(fs::read(backup_of(&old)).unwrap(), b"original");
         rollback(&old).unwrap();
         assert_eq!(fs::read(&old).unwrap(), b"original");
@@ -139,10 +154,11 @@ mod tests {
         let new = t.0.join("new");
         fs::write(&old, b"original").unwrap();
         fs::write(&new, b"invalid").unwrap();
-        assert!(install(&old, &new).is_err());
+        assert!(install(&old, &new, &expected(b"other")).is_err());
+        assert!(install(&old, &new, &expected(b"invalid")).is_err());
         assert!(!stage_of(&old).exists());
         fs::write(stage_of(&old), b"stale").unwrap();
-        assert!(install(&old, &new).is_err());
+        assert!(install(&old, &new, &expected(b"other")).is_err());
         assert_eq!(fs::read(stage_of(&old)).unwrap(), b"stale");
         assert_eq!(fs::read(old).unwrap(), b"original");
     }

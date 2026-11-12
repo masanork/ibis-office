@@ -14,7 +14,7 @@
 #
 #   AppRun -> usr/bin/ibisOffice
 #   ibisoffice.desktop, ibisoffice.png, .DirIcon   (what AppImage tools read)
-#   usr/bin/ibisOffice
+#   usr/bin/ibisOffice and usr/bin/ibisOfficeUpdater
 #   usr/share/icons/hicolor/<n>x<n>/apps/dev.sorane.Docs.png   (Windows' icon without its plate)
 #   usr/share/ibisOffice/artborders/   (ECMA-376's art borders, unmodified, with its notice)
 #   usr/share/doc/ibisOffice/          (ibisOffice's licences, the third-party ones)
@@ -31,7 +31,7 @@ if [[ "${1:-}" == "--release" ]]; then PROFILE=release; FLAGS=(--release); fi
 # The paths of this machine are not to go into the executables (see
 # scripts/bundle-macos.sh), in a target directory of their own.
 REMAP="--remap-path-prefix=$HOME/.cargo/registry/src=crates.io --remap-path-prefix=$HOME/.cargo/git/checkouts=git --remap-path-prefix=$HOME/.rustup=rustup --remap-path-prefix=$(pwd)=."
-RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo build ${FLAGS[@]+"${FLAGS[@]}"} --locked -p ibis-office-app -p ibis-appimage
+RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo build ${FLAGS[@]+"${FLAGS[@]}"} --locked -p ibis-office-app -p ibis-office-updater -p ibis-appimage
 
 VERSION=$(awk -F'\t' '$1 == "Linux" { sub(/\r$/, "", $2); print $2 }' version.txt)
 [[ -n $VERSION ]] || { echo "version.txt has no Linux line" >&2; exit 1; }
@@ -41,6 +41,7 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/doc/ibisOffice" "$APPDIR/usr/share/ibisOffice/artborders"
 # Without the symbols (half of the file): panics still name their place.
 strip -o "$APPDIR/usr/bin/ibisOffice" "target/dist/$PROFILE/ibisOffice"
+strip -o "$APPDIR/usr/bin/ibisOfficeUpdater" "target/dist/$PROFILE/ibisOfficeUpdater"
 ln -s usr/bin/ibisOffice "$APPDIR/AppRun"
 
 cp crates/ibis-office-app/linux/ibisoffice.desktop "$APPDIR/dev.sorane.Docs.desktop"
