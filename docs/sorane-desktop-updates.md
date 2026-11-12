@@ -104,6 +104,13 @@ application health check. This does not test a real Sorane Docs install, a
 Developer ID signature or notarization, a download or archive, user-interface
 confirmation, machine interruption, or a real AppImage update.
 
+The Linux desktop build also extracts the updater from its actual built AppImage
+and tests it against isolated copies. The test alters the candidate ELF machine
+type to cause an execution failure, then checks that the bundled helper restores
+the original AppImage bytes. It supplies the candidate hash directly: it does
+not verify a signature, exercise the application UI or app-to-helper handoff,
+or establish a successful GUI restart or power-loss recovery.
+
 ## Gates before activation
 
 - Establish and protect a production signing key, review the public key, embed
