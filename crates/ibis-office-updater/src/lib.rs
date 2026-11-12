@@ -14,6 +14,8 @@ pub mod log;
 pub mod paths;
 pub mod process;
 pub mod swap;
+#[cfg(unix)]
+pub mod appimage_swap;
 pub mod version;
 
 /// Verification of Sorane Docs signed update metadata and artifacts.

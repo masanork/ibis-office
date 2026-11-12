@@ -33,8 +33,23 @@ most formatting, exact layout, pictures and some text controls are not reproduce
 Unsupported or encrypted variants may not open. JTTC support is limited to the
 observed `JustCompressedDocument` / LH5 wrapper, checked with an output size
 limit and CRC. Two local JTTC files decompress and their inner text structures
-can be inspected, but both contain no readable body text and embedded objects;
-the importer rejects them. Images and embedded objects remain unsupported.
+can be inspected, but both contain no readable body text and embedded objects.
+For this specific no-readable-body case, the app can instead show a read-only,
+explicitly unplaced list of renderable embedded WMF candidates. The list is
+not the original document: pages, position, size, order and visual fidelity
+are unknown. Unsupported candidates are omitted, with inspection capped at
+32 candidates and 8 MiB. Word conversion/export is disabled in this mode;
+the original source remains available through the original download action.
+Images are not placed in ordinary text previews or converted documents.
+When a document has readable text, View > Show Ichitaro embedded images opens
+the same explicitly unplaced image list separately; View > Return to Ichitaro
+body preview returns to the read-only body and its normal DOCX conversion.
+Only the observed `EmbeddedPress` WMF candidates are shown; other embedded
+content can still be omitted. If no candidate is displayable, the body preview
+stays open with a message.
+Each image is labelled with its observed embedding index, which is not a page
+number or evidence of source order. The list reports how many recognized stream
+candidates were displayed; it does not count other embedded formats.
 Three local JTT files were checked against the independent diagnostic for
 normalized text, ruby and ruled display-row counts. This is not a general JTT
 compatibility or visual-fidelity claim; the files remain local.

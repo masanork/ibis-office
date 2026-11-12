@@ -60,8 +60,17 @@ stop without deleting either path. An interruption after the old folder has
 been moved aside can leave the original location absent. Preserve both paths;
 inspect and recover the old copy manually rather than starting another update
 or deleting them. This is a fail-closed preservation measure, not automated
-crash recovery. Linux AppImage replacement follows a different path and is not
-covered by the folder rollback implementation.
+crash recovery. The standalone Linux updater stages an AppImage beside the
+installed file, keeps a hard-linked backup, and restores it if startup fails.
+It refuses stale stage or backup paths, symlinked files, and filesystems that
+cannot create the backup hard link. An interruption can leave recovery files;
+preserve and inspect them manually. File syncing and rename do not establish
+power-loss recovery. The application starts the helper bundled with the current AppImage and passes
+the size and SHA-256 from verified metadata. The helper bounds the copy and
+checks the staged file against those values immediately before replacement.
+The helper trusts the parent-provided values; this is an integrity handoff, not
+independent signature verification or a defense against a compromised local
+account. Older AppImages without the helper cannot perform this update.
 
 A local HTTPS fixture exercises the app's shared curl transport, signed metadata
 selection, bounded download, artifact hash verification, and folder swap and
@@ -77,7 +86,7 @@ update-verifier CI sets it to `openssl`.
 
 ## Isolated updater-process fixture
 
-On macOS and Windows, run the real updater executable against synthetic app
+On macOS, Windows, and Linux, run the real updater executable against synthetic app
 copies under a new temporary directory:
 
 ```sh
@@ -88,9 +97,19 @@ The test starts a child owned by the test, waits for it to exit, replaces a
 synthetic application, launches a short-lived fixture and checks success or
 rollback after an immediate exit. The macOS fixture is ad-hoc signed and uses
 a symlinked install path to check the path reported by LaunchServices. Desktop
-CI opts into this test on macOS and Windows. It does not test a real Sorane
-Docs install, a Developer ID signature or notarization, a download or archive,
-user-interface confirmation, machine interruption, or Linux AppImage updates.
+CI opts into this test on all three platforms. The Linux fixture marks synthetic
+ELF executables as AppImages and also checks stale-backup preservation and that
+a live parent is never terminated. Three seconds of process liveness is not an
+application health check. This does not test a real Sorane Docs install, a
+Developer ID signature or notarization, a download or archive, user-interface
+confirmation, machine interruption, or a real AppImage update.
+
+The Linux desktop build also extracts the updater from its actual built AppImage
+and tests it against isolated copies. The test alters the candidate ELF machine
+type to cause an execution failure, then checks that the bundled helper restores
+the original AppImage bytes. It supplies the candidate hash directly: it does
+not verify a signature, exercise the application UI or app-to-helper handoff,
+or establish a successful GUI restart or power-loss recovery.
 
 ## Gates before activation
 
@@ -102,6 +121,8 @@ user-interface confirmation, machine interruption, or Linux AppImage updates.
 - macOS requires the Sorane Docs Developer ID team and signed/notarized app;
   the inherited ibis inc. team identifier must never be used as the fork's.
   Windows release signing and verification also require a distribution policy.
+- Validate the complete Linux app-to-helper handoff on installed AppImages,
+  including upgrades from versions that contain the helper.
 - Exercise the entire download, verification, replacement, rollback and restart
   flow on installed copies of each platform, including interruptions, untrusted
   keys, corrupted files and unwritable installs. CI packaging alone is not proof.

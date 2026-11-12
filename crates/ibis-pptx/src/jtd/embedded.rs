@@ -163,6 +163,33 @@ mod tests {
     }
 
     #[test]
+    fn preview_falls_back_only_for_a_decoded_empty_body() {
+        use ibis_ooxml::cfb::Item;
+        let document = |units: &[u16]| ibis_ooxml::cfb::write(&[
+            Item::stream("DocumentText", super::super::decode::fixture(units)),
+            Item::storage("EmbedItems"),
+            Item::storage("EmbedItems/Embedding 7"),
+            Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", envelope()),
+        ]);
+        let empty = document(&[10]);
+        assert!(super::super::read(&empty).is_err());
+        assert!(matches!(super::super::read_preview(&empty), Ok(super::super::Preview::UnplacedImages(_))));
+        let compressed = ibis_ooxml::cfb::write(&[Item::stream("JSCompDocument", super::super::compressed::fixture(&empty))]);
+        assert!(matches!(super::super::read_preview(&compressed), Ok(super::super::Preview::UnplacedImages(_))));
+        assert!(matches!(super::super::read_preview(&document(&[])), Ok(super::super::Preview::UnplacedImages(_))));
+        let blank = ibis_ooxml::cfb::write(&[Item::stream("DocumentText", super::super::decode::fixture(&[]))]);
+        assert!(matches!(super::super::read_preview(&blank), Ok(super::super::Preview::Document(_))));
+        assert!(matches!(super::super::read_preview(&document(&[0x7532])), Ok(super::super::Preview::Document(_))));
+        let invalid = ibis_ooxml::cfb::write(&[
+            Item::stream("DocumentText", b"not a document".to_vec()),
+            Item::storage("EmbedItems"),
+            Item::storage("EmbedItems/Embedding 7"),
+            Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", envelope()),
+        ]);
+        assert!(super::super::read_preview(&invalid).is_err());
+    }
+
+    #[test]
     #[ignore = "requires a local document and independently extracted WMF files"]
     fn local_metafiles_match_independent_extraction() {
         let document = std::fs::read(std::env::var_os("IBIS_JTD_SAMPLE").unwrap()).unwrap();

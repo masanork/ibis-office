@@ -23,6 +23,39 @@ use ibis_doc_model::{
 
 const MAX_FILE: usize = 64 * 1024 * 1024;
 const MAX_STREAM: usize = 32 * 1024 * 1024;
+const NO_VISIBLE_CONTENT: &str = "表示できる一太郎本文を読み取れませんでした。画像・図形・埋め込みは現在未対応です";
+
+/// A text preview, or unplaced image candidates when the decoded body has no visible content.
+pub enum Preview {
+    Document(Presentation),
+    UnplacedImages(EmbeddedMetafileInspection),
+}
+
+/// Preserve ordinary import errors; only the specifically recognized empty-body
+/// case can fall back to an explicitly unplaced image inspection.
+pub fn read_preview(data: &[u8]) -> Result<Preview, Error> {
+    match read(data) {
+        Ok(document) => {
+            // A truly empty text stream is accepted by the regular reader.
+            // Only choose the gallery if it also contains known image candidates.
+            let empty = document.flow.as_ref().is_some_and(|flow| flow.body.iter().all(|block| {
+                matches!(block, Block::Paragraph(paragraph) if paragraph.runs.is_empty())
+            }));
+            if empty {
+                if let Ok(candidates) = inspect_embedded_metafiles(data) {
+                    if !candidates.metafiles.is_empty() { return Ok(Preview::UnplacedImages(candidates)); }
+                }
+            }
+            Ok(Preview::Document(document))
+        }
+        Err(error) if error.0 == NO_VISIBLE_CONTENT => {
+            let candidates = inspect_embedded_metafiles(data)?;
+            if candidates.metafiles.is_empty() { Err(error) }
+            else { Ok(Preview::UnplacedImages(candidates)) }
+        }
+        Err(error) => Err(error),
+    }
+}
 
 /// Supported Ichitaro document or template extension (case-insensitive).
 pub fn is_extension(extension: &str) -> bool {
@@ -1538,7 +1571,7 @@ fn extract_decoded(
             _ => false,
         })
     {
-        return Err(Error::new("表示できる一太郎本文を読み取れませんでした。画像・図形・埋め込みは現在未対応です"));
+        return Err(Error::new(NO_VISIBLE_CONTENT));
     }
     Ok(out)
 }

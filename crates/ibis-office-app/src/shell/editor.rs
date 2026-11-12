@@ -590,6 +590,12 @@ pub struct SlideEditor {
     pub(crate) read_only: bool,
     /// Original JTD bytes: presence makes this document permanently read-only.
     pub(crate) jtd_original: Option<std::sync::Arc<[u8]>>,
+    /// An unplaced image list, not a reconstruction of the source document.
+    pub(crate) jtd_gallery: bool,
+    /// Body preview retained while its unplaced image list is open.
+    pub(crate) jtd_gallery_body: Option<Presentation>,
+    /// Invalidates image-list work when the document or open request changes.
+    jtd_gallery_generation: u64,
     /// Source path to protect after converting a JTD to an editable document.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) jtd_source_path: Option<std::path::PathBuf>,
@@ -873,6 +879,9 @@ impl SlideEditor {
             #[cfg(not(target_arch = "wasm32"))]
             read_only: false,
             jtd_original: None,
+            jtd_gallery: false,
+            jtd_gallery_body: None,
+            jtd_gallery_generation: 0,
             #[cfg(not(target_family = "wasm"))]
             jtd_source_path: None,
             modify_unlocked: false,
@@ -923,20 +932,80 @@ impl SlideEditor {
         }
     }
 
-    pub(crate) fn load_jtd(&mut self, presentation: Presentation, name: SharedString, bytes: Vec<u8>, window: &mut Window, cx: &mut Context<Self>) {
-        let omissions = ibis_pptx::jtd::omitted_content(&bytes).ok();
+    pub(crate) fn load_jtd(&mut self, presentation: Presentation, name: SharedString, bytes: impl Into<std::sync::Arc<[u8]>>, gallery: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let bytes = bytes.into();
+        let omissions = (!gallery).then(|| ibis_pptx::jtd::omitted_content(&bytes).ok()).flatten();
         self.load(presentation, name, window, cx);
-        self.jtd_original = Some(bytes.into());
+        self.jtd_original = Some(bytes);
+        self.jtd_gallery = gallery;
         self.document.set_read_only(true);
         self.sidebar_open = false;
-        let mut notice = crate::shell::i18n::text("jtd.read-only-notice").to_string();
-        Self::jtd_omission_notice(&mut notice, omissions);
+        let mut notice = crate::shell::i18n::text(if gallery { "jtd.gallery-notice" } else { "jtd.read-only-notice" }).to_string();
+        if !gallery { Self::jtd_omission_notice(&mut notice, omissions); }
         self.set_status(notice, cx);
+    }
+
+    /// Inspect unplaced images without treating them as part of the body layout.
+    pub(crate) fn show_jtd_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.jtd_gallery { return; }
+        let Some(original) = self.jtd_original.clone() else { return; };
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
+        let generation = self.jtd_gallery_generation;
+        #[cfg(target_family = "wasm")]
+        let name = self.file_name.clone().unwrap_or_else(|| "document.jtd".into());
+        self.set_status(crate::shell::i18n::text("jtd.gallery-loading").to_string(), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            let current = this.update(cx, |this, _| {
+                this.jtd_gallery_generation == generation && !this.jtd_gallery
+                    && this.jtd_original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original))
+            }).unwrap_or(false);
+            if !current { return; }
+            let source = original.clone();
+            #[cfg(not(target_family = "wasm"))]
+            let result = cx.background_executor().spawn(async move { crate::jtd_preview::images(&source) }).await;
+            #[cfg(target_family = "wasm")]
+            let mut result = crate::jtd_preview::images(&source);
+            #[cfg(target_family = "wasm")]
+            if !this.update(cx, |this, _| this.jtd_gallery_generation == generation).unwrap_or(false) { return; }
+            #[cfg(target_family = "wasm")]
+            if let Ok(presentation) = &result {
+                if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
+                    result = Err(crate::web::font_preload_error(error));
+                }
+            }
+            this.update_in(cx, |this, window, cx| {
+                if this.jtd_gallery_generation != generation || this.jtd_gallery || !this.jtd_original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
+                match result {
+                    Ok(presentation) => {
+                        let body = this.presentation().clone();
+                        this.replace_jtd_preview(presentation, original.clone(), true, window, cx);
+                        this.jtd_gallery_body = Some(body);
+                    }
+                    Err(error) => this.set_status(error, cx),
+                }
+            }).ok();
+        }).detach();
+    }
+
+    pub(crate) fn show_jtd_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.jtd_gallery { return; }
+        let (Some(body), Some(original)) = (self.jtd_gallery_body.take(), self.jtd_original.clone()) else { return; };
+        self.replace_jtd_preview(body, original, false, window, cx);
+    }
+
+    fn replace_jtd_preview(&mut self, presentation: Presentation, bytes: std::sync::Arc<[u8]>, gallery: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.file_name.clone().unwrap_or_else(|| "document.jtd".into());
+        #[cfg(not(target_family = "wasm"))]
+        let (path, stamp) = (self.path.clone(), self.watch.known.clone());
+        self.load_jtd(presentation, name, bytes, gallery, window, cx);
+        #[cfg(not(target_family = "wasm"))]
+        { self.set_file_path(path); self.watch.known = stamp; }
     }
 
     /// Convert the recognized preview into a separate editable Word document.
     pub(crate) fn edit_jtd_as_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_jtd_read_only() || self.read_only { return; }
+        if !self.is_jtd_read_only() || self.read_only || self.jtd_gallery { return; }
         let omissions = self.jtd_original.as_deref().and_then(|bytes| ibis_pptx::jtd::omitted_content(bytes).ok());
         let result = ibis_pptx::jtd::export_docx(self.presentation()).and_then(ibis_pptx::open);
         match result {
@@ -960,8 +1029,11 @@ impl SlideEditor {
 
     /// Replace the open presentation, dropping undo history and selection.
     pub(crate) fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         self.end_slideshow(window, cx);
         self.jtd_original = None;
+        self.jtd_gallery = false;
+        self.jtd_gallery_body = None;
         #[cfg(not(target_family = "wasm"))]
         { self.jtd_source_path = None; }
         self.modify_unlocked = false;
@@ -1135,6 +1207,7 @@ impl SlideEditor {
     /// document. Initial links and the file picker use the same safe path.
     #[cfg(target_family = "wasm")]
     pub(crate) fn open_web_bytes(&mut self, name: String, data: Vec<u8>, initial: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         self.web_open_generation = self.web_open_generation.wrapping_add(1);
         let generation = self.web_open_generation;
         let closed = self.closed;
@@ -1154,8 +1227,8 @@ impl SlideEditor {
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
             let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ibis_pptx::jtd::is_extension(ext)) || ibis_pptx::jtd::is_jtd(&data);
             if is_jtd {
-                let mut result = ibis_pptx::jtd::read(&data).map_err(|e| e.to_string());
-                if let Ok(presentation) = &result {
+                let mut result = crate::jtd_preview::read(&data);
+                if let Ok((presentation, _)) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
                         result = Err(crate::web::font_preload_error(error));
                     }
@@ -1163,7 +1236,7 @@ impl SlideEditor {
                 this.update_in(cx, |this, window, cx| {
                     if this.closed != closed || this.web_open_generation != generation { return; }
                     match result {
-                        Ok(presentation) => this.load_jtd(presentation, name, data, window, cx),
+                        Ok((presentation, gallery)) => this.load_jtd(presentation, name, data, gallery, window, cx),
                         Err(err) => this.fail_loading(crate::shell::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
                     }
                 }).ok();
@@ -1242,6 +1315,7 @@ impl SlideEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         self.commit_edit(window, cx);
         let name: SharedString = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
         let kind = path.extension().and_then(|e| e.to_str()).and_then(ibis_pptx::Kind::from_extension);
@@ -1265,7 +1339,7 @@ impl SlideEditor {
                 Ok(loaded) => {
                     let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
                     if let Some(bytes) = loaded.jtd_original {
-                        this.load_jtd(loaded.presentation, name, bytes, window, cx);
+                        this.load_jtd(loaded.presentation, name, bytes, loaded.jtd_gallery, window, cx);
                         this.set_file_path(Some(path.clone()));
                         this.watch.known = stamp_before_read;
                     } else if is_tmpl {
@@ -1428,6 +1502,7 @@ impl SlideEditor {
     /// ファイル > 閉じる: close the open file and show the start view
     /// (スタート画面) in the window, as Office does.
     pub(crate) fn close_file(&mut self, _: &CloseFile, window: &mut Window, cx: &mut Context<Self>) {
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         if !self.has_document {
             // The start window closes too (⌘W / Ctrl+W), so the windows can be closed one after
             // another; the app ends with its last window, as with the window's red button. Not in
@@ -2097,6 +2172,8 @@ impl SlideEditor {
             let path = self.file_path();
             let source = self.source.clone();
             let jtd_original = self.jtd_original.clone();
+            let jtd_gallery = self.jtd_gallery;
+            let jtd_gallery_body = self.jtd_gallery_body.clone();
             #[cfg(not(target_family = "wasm"))]
             let jtd_source_path = self.jtd_source_path.clone();
             let current = self.current_slide;
@@ -2113,6 +2190,8 @@ impl SlideEditor {
                 editor.set_file_path(path);
                 editor.source = source;
                 editor.jtd_original = jtd_original;
+                editor.jtd_gallery = jtd_gallery;
+                editor.jtd_gallery_body = jtd_gallery_body;
                 #[cfg(not(target_family = "wasm"))]
                 { editor.jtd_source_path = jtd_source_path; }
                 editor.document_id = doc_id;

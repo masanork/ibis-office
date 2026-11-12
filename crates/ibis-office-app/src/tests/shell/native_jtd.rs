@@ -4,7 +4,159 @@ use super::Scenario;
 use crate::docx::scenarios::DocSteps;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_omissions", omissions), ("shell::native_jtd_template", template), ("shell::native_jtd_compressed_template", compressed_template)]
+    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_omissions", omissions), ("shell::native_jtd_template", template), ("shell::native_jtd_compressed_template", compressed_template), ("shell::native_jtd_unplaced_images", unplaced_images), ("shell::native_jtd_image_switch", image_switch)]
+}
+
+fn image_switch() {
+    use ibis_ooxml::cfb::{self, Item};
+    let original = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jtd");
+    let text = cfb::stream_path(original, "DocumentText").unwrap();
+    let wmf = &include_bytes!("../../../../ibis-emf/tests/fixtures/shapes.wmf")[22..];
+    let mut press = vec![0u8; 48];
+    press[..8].copy_from_slice(b"METAFILE");
+    press.extend_from_slice(wmf);
+    let bytes = cfb::write(&[
+        Item::stream("DocumentText", text),
+        Item::storage("EmbedItems"), Item::storage("EmbedItems/Embedding 7"),
+        Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", press.clone()),
+        Item::storage("EmbedItems/Embedding 2"),
+        Item::stream("EmbedItems/Embedding 2/\u{3}EmbeddedPress", press),
+        Item::storage("EmbedItems/Embedding 9"),
+        Item::stream("EmbedItems/Embedding 9/\u{3}EmbeddedPress", b"unsupported".to_vec()),
+    ]);
+    let mut s = Scenario::start_view();
+    let path = s.screenshot_path("jtd-mixed-source").with_extension("jtd");
+    std::fs::write(&path, &bytes).unwrap();
+    s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
+    for _ in 0..100 {
+        s.wait(50);
+        if s.with(|e, _| e.is_jtd_read_only()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery));
+    assert!(s.paragraph(0).1.contains("日本語 test"));
+    let body_before = s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone());
+    s.with(|e, _| {
+        let menu = crate::shell::chrome_defaults::view_menu(e, ibis_pptx::Kind::Document);
+        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-images").is_some());
+        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_none());
+    });
+    // A later open request invalidates the pending image-list result even if
+    // that later file fails and the existing body remains visible.
+    let invalid = path.with_file_name("invalid-switch.jtd");
+    std::fs::write(&invalid, b"not a JTD").unwrap();
+    s.update(|e, w, cx| {
+        e.show_jtd_images(w, cx);
+        e.open_path(invalid.clone(), None, w, cx);
+    });
+    s.wait(1000);
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery));
+    assert_eq!(s.with(|e, _| e.path.clone()), Some(path.clone()));
+    let old_stamp = s.with(|e, _| e.watch.known.clone());
+    s.update(|e, w, cx| e.show_jtd_images(w, cx));
+    for _ in 0..200 {
+        s.wait(50);
+        if s.with(|e, _| e.jtd_gallery) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    s.with(|e, _| {
+        assert!(e.jtd_gallery && e.jtd_gallery_body.is_some() && e.is_read_only());
+        assert_eq!(e.presentation().media.len(), 2);
+        let texts: Vec<String> = e.presentation().flow.as_ref().unwrap().body.iter().filter_map(|block| {
+            if let ibis_doc_model::Block::Paragraph(paragraph) = block { Some(paragraph.text()) } else { None }
+        }).collect();
+        let first = crate::shell::i18n::format("jtd.gallery-item", &[("index", &2)]);
+        let second = crate::shell::i18n::format("jtd.gallery-item", &[("index", &7)]);
+        assert!(texts.iter().position(|text| text == &first).unwrap() < texts.iter().position(|text| text == &second).unwrap());
+        assert!(texts.contains(&crate::shell::i18n::format("jtd.gallery-count", &[("displayed", &2), ("candidates", &3)])));
+        assert_eq!(e.path.as_deref(), Some(path.as_path()));
+        assert_eq!(e.watch.known, old_stamp);
+        assert!(e.current_bytes().is_err());
+        assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
+        let menu = crate::shell::chrome_defaults::view_menu(e, ibis_pptx::Kind::Document);
+        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_some());
+    });
+    s.wait(1000);
+    s.screenshot("jtd-mixed-unplaced");
+    s.update(|e, w, cx| e.show_jtd_body(w, cx));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery && e.jtd_gallery_body.is_none()));
+    assert!(s.paragraph(0).1.contains("日本語 test"));
+    assert_eq!(s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone()), body_before);
+    assert_eq!(s.with(|e, _| e.path.clone()), Some(path.clone()));
+    s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
+    assert!(!s.with(|e, _| e.is_jtd_read_only()));
+    let output = path.with_extension("docx");
+    s.update(|e, w, _| e.save_to(output.clone(), w)).unwrap();
+    let saved = ibis_pptx::read(&std::fs::read(output).unwrap()).unwrap();
+    assert!(saved.flow.unwrap().body.iter().any(|b| matches!(b, ibis_doc_model::Block::Paragraph(p) if p.text().contains("日本語 test"))));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
+fn unplaced_images() {
+    use ibis_ooxml::cfb::{self, Item};
+    assert_eq!(crate::jtd_preview::inspection_size(u32::MAX, 1), ibis_doc_model::EmuSize::new(5 * 914_400, 1));
+    // A one-unit, whitespace-only TextV.01 in an SsmgV.01 store.
+    let mut text = b"TextV.01".to_vec();
+    text.extend_from_slice(&1u32.to_be_bytes());
+    text.extend_from_slice(&10u16.to_be_bytes());
+    text.push(0);
+    text.extend_from_slice(&1u32.to_be_bytes());
+    let len = text.len() as u32;
+    text.resize(256, 0);
+    let mut body = b"SsmgV.01".to_vec();
+    for value in [1u32, 256, 1] { body.extend_from_slice(&value.to_be_bytes()); }
+    body.extend(text);
+    for value in [0u32, 0, len, 1, 1, 0, 0] { body.extend_from_slice(&value.to_be_bytes()); }
+    let wmf = &include_bytes!("../../../../ibis-emf/tests/fixtures/shapes.wmf")[22..];
+    let mut press = vec![0u8; 48];
+    press[..8].copy_from_slice(b"METAFILE");
+    press.extend_from_slice(wmf);
+    let bytes = cfb::write(&[
+        Item::stream("DocumentText", body),
+        Item::storage("EmbedItems"), Item::storage("EmbedItems/Embedding 7"),
+        Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", press),
+    ]);
+    let mut s = Scenario::start_view();
+    let path = s.screenshot_path("jtd-unplaced-source").with_extension("jtd");
+    std::fs::write(&path, &bytes).unwrap();
+    let loaded = crate::read_file(&path).unwrap();
+    assert!(loaded.jtd_gallery);
+    assert_eq!(loaded.presentation.media.len(), 1);
+    s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
+    for _ in 0..100 {
+        s.wait(50);
+        if s.with(|e, _| e.is_jtd_read_only()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    s.with(|e, _| {
+        assert!(e.is_jtd_read_only() && e.jtd_gallery);
+        assert!(e.status.as_deref().unwrap().contains(&*crate::shell::i18n::text("jtd.gallery-notice")));
+        assert!(e.current_bytes().is_err());
+        assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
+        let menu = crate::shell::chrome_defaults::view_menu(e, ibis_pptx::Kind::Document);
+        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_none());
+    });
+    s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && e.jtd_gallery));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    s.screenshot("jtd-unplaced-images");
+    // Optional, locally owned sample; never part of a distributable fixture.
+    if let Some(sample) = std::env::var_os("IBIS_JTD_GALLERY_SAMPLE").map(std::path::PathBuf::from) {
+        let loaded = crate::read_file(&sample).unwrap();
+        assert!(loaded.jtd_gallery && !loaded.presentation.media.is_empty());
+        if let Ok(expected) = std::env::var("IBIS_JTD_GALLERY_EXPECT") {
+            assert_eq!(loaded.presentation.media.len(), expected.parse::<usize>().unwrap());
+        }
+        s.update(|e, w, cx| e.open_path(sample.clone(), None, w, cx));
+        for _ in 0..100 {
+            s.wait(50);
+            if s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd_gallery) { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd_gallery));
+        s.wait(1000);
+        s.screenshot("jtd-local-unplaced-images");
+    }
 }
 
 fn compressed_template() {
@@ -117,6 +269,14 @@ fn open_read_only() {
     }
     assert!(s.with(|e, _| e.is_read_only() && e.is_jtd_read_only()));
     assert!(s.paragraph(0).1.contains("日本語 test"));
+    // A document without supported images remains on its body preview.
+    s.update(|e, w, cx| e.show_jtd_images(w, cx));
+    for _ in 0..100 {
+        s.wait(50);
+        if s.with(|e, _| e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.no-embedded-images"))) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery && e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.no-embedded-images"))));
     let (paragraph, _) = s.paragraph(0);
     s.click_text(ibis_doc_model::FlowPos::new(paragraph, 0));
     s.type_text("forbidden");

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Opt-in process tests use synthetic executables in an isolated temp folder.
 //! No Sorane Docs installation, signing key, update feed, or network is used.
-#![cfg(any(target_os = "macos", windows))]
+#![cfg(any(target_os = "macos", target_os = "linux", windows))]
 
 use std::{
     fs,
@@ -85,6 +85,16 @@ impl Fixture {
             );
             app
         }
+        #[cfg(target_os = "linux")]
+        {
+            let image = self.root.join(format!("{name}.AppImage"));
+            self.executable(&image, mode, marker);
+            // ELF padding contains the AppImage type 2 marker. Linux ignores it.
+            let mut bytes = fs::read(&image).unwrap();
+            bytes[8..11].copy_from_slice(b"AI\x02");
+            fs::write(&image, bytes).unwrap();
+            image
+        }
         #[cfg(windows)]
         {
             let dir = self.root.join(name);
@@ -98,12 +108,24 @@ impl Fixture {
         {
             app.join("Contents/MacOS/ibisOffice")
         }
+        #[cfg(target_os = "linux")]
+        {
+            app.to_path_buf()
+        }
         #[cfg(windows)]
         {
             app.join("ibisOffice.exe")
         }
     }
     fn run(&self, installed: &Path, candidate: &Path) -> std::process::ExitStatus {
+        self.run_with_hash(installed, candidate, false)
+    }
+    fn run_with_hash(
+        &self,
+        installed: &Path,
+        candidate: &Path,
+        _wrong_hash: bool,
+    ) -> std::process::ExitStatus {
         let parent = self.root.join(if cfg!(windows) {
             "parent.exe"
         } else {
@@ -117,7 +139,8 @@ impl Fixture {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let result = Command::new(env!("CARGO_BIN_EXE_ibisOfficeUpdater"))
+        let mut updater = Command::new(env!("CARGO_BIN_EXE_ibisOfficeUpdater"));
+        updater
             .args([
                 "--pid",
                 &child.id().to_string(),
@@ -130,9 +153,10 @@ impl Fixture {
             .arg(candidate)
             .arg("--log")
             .arg(self.root.join("updater.log"))
-            .args(["--wait-secs", "15"])
-            .status()
-            .unwrap();
+            .args(["--wait-secs", "15"]);
+        #[cfg(target_os = "linux")]
+        add_expected(&mut updater, candidate, _wrong_hash);
+        let result = updater.status().unwrap();
         let _ = child.wait();
         result
     }
@@ -167,6 +191,34 @@ impl Drop for Fixture {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn add_expected(command: &mut Command, candidate: &Path, wrong: bool) {
+    let bytes = fs::read(candidate).unwrap();
+    let hash = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    let hex: String = hash.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    command.args([
+        "--size",
+        &bytes.len().to_string(),
+        "--sha256",
+        if wrong {
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        } else {
+            &hex
+        },
+    ]);
+}
+
+fn backup_of(path: &Path) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        ibis_office_updater::appimage_swap::backup_of(path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        ibis_office_updater::swap::backup_of(path)
+    }
+}
+
 #[test]
 fn updater_process_installs_and_keeps_running_fixture() {
     if std::env::var_os("SORANE_UPDATER_PROCESS_TEST").as_deref() != Some(std::ffi::OsStr::new("1"))
@@ -182,7 +234,7 @@ fn updater_process_installs_and_keeps_running_fixture() {
     assert!(status.success(), "updater status {status}: {log}");
     f.wait_marker("new-marker");
     assert_eq!(fs::read(Fixture::app_binary(&old)).unwrap(), expected);
-    assert!(!ibis_office_updater::swap::backup_of(&old).exists());
+    assert!(!backup_of(&old).exists());
     let log = fs::read_to_string(f.root.join("updater.log")).unwrap();
     assert!(log.contains(" check-running ok "), "{log}");
     // The synthetic process exits after seven seconds; don't leave it running.
@@ -203,7 +255,83 @@ fn updater_process_rolls_back_after_fixture_exits() {
     f.wait_marker("new-marker");
     f.wait_marker("old-marker");
     assert_eq!(fs::read(Fixture::app_binary(&old)).unwrap(), expected);
-    assert!(!ibis_office_updater::swap::backup_of(&old).exists());
+    assert!(!backup_of(&old).exists());
     let log = fs::read_to_string(f.root.join("updater.log")).unwrap();
     assert!(log.contains(" rollback ok "), "{log}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stale_backup_is_preserved() {
+    if std::env::var_os("SORANE_UPDATER_PROCESS_TEST").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let f = Fixture::new();
+    let old = f.app("Installed", "old", &f.root.join("old-marker"));
+    let new = f.app("Candidate", "new-running", &f.root.join("new-marker"));
+    let before = fs::read(&old).unwrap();
+    fs::write(backup_of(&old), b"recovery data").unwrap();
+    assert!(!f.run(&old, &new).success());
+    assert_eq!(fs::read(&old).unwrap(), before);
+    assert_eq!(fs::read(backup_of(&old)).unwrap(), b"recovery data");
+    assert!(!f.root.join("new-marker").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn live_parent_is_not_terminated() {
+    if std::env::var_os("SORANE_UPDATER_PROCESS_TEST").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let f = Fixture::new();
+    let old = f.app("Installed", "old", &f.root.join("old-marker"));
+    let new = f.app("Candidate", "new-running", &f.root.join("new-marker"));
+    let before = fs::read(&old).unwrap();
+    let parent = f.root.join("parent");
+    f.executable(&parent, "new-running", &f.root.join("parent-marker"));
+    let mut child = Command::new(parent).spawn().unwrap();
+    let mut updater = Command::new(env!("CARGO_BIN_EXE_ibisOfficeUpdater"));
+    updater
+        .args([
+            "--pid",
+            &child.id().to_string(),
+            "--version",
+            "2.0.0",
+            "--old",
+        ])
+        .arg(&old)
+        .arg("--new")
+        .arg(&new)
+        .arg("--log")
+        .arg(f.root.join("updater.log"))
+        .args(["--wait-secs", "1"]);
+    add_expected(&mut updater, &new, false);
+    let status = updater.status().unwrap();
+    assert!(!status.success());
+    assert!(child.try_wait().unwrap().is_none());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(fs::read(&old).unwrap(), before);
+    assert!(!backup_of(&old).exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn updater_rejects_changed_candidate() {
+    if std::env::var_os("SORANE_UPDATER_PROCESS_TEST").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let f = Fixture::new();
+    let old = f.app("Installed", "old", &f.root.join("old-marker"));
+    let new = f.app("Candidate", "new-running", &f.root.join("new-marker"));
+    let original = fs::read(&old).unwrap();
+    assert!(!f.run_with_hash(&old, &new, true).success());
+    assert_eq!(fs::read(&old).unwrap(), original);
+    assert!(!f.root.join("new-marker").exists());
+    assert!(!backup_of(&old).exists());
+    let log = fs::read_to_string(f.root.join("updater.log")).unwrap();
+    assert!(log.contains("artifact hash mismatch"), "{log}");
 }

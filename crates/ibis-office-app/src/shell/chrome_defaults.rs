@@ -177,7 +177,7 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 item("file.export.gif", "animation").on(|this, window, cx| this.export_gif(window, cx)).into(),
                 item("file.export.svg", "draw").into(),
             ];
-            if editor.is_jtd_read_only() {
+            if editor.is_jtd_read_only() && !editor.jtd_gallery {
                 entries.push(item("jtd.export-docx", "description").on(|this, window, cx| this.export_jtd_docx(window, cx)).into());
                 if !editor.read_only {
                     entries.push(item("jtd.edit-as-docx", "edit").on(|this, window, cx| this.edit_jtd_as_docx(window, cx)).into());
@@ -244,6 +244,15 @@ fn edit_menu(editor: &SlideEditor, kind: Kind) -> Vec<MenuEntry> {
 
 pub(crate) fn view_menu(editor: &SlideEditor, kind: Kind) -> Vec<MenuEntry> {
     let mut entries = Vec::new();
+    if editor.is_jtd_read_only() {
+        if !editor.jtd_gallery {
+            entries.push(item("jtd.show-images", "image").on(|this, window, cx| this.show_jtd_images(window, cx)).into());
+            entries.push(SEP);
+        } else if editor.jtd_gallery_body.is_some() {
+            entries.push(item("jtd.show-body", "description").on(|this, window, cx| this.show_jtd_body(window, cx)).into());
+            entries.push(SEP);
+        }
+    }
     match kind {
         Kind::Presentation => entries.extend([
             item("pptx.normal-view", "view_compact").checked(editor.is_normal_view()).on(|this, window, cx| this.switch_to_normal_view(window, cx)).into(),

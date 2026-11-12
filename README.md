@@ -189,6 +189,7 @@ cargo build --release
 - On macOS, `scripts/bundle-macos.sh --release` builds the app at `target/release/ibisOffice.app`.
 - The About dialog shows the Git branch and commit for builds from a checkout. `dirty` means tracked files or submodules have uncommitted changes; untracked files are not included. Set `IBIS_BUILD_BRANCH` to the source branch when building a detached checkout in CI. Source archives without Git show only the version.
 - On Linux, `scripts/bundle-linux.sh --release` builds an AppImage at `target/dist/ibisOffice-<version>-Linux.AppImage`, and `scripts/bundle-flatpak.sh --release` a Flatpak bundle at `target/dist/ibisOffice-<version>-Linux-<arch>.flatpak` (needs `flatpak-builder`).
+- To install the built Linux executable for the current user, run `python3 scripts/install-linux.py`. It installs the binary and the desktop entry and icons needed by the application launcher and window manager.
 - For the browser edition, build with `scripts/build-web.sh --release` and serve `www/` (browsers with WebGPU: Chrome, Edge, Safari 26 or later).
 
   The desktop and browser editions can also open `.jtd`, `.jtt`, and some compressed `.jttc` files as an experimental read-only preview. Image-based and other unsupported documents may not open. Recognized content can be exported to a separate DOCX. See [Ichitaro preview](docs/jtd-preview.md).
