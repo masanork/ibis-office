@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! An explicitly unplaced image list for JTD documents.
+//! Explicitly labelled auxiliary previews for JTD documents.
 use ibis_doc_model::{
     Block, EmuSize, FlowParagraph, FlowRun, FlowRunKind, FlowRunStyle, MediaFormat, PictureLook,
     Presentation,
@@ -18,6 +18,27 @@ pub(crate) fn read(data: &[u8]) -> Result<(Presentation, bool), String> {
 pub(crate) fn images(data: &[u8]) -> Result<Presentation, String> {
     let images = ibis_pptx::jtd::inspect_embedded_metafiles(data).map_err(|e| e.to_string())?;
     gallery(images, "jtd.no-embedded-images")
+}
+
+/// An embedded snapshot, which may be stale and is not a reconstructed page.
+pub(crate) fn thumbnail(data: &[u8]) -> Result<Presentation, String> {
+    let bmp = ibis_pptx::jtd::decode_thumbnail_bmp(data)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| crate::shell::i18n::text("jtd.thumbnail-unavailable").to_string())?;
+    let (width, height) = crate::pptx::editing::validated_picture_size(MediaFormat::Bmp, &bmp)
+        .ok_or_else(|| crate::shell::i18n::text("jtd.thumbnail-unavailable").to_string())?;
+    let bytes = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
+    let mut document = ibis_pptx::read(&bytes).map_err(|e| e.to_string())?;
+    let media = document.add_media(MediaFormat::Bmp, bmp);
+    let longest = u64::from(width.max(height).max(1));
+    let scale = |value: u32| ((u64::from(value) * (5 * 914_400)) / longest).max(1) as i64;
+    let body = vec![
+        paragraph(1, FlowRunKind::Text(crate::shell::i18n::text("jtd.thumbnail-heading").to_string())),
+        paragraph(2, FlowRunKind::Picture { media, size: EmuSize::new(scale(width), scale(height)), look: PictureLook::default() }),
+    ];
+    let flow = document.flow.as_mut().ok_or("cannot create thumbnail preview")?;
+    std::sync::Arc::make_mut(flow).body = body;
+    Ok(document)
 }
 
 fn gallery(mut images: ibis_pptx::jtd::EmbeddedMetafileInspection, empty_key: &str) -> Result<Presentation, String> {

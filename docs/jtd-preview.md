@@ -51,6 +51,13 @@ Each image is labelled with its observed embedding index, which is not a page
 number or evidence of source order. The list reports how many recognized stream
 candidates were displayed; it does not count other embedded formats.
 
+View > Show saved Ichitaro thumbnail displays a separately decoded embedded
+snapshot when the observed thumbnail format is available. It can be opened
+from either the body preview or the unplaced image list; returning restores the
+previous view. The snapshot can be outdated or incomplete and is not evidence
+of the current page layout. It is read-only and cannot be converted to DOCX.
+If there is no displayable snapshot, the previous view remains open.
+
 For format investigation, `cargo run -p ibis-pptx --example jtd_frame_links -- INPUT`
 reports candidate links between `EmbeddingInfo` references and `Frame` IDs.
 It exposes duplicate matches, missing matches, and raw size comparisons rather

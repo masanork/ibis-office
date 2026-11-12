@@ -250,13 +250,17 @@ fn edit_menu(editor: &SlideEditor, kind: Kind) -> Vec<MenuEntry> {
 pub(crate) fn view_menu(editor: &SlideEditor, kind: Kind) -> Vec<MenuEntry> {
     let mut entries = Vec::new();
     if editor.is_jtd_read_only() {
-        if !editor.jtd_gallery {
-            entries.push(item("jtd.show-images", "image").on(|this, window, cx| this.show_jtd_images(window, cx)).into());
-            entries.push(SEP);
-        } else if editor.jtd_gallery_body.is_some() {
-            entries.push(item("jtd.show-body", "description").on(|this, window, cx| this.show_jtd_body(window, cx)).into());
-            entries.push(SEP);
+        if editor.jtd_thumbnail {
+            entries.push(item("jtd.thumbnail-back", "arrow_back").on(|this, window, cx| this.return_from_jtd_thumbnail(window, cx)).into());
+        } else {
+            entries.push(item("jtd.show-thumbnail", "image").on(|this, window, cx| this.show_jtd_thumbnail(window, cx)).into());
+            if !editor.jtd_gallery {
+                entries.push(item("jtd.show-images", "image").on(|this, window, cx| this.show_jtd_images(window, cx)).into());
+            } else if editor.jtd_gallery_body.is_some() {
+                entries.push(item("jtd.show-body", "description").on(|this, window, cx| this.show_jtd_body(window, cx)).into());
+            }
         }
+        entries.push(SEP);
     }
     match kind {
         Kind::Presentation => entries.extend([
