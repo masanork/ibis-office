@@ -922,7 +922,13 @@ jtd.gallery-item	埋め込み項目 {index}
 jtd.gallery-count	検査した画像候補 {candidates} 件のうち {displayed} 件を表示しています。他の埋め込みは含まれない場合があります。
 jtd.gallery-notice	埋め込み画像の一部を配置未確定の一覧として表示しています。元の文書の再現ではありません。
 jtd.gallery-unavailable	表示できる本文または埋め込み画像がありません。
-jtd.gallery-export-disabled	画像一覧は元の文書ではないため、Wordに変換できません。
+jtd.gallery-export-disabled	この参考表示は元の文書ではないため、Wordに変換できません。
+jtd.show-thumbnail	一太郎の保存済み縮小画像を表示
+jtd.thumbnail-back	前のプレビューに戻る
+jtd.thumbnail-loading	保存済み縮小画像を読み込んでいます…
+jtd.thumbnail-unavailable	表示できる保存済み縮小画像がありません。現在の表示はそのままです。
+jtd.thumbnail-heading	保存済み縮小画像（古い可能性があり、現在の文書の再現ではありません）
+jtd.thumbnail-notice	保存済みの縮小画像です。古い、または文書の一部のみである可能性があります。
 jtd.show-images	一太郎の埋め込み画像を一覧表示
 jtd.show-body	一太郎の本文プレビューに戻る
 jtd.gallery-loading	埋め込み画像を読み込んでいます…

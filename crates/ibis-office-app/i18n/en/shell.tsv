@@ -924,7 +924,13 @@ jtd.gallery-item	Embedded item {index}
 jtd.gallery-count	Showing {displayed} of {candidates} inspected image candidates. Other embedded content may not be included.
 jtd.gallery-notice	Some embedded images are shown as an unplaced list, not as the original document.
 jtd.gallery-unavailable	No displayable body text or embedded images were found.
-jtd.gallery-export-disabled	This image list is not the original document and cannot be converted to Word.
+jtd.gallery-export-disabled	This reference view is not the original document and cannot be converted to Word.
+jtd.show-thumbnail	Show saved Ichitaro thumbnail
+jtd.thumbnail-back	Return to previous preview
+jtd.thumbnail-loading	Loading saved thumbnail…
+jtd.thumbnail-unavailable	No displayable saved thumbnail was found. The current view is unchanged.
+jtd.thumbnail-heading	Saved thumbnail (it may be outdated and is not a reconstruction of the current document).
+jtd.thumbnail-notice	This saved thumbnail may be outdated or show only part of the document.
 jtd.show-images	Show Ichitaro embedded images
 jtd.show-body	Return to Ichitaro body preview
 jtd.gallery-loading	Loading embedded images…

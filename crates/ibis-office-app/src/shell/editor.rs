@@ -590,10 +590,13 @@ pub struct SlideEditor {
     pub(crate) read_only: bool,
     /// Original JTD bytes: presence makes this document permanently read-only.
     pub(crate) jtd_original: Option<std::sync::Arc<[u8]>>,
-    /// An unplaced image list, not a reconstruction of the source document.
+    /// An auxiliary preview, not a reconstruction of the source document.
     pub(crate) jtd_gallery: bool,
     /// Body preview retained while its unplaced image list is open.
     pub(crate) jtd_gallery_body: Option<Presentation>,
+    /// Embedded snapshot and the immediately preceding body or image-list view.
+    pub(crate) jtd_thumbnail: bool,
+    pub(crate) jtd_thumbnail_previous: Option<(Presentation, bool, Option<Presentation>)>,
     /// Invalidates image-list work when the document or open request changes.
     jtd_gallery_generation: u64,
     /// Source path to protect after converting a JTD to an editable document.
@@ -881,6 +884,8 @@ impl SlideEditor {
             jtd_original: None,
             jtd_gallery: false,
             jtd_gallery_body: None,
+            jtd_thumbnail: false,
+            jtd_thumbnail_previous: None,
             jtd_gallery_generation: 0,
             #[cfg(not(target_family = "wasm"))]
             jtd_source_path: None,
@@ -989,9 +994,59 @@ impl SlideEditor {
     }
 
     pub(crate) fn show_jtd_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.jtd_gallery { return; }
+        if !self.jtd_gallery || self.jtd_thumbnail { return; }
         let (Some(body), Some(original)) = (self.jtd_gallery_body.take(), self.jtd_original.clone()) else { return; };
         self.replace_jtd_preview(body, original, false, window, cx);
+    }
+
+    /// Open a stored snapshot separately; it may be stale or incomplete.
+    pub(crate) fn show_jtd_thumbnail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.jtd_thumbnail { return; }
+        let Some(original) = self.jtd_original.clone() else { return; };
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
+        let generation = self.jtd_gallery_generation;
+        #[cfg(target_family = "wasm")]
+        let name = self.file_name.clone().unwrap_or_else(|| "document.jtd".into());
+        self.set_status(crate::shell::i18n::text("jtd.thumbnail-loading").to_string(), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            let current = this.update(cx, |this, _| this.jtd_gallery_generation == generation && !this.jtd_thumbnail
+                && this.jtd_original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original))).unwrap_or(false);
+            if !current { return; }
+            let source = original.clone();
+            #[cfg(not(target_family = "wasm"))]
+            let result = cx.background_executor().spawn(async move { crate::jtd_preview::thumbnail(&source) }).await;
+            #[cfg(target_family = "wasm")]
+            let mut result = crate::jtd_preview::thumbnail(&source);
+            #[cfg(target_family = "wasm")]
+            if !this.update(cx, |this, _| this.jtd_gallery_generation == generation).unwrap_or(false) { return; }
+            #[cfg(target_family = "wasm")]
+            if let Ok(presentation) = &result {
+                if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
+                    result = Err(crate::web::font_preload_error(error));
+                }
+            }
+            this.update_in(cx, |this, window, cx| {
+                if this.jtd_gallery_generation != generation || this.jtd_thumbnail || !this.jtd_original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
+                match result {
+                    Ok(presentation) => {
+                        let previous = (this.presentation().clone(), this.jtd_gallery, this.jtd_gallery_body.take());
+                        this.replace_jtd_preview(presentation, original.clone(), true, window, cx);
+                        this.jtd_thumbnail = true;
+                        this.jtd_thumbnail_previous = Some(previous);
+                        this.set_status(crate::shell::i18n::text("jtd.thumbnail-notice").to_string(), cx);
+                    }
+                    Err(error) => this.set_status(error, cx),
+                }
+            }).ok();
+        }).detach();
+    }
+
+    pub(crate) fn return_from_jtd_thumbnail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.jtd_thumbnail { return; }
+        let (Some((previous, gallery, body)), Some(original)) = (self.jtd_thumbnail_previous.take(), self.jtd_original.clone()) else { return; };
+        self.replace_jtd_preview(previous, original, gallery, window, cx);
+        self.jtd_gallery_body = body;
     }
 
     fn replace_jtd_preview(&mut self, presentation: Presentation, bytes: std::sync::Arc<[u8]>, gallery: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -1034,6 +1089,8 @@ impl SlideEditor {
         self.jtd_original = None;
         self.jtd_gallery = false;
         self.jtd_gallery_body = None;
+        self.jtd_thumbnail = false;
+        self.jtd_thumbnail_previous = None;
         #[cfg(not(target_family = "wasm"))]
         { self.jtd_source_path = None; }
         self.modify_unlocked = false;
@@ -2174,6 +2231,8 @@ impl SlideEditor {
             let jtd_original = self.jtd_original.clone();
             let jtd_gallery = self.jtd_gallery;
             let jtd_gallery_body = self.jtd_gallery_body.clone();
+            let jtd_thumbnail = self.jtd_thumbnail;
+            let jtd_thumbnail_previous = self.jtd_thumbnail_previous.clone();
             #[cfg(not(target_family = "wasm"))]
             let jtd_source_path = self.jtd_source_path.clone();
             let current = self.current_slide;
@@ -2192,6 +2251,8 @@ impl SlideEditor {
                 editor.jtd_original = jtd_original;
                 editor.jtd_gallery = jtd_gallery;
                 editor.jtd_gallery_body = jtd_gallery_body;
+                editor.jtd_thumbnail = jtd_thumbnail;
+                editor.jtd_thumbnail_previous = jtd_thumbnail_previous;
                 #[cfg(not(target_family = "wasm"))]
                 { editor.jtd_source_path = jtd_source_path; }
                 editor.document_id = doc_id;
