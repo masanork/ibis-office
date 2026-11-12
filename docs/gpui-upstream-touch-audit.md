@@ -85,3 +85,60 @@ extrapolate this inventory to independently maintained GPUI mobile backends.
   and human-authored communication; it does not accept autonomous-agent
   contributions. This document is AI-assisted investigation, not a message to
   upstream maintainers or evidence of their approval.
+
+## Reproductions on the pinned snapshot
+
+On 2026-11-12, the following tests were run locally on macOS. The first two
+extract the indicated upstream function or expressions, verify complete source
+file hashes, and execute them in small Rust harnesses with stub surroundings:
+
+```sh
+python3 scripts/audit-upstream-ios-keyboard.py "$ZED_ROOT/crates/gpui_ios/src/ios/window.rs"
+python3 scripts/audit-upstream-pinch-scale.py "$ZED_ROOT"
+```
+
+- The iOS harness passed four cases. With the keyboard considered open, the
+  actual `handle_keyboard_dismiss_touch` calls `hide_keyboard` when contact 1
+  moves down 30 pixels while contact 2 remains down. It does not call it when
+  only contact 2 moves. UIKit delivery, rendering and the actual keyboard are
+  not part of this harness. The handler runs before the input callback in the
+  inspected iOS backend, but the test does not establish device behaviour.
+- The scale harness feeds hypothetical absolute scales 1, 2, 3 through the
+  exact Wayland/X11 and Windows arithmetic and the actual image-viewer pinch
+  handler, with zoom limits stubbed out. It obtains 4 and 3 respectively. It
+  does not inject platform events or establish what real drivers report.
+- `.github/workflows/web-fonts.yml` runs these two observations against files
+  downloaded from the pinned upstream revision, not against current `main`.
+  A passing observation documents existing behaviour; it does not mean the
+  behaviour has been fixed or that it is necessarily a product bug.
+
+The upstream `gpui_web` input example was also built from that Zed source and
+run in Chrome 157.0.8103.79 on macOS. Since Git fetch returned HTTP 403 here,
+fixed source archives were substituted for the upstream `wasm_thread`, `wgpu`
+(including `naga`), and `font-kit` Git dependencies; locally cached exact
+`oo7` and `scap` revisions were used. Cargo registry dependencies were resolved
+at build time, so the build is not a fully locked reproduction. No GPUI input
+or example source was changed. The standalone example used shared-memory WASM,
+`wasm-bindgen` 0.2.130, and local COOP/COEP headers.
+
+With the example already focused, the test explicitly sets its hidden IME
+textarea's `inputmode` to `none` to model a controlled dismissed state. It then
+sends two Chrome CDP contacts on the editable area, moves only the second
+contact, and releases both; the first contact stays still. The pointer trace
+shows two downs, one move, and two ups; after release the actual upstream Web
+example sets `inputmode` to `text`. This demonstrates a browser-side state
+change for that controlled synthetic sequence, not that a real mobile
+keyboard opened, nor that the current upstream recognizes a pinch.
+
+For a source checkout and running upstream gallery, start the documented
+`crates/gpui_web/examples/hello_web` gallery with `trunk serve`, then run:
+
+```sh
+GPUI_UPSTREAM_WEB_URL=http://127.0.0.1:8080/input \\
+  node scripts/audit-upstream-web-keyboard.mjs
+```
+
+The browser audit asserts the observed pinned behaviour. Check the example's
+layout and source revision before interpreting it against another version.
+The gallery build requires its documented nightly toolchain and cross-origin
+isolation. Physical iOS/Android browser and UIKit gesture tests remain open.

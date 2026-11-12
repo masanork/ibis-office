@@ -66,6 +66,31 @@ jobs:
         run: |
           cargo test --locked --manifest-path forks/gpui-pre/Cargo.toml --features test-support --lib gestures::tests
           cargo test --locked --manifest-path forks/gpui-pre/Cargo.toml --features test-support --lib window::tests
+  upstream-observations:
+    # These tests document the pinned upstream behaviour; they are not fixes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - name: Exercise pinned upstream touch and pinch code
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/zed-touch-audit"
+          base=https://raw.githubusercontent.com/zed-industries/zed/6ceb6fee8738274589b59139df27efc191ec2231
+          for path in \
+            crates/gpui_ios/src/ios/window.rs \
+            crates/gpui_linux/src/linux/wayland/client.rs \
+            crates/gpui_linux/src/linux/x11/client.rs \
+            crates/gpui_windows/src/direct_manipulation.rs \
+            crates/image_viewer/src/image_viewer.rs; do
+            mkdir -p "$root/$(dirname "$path")"
+            curl --fail --location --retry 3 "$base/$path" -o "$root/$path"
+          done
+          python3 scripts/audit-upstream-ios-keyboard.py "$root/crates/gpui_ios/src/ios/window.rs"
+          python3 scripts/audit-upstream-pinch-scale.py "$root"
   touch-browser:
     runs-on: ubuntu-latest
     timeout-minutes: 60
