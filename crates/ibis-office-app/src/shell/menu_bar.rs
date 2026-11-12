@@ -462,6 +462,12 @@ impl SlideEditor {
         // left: the menu names stay where they were before the logo became a button (4 + 8 + logo + 8 = 8 + logo + 12).
         let leading=if show_logo{(8.+12.-2.*MENU_BAR_BUTTON_PADDING).max(0.)}else{8.};
         h_flex()
+            .id("main-menu-bar")
+            .w_full()
+            .min_w_0()
+            .when(window.viewport_size().width < px(600.), |bar| {
+                bar.overflow_x_scroll().track_scroll(&self.menu_bar_scroll)
+            })
             .h(px(28.))
             .flex_shrink_0()
             .pl(px(leading))

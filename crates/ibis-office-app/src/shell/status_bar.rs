@@ -42,7 +42,8 @@ impl SlideEditor {
         texts
     }
 
-    pub(crate) fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = window.viewport_size().width < px(600.);
         let theme = cx.theme();
         let mut texts = self.status_texts();
         let hint = texts.pop().unwrap_or_default();
@@ -88,10 +89,12 @@ impl SlideEditor {
         } else {
             (texts, Vec::new())
         };
+        let left_texts = if compact { left_texts.into_iter().take(1).collect() } else { left_texts };
+        let right_texts = if compact { Vec::new() } else { right_texts };
         let right_layout = self.status_layout.clone();
         h_flex()
             .relative()
-            .h(px(26.))
+            .h(px(if compact { 36. } else { 26. }))
             .flex_shrink_0()
             .px_3()
             .gap_4()
@@ -116,7 +119,7 @@ impl SlideEditor {
                 }
             }))
             .children(left_texts)
-            .child(div().flex_1().child(hint))
+            .child(div().flex_1().min_w_0().overflow_hidden().child(hint))
             .child(
                 h_flex()
                     .relative()
@@ -134,14 +137,14 @@ impl SlideEditor {
                         }
                     }))
                     .children(right_texts)
-                    .child(self.render_zoom(cx)),
+                    .child(self.render_zoom(compact, cx)),
             )
             .children(tab_scrollbar)
     }
 
     /// Zoom of the status bar: − / slider / +, the percentage with ▲ for
     /// the list of zooms, and fitting the slide to the window.
-    fn render_zoom(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_zoom(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let zoom = self.current_zoom();
         // A little slack, so a zoom rounded onto a limit still counts as there.
         let (at_min, at_max) = (zoom <= MIN_ZOOM * 1.001, zoom >= MAX_ZOOM * 0.999);
@@ -152,12 +155,12 @@ impl SlideEditor {
             .gap_1()
             .items_center()
             .child(
-                zoom_step_button("zoom-out", IconName::Minus, "view.zoom-out", at_min)
+                zoom_step_button("zoom-out", IconName::Minus, "view.zoom-out", at_min, compact)
                     .when(!at_min, |d| d.on_click(cx.listener(|this, _, window, cx| this.step_zoom(false, window, cx)))),
             )
-            .child(div().w(px(120.)).child(crate::shell::chrome::slider("zoom-slider", &self.zoom_slider)))
+            .when(!compact, |d| d.child(div().w(px(120.)).child(crate::shell::chrome::slider("zoom-slider", &self.zoom_slider))))
             .child(
-                zoom_step_button("zoom-in", IconName::Plus, "view.zoom-in", at_max)
+                zoom_step_button("zoom-in", IconName::Plus, "view.zoom-in", at_max, compact)
                     .when(!at_max, |d| d.on_click(cx.listener(|this, _, window, cx| this.step_zoom(true, window, cx)))),
             )
             .child(self.render_zoom_menu(cx))
@@ -255,11 +258,11 @@ impl SlideEditor {
 }
 
 /// The − / + button of the zoom: the same hover (and size) as the percentage's button beside it.
-fn zoom_step_button(id: &'static str, icon: IconName, tooltip: &'static str, disabled: bool) -> Stateful<Div> {
+fn zoom_step_button(id: &'static str, icon: IconName, tooltip: &'static str, disabled: bool, compact: bool) -> Stateful<Div> {
     let hover = hsla(0.0, 0.0, 0.27, 0.08);
     div()
         .id(id)
-        .size(px(22.))
+        .size(px(if compact { 34. } else { 22. }))
         .flex()
         .flex_none()
         .items_center()

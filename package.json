@@ -10,9 +10,11 @@
     "build:fonts": "node scripts/build-web-fonts.mjs",
     "test:fonts": "npm run build:font-engine && tsc --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom,dom.iterable --strict --skipLibCheck www/font-coverage.ts www/wasm-loader.ts www/font-loader.ts www/dynamic-fonts.ts worker/font-service.ts && node --test test/web/font-*.test.mjs",
     "build:font-engine": "scripts/build-font-subsetter.sh",
-    "check:worker": "wrangler types worker-configuration.d.ts --env-interface CloudflareEnv && tsc -p worker/tsconfig.json"
+    "check:worker": "wrangler types worker-configuration.d.ts --env-interface CloudflareEnv && tsc -p worker/tsconfig.json",
+    "test:touch-browser": "node scripts/touch-browser-smoke.mjs"
   },
   "devDependencies": {
+    "playwright-core": "1.64.1",
     "typescript": "7.0.2",
     "wrangler": "4.153.0"
   }

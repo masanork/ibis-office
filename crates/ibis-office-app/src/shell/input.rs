@@ -35,6 +35,10 @@ impl FormatInput {
 }
 
 impl InputHandler for FormatInput {
+    fn element_bounds(&mut self, _: &mut Window, _: &mut App) -> Option<Bounds<Pixels>> {
+        Some(self.bounds)
+    }
+
     fn selected_text_range(&mut self, ignore_disabled_input: bool, window: &mut Window, cx: &mut App) -> Option<UTF16Selection> {
         self.editor.update(cx, |e, cx| with_format!(e, selected_text_range(e, ignore_disabled_input, window, cx)))
     }

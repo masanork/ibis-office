@@ -19,3 +19,6 @@
 [submodule "forks/gpui-pre-wgpu"]
 	path = forks/gpui-pre-wgpu
 	url = https://github.com/masanork/gpui-pre-wgpu.git
+[submodule "forks/gpui-kit"]
+	path = forks/gpui-kit
+	url = https://github.com/masanork/gpui-kit.git
