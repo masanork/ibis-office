@@ -199,6 +199,29 @@ impl SlideEditor {
         crate::shell::save::write_replacing(path, &bytes).map_err(|e| e.to_string())
     }
 
+    /// Export the recognized JTD content as a separate HTML document.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn export_jtd_html(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_jtd_read_only() { return; }
+        let (stem, _) = self.name_parts();
+        self.ask_path(format!("{stem}.html"), window, cx, |this, path, _, cx| {
+            let result = this.export_jtd_html_to(&path)
+                .map(|()| crate::shell::i18n::text("jtd.html-exported").to_string())
+                .map_err(|error| crate::shell::i18n::format("file.save-failed", &[("error", &error)]));
+            this.report(result, cx);
+        });
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn export_jtd_html_to(&self, path: &std::path::Path) -> Result<(), String> {
+        if !self.is_jtd_read_only() || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html"))
+            || self.path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, path)) {
+            return Err(crate::shell::i18n::text("jtd.read-only").to_string());
+        }
+        let bytes = ibis_pptx::jtd::export_html(self.presentation()).map_err(|e| e.to_string())?;
+        crate::shell::save::write_replacing(path, &bytes).map_err(|e| e.to_string())
+    }
+
     /// ファイル > パスワードで保護…: the window that sets the password (or takes it off).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn protect_with_password(&mut self, window: &mut Window, cx: &mut Context<Self>) {

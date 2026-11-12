@@ -943,3 +943,5 @@ jtd.editable-notice	Converted to Word. Unsupported formatting, images and some t
 jtd.source-protected	Saving as an Ichitaro file is not supported. Save separately from the original file.
 jtd.export-docx	Word (preview; partial lines omitted)
 jtd.docx-exported	Converted to Word. Partial table lines, unsupported formatting and images are omitted.
+jtd.export-html	HTML (preview; partial lines omitted)
+jtd.html-exported	Converted to HTML. Partial table lines, unsupported formatting and images are omitted.
