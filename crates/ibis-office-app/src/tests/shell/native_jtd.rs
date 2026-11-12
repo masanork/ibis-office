@@ -18,7 +18,11 @@ fn image_switch() {
     let bytes = cfb::write(&[
         Item::stream("DocumentText", text),
         Item::storage("EmbedItems"), Item::storage("EmbedItems/Embedding 7"),
-        Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", press),
+        Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", press.clone()),
+        Item::storage("EmbedItems/Embedding 2"),
+        Item::stream("EmbedItems/Embedding 2/\u{3}EmbeddedPress", press),
+        Item::storage("EmbedItems/Embedding 9"),
+        Item::stream("EmbedItems/Embedding 9/\u{3}EmbeddedPress", b"unsupported".to_vec()),
     ]);
     let mut s = Scenario::start_view();
     let path = s.screenshot_path("jtd-mixed-source").with_extension("jtd");
@@ -57,7 +61,14 @@ fn image_switch() {
     }
     s.with(|e, _| {
         assert!(e.jtd_gallery && e.jtd_gallery_body.is_some() && e.is_read_only());
-        assert_eq!(e.presentation().media.len(), 1);
+        assert_eq!(e.presentation().media.len(), 2);
+        let texts: Vec<String> = e.presentation().flow.as_ref().unwrap().body.iter().filter_map(|block| {
+            if let ibis_doc_model::Block::Paragraph(paragraph) = block { Some(paragraph.text()) } else { None }
+        }).collect();
+        let first = crate::shell::i18n::format("jtd.gallery-item", &[("index", &2)]);
+        let second = crate::shell::i18n::format("jtd.gallery-item", &[("index", &7)]);
+        assert!(texts.iter().position(|text| text == &first).unwrap() < texts.iter().position(|text| text == &second).unwrap());
+        assert!(texts.contains(&crate::shell::i18n::format("jtd.gallery-count", &[("displayed", &2), ("candidates", &3)])));
         assert_eq!(e.path.as_deref(), Some(path.as_path()));
         assert_eq!(e.watch.known, old_stamp);
         assert!(e.current_bytes().is_err());

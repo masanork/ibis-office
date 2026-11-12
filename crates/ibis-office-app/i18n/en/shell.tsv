@@ -920,6 +920,8 @@ file.modify-locked-no-overwrite	This file needs its password to modify, so it ca
 start.update	Update ibisOffice
 jtd.read-only-notice	Ichitaro: Read-only preview with limited vertical text, ruby and tables. Table borders are approximate; formatting and images are omitted.
 jtd.gallery-heading	Some unplaced embedded images (original pages, position, size, and order are not reproduced; rendering is approximate).
+jtd.gallery-item	Embedded item {index}
+jtd.gallery-count	Showing {displayed} of {candidates} inspected image candidates. Other embedded content may not be included.
 jtd.gallery-notice	Some embedded images are shown as an unplaced list, not as the original document.
 jtd.gallery-unavailable	No displayable body text or embedded images were found.
 jtd.gallery-export-disabled	This image list is not the original document and cannot be converted to Word.

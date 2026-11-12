@@ -36,11 +36,54 @@ jobs:
       - run: cargo test --locked -p ibis-emf
       - run: 'cargo test --locked -p ibis-pptx --lib jtd::'
       - run: cargo test --locked -p ibis-pptx --test html_export
+      - name: Test browser touch gesture arbitration
+        run: |
+          rustc --edition 2024 --test forks/gpui-pre-web/src/touch_pinch.rs -o "$RUNNER_TEMP/touch-pinch-test"
+          "$RUNNER_TEMP/touch-pinch-test"
       - run: cargo test --locked -p ibis-pptx --example jtd_embedded
       - run: npm run test:web
       - run: npm run check:worker
       - run: npx wrangler deploy --dry-run
       - run: cargo check --locked -p ibis-office-app --lib --target wasm32-unknown-unknown
+  touch-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-28
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-bindgen
+            ~/.cargo/bin/wasm-bindgen-test-runner
+            ~/.cargo/bin/wasm2es6js
+          key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
+      - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - run: scripts/build-web.sh
+      - name: Exercise touch input in Chrome
+        run: |
+          export IBIS_CHROME_PATH="$(command -v google-chrome)"
+          export IBIS_TOUCH_WEBGL=1
+          export IBIS_TOUCH_ARTIFACTS="$RUNNER_TEMP/ibis-touch-artifacts"
+          mkdir -p "$IBIS_TOUCH_ARTIFACTS"
+          python3 -m http.server 8793 --bind 127.0.0.1 --directory www > /tmp/ibis-touch-www.log 2>&1 &
+          npm run test:touch-browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: touch-browser-failure-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ibis-touch-artifacts
+
   html-browser:
     runs-on: ubuntu-latest
     timeout-minutes: 60
