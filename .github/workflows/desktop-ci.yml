@@ -160,6 +160,7 @@ jobs:
           (cd "$RUNNER_TEMP/verify-linux" && "$image" --appimage-extract)
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOfficeUpdater"
+          python3 scripts/test-appimage-recovery.py "$image"
           test -s "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/third-party-licenses.md"
           set +e
           "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" --export invalid
