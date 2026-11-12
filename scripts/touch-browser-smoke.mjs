@@ -245,12 +245,22 @@ try {
   const editingCdp = await editing.context().newCDPSession(editing);
   const editingTouch = (type, touchPoints) => editingCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
   const editingTap = (id, x, y) => tap(editingTouch, id, x, y);
+  const mirror = editing.locator('textarea');
   const assertDownloadContains = async marker => {
     await editing.waitForFunction(() => Array.isArray(window.__ibisDownloaded), null, { timeout: 15_000 });
     const docx = Buffer.from(await editing.evaluate(() => window.__ibisDownloaded));
     execFileSync('python3', ['-c', "import io,sys,zipfile; z=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())); assert sys.argv[1] in z.read('word/document.xml').decode('utf-8')", marker], { input: docx });
     await editing.evaluate(() => { delete window.__ibisDownloaded; });
   };
+  // The first contact remains down after the second lifts. Neither release
+  // may be interpreted as an editable tap or activate the virtual keyboard.
+  await editingTouch('touchStart', [pt(40, 120, 200)]);
+  await editingTouch('touchStart', [pt(40, 120, 200), pt(41, 200, 200)]);
+  await editingTouch('touchEnd', [pt(40, 120, 200)]);
+  await editingTouch('touchEnd', []);
+  await editing.waitForTimeout(500);
+  assert.equal(await mirror.getAttribute('inputmode'), 'none', 'a two-finger gesture must not summon the virtual keyboard');
+
   await editingTap(15, 120, 200);
   await editing.waitForTimeout(500);
   await editing.keyboard.insertText('初期編集');
@@ -268,7 +278,6 @@ try {
   await editingTouch('touchMove', [pt(12, 300, 400)]);
   await editingTouch('touchEnd', []);
   await editing.waitForTimeout(500);
-  const mirror = editing.locator('textarea');
   assert.equal(await mirror.getAttribute('inputmode'), 'none', 'a pan must not summon the virtual keyboard');
   await editingTap(13, 120, 200);
   await editing.waitForTimeout(500);
