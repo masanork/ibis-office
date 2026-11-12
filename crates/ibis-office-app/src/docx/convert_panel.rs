@@ -9,7 +9,32 @@ use ibis_pptx::docx_convert::{DocxConvertFormat, export_docx_format, import_docx
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::text;
 
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = ibisOfficeDownloadHtml)]
+    pub(crate) fn download_html(name: &str, bytes: Vec<u8>) -> Result<(), wasm_bindgen::JsValue>;
+}
+
 impl SlideEditor {
+    /// Download visible workbook sheets or slides as a standalone HTML page.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn export_office_html(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_edit(window, cx);
+        let (stem, _) = self.name_parts();
+        let stem = if stem.is_empty() { "document" } else { &stem };
+        let result = if self.is_workbook() {
+            ibis_pptx::html_export::export_workbook_html(self.presentation(), stem)
+        } else {
+            ibis_pptx::html_export::export_slides_html(self.presentation(), stem)
+        };
+        match result {
+            Ok(bytes) => if let Err(error) = download_html(&format!("{stem}.html"), bytes) {
+                self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &format!("{error:?}"))]), cx);
+            },
+            Err(error) => self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &error.to_string())]), cx),
+        }
+    }
     /// File > Export > a supported text-document format.
     pub(crate) fn export_docx_format_dialog(&mut self, format: DocxConvertFormat, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);
@@ -29,8 +54,20 @@ impl SlideEditor {
         }
         #[cfg(target_family = "wasm")]
         {
-            let _ = format;
-            self.report(Err(text("_shell.exporting-is-not-yet-available-in-the-browser-ve").into()), cx);
+            if format != DocxConvertFormat::Html {
+                self.report(Err(text("_shell.exporting-is-not-yet-available-in-the-browser-ve").into()), cx);
+                return;
+            }
+            let (stem, _) = self.name_parts();
+            let name = format!("{}.html", if stem.is_empty() { "document" } else { &stem });
+            match export_docx_format(self.presentation(), format) {
+                Ok(bytes) => {
+                    if let Err(error) = download_html(&name, bytes) {
+                        self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &format!("{error:?}"))]), cx);
+                    }
+                }
+                Err(error) => self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &error.to_string())]), cx),
+            }
         }
     }
 
