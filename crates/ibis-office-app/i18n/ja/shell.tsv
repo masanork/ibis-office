@@ -918,9 +918,13 @@ file.modify-locked-no-overwrite	書き込みパスワードが必要なため、
 start.update	ibisOffice を更新する
 jtd.read-only-notice	一太郎文書: 読み取り専用。一部の縦書き・ルビ・表に対応。表の罫線は近似で、書式や画像は再現されません。
 jtd.gallery-heading	検出した埋め込み画像の一部（元のページ・位置・大きさ・順序は再現していません。画像の表示も近似です）
-jtd.gallery-notice	本文を表示できないため、埋め込み画像の一部を配置未確定の一覧として表示しています。元の文書の再現ではありません。
+jtd.gallery-notice	埋め込み画像の一部を配置未確定の一覧として表示しています。元の文書の再現ではありません。
 jtd.gallery-unavailable	表示できる本文または埋め込み画像がありません。
 jtd.gallery-export-disabled	画像一覧は元の文書ではないため、Wordに変換できません。
+jtd.show-images	一太郎の埋め込み画像を一覧表示
+jtd.show-body	一太郎の本文プレビューに戻る
+jtd.gallery-loading	埋め込み画像を読み込んでいます…
+jtd.no-embedded-images	表示できる埋め込み画像がありません。本文はそのままです。
 jtd.omitted-sheets	 追加シート{count}件は表示・変換されません。
 jtd.omitted-objects	 埋め込み関連の格納領域{count}件は表示・変換されません。
 jtd.read-only	一太郎文書は読み取り専用です

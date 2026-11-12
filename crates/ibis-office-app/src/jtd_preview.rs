@@ -9,12 +9,18 @@ pub(crate) fn read(data: &[u8]) -> Result<(Presentation, bool), String> {
     match ibis_pptx::jtd::read_preview(data).map_err(|e| e.to_string())? {
         ibis_pptx::jtd::Preview::Document(document) => Ok((document, false)),
         ibis_pptx::jtd::Preview::UnplacedImages(images) => {
-            gallery(images).map(|document| (document, true))
+            gallery(images, "jtd.gallery-unavailable").map(|document| (document, true))
         }
     }
 }
 
-fn gallery(mut images: ibis_pptx::jtd::EmbeddedMetafileInspection) -> Result<Presentation, String> {
+/// Inspect unplaced images separately even when the document has body text.
+pub(crate) fn images(data: &[u8]) -> Result<Presentation, String> {
+    let images = ibis_pptx::jtd::inspect_embedded_metafiles(data).map_err(|e| e.to_string())?;
+    gallery(images, "jtd.no-embedded-images")
+}
+
+fn gallery(mut images: ibis_pptx::jtd::EmbeddedMetafileInspection, empty_key: &str) -> Result<Presentation, String> {
     let bytes = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
     let mut document = ibis_pptx::read(&bytes).map_err(|e| e.to_string())?;
     images.metafiles.sort_by_key(|entry| entry.embedding_index);
@@ -47,7 +53,7 @@ fn gallery(mut images: ibis_pptx::jtd::EmbeddedMetafileInspection) -> Result<Pre
         ));
     }
     if blocks.len() == 1 {
-        return Err(crate::shell::i18n::text("jtd.gallery-unavailable").to_string());
+        return Err(crate::shell::i18n::text(empty_key).to_string());
     }
     let flow = document.flow.as_mut().ok_or("cannot create image list")?;
     std::sync::Arc::make_mut(flow).body = blocks;
