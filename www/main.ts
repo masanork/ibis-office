@@ -50,6 +50,8 @@ declare global {
     ibisOfficePreloadFonts: (text: string) => Promise<void>;
     /** Download a locally generated DOCX without sending the document to a server. */
     ibisOfficeDownloadDocx: (name: string, bytes: Uint8Array) => void;
+    /** Download locally generated HTML without sending the document to a server. */
+    ibisOfficeDownloadHtml: (name: string, bytes: Uint8Array) => void;
     /** Called from Rust when the close or the download button is pressed. */
     ibisOfficeEmbedAction: (kind: string, name: string, bytes?: Uint8Array) => void;
     /** Set by the embedding page before main.js. */
@@ -224,13 +226,20 @@ function showStatus(text: string): void {
 }
 
 window.ibisOfficeDownloadDocx = (name, bytes) => {
-  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }));
+  downloadDocument(name, bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+};
+window.ibisOfficeDownloadHtml = (name, bytes) => {
+  downloadDocument(name, bytes, 'text/html;charset=utf-8');
+};
+
+function downloadDocument(name: string, bytes: Uint8Array, type: string): void {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
   const link = document.createElement('a');
   link.href = url;
   link.download = name;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
-};
+}
 
 window.ibisOfficePickFile = pickFile;
 window.ibisOfficeEmbedAction = embedAction;

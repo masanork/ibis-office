@@ -821,6 +821,12 @@ pub fn export_docx(presentation: &Presentation) -> Result<Vec<u8>, Error> {
     blank.source.save(&exported, crate::SaveOptions::default())
 }
 
+/// Export the currently recognized model as standalone UTF-8 HTML.
+/// Unsupported JTD features are omitted, as with [`export_docx`].
+pub fn export_html(presentation: &Presentation) -> Result<Vec<u8>, Error> {
+    crate::docx_convert::export_docx_to_html(presentation)
+}
+
 /// Prefer the documented direction flag; the initial record remains an
 /// imperfect compatibility heuristic for variants that cannot be decoded.
 fn observed_vertical(data: &[u8]) -> bool {
@@ -2281,6 +2287,64 @@ mod tests {
         assert!(matches!(&flow.body[1], Block::Paragraph(p) if p.text() == "second"));
     }
     #[test]
+    fn exports_recognized_text_as_utf8_html() {
+        let model = read(&fixture("日本語 <>&\nsecond")).unwrap();
+        let html = String::from_utf8(export_html(&model).unwrap()).unwrap();
+        assert!(html.starts_with("<!DOCTYPE html>\n"));
+        assert!(html.contains("<meta charset=\"UTF-8\">"));
+        assert!(html.contains("<p style=\"text-align:justify\">日本語 &lt;&gt;&amp;</p>"));
+        assert!(html.contains("<p style=\"text-align:justify\">second</p>"));
+        let mut without_flow = model;
+        without_flow.flow = None;
+        assert!(export_html(&without_flow).is_err());
+    }
+
+    #[test]
+    fn html_preserves_combined_table_spans() {
+        use ibis_doc_model::VerticalMerge::{Continue, None, Start};
+        let cell = |span, merge| FlowCell { span, merge, ..FlowCell::default() };
+        let row = |cells| FlowRow { cells, ..FlowRow::default() };
+        let table = FlowTable {
+            columns: vec![50, 50, 50, 50],
+            rows: vec![
+                row(vec![cell(2, Start), cell(1, None), cell(1, None)]),
+                row(vec![cell(2, Continue), cell(1, None), cell(1, None)]),
+                row(vec![cell(2, Continue), cell(1, None), cell(1, None)]),
+                row(vec![cell(2, None), cell(1, Start), cell(1, None)]),
+                // The merge starts at grid column 2, but its cell index changes.
+                row(vec![cell(0, None), cell(1, None), cell(1, Continue), cell(1, None)]),
+                row(vec![cell(2, None), cell(1, None), cell(1, None)]),
+                row(vec![cell(2, None), cell(1, Continue), cell(1, None)]),
+            ],
+            ..FlowTable::default()
+        };
+        let mut model = read(&fixture("table")).unwrap();
+        std::sync::Arc::make_mut(model.flow.as_mut().unwrap()).body = vec![Block::Table(table)];
+        let html = String::from_utf8(export_html(&model).unwrap()).unwrap();
+        assert!(html.contains("<tr><td colspan=\"2\" rowspan=\"3\"></td><td></td><td></td></tr>"));
+        assert_eq!(html.matches("<tr><td></td><td></td></tr>").count(), 2);
+        assert!(html.contains("<tr><td colspan=\"2\"></td><td rowspan=\"2\"></td><td></td></tr>"));
+        assert_eq!(html.matches("rowspan=").count(), 2, "a merge stops at the first unmerged row");
+        assert!(!html.contains("colspan=\"0\""));
+    }
+
+    #[test]
+    fn html_escapes_ruby_and_keeps_its_style_and_link() {
+        let mut model = read(&fixture("ruby")).unwrap();
+        let flow = std::sync::Arc::make_mut(model.flow.as_mut().unwrap());
+        let Block::Paragraph(paragraph) = &mut flow.body[0] else { panic!("paragraph") };
+        let run = &mut paragraph.runs[0];
+        run.kind = FlowRunKind::Ruby {
+            base: "<&".into(), text: ">&".into(), size: 500, raise: 1000,
+            align: RubyAlign::Center,
+        };
+        run.style.bold = true;
+        run.link = Some(ibis_doc_model::Link::Url("https://example.com/?a=1&b=2".into()));
+        let html = String::from_utf8(export_html(&model).unwrap()).unwrap();
+        assert!(html.contains("<a href=\"https://example.com/?a=1&amp;b=2\"><strong><ruby>&lt;&amp;<rt>&gt;&amp;</rt></ruby></strong></a>"));
+    }
+
+    #[test]
     fn exports_recognized_text_and_page_direction_as_docx() {
         let mut presentation = read(&fixture("日本語\nsecond")).unwrap();
         std::sync::Arc::make_mut(presentation.flow.as_mut().unwrap())
@@ -2707,7 +2771,7 @@ mod tests {
     }
 
     #[test]
-    fn observed_ruby_pair_is_kept_in_word_model_and_docx() {
+    fn observed_ruby_pair_is_kept_in_word_model_docx_and_html() {
         let mut s = b"SsmgV.01".to_vec();
         for unit in [
             0x1c_u16, 1, 7, 0, 0, 3, 0x1d, 0x6f22, 0x1e, 5, 0, 1, 0x1f, 0x1c, 1, 7, 0, 1, 0x82,
@@ -2728,6 +2792,8 @@ mod tests {
         assert!(
             matches!(&flow.body[0], Block::Paragraph(p) if matches!(&p.runs[0].kind, FlowRunKind::Ruby {base, text, ..} if base == "漢" && text == "かん"))
         );
+        let html = String::from_utf8(export_html(&model).unwrap()).unwrap();
+        assert!(html.contains("<ruby>漢<rt>かん</rt></ruby>"));
         let docx = export_docx(&model).unwrap();
         let reopened = crate::read(&docx).unwrap();
         assert!(

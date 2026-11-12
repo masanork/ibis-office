@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use ibis_doc_model::{
     Block, FlowAlign, FlowDocument, FlowParagraph, FlowRun, FlowRunKind, Link,
-    Presentation, Rgb,
+    Presentation, Rgb, VerticalMerge,
 };
 use ibis_ooxml::cfb::{self, Item as CfbItem};
 use ibis_ooxml::zip::{EntryMeta, Writer};
@@ -1364,7 +1364,12 @@ pub fn export_html(doc: &FlowDocument) -> String {
             if txt.is_empty() {
                 continue;
             }
-            let mut chunk = xml_escape(&txt);
+            let mut chunk = match &run.kind {
+                FlowRunKind::Ruby { base, text, .. } => format!(
+                    "<ruby>{}<rt>{}</rt></ruby>", xml_escape(base), xml_escape(text)
+                ),
+                _ => xml_escape(&txt),
+            };
             if run.style.bold {
                 chunk = format!("<strong>{chunk}</strong>");
             }
@@ -1396,11 +1401,39 @@ pub fn export_html(doc: &FlowDocument) -> String {
             Block::Paragraph(p) => render_para(&mut out, p),
             Block::Table(t) => {
                 out.push_str("<table>\n");
-                for row in &t.rows {
+                for (row_index, row) in t.rows.iter().enumerate() {
                     out.push_str("<tr>");
                     let cell_tag = if row.header { "th" } else { "td" };
+                    let mut column = 0;
                     for cell in &row.cells {
-                        out.push_str(&format!("<{cell_tag}>"));
+                        let start_column = column;
+                        let span = cell.span.max(1) as usize;
+                        column += span;
+                        if cell.merge == VerticalMerge::Continue {
+                            continue;
+                        }
+                        out.push_str(&format!("<{cell_tag}"));
+                        if span > 1 {
+                            out.push_str(&format!(" colspan=\"{span}\""));
+                        }
+                        if cell.merge == VerticalMerge::Start {
+                            let mut rows = 1;
+                            for next_row in &t.rows[row_index + 1..] {
+                                let mut next_column = 0;
+                                let continued = next_row.cells.iter().any(|next| {
+                                    let start = next_column;
+                                    next_column += next.span.max(1) as usize;
+                                    start == start_column && next_column == column
+                                        && next.merge == VerticalMerge::Continue
+                                });
+                                if !continued { break; }
+                                rows += 1;
+                            }
+                            if rows > 1 {
+                                out.push_str(&format!(" rowspan=\"{rows}\""));
+                            }
+                        }
+                        out.push('>');
                         for b in &cell.blocks {
                             if let Block::Paragraph(p) = b {
                                 render_para(&mut out, p);
