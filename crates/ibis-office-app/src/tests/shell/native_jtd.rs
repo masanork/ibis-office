@@ -4,7 +4,7 @@ use super::Scenario;
 use crate::docx::scenarios::DocSteps;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_omissions", omissions), ("shell::native_jtd_template", template), ("shell::native_jtd_compressed_template", compressed_template), ("shell::native_jtd_unplaced_images", unplaced_images), ("shell::native_jtd_image_switch", image_switch)]
+    vec![("shell::native_jtd_open_read_only", open_read_only), ("shell::native_jtd_html_export", html_export), ("shell::native_jtd_omissions", omissions), ("shell::native_jtd_template", template), ("shell::native_jtd_compressed_template", compressed_template), ("shell::native_jtd_unplaced_images", unplaced_images), ("shell::native_jtd_image_switch", image_switch)]
 }
 
 fn synthetic_thumbnail() -> Vec<u8> {
@@ -155,6 +155,54 @@ fn image_switch() {
     let saved = ibis_pptx::read(&std::fs::read(output).unwrap()).unwrap();
     assert!(saved.flow.unwrap().body.iter().any(|b| matches!(b, ibis_doc_model::Block::Paragraph(p) if p.text().contains("日本語 test"))));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
+fn html_export() {
+    let mut s = Scenario::start_view();
+    let bytes = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jtd");
+    let compressed = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jttc");
+    for (extension, source) in [("JTD", bytes.as_slice()), ("JTT", bytes.as_slice()), ("JTTC", compressed.as_slice()), ("html", bytes.as_slice())] {
+        let path = s.screenshot_path("synthetic-html-export").with_extension(extension);
+        let output = path.with_file_name(format!("export-{extension}.HTML"));
+        assert!(s.with(|e, _| e.export_jtd_html_to(&output)).is_err());
+        std::fs::write(&path, source).unwrap();
+        s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
+        for _ in 0..100 {
+            s.wait(50);
+            if s.with(|e, _| e.is_jtd_read_only()) { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(s.with(|e, _| e.is_jtd_read_only()));
+        s.with(|e, _| {
+            let mut menus = e.menus();
+            let item = menus.find_mut("jtd.export-html").expect("HTML export menu");
+            assert_eq!(item.label.as_str(), crate::shell::i18n::text("jtd.export-html"));
+            assert!(item.handler.is_some());
+            assert!(e.export_jtd_html_to(&path).is_err());
+            for ext in ["jtd", "JTT", "jttc", "JTDC", "docx", "txt"] {
+                let forbidden = path.with_file_name(format!("forbidden.{ext}"));
+                std::fs::write(&forbidden, b"keep").unwrap();
+                assert!(e.export_jtd_html_to(&forbidden).is_err());
+                assert_eq!(std::fs::read(forbidden).unwrap(), b"keep");
+            }
+        });
+        #[cfg(unix)]
+        {
+            let alias = path.with_file_name("source-alias.html");
+            let _ = std::fs::remove_file(&alias);
+            std::os::unix::fs::symlink(&path, &alias).unwrap();
+            assert!(s.with(|e, _| e.export_jtd_html_to(&alias)).is_err());
+        }
+        s.with(|e, _| e.export_jtd_html_to(&output)).unwrap();
+        let html = std::fs::read_to_string(&output).unwrap();
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("日本語 test"));
+        assert_eq!(std::fs::read(&path).unwrap(), source);
+        assert!(s.with(|e, _| e.is_jtd_read_only() && e.path.as_ref() == Some(&path)));
+        s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
+        assert!(s.with(|e, _| e.export_jtd_html_to(&output)).is_err());
+        assert_eq!(std::fs::read_to_string(output).unwrap(), html);
+    }
 }
 
 fn unplaced_images() {

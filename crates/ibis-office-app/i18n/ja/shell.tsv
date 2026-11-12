@@ -941,3 +941,5 @@ jtd.editable-notice	Word文書に変換しました。未対応の書式・画�
 jtd.source-protected	一太郎形式には保存できません。元のファイルとは別に保存してください。
 jtd.export-docx	Word（表示中の内容、途中の罫線を除く）
 jtd.docx-exported	Wordに変換しました。途中の罫線、未対応の書式や画像は含まれません。
+jtd.export-html	HTML（表示中の内容、途中の罫線を除く）
+jtd.html-exported	HTMLに変換しました。途中の罫線、未対応の書式や画像は含まれません。

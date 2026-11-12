@@ -94,6 +94,8 @@ extern "C" {
     fn embed_action_js(kind: &str, name: &str, bytes: Option<Vec<u8>>);
     #[wasm_bindgen(js_name = ibisOfficeDownloadDocx)]
     fn download_docx_js(name: &str, bytes: Vec<u8>);
+    #[wasm_bindgen(js_name = ibisOfficeDownloadHtml)]
+    fn download_html_js(name: &str, bytes: Vec<u8>);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -113,6 +115,20 @@ impl SlideEditor {
                 let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
                 download_docx_js(&format!("{stem}.docx"), bytes);
                 self.set_status(crate::shell::i18n::text("jtd.docx-exported").to_string(), cx);
+            }
+            Err(err) => self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &err.to_string())]), cx),
+        }
+    }
+
+    /// Download the content currently recognized from the read-only JTD as HTML.
+    pub(crate) fn export_jtd_html(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_jtd_read_only() { return; }
+        match ibis_pptx::jtd::export_html(self.presentation()) {
+            Ok(bytes) => {
+                let name = self.file_name.as_deref().unwrap_or("document.jtd");
+                let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+                download_html_js(&format!("{stem}.html"), bytes);
+                self.set_status(crate::shell::i18n::text("jtd.html-exported").to_string(), cx);
             }
             Err(err) => self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &err.to_string())]), cx),
         }
