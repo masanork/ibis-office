@@ -177,6 +177,11 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 item("file.export.gif", "animation").on(|this, window, cx| this.export_gif(window, cx)).into(),
                 item("file.export.svg", "draw").into(),
             ];
+            #[cfg(target_family = "wasm")]
+            if matches!(editor.kind(), Kind::Workbook | Kind::Presentation) {
+                entries.push(item_key("file.export.html", "description", "docx.convert.format.html")
+                    .on(|this, window, cx| this.export_office_html(window, cx)).into());
+            }
             if editor.is_jtd_read_only() && !editor.jtd_gallery {
                 entries.push(item("jtd.export-docx", "description").on(|this, window, cx| this.export_jtd_docx(window, cx)).into());
                 if !editor.read_only {
