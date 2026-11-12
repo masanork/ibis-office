@@ -11,11 +11,42 @@ const browser = await chromium.launch({
   headless: true,
   args: ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--disable-gpu-sandbox'],
 });
+// `run()` can return before the first GPU frame is presented. Wait for
+// actual pixels rather than assuming that removal of the loading overlay
+// means the editor is already ready for input.
+async function waitForEditorFrame(page) {
+  console.log(`Waiting for editor frame at ${page.viewportSize().width}px`);
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const screenshot = await page.screenshot();
+    const painted = await page.evaluate(async data => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${data}`;
+      await img.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const pixels = ctx.getImageData(0, 0, img.width, img.height).data;
+      let nonwhite = 0;
+      for (let i = 0; i < pixels.length; i += 64) {
+        if (pixels[i] < 230 || pixels[i + 1] < 230 || pixels[i + 2] < 230) nonwhite++;
+      }
+      return nonwhite > 100;
+    }, screenshot.toString('base64'));
+    if (painted) { console.log('Editor frame painted'); return; }
+    await page.waitForTimeout(500);
+  }
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await page.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/no-editor-frame.png` });
+  throw new Error('editor did not paint a frame within 60 seconds');
+}
 try {
   const page = await browser.newPage({ viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   const failures = [];
   page.on('pageerror', error => failures.push(error.message));
   page.on('console', message => {
+    if (message.type() === 'error') console.error('Browser console:', message.text());
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
   await page.addInitScript(() => {
@@ -28,7 +59,8 @@ try {
   });
   await page.goto(url);
   await page.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
-  await page.waitForTimeout(3000);
+  await waitForEditorFrame(page);
+  await page.waitForTimeout(1000);
   const cdp = await page.context().newCDPSession(page);
   const pt = (id, x, y) => ({ id, x, y, radiusX: 4, radiusY: 4, force: 1 });
   const touch = (type, touchPoints) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
@@ -79,7 +111,8 @@ try {
   });
   await phone.goto(url);
   await phone.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
-  await phone.waitForTimeout(3000);
+  await waitForEditorFrame(phone);
+  await phone.waitForTimeout(1000);
   const pixel = x => phone.screenshot({ clip: { x, y: 180, width: 1, height: 1 } });
   assert((await pixel(25)).equals(await pixel(385)), 'phone document should fit between the page margins');
   const phoneCdp = await phone.context().newCDPSession(phone);
@@ -187,7 +220,8 @@ try {
   editingUrl.searchParams.set('download', '1');
   await editing.goto(editingUrl.href);
   await editing.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
-  await editing.waitForTimeout(3000);
+  await waitForEditorFrame(editing);
+  await editing.waitForTimeout(1000);
   const editingCdp = await editing.context().newCDPSession(editing);
   const editingTouch = (type, touchPoints) => editingCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
   const editingTap = async (id, x, y) => {
