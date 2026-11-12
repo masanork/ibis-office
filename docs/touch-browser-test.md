@@ -24,7 +24,11 @@ and zoom control at 1024×768 and 390×844. The script uses Chrome's software GP
 flags so it can run headlessly where available.
 
 The `touch-browser` CI job builds the Web app and runs this test in Linux
-Chrome. Synthetic Chrome input cannot establish real Safari, mobile keyboard,
+Chrome with `IBIS_TOUCH_WEBGL=1`, which disables WebGPU and verifies that no
+WebGPU adapter is available. Chrome's headless Linux mobile emulation lost
+its WebGPU device before painting in CI; that configuration is not qualified
+by the WebGL run. The default local test still exercises automatic backend
+selection. Synthetic Chrome input cannot establish real Safari, mobile keyboard,
 device GPU, system gesture or physical touchscreen behavior.
 
 The input check uses Chrome's synthetic text insertion rather than a real

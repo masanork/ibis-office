@@ -9,7 +9,10 @@ const executablePath = process.env.IBIS_CHROME_PATH ?? '/Applications/Google Chr
 const browser = await chromium.launch({
   executablePath,
   headless: true,
-  args: ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--disable-gpu-sandbox'],
+  args: [
+    ...(process.env.IBIS_TOUCH_WEBGL === '1' ? ['--disable-webgpu'] : ['--enable-unsafe-webgpu']),
+    '--use-angle=swiftshader', '--disable-gpu-sandbox',
+  ],
 });
 // `run()` can return before the first GPU frame is presented. Wait for
 // actual pixels rather than assuming that removal of the loading overlay
@@ -58,6 +61,9 @@ try {
     }
   });
   await page.goto(url);
+  if (process.env.IBIS_TOUCH_WEBGL === '1') {
+    assert.equal(await page.evaluate(async () => !!(await navigator.gpu?.requestAdapter())), false, 'WebGL test must not have a WebGPU adapter');
+  }
   await page.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
   await waitForEditorFrame(page);
   await page.waitForTimeout(1000);
