@@ -63,10 +63,13 @@ fn image_switch() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery));
+    assert!(s.with(|e, _| e.write_pdf(path.clone())).is_err());
+    assert!(s.with(|e, _| e.write_png(path.clone(), None)).is_err());
+    assert!(s.with(|e, _| e.write_gif(path.clone(), None)).is_err());
     assert!(s.paragraph(0).1.contains("日本語 test"));
     let body_before = s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone());
     s.with(|e, _| {
-        let menu = crate::shell::chrome_defaults::view_menu(e, ibis_pptx::Kind::Document);
+        let menu = crate::shell::chrome_defaults::view_menu(e);
         assert!(crate::shell::scenario::find_item(&menu, "jtd.show-images").is_some());
         assert!(crate::shell::scenario::find_item(&menu, "jtd.show-thumbnail").is_some());
         assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_none());
@@ -100,7 +103,7 @@ fn image_switch() {
         assert_eq!(e.watch.known, old_stamp);
         assert!(e.current_bytes().is_err());
         assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
-        let menu = crate::shell::chrome_defaults::view_menu(e, ibis_pptx::Kind::Document);
+        let menu = crate::shell::chrome_defaults::view_menu(e);
         assert!(crate::shell::scenario::find_item(&menu, "jtd.thumbnail-back").is_some());
         assert!(crate::shell::scenario::find_item(&menu, "jtd.show-images").is_none());
     });
@@ -131,7 +134,7 @@ fn image_switch() {
         assert_eq!(e.watch.known, old_stamp);
         assert!(e.current_bytes().is_err());
         assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
-        let menu = crate::shell::chrome_defaults::view_menu(e, ibis_pptx::Kind::Document);
+        let menu = crate::shell::chrome_defaults::view_menu(e);
         assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_some());
     });
     s.wait(1000);
@@ -176,7 +179,7 @@ fn html_export() {
         s.with(|e, _| {
             let mut menus = e.menus();
             let item = menus.find_mut("jtd.export-html").expect("HTML export menu");
-            assert_eq!(item.label.as_str(), crate::shell::i18n::text("jtd.export-html"));
+            assert_eq!(item.label.as_str(), crate::shell::i18n::text("jtd.export-html").as_ref());
             assert!(item.handler.is_some());
             assert!(e.export_jtd_html_to(&path).is_err());
             for ext in ["jtd", "JTT", "jttc", "JTDC", "docx", "txt"] {
@@ -246,7 +249,7 @@ fn unplaced_images() {
         assert!(e.status.as_deref().unwrap().contains(&*crate::shell::i18n::text("jtd.gallery-notice")));
         assert!(e.current_bytes().is_err());
         assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
-        let menu = crate::shell::chrome_defaults::view_menu(e, ibis_pptx::Kind::Document);
+        let menu = crate::shell::chrome_defaults::view_menu(e);
         assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_none());
     });
     s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));

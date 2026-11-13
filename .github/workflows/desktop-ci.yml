@@ -87,8 +87,8 @@ jobs:
           $dir = 'ci-package/ibisOffice'
           New-Item -ItemType Directory -Force "$dir/Resources/artborders", "$dir/Resources/Licenses" | Out-Null
           Copy-Item target/release/ibisOffice.exe,target/release/ibisOfficeUpdater.exe $dir
-          Copy-Item crates/ibis-office-app/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip,crates/ibis-office-app/data/artborders/ECMA-NOTICE.txt "$dir/Resources/artborders"
-          Copy-Item LICENSE,NOTICE,COMMERCIAL-LICENSE.md,crates/ibis-office-app/windows/license.md,crates/ibis-office-app/fonts/carlito/OFL.txt "$dir/Resources/Licenses"
+          Copy-Item crates/ibis-pptx/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip,crates/ibis-pptx/data/artborders/ECMA-NOTICE.txt "$dir/Resources/artborders"
+          Copy-Item LICENSE,NOTICE,COMMERCIAL-LICENSE.md,crates/ibis-office-app/windows/license.md,crates/ibis-office-render/fonts/carlito/OFL.txt "$dir/Resources/Licenses"
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path "$dir/ibisOffice.exe"))
           $offset = [BitConverter]::ToInt32($bytes, 0x3c)
           if ([BitConverter]::ToUInt32($bytes, $offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, $offset + 4) -ne 0x8664) { throw 'expected x64 PE executable' }

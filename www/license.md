@@ -16,7 +16,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | Lucide | アイコン（`assets/icons/`） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 
-## Rust の部品（439 件）
+## Rust の部品（442 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -415,7 +415,9 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | url | 2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
 | usvg | 0.46.0 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
 | utf-8 | 0.7.6 | MIT OR Apache-2.0 | https://github.com/SimonSapin/rust-utf8 |
+| utf16_iter | 1.1.0 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf16_iter |
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter |
+| utf_types | 1.0.0 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf_types |
 | uuid | 1.26.1 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid |
 | value-bag | 1.14.1 | Apache-2.0 OR MIT | https://github.com/sval-rs/value-bag |
 | value-bag-serde1 | 1.14.1 | Apache-2.0 OR MIT | https://crates.io/crates/value-bag-serde1 |
@@ -440,6 +442,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | winnow | 0.7.15 | MIT | https://github.com/winnow-rs/winnow |
 | winnow | 1.0.4 | MIT | https://github.com/winnow-rs/winnow |
 | write-fonts | 0.56.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
+| write16 | 1.0.0 | Apache-2.0 OR MIT | https://github.com/hsivonen/write16 |
 | writeable | 0.6.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | xml5ever | 0.18.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever |
 | xmlwriter | 0.1.0 | MIT | https://github.com/RazrFalcon/xmlwriter |
@@ -1113,7 +1116,9 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **url 2.5.8**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2013-2025 The rust-url developers
 - **usvg 0.46.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2017 the Resvg Authors
 - **utf-8 0.7.6**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **utf16_iter 1.1.0**：Copyright Mozilla Foundation / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **utf8_iter 1.0.4**：Copyright Mozilla Foundation / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **utf_types 1.0.0**：Copyright Mozilla Foundation / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **uuid 1.26.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers / Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
 - **value-bag 1.14.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020 sval-rs
 - **value-bag-serde1 1.14.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020 sval-rs
@@ -1136,6 +1141,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **wgpu-naga-bridge 29.0.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2025 The gfx-rs developers
 - **wgpu-types 29.0.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2025 The gfx-rs developers
 - **write-fonts 0.56.0**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
+- **write16 1.0.0**：Copyright Mozilla Foundation / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **writeable 0.6.4**：COPYRIGHT AND PERMISSION NOTICE / Copyright © 2020-2024 Unicode, Inc.
 - **xml5ever 0.18.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The html5ever Project Developers
 - **xmlwriter 0.1.0**：Copyright (c) 2019 Reizner Evgeniy

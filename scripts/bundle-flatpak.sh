@@ -14,6 +14,8 @@
 # /app. No external shared libraries (.so) are bundled inside the Flatpak.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# The distribution keeps the release defaults (no incremental, default LTO); Cargo.toml's release profile is for development.
+source scripts/dist-profile.sh
 
 PROFILE=debug
 FLAGS=()
@@ -57,8 +59,8 @@ for size in 16 24 32 48 256; do
     "$STAGE/share/icons/hicolor/${size}x${size}/apps/dev.sorane.Docs.png"
 done
 
-cp crates/ibis-office-app/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip \
-  crates/ibis-office-app/data/artborders/ECMA-NOTICE.txt \
+cp crates/ibis-pptx/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip \
+  crates/ibis-pptx/data/artborders/ECMA-NOTICE.txt \
   "$STAGE/share/ibisOffice/artborders/"
 
 python3 scripts/gen-web-licenses.py linux
@@ -69,7 +71,7 @@ cp "$LIC/LICENSE" "$DOC/LICENSE"
 cp "$LIC/COMMERCIAL-LICENSE.md" "$DOC/COMMERCIAL-LICENSE.md"
 [[ -f $LIC/NOTICE ]] && cp "$LIC/NOTICE" "$DOC/NOTICE"
 cp crates/ibis-office-app/linux/license.md "$DOC/third-party-licenses.md"
-cp crates/ibis-office-app/fonts/carlito/OFL.txt "$DOC/Carlito-OFL.txt"
+cp crates/ibis-office-render/fonts/carlito/OFL.txt "$DOC/Carlito-OFL.txt"
 
 cp crates/ibis-office-app/linux/dev.sorane.Docs.yml "$WORK/dev.sorane.Docs.yml"
 

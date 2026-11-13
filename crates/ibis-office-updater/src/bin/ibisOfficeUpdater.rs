@@ -13,10 +13,11 @@
 //! holding `ibisOffice.exe` on Windows, and AppImage files on Linux. The steps, each logged as it starts
 //! and as it succeeds or fails:
 //!
-//! 1. `wait-exit`: wait for ibisOffice to quit (Linux aborts on timeout).
-//! 2. `install`: replace the installed copy (`swap`: the new one copied
+//! 1. `wait-exit`: wait for ibisOffice to quit (30 s; Linux aborts on timeout).
+//! 2. `install`: replace the installed copy (`swap`. macOS: the new one copied
 //!    next to it and checked, the old one moved aside, the copy moved into
-//!    place). The old copy is kept aside.
+//!    place. Windows: the files of the new version replace the old ones one by
+//!    one, and the user's own files in the folder stay). The old files are kept aside.
 //! 3. `launch` and `check-running`: start the new ibisOffice; it must still
 //!    be running after a few seconds.
 //! 4. `cleanup`: remove the old copy and the unpacked folder.
@@ -327,15 +328,15 @@ mod platform {
     pub type Started = std::process::Child;
 
     pub fn install(old: &Path, new: &Path) -> Result<(), String> {
-        swap::install(old, new, &|_| Ok(()))
+        swap::install_files(old, new, &swap::parse_list(swap::DISTRIBUTED))
     }
 
-    pub fn rollback(old: &Path, _: &Path) -> Result<(), String> {
-        swap::rollback(old)
+    pub fn rollback(old: &Path, new: &Path) -> Result<(), String> {
+        swap::rollback_files(old, new)
     }
 
     pub fn cleanup(old: &Path, _: &Path) -> Result<(), String> {
-        swap::cleanup(old)
+        swap::cleanup_files(old)
     }
 
     pub fn launch(dir: &Path) -> Result<Started, String> {

@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { wasmVersion } from './browser-test-version.mjs';
 
 const url = process.env.IBIS_TOUCH_URL ?? 'http://127.0.0.1:8793/editor.html?open=./samples/sorane-welcome.docx';
 const executablePath = process.env.IBIS_CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -52,7 +53,10 @@ try {
     if (message.type() === 'error') console.error('Browser console:', message.text());
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
-  await page.addInitScript(() => {
+  await page.addInitScript(version => {
+    Error.stackTraceLimit = 100;
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
     window.__ibisTouchEvents = [];
     window.__ibisTouchTrace = [];
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
@@ -63,7 +67,7 @@ try {
         }
       }, true);
     }
-  });
+  }, wasmVersion);
   await page.goto(url);
   if (process.env.IBIS_TOUCH_WEBGL === '1') {
     assert.equal(await page.evaluate(async () => !!(await navigator.gpu?.requestAdapter())), false, 'WebGL test must not have a WebGPU adapter');
@@ -132,6 +136,10 @@ try {
   phone.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
+  await phone.addInitScript(version => {
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
+  }, wasmVersion);
   await phone.goto(url);
   await phone.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
   await waitForEditorFrame(phone);
@@ -212,20 +220,16 @@ try {
   assert(forward.score > 0.5 && forward.foreground > 1000, `phone swipe up must move document pixels upward: ${JSON.stringify(forward)}`);
   assert(reverse.score > 0.5 && reverse.foreground > 1000, `phone swipe down must move document pixels downward: ${JSON.stringify(reverse)}`);
   assert(stationary.score < 0.5, `stationary document pixels must not count as a scroll: ${JSON.stringify(stationary)}`);
-  const menuStrip = () => phone.screenshot({ clip: { x: 0, y: 34, width: 390, height: 30 } });
-  const beforeMenu = await menuStrip();
-  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
-  await phoneTouch('touchStart', [pt(8, 350, 49)]);
-  await phoneTouch('touchMove', [pt(8, 80, 49)]);
-  await phoneTouch('touchEnd', []);
-  await phone.waitForTimeout(1000);
-  assert(!beforeMenu.equals(await menuStrip()), 'phone menu bar must scroll horizontally');
-  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
+  // 0.8.7 folds menus that do not fit into the arrow after the visible menus.
   const menuPopup = () => phone.screenshot({ clip: { x: 150, y: 66, width: 230, height: 300 } });
   const beforePopup = await menuPopup();
-  await tap(phoneTouch, 9, 360, 49);
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
+  // The English system font on Linux makes the preceding menu labels narrower.
+  const overflowX = process.platform === 'linux' ? 331 : 354;
+  await tap(phoneTouch, 9, overflowX, 49);
   await phone.waitForTimeout(1000);
-  assert(!beforePopup.equals(await menuPopup()), 'a revealed menu must open on tap');
+  assert(!beforePopup.equals(await menuPopup()), 'the overflow menu must open on touch');
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
   assert.deepEqual(failures, [], 'phone interactions must not panic');
   await phone.context().close();
 
@@ -235,7 +239,11 @@ try {
   editing.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
-  await editing.addInitScript(() => window.addEventListener('ibisoffice:download', event => { window.__ibisDownloaded = Array.from(event.detail.bytes); }));
+  await editing.addInitScript(version => {
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
+    window.addEventListener('ibisoffice:download', event => { window.__ibisDownloaded = Array.from(event.detail.bytes); });
+  }, wasmVersion);
   const editingUrl = new URL(url);
   editingUrl.searchParams.set('download', '1');
   await editing.goto(editingUrl.href);

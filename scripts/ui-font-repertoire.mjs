@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 export const uiSources = [
-  resolve(root, 'crates/ibis-office-app/i18n'),
+  resolve(root, 'crates/ibis-office-base/i18n'),
   resolve(root, 'forks/gpui-component/locales/ui.yml'),
 ];
 

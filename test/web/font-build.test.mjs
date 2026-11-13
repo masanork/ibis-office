@@ -50,7 +50,7 @@ test('invalid default and duplicate aliases leave the previous manifest intact',
   await writeFile(config, JSON.stringify({ uiFont: 'missing', fonts: [{ id: 'plex', path: source }] }));
   await assert.rejects(buildWebFonts(config, { outDir: dir }), /uiFont/);
   assert.equal(await readFile(output, 'utf8'), 'previous');
-  const carlito = fileURLToPath(new URL('../../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
+  const carlito = fileURLToPath(new URL('../../crates/ibis-office-render/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
   await writeFile(config, JSON.stringify({ fonts: [
     { id: 'plex', path: source, aliases: ['Shared Alias'] },
     { id: 'carlito', path: carlito, aliases: ['Shared Alias'] },
@@ -63,7 +63,7 @@ test('UI selection preserves a different document default and named aliases', as
   const dir = await mkdtemp(join(tmpdir(), 'ibis-font-ui-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const config = join(dir, 'fonts.json');
-  const carlito = fileURLToPath(new URL('../../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
+  const carlito = fileURLToPath(new URL('../../crates/ibis-office-render/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
   await writeFile(config, JSON.stringify({ defaultFont: 'document', uiFont: 'ui', fonts: [
     { id: 'document', path: carlito, aliases: ['Document Face'] },
     { id: 'ui', path: source },
@@ -79,7 +79,7 @@ test('source-built engine subsets two distinct fonts without a family collision'
   const dir = await mkdtemp(join(tmpdir(), 'ibis-font-subset-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const config = join(dir, 'config.json');
-  const carlito = fileURLToPath(new URL('../../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
+  const carlito = fileURLToPath(new URL('../../crates/ibis-office-render/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
   await writeFile(join(dir, 'text.txt'), 'Hello office 123\n');
   await writeFile(config, JSON.stringify({ fonts: [
     { id: 'plex', path: source, textFile: 'text.txt' },

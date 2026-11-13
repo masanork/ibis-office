@@ -32,7 +32,7 @@ test('verifies binary fonts under a deployment subpath before supplying aliases'
 });
 
 test('loads an independent UI face without changing document aliases', async () => {
-  const carlito = await readFile(new URL('../../crates/ibis-office-app/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
+  const carlito = await readFile(new URL('../../crates/ibis-office-render/fonts/carlito/Carlito-Regular.ttf', import.meta.url));
   const value = manifest();
   value.defaultFamily = 'Carlito';
   value.uiFamily = 'IBM Plex Sans';

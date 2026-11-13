@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
+import { wasmVersion } from './browser-test-version.mjs';
 
 const url = process.env.IBIS_HTML_TEST_URL ?? 'http://127.0.0.1:8794/editor.html?open=./samples/sorane-welcome.docx';
 const executablePath = process.env.IBIS_CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -14,12 +15,14 @@ try {
   page.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) errors.push(message.text());
   });
-  await page.addInitScript(() => {
+  await page.addInitScript(version => {
     localStorage.setItem('ibisoffice-lang', 'ja');
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
     window.__ibisBlobTypes = [];
     const create = URL.createObjectURL.bind(URL);
     URL.createObjectURL = blob => { window.__ibisBlobTypes.push(blob.type); return create(blob); };
-  });
+  }, wasmVersion);
   await page.goto(url);
   await page.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
   await page.waitForTimeout(3000);
@@ -29,10 +32,10 @@ try {
   assert((await page.locator('textarea').inputValue()).includes('HTML<&検証'), 'test edit must reach the editor');
 
   await page.mouse.click(145, 49); // File
-  await page.mouse.move(230, 266); // Export submenu
+  await page.mouse.move(230, 295); // Export submenu
   await page.waitForTimeout(700);
   const downloadPromise = page.waitForEvent('download', { timeout: 15_000 });
-  await page.mouse.click(520, 466); // Web page (.html)
+  await page.mouse.click(520, 494); // Web page (.html)
   const download = await downloadPromise;
   assert.equal(download.suggestedFilename(), 'sorane-welcome.html');
   assert.equal(await download.failure(), null);
