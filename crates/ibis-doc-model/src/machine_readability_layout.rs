@@ -484,3 +484,38 @@ pub fn infer_column_schemas(columns: &[(u32, Option<&str>)], body_first: u32, bo
         InferredColumnSchema { column, kind, has_header: label.is_some_and(|s| !s.is_empty()) }
     }).collect())
 }
+
+/// Reader-normalized header value and merge metadata. `value` is the same
+/// textual representation Harunobu's reader would provide for its cell value;
+/// `None` denotes a blank cell. Master coordinates are zero-based.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderCell { pub row: u32, pub column: u32, pub value: Option<String>, pub merged: bool, pub master: Option<(u32, u32)> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InferredColumnHeader { pub column: u32, pub rows: Vec<u32>, pub label: String, pub merged: bool }
+
+/// Construct column labels from selected header rows. Complete cells, including
+/// merge masters, must be supplied; missing required reader data cannot be
+/// inferred here. Columns must be strictly increasing, and duplicate cell
+/// coordinates are rejected. Only adjacent repeated labels are collapsed.
+pub fn generate_column_headers(header_rows: &[u32], columns: &[u32], cells: &[HeaderCell]) -> Option<Vec<InferredColumnHeader>> {
+    if columns.windows(2).any(|w| w[0] >= w[1]) { return None; }
+    let mut by_position = BTreeMap::new();
+    for cell in cells { if by_position.insert((cell.row, cell.column), cell).is_some() { return None; } }
+    if header_rows.is_empty() { return Some(Vec::new()); }
+    let mut out = Vec::with_capacity(columns.len());
+    for &column in columns {
+        let mut labels: Vec<&str> = Vec::new();
+        let mut merged = false;
+        for &row in header_rows {
+            let Some(cell) = by_position.get(&(row, column)) else { continue; };
+            merged |= cell.merged;
+            let value = cell.value.as_deref().or_else(|| cell.master.and_then(|pos| by_position.get(&pos)).and_then(|master| master.value.as_deref()));
+            if let Some(value) = value {
+                let value = value.trim_matches(python_space);
+                if !value.is_empty() && labels.last().copied() != Some(value) { labels.push(value); }
+            }
+        }
+        out.push(InferredColumnHeader { column, rows: header_rows.to_vec(), label: labels.join(" / "), merged });
+    }
+    Some(out)
+}

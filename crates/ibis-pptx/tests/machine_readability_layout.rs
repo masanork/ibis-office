@@ -163,3 +163,34 @@ fn column_schemas_match_reference() {
     assert_eq!(schemas.iter().map(|s| (s.column, s.kind, s.has_header)).collect::<Vec<_>>(), [(7, InferredColumnType::Text, false), (4, InferredColumnType::Numeric, true), (9, InferredColumnType::Empty, false)]);
     assert!(infer_column_schemas(&[(4, None), (4, None)], 0, 1, &[]).is_none());
 }
+
+#[test]
+fn generated_column_headers_match_reference() {
+    use ibis_doc_model::machine_readability_layout::{generate_column_headers, HeaderCell};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-label-reference.json");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (index, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cells: Vec<_> = case["cells"].as_array().unwrap().iter().map(|v| HeaderCell {
+            row: v["row"].as_u64().unwrap() as u32, column: v["column"].as_u64().unwrap() as u32,
+            value: v["value"].as_str().map(str::to_owned), merged: v["merged"].as_bool().unwrap(),
+            master: v["master"].as_array().map(|a| (a[0].as_u64().unwrap() as u32, a[1].as_u64().unwrap() as u32)),
+        }).collect();
+        let rows: Vec<_> = case["rows"].as_array().unwrap().iter().map(|r| r.as_u64().unwrap() as u32).collect();
+        let columns: Vec<_> = (0..case["width"].as_u64().unwrap() as u32).collect();
+        let actual = generate_column_headers(&rows, &columns, &cells).unwrap();
+        let expected = case["headers"].as_array().unwrap();
+        assert_eq!(actual.len(), expected.len(), "case {index}");
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_eq!(actual.column, expected["column"].as_u64().unwrap() as u32, "case {index}");
+            assert_eq!(actual.label, expected["label"].as_str().unwrap(), "case {index}");
+            assert_eq!(actual.merged, expected["merged"].as_bool().unwrap(), "case {index}");
+            assert_eq!(actual.rows, rows, "case {index}");
+        }
+    }
+    let cell = |row, value: &str| HeaderCell { row, column: 0, value: Some(value.into()), merged: false, master: None };
+    let cells = [cell(0, " A "), cell(1, "A"), cell(2, "B"), cell(3, "A")];
+    assert_eq!(generate_column_headers(&[0, 1, 2, 3], &[0], &cells).unwrap()[0].label, "A / B / A");
+    assert!(generate_column_headers(&[0], &[1,1], &[]).is_none());
+    assert_eq!(generate_column_headers(&[], &[0], &[]).unwrap().len(), 0);
+}
