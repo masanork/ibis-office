@@ -7,7 +7,7 @@
 use crate::sheet::{CellRange, CellValue, Sheet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CandidateKind { MergedCells, HiddenRow, HiddenColumn, Formula, PlatformDependentCharacters }
+pub enum CandidateKind { MergedCells, HiddenRow, HiddenColumn, Formula, PlatformDependentCharacters, PrivateUseCharacters }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -41,6 +41,14 @@ pub(crate) fn character_risk(c: char) -> Option<CharacterRisk> {
 
 fn platform_character_candidate(value: &str) -> bool { value.chars().any(|c| character_risk(c).is_some()) }
 
+/// Unicode private-use scalars may require a shared font or mapping. This is
+/// advisory and is deliberately independent of Harunobu L1-08 scoring.
+/// See gjs `src/shared/txtbin/char-analysis.ts` (commit 9173a4d) for the
+/// corresponding character categories. Exclude plane-ending noncharacters.
+fn private_use_candidate(value: &str) -> bool {
+    value.chars().any(|c| matches!(c as u32, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd))
+}
+
 /// Inspect the current sheet in memory. Formatting-only cells do not define
 /// the data extent; candidates are not compliance decisions or scores.
 pub fn candidates(sheet: &Sheet) -> Vec<Candidate> {
@@ -57,6 +65,9 @@ pub fn candidates(sheet: &Sheet) -> Vec<Candidate> {
         if let CellValue::Text(value) = &cell.value {
             if platform_character_candidate(value) {
                 out.push(Candidate { kind: CandidateKind::PlatformDependentCharacters, range: CellRange { first_row: cell.row, last_row: cell.row, first_column: cell.column, last_column: cell.column } });
+            }
+            if private_use_candidate(value) {
+                out.push(Candidate { kind: CandidateKind::PrivateUseCharacters, range: CellRange { first_row: cell.row, last_row: cell.row, first_column: cell.column, last_column: cell.column } });
             }
         }
         if cell.formula.as_ref().is_some_and(|f| !f.is_empty()) {

@@ -30057,6 +30057,16 @@ fn machine_readability_candidates_and_live_edits() {
     });
     s.update(|e, _, cx| e.jump_machine_readability(index, cx));
     assert_eq!(s.selected(), "C5");
+    s.click_cell("C5");
+    s.type_text("\u{e000}");
+    s.key("enter");
+    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    let index = s.with(|e, _| {
+        let panel = e.wb().panels.machine_readability.as_ref().unwrap();
+        panel.findings.iter().position(|f| f.kind == CandidateKind::PrivateUseCharacters).expect("private-use advisory")
+    });
+    s.update(|e, _, cx| e.jump_machine_readability(index, cx));
+    assert_eq!(s.selected(), "C5");
 }
 
 

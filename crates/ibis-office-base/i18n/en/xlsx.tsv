@@ -2907,3 +2907,5 @@ xlsx.hf.back-to-page-setup	Back to Page Setup
 xlsx.validation.list-needs-extension	This setting is not in Excel (the data validation does not work in Excel). Do you want to use it?
 xlsx.design-mode.close	Close Design Mode
 xlsx.sheet.delete-ask	Do you want to delete the sheet?
+
+xlsx.machine-readability.private-use	Private-use character: appearance or meaning may differ between environments. Check the recipient’s font and character mapping.
