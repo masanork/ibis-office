@@ -64,7 +64,7 @@ pub struct LayoutCell {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OtherRegion { Title, Total, Note, Source }
+pub enum OtherRegion { Title, Total, Note, Source, Isolated }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrimmedOther { pub row: u32, pub column: u32, pub kind: OtherRegion }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -518,4 +518,59 @@ pub fn generate_column_headers(header_rows: &[u32], columns: &[u32], cells: &[He
         out.push(InferredColumnHeader { column, rows: header_rows.to_vec(), label: labels.join(" / "), merged });
     }
     Some(out)
+}
+
+/// Initial island candidates and separated cells, before the reference
+/// detector's column/form merging and header inheritance passes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreliminaryIslands { pub candidates: Vec<IslandCandidate>, pub others: Vec<TrimmedOther> }
+
+/// Combine occupancy bands, header/body merging, trimming and trivial-island
+/// exclusion. This deliberately returns preliminary results: callers must not
+/// treat these candidates as the final Harunobu table list. The caller supplies
+/// complete cells, including formatted blanks, and complete merge metadata.
+pub fn preliminary_islands(cells: &[LayoutCell], merges: &[CellRange]) -> Option<PreliminaryIslands> {
+    if merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let mut positions = BTreeSet::new();
+    let mut occupied_rows = BTreeSet::new();
+    let mut occupied_columns = BTreeSet::new();
+    for cell in cells {
+        if !positions.insert((cell.row, cell.column)) { return None; }
+        if cell.value.is_some() { occupied_rows.insert(cell.row); occupied_columns.insert(cell.column); }
+    }
+    if occupied_rows.is_empty() { return Some(PreliminaryIslands { candidates: Vec::new(), others: Vec::new() }); }
+    let row_indices: Vec<_> = occupied_rows.into_iter().collect();
+    let column_indices: Vec<_> = occupied_columns.into_iter().collect();
+    let rows = occupied_bands(&row_indices, 1)?;
+    let columns = occupied_bands(&column_indices, 1)?;
+    let rows = merge_header_body_bands(&rows, &columns, 1, cells, merges)?;
+    // Sparse grouping avoids walking the Cartesian product of unrelated bands.
+    // BTreeMap preserves the detector's row-band, then column-band order.
+    let mut groups = BTreeMap::<(usize, usize), Vec<LayoutCell>>::new();
+    for cell in cells {
+        let r = rows.partition_point(|band| band.1 < cell.row);
+        let c = columns.partition_point(|band| band.1 < cell.column);
+        if r < rows.len() && c < columns.len() && rows[r].0 <= cell.row && columns[c].0 <= cell.column {
+            groups.entry((r, c)).or_default().push(cell.clone());
+        }
+    }
+    let mut candidates = Vec::new();
+    let mut others = Vec::new();
+    let mut evaluated = Vec::new();
+    for ((r, c), group) in groups {
+        let region = CellRange { first_row: rows[r].0, last_row: rows[r].1, first_column: columns[c].0, last_column: columns[c].1 };
+        let result = evaluate_island(region, &group)?;
+        others.extend(result.others);
+        if let Some(candidate) = result.candidate { evaluated.push((candidate, group)); }
+    }
+    for (candidate, mut group) in evaluated {
+        // Reference excludes one-cell and one-column islands after evaluating
+        // every band pair; separated cells are appended in sheet order.
+        if candidate.range.first_column == candidate.range.last_column {
+            group.sort_by_key(|c| (c.row, c.column));
+            others.extend(group.iter().filter(|cell| cell.value.is_some() && cell.row >= candidate.range.first_row && cell.row <= candidate.range.last_row && cell.column >= candidate.range.first_column && cell.column <= candidate.range.last_column)
+                .map(|cell| TrimmedOther { row: cell.row, column: cell.column, kind: OtherRegion::Isolated }));
+        } else { candidates.push(candidate); }
+    }
+    Some(PreliminaryIslands { candidates, others })
 }
