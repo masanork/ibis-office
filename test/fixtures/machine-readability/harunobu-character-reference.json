@@ -1,0 +1,93 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "cases": [
+    {
+      "value": "abc日本語123",
+      "detected": false
+    },
+    {
+      "value": "①",
+      "detected": true
+    },
+    {
+      "value": "⑳",
+      "detected": true
+    },
+    {
+      "value": "⓪",
+      "detected": false
+    },
+    {
+      "value": "㉑",
+      "detected": true
+    },
+    {
+      "value": "㊿",
+      "detected": true
+    },
+    {
+      "value": "Ⅰ-0",
+      "detected": true
+    },
+    {
+      "value": "ⅿ",
+      "detected": true
+    },
+    {
+      "value": "Ａ",
+      "detected": true
+    },
+    {
+      "value": "ｚ",
+      "detected": true
+    },
+    {
+      "value": "９",
+      "detected": true
+    },
+    {
+      "value": "㈱",
+      "detected": true
+    },
+    {
+      "value": "㋿",
+      "detected": true
+    },
+    {
+      "value": "〜",
+      "detected": true
+    },
+    {
+      "value": "～",
+      "detected": true
+    },
+    {
+      "value": "㍻",
+      "detected": true
+    },
+    {
+      "value": "︰",
+      "detected": true
+    },
+    {
+      "value": "㎡",
+      "detected": false
+    },
+    {
+      "value": "㎏㎥",
+      "detected": false
+    },
+    {
+      "value": "面積㎡／Ａ",
+      "detected": true
+    },
+    {
+      "value": "Ⓐ",
+      "detected": false
+    },
+    {
+      "value": "😀",
+      "detected": false
+    }
+  ]
+}

@@ -2830,7 +2830,7 @@ xlsx.format-pane.remove-stop	ストップを削除
 
 xlsx.machine-readability.menu	機械可読性チェック…
 xlsx.machine-readability.title	機械可読性チェック
-xlsx.machine-readability.scope	結合セル・非表示行列・数式を確認します。候補の一覧であり、合否や点数ではありません。表の領域と非表示シート、その他の項目は未検査です。編集後は再検査してください。
+xlsx.machine-readability.scope	結合セル・非表示行列・数式・文字を確認します。候補の一覧であり、合否や点数ではありません。表の領域と非表示シート、その他の項目は未検査です。編集後は再検査してください。
 xlsx.machine-readability.loading	CSV を読み込み中です。完了後に再検査してください。
 xlsx.machine-readability.none	確認する候補はありません。ほかの項目は未検査です。
 xlsx.machine-readability.merge	L1-12 結合セル：見出しとデータのどちらか確認してください。
@@ -2866,3 +2866,5 @@ xlsx.harunobu.bulk-score	複数ファイル総合スコア
 xlsx.harunobu.pick-bulk	比較するファイルを選択
 
 xlsx.harunobu.bulk-minimum	2 ファイル以上を選択してください
+
+xlsx.machine-readability.platform-characters	L1-08 機種依存文字・全角英数字：公開形式での表示を確認してください。

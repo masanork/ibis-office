@@ -29,3 +29,16 @@ with tempfile.TemporaryDirectory() as tmp:
                         rules.append({"sheet": sheet["シート名"], "table": table["範囲"], "rule": rule["ルールID"], "passed": rule["合否"], "skipped": rule["判定対象外"], "locations": [v["セル範囲"] for v in rule["違反"]]})
         result["fixtures"][key] = {"format": data["フォーマット"], "rules": sorted(rules, key=lambda r: r["rule"])}
 (FIXTURES / "harunobu-reference.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+
+# Character detection is intentionally compared separately from table inference
+# and file encoding, because the live editor examines the whole sheet.
+character_cases = ["abc日本語123", "①", "⑳", "⓪", "㉑", "㊿", "Ⅰ-0", "ⅿ", "Ａ", "ｚ", "９", "㈱", "㋿", "〜", "～", "㍻", "︰", "㎡", "㎏㎥", "面積㎡／Ａ", "Ⓐ", "😀"]
+character_script = """import json, sys
+from harunobu.rules.level1.L1_08_platform_dependent_chars import PlatformDependentCharsRule
+r = PlatformDependentCharsRule()
+print(json.dumps([{'value': value, 'detected': bool(r._detect_in_cell(value))} for value in json.load(sys.stdin)], ensure_ascii=False))
+"""
+process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-c", character_script],
+    input=json.dumps(character_cases, ensure_ascii=False), text=True, capture_output=True, check=True)
+characters = {"harunobu_commit": COMMIT, "cases": json.loads(process.stdout)}
+(FIXTURES / "harunobu-character-reference.json").write_text(json.dumps(characters, ensure_ascii=False, indent=2) + "\n")
