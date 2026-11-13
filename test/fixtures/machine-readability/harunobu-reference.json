@@ -13,8 +13,12 @@
           "rule": "L1-12",
           "passed": false,
           "skipped": false,
+          "severity": "fatal",
           "locations": [
             "A2:A3"
+          ],
+          "finding_severities": [
+            "error"
           ]
         },
         {
@@ -23,9 +27,14 @@
           "rule": "L1-13",
           "passed": false,
           "skipped": false,
+          "severity": "critical",
           "locations": [
             "行3",
             "列2"
+          ],
+          "finding_severities": [
+            "error",
+            "error"
           ]
         },
         {
@@ -34,8 +43,12 @@
           "rule": "L2-06",
           "passed": false,
           "skipped": false,
+          "severity": "major",
           "locations": [
             "C5"
+          ],
+          "finding_severities": [
+            "error"
           ]
         }
       ]
@@ -53,8 +66,12 @@
           "rule": "L1-12",
           "passed": true,
           "skipped": false,
+          "severity": "major",
           "locations": [
             "B1:C1"
+          ],
+          "finding_severities": [
+            "info"
           ]
         },
         {
@@ -63,7 +80,9 @@
           "rule": "L1-13",
           "passed": true,
           "skipped": false,
-          "locations": []
+          "severity": "critical",
+          "locations": [],
+          "finding_severities": []
         },
         {
           "sheet": "Header",
@@ -71,7 +90,9 @@
           "rule": "L2-06",
           "passed": true,
           "skipped": false,
-          "locations": []
+          "severity": "major",
+          "locations": [],
+          "finding_severities": []
         }
       ]
     }

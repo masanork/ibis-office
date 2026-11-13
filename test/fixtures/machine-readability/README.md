@@ -24,3 +24,9 @@ See https://github.com/digital-go-jp/machine_readability_rule#ライセンスに
 the same pinned Harunobu version for synthetic Unicode examples. The live
 scanner checks the whole sheet and does not apply table, encoding, or score
 semantics; these examples do not establish full rule parity.
+
+`harunobu-scoring-reference.json` records the default `LevelScorer` results
+for synthetic rule outcomes at all three levels, including skipped and fatal
+rules, default severity, saturation, and repeated rule IDs. It is generated
+by `scripts/machine-readability-reference.py`. This tests scoring only, not
+rule execution, table detection, or end-to-end parity.
