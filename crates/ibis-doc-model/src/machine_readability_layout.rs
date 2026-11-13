@@ -235,10 +235,16 @@ pub fn band_is_header_like(band: CellRange, cells: &[LayoutCell], merges: &[Cell
             rows.entry(cell.row).or_default().push(cell);
         }
     }
+    Some(header_like_from_rows(band, &rows, merges))
+}
+
+fn header_like_from_rows(band: CellRange, rows: &BTreeMap<u32, Vec<&LayoutCell>>, merges: &[CellRange]) -> bool {
     let width = u64::from(band.last_column) - u64::from(band.first_column) + 1;
     let mut strong = false;
     let mut data = false;
-    for (&row, row_cells) in &rows {
+    for (&row, row_cells) in rows.range(band.first_row..=band.last_row) {
+        let selected: Vec<_> = row_cells.iter().copied().filter(|c| c.column >= band.first_column && c.column <= band.last_column).collect();
+        let row_cells = &selected;
         let strength = row_strength_for_cells(row, band.first_column, band.last_column, row_cells, merges);
         if strength >= 2 { strong = true; continue; }
         if strength == 1 || (row_cells.len() <= 2 && width >= 3) { continue; }
@@ -249,5 +255,41 @@ pub fn band_is_header_like(band: CellRange, cells: &[LayoutCell], merges: &[Cell
         });
         if numeric && row_cells.len() as f64 / width as f64 > 0.3 { data = true; }
     }
-    Some(strong && !data)
+    strong && !data
+}
+
+/// Combine adjacent row bands when the preceding band is header-like. The
+/// row/column bands must be sorted, non-overlapping, inclusive zero-based
+/// intervals, and cell and merge metadata must be complete. This is the
+/// reference detector's header/body merge pass, not full table inference.
+pub fn merge_header_body_bands(row_bands: &[(u32, u32)], column_bands: &[(u32, u32)], gap_tolerance: u32, cells: &[LayoutCell], merges: &[CellRange]) -> Option<Vec<(u32, u32)>> {
+    let valid_bands = |bands: &[(u32, u32)]| bands.iter().all(|&(a, b)| a <= b) && bands.windows(2).all(|w| w[0].1 < w[1].0);
+    if !valid_bands(row_bands) || !valid_bands(column_bands) || merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let mut positions = BTreeSet::new();
+    let mut rows: BTreeMap<u32, Vec<&LayoutCell>> = BTreeMap::new();
+    for cell in cells {
+        if !positions.insert((cell.row, cell.column)) { return None; }
+        if cell.value.is_some() { rows.entry(cell.row).or_default().push(cell); }
+    }
+    let Some(&(first_col, last_col)) = column_bands.iter().max_by_key(|&&(a, b)| (u64::from(b) - u64::from(a), std::cmp::Reverse(a))) else { return Some(row_bands.to_vec()); };
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < row_bands.len() {
+        let mut current = row_bands[i];
+        i += 1;
+        while i < row_bands.len() {
+            let next = row_bands[i];
+            let gap = u64::from(next.0) - u64::from(current.1) - 1;
+            if gap > u64::from(gap_tolerance) { break; }
+            let height = u64::from(current.1) - u64::from(current.0) + 1;
+            let extending_merge = merges.iter().any(|m| m.first_row >= current.0 && m.first_row <= current.1 && m.first_column >= first_col && m.last_column <= last_col && m.last_row > m.first_row);
+            let eligible_size = height <= 10 || extending_merge;
+            let band = CellRange { first_row: current.0, last_row: current.1, first_column: first_col, last_column: last_col };
+            if !eligible_size || !header_like_from_rows(band, &rows, merges) { break; }
+            current.1 = next.1;
+            i += 1;
+        }
+        result.push(current);
+    }
+    Some(result)
 }

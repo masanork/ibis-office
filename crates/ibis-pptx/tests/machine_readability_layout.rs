@@ -105,3 +105,23 @@ fn header_band_matches_reference() {
         assert_eq!(band_is_header_like(band, &cells, &merges), case["header_like"].as_bool(), "case {index}: {case}");
     }
 }
+
+#[test]
+fn header_body_band_merging_matches_reference() {
+    use ibis_doc_model::machine_readability_layout::{merge_header_body_bands, LayoutCell, LayoutValue};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-header-reference.json");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (index, case) in data["band_merges"].as_array().unwrap().iter().enumerate() {
+        let cells: Vec<_> = case["cells"].as_array().unwrap().iter().map(|v| LayoutCell {
+            row: v["row"].as_u64().unwrap() as u32, column: v["column"].as_u64().unwrap() as u32,
+            value: if v["value"].is_null() { None } else if let Some(s) = v["value"].as_str() { Some(LayoutValue::Text(s.into())) } else if v["value"].is_number() || v["value"].is_boolean() { Some(LayoutValue::Numeric) } else { Some(LayoutValue::Other) },
+            bold: v["bold"].as_bool().unwrap(), merged: v["merged"].as_bool().unwrap(), formula: None,
+        }).collect();
+        let merges: Vec<_> = case["merges"].as_array().unwrap().iter().map(|v| CellRange { first_row: v[0].as_u64().unwrap() as u32, first_column: v[1].as_u64().unwrap() as u32, last_row: v[2].as_u64().unwrap() as u32, last_column: v[3].as_u64().unwrap() as u32 }).collect();
+        let pairs = |v: &serde_json::Value| v.as_array().unwrap().iter().map(|a| (a[0].as_u64().unwrap() as u32, a[1].as_u64().unwrap() as u32)).collect::<Vec<_>>();
+        assert_eq!(merge_header_body_bands(&pairs(&case["row_bands"]), &pairs(&case["column_bands"]), case["gap"].as_u64().unwrap() as u32, &cells, &merges), Some(pairs(&case["result"])), "case {index}: {case}");
+    }
+    assert_eq!(merge_header_body_bands(&[(0, 1), (1, 2)], &[], 1, &[], &[]), None);
+    assert_eq!(merge_header_body_bands(&[(2, 1)], &[], 1, &[], &[]), None);
+}
