@@ -150,3 +150,24 @@ pub fn trim_boundaries(region: CellRange, cells: &[LayoutCell]) -> Option<Trimme
     let range = (!remove_last).then_some(CellRange { first_row: first, last_row: last, ..region });
     Some(TrimmedRegion { range, others })
 }
+
+/// A candidate island after boundary trimming. This does not yet include
+/// Harunobu's header/column inference or its post-detection merge passes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IslandCandidate { pub range: CellRange, pub confidence: f64 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct IslandEvaluation { pub candidate: Option<IslandCandidate>, pub others: Vec<TrimmedOther> }
+
+/// Evaluate one pair of previously determined row/column bands. Complete
+/// cell metadata is required; `None` denotes invalid or duplicate input.
+pub fn evaluate_island(region: CellRange, cells: &[LayoutCell]) -> Option<IslandEvaluation> {
+    if region.first_row > region.last_row || region.first_column > region.last_column { return None; }
+    let trimmed = trim_boundaries(region, cells)?;
+    let has_value = cells.iter().any(|c| c.row >= region.first_row && c.row <= region.last_row && c.column >= region.first_column && c.column <= region.last_column && c.value.is_some());
+    if !has_value { return Some(IslandEvaluation { candidate: None, others: Vec::new() }); }
+    let candidate = if let Some(range) = trimmed.range {
+        let positions: Vec<_> = cells.iter().filter(|c| c.row >= range.first_row && c.row <= range.last_row && c.column >= range.first_column && c.column <= range.last_column && c.value.is_some()).map(|c| (c.row, c.column)).collect();
+        Some(IslandCandidate { range, confidence: trimmed_region_confidence(range, &positions)? })
+    } else { None };
+    Some(IslandEvaluation { candidate, others: trimmed.others })
+}
