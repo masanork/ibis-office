@@ -70,3 +70,37 @@ process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-
     text=True, capture_output=True, check=True)
 scoring = {"harunobu_commit": COMMIT, "cases": json.loads(process.stdout)}
 (FIXTURES / "harunobu-scoring-reference.json").write_text(json.dumps(scoring, ensure_ascii=False, indent=2) + "\n")
+
+workbook_rules_script = """import json
+from harunobu.core.models import Sheet, WorkBook, TableContext, TableRegion, CellRange
+from harunobu.rules.level1.L1_01_file_format import FileFormatRule
+from harunobu.rules.level1.L1_02_one_table_per_sheet import OneTablePerSheetRule
+sheet = Sheet(name='Data')
+formats = []
+for fmt in ['xlsx', 'csv', 'tsv', 'xls']:
+    workbook = WorkBook.model_construct(file_name='data.' + fmt, file_format=fmt, sheets=[sheet])
+    current = TableRegion(range=CellRange(start_row=1, start_col=1, end_row=4, end_col=3), confidence=0.8)
+    context = TableContext(workbook=workbook, sheet=sheet, table_region=current)
+    result = FileFormatRule().check(context)
+    formats.append(dict(format=fmt, passed=result.passed, confidence=result.confidence, locations=[v.cell_range for v in result.violations]))
+patterns = [
+    [(0, 0, 3, 2, 0.9)],
+    [(0, 0, 3, 2, 0.9), (6, 0, 9, 2, 0.9)],
+    [(0, 0, 3, 2, 0.2), (6, 0, 9, 2, 0.3)],
+    [(0, 0, 3, 2, 0.2), (6, 0, 9, 2, 0.5)],
+    [(0, 0, 3, 2, 0.5), (6, 0, 9, 2, 0.5)],
+]
+workbook = WorkBook(file_name='data.xlsx', file_format='xlsx', sheets=[sheet])
+cases = []
+for pattern in patterns:
+    tables = [TableRegion(range=CellRange(start_row=a+1, start_col=b+1, end_row=c+1, end_col=d+1), confidence=q) for a,b,c,d,q in pattern]
+    for index, current in enumerate(tables):
+        context = TableContext(workbook=workbook, sheet=sheet, table_region=current, all_tables=tables)
+        result = OneTablePerSheetRule().check(context)
+        cases.append(dict(tables=pattern, current=index, passed=result.passed, confidence=result.confidence, locations=[v.cell_range for v in result.violations], severities=[v.severity for v in result.violations]))
+print(json.dumps(dict(formats=formats, tables=cases), ensure_ascii=False))
+"""
+process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-c", workbook_rules_script],
+    text=True, capture_output=True, check=True)
+workbook_rules = {"harunobu_commit": COMMIT, **json.loads(process.stdout)}
+(FIXTURES / "harunobu-workbook-rules-reference.json").write_text(json.dumps(workbook_rules, ensure_ascii=False, indent=2) + "\n")

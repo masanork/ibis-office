@@ -135,7 +135,7 @@ fn rust_rules_match_reference_when_table_context_is_supplied() {
                 ibis_doc_model::machine_readability_scoring::Severity::Info => "info",
             };
             assert_eq!(severity, expected_rule["severity"].as_str().unwrap());
-            let levels: Vec<&str> = actual.findings.iter().map(|f| match f.severity { FindingSeverity::Error => "error", FindingSeverity::Info => "info" }).collect();
+            let levels: Vec<&str> = actual.findings.iter().map(|f| match f.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" }).collect();
             let wanted_levels: Vec<&str> = expected_rule["finding_severities"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
             assert_eq!(levels, wanted_levels);
         }
@@ -177,4 +177,38 @@ fn rust_rule_boundaries_and_missing_data_are_explicit() {
     let invalid = CellRange { first_row: 3, last_row: 2, first_column: 0, last_column: 1 };
     assert_eq!(hidden_rows_columns(&sheet, UsedExtent::Range(invalid)).result.confidence, 0.0);
     assert_eq!(formula_cells(&sheet, invalid, true).result.confidence, 0.0);
+}
+
+#[test]
+fn rust_workbook_rules_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{file_format, one_table_per_sheet, WorkbookFormat, DetectedTable};
+    use ibis_doc_model::sheet::CellRange;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-workbook-rules-reference.json")).unwrap()).unwrap();
+    assert_eq!(fixture["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for case in fixture["formats"].as_array().unwrap() {
+        let format = match case["format"].as_str().unwrap() { "xlsx" => WorkbookFormat::Xlsx, "csv" => WorkbookFormat::Csv, "tsv" => WorkbookFormat::Tsv, _ => WorkbookFormat::Other };
+        let actual = file_format(format);
+        assert_eq!(actual.result.passed, case["passed"].as_bool().unwrap());
+        assert_eq!(actual.result.confidence, case["confidence"].as_f64().unwrap());
+        assert_eq!(actual.findings.iter().map(|f| f.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>());
+    }
+    assert_eq!(file_format(WorkbookFormat::Unknown).result.confidence, 0.0);
+    for case in fixture["tables"].as_array().unwrap() {
+        let tables: Vec<_> = case["tables"].as_array().unwrap().iter().map(|v| {
+            let a = v.as_array().unwrap();
+            DetectedTable { range: CellRange { first_row: a[0].as_u64().unwrap() as u32, first_column: a[1].as_u64().unwrap() as u32,
+                last_row: a[2].as_u64().unwrap() as u32, last_column: a[3].as_u64().unwrap() as u32 }, confidence: a[4].as_f64().unwrap() }
+        }).collect();
+        let current = tables[case["current"].as_u64().unwrap() as usize].range;
+        let actual = one_table_per_sheet(current, Some(&tables));
+        assert_eq!(actual.result.passed, case["passed"].as_bool().unwrap());
+        assert_eq!(actual.result.confidence, case["confidence"].as_f64().unwrap());
+        assert_eq!(actual.findings.iter().map(|f| f.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>());
+        assert!(actual.findings.iter().all(|f| f.severity == ibis_doc_model::machine_readability_rules::FindingSeverity::Warning));
+    }
+    assert_eq!(one_table_per_sheet(CellRange::default(), None).result.confidence, 0.0);
+    assert_eq!(one_table_per_sheet(CellRange::default(), Some(&[])).result.confidence, 0.0);
+    let invalid = DetectedTable { range: CellRange::default(), confidence: f64::NAN };
+    assert_eq!(one_table_per_sheet(CellRange::default(), Some(&[invalid])).result.confidence, 0.0);
 }

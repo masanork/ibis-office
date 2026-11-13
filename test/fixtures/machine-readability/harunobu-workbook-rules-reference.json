@@ -1,0 +1,251 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "formats": [
+    {
+      "format": "xlsx",
+      "passed": true,
+      "confidence": 1.0,
+      "locations": []
+    },
+    {
+      "format": "csv",
+      "passed": true,
+      "confidence": 1.0,
+      "locations": []
+    },
+    {
+      "format": "tsv",
+      "passed": true,
+      "confidence": 1.0,
+      "locations": []
+    },
+    {
+      "format": "xls",
+      "passed": false,
+      "confidence": 1.0,
+      "locations": [
+        "ファイル全体"
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.9
+        ]
+      ],
+      "current": 0,
+      "passed": true,
+      "confidence": 0.85,
+      "locations": [],
+      "severities": []
+    },
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.9
+        ],
+        [
+          6,
+          0,
+          9,
+          2,
+          0.9
+        ]
+      ],
+      "current": 0,
+      "passed": false,
+      "confidence": 0.85,
+      "locations": [
+        "A1:C4",
+        "A7:C10"
+      ],
+      "severities": [
+        "warning",
+        "warning"
+      ]
+    },
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.9
+        ],
+        [
+          6,
+          0,
+          9,
+          2,
+          0.9
+        ]
+      ],
+      "current": 1,
+      "passed": true,
+      "confidence": 0.85,
+      "locations": [],
+      "severities": []
+    },
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.2
+        ],
+        [
+          6,
+          0,
+          9,
+          2,
+          0.3
+        ]
+      ],
+      "current": 0,
+      "passed": false,
+      "confidence": 0.85,
+      "locations": [
+        "A1:C4",
+        "A7:C10"
+      ],
+      "severities": [
+        "warning",
+        "warning"
+      ]
+    },
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.2
+        ],
+        [
+          6,
+          0,
+          9,
+          2,
+          0.3
+        ]
+      ],
+      "current": 1,
+      "passed": true,
+      "confidence": 0.85,
+      "locations": [],
+      "severities": []
+    },
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.2
+        ],
+        [
+          6,
+          0,
+          9,
+          2,
+          0.5
+        ]
+      ],
+      "current": 0,
+      "passed": true,
+      "confidence": 0.85,
+      "locations": [],
+      "severities": []
+    },
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.2
+        ],
+        [
+          6,
+          0,
+          9,
+          2,
+          0.5
+        ]
+      ],
+      "current": 1,
+      "passed": true,
+      "confidence": 0.85,
+      "locations": [],
+      "severities": []
+    },
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.5
+        ],
+        [
+          6,
+          0,
+          9,
+          2,
+          0.5
+        ]
+      ],
+      "current": 0,
+      "passed": false,
+      "confidence": 0.85,
+      "locations": [
+        "A1:C4",
+        "A7:C10"
+      ],
+      "severities": [
+        "warning",
+        "warning"
+      ]
+    },
+    {
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          0.5
+        ],
+        [
+          6,
+          0,
+          9,
+          2,
+          0.5
+        ]
+      ],
+      "current": 1,
+      "passed": true,
+      "confidence": 0.85,
+      "locations": [],
+      "severities": []
+    }
+  ]
+}
