@@ -19,3 +19,8 @@ The Harunobu sample implementation is distributed under MIT; its rule data
 and documentation use PDL 1.0. This fixture and recorded result were generated
 for ibisOffice and are not an official Digital Agency certification.
 See https://github.com/digital-go-jp/machine_readability_rule#ライセンスについて
+
+`harunobu-character-reference.json` records `_detect_in_cell` results from
+the same pinned Harunobu version for synthetic Unicode examples. The live
+scanner checks the whole sheet and does not apply table, encoding, or score
+semantics; these examples do not establish full rule parity.

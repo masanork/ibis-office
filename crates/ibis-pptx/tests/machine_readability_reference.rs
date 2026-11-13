@@ -59,3 +59,19 @@ fn csv_has_no_excel_structure_candidates() {
     let p = ibis_pptx::read(&xlsx).unwrap();
     assert!(candidates(sheet_of_slide(&p.slides[0]).unwrap()).is_empty());
 }
+
+#[test]
+fn live_character_candidates_match_reference_examples() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let reference: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-character-reference.json")).unwrap()).unwrap();
+    assert_eq!(reference["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let cases = reference["cases"].as_array().unwrap();
+    let csv = cases.iter().map(|case| case["value"].as_str().unwrap()).collect::<Vec<_>>().join("\n");
+    let bytes = ibis_pptx::csv::workbook_from(&csv, "characters").unwrap();
+    let p = ibis_pptx::read(&bytes).unwrap();
+    let findings = candidates(sheet_of_slide(&p.slides[0]).unwrap());
+    for (row, case) in cases.iter().enumerate() {
+        let detected = findings.iter().any(|f| f.kind == CandidateKind::PlatformDependentCharacters && f.range.first_row == row as u32 && f.range.first_column == 0);
+        assert_eq!(detected, case["detected"].as_bool().unwrap(), "{}", case["value"]);
+    }
+}
