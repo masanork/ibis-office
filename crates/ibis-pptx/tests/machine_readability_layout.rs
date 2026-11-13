@@ -233,3 +233,33 @@ fn preliminary_islands_match_reference() {
     assert!(result.candidates.is_empty());
     assert_eq!(result.others.len(), 5_000);
 }
+
+#[test]
+fn header_inheritance_matches_reference() {
+    use ibis_doc_model::machine_readability_layout::{inherit_headers_from_above, HeaderRows, InferredColumnHeader, InferredColumnSchema, InferredColumnType, IslandCandidate, LayoutCell, LayoutValue, ResolvedIsland};
+    fn parse_table(v: &serde_json::Value) -> ResolvedIsland {
+        let n = |v: &serde_json::Value| v.as_u64().unwrap() as u32;
+        let values = |v: &serde_json::Value| v.as_array().unwrap().iter().map(n).collect::<Vec<_>>();
+        let kind = |v: &serde_json::Value| match v.as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "mixed" => InferredColumnType::Mixed, "empty" => InferredColumnType::Empty, other => panic!("unknown {other}") };
+        ResolvedIsland {
+            candidate: IslandCandidate { range: CellRange { first_row: n(&v["range"][0]), first_column: n(&v["range"][1]), last_row: n(&v["range"][2]), last_column: n(&v["range"][3]) }, confidence: v["confidence"].as_f64().unwrap() },
+            headers: HeaderRows { rows: values(&v["rows"]), body_first: n(&v["body"][0]), body_last: n(&v["body"][1]) },
+            column_headers: v["headers"].as_array().unwrap().iter().map(|h| InferredColumnHeader { column: n(&h["column"]), rows: values(&h["rows"]), label: h["label"].as_str().unwrap().into(), merged: h["merged"].as_bool().unwrap() }).collect(),
+            column_schemas: v["schemas"].as_array().unwrap().iter().map(|c| InferredColumnSchema { column: n(&c["column"]), kind: kind(&c["kind"]), has_header: c["has_header"].as_bool().unwrap() }).collect(),
+            stub_columns: values(&v["stub"]), footer_rows: values(&v["footer"]), abstain: v["abstain"].as_bool().unwrap(),
+        }
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-inheritance-reference.json");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (index, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cells: Vec<_> = case["cells"].as_array().unwrap().iter().map(|v| LayoutCell {
+            row: v["row"].as_u64().unwrap() as u32, column: v["column"].as_u64().unwrap() as u32,
+            value: if v["value"].is_null() { None } else if let Some(s) = v["value"].as_str() { Some(LayoutValue::Text(s.into())) } else { Some(LayoutValue::Numeric) },
+            bold: false, merged: false, formula: None,
+        }).collect();
+        let input: Vec<_> = case["tables"].as_array().unwrap().iter().map(parse_table).collect();
+        let expected: Vec<_> = case["expected"].as_array().unwrap().iter().map(parse_table).collect();
+        assert_eq!(inherit_headers_from_above(&input, &cells), Some(expected), "case {index}: {case}");
+    }
+}
