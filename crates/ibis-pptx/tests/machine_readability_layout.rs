@@ -62,3 +62,25 @@ fn island_boundary_trimming_matches_reference() {
     let cell = LayoutCell { row: 1, column: 1, value: None, bold: false, merged: false, formula: None };
     assert!(trim_boundaries(region, &[cell.clone(), cell]).is_none());
 }
+
+#[test]
+fn header_row_strength_matches_reference() {
+    use ibis_doc_model::machine_readability_layout::{header_row_strength, LayoutCell, LayoutValue};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-header-reference.json");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (index, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cells: Vec<_> = case["cells"].as_array().unwrap().iter().map(|v| LayoutCell {
+            row: v["row"].as_u64().unwrap() as u32, column: v["column"].as_u64().unwrap() as u32,
+            value: if v["value"].is_null() { None } else if let Some(s) = v["value"].as_str() { Some(LayoutValue::Text(s.into())) } else { Some(LayoutValue::Other) },
+            bold: v["bold"].as_bool().unwrap(), merged: v["merged"].as_bool().unwrap(), formula: None,
+        }).collect();
+        let merges: Vec<_> = case["merges"].as_array().unwrap().iter().map(|v| CellRange {
+            first_row: v[0].as_u64().unwrap() as u32, first_column: v[1].as_u64().unwrap() as u32,
+            last_row: v[2].as_u64().unwrap() as u32, last_column: v[3].as_u64().unwrap() as u32,
+        }).collect();
+        assert_eq!(header_row_strength(0, 0, case["width"].as_u64().unwrap() as u32 - 1, &cells, &merges), Some(case["strength"].as_u64().unwrap() as u8), "case {index}: {case}");
+    }
+    assert_eq!(header_row_strength(0, 2, 1, &[], &[]), None);
+    assert_eq!(header_row_strength(0, 0, 1, &[], &[CellRange { first_row: 1, last_row: 0, first_column: 0, last_column: 0 }]), None);
+}
