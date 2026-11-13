@@ -136,3 +136,30 @@ fn header_body_band_merging_matches_reference() {
     assert_eq!(merge_header_body_bands(&[(0, 1), (1, 2)], &[], 1, &[], &[]), None);
     assert_eq!(merge_header_body_bands(&[(2, 1)], &[], 1, &[], &[]), None);
 }
+
+#[test]
+fn column_schemas_match_reference() {
+    use ibis_doc_model::machine_readability_layout::{infer_column_schema, infer_column_schemas, infer_column_type, InferredColumnType, LayoutCell, LayoutValue};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-column-reference.json");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (index, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cells: Vec<_> = case["cells"].as_array().unwrap().iter().map(|v| LayoutCell {
+            row: v["row"].as_u64().unwrap() as u32, column: 4,
+            value: if v["value"].is_null() { None } else if let Some(s) = v["value"].as_str() { Some(LayoutValue::Text(s.into())) } else if v["value"].is_number() || v["value"].is_boolean() { Some(LayoutValue::Numeric) } else { Some(LayoutValue::Date) },
+            bold: false, merged: false, formula: None,
+        }).collect();
+        let kind = match case["kind"].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "mixed" => InferredColumnType::Mixed, "empty" => InferredColumnType::Empty, other => panic!("unexpected {other}") };
+        let schema = infer_column_schema(4, 0, case["height"].as_u64().unwrap() as u32 - 1, &cells, case["label"].as_str()).unwrap();
+        assert_eq!(schema.kind, kind, "case {index}: {case}");
+        assert_eq!(schema.has_header, case["has_header"].as_bool().unwrap(), "case {index}: {case}");
+        assert_eq!(schema.column, 4);
+    }
+    assert_eq!(infer_column_type(4, 2, 1, &[]), Some(InferredColumnType::Empty));
+    let cell = LayoutCell { row: 0, column: 4, value: Some(LayoutValue::Numeric), bold: false, merged: false, formula: None };
+    assert_eq!(infer_column_type(4, 0, 1, &[cell.clone(), cell.clone()]), None);
+    let other = LayoutCell { column: 7, value: Some(LayoutValue::Text("label".into())), ..cell.clone() };
+    let schemas = infer_column_schemas(&[(7, None), (4, Some("value")), (9, Some(""))], 0, 1, &[cell, other]).unwrap();
+    assert_eq!(schemas.iter().map(|s| (s.column, s.kind, s.has_header)).collect::<Vec<_>>(), [(7, InferredColumnType::Text, false), (4, InferredColumnType::Numeric, true), (9, InferredColumnType::Empty, false)]);
+    assert!(infer_column_schemas(&[(4, None), (4, None)], 0, 1, &[]).is_none());
+}
