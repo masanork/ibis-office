@@ -14,7 +14,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 
-## Rust の部品（473 件）
+## Rust の部品（477 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -100,6 +100,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
 | ctor | 1.0.13 | Apache-2.0 OR MIT | https://github.com/mmastrac/linktime |
 | data-url | 0.3.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
+| delharc | 0.8.0 | MIT OR Apache-2.0 | https://github.com/royaltm/rust-delharc |
 | derive_more | 2.1.1 | MIT | https://github.com/JelteF/derive_more |
 | derive_more-impl | 2.1.1 | MIT | https://github.com/JelteF/derive_more |
 | digest | 0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
@@ -158,6 +159,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | futures-task | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | generic-array | 0.14.7 | MIT | https://github.com/fizyk20/generic-array.git |
+| getrandom | 0.2.17 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | getrandom | 0.3.4 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | gif | 0.14.2 | MIT OR Apache-2.0 | https://github.com/image-rs/image-gif |
@@ -351,6 +353,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex |
 | resvg | 0.46.0 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
 | rgb | 0.8.53 | MIT | https://github.com/kornelski/rust-rgb |
+| ring | 0.17.14 | Apache-2.0 AND ISC | https://github.com/briansmith/ring |
 | ropey | 2.0.0-beta.1 | MIT OR Apache-2.0 | https://github.com/cessen/ropey |
 | roxmltree | 0.21.1 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/roxmltree |
 | rust-embed | 8.12.0 | MIT | https://pyrossh.dev/repos/rust-embed |
@@ -458,6 +461,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | unicode-vo | 0.1.0 | MIT/Apache-2.0 | https://github.com/RazrFalcon/unicode-vo |
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-width |
 | unicode-xid | 0.2.6 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-xid |
+| untrusted | 0.9.0 | ISC | https://github.com/briansmith/untrusted |
 | url | 2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
 | usvg | 0.46.0 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
 | utf-8 | 0.7.6 | MIT OR Apache-2.0 | https://github.com/SimonSapin/rust-utf8 |
@@ -682,6 +686,36 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
+### Harunobu
+
+```text
+Harunobu character classification (modified)
+Source: https://github.com/digital-go-jp/machine_readability_rule
+Revision: 88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f
+
+MIT License
+
+Copyright (c) 2026 Digital Agency of Japan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### Lucide
 
 ```text
@@ -816,6 +850,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **crypto-common 0.2.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2021-2026 RustCrypto Developers
 - **ctor 1.0.13**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **data-url 0.3.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2013-2025 The rust-url developers
+- **delharc 0.8.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2023 Rafal Michalski
 - **derive_more 2.1.1**：Copyright (c) 2016 Jelte Fennema
 - **derive_more-impl 2.1.1**：Copyright (c) 2016 Jelte Fennema
 - **digest 0.10.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2017 Artyom Pavlov
@@ -873,6 +908,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **futures-task 0.3.34**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 Alex Crichton / Copyright (c) 2017 The Tokio Authors
 - **futures-util 0.3.34**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 Alex Crichton / Copyright (c) 2017 The Tokio Authors
 - **generic-array 0.14.7**：Copyright (c) 2015 Bartłomiej Kamiński
+- **getrandom 0.2.17**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018-2024 The rust-random Project Developers / Copyright (c) 2014 The Rust Project Developers
 - **getrandom 0.3.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018-2025 The rust-random Project Developers / Copyright (c) 2014 The Rust Project Developers
 - **getrandom 0.4.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018-2026 The rust-random Project Developers / Copyright (c) 2014 The Rust Project Developers
 - **gif 0.14.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 nwin
@@ -1024,6 +1060,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **regex-syntax 0.8.11**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers
 - **resvg 0.46.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2017 the Resvg Authors
 - **rgb 0.8.53**：Copyright (c) 2019 Kornel
+- **ring 0.17.14**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2009 The Go Authors. All rights reserved. / copyright notice, this list of conditions and the following disclaimer / Copyright 2015 The Chromium Authors. All rights reserved. / Copyright 2015-2025 Brian Smith. / copyright notice and this permission notice appear in all copies.
 - **ropey 2.0.0-beta.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2023 Nathan Vegdahl
 - **roxmltree 0.21.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Yevhenii Reizner
 - **rust-embed 8.12.0**：Copyright (c) 2018 pyros2097
@@ -2566,6 +2603,24 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
+### untrusted 0.9.0（ISC）
+
+```text
+// Copyright 2015-2016 Brian Smith.
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHORS DISCLAIM ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR
+// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
 ### writeable 0.6.4（Unicode-3.0）
 
 ```text
@@ -3319,6 +3374,24 @@ For these and/or other purposes and motivations, and without any expectation of 
      c. Affirmer disclaims responsibility for clearing rights of other persons that may apply to the Work or any use thereof, including without limitation any person's Copyright and Related Rights in the Work. Further, Affirmer disclaims responsibility for obtaining any necessary consents, permissions or other rights required for any use of the Work.
 
      d. Affirmer understands and acknowledges that Creative Commons is not a party to this document and has no duty or obligation with respect to this CC0 or use of the Work.
+```
+
+### ISC
+
+```text
+Copyright 2015-2025 Brian Smith.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
 ### MIT

@@ -21,6 +21,7 @@ pub struct Candidate {
 /// intentionally left to the reference engine.
 /// Reference: digital-go-jp/machine_readability_rule, MIT license,
 /// harunobu/rules/level1/L1_08_platform_dependent_chars.py (commit 88014ff9).
+/// Copyright (c) 2026 Digital Agency of Japan; see ../HARUNOBU-MIT.txt.
 fn platform_character_candidate(value: &str) -> bool {
     const UNITS: &str = "㎡㎥㎢㎠㎝㎞㎜㎏㎎㎍㎅㎄㎃㎖㎗㎘㏄㏊";
     value.chars().any(|c| {

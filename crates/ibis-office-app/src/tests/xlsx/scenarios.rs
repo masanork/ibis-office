@@ -780,6 +780,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     #[cfg(not(target_family = "wasm"))]
     if std::env::var_os("IBIS_HARUNOBU_INTEGRATION").is_some() {
         all.push(("xlsx::harunobu_reference_integration", harunobu_reference_integration));
+        all.push(("xlsx::harunobu_unsaved_csv", harunobu_unsaved_csv));
         all.push(("xlsx::harunobu_matches_reference_cli", harunobu_matches_reference_cli));
         all.push(("xlsx::harunobu_bulk_reference", harunobu_bulk_reference));
     }
@@ -29715,11 +29716,41 @@ fn harunobu_reference_integration() {
     s.click_cell("C5");
     s.type_text("42");
     s.key("enter");
+    let path = crate::shell::scenario::repo_root().join("test/fixtures/machine-readability/structure.xlsx");
+    let original = std::fs::read(&path).unwrap();
+    s.update(|e, window, cx| e.run_harunobu("standard", window, cx));
+    for _ in 0..100 {
+        s.wait(100);
+        if s.with(|e, _| e.wb().panels.machine_readability.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
+    }
+    s.with(|e, _| {
+        let p = e.wb().panels.machine_readability.as_ref().unwrap();
+        assert!(p.full_error.is_none(), "snapshot failed: {:?}", p.full_error);
+        let report = p.full.as_ref().expect("snapshot report");
+        assert!(report.snapshot);
+        let rules = report.json["sheets"].as_array().unwrap().iter()
+            .flat_map(|sheet| sheet["評価対象エリア"].as_array().into_iter().flatten())
+            .flat_map(|area| area["評価内容"].as_array().into_iter().flatten());
+        let formula = rules.filter(|rule| rule["ルールID"] == "L2-06").collect::<Vec<_>>();
+        assert!(!formula.is_empty());
+        assert!(formula.iter().all(|rule| rule["合否"] == true), "edited formula should be gone");
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), original, "inspection must not overwrite the source");
+}
+
+
+#[cfg(not(target_family = "wasm"))]
+fn harunobu_unsaved_csv() {
+    let mut s = Scenario::open("test/fixtures/machine-readability/data.csv");
+    s.menu("xlsx.machine-readability.menu");
+    s.click_cell("B2");
+    s.type_text("42");
+    s.key("enter");
     s.update(|e, window, cx| e.run_harunobu("standard", window, cx));
     s.with(|e, _| {
         let p = e.wb().panels.machine_readability.as_ref().unwrap();
         assert!(p.full.is_none());
-        assert!(p.full_error.is_some(), "unsaved edits must not silently analyze the old file");
+        assert!(p.full_error.is_some(), "unsaved CSV must not inspect stale bytes");
     });
 }
 

@@ -75,15 +75,27 @@ impl SlideEditor {
     }
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn run_harunobu(&mut self, mode: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let validation = if self.is_dirty() { Err(text("xlsx.harunobu.save-first").to_string()) }
-            else if self.is_csv_streaming { Err(text("xlsx.machine-readability.loading").to_string()) }
+        let validation = if self.is_csv_streaming { Err(text("xlsx.machine-readability.loading").to_string()) }
             else { self.path.clone().ok_or_else(|| text("xlsx.harunobu.save-first").to_string()) };
         let path = match validation {
             Ok(path) => path,
             Err(error) => { if let Some(p) = self.wb_mut().panels.machine_readability.as_mut() { p.full = None; p.full_error = Some(error); p.full_busy = None; } cx.notify(); return; }
         };
-        self.start_harunobu(vec![path], false, mode, window, cx);
+        if self.is_dirty() {
+            let xlsx = path.extension().and_then(|x| x.to_str()).is_some_and(|x| x.eq_ignore_ascii_case("xlsx") || x.eq_ignore_ascii_case("xlsm"));
+            if !xlsx || self.cell_edit().is_some() || self.source.is_none() {
+                if let Some(p) = self.wb_mut().panels.machine_readability.as_mut() { p.full = None; p.full_error = Some(text("xlsx.harunobu.save-first").to_string()); p.full_busy = None; }
+                cx.notify();
+                return;
+            }
+            let source = self.source.clone().unwrap();
+            let presentation = self.presentation().clone();
+            self.start_harunobu_input(vec![path], false, Some((source, presentation)), mode, window, cx);
+        } else {
+            self.start_harunobu(vec![path], false, mode, window, cx);
+        }
     }
+
     #[cfg(not(target_family = "wasm"))]
     fn pick_harunobu_bulk(&mut self, mode: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let document_id = self.document_id;
@@ -101,6 +113,10 @@ impl SlideEditor {
     }
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn start_harunobu(&mut self, paths: Vec<std::path::PathBuf>, bulk: bool, mode: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_harunobu_input(paths, bulk, None, mode, window, cx);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    fn start_harunobu_input(&mut self, paths: Vec<std::path::PathBuf>, bulk: bool, snapshot: Option<(std::sync::Arc<ibis_pptx::Source>, ibis_doc_model::Presentation)>, mode: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let job = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -110,7 +126,10 @@ impl SlideEditor {
         cx.spawn_in(window, async move |this, cx| {
             let result = cx.background_executor().spawn(async move {
                 super::harunobu::runtime().and_then(|bin| {
-                    if bulk { super::harunobu::analyze_bulk(&bin, &paths, mode) }
+                    if let Some((source, presentation)) = snapshot {
+                        let bytes = source.save(&presentation, ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?;
+                        super::harunobu::analyze_snapshot(&bin, &paths[0], &bytes, mode)
+                    } else if bulk { super::harunobu::analyze_bulk(&bin, &paths, mode) }
                     else { super::harunobu::analyze(&bin, &paths[0], mode) }
                 })
             }).await;
@@ -221,7 +240,8 @@ impl SlideEditor {
             if full_busy { content = content.child(div().text_sm().child(text("xlsx.harunobu.running").to_string())); }
             if let Some(error) = full_error { content = content.child(div().text_sm().text_color(cx.theme().danger).child(format!("{}: {error}", text("xlsx.harunobu.failed")))); }
             if let Some(report) = full {
-                if dirty && !report.bulk { content = content.child(div().text_sm().text_color(cx.theme().warning).child(text("xlsx.harunobu.stale").to_string())); }
+                if report.snapshot { content = content.child(div().text_sm().text_color(cx.theme().warning).child(text("xlsx.harunobu.snapshot").to_string())); }
+                else if dirty && !report.bulk { content = content.child(div().text_sm().text_color(cx.theme().warning).child(text("xlsx.harunobu.stale").to_string())); }
                 for (index, (csv, key)) in [(false, "xlsx.harunobu.export-json"), (true, "xlsx.harunobu.export-csv")].into_iter().enumerate() {
                     content = content.child(crate::shell::chrome::action_button(("harunobu-export", index)).label(text(key)).small()
                         .on_click(cx.listener(move |this, _, window, cx| this.export_harunobu(csv, window, cx))));

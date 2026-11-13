@@ -2842,7 +2842,7 @@ xlsx.machine-readability.hidden-column	L1-13 Hidden column
 xlsx.machine-readability.formula	L2-06 Formula: check whether published data needs a value.
 xlsx.machine-readability.omitted	Additional candidates not shown
 
-xlsx.harunobu.scope	Analyze the saved file with Harunobu. Save edits first. AI is off. Table regions are estimates; scores exclude unchecked rules.
+xlsx.harunobu.scope	Analyze with Harunobu. Unsaved edits in opened XLSX/XLSM files use a temporary snapshot; save CSV/TSV edits first. Finish editing the active cell. AI is off. Table regions are estimates; scores exclude unchecked rules.
 xlsx.harunobu.save-first	Save or open a saved file first
 xlsx.harunobu.running	Analyzing…
 xlsx.harunobu.failed	Analysis failed
@@ -2871,3 +2871,5 @@ xlsx.harunobu.pick-bulk	Choose files to compare
 xlsx.harunobu.bulk-minimum	Select at least two files
 
 xlsx.machine-readability.platform-characters	L1-08 Platform-dependent characters or full-width alphanumerics: check the published format.
+
+xlsx.harunobu.snapshot	This report covers unsaved edits at the start of analysis. Recheck after subsequent edits.

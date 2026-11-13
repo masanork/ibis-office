@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 //! Local Harunobu reference backend. The subprocess gets a private byte-for-byte
-//! copy of the saved input; no shell or network-backed AI is used.
+//! copy of the saved input or an in-memory workbook snapshot; no shell or
+//! network-backed AI is used.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use wait_timeout::ChildExt;
 
 #[derive(Clone)]
-pub(crate) struct Report { pub(crate) json: serde_json::Value, pub(crate) csv: String, pub(crate) bulk: bool, pub(crate) sources: Vec<PathBuf> }
+pub(crate) struct Report { pub(crate) json: serde_json::Value, pub(crate) csv: String, pub(crate) bulk: bool, pub(crate) snapshot: bool, pub(crate) sources: Vec<PathBuf> }
 
 const PIN: &str = "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f";
 
@@ -39,15 +40,20 @@ pub(crate) fn runtime() -> Result<PathBuf, String> {
 
 /// Run on a saved file snapshot. `mode` is restricted to Harunobu's three modes.
 pub(crate) fn analyze(bin: &Path, source: &Path, mode: &str) -> Result<Report, String> {
-    run(bin, &[source.to_path_buf()], mode, false)
+    run(bin, &[source.to_path_buf()], mode, false, None)
 }
 
 pub(crate) fn analyze_bulk(bin: &Path, sources: &[PathBuf], mode: &str) -> Result<Report, String> {
     if sources.len() < 2 { return Err("Select at least two files".into()); }
-    run(bin, sources, mode, true)
+    run(bin, sources, mode, true, None)
 }
 
-fn run(bin: &Path, sources: &[PathBuf], mode: &str, bulk: bool) -> Result<Report, String> {
+/// Analyze an in-memory serialization while preserving the original name for reports.
+pub(crate) fn analyze_snapshot(bin: &Path, source: &Path, bytes: &[u8], mode: &str) -> Result<Report, String> {
+    run(bin, &[source.to_path_buf()], mode, false, Some(bytes))
+}
+
+fn run(bin: &Path, sources: &[PathBuf], mode: &str, bulk: bool, snapshot: Option<&[u8]>) -> Result<Report, String> {
     if !matches!(mode, "lite" | "standard" | "thorough") { return Err("Unsupported analysis mode".into()); }
     let dir = tempfile::Builder::new().prefix("sorane-harunobu-").tempdir().map_err(|e| e.to_string())?;
     let mut inputs = Vec::with_capacity(sources.len());
@@ -58,7 +64,8 @@ fn run(bin: &Path, sources: &[PathBuf], mode: &str, bulk: bool) -> Result<Report
         let folder = dir.path().join(index.to_string());
         std::fs::create_dir(&folder).map_err(|e| e.to_string())?;
         let input = folder.join(name);
-        std::fs::copy(source, &input).map_err(|e| e.to_string())?;
+        if let Some(bytes) = snapshot { std::fs::write(&input, bytes).map_err(|e| e.to_string())?; }
+        else { std::fs::copy(source, &input).map_err(|e| e.to_string())?; }
         inputs.push(input);
     }
     const PYTHON: &str = r#"import json, sys
@@ -106,7 +113,7 @@ print(json.dumps({'json': report, 'csv': csv}, ensure_ascii=False))"#;
     let valid = if bulk { report.get("ファイル別結果").is_some_and(|v| v.is_array()) && report.get("ファイル横断チェック").is_some_and(|v| v.is_object()) }
         else { report.get("sheets").is_some_and(|v| v.is_array()) && report.get("レベル別スコア").is_some_and(|v| v.is_object()) };
     if !valid { return Err("Invalid Harunobu report".into()); }
-    Ok(Report { json: report, csv, bulk, sources: sources.to_vec() })
+    Ok(Report { json: report, csv, bulk, snapshot: snapshot.is_some(), sources: sources.to_vec() })
 }
 
 /// Interpret only unambiguous one-based locations emitted by Harunobu.
