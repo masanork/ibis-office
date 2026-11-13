@@ -14,7 +14,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 
-## Rust の部品（573 件）
+## Rust の部品（576 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -117,6 +117,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | data-url | 0.3.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
 | deku | 0.20.3 | MIT OR Apache-2.0 | https://github.com/sharksforarms/deku |
 | deku_derive | 0.20.3 | MIT OR Apache-2.0 | https://github.com/sharksforarms/deku |
+| delharc | 0.8.0 | MIT OR Apache-2.0 | https://github.com/royaltm/rust-delharc |
 | derive_more | 2.1.1 | MIT | https://github.com/JelteF/derive_more |
 | derive_more-impl | 2.1.1 | MIT | https://github.com/JelteF/derive_more |
 | digest | 0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
@@ -163,7 +164,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | foldhash | 0.1.5 | Zlib | https://github.com/orlp/foldhash |
 | foldhash | 0.2.0 | Zlib | https://github.com/orlp/foldhash |
 | font-types | 0.11.3 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
-| font-types | 0.12.5 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
+| font-types | 0.12.7 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | fontconfig-parser | 0.5.8 | MIT | https://github.com/Riey/fontconfig-parser |
 | fontdb | 0.23.0 | MIT | https://github.com/RazrFalcon/fontdb |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
@@ -396,6 +397,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | https://github.com/ebkalderon/renderdoc-rs |
 | resvg | 0.46.0 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
 | rgb | 0.8.53 | MIT | https://github.com/kornelski/rust-rgb |
+| ring | 0.17.14 | Apache-2.0 AND ISC | https://github.com/briansmith/ring |
 | ropey | 2.0.0-beta.1 | MIT OR Apache-2.0 | https://github.com/cessen/ropey |
 | roxmltree | 0.20.0 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/roxmltree |
 | roxmltree | 0.21.1 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/roxmltree |
@@ -517,6 +519,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | unicode-vo | 0.1.0 | MIT/Apache-2.0 | https://github.com/RazrFalcon/unicode-vo |
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-width |
 | unicode-xid | 0.2.6 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-xid |
+| untrusted | 0.9.0 | ISC | https://github.com/briansmith/untrusted |
 | url | 2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
 | usvg | 0.46.0 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
 | utf-8 | 0.7.6 | MIT OR Apache-2.0 | https://github.com/SimonSapin/rust-utf8 |
@@ -782,6 +785,36 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
+### Harunobu
+
+```text
+Harunobu character classification (modified)
+Source: https://github.com/digital-go-jp/machine_readability_rule
+Revision: 88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f
+
+MIT License
+
+Copyright (c) 2026 Digital Agency of Japan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### Lucide
 
 ```text
@@ -933,6 +966,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **data-url 0.3.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2013-2025 The rust-url developers
 - **deku 0.20.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **deku_derive 0.20.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **delharc 0.8.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2023 Rafal Michalski
 - **derive_more 2.1.1**：Copyright (c) 2016 Jelte Fennema
 - **derive_more-impl 2.1.1**：Copyright (c) 2016 Jelte Fennema
 - **digest 0.10.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2017 Artyom Pavlov
@@ -978,7 +1012,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **foldhash 0.1.5**：Copyright (c) 2024 Orson Peters
 - **foldhash 0.2.0**：Copyright (c) 2024 Orson Peters
 - **font-types 0.11.3**：Copyright 2019 Colin Rothfels / Copyright (c) 2019 Colin Rothfels
-- **font-types 0.12.5**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
+- **font-types 0.12.7**：Copyright 2019 Fontations Developers / Copyright (c) 2019 Fontations Developers
 - **fontconfig-parser 0.5.8**：Copyright (c) 2021 Riey
 - **fontdb 0.23.0**：Copyright (c) 2020 Yevhenii Reizner
 - **form_urlencoded 1.2.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2013-2016 The rust-url developers
@@ -1188,6 +1222,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **renderdoc-sys 1.1.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2022 Eyal Kalderon
 - **resvg 0.46.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2017 the Resvg Authors
 - **rgb 0.8.53**：Copyright (c) 2019 Kornel
+- **ring 0.17.14**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2009 The Go Authors. All rights reserved. / copyright notice, this list of conditions and the following disclaimer / Copyright 2015 The Chromium Authors. All rights reserved. / Copyright 2015-2025 Brian Smith. / copyright notice and this permission notice appear in all copies.
 - **ropey 2.0.0-beta.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2023 Nathan Vegdahl
 - **roxmltree 0.20.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Yevhenii Reizner
 - **roxmltree 0.21.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Yevhenii Reizner
@@ -2978,6 +3013,24 @@ SPDX-License-Identifier: Unicode-3.0
 
 Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+```
+
+### untrusted 0.9.0（ISC）
+
+```text
+// Copyright 2015-2016 Brian Smith.
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHORS DISCLAIM ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR
+// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
 ### writeable 0.6.4（Unicode-3.0）
