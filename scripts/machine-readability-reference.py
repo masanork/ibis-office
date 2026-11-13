@@ -170,3 +170,24 @@ process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-
     input=json.dumps(csv_reference['cases'], ensure_ascii=False), text=True, capture_output=True, check=True)
 csv_rules = {"harunobu_commit": COMMIT, "cases": json.loads(process.stdout)}
 (FIXTURES / "harunobu-csv-rules-reference.json").write_text(json.dumps(csv_rules, ensure_ascii=False, separators=(',', ':')) + "\n")
+
+character_rule_script = """import json, sys
+from harunobu.core.models import Cell, CellPosition, Sheet, WorkBook, TableContext, TableRegion, CellRange
+from harunobu.rules.level1.L1_08_platform_dependent_chars import PlatformDependentCharsRule
+values = json.load(sys.stdin)
+cells = {(i, 1): Cell(pos=CellPosition(row=i, col=1), value=v) for i,v in enumerate(values, start=1)}
+sheet = Sheet(name='Cases', cells=cells, max_row=len(values), max_col=1)
+region = TableRegion(range=CellRange(start_row=1, start_col=1, end_row=len(values), end_col=1), confidence=1.0)
+cases = []
+for label, fmt, encoding in [('xlsx','xlsx',None), ('utf8','csv','utf-8'), ('cp932','csv','cp932')]:
+    workbook = WorkBook(file_name='data.'+fmt, file_format=fmt, encoding=encoding, sheets=[sheet])
+    r = PlatformDependentCharsRule().check(TableContext(workbook=workbook, sheet=sheet, table_region=region))
+    cases.append(dict(encoding=label, passed=r.passed, confidence=r.confidence,
+        locations=[v.cell_range for v in r.violations], severities=[v.severity for v in r.violations]))
+print(json.dumps(cases, ensure_ascii=False))
+"""
+character_values = character_cases + ['Ⅰ-0', '  Ⅱ－１  ', 'Ⅰ-0x', '①Ａ', '㎡', '①㎡', 'ＡＢ９', '㋿']
+process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-c", character_rule_script],
+    input=json.dumps(character_values, ensure_ascii=False), text=True, capture_output=True, check=True)
+character_rule = {"harunobu_commit": COMMIT, "values": character_values, "cases": json.loads(process.stdout)}
+(FIXTURES / "harunobu-character-rule-reference.json").write_text(json.dumps(character_rule, ensure_ascii=False, indent=2) + "\n")
