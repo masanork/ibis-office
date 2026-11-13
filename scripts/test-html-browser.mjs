@@ -30,10 +30,10 @@ try {
   assert((await page.locator('textarea').inputValue()).includes('HTML<&検証'), 'test edit must reach the editor');
 
   await page.mouse.click(145, 49); // File
-  await page.mouse.move(230, 266); // Export submenu
+  await page.mouse.move(230, 295); // Export submenu
   await page.waitForTimeout(700);
   const downloadPromise = page.waitForEvent('download', { timeout: 15_000 });
-  await page.mouse.click(520, 466); // Web page (.html)
+  await page.mouse.click(520, 494); // Web page (.html)
   const download = await downloadPromise;
   assert.equal(download.suggestedFilename(), 'sorane-welcome.html');
   assert.equal(await download.failure(), null);

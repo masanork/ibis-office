@@ -219,7 +219,9 @@ try {
   const menuPopup = () => phone.screenshot({ clip: { x: 150, y: 66, width: 230, height: 300 } });
   const beforePopup = await menuPopup();
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
-  await tap(phoneTouch, 9, 354, 49);
+  // The English system font on Linux makes the preceding menu labels narrower.
+  const overflowX = process.platform === 'linux' ? 331 : 354;
+  await tap(phoneTouch, 9, overflowX, 49);
   await phone.waitForTimeout(1000);
   assert(!beforePopup.equals(await menuPopup()), 'the overflow menu must open on touch');
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
