@@ -56,7 +56,18 @@ for _ in range(400):
         else: r,c,kind=o.row,o.col,o.region_type
         encoded_others.append([r-1,c-1,kind])
     columns=IslandDetector()._merge_column_adjacent_regions(sheet,table)
-    cases.append(dict(height=height,width=width,cells=raw,merges=merge_raw,candidates=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence] for t in table],others=encoded_others,columns=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence,[r-1 for r in t.layout.header_rows]] for t in columns]))
+    forms=IslandDetector()._merge_form_fragments(sheet,columns)
+    cases.append(dict(height=height,width=width,cells=raw,merges=merge_raw,forms=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence,[r-1 for r in t.layout.header_rows]] for t in forms],candidates=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence] for t in table],others=encoded_others,columns=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence,[r-1 for r in t.layout.header_rows]] for t in columns]))
+# Explicit form layouts: three narrow islands, with and without a fourth wider island.
+for col_bands in [[(0,1),(4,5),(8,9)],[(0,1),(4,5),(8,9),(13,16)],[(0,1),(4,5)]]:
+    height=4; width=col_bands[-1][1]+1
+    raw=[dict(row=r,column=c,value='項目' if r==0 else 123,bold=r==0,merged=False,formula=None) for r in range(height) for a,b in col_bands for c in range(a,b+1)]
+    mapped={(a['row']+1,a['column']+1):Cell(pos=CellPosition(row=a['row']+1,col=a['column']+1),value=a['value'],fmt=CellFormat(bold=a['bold'])) for a in raw}
+    sheet=Sheet(name='fixture',cells=mapped,max_row=height,max_col=width)
+    table=[IslandDetector()._evaluate_region_with_trim(sheet,(1,height),(a+1,b+1))[0] for a,b in col_bands]
+    columns=IslandDetector()._merge_column_adjacent_regions(sheet,table)
+    forms=IslandDetector()._merge_form_fragments(sheet,columns)
+    cases.append(dict(height=height,width=width,cells=raw,merges=[],others=[],candidates=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence] for t in table],columns=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence,[r-1 for r in t.layout.header_rows]] for t in columns],forms=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence,[r-1 for r in t.layout.header_rows]] for t in forms]))
 print(json.dumps(cases,ensure_ascii=False))
 '''
 run=subprocess.run([str(repo/'.venv/bin/python'),'-I','-X','utf8','-c',code],text=True,capture_output=True,check=True)
