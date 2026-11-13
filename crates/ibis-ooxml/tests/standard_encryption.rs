@@ -79,14 +79,11 @@ fn protect(package: &[u8], password: &str, key_bits: u32) -> Vec<u8> {
     cfb::write(&[cfb::Item::stream("EncryptionInfo", info), cfb::Item::stream("EncryptedPackage", encrypted)])
 }
 
-fn file(name: &str) -> Vec<u8> {
-    std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/editing").join(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
-}
-
 #[test]
 fn standard_files_open_for_every_key_size() {
-    for (name, main_part) in [("xlsx-encrypted.xlsx", "xl/workbook.xml"), ("docx-encrypted.docx", "word/document.xml")] {
-        let package = encryption::decrypt(&file(name), "ibis123").unwrap();
+    let workbook = include_bytes!("../../../test/fixtures/machine-readability/structure.xlsx").to_vec();
+    let document = encryption::decrypt(include_bytes!("fixtures/standard-password.docx"), "Password1234_").unwrap();
+    for (name, package, main_part) in [("xlsx", workbook, "xl/workbook.xml"), ("docx", document, "word/document.xml")] {
         for bits in [128, 192, 256] {
             let locked = protect(&package, "ibis123", bits);
             assert!(encryption::is_encrypted(&locked));

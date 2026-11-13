@@ -16,6 +16,7 @@ try {
   });
   await page.addInitScript(() => {
     localStorage.setItem('ibisoffice-lang', 'ja');
+    localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1');
     window.__ibisBlobTypes = [];
     const create = URL.createObjectURL.bind(URL);
     URL.createObjectURL = blob => { window.__ibisBlobTypes.push(blob.type); return create(blob); };

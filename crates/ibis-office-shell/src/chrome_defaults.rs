@@ -156,7 +156,7 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
             ];
             #[cfg(target_family = "wasm")]
             if matches!(editor.kind(), ibis_pptx::Kind::Workbook | ibis_pptx::Kind::Presentation) {
-                entries.push(item("file.export.html", "description").on(|this, window, cx| this.export_office_html(window, cx)).into());
+                entries.push(item_key("file.export.html", "description", "docx.convert.format.html").on(|this, window, cx| this.export_office_html(window, cx)).into());
             }
             if editor.is_jtd_read_only() && !editor.jtd_gallery {
                 entries.push(item("jtd.export-docx", "description").on(|this, window, cx| this.export_jtd_docx(window, cx)).into());

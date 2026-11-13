@@ -53,6 +53,7 @@ try {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
   await page.addInitScript(() => {
+    localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1');
     window.__ibisTouchEvents = [];
     window.__ibisTouchTrace = [];
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
@@ -235,7 +236,7 @@ try {
   editing.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
-  await editing.addInitScript(() => window.addEventListener('ibisoffice:download', event => { window.__ibisDownloaded = Array.from(event.detail.bytes); }));
+  await editing.addInitScript(() => { localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1'); window.addEventListener('ibisoffice:download', event => { window.__ibisDownloaded = Array.from(event.detail.bytes); }); });
   const editingUrl = new URL(url);
   editingUrl.searchParams.set('download', '1');
   await editing.goto(editingUrl.href);
