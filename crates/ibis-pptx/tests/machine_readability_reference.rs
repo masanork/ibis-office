@@ -323,3 +323,31 @@ fn private_use_is_a_separate_live_advisory() {
     assert!(l1_08.result.passed);
     assert!(l1_08.findings.is_empty(), "private-use advisories must not alter Harunobu L1-08");
 }
+
+#[test]
+fn rust_one_data_per_cell_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{multiple_data_reason, one_data_per_cell, ColumnType};
+    use ibis_doc_model::sheet::{CellRange, CellValue};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-one-data-reference.json")).unwrap()).unwrap();
+    assert_eq!(fixture["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for case in fixture["cases"].as_array().unwrap() {
+        let column = match case["column"].as_str() { Some("numeric") => Some(ColumnType::Numeric), Some("text") => Some(ColumnType::Other), None => None, other => panic!("unexpected column {other:?}") };
+        assert_eq!(multiple_data_reason(case["value"].as_str().unwrap(), column), case["reason"].as_str(), "case {case}");
+    }
+    let p = ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet = (**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let template = sheet.cells[0].clone();
+    sheet.cells.clear();
+    for (row, column, value) in [(0, 0, "A,B"), (1, 0, "1,2"), (2, 0, "1,234"), (3, 0, "A・B・C"), (4, 0, "a,b")] {
+        let mut cell = template.clone(); cell.row = row; cell.column = column; cell.value = CellValue::Text(value.into()); sheet.cells.push(cell);
+    }
+    let table = CellRange { first_row: 0, first_column: 0, last_row: 3, last_column: 0 };
+    let columns = std::collections::BTreeMap::from([(0, ColumnType::Numeric)]);
+    let result = one_data_per_cell(&sheet, table, Some(&columns));
+    assert!(!result.result.passed);
+    assert_eq!(result.result.confidence, 0.78);
+    assert_eq!(result.findings.iter().map(|f| f.location.as_str()).collect::<Vec<_>>(), ["A1", "A4"]);
+    let invalid = CellRange { first_row: 2, last_row: 1, ..table };
+    assert_eq!(one_data_per_cell(&sheet, invalid, None).result.confidence, 0.0);
+}

@@ -184,3 +184,56 @@ pub fn platform_characters(sheet: &Sheet, table: CellRange, encoding: TextEncodi
     }
     result("L1-08", encoding != TextEncoding::Cp932 || !any_warning, 0.95, Severity::Critical, findings)
 }
+
+/// A layout detector's inferred column type for L1-07. `None` at the call
+/// site means no schema is available, matching Harunobu's unguarded fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnType { Numeric, Other }
+
+/// Classify one textual cell with Harunobu's L1-07 heuristics. The order of
+/// checks matters because only the first issue is reported for each cell.
+pub fn multiple_data_reason(value: &str, column: Option<ColumnType>) -> Option<&'static str> {
+    use std::sync::OnceLock;
+    use regex::Regex;
+    static TWO: OnceLock<Regex> = OnceLock::new();
+    static THOUSANDS: OnceLock<Regex> = OnceLock::new();
+    static DIGIT: OnceLock<Regex> = OnceLock::new();
+    static PAREN: OnceLock<Regex> = OnceLock::new();
+    let two = TWO.get_or_init(|| Regex::new(r"^\d+（\d+）$").unwrap());
+    let thousands = THOUSANDS.get_or_init(|| Regex::new(r"^\d{1,3}(,\d{3})*(\.\d+)?$").unwrap());
+    let digit = DIGIT.get_or_init(|| Regex::new(r"^\d$").unwrap());
+    let paren = PAREN.get_or_init(|| Regex::new(r"（[^）]*）").unwrap());
+    let python_space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    if value.split('\n').filter(|line| !line.trim_matches(python_space).is_empty()).take(2).count() >= 2 { return Some("セル内改行による複数データ"); }
+    if two.is_match(value.trim_matches(python_space)) { return Some("全角括弧内に別数値（複数指標の混在）"); }
+    if value.matches('、').count() >= 2 { return Some("読点（、）による列挙"); }
+    if value.matches('・').count() >= 2 { return Some("中黒（・）による列挙"); }
+    let chars: Vec<char> = value.chars().collect();
+    let is_digit = |c: char| digit.is_match(c.encode_utf8(&mut [0; 4]));
+    let separator = chars.iter().enumerate().any(|(i, &c)| c == ',' && (i == 0 || !is_digit(chars[i-1])) && (i + 1 == chars.len() || !is_digit(chars[i+1])));
+    if separator && !thousands.is_match(value.trim_matches(python_space)) { return Some("カンマ区切りによる複数データ"); }
+    if column != Some(ColumnType::Numeric) {
+        let compact: String = value.chars().filter(|&c| !python_space(c)).collect();
+        let compact = paren.replace_all(&compact, "");
+        if compact.contains(',') && !thousands.is_match(&compact) { return Some("カンマ区切りによる複数データ"); }
+    }
+    None
+}
+
+/// L1-07 over an explicitly supplied table and column schema. Invalid ranges
+/// are skipped; no table or schema is inferred here.
+pub fn one_data_per_cell(sheet: &Sheet, table: CellRange, columns: Option<&std::collections::BTreeMap<u32, ColumnType>>) -> RuleEvaluation {
+    if table.first_row > table.last_row || table.first_column > table.last_column {
+        return result("L1-07", true, 0.0, Severity::Critical, Vec::new());
+    }
+    let mut findings = Vec::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= table.first_row && c.row <= table.last_row && c.column >= table.first_column && c.column <= table.last_column) {
+        if let CellValue::Text(value) = &cell.value {
+            if !value.trim().is_empty() && multiple_data_reason(value, columns.and_then(|c| c.get(&cell.column).copied())).is_some() {
+                findings.push(Finding { location: address(cell.row, cell.column), severity: FindingSeverity::Warning });
+            }
+        }
+    }
+    let passed = findings.is_empty();
+    result("L1-07", passed, if passed { 0.82 } else { 0.78 }, Severity::Critical, findings)
+}
