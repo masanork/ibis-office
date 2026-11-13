@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ibis-calc", "crates/ibis-office-base", "crates/ibis-office-macros", "crates/ibis-office-render", "crates/ibis-office-shell", "crates/ibis-office-docx", "crates/ibis-office-pptx", "crates/ibis-office-xlsx", "crates/ibis-doc-model", "crates/ibis-ooxml", "crates/ibis-emf", "crates/ibis-eot", "crates/ibis-imgdiff", "crates/ibis-pptx", "crates/ibis-office-updater", "crates/ibis-appimage", "crates/ibis-office-app", "tools/ibis-bench"]
+members = ["crates/ibis-font-subsetter", "crates/ibis-calc", "crates/ibis-office-base", "crates/ibis-office-macros", "crates/ibis-office-render", "crates/ibis-office-shell", "crates/ibis-office-docx", "crates/ibis-office-pptx", "crates/ibis-office-xlsx", "crates/ibis-doc-model", "crates/ibis-ooxml", "crates/ibis-emf", "crates/ibis-eot", "crates/ibis-imgdiff", "crates/ibis-pptx", "crates/ibis-office-updater", "crates/ibis-appimage", "crates/ibis-office-app", "tools/ibis-bench"]
 # The GPUI forks under forks/ are separate packages patched in below, not members.
 exclude = ["forks"]
 
