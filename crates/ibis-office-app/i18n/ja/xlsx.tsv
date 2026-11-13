@@ -2838,3 +2838,31 @@ xlsx.machine-readability.hidden-row	L1-13 非表示の行
 xlsx.machine-readability.hidden-column	L1-13 非表示の列
 xlsx.machine-readability.formula	L2-06 数式：公開データとして値が必要か確認してください。
 xlsx.machine-readability.omitted	表示していない候補の件数
+
+xlsx.harunobu.scope	Harunobu で保存済みファイルを検査します。未保存の編集は先に保存してください。AI 補完はオフです。表の範囲は推定で、未判定を除いた得点は参考値です。
+xlsx.harunobu.save-first	保存するか、保存済みファイルを開いてください
+xlsx.harunobu.running	検査中…
+xlsx.harunobu.failed	検査できませんでした
+xlsx.harunobu.skipped	未判定
+xlsx.harunobu.issue	要確認
+xlsx.harunobu.info	参考
+xlsx.harunobu.lite	Harunobu L1
+xlsx.harunobu.standard	Harunobu L1–L2
+xlsx.harunobu.thorough	Harunobu L1–L3
+xlsx.harunobu.export-json	JSON を保存…
+xlsx.harunobu.export-csv	CSV を保存…
+xlsx.harunobu.cannot-overwrite	元ファイルには上書きできません
+xlsx.harunobu.exported	検査結果を保存しました
+xlsx.harunobu.hidden-sheet	非表示シート
+xlsx.harunobu.table	推定範囲
+xlsx.harunobu.header	見出し
+xlsx.harunobu.stale	編集中の変更は、この検査結果に含まれていません。
+xlsx.harunobu.runtime-missing	固定版 Harunobu のローカル実行環境がありません。セットアップ手順を確認してください。
+xlsx.harunobu.runtime-invalid	Harunobu のバージョンまたは内容を確認できません。実行環境を確認してください。
+xlsx.harunobu.unsupported	この形式は Harunobu の検査対象外です。
+xlsx.harunobu.timeout	検査が時間内に完了しませんでした。
+xlsx.harunobu.bulk-scope	複数の保存済みファイルを選んで比較
+xlsx.harunobu.bulk-score	複数ファイル総合スコア
+xlsx.harunobu.pick-bulk	比較するファイルを選択
+
+xlsx.harunobu.bulk-minimum	2 ファイル以上を選択してください

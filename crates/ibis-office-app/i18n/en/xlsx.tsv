@@ -2841,3 +2841,31 @@ xlsx.machine-readability.hidden-row	L1-13 Hidden row
 xlsx.machine-readability.hidden-column	L1-13 Hidden column
 xlsx.machine-readability.formula	L2-06 Formula: check whether published data needs a value.
 xlsx.machine-readability.omitted	Additional candidates not shown
+
+xlsx.harunobu.scope	Analyze the saved file with Harunobu. Save edits first. AI is off. Table regions are estimates; scores exclude unchecked rules.
+xlsx.harunobu.save-first	Save or open a saved file first
+xlsx.harunobu.running	Analyzing…
+xlsx.harunobu.failed	Analysis failed
+xlsx.harunobu.skipped	Not checked
+xlsx.harunobu.issue	Issue
+xlsx.harunobu.info	Information
+xlsx.harunobu.lite	Harunobu L1
+xlsx.harunobu.standard	Harunobu L1–L2
+xlsx.harunobu.thorough	Harunobu L1–L3
+xlsx.harunobu.export-json	Save JSON…
+xlsx.harunobu.export-csv	Save CSV…
+xlsx.harunobu.cannot-overwrite	Cannot overwrite the source file
+xlsx.harunobu.exported	Report saved
+xlsx.harunobu.hidden-sheet	Hidden sheet
+xlsx.harunobu.table	Estimated table
+xlsx.harunobu.header	Header
+xlsx.harunobu.stale	Unsaved edits are not included in this result.
+xlsx.harunobu.runtime-missing	The pinned Harunobu runtime is not installed. See the setup instructions.
+xlsx.harunobu.runtime-invalid	The Harunobu runtime could not be verified. Check its installation.
+xlsx.harunobu.unsupported	This file format is not supported by Harunobu.
+xlsx.harunobu.timeout	The analysis timed out.
+xlsx.harunobu.bulk-scope	Compare multiple saved files
+xlsx.harunobu.bulk-score	Combined score
+xlsx.harunobu.pick-bulk	Choose files to compare
+
+xlsx.harunobu.bulk-minimum	Select at least two files

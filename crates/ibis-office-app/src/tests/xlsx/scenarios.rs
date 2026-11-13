@@ -777,6 +777,12 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::sheet031_validation_list_from_another_sheet", sheet031_validation_list_from_another_sheet),
         ("xlsx::sheet032_overwrite_question_and_text_paste", sheet032_overwrite_question_and_text_paste),
     ];
+    #[cfg(not(target_family = "wasm"))]
+    if std::env::var_os("IBIS_HARUNOBU_INTEGRATION").is_some() {
+        all.push(("xlsx::harunobu_reference_integration", harunobu_reference_integration));
+        all.push(("xlsx::harunobu_matches_reference_cli", harunobu_matches_reference_cli));
+        all.push(("xlsx::harunobu_bulk_reference", harunobu_bulk_reference));
+    }
     all.extend(super::corpus_report::all());
     all.extend(dropdown_position_20261106::all());
     all
@@ -29670,4 +29676,139 @@ fn machine_readability_candidates_and_live_edits() {
         assert_eq!(panel.findings.len(), 3);
         assert!(!panel.findings.iter().any(|f| f.kind == CandidateKind::Formula));
     });
+}
+
+
+#[cfg(not(target_family = "wasm"))]
+fn harunobu_reference_integration() {
+    let mut s = Scenario::open("test/fixtures/machine-readability/structure.xlsx");
+    s.menu("xlsx.machine-readability.menu");
+    s.update(|e, window, cx| e.run_harunobu("thorough", window, cx));
+    for _ in 0..100 {
+        s.wait(100);
+        if s.with(|e, _| e.wb().panels.machine_readability.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
+    }
+    s.with(|e, _| {
+        let p = e.wb().panels.machine_readability.as_ref().unwrap();
+        assert!(p.full_error.is_none(), "Harunobu failed: {:?}", p.full_error);
+        let report = p.full.as_ref().expect("Harunobu output");
+        assert_eq!(report.json["レベル別スコア"]["1"]["スコア"], 0);
+        assert!(report.csv.contains("L1-12"));
+        assert_eq!(super::harunobu::cell_location("A2:A3"), Some((1, 0)));
+        assert_eq!(super::harunobu::cell_location("行3"), Some((2, 0)));
+        assert_eq!(super::harunobu::cell_location("列2"), Some((0, 1)));
+        assert_eq!(super::harunobu::cell_location("XFE1"), None);
+    });
+    s.screenshot("harunobu-full-report");
+    s.update(|e, _, cx| e.jump_harunobu(e.current_slide, 4, 2, cx));
+    assert_eq!(s.selected(), "C5");
+    s.click_cell("C5");
+    s.type_text("42");
+    s.key("enter");
+    s.update(|e, window, cx| e.run_harunobu("standard", window, cx));
+    s.with(|e, _| {
+        let p = e.wb().panels.machine_readability.as_ref().unwrap();
+        assert!(p.full.is_none());
+        assert!(p.full_error.is_some(), "unsaved edits must not silently analyze the old file");
+    });
+}
+
+
+#[cfg(not(target_family = "wasm"))]
+fn harunobu_matches_reference_cli() {
+    use std::collections::BTreeMap;
+    fn rules(v: &serde_json::Value) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for sheet in v["sheets"].as_array().unwrap() {
+            for area in sheet["評価対象エリア"].as_array().unwrap() {
+                for r in area["評価内容"].as_array().unwrap() {
+                    let key = format!("{}|{}|{}", sheet["シート名"], area["範囲"], r["ルールID"]);
+                    let mut violations: Vec<String> = r["違反"].as_array().unwrap().iter().map(|v| v.to_string()).collect();
+                    violations.sort();
+                    out.insert(key, format!("{}|{}|{}|{}|{:?}", r["合否"], r["判定対象外"], r["重大度"], r["信頼度"], violations));
+                }
+            }
+        }
+        out
+    }
+    fn scores(v: &serde_json::Value) -> serde_json::Value {
+        let mut value = v["レベル別スコア"].clone();
+        for level in ["1", "2", "3"] {
+            for key in ["強制0点ルール", "失敗ルール"] {
+                if let Some(items) = value[level][key].as_array_mut() { items.sort_by_key(|v| v.to_string()); }
+            }
+        }
+        value
+    }
+    let root = crate::shell::scenario::repo_root().join("test/fixtures/machine-readability");
+    let bin = super::harunobu::runtime().unwrap();
+    for fixture in ["structure.xlsx", "header-merge.xlsx", "data.csv"] {
+        let path = root.join(fixture);
+        for mode in ["lite", "standard", "thorough"] {
+            let report = super::harunobu::analyze(&bin, &path, mode).unwrap();
+            let result = std::process::Command::new(&bin).args(["-I", "-X", "utf8", "-m", "harunobu", "analyze"]).arg(&path)
+                .args(["--mode", mode, "--output", "json"]).env("HARUNOBU_AI_DISABLED", "1").output().unwrap();
+            assert!(result.status.success(), "reference CLI failed");
+            let reference: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+            assert_eq!(scores(&report.json), scores(&reference), "{fixture} {mode}");
+            assert_eq!(rules(&report.json), rules(&reference), "{fixture} {mode}");
+            assert!(!report.csv.is_empty());
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn harunobu_bulk_reference() {
+    fn normalize(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Array(items) => {
+                for item in items.iter_mut() { normalize(item); }
+                items.sort_by_key(|v| v.to_string());
+            }
+            serde_json::Value::Object(items) => for item in items.values_mut() { normalize(item); },
+            _ => {}
+        }
+    }
+    let root = crate::shell::scenario::repo_root().join("test/fixtures/machine-readability");
+    let paths = vec![root.join("structure.xlsx"), root.join("data.csv")];
+    let bin = super::harunobu::runtime().unwrap();
+    assert!(super::harunobu::analyze_bulk(&bin, &paths[..1], "thorough").is_err());
+    let script = r#"from io import BytesIO
+from pathlib import Path
+from harunobu.core.analyzer import Analyzer
+from harunobu.core.reader import read_workbook
+from harunobu.output.json_writer import to_bulk_dict
+import sys, json
+mode, *paths = sys.argv[1:]
+books = [read_workbook(Path(p).name, BytesIO(Path(p).read_bytes())) for p in paths]
+print(json.dumps(to_bulk_dict(Analyzer(mode=mode).analyze_bulk(books)), ensure_ascii=False))"#;
+    for mode in ["lite", "standard", "thorough"] {
+        let report = super::harunobu::analyze_bulk(&bin, &paths, mode).unwrap();
+        assert!(report.bulk);
+        assert_eq!(report.sources, paths);
+        assert!(!report.csv.is_empty());
+        let reference = std::process::Command::new(&bin).args(["-I", "-X", "utf8", "-c", script, mode])
+            .args(&paths).env("HARUNOBU_AI_DISABLED", "1").output().unwrap();
+        assert!(reference.status.success());
+        let mut expected: serde_json::Value = serde_json::from_slice(&reference.stdout).unwrap();
+        let mut actual = report.json;
+        normalize(&mut expected);
+        normalize(&mut actual);
+        assert_eq!(actual, expected, "bulk {mode}");
+    }
+    let mut s = Scenario::open("test/fixtures/machine-readability/structure.xlsx");
+    s.menu("xlsx.machine-readability.menu");
+    s.update(|e, window, cx| e.start_harunobu(paths, true, "thorough", window, cx));
+    for _ in 0..100 {
+        s.wait(100);
+        if s.with(|e, _| e.wb().panels.machine_readability.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
+    }
+    s.with(|e, _| {
+        let p = e.wb().panels.machine_readability.as_ref().unwrap();
+        assert!(p.full_error.is_none(), "bulk failed: {:?}", p.full_error);
+        let report = p.full.as_ref().expect("bulk report");
+        assert!(report.json["ファイル横断チェック"]["L3-07"].is_object());
+        assert_eq!(report.json["ファイル数"], 2);
+    });
+    s.screenshot("harunobu-bulk-report");
 }
