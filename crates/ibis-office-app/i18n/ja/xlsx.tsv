@@ -2839,7 +2839,7 @@ xlsx.machine-readability.hidden-column	L1-13 非表示の列
 xlsx.machine-readability.formula	L2-06 数式：公開データとして値が必要か確認してください。
 xlsx.machine-readability.omitted	表示していない候補の件数
 
-xlsx.harunobu.scope	Harunobu で保存済みファイルを検査します。未保存の編集は先に保存してください。AI 補完はオフです。表の範囲は推定で、未判定を除いた得点は参考値です。
+xlsx.harunobu.scope	Harunobu でファイルを検査します。開いた XLSX・XLSM の未保存の編集は一時コピーで検査し、CSV・TSV は保存後に検査します。入力中のセルは確定してください。AI 補完はオフです。表の範囲は推定で、未判定を除いた得点は参考値です。
 xlsx.harunobu.save-first	保存するか、保存済みファイルを開いてください
 xlsx.harunobu.running	検査中…
 xlsx.harunobu.failed	検査できませんでした
@@ -2868,3 +2868,5 @@ xlsx.harunobu.pick-bulk	比較するファイルを選択
 xlsx.harunobu.bulk-minimum	2 ファイル以上を選択してください
 
 xlsx.machine-readability.platform-characters	L1-08 機種依存文字・全角英数字：公開形式での表示を確認してください。
+
+xlsx.harunobu.snapshot	検査開始時の未保存の編集内容です。検査開始後に変更した場合は再検査してください。
