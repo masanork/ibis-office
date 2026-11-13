@@ -128,6 +128,8 @@ pub(crate) mod chart_insert;
 pub(crate) mod threaded_comments;
 pub(crate) mod accessibility_panel;
 pub(crate) mod machine_readability;
+#[cfg(not(target_family = "wasm"))]
+pub(crate) mod harunobu;
 pub(crate) mod compatibility_panel;
 pub(crate) mod selection_pane;
 pub(crate) mod frame_panel;
