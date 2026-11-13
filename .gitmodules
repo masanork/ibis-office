@@ -3,7 +3,7 @@
 	url = https://github.com/ibisjp/gpui-component.git
 [submodule "forks/gpui-base"]
 	path = forks/gpui-base
-	url = https://github.com/ibisjp/gpui-base.git
+	url = https://github.com/masanork/gpui-base.git
 [submodule "forks/gpui-pre"]
 	path = forks/gpui-pre
 	url = https://github.com/ibisjp/gpui-pre.git

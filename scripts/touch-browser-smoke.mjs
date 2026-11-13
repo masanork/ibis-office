@@ -53,6 +53,7 @@ try {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
   await page.addInitScript(() => {
+    Error.stackTraceLimit = 100;
     localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1');
     window.__ibisTouchEvents = [];
     window.__ibisTouchTrace = [];
@@ -133,6 +134,7 @@ try {
   phone.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
+  await phone.addInitScript(() => localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1'));
   await phone.goto(url);
   await phone.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
   await waitForEditorFrame(phone);
@@ -213,20 +215,14 @@ try {
   assert(forward.score > 0.5 && forward.foreground > 1000, `phone swipe up must move document pixels upward: ${JSON.stringify(forward)}`);
   assert(reverse.score > 0.5 && reverse.foreground > 1000, `phone swipe down must move document pixels downward: ${JSON.stringify(reverse)}`);
   assert(stationary.score < 0.5, `stationary document pixels must not count as a scroll: ${JSON.stringify(stationary)}`);
-  const menuStrip = () => phone.screenshot({ clip: { x: 0, y: 34, width: 390, height: 30 } });
-  const beforeMenu = await menuStrip();
-  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
-  await phoneTouch('touchStart', [pt(8, 350, 49)]);
-  await phoneTouch('touchMove', [pt(8, 80, 49)]);
-  await phoneTouch('touchEnd', []);
-  await phone.waitForTimeout(1000);
-  assert(!beforeMenu.equals(await menuStrip()), 'phone menu bar must scroll horizontally');
-  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
+  // 0.8.7 folds menus that do not fit into the arrow after the visible menus.
   const menuPopup = () => phone.screenshot({ clip: { x: 150, y: 66, width: 230, height: 300 } });
   const beforePopup = await menuPopup();
-  await tap(phoneTouch, 9, 360, 49);
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
+  await tap(phoneTouch, 9, 354, 49);
   await phone.waitForTimeout(1000);
-  assert(!beforePopup.equals(await menuPopup()), 'a revealed menu must open on tap');
+  assert(!beforePopup.equals(await menuPopup()), 'the overflow menu must open on touch');
+  if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
   assert.deepEqual(failures, [], 'phone interactions must not panic');
   await phone.context().close();
 
