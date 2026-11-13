@@ -50,10 +50,10 @@ pub fn trimmed_region_confidence(region: CellRange, occupied: &[(u32, u32)]) -> 
     format!("{score:.3}").parse().ok()
 }
 
-/// Value category required by boundary trimming. Other covers numbers, booleans,
-/// dates, and errors; `None` on a cell means it has no value.
+/// Value category required by layout inference. Numbers and booleans are
+/// Numeric; Other includes dates and errors. `None` means no cell value.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LayoutValue { Text(String), Other }
+pub enum LayoutValue { Text(String), Numeric, Other }
 
 /// Reader-provided cell data; formula includes the leading `=` as in Harunobu.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -193,15 +193,19 @@ pub fn header_row_strength(row: u32, first_column: u32, last_column: u32, cells:
         if !positions.insert((cell.row, cell.column)) { return None; }
         if cell.row == row && cell.column >= first_column && cell.column <= last_column && cell.value.is_some() { nonempty.push(cell); }
     }
-    if nonempty.is_empty() { return Some(0); }
-    if nonempty.iter().any(|cell| cell.bold) { return Some(2); }
+    Some(row_strength_for_cells(row, first_column, last_column, &nonempty, merges))
+}
+
+fn row_strength_for_cells(row: u32, first_column: u32, last_column: u32, nonempty: &[&LayoutCell], merges: &[CellRange]) -> u8 {
+    if nonempty.is_empty() { return 0; }
+    if nonempty.iter().any(|cell| cell.bold) { return 2; }
     if nonempty.iter().any(|cell| cell.merged) {
         let mut vertical_count = 0;
         for m in merges.iter().filter(|m| m.first_row <= row && m.last_row >= row && m.first_column >= first_column && m.last_column <= last_column) {
-            if m.last_column > m.first_column { return Some(2); }
+            if m.last_column > m.first_column { return 2; }
             if m.last_row > m.first_row { vertical_count += 1; }
         }
-        if vertical_count >= 3 { return Some(2); }
+        if vertical_count >= 3 { return 2; }
     }
     if nonempty.iter().all(|cell| matches!(&cell.value, Some(LayoutValue::Text(_)))) {
         let mut data_like = 0;
@@ -213,7 +217,37 @@ pub fn header_row_strength(row: u32, first_column: u32, last_column: u32, cells:
             meaningful += 1;
             if is_data_like_numeric(value) { data_like += 1; }
         }
-        if data_like as f64 <= (meaningful.max(1) as f64) * 0.3 { return Some(1); }
+        if data_like as f64 <= (meaningful.max(1) as f64) * 0.3 { return 1; }
     }
-    Some(0)
+    0
+}
+
+/// Whether a band is a header-only region suitable for possible merging with
+/// a following body band. This does not merge bands or select header rows.
+/// All sheet cells and merge metadata must be provided by the reader.
+pub fn band_is_header_like(band: CellRange, cells: &[LayoutCell], merges: &[CellRange]) -> Option<bool> {
+    if band.first_row > band.last_row || band.first_column > band.last_column || merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let mut positions = BTreeSet::new();
+    let mut rows: BTreeMap<u32, Vec<&LayoutCell>> = BTreeMap::new();
+    for cell in cells {
+        if !positions.insert((cell.row, cell.column)) { return None; }
+        if cell.row >= band.first_row && cell.row <= band.last_row && cell.column >= band.first_column && cell.column <= band.last_column && cell.value.is_some() {
+            rows.entry(cell.row).or_default().push(cell);
+        }
+    }
+    let width = u64::from(band.last_column) - u64::from(band.first_column) + 1;
+    let mut strong = false;
+    let mut data = false;
+    for (&row, row_cells) in &rows {
+        let strength = row_strength_for_cells(row, band.first_column, band.last_column, row_cells, merges);
+        if strength >= 2 { strong = true; continue; }
+        if strength == 1 || (row_cells.len() <= 2 && width >= 3) { continue; }
+        let numeric = row_cells.iter().any(|cell| match &cell.value {
+            Some(LayoutValue::Numeric) => true,
+            Some(LayoutValue::Text(value)) => is_data_like_numeric(value.trim_matches(python_space)),
+            _ => false,
+        });
+        if numeric && row_cells.len() as f64 / width as f64 > 0.3 { data = true; }
+    }
+    Some(strong && !data)
 }
