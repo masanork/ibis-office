@@ -14,7 +14,7 @@ pub enum XlsxReadWindow { Empty, Through { last_row: u32, last_column: u32 } }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum XlsxLayoutError {
     MissingStyle, DuplicateCell, InvalidMerge, OverlappingMerge, MergeTooLarge,
-    NumberFormatRequiresMetadata, NonFiniteNumber, FormulaCacheUnknown,
+    NumberFormatRequiresMetadata, EmptyTextRequiresMetadata, NonFiniteNumber, FormulaCacheUnknown,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct XlsxLayoutInput { pub cells: Vec<LayoutCell>, pub merges: Vec<CellRange> }
@@ -22,9 +22,8 @@ pub struct XlsxLayoutInput { pub cells: Vec<LayoutCell>, pub merges: Vec<CellRan
 /// Adapt a sheet only when the caller can guarantee that values are the saved
 /// non-formula values, and that cells/styles/merges cover the reference
 /// reader's window. Formula values must be supplied from the original XLSX
-/// XML, because the editor may have recalculated them. Dates and other non-General numeric
-/// formats are rejected until the XLSX reader supplies authoritative typing;
-/// treating them as plain numbers could change header and column inference.
+/// XML, because the editor may have recalculated them. Out-of-range date and
+/// duration serials are rejected until authoritative typing is available.
 pub fn prepare_xlsx_layout(sheet: &Sheet, window: XlsxReadWindow, formula_cache: &BTreeMap<(u32, u32), CellValue>) -> Result<XlsxLayoutInput, XlsxLayoutError> {
     const MAX_MERGED_CELLS: u64 = 1_000_000;
     let mut cells = BTreeMap::<(u32, u32), LayoutCell>::new();
@@ -37,15 +36,21 @@ pub fn prepare_xlsx_layout(sheet: &Sheet, window: XlsxReadWindow, formula_cache:
         let value = if cell.formula.is_some() { formula_cache.get(&(cell.row, cell.column)).ok_or(XlsxLayoutError::FormulaCacheUnknown)? } else { &cell.value };
         let (value, formula) = match value {
             CellValue::Empty => (None, None),
-            CellValue::Text(text) if text.is_empty() => (None, None),
+            CellValue::Text(text) if text.is_empty() => return Err(XlsxLayoutError::EmptyTextRequiresMetadata),
             CellValue::Text(text) if text.starts_with('=') => (None, Some(text.clone())),
             CellValue::Text(text) => (Some(LayoutValue::Text(text.clone())), None),
             CellValue::Bool(_) => (Some(LayoutValue::Numeric), None),
             CellValue::Error(error) => (Some(LayoutValue::Text(error.to_string())), None),
             CellValue::Number(value) => {
                 if !value.is_finite() { return Err(XlsxLayoutError::NonFiniteNumber); }
-                if !style.number_format.is_empty() && !style.number_format.eq_ignore_ascii_case("General") { return Err(XlsxLayoutError::NumberFormatRequiresMetadata); }
-                (Some(LayoutValue::Numeric), None)
+                let kind = classify_xlsx_number_format(&style.number_format);
+                let layout = match kind {
+                    XlsxNumberFormat::Numeric => LayoutValue::Numeric,
+                    XlsxNumberFormat::DateTime | XlsxNumberFormat::Duration if !(0.0..=2_900_000.0).contains(value) => return Err(XlsxLayoutError::NumberFormatRequiresMetadata),
+                    XlsxNumberFormat::DateTime => LayoutValue::Date,
+                    XlsxNumberFormat::Duration => LayoutValue::Other,
+                };
+                (Some(layout), None)
             }
         };
         if value.is_none() && !style.bold && formula.is_none() { continue; }
@@ -70,4 +75,45 @@ pub fn prepare_xlsx_layout(sheet: &Sheet, window: XlsxReadWindow, formula_cache:
         }
     }
     Ok(XlsxLayoutInput { cells: cells.into_values().collect(), merges: sheet.merges.clone() })
+}
+
+/// Numeric interpretation selected by the pinned openpyxl date-format test.
+/// This is a format classification, not a date parser or an Excel guarantee.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum XlsxNumberFormat { Numeric, DateTime, Duration }
+
+/// Match openpyxl's first-section date and elapsed-time format tests, including
+/// its treatment of quoted text, brackets and escaped date letters.
+pub fn classify_xlsx_number_format(format: &str) -> XlsxNumberFormat {
+    let section = format.split(';').next().unwrap_or("");
+    let chars: Vec<char> = section.chars().collect();
+    let mut stripped = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '"' {
+            if let Some(offset) = chars[i + 1..].iter().position(|&c| c == '"' || c == '\n') {
+                let end = i + 1 + offset;
+                if chars[end] == '"' { i = end + 1; continue; }
+            }
+        } else if chars[i] == '[' {
+            if let Some(offset) = chars[i + 1..].iter().position(|&c| c == ']') {
+                let end = i + 1 + offset;
+                let inner: String = chars[i + 1..end].iter().collect();
+                if !matches!(inner.as_str(), "h" | "hh" | "m" | "mm" | "s" | "ss") { i = end + 1; continue; }
+            }
+        }
+        stripped.push(chars[i]); i += 1;
+    }
+    let is_date = stripped.iter().enumerate().any(|(i, &c)| "dmhysDMHYS".contains(c) && (i == 0 || !matches!(stripped[i - 1], '_' | '\\')));
+    if !is_date { return XlsxNumberFormat::Numeric; }
+    let mut duration = false;
+    for (i, c) in chars.iter().enumerate() {
+        if *c != '[' { continue; }
+        if let Some(offset) = chars[i + 1..].iter().position(|&c| c == ']') {
+            let end = i + 1 + offset;
+            let inner: String = chars[i + 1..end].iter().collect();
+            if ["h", "hh", "m", "mm", "s", "ss"].iter().any(|t| inner.eq_ignore_ascii_case(t)) { duration = true; break; }
+        }
+    }
+    if duration { XlsxNumberFormat::Duration } else { XlsxNumberFormat::DateTime }
 }
