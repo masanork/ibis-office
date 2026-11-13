@@ -11,7 +11,7 @@ if subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=T
     raise SystemExit('Harunobu checkout is not at the pinned revision')
 code = r'''
 import json, random
-from harunobu.core.layout.island import _trim_boundaries
+from harunobu.core.layout.island import _trim_boundaries, IslandDetector
 from harunobu.core.models import Cell, CellPosition, CellFormat, Sheet
 rng = random.Random(47199)
 values = [None, None, '', 'data', '合計', '小計', '※注記', '注: 説明', '出典: 例', 'Source: x', ' 参考資料', '値', 123, True]
@@ -30,7 +30,9 @@ for _ in range(300):
     cells = {(a['row']+1,a['column']+1): Cell(pos=CellPosition(row=a['row']+1,col=a['column']+1),value=a['value'],fmt=CellFormat(bold=a['bold']),is_merged=a['merged'],formula=a['formula']) for a in raw}
     sheet=Sheet(name='fixture',cells=cells,max_row=height,max_col=width)
     start,end,others = _trim_boundaries(sheet,1,height,1,width)
-    cases.append(dict(height=height,width=width,cells=raw,trimmed=None if start>end else [start-1,end-1],others=[[o.row-1,o.col-1,o.region_type] for o in others]))
+    detected, detected_others = IslandDetector()._evaluate_region_with_trim(sheet,(1,height),(1,width))
+    candidate = None if detected is None else [detected.range.start_row-1,detected.range.end_row-1,detected.confidence]
+    cases.append(dict(height=height,width=width,cells=raw,trimmed=None if start>end else [start-1,end-1],others=[[o.row-1,o.col-1,o.region_type] for o in others],candidate=candidate,detected_others=[[o.row-1,o.col-1,o.region_type] for o in detected_others]))
 print(json.dumps(cases,ensure_ascii=False))
 '''
 run = subprocess.run([str(repo / '.venv/bin/python'), '-I', '-X', 'utf8', '-c', code], text=True, capture_output=True, check=True)
