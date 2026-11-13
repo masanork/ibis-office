@@ -18,6 +18,9 @@ pub enum XlsxLayoutError {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct XlsxLayoutInput { pub cells: Vec<LayoutCell>, pub merges: Vec<CellRange> }
+/// Harunobu's normal and read-only reader paths have different format data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum XlsxReaderMode { SinglePass, TwoPass }
 
 /// Adapt a sheet only when the caller can guarantee that values are the saved
 /// non-formula values, and that cells/styles/merges cover the reference
@@ -25,6 +28,11 @@ pub struct XlsxLayoutInput { pub cells: Vec<LayoutCell>, pub merges: Vec<CellRan
 /// XML, because the editor may have recalculated them. Out-of-range date and
 /// duration serials are rejected until authoritative typing is available.
 pub fn prepare_xlsx_layout(sheet: &Sheet, window: XlsxReadWindow, formula_cache: &BTreeMap<(u32, u32), CellValue>) -> Result<XlsxLayoutInput, XlsxLayoutError> {
+    prepare_xlsx_layout_for_mode(sheet, window, formula_cache, XlsxReaderMode::SinglePass)
+}
+
+/// Adapt with the format/blank semantics of the selected reference reader.
+pub fn prepare_xlsx_layout_for_mode(sheet: &Sheet, window: XlsxReadWindow, formula_cache: &BTreeMap<(u32, u32), CellValue>, mode: XlsxReaderMode) -> Result<XlsxLayoutInput, XlsxLayoutError> {
     const MAX_MERGED_CELLS: u64 = 1_000_000;
     let mut cells = BTreeMap::<(u32, u32), LayoutCell>::new();
     let mut seen = BTreeSet::new();
@@ -53,8 +61,9 @@ pub fn prepare_xlsx_layout(sheet: &Sheet, window: XlsxReadWindow, formula_cache:
                 (Some(layout), None)
             }
         };
-        if value.is_none() && !style.bold && formula.is_none() { continue; }
-        let layout = LayoutCell { row: cell.row, column: cell.column, value, bold: style.bold, merged: false, formula };
+        let bold = mode == XlsxReaderMode::SinglePass && style.bold;
+        if value.is_none() && !bold && formula.is_none() { continue; }
+        let layout = LayoutCell { row: cell.row, column: cell.column, value, bold, merged: false, formula };
         if cells.insert((cell.row, cell.column), layout).is_some() { return Err(XlsxLayoutError::DuplicateCell); }
     }
     let mut expanded = 0u64;
@@ -69,7 +78,7 @@ pub fn prepare_xlsx_layout(sheet: &Sheet, window: XlsxReadWindow, formula_cache:
                 let cell = cells.entry((row, column)).or_insert_with(|| LayoutCell { row, column, value: None, bold: false, merged: false, formula: None });
                 if cell.merged { return Err(XlsxLayoutError::OverlappingMerge); }
                 // openpyxl represents non-master positions as empty merged cells.
-                if row != merge.first_row || column != merge.first_column { cell.value = None; cell.bold = false; cell.formula = None; }
+                if mode == XlsxReaderMode::SinglePass && (row != merge.first_row || column != merge.first_column) { cell.value = None; cell.bold = false; cell.formula = None; }
                 cell.merged = true;
             }
         }

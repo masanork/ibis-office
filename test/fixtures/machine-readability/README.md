@@ -83,5 +83,6 @@ classification, including quoted text, bracketed elapsed time and escapes.
 `xlsx-window-cases.xlsx` and `harunobu-xlsx-window-reference.json` cover
 automatic window selection and representative numeric, date and duration
 values. The adapter rejects unsupported cell types, ambiguous empty shared
-strings, out-of-range date serials and workbooks over 5 MiB rather than
-claiming equivalence for cases not covered by its single-pass reader.
+strings and out-of-range date serials rather than claiming equivalence for
+unsupported source metadata. The fixture also covers reference two-pass reader
+behavior above 5 MiB using a synthetic padding part generated in memory.

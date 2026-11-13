@@ -59,6 +59,13 @@
     },
     {
       "index": 8,
+      "name": "bold_blank",
+      "last_row": 0,
+      "last_column": 1,
+      "typed": []
+    },
+    {
+      "index": 9,
       "name": "formats",
       "last_row": 7,
       "last_column": 1,
@@ -100,5 +107,361 @@
         }
       ]
     }
-  ]
+  ],
+  "large_cases": [
+    {
+      "index": 0,
+      "name": "empty",
+      "last_row": 0,
+      "last_column": 0,
+      "cells": []
+    },
+    {
+      "index": 1,
+      "name": "simple",
+      "last_row": 1,
+      "last_column": 2,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "region",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 2,
+          "kind": "text",
+          "text": "value",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "name": "wide_sample",
+      "last_row": 2,
+      "last_column": 299,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "region",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 299,
+          "kind": "text",
+          "text": "far",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "name": "wide_late",
+      "last_row": 100,
+      "last_column": 299,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "region",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 100,
+          "column": 299,
+          "kind": "text",
+          "text": "late",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "name": "wide_formula",
+      "last_row": 0,
+      "last_column": 299,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "region",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "name": "late_row",
+      "last_row": 9999,
+      "last_column": 0,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "region",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "name": "styled_blank",
+      "last_row": 199,
+      "last_column": 299,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "region",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "name": "merged_wide",
+      "last_row": 199,
+      "last_column": 299,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "region",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 199,
+          "column": 297,
+          "kind": null,
+          "text": null,
+          "bold": false,
+          "merged": true,
+          "formula": null
+        },
+        {
+          "row": 199,
+          "column": 298,
+          "kind": null,
+          "text": null,
+          "bold": false,
+          "merged": true,
+          "formula": null
+        },
+        {
+          "row": 199,
+          "column": 299,
+          "kind": null,
+          "text": null,
+          "bold": false,
+          "merged": true,
+          "formula": null
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "name": "bold_blank",
+      "last_row": 0,
+      "last_column": 1,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "value",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "name": "formats",
+      "last_row": 7,
+      "last_column": 1,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "header",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 0,
+          "column": 1,
+          "kind": "text",
+          "text": "value",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "kind": "text",
+          "text": "date",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "kind": "date",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "kind": "text",
+          "text": "number",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "kind": "text",
+          "text": "duration",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 3,
+          "column": 1,
+          "kind": "other",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "kind": "text",
+          "text": "builtin",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 4,
+          "column": 1,
+          "kind": "date",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "kind": "text",
+          "text": "percent",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 5,
+          "column": 1,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 6,
+          "column": 0,
+          "kind": "text",
+          "text": "bracket",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 6,
+          "column": 1,
+          "kind": "other",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 7,
+          "column": 0,
+          "kind": "text",
+          "text": "time",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 7,
+          "column": 1,
+          "kind": "date",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ]
+    }
+  ],
+  "boundary": {
+    "index": 8,
+    "bold_blank_present": true,
+    "bold": true
+  }
 }
