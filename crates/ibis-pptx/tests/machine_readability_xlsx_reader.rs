@@ -13,8 +13,6 @@ fn xlsx_cells_and_preliminary_layout_match_reference_examples() {
     assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
     for case in data["cases"].as_array().unwrap() {
         let name = case["file"].as_str().unwrap();
-        let presentation = ibis_pptx::read(&std::fs::read(root.join(name)).unwrap()).unwrap();
-        let sheet = sheet_of_slide(&presentation.slides[0]).unwrap();
         let window = XlsxReadWindow::Through { last_row: case["last_row"].as_u64().unwrap() as u32, last_column: case["last_column"].as_u64().unwrap() as u32 };
         let bytes = std::fs::read(root.join(name)).unwrap();
         let input = ibis_pptx::machine_readability_xlsx::read_xlsx_layout(&bytes, 0, window).unwrap_or_else(|e| panic!("{name}: {e:?}"));
@@ -50,6 +48,8 @@ fn unsupported_xlsx_layout_metadata_does_not_silently_pass() {
     let index = changed.cells[0].style as usize;
     changed.cells[0].value = CellValue::Number(1.0);
     changed.styles[index].number_format = "yyyy-mm-dd".into();
+    assert_eq!(prepare_xlsx_layout(&changed, window, &cache).unwrap().cells[0].value, Some(LayoutValue::Date));
+    changed.cells[0].value = CellValue::Number(-1.0);
     assert_eq!(prepare_xlsx_layout(&changed, window, &cache), Err(XlsxLayoutError::NumberFormatRequiresMetadata));
     changed.styles[index].number_format = "General".into();
     changed.cells[0].value = CellValue::Number(f64::NAN);
@@ -78,4 +78,40 @@ fn xlsx_layout_uses_original_formula_caches() {
             bold: v["bold"].as_bool().unwrap(), merged: v["merged"].as_bool().unwrap(), formula: v["formula"].as_str().map(str::to_owned) };
         assert_eq!(actual, Some(&expected), "{name}");
     }
+}
+
+#[test]
+fn xlsx_number_format_classification_matches_reference() {
+    use ibis_doc_model::machine_readability_xlsx::{classify_xlsx_number_format, XlsxNumberFormat};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-formats-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let expected = match case["kind"].as_str().unwrap() { "numeric" => XlsxNumberFormat::Numeric, "date" => XlsxNumberFormat::DateTime, "duration" => XlsxNumberFormat::Duration, other => panic!("unexpected {other}") };
+        assert_eq!(classify_xlsx_number_format(case["format"].as_str().unwrap()), expected, "format case {i}: {case}");
+    }
+}
+
+#[test]
+fn automatic_xlsx_window_and_numeric_types_match_reference() {
+    use ibis_pptx::machine_readability_xlsx::{read_xlsx_layout_auto, XlsxInputError};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-window-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let bytes = std::fs::read(root.join("xlsx-window-cases.xlsx")).unwrap();
+    for case in data["cases"].as_array().unwrap() {
+        let index = case["index"].as_u64().unwrap() as usize;
+        let name = case["name"].as_str().unwrap();
+        let (window, input) = read_xlsx_layout_auto(&bytes, index).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(window, XlsxReadWindow::Through { last_row: case["last_row"].as_u64().unwrap() as u32, last_column: case["last_column"].as_u64().unwrap() as u32 }, "{name}");
+        for expected in case["typed"].as_array().unwrap() {
+            let row = expected["row"].as_u64().unwrap() as u32;
+            let column = expected["column"].as_u64().unwrap() as u32;
+            let value = &input.cells.iter().find(|c| c.row == row && c.column == column).unwrap().value;
+            let kind = match value { Some(LayoutValue::Numeric) => "numeric", Some(LayoutValue::Date) => "date", Some(LayoutValue::Other) => "other", _ => panic!("unexpected {value:?}") };
+            assert_eq!(kind, expected["kind"].as_str().unwrap(), "{name} ({row},{column})");
+        }
+    }
+    let oversized = vec![0u8; 5 * 1024 * 1024 + 1];
+    assert_eq!(read_xlsx_layout_auto(&oversized, 0), Err(XlsxInputError::UnsupportedLargeWorkbook));
 }
