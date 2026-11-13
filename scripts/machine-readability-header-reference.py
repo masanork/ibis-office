@@ -11,7 +11,7 @@ if subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=T
     raise SystemExit('Harunobu checkout is not at the pinned revision')
 code = r'''
 import json, random
-from harunobu.core.layout.island import _header_row_strength, _band_is_header_like, _split_into_bands, _merge_header_body_bands
+from harunobu.core.layout.island import _header_row_strength, _band_is_header_like, _split_into_bands, _merge_header_body_bands, _estimate_layout
 from harunobu.core.models import Cell, CellPosition, CellFormat, MergedRange, Sheet
 rng = random.Random(70465)
 values = [None, '', 'data', '1', '12', '123', '001', '-2', '+10', '1,000', '12.3', '３３３', '١٢٣', 'N/A', '×', '-', 'X', 0, True, 1.2]
@@ -55,7 +55,35 @@ for _ in range(300):
         merges.append([r,c,rng.randrange(r,height),rng.randrange(c,width)])
     ranges=[MergedRange(start_row=r+1,start_col=c+1,end_row=rr+1,end_col=cc+1) for r,c,rr,cc in merges]
     sheet=Sheet(name='fixture',cells=mapped,merged_cells=ranges,max_row=height,max_col=width)
-    bands.append(dict(height=height,width=width,cells=raw,merges=merges,header_like=_band_is_header_like(sheet,1,height,1,width)))
+    layout=_estimate_layout(sheet,1,height,1,width)
+    bands.append(dict(height=height,width=width,cells=raw,merges=merges,header_like=_band_is_header_like(sheet,1,height,1,width),layout=[[r-1 for r in layout.header_rows],layout.body_start_row-1,layout.body_end_row-1]))
+# Dense multi-row tables with headers, blanks, and numeric body values.
+for _ in range(150):
+    height,width=rng.randrange(2,19),rng.randrange(2,9)
+    header_depth=rng.randrange(1,min(height,8)+1)
+    raw=[]
+    for r in range(height):
+        for c in range(width):
+            if rng.random()<0.2: continue
+            if r<header_depth:
+                value=rng.choice(['項目','区分','1','１２',None])
+                bold=rng.random()<0.45
+            else:
+                value=rng.choice(['100','20','data',123,False,None])
+                bold=False
+            raw.append(dict(row=r,column=c,value=value,bold=bold,merged=False))
+    merges=[]
+    if rng.random()<0.5:
+        top=rng.randrange(min(height,header_depth)); end=rng.randrange(top,height)
+        column=rng.randrange(width)
+        merges.append([top,column,end,column])
+        for a in raw:
+            if a['column']==column and top<=a['row']<=end: a['merged']=True
+    mapped={(a['row']+1,a['column']+1):Cell(pos=CellPosition(row=a['row']+1,col=a['column']+1),value=a['value'],fmt=CellFormat(bold=a['bold']),is_merged=a['merged']) for a in raw}
+    ranges=[MergedRange(start_row=r+1,start_col=c+1,end_row=rr+1,end_col=cc+1) for r,c,rr,cc in merges]
+    sheet=Sheet(name='fixture',cells=mapped,merged_cells=ranges,max_row=height,max_col=width)
+    layout=_estimate_layout(sheet,1,height,1,width)
+    bands.append(dict(height=height,width=width,cells=raw,merges=merges,header_like=_band_is_header_like(sheet,1,height,1,width),layout=[[r-1 for r in layout.header_rows],layout.body_start_row-1,layout.body_end_row-1]))
 merges_cases=[]
 for band in bands:
     raw=band['cells']
