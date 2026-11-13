@@ -3,12 +3,12 @@
 //! Conservative XLSX layout input from original workbook bytes. Formula caches
 //! are read from worksheet XML, not from the editor's recalculated values.
 use std::collections::{BTreeMap, BTreeSet};
-use ibis_doc_model::machine_readability_xlsx::{prepare_xlsx_layout, XlsxLayoutError, XlsxLayoutInput, XlsxReadWindow};
+use ibis_doc_model::machine_readability_xlsx::{prepare_xlsx_layout_for_mode, XlsxLayoutError, XlsxLayoutInput, XlsxReaderMode, XlsxReadWindow};
 use ibis_doc_model::sheet::{CellError, CellValue};
 use ibis_doc_model::sheet_calc::sheet_of_slide;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum XlsxInputError { Workbook(String), SheetUnavailable, InvalidFormulaCache, UnsupportedFormulaCache, FormulaModelMismatch, UnsupportedLargeWorkbook, InvalidWindowMetadata, Layout(XlsxLayoutError) }
+pub enum XlsxInputError { Workbook(String), SheetUnavailable, InvalidFormulaCache, UnsupportedFormulaCache, FormulaModelMismatch, InvalidWindowMetadata, Layout(XlsxLayoutError) }
 
 /// Read one worksheet from the original bytes. The caller supplies the exact
 /// reader window; this function does not yet infer Harunobu's dimension limits.
@@ -17,15 +17,15 @@ pub fn read_xlsx_layout(bytes: &[u8], sheet_index: usize, window: XlsxReadWindow
     read_xlsx_layout_impl(bytes, sheet_index, Some(window)).map(|(_, input)| input)
 }
 
-/// Derive the default single-pass Harunobu reader window from worksheet XML,
-/// then prepare the layout input. Workbooks over 5 MiB use a distinct reference
-/// reader and are rejected until its blank-cell semantics are implemented.
+/// Derive the default Harunobu reader window from worksheet XML, then prepare
+/// layout input using the matching single-pass or large-file two-pass format
+/// and blank-cell semantics.
 pub fn read_xlsx_layout_auto(bytes: &[u8], sheet_index: usize) -> Result<(XlsxReadWindow, XlsxLayoutInput), XlsxInputError> {
     read_xlsx_layout_impl(bytes, sheet_index, None)
 }
 
 fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxReadWindow>) -> Result<(XlsxReadWindow, XlsxLayoutInput), XlsxInputError> {
-    if bytes.len() > 5 * 1024 * 1024 { return Err(XlsxInputError::UnsupportedLargeWorkbook); }
+    let mode = if bytes.len() > 5 * 1024 * 1024 { XlsxReaderMode::TwoPass } else { XlsxReaderMode::SinglePass };
     let (presentation, sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
     let slide = presentation.slides.get(sheet_index).ok_or(XlsxInputError::SheetUnavailable)?;
     let sheet = sheet_of_slide(slide).ok_or(XlsxInputError::SheetUnavailable)?;
@@ -41,7 +41,7 @@ fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxRe
             !si.children().any(|n| n.is_element() && ((n.tag_name().name() == "t" && n.text().is_some_and(|t| !t.is_empty())) || (n.tag_name().name() == "r" && n.children().any(|t| t.is_element() && t.tag_name().name() == "t" && t.text().is_some_and(|s| !s.is_empty())))))
         }).collect::<Vec<_>>())
     } else { None };
-    let derived = derive_window(root, &sheet.merges, shared_empty.as_deref())?;
+    let derived = derive_window(root, &sheet.merges, shared_empty.as_deref(), mode)?;
     let window = window.unwrap_or(derived);
     let mut caches = BTreeMap::<(u32, u32), CellValue>::new();
     if let Some(data) = root.children().find(|n| n.is_element() && n.tag_name().name() == "sheetData") {
@@ -70,7 +70,7 @@ fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxRe
         let within = match window { XlsxReadWindow::Empty => false, XlsxReadWindow::Through { last_row, last_column } => row <= last_row && column <= last_column };
         if within && !formula_positions.contains(&(row, column)) { return Err(XlsxInputError::FormulaModelMismatch); }
     }
-    let input = prepare_xlsx_layout(sheet, window, &caches).map_err(XlsxInputError::Layout)?;
+    let input = prepare_xlsx_layout_for_mode(sheet, window, &caches, mode).map_err(XlsxInputError::Layout)?;
     Ok((window, input))
 }
 
@@ -82,10 +82,10 @@ fn source_cell_position(address: &str) -> Result<(u32, u32), XlsxInputError> {
     Ok((row, column))
 }
 
-/// Reproduce the default single-pass reader's max-row/max-column limits and
-/// its wide-sheet sample. Coordinates and merge ranges come from original XML;
+/// Reproduce the reader's max-row/max-column limits and, for the single-pass
+/// path only, its wide-sheet sample. Coordinates and merge ranges come from original XML;
 /// formula occupancy comes from saved cached values, not recalculation.
-fn derive_window(root: roxmltree::Node<'_, '_>, merges: &[ibis_doc_model::sheet::CellRange], shared_empty: Option<&[bool]>) -> Result<XlsxReadWindow, XlsxInputError> {
+fn derive_window(root: roxmltree::Node<'_, '_>, merges: &[ibis_doc_model::sheet::CellRange], shared_empty: Option<&[bool]>, mode: XlsxReaderMode) -> Result<XlsxReadWindow, XlsxInputError> {
     let mut max_row = 0u32; // openpyxl reports 1x1 even for an empty sheet
     let mut max_column = 0u32;
     let mut sample_column = 0u32;
@@ -127,6 +127,6 @@ fn derive_window(root: roxmltree::Node<'_, '_>, merges: &[ibis_doc_model::sheet:
         }
     }
     let last_row = max_row.min(9_999);
-    let last_column = if max_column >= 255 { sample_column.saturating_add(5).min(max_column).min(499) } else { max_column.min(499) };
+    let last_column = if mode == XlsxReaderMode::SinglePass && max_column >= 255 { sample_column.saturating_add(5).min(max_column).min(499) } else { max_column.min(499) };
     Ok(XlsxReadWindow::Through { last_row, last_column })
 }

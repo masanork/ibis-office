@@ -94,7 +94,7 @@ fn xlsx_number_format_classification_matches_reference() {
 
 #[test]
 fn automatic_xlsx_window_and_numeric_types_match_reference() {
-    use ibis_pptx::machine_readability_xlsx::{read_xlsx_layout_auto, XlsxInputError};
+    use ibis_pptx::machine_readability_xlsx::read_xlsx_layout_auto;
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-window-reference.json")).unwrap()).unwrap();
     assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
@@ -112,6 +112,45 @@ fn automatic_xlsx_window_and_numeric_types_match_reference() {
             assert_eq!(kind, expected["kind"].as_str().unwrap(), "{name} ({row},{column})");
         }
     }
-    let oversized = vec![0u8; 5 * 1024 * 1024 + 1];
-    assert_eq!(read_xlsx_layout_auto(&oversized, 0), Err(XlsxInputError::UnsupportedLargeWorkbook));
+}
+
+#[test]
+fn large_xlsx_reader_matches_reference_two_pass_semantics() {
+    use ibis_pptx::machine_readability_xlsx::read_xlsx_layout_auto;
+    use ibis_ooxml::zip::{Archive, Writer, EntryMeta, STORED, crc32};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-window-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    // Add an unreferenced stored part in memory so the same synthetic workbook
+    // crosses Harunobu's 5 MiB threshold without committing a large fixture.
+    let original = Archive::new(std::fs::read(root.join("xlsx-window-cases.xlsx")).unwrap().into()).unwrap();
+    let padded = |padding_len: usize| {
+        let mut writer = Writer::new();
+        for entry in original.entries() { writer.add(&entry.name, entry.meta, &original.read(entry).unwrap()).unwrap(); }
+        let padding = vec![0u8; padding_len];
+        writer.add_raw("reference-padding.bin", EntryMeta::new(), STORED, crc32(&padding), padding.len(), &padding).unwrap();
+        writer.finish().unwrap()
+    };
+    let base = padded(0);
+    let boundary = padded(5 * 1024 * 1024 - base.len());
+    assert_eq!(boundary.len(), 5 * 1024 * 1024);
+    let index = data["boundary"]["index"].as_u64().unwrap() as usize;
+    let (_, single) = read_xlsx_layout_auto(&boundary, index).unwrap();
+    let blank = single.cells.iter().find(|c| c.row == 0 && c.column == 1);
+    assert_eq!(blank.is_some(), data["boundary"]["bold_blank_present"].as_bool().unwrap());
+    assert_eq!(blank.map(|c| c.bold), data["boundary"]["bold"].as_bool());
+    let bytes = padded(5 * 1024 * 1024 - base.len() + 1);
+    assert_eq!(bytes.len(), 5 * 1024 * 1024 + 1);
+    for case in data["large_cases"].as_array().unwrap() {
+        let index = case["index"].as_u64().unwrap() as usize;
+        let name = case["name"].as_str().unwrap();
+        let (window, input) = read_xlsx_layout_auto(&bytes, index).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(window, XlsxReadWindow::Through { last_row: case["last_row"].as_u64().unwrap() as u32, last_column: case["last_column"].as_u64().unwrap() as u32 }, "{name}");
+        let expected: Vec<_> = case["cells"].as_array().unwrap().iter().map(|v| LayoutCell {
+            row: v["row"].as_u64().unwrap() as u32, column: v["column"].as_u64().unwrap() as u32,
+            value: match v["kind"].as_str() { None => None, Some("text") => Some(LayoutValue::Text(v["text"].as_str().unwrap().into())), Some("numeric") => Some(LayoutValue::Numeric), Some("date") => Some(LayoutValue::Date), Some("other") => Some(LayoutValue::Other), other => panic!("bad {other:?}") },
+            bold: v["bold"].as_bool().unwrap(), merged: v["merged"].as_bool().unwrap(), formula: v["formula"].as_str().map(str::to_owned),
+        }).collect();
+        assert_eq!(input.cells, expected, "cells in {name}");
+    }
 }
