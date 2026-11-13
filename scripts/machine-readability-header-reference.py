@@ -11,7 +11,7 @@ if subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=T
     raise SystemExit('Harunobu checkout is not at the pinned revision')
 code = r'''
 import json, random
-from harunobu.core.layout.island import _header_row_strength, _band_is_header_like
+from harunobu.core.layout.island import _header_row_strength, _band_is_header_like, _split_into_bands, _merge_header_body_bands
 from harunobu.core.models import Cell, CellPosition, CellFormat, MergedRange, Sheet
 rng = random.Random(70465)
 values = [None, '', 'data', '1', '12', '123', '001', '-2', '+10', '1,000', '12.3', '３３３', '١٢٣', 'N/A', '×', '-', 'X', 0, True, 1.2]
@@ -56,7 +56,28 @@ for _ in range(300):
     ranges=[MergedRange(start_row=r+1,start_col=c+1,end_row=rr+1,end_col=cc+1) for r,c,rr,cc in merges]
     sheet=Sheet(name='fixture',cells=mapped,merged_cells=ranges,max_row=height,max_col=width)
     bands.append(dict(height=height,width=width,cells=raw,merges=merges,header_like=_band_is_header_like(sheet,1,height,1,width)))
-print(json.dumps(dict(cases=cases,bands=bands),ensure_ascii=False))
+merges_cases=[]
+for band in bands:
+    raw=band['cells']
+    occupied=[a for a in raw if a['value'] is not None]
+    rows=_split_into_bands(sorted({a['row']+1 for a in occupied}),1)
+    cols=_split_into_bands(sorted({a['column']+1 for a in occupied}),1)
+    mapped={(a['row']+1,a['column']+1):Cell(pos=CellPosition(row=a['row']+1,col=a['column']+1),value=a['value'],fmt=CellFormat(bold=a['bold']),is_merged=a['merged']) for a in raw}
+    ranges=[MergedRange(start_row=r+1,start_col=c+1,end_row=rr+1,end_col=cc+1) for r,c,rr,cc in band['merges']]
+    sheet=Sheet(name='fixture',cells=mapped,merged_cells=ranges,max_row=band['height'],max_col=band['width'])
+    gap=rng.randrange(1,4)
+    result=_merge_header_body_bands(sheet,rows,cols,gap)
+    merges_cases.append(dict(**band,row_bands=[[a-1,b-1] for a,b in rows],column_bands=[[a-1,b-1] for a,b in cols],gap=gap,result=[[a-1,b-1] for a,b in result]))
+# Explicit positive/negative cases and the large merged-header exception.
+for height, spans, bold, with_merge in [(3,[(0,0),(2,2)],True,False), (3,[(0,0),(2,2)],False,False), (14,[(0,10),(12,13)],True,False), (14,[(0,10),(12,13)],True,True)]:
+    raw=[dict(row=r,column=c,value='項目',bold=bold,merged=with_merge) for r in range(height) for c in range(3) if any(a<=r<=b for a,b in spans)]
+    merged=[[0,0,10,0]] if with_merge else []
+    mapped={(a['row']+1,a['column']+1):Cell(pos=CellPosition(row=a['row']+1,col=a['column']+1),value=a['value'],fmt=CellFormat(bold=a['bold']),is_merged=a['merged']) for a in raw}
+    ranges=[MergedRange(start_row=r+1,start_col=c+1,end_row=rr+1,end_col=cc+1) for r,c,rr,cc in merged]
+    sheet=Sheet(name='fixture',cells=mapped,merged_cells=ranges,max_row=height,max_col=3)
+    result=_merge_header_body_bands(sheet,[(a+1,b+1) for a,b in spans],[(1,3)],1)
+    merges_cases.append(dict(height=height,width=3,cells=raw,merges=merged,header_like=_band_is_header_like(sheet,1,height,1,3),row_bands=spans,column_bands=[[0,2]],gap=1,result=[[a-1,b-1] for a,b in result]))
+print(json.dumps(dict(cases=cases,bands=bands,band_merges=merges_cases),ensure_ascii=False))
 '''
 run = subprocess.run([str(repo / '.venv/bin/python'), '-I', '-X', 'utf8', '-c', code], text=True, capture_output=True, check=True)
 data = {'harunobu_commit': commit, **json.loads(run.stdout)}
