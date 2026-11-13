@@ -55,7 +55,8 @@ for _ in range(400):
         if isinstance(o,tuple): r,c,kind=o
         else: r,c,kind=o.row,o.col,o.region_type
         encoded_others.append([r-1,c-1,kind])
-    cases.append(dict(height=height,width=width,cells=raw,merges=merge_raw,candidates=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence] for t in table],others=encoded_others))
+    columns=IslandDetector()._merge_column_adjacent_regions(sheet,table)
+    cases.append(dict(height=height,width=width,cells=raw,merges=merge_raw,candidates=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence] for t in table],others=encoded_others,columns=[[t.range.start_row-1,t.range.start_col-1,t.range.end_row-1,t.range.end_col-1,t.confidence,[r-1 for r in t.layout.header_rows]] for t in columns]))
 print(json.dumps(cases,ensure_ascii=False))
 '''
 run=subprocess.run([str(repo/'.venv/bin/python'),'-I','-X','utf8','-c',code],text=True,capture_output=True,check=True)
