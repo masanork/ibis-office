@@ -28,6 +28,9 @@ fn standard_encryption_read_only() {
     assert!(s.with(|e, _| e.copy_to(&plaintext)).is_err());
     assert!(!plaintext.exists());
     assert!(s.with(|e, _| e.check_standard_output(&path)).is_err());
+    assert!(s.with(|e, _| e.write_pdf(path.clone())).is_err());
+    assert!(s.with(|e, _| e.write_png(path.clone(), None)).is_err());
+    assert!(s.with(|e, _| e.write_gif(path.clone(), None)).is_err());
     let hard_link = path.with_file_name("standard-hard-link.docx");
     let _ = std::fs::remove_file(&hard_link);
     std::fs::hard_link(&path, &hard_link).unwrap();
