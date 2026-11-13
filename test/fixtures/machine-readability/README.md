@@ -34,3 +34,12 @@ rule execution, table detection, or end-to-end parity.
 `harunobu-workbook-rules-reference.json` records synthetic L1-01 and L1-02
 outcomes with supplied file format and table regions. It does not test file
 signature validation or layout detection.
+
+`harunobu-csv-diagnostics-reference.json` records raw diagnostics for
+synthetic CSV and TSV, including quoting, embedded line breaks, field counts,
+the bounded-sample and truncation limits, and 100 seeded synthetic inputs.
+It does not test decoding bytes
+or infer tables.
+
+`harunobu-csv-rules-reference.json` records L1-14 and L1-15 rule outcomes
+on those same diagnostics with a supplied table range.
