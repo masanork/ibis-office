@@ -87,7 +87,7 @@ fn header_row_strength_matches_reference() {
 
 #[test]
 fn header_band_matches_reference() {
-    use ibis_doc_model::machine_readability_layout::{band_is_header_like, LayoutCell, LayoutValue};
+    use ibis_doc_model::machine_readability_layout::{band_is_header_like, infer_header_rows, LayoutCell, LayoutValue};
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-header-reference.json");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
@@ -103,6 +103,17 @@ fn header_band_matches_reference() {
         }).collect();
         let band = CellRange { first_row: 0, last_row: case["height"].as_u64().unwrap() as u32 - 1, first_column: 0, last_column: case["width"].as_u64().unwrap() as u32 - 1 };
         assert_eq!(band_is_header_like(band, &cells, &merges), case["header_like"].as_bool(), "case {index}: {case}");
+        let layout = infer_header_rows(band, &cells, &merges).unwrap();
+        let wanted: Vec<u32> = case["layout"][0].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        assert_eq!(layout.rows, wanted, "header rows case {index}: {case}");
+        assert_eq!(layout.body_first, case["layout"][1].as_u64().unwrap() as u32, "body start case {index}: {case}");
+        assert_eq!(layout.body_last, case["layout"][2].as_u64().unwrap() as u32, "body end case {index}: {case}");
+        let shifted_cells: Vec<_> = cells.iter().cloned().map(|mut c| { c.row += 7; c.column += 5; c }).collect();
+        let shifted_merges: Vec<_> = merges.iter().map(|m| CellRange { first_row: m.first_row + 7, last_row: m.last_row + 7, first_column: m.first_column + 5, last_column: m.last_column + 5 }).collect();
+        let shifted = CellRange { first_row: band.first_row + 7, last_row: band.last_row + 7, first_column: band.first_column + 5, last_column: band.last_column + 5 };
+        let inferred = infer_header_rows(shifted, &shifted_cells, &shifted_merges).unwrap();
+        assert_eq!(inferred.rows, layout.rows.iter().map(|r| r + 7).collect::<Vec<_>>(), "offset case {index}");
+        assert_eq!(inferred.body_first, layout.body_first + 7, "offset body case {index}");
     }
 }
 
