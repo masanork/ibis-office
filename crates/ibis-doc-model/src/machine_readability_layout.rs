@@ -574,3 +574,42 @@ pub fn preliminary_islands(cells: &[LayoutCell], merges: &[CellRange]) -> Option
     }
     Some(PreliminaryIslands { candidates, others })
 }
+
+/// Island plus its currently inferred header rows. Labels, types, and stub
+/// columns are still separate, and this is not a final detection result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IslandWithHeaders { pub candidate: IslandCandidate, pub headers: HeaderRows }
+
+/// Merge horizontally adjacent candidates with compatible row and header
+/// ranges. Re-infer headers and confidence after each merge, as the reference
+/// detector does. The form-fragment and header-inheritance passes remain.
+pub fn merge_column_adjacent_regions(candidates: &[IslandCandidate], cells: &[LayoutCell], merges: &[CellRange]) -> Option<Vec<IslandWithHeaders>> {
+    let mut regions: Vec<_> = candidates.iter().map(|candidate| Some(IslandWithHeaders { candidate: candidate.clone(), headers: infer_header_rows(candidate.range, cells, merges)? })).collect::<Option<_>>()?;
+    regions.sort_by_key(|r| (r.candidate.range.first_row, r.candidate.range.first_column));
+    let mut used = vec![false; regions.len()];
+    let mut result = Vec::new();
+    for i in 0..regions.len() {
+        if used[i] { continue; }
+        let mut current = regions[i].clone();
+        for j in (i + 1)..regions.len() {
+            if used[j] { continue; }
+            let right = &regions[j];
+            let left_range = current.candidate.range;
+            let right_range = right.candidate.range;
+            // Candidates are sorted by first row; later regions cannot match.
+            if u64::from(right_range.first_row) > u64::from(left_range.first_row) + 1 { break; }
+            if left_range.first_row.abs_diff(right_range.first_row) > 1 || left_range.last_row.abs_diff(right_range.last_row) > 1 { continue; }
+            let gap = i64::from(right_range.first_column) - i64::from(left_range.last_column) - 1;
+            if gap != 1 { continue; }
+            let left_headers: BTreeSet<_> = current.headers.rows.iter().copied().collect();
+            let right_headers: BTreeSet<_> = right.headers.rows.iter().copied().collect();
+            if !left_headers.is_subset(&right_headers) && !right_headers.is_subset(&left_headers) { continue; }
+            let range = CellRange { first_row: left_range.first_row.min(right_range.first_row), last_row: left_range.last_row.max(right_range.last_row), first_column: left_range.first_column, last_column: right_range.last_column };
+            let occupied: Vec<_> = cells.iter().filter(|c| c.row >= range.first_row && c.row <= range.last_row && c.column >= range.first_column && c.column <= range.last_column && c.value.is_some()).map(|c| (c.row, c.column)).collect();
+            current = IslandWithHeaders { candidate: IslandCandidate { range, confidence: trimmed_region_confidence(range, &occupied)? }, headers: infer_header_rows(range, cells, merges)? };
+            used[j] = true;
+        }
+        result.push(current);
+    }
+    Some(result)
+}
