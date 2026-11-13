@@ -197,7 +197,7 @@ fn generated_column_headers_match_reference() {
 
 #[test]
 fn preliminary_islands_match_reference() {
-    use ibis_doc_model::machine_readability_layout::{merge_column_adjacent_regions, preliminary_islands, LayoutCell, LayoutValue, OtherRegion};
+    use ibis_doc_model::machine_readability_layout::{merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, LayoutCell, LayoutValue, OtherRegion};
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-islands-reference.json");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
@@ -216,6 +216,10 @@ fn preliminary_islands_match_reference() {
         let expected: Vec<_> = case["others"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32, v[2].as_str().unwrap())).collect();
         assert_eq!(others, expected, "others case {index}: {case}");
         let columns = merge_column_adjacent_regions(&actual.candidates, &cells, &merges).unwrap();
+        let forms = merge_form_fragments(&columns, &cells, &merges).unwrap();
+        let forms: Vec<_> = forms.iter().map(|c| (c.candidate.range.first_row, c.candidate.range.first_column, c.candidate.range.last_row, c.candidate.range.last_column, c.candidate.confidence, c.headers.rows.clone())).collect();
+        let expected_forms: Vec<_> = case["forms"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32, v[2].as_u64().unwrap() as u32, v[3].as_u64().unwrap() as u32, v[4].as_f64().unwrap(), v[5].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>())).collect();
+        assert_eq!(forms, expected_forms, "form merges case {index}: {case}");
         let columns: Vec<_> = columns.iter().map(|c| (c.candidate.range.first_row, c.candidate.range.first_column, c.candidate.range.last_row, c.candidate.range.last_column, c.candidate.confidence, c.headers.rows.clone())).collect();
         let wanted: Vec<_> = case["columns"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32, v[2].as_u64().unwrap() as u32, v[3].as_u64().unwrap() as u32, v[4].as_f64().unwrap(), v[5].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>())).collect();
         assert_eq!(columns, wanted, "column merges case {index}: {case}");
