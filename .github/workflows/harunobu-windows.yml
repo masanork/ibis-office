@@ -1,0 +1,41 @@
+name: Harunobu Windows setup
+on:
+  push:
+    branches: [masanork]
+  pull_request:
+    branches: [masanork]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  setup:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install uv
+        shell: pwsh
+        run: |
+          python -m pip install uv==0.13.8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install and verify pinned runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'harunobu-test'
+          & ./scripts/setup-harunobu.ps1
+          & ./scripts/setup-harunobu.ps1
+          $root = Join-Path $env:LOCALAPPDATA 'Sorane Docs\harunobu'
+          $marker = [System.IO.File]::ReadAllText((Join-Path $root '.ibis-harunobu-commit'))
+          if ($marker.Trim() -ne '88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f') { throw 'Invalid runtime marker' }
+          $env:HARUNOBU_AI_DISABLED = '1'
+          & (Join-Path $root '.venv\Scripts\python.exe') -I -X utf8 -c "from importlib.metadata import version; assert version('harunobu') == '0.2.2'"
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime failed to load' }
+          & (Join-Path $root '.venv\Scripts\python.exe') -I -X utf8 -c "from harunobu import analyze, Config; from pathlib import Path; r = analyze(Path('test/fixtures/machine-readability/structure.xlsx'), Config(mode='thorough')); assert r.sheets"
+          if ($LASTEXITCODE -ne 0) { throw 'Reference analysis failed' }
+          Add-Content -LiteralPath (Join-Path $root 'README.md') -Value 'local change'
+          $rejected = $false
+          try { & ./scripts/setup-harunobu.ps1 } catch { $rejected = $true }
+          if (-not $rejected) { throw 'Modified checkout was accepted' }

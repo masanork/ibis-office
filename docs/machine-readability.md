@@ -6,18 +6,20 @@
 
 ## ローカル実行環境
 
-macOS または Linux で Git と uv を用意し、ソースチェックアウトから次を実行します。
+Git と uv を用意し、ソースチェックアウトから macOS または Linux では次を実行します。
 
 ```sh
 scripts/setup-harunobu.sh
 ```
 
-固定コミットのソースと lockfile に基づく Python 環境を、macOS では `~/Library/Application Support/Sorane Docs/harunobu` に、Linux では `${XDG_DATA_HOME:-~/.local/share}/sorane-docs/harunobu` に作成します。アプリが検査を実行する時点でコミットと追跡ファイルの変更を確認します。ランタイムが無い場合や異なる場合は、検査を行わずエラーを表示します。
+Windows では PowerShell から `powershell -File scripts/setup-harunobu.ps1` を実行します。
+
+固定コミットのソースと lockfile に基づく Python 環境を、Windows では `%LOCALAPPDATA%\Sorane Docs\harunobu` に、macOS では `~/Library/Application Support/Sorane Docs/harunobu` に、Linux では `${XDG_DATA_HOME:-~/.local/share}/sorane-docs/harunobu` に作成します。アプリが検査を実行する時点でコミットと追跡ファイルの変更を確認します。ランタイムが無い場合や異なる場合は、検査を行わずエラーを表示します。
 
 ## 制限
 
 - 保存先が決まっている XLSX・XLSM の未保存の編集は、検査開始時点の一時的なシリアライズ結果で検査します。元ファイルは保存・変更しません。結果は編集後に再検査してください。入力中のセルは確定する必要があります。CSV・TSV の未保存の編集は、元のテキスト形式を保って検査するため保存が必要です。
-- 現在の Python 連携はデスクトップ版のみです。Windows 向けのセットアップと Web 版の Harunobu エンジンは未提供です。
+- 現在の Python 連携はデスクトップ版のみです。Web 版の Harunobu エンジンは未提供です。
 - 複数ファイルを選択すると、ファイル横断の L3-07 と各ファイルの結果を検査できます。複数ファイル結果からセルへの直接移動はできません。
 - AI 補完は未対応です。AI なしで判定できない項目は未判定と表示します。
 - 表領域は Harunobu が推定します。複雑な表やタイトル・注釈では誤検出があり、公式の適合証明ではありません。詳しくは [Harunobu の既知の制限](https://github.com/digital-go-jp/machine_readability_rule/blob/88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f/docs/guides/limitations.md) を参照してください。
