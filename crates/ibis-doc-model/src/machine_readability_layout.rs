@@ -712,3 +712,78 @@ pub fn inherit_headers_from_above(tables: &[ResolvedIsland], cells: &[LayoutCell
     }
     Some(sorted)
 }
+
+/// Canonical positive integer keys must be supplied by the reader, without
+/// leading zeros. Other represents any present value that is not such a key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StubValue { PositiveInteger(String), Other }
+/// Cell data required by the row-header heuristic, including formatting on
+/// empty cells. `background_nonwhite` means a known nonwhite background.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StubCell {
+    pub row: u32, pub column: u32, pub value: Option<StubValue>, pub bold: bool,
+    pub background_nonwhite: bool, pub border_left: bool, pub border_right: bool,
+}
+
+/// Score one possible row-header column. All cells in the body and neighboring
+/// columns, including formatted blanks, must be present in the supplied input.
+/// The caller must provide complete metadata; duplicate cells and invalid
+/// integer keys return unknown rather than a score.
+pub fn stub_column_score(column: u32, end_column: u32, body_first: u32, body_last: u32, cells: &[StubCell], schema: Option<InferredColumnType>) -> Option<i32> {
+    if column > end_column { return None; }
+    let mut positions = BTreeSet::new();
+    for c in cells {
+        if !positions.insert((c.row, c.column)) { return None; }
+        if let Some(StubValue::PositiveInteger(key)) = &c.value {
+            if key.is_empty() || !matches!(key.as_bytes()[0], b'1'..=b'9') || !key.bytes().all(|b| b.is_ascii_digit()) { return None; }
+        }
+    }
+    if body_first > body_last {
+        return Some(match schema { Some(InferredColumnType::Text) => 2, Some(InferredColumnType::Mixed) => 1, Some(InferredColumnType::Numeric | InferredColumnType::Date) => -2, _ => 0 });
+    }
+    let mut selected = Vec::new();
+    for c in cells.iter().filter(|c| c.row >= body_first && c.row <= body_last && c.column == column) {
+        if c.value.is_some() { selected.push(c); }
+    }
+    let type_score = match schema {
+        Some(InferredColumnType::Text) => 2,
+        Some(InferredColumnType::Mixed) => 1,
+        Some(InferredColumnType::Date) => -2,
+        Some(InferredColumnType::Numeric) => {
+            let mut codes = BTreeSet::new();
+            let code_like = selected.len() >= 2 && selected.iter().all(|c| match &c.value { Some(StubValue::PositiveInteger(key)) => codes.insert(key.as_str()), _ => false });
+            if code_like { 0 } else { -2 }
+        }
+        _ => 0,
+    };
+    let height = (u64::from(body_last) - u64::from(body_first) + 1) as f64;
+    let boundary_rate = |col: u32| -> f64 {
+        let mut rows = BTreeSet::new();
+        for c in cells.iter().filter(|c| c.row >= body_first && c.row <= body_last) {
+            if (c.column == col && c.border_right) || (col < end_column && c.column == col + 1 && c.border_left) { rows.insert(c.row); }
+        }
+        rows.len() as f64 / height
+    };
+    let border_score = if column < end_column && boundary_rate(column) - boundary_rate(column + 1) > 0.8 { 2 } else { 0 };
+    if selected.is_empty() { return Some(type_score + border_score); }
+    let total = selected.len() as f64;
+    let background = if selected.iter().filter(|c| c.background_nonwhite).count() as f64 / total > 0.8 { 2 } else { 0 };
+    let bold = if selected.iter().filter(|c| c.bold).count() as f64 / total > 0.8 { 1 } else { 0 };
+    Some(type_score + border_score + background + bold)
+}
+
+/// Select at most the first three columns as row headers, retaining at least
+/// one data column. Schemas use the last entry for a repeated column, matching
+/// the reference's schema map. Reader-provided formatting must be complete.
+pub fn estimate_stub_columns(first_column: u32, last_column: u32, body_first: u32, body_last: u32, cells: &[StubCell], schemas: &[InferredColumnSchema]) -> Option<Vec<u32>> {
+    if first_column > last_column { return None; }
+    let width = u64::from(last_column) - u64::from(first_column) + 1;
+    let count = (width - 1).min(3);
+    let mut result = Vec::new();
+    for offset in 0..count {
+        let column = (u64::from(first_column) + offset) as u32;
+        let kind = schemas.iter().rev().find(|s| s.column == column).map(|s| s.kind);
+        if stub_column_score(column, last_column, body_first, body_last, cells, kind)? >= 2 { result.push(column); }
+    }
+    Some(result)
+}

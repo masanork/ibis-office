@@ -263,3 +263,28 @@ fn header_inheritance_matches_reference() {
         assert_eq!(inherit_headers_from_above(&input, &cells), Some(expected), "case {index}: {case}");
     }
 }
+
+#[test]
+fn stub_column_scores_match_reference() {
+    use ibis_doc_model::machine_readability_layout::{estimate_stub_columns, stub_column_score, InferredColumnSchema, InferredColumnType, StubCell, StubValue};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-stub-reference.json");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (index, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cells: Vec<_> = case["cells"].as_array().unwrap().iter().map(|v| StubCell {
+            row: v["row"].as_u64().unwrap() as u32, column: v["column"].as_u64().unwrap() as u32,
+            value: if !v["present"].as_bool().unwrap() { None } else if let Some(s) = v["key"].as_str() { Some(StubValue::PositiveInteger(s.into())) } else { Some(StubValue::Other) },
+            bold: v["bold"].as_bool().unwrap(), background_nonwhite: v["background_nonwhite"].as_bool().unwrap(), border_left: v["left"].as_bool().unwrap(), border_right: v["right"].as_bool().unwrap(),
+        }).collect();
+        let schema = match case["kind"].as_str() { None => None, Some("numeric") => Some(InferredColumnType::Numeric), Some("text") => Some(InferredColumnType::Text), Some("date") => Some(InferredColumnType::Date), Some("mixed") => Some(InferredColumnType::Mixed), Some("empty") => Some(InferredColumnType::Empty), other => panic!("unexpected {other:?}") };
+        let actual = stub_column_score(case["column"].as_u64().unwrap() as u32, case["width"].as_u64().unwrap() as u32 - 1, case["first"].as_u64().unwrap() as u32, case["last"].as_u64().unwrap() as u32, &cells, schema);
+        assert_eq!(actual, Some(case["score"].as_i64().unwrap() as i32), "case {index}: {case}");
+        let column = case["column"].as_u64().unwrap() as u32;
+        let schemas: Vec<_> = schema.map(|kind| InferredColumnSchema { column, kind, has_header: true }).into_iter().collect();
+        let stubs = estimate_stub_columns(0, case["width"].as_u64().unwrap() as u32 - 1, case["first"].as_u64().unwrap() as u32, case["last"].as_u64().unwrap() as u32, &cells, &schemas);
+        let expected = case["stubs"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>();
+        assert_eq!(stubs, Some(expected), "stub columns case {index}: {case}");
+    }
+    let invalid = StubCell { row: 0, column: 0, value: Some(StubValue::PositiveInteger("01".into())), bold: false, background_nonwhite: false, border_left: false, border_right: false };
+    assert_eq!(stub_column_score(0, 1, 0, 1, &[invalid], Some(InferredColumnType::Numeric)), None);
+}
