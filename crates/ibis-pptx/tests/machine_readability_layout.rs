@@ -46,14 +46,14 @@ fn island_boundary_trimming_matches_reference() {
         let result = trim_boundaries(region, &cells).unwrap();
         let expected = case["trimmed"].as_array().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32));
         assert_eq!(result.range.map(|r| (r.first_row, r.last_row)), expected, "case {index}: {case}");
-        let actual: Vec<_> = result.others.iter().map(|v| (v.row, v.column, match v.kind { OtherRegion::Title => "title", OtherRegion::Total => "total", OtherRegion::Note => "note", OtherRegion::Source => "source" })).collect();
+        let actual: Vec<_> = result.others.iter().map(|v| (v.row, v.column, match v.kind { OtherRegion::Title => "title", OtherRegion::Total => "total", OtherRegion::Note => "note", OtherRegion::Source => "source", OtherRegion::Isolated => "isolated" })).collect();
         let expected: Vec<_> = case["others"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32, v[2].as_str().unwrap())).collect();
         assert_eq!(actual, expected, "case {index}: {case}");
         let evaluated = evaluate_island(region, &cells).unwrap();
         let candidate = evaluated.candidate.map(|v| (v.range.first_row, v.range.last_row, v.confidence));
         let wanted = case["candidate"].as_array().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32, v[2].as_f64().unwrap()));
         assert_eq!(candidate, wanted, "candidate case {index}: {case}");
-        let actual: Vec<_> = evaluated.others.iter().map(|v| (v.row, v.column, match v.kind { OtherRegion::Title => "title", OtherRegion::Total => "total", OtherRegion::Note => "note", OtherRegion::Source => "source" })).collect();
+        let actual: Vec<_> = evaluated.others.iter().map(|v| (v.row, v.column, match v.kind { OtherRegion::Title => "title", OtherRegion::Total => "total", OtherRegion::Note => "note", OtherRegion::Source => "source", OtherRegion::Isolated => "isolated" })).collect();
         let wanted: Vec<_> = case["detected_others"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32, v[2].as_str().unwrap())).collect();
         assert_eq!(actual, wanted, "candidate others case {index}: {case}");
     }
@@ -193,4 +193,35 @@ fn generated_column_headers_match_reference() {
     assert_eq!(generate_column_headers(&[0, 1, 2, 3], &[0], &cells).unwrap()[0].label, "A / B / A");
     assert!(generate_column_headers(&[0], &[1,1], &[]).is_none());
     assert_eq!(generate_column_headers(&[], &[0], &[]).unwrap().len(), 0);
+}
+
+#[test]
+fn preliminary_islands_match_reference() {
+    use ibis_doc_model::machine_readability_layout::{preliminary_islands, LayoutCell, LayoutValue, OtherRegion};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-islands-reference.json");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (index, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cells: Vec<_> = case["cells"].as_array().unwrap().iter().map(|v| LayoutCell {
+            row: v["row"].as_u64().unwrap() as u32, column: v["column"].as_u64().unwrap() as u32,
+            value: if v["value"].is_null() { None } else if let Some(s) = v["value"].as_str() { Some(LayoutValue::Text(s.into())) } else { Some(LayoutValue::Numeric) },
+            bold: v["bold"].as_bool().unwrap(), merged: v["merged"].as_bool().unwrap(), formula: v["formula"].as_str().map(str::to_owned),
+        }).collect();
+        let merges: Vec<_> = case["merges"].as_array().unwrap().iter().map(|v| CellRange { first_row: v[0].as_u64().unwrap() as u32, first_column: v[1].as_u64().unwrap() as u32, last_row: v[2].as_u64().unwrap() as u32, last_column: v[3].as_u64().unwrap() as u32 }).collect();
+        let actual = preliminary_islands(&cells, &merges).unwrap();
+        let regions: Vec<_> = actual.candidates.iter().map(|c| (c.range.first_row, c.range.first_column, c.range.last_row, c.range.last_column, c.confidence)).collect();
+        let expected: Vec<_> = case["candidates"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32, v[2].as_u64().unwrap() as u32, v[3].as_u64().unwrap() as u32, v[4].as_f64().unwrap())).collect();
+        assert_eq!(regions, expected, "candidates case {index}: {case}");
+        let others: Vec<_> = actual.others.iter().map(|v| (v.row, v.column, match v.kind { OtherRegion::Title => "title", OtherRegion::Total => "total", OtherRegion::Note => "note", OtherRegion::Source => "source", OtherRegion::Isolated => "isolated" })).collect();
+        let expected: Vec<_> = case["others"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32, v[2].as_str().unwrap())).collect();
+        assert_eq!(others, expected, "others case {index}: {case}");
+    }
+    let cell = LayoutCell { row: 0, column: 0, value: None, bold: false, merged: false, formula: None };
+    assert!(preliminary_islands(&[cell.clone(), cell], &[]).is_none());
+    // Sparse diagonal inputs produce 25 million potential band intersections;
+    // processing should visit stored cells instead of allocating that grid.
+    let sparse: Vec<_> = (0..5_000).map(|i| LayoutCell { row: i * 2, column: i * 2, value: Some(LayoutValue::Numeric), bold: false, merged: false, formula: None }).collect();
+    let result = preliminary_islands(&sparse, &[]).unwrap();
+    assert!(result.candidates.is_empty());
+    assert_eq!(result.others.len(), 5_000);
 }
