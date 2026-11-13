@@ -36,6 +36,7 @@ pub mod machine_readability;
 pub mod machine_readability_scoring;
 pub mod machine_readability_rules;
 pub mod machine_readability_csv;
+pub mod machine_readability_layout;
 pub mod latex;
 pub mod forecast_sheet;
 pub mod goal_seek;
