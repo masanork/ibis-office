@@ -48,6 +48,7 @@ pub use clip_poster::{clip_poster, screenshot_snapshot};
 mod chart;
 mod chart_ex;
 pub mod csv;
+pub mod machine_readability_csv;
 pub mod progress;
 mod docx;
 pub mod docx_convert;
