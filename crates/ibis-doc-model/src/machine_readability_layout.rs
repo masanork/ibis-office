@@ -31,6 +31,10 @@ pub fn occupied_bands(indices: &[u32], gap_threshold: u32) -> Option<Vec<(u32, u
 /// in the region. Missing cells, duplicates or invalid ranges are not inferred.
 /// Callers must not use this as a complete table detector.
 pub fn trimmed_region_confidence(region: CellRange, occupied: &[(u32, u32)]) -> Option<f64> {
+    weighted_region_confidence(region, occupied, 0.6, 0.6)
+}
+
+fn weighted_region_confidence(region: CellRange, occupied: &[(u32, u32)], fill_weight: f64, row_weight: f64) -> Option<f64> {
     if region.first_row > region.last_row || region.first_column > region.last_column { return None; }
     let mut distinct = BTreeSet::new();
     let mut rows = BTreeMap::<u32, u64>::new();
@@ -44,7 +48,7 @@ pub fn trimmed_region_confidence(region: CellRange, occupied: &[(u32, u32)]) -> 
     let filled_rows = rows.values().filter(|&&n| n as f64 >= minimum).count();
     let fill_rate = (distinct.len() as f64) / ((height as f64) * (width as f64));
     let row_rate = (filled_rows as f64) / height as f64;
-    let score = (fill_rate * 0.6 + row_rate * 0.6).min(1.0);
+    let score = (fill_rate * fill_weight + row_rate * row_weight).min(1.0);
     // Python round(x, 3) rounds the actual binary float; multiplying by
     // 1000 first can introduce a second rounding (e.g. 0.0375).
     format!("{score:.3}").parse().ok()
@@ -611,5 +615,51 @@ pub fn merge_column_adjacent_regions(candidates: &[IslandCandidate], cells: &[La
         }
         result.push(current);
     }
+    Some(result)
+}
+
+/// Merge groups of at least three narrow form fragments whose row ranges
+/// overlap by at least 80%. Recalculate header positions and the reference
+/// form-specific confidence. Header inheritance is a later pass.
+pub fn merge_form_fragments(candidates: &[IslandWithHeaders], cells: &[LayoutCell], merges: &[CellRange]) -> Option<Vec<IslandWithHeaders>> {
+    let mut assigned = vec![false; candidates.len()];
+    let mut groups = Vec::<Vec<usize>>::new();
+    for i in 0..candidates.len() {
+        if assigned[i] { continue; }
+        let a = candidates[i].candidate.range;
+        if a.first_row > a.last_row || a.first_column > a.last_column { return None; }
+        let mut group = vec![i];
+        assigned[i] = true;
+        for j in (i + 1)..candidates.len() {
+            if assigned[j] { continue; }
+            let b = candidates[j].candidate.range;
+            if b.first_row > b.last_row || b.first_column > b.last_column { return None; }
+            let start = a.first_row.max(b.first_row);
+            let end = a.last_row.min(b.last_row);
+            if start > end { continue; }
+            let overlap = u64::from(end) - u64::from(start) + 1;
+            let length_a = u64::from(a.last_row) - u64::from(a.first_row) + 1;
+            let length_b = u64::from(b.last_row) - u64::from(b.first_row) + 1;
+            if overlap as f64 / length_a.min(length_b) as f64 >= 0.8 { group.push(j); assigned[j] = true; }
+        }
+        groups.push(group);
+    }
+    let mut merged_indices = BTreeSet::new();
+    let mut new_regions = Vec::new();
+    for group in groups {
+        let narrow = group.iter().filter(|&&i| { let r = candidates[i].candidate.range; u64::from(r.last_column) - u64::from(r.first_column) + 1 <= 3 }).count();
+        if group.len() < 3 || narrow < 3 { continue; }
+        let mut range = candidates[group[0]].candidate.range;
+        for &i in &group[1..] {
+            let r = candidates[i].candidate.range;
+            range.first_row = range.first_row.min(r.first_row); range.last_row = range.last_row.max(r.last_row);
+            range.first_column = range.first_column.min(r.first_column); range.last_column = range.last_column.max(r.last_column);
+        }
+        let occupied: Vec<_> = cells.iter().filter(|c| c.row >= range.first_row && c.row <= range.last_row && c.column >= range.first_column && c.column <= range.last_column && c.value.is_some()).map(|c| (c.row, c.column)).collect();
+        new_regions.push(IslandWithHeaders { candidate: IslandCandidate { range, confidence: weighted_region_confidence(range, &occupied, 0.2, 0.85)? }, headers: infer_header_rows(range, cells, merges)? });
+        merged_indices.extend(group);
+    }
+    let mut result: Vec<_> = candidates.iter().enumerate().filter(|(i, _)| !merged_indices.contains(i)).map(|(_, c)| c.clone()).collect();
+    result.extend(new_regions);
     Some(result)
 }
