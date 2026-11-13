@@ -10,7 +10,7 @@ use crate::machine_readability_scoring::{RuleResult, Severity};
 use crate::sheet::{CellError, CellRange, CellValue, Sheet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FindingSeverity { Error, Info }
+pub enum FindingSeverity { Error, Warning, Info }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding { pub location: String, pub severity: FindingSeverity }
 #[derive(Clone, Debug, PartialEq)]
@@ -31,7 +31,7 @@ fn column_letters(column: u32) -> String {
 fn address(row: u32, column: u32) -> String { format!("{}{}", column_letters(column), u64::from(row) + 1) }
 fn range_address(r: CellRange) -> String { format!("{}:{}", address(r.first_row, r.first_column), address(r.last_row, r.last_column)) }
 
-/// L1-12: identify merges intersecting an explicitly supplied table range.
+/// Excel-only L1-12: identify merges intersecting an explicitly supplied table range.
 /// Header rows use zero-based indices. None means unknown (skip); an empty set
 /// means that the table is known to have no header rows.
 pub fn merged_cells(sheet: &Sheet, table: CellRange, header_rows: Option<&BTreeSet<u32>>) -> RuleEvaluation {
@@ -55,7 +55,7 @@ pub fn merged_cells(sheet: &Sheet, table: CellRange, header_rows: Option<&BTreeS
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsedExtent { Unknown, Empty, Range(CellRange) }
 
-/// L1-13: inspect hidden rows and columns within a reader-provided used extent.
+/// Excel-only L1-13: inspect hidden rows and columns within a reader-provided used extent.
 pub fn hidden_rows_columns(sheet: &Sheet, used: UsedExtent) -> RuleEvaluation {
     if used == UsedExtent::Unknown { return result("L1-13", true, 0.0, Severity::Critical, Vec::new()); }
     let mut findings = Vec::new();
@@ -80,7 +80,7 @@ pub fn hidden_rows_columns(sheet: &Sheet, used: UsedExtent) -> RuleEvaluation {
     result("L1-13", findings.is_empty(), 1.0, Severity::Critical, findings)
 }
 
-/// L2-06 fallback over the parsed sheet. `complete` must be false if the reader
+/// Excel-only L2-06 fallback over the parsed sheet. `complete` must be false if the reader
 /// cannot guarantee that formula and error cells in the table were all loaded;
 /// incomplete input is skipped, never treated as a pass.
 pub fn formula_cells(sheet: &Sheet, table: CellRange, complete: bool) -> RuleEvaluation {
@@ -94,4 +94,44 @@ pub fn formula_cells(sheet: &Sheet, table: CellRange, complete: bool) -> RuleEva
         }
     }
     result("L2-06", findings.is_empty(), 1.0, Severity::Major, findings)
+}
+
+/// A reader-confirmed normalized format. XLSM is normalized to XLSX by the
+/// reference reader; callers must make that normalization themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkbookFormat { Xlsx, Csv, Tsv, Other, Unknown }
+
+/// L1-01: a format check after content/extension validation by the reader.
+/// This does not validate a file signature or inspect its contents.
+pub fn file_format(format: WorkbookFormat) -> RuleEvaluation {
+    match format {
+        WorkbookFormat::Unknown => result("L1-01", true, 0.0, Severity::Fatal, Vec::new()),
+        WorkbookFormat::Other => result("L1-01", false, 1.0, Severity::Fatal,
+            vec![Finding { location: "ファイル全体".to_string(), severity: FindingSeverity::Error }]),
+        WorkbookFormat::Xlsx | WorkbookFormat::Csv | WorkbookFormat::Tsv => result("L1-01", true, 1.0, Severity::Fatal, Vec::new()),
+    }
+}
+
+/// A table detected by a separate layout engine. Confidence is the reference
+/// detector's table confidence, rather than rule confidence.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DetectedTable { pub range: CellRange, pub confidence: f64 }
+
+/// L1-02: evaluate an explicitly supplied, complete set of detected tables.
+/// None or an empty list means detection is unavailable for this current
+/// table; both are skipped rather than guessing the detector's fallback.
+pub fn one_table_per_sheet(current: CellRange, tables: Option<&[DetectedTable]>) -> RuleEvaluation {
+    let Some(tables) = tables else { return result("L1-02", true, 0.0, Severity::Fatal, Vec::new()); };
+    if tables.is_empty() { return result("L1-02", true, 0.0, Severity::Fatal, Vec::new()); }
+    let invalid = |r: CellRange| r.first_row > r.last_row || r.first_column > r.last_column;
+    if invalid(current) || tables.iter().any(|t| invalid(t.range) || !t.confidence.is_finite() || !(0.0..=1.0).contains(&t.confidence)) {
+        return result("L1-02", true, 0.0, Severity::Fatal, Vec::new());
+    }
+    let confident: Vec<_> = tables.iter().filter(|t| t.confidence >= 0.5).collect();
+    let considered: Vec<_> = if confident.is_empty() { tables.iter().collect() } else { confident };
+    if considered.len() <= 1 || considered.first().is_some_and(|first| first.range.first_row != current.first_row || first.range.first_column != current.first_column) {
+        return result("L1-02", true, 0.85, Severity::Fatal, Vec::new());
+    }
+    let findings = considered.iter().map(|t| Finding { location: range_address(t.range), severity: FindingSeverity::Warning }).collect();
+    result("L1-02", false, 0.85, Severity::Fatal, findings)
 }

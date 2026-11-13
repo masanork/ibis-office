@@ -30,3 +30,7 @@ for synthetic rule outcomes at all three levels, including skipped and fatal
 rules, default severity, saturation, and repeated rule IDs. It is generated
 by `scripts/machine-readability-reference.py`. This tests scoring only, not
 rule execution, table detection, or end-to-end parity.
+
+`harunobu-workbook-rules-reference.json` records synthetic L1-01 and L1-02
+outcomes with supplied file format and table regions. It does not test file
+signature validation or layout detection.
