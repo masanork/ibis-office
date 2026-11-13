@@ -997,6 +997,7 @@ impl SlideEditor {
     }
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_merge_recipient_list(&self, path: &std::path::Path) -> Result<(), String> {
+        self.check_standard_output(path).map_err(|e| e.to_string())?;
         let m = self
             .merge_state()
             .ok_or_else(|| tr("docx.merge-panel.there-no-recipient-list").to_string())?;

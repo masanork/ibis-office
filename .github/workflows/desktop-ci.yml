@@ -52,6 +52,8 @@ jobs:
         env:
           SORANE_UPDATER_PROCESS_TEST: "1"
         run: cargo test --locked -p ibis-office-updater
+      - name: Test Office 2007 encryption
+        run: cargo test --locked -p ibis-ooxml --test standard_encryption
       - name: Build and verify macOS app
         if: matrix.platform == 'macos-arm64'
         shell: bash
@@ -146,6 +148,8 @@ jobs:
         env:
           SORANE_UPDATER_PROCESS_TEST: "1"
         run: cargo test --locked -p ibis-office-updater -p ibis-appimage
+      - name: Test Office 2007 encryption
+        run: cargo test --locked -p ibis-ooxml --test standard_encryption
       - name: Build and verify AppImage
         shell: bash
         run: |

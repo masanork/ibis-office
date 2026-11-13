@@ -588,6 +588,11 @@ pub struct SlideEditor {
     pub(crate) repair_report: Option<ibis_pptx::repair::RepairReport>,
     /// Whether this document is opened in read-only / viewing mode (--read-only or ?view=1).
     pub(crate) read_only: bool,
+    /// A Standard-encrypted document remains read-only until saved as a copy.
+    pub(crate) standard_read_only: bool,
+    /// Preserve the original path even after creating an editable copy.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) standard_source_path: Option<std::path::PathBuf>,
     /// Original JTD bytes: presence makes this document permanently read-only.
     pub(crate) jtd_original: Option<std::sync::Arc<[u8]>>,
     /// An auxiliary preview, not a reconstruction of the source document.
@@ -881,6 +886,9 @@ impl SlideEditor {
             read_only: crate::shell::embed::is_view_only(),
             #[cfg(not(target_arch = "wasm32"))]
             read_only: false,
+            standard_read_only: false,
+            #[cfg(not(target_family = "wasm"))]
+            standard_source_path: None,
             jtd_original: None,
             jtd_gallery: false,
             jtd_gallery_body: None,
@@ -919,7 +927,7 @@ impl SlideEditor {
 
     /// Whether this editor is currently in read-only / viewing mode (either via `--read-only` or during CSV streaming).
     pub(crate) fn is_read_only(&self) -> bool {
-        self.read_only || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+        self.read_only || self.standard_read_only || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
     }
 
     pub(crate) fn is_jtd_read_only(&self) -> bool {
@@ -1084,6 +1092,9 @@ impl SlideEditor {
 
     /// Replace the open presentation, dropping undo history and selection.
     pub(crate) fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.standard_read_only = false;
+        #[cfg(not(target_family = "wasm"))]
+        { self.standard_source_path = None; }
         self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         self.end_slideshow(window, cx);
         self.jtd_original = None;
@@ -1427,7 +1438,15 @@ impl SlideEditor {
                         }
                         this.set_file_path(Some(path.clone()));
                         this.watch.known = stamp_before_read;
+                        this.protection_password = loaded.password.clone();
+                    }
+                    if loaded.standard_encryption {
+                        this.standard_read_only = true;
+                        this.standard_source_path = Some(path.clone());
                         this.protection_password = loaded.password;
+                        this.document.set_read_only(true);
+                        this.sidebar_open = false;
+                        this.set_status(crate::shell::i18n::text("file.standard-read-only").to_string(), cx);
                     }
                     if let Some(rx) = loaded.csv_stream {
                         this.is_csv_streaming = true;
@@ -2182,6 +2201,11 @@ impl SlideEditor {
     /// Open a new window duplicating current presentation or open path.
     pub(crate) fn new_window(&mut self, cx: &mut App) {
         let document_memory=self.document_memory.clone();
+        let standard_read_only = self.standard_read_only;
+        #[cfg(not(target_family = "wasm"))]
+        let standard_source_path = self.standard_source_path.clone();
+        #[cfg(not(target_family = "wasm"))]
+        let protection_password = self.protection_password.clone();
         if self.is_workbook() {
             let wb_id = if self.workbook_id == 0 {
                 let id = NEXT_WORKBOOK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2208,6 +2232,9 @@ impl SlideEditor {
                 editor.document_memory=document_memory.clone();
                 editor.set_file_path(path);
                 editor.source = source;
+                editor.standard_read_only = standard_read_only;
+                #[cfg(not(target_family = "wasm"))]
+                { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; }
                 editor.workbook_id = wb_id;
                 editor.window_number = Some(new_num);
                 editor.current_slide = current;
@@ -2249,6 +2276,9 @@ impl SlideEditor {
                 editor.set_file_path(path);
                 editor.source = source;
                 editor.jtd_original = jtd_original;
+                editor.standard_read_only = standard_read_only;
+                #[cfg(not(target_family = "wasm"))]
+                { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; }
                 editor.jtd_gallery = jtd_gallery;
                 editor.jtd_gallery_body = jtd_gallery_body;
                 editor.jtd_thumbnail = jtd_thumbnail;

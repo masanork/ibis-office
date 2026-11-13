@@ -78,6 +78,7 @@ impl SlideEditor {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Result<usize, String> {
+        self.check_standard_output(path).map_err(|e| e.to_string())?;
         let pres = self.presentation().clone();
         let bytes = export_docx_format(&pres, format).map_err(|e| e.to_string())?;
         let len = bytes.len();

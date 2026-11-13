@@ -769,6 +769,7 @@ pub(crate) struct Loaded {
     pub(crate) source: std::sync::Arc<ibis_pptx::Source>,
     /// The password a protected file was opened with: saving protects it again.
     pub(crate) password: Option<String>,
+    pub(crate) standard_encryption: bool,
     pub(crate) csv_stream: Option<std::sync::mpsc::Receiver<ibis_pptx::CsvProgressiveChunk>>,
     /// JTD is a lossy import and must remain read-only, irrespective of its filename.
     pub(crate) jtd_original: Option<Vec<u8>>,
@@ -817,11 +818,12 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
         let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
         render::preload::Preload::start_for_next(&presentation);
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, csv_stream: None, jtd_original: Some(data), jtd_gallery });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: Some(data), jtd_gallery });
     }
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     timing::mark("read");
     let mut used = None;
+    let standard_encryption = ibis_pptx::ibis_ooxml::encryption::is_standard_encrypted(&data);
     if ibis_pptx::is_encrypted(&data) {
         let Some(password) = password else { return Err(NEEDS_PASSWORD.to_string()) };
         data = ibis_pptx::decrypt(&data, password).map_err(|e| if e == ibis_pptx::DecryptError::WrongPassword { WRONG_PASSWORD.to_string() } else { e.to_string() })?;
@@ -844,7 +846,7 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
     let total_file_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     eprintln!("ibisOffice timing: read_file total: {total_file_ms:.1} ms (fs::read: {read_fs_ms:.1} ms, open: {open_ms:.1} ms)");
     render::preload::Preload::start_for_next(&opened.presentation);
-    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, jtd_original: None, jtd_gallery: false })
+    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, standard_encryption, csv_stream, jtd_original: None, jtd_gallery: false })
 }
 
 /// The file at `path`, read and parsed, with its name.

@@ -5,10 +5,10 @@
 //! (`.pptx`, `.xlsx`, `.docx`) kept encrypted in a compound file, as Office 2010 and later
 //! write it (MS-OFFCRYPTO, "Agile Encryption": AES in CBC mode, a key made of the
 //! password by SHA-2 hashed over `spinCount` rounds, the package in 4096-byte segments).
-//! The older Standard and RC4 methods are not read: the message says so, and the
-//! file is left as it is.
+//! Standard encryption is read for Office 2007 compatibility; writing uses Agile.
+//! Standard encryption has no package integrity check. RC4 is not read here.
 
-use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use aes::cipher::{block_padding::NoPadding, BlockDecrypt, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
@@ -46,6 +46,12 @@ impl From<DecryptError> for crate::Error {
 /// Whether `data` is a package kept encrypted in a compound file.
 pub fn is_encrypted(data: &[u8]) -> bool {
     cfb::is_cfb(data) && cfb::stream(data, "EncryptionInfo").is_ok() && cfb::stream(data, "EncryptedPackage").is_ok()
+}
+
+/// Whether the encrypted package uses the Office 2007 Standard format.
+pub fn is_standard_encrypted(data: &[u8]) -> bool {
+    let Ok(info) = cfb::stream(data, "EncryptionInfo") else { return false };
+    info.len() >= 4 && matches!((u16::from_le_bytes([info[0], info[1]]), u16::from_le_bytes([info[2], info[3]])), (2..=4, 2))
 }
 
 const BLOCK_VERIFIER_INPUT: [u8; 8] = [0xfe, 0xa7, 0xd2, 0x76, 0x3b, 0x4b, 0x9e, 0x79];
@@ -171,6 +177,67 @@ fn password_key(password: &str, salt: &[u8], spin: u32, hash: Hash, key_bits: us
     fitted(hash.digest(&[&h, block]), key_bits / 8)
 }
 
+/// Office 2007 Standard encryption, MS-OFFCRYPTO 2.3.4.5–2.3.4.9.
+fn decrypt_standard(info: &[u8], package: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
+    let bad = || DecryptError::Damaged("Standard EncryptionInfo".into());
+    let u32_at = |at: usize| -> Result<u32, DecryptError> {
+        Ok(u32::from_le_bytes(info.get(at..at + 4).ok_or_else(bad)?.try_into().map_err(|_| bad())?))
+    };
+    let flags = u32_at(4)?;
+    let header_len = u32_at(8)? as usize;
+    let end = 12usize.checked_add(header_len).ok_or_else(bad)?;
+    if header_len < 32 || end > info.len() { return Err(bad()); }
+    let inner_flags = u32_at(12)?;
+    if flags != inner_flags || flags & 0x24 != 0x24 || flags & 0x18 != 0 || u32_at(16)? != 0 {
+        return Err(DecryptError::Unsupported("Standard encryption flags".into()));
+    }
+    let (alg, hash, bits) = (u32_at(20)?, u32_at(24)?, u32_at(28)?);
+    if !matches!((alg, bits), (0x660e, 128) | (0x660f, 192) | (0x6610, 256)) || hash != 0x8004 {
+        return Err(DecryptError::Unsupported(format!("Standard algorithm {alg:#x}, hash {hash:#x}, key {bits}")));
+    }
+    let verifier = info.get(end..end.checked_add(72).ok_or_else(bad)?).ok_or_else(bad)?;
+    if u32::from_le_bytes(verifier[0..4].try_into().unwrap()) != 16 || u32::from_le_bytes(verifier[36..40].try_into().unwrap()) != 20 { return Err(bad()); }
+    let salt = &verifier[4..20];
+    let pass: Vec<u8> = password.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut h = sha1::Sha1::new();
+    h.update(salt); h.update(&pass);
+    let mut hash_value = h.finalize().to_vec();
+    for i in 0u32..50_000 {
+        let mut d = sha1::Sha1::new(); d.update(i.to_le_bytes()); d.update(&hash_value); hash_value = d.finalize().to_vec();
+    }
+    let mut d = sha1::Sha1::new(); d.update(&hash_value); d.update(0u32.to_le_bytes());
+    let final_hash = d.finalize();
+    let mut material = Vec::with_capacity(40);
+    for pad in [0x36u8, 0x5c] {
+        let mut block = [pad; 64];
+        for (a, b) in block.iter_mut().zip(final_hash.iter()) { *a ^= *b; }
+        material.extend_from_slice(&sha1::Sha1::digest(block));
+    }
+    material.truncate(bits as usize / 8);
+    fn blocks(key: &[u8], data: &mut [u8]) -> Result<(), DecryptError> {
+        use aes::cipher::KeyInit;
+        if !data.len().is_multiple_of(16) { return Err(DecryptError::Damaged("AES blocks".into())); }
+        macro_rules! decrypt { ($ty:ty) => {{
+            let cipher = <$ty>::new_from_slice(key).map_err(|_| DecryptError::Damaged("AES key".into()))?;
+            for block in data.chunks_exact_mut(16) { cipher.decrypt_block(aes::cipher::Block::<$ty>::from_mut_slice(block)); }
+        }} }
+        match key.len() { 16 => decrypt!(aes::Aes128), 24 => decrypt!(aes::Aes192), 32 => decrypt!(aes::Aes256), _ => return Err(DecryptError::Damaged("AES key".into())) }
+        Ok(())
+    }
+    let mut check = verifier[20..36].to_vec();
+    let mut expected = verifier[40..72].to_vec();
+    blocks(&material, &mut check)?; blocks(&material, &mut expected)?;
+    if sha1::Sha1::digest(&check).as_slice() != &expected[..20] { return Err(DecryptError::WrongPassword); }
+    if package.len() < 8 { return Err(DecryptError::Damaged("EncryptedPackage".into())); }
+    let size = u64::from_le_bytes(package[..8].try_into().unwrap());
+    let mut data = package[8..].to_vec();
+    blocks(&material, &mut data)?;
+    let size = usize::try_from(size).map_err(|_| DecryptError::Damaged("size".into()))?;
+    if size > data.len() || data.len() - size >= 16 { return Err(DecryptError::Damaged("size".into())); }
+    data.truncate(size);
+    Ok(data)
+}
+
 /// The package inside `data`, a protected file, opened with `password`.
 pub fn decrypt(data: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     let info = cfb::stream(data, "EncryptionInfo").map_err(|_| DecryptError::Damaged("EncryptionInfo".into()))?;
@@ -179,9 +246,11 @@ pub fn decrypt(data: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
         return Err(DecryptError::Damaged("EncryptionInfo".into()));
     }
     let (major, minor) = (u16::from_le_bytes([info[0], info[1]]), u16::from_le_bytes([info[2], info[3]]));
+    if matches!((major, minor), (2..=4, 2)) {
+        return decrypt_standard(&info, &package, password);
+    }
     if (major, minor) != (4, 4) {
         let name = match (major, minor) {
-            (2 | 3 | 4, 2) => "標準暗号化（Office 2007）".to_string(),
             (1, 1) => "RC4".to_string(),
             _ => format!("版 {major}.{minor}"),
         };
@@ -411,6 +480,6 @@ mod tests {
         let mut info = vec![3, 0, 2, 0, 0x24, 0, 0, 0];
         info.extend_from_slice(&[0; 40]);
         let file = cfb::write(&[cfb::Item::stream("EncryptionInfo", info), cfb::Item::stream("EncryptedPackage", vec![0; 16])]);
-        assert!(matches!(decrypt(&file, "x"), Err(DecryptError::Unsupported(_))));
+        assert!(matches!(decrypt(&file, "x"), Err(DecryptError::Damaged(_))));
     }
 }

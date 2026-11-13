@@ -1018,6 +1018,7 @@ impl SlideEditor {
 
     /// The sheet shown, as CSV, to `path`.
     pub(crate) fn write_csv(&self, path: &std::path::Path) -> std::io::Result<()> {
+        self.check_standard_output(path)?;
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
         std::fs::write(path, ibis_pptx::csv::sheet_to_csv(self.presentation(), index))
     }
@@ -1086,6 +1087,7 @@ impl SlideEditor {
 
     /// The whole workbook, as an OpenDocument spreadsheet, to `path`.
     pub(crate) fn write_ods(&self, path: &std::path::Path) -> std::io::Result<()> {
+        self.check_standard_output(path)?;
         let bytes = match self.source.as_deref() {
             Some(source) => ibis_pptx::write_ods_with_source(self.presentation(), source),
             None => ibis_pptx::write_ods(self.presentation()),
@@ -1096,6 +1098,7 @@ impl SlideEditor {
 
     /// The whole workbook, as an old Excel file, to `path`; what was left out.
     pub(crate) fn write_xls(&self, path: &std::path::Path) -> std::io::Result<Option<SharedString>> {
+        self.check_standard_output(path)?;
         let (bytes, report) = ibis_pptx::write_xls_report(self.presentation()).map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(path, bytes)?;
         Ok(super::export_xls::note(&report))
@@ -1166,12 +1169,14 @@ impl SlideEditor {
 
     /// The sheet shown, as Shift_JIS CSV, to `path`.
     pub(crate) fn write_csv_sjis(&self, path: &std::path::Path) -> std::io::Result<()> {
+        self.check_standard_output(path)?;
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
         std::fs::write(path, ibis_pptx::csv::sheet_to_csv_sjis(self.presentation(), index))
     }
 
     /// The sheet shown, as TSV, to `path`.
     pub(crate) fn write_tsv(&self, path: &std::path::Path) -> std::io::Result<()> {
+        self.check_standard_output(path)?;
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
         std::fs::write(path, ibis_pptx::csv::sheet_to_tsv(self.presentation(), index))
     }

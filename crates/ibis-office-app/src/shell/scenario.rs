@@ -109,6 +109,8 @@ mod find_shortcuts;
 mod file_watch_scenarios;
 #[path="../tests/shell/native_jtd.rs"]
 mod native_jtd_scenarios;
+#[path="../tests/shell/standard_encryption.rs"]
+mod standard_encryption_scenarios;
 #[path = "../tests/shell/dropdown.rs"]
 mod dropdown;
 #[path = "../tests/shell/popup_guard.rs"]
@@ -151,6 +153,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     all.extend(find_shortcuts::all());
     all.extend(file_watch_scenarios::all());
     all.extend(native_jtd_scenarios::all());
+    all.extend(standard_encryption_scenarios::all());
     all.extend(comments_common::all());
     all.push(("shell::dropdown_item_attributes",dropdown::run));
     all.push(("shell::toolbar_style_common_dropdown",dropdown::toolbar_style));
