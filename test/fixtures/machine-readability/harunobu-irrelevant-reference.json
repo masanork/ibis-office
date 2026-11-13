@@ -1,0 +1,77 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "cases": [
+    {
+      "others": [],
+      "passed": true,
+      "confidence": 0.9,
+      "locations": [],
+      "severities": []
+    },
+    {
+      "others": [
+        [
+          1,
+          1,
+          "title"
+        ]
+      ],
+      "passed": false,
+      "confidence": 0.9,
+      "locations": [
+        "A1"
+      ],
+      "severities": [
+        "warning"
+      ]
+    },
+    {
+      "others": [
+        [
+          1,
+          1,
+          "title"
+        ],
+        [
+          6,
+          2,
+          "footnote"
+        ],
+        [
+          1,
+          1,
+          "isolated"
+        ]
+      ],
+      "passed": false,
+      "confidence": 0.9,
+      "locations": [
+        "A1",
+        "B6",
+        "A1"
+      ],
+      "severities": [
+        "warning",
+        "warning",
+        "warning"
+      ]
+    },
+    {
+      "others": [
+        [
+          1048576,
+          16384,
+          "other"
+        ]
+      ],
+      "passed": false,
+      "confidence": 0.9,
+      "locations": [
+        "XFD1048576"
+      ],
+      "severities": [
+        "warning"
+      ]
+    }
+  ]
+}

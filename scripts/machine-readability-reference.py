@@ -202,3 +202,22 @@ print(json.dumps([dict(value=v, column=c, reason=r._has_multiple_data(v, col_typ
 '''
 process = subprocess.run([str(repo / '.venv/bin/python'), '-I', '-X', 'utf8', '-c', one_data_script], text=True, capture_output=True, check=True)
 (FIXTURES / 'harunobu-one-data-reference.json').write_text(json.dumps({'harunobu_commit': COMMIT, 'cases': json.loads(process.stdout)}, ensure_ascii=False, indent=2) + '\n')
+
+# L1-04 accepts the detector's 'others' unchanged, including repeats.
+irrelevant_script = '''import json
+from harunobu.core.models import Sheet, WorkBook, TableContext, TableRegion, CellRange, OtherCell
+from harunobu.rules.level1.L1_04_irrelevant_info import IrrelevantInfoRule
+sheet = Sheet(name='Data')
+workbook = WorkBook(file_name='data.xlsx', file_format='xlsx', sheets=[sheet])
+table = TableRegion(range=CellRange(start_row=1, start_col=1, end_row=4, end_col=3), confidence=0.9)
+patterns = [[], [(1,1,'title')], [(1,1,'title'),(6,2,'footnote'),(1,1,'isolated')], [(1048576,16384,'other')]]
+cases=[]
+for pattern in patterns:
+    others=[OtherCell(row=r, col=c, value='example', region_type=t) for r,c,t in pattern]
+    context=TableContext(workbook=workbook, sheet=sheet, table_region=table, sheet_others=others)
+    result=IrrelevantInfoRule().check(context)
+    cases.append(dict(others=pattern, passed=result.passed, confidence=result.confidence, locations=[v.cell_range for v in result.violations], severities=[v.severity for v in result.violations]))
+print(json.dumps(cases, ensure_ascii=False))
+'''
+process = subprocess.run([str(repo / '.venv/bin/python'), '-I', '-X', 'utf8', '-c', irrelevant_script], text=True, capture_output=True, check=True)
+(FIXTURES / 'harunobu-irrelevant-reference.json').write_text(json.dumps({'harunobu_commit': COMMIT, 'cases': json.loads(process.stdout)}, ensure_ascii=False, indent=2) + '\n')
