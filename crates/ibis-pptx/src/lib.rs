@@ -76,6 +76,8 @@ mod xlsb_formula;
 mod ods_write;
 mod xls;
 mod msdoc;
+/// Bounded decoding of the text stream in Ichitaro documents.
+pub mod jtd;
 pub mod odp;
 mod odp_anim;
 mod odp_shape;
