@@ -209,3 +209,97 @@ pub fn single_line_records(diag: Option<&Diagnostics>, first_row: usize, last_ro
 pub fn valid_quoting(diag: Option<&Diagnostics>, first_row: usize, last_row: usize) -> crate::machine_readability_rules::RuleEvaluation {
     check_diagnostics(diag, first_row, last_row, true)
 }
+
+/// A decoded CSV/TSV sheet as Harunobu's byte-stream reader sees it. Values
+/// remain strings, including values that resemble numbers, dates or formulas.
+/// Empty fields are represented as `None`; a blank line is an empty record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CsvSheet { pub records: Vec<Vec<Option<String>>>, pub max_columns: usize }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CsvReadError { UnquotedCarriageReturn, FieldTooLong, TooManyRows, TooManyColumns }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReaderState { RecordStart, FieldStart, Unquoted, Quoted, AfterQuote }
+
+/// Parse a decoded string with the pinned Harunobu reader's `csv.reader`
+/// dialect and `io.StringIO` newline behavior. This is separate from the app's
+/// CSV import, which intentionally coerces types. Encoding selection belongs
+/// to the byte reader, not this function.
+pub fn read_sheet(text: &str, delimiter: Delimiter) -> Result<CsvSheet, CsvReadError> {
+    const MAX_FIELD: usize = 131_072; // CPython's default csv.field_size_limit
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut field_chars = 0usize;
+    let mut state = ReaderState::RecordStart;
+    let mut input = text.chars().peekable();
+    let mut max_columns = 0usize;
+    let append = |field: &mut String, count: &mut usize, c: char| -> Result<(), CsvReadError> {
+        *count += 1;
+        if *count > MAX_FIELD { return Err(CsvReadError::FieldTooLong); }
+        field.push(c);
+        Ok(())
+    };
+    let finish_field = |record: &mut Vec<Option<String>>, field: &mut String, count: &mut usize| -> Result<(), CsvReadError> {
+        if record.len() >= u32::MAX as usize { return Err(CsvReadError::TooManyColumns); }
+        record.push(if field.is_empty() { None } else { Some(std::mem::take(field)) });
+        *count = 0;
+        Ok(())
+    };
+    while let Some(ch) = input.next() {
+        if state == ReaderState::Quoted {
+            if ch == '"' { state = ReaderState::AfterQuote; }
+            else { append(&mut field, &mut field_chars, ch)?; }
+            continue;
+        }
+        if state == ReaderState::AfterQuote && ch == '"' {
+            append(&mut field, &mut field_chars, '"')?;
+            state = ReaderState::Quoted;
+            continue;
+        }
+        if ch == delimiter.character() {
+            finish_field(&mut record, &mut field, &mut field_chars)?;
+            state = ReaderState::FieldStart;
+        } else if ch == '\r' || ch == '\n' {
+            if ch == '\r' {
+                while input.peek() == Some(&'\r') { input.next(); }
+                if input.peek() == Some(&'\n') { input.next(); }
+                else if input.peek().is_some() { return Err(CsvReadError::UnquotedCarriageReturn); }
+            }
+            if state != ReaderState::RecordStart { finish_field(&mut record, &mut field, &mut field_chars)?; }
+            if records.len() >= u32::MAX as usize { return Err(CsvReadError::TooManyRows); }
+            max_columns = max_columns.max(record.len());
+            records.push(std::mem::take(&mut record));
+            state = ReaderState::RecordStart;
+        } else if ch == '"' && matches!(state, ReaderState::RecordStart | ReaderState::FieldStart) {
+            state = ReaderState::Quoted;
+        } else {
+            append(&mut field, &mut field_chars, ch)?;
+            state = ReaderState::Unquoted;
+        }
+    }
+    if state != ReaderState::RecordStart {
+        finish_field(&mut record, &mut field, &mut field_chars)?;
+        if records.len() >= u32::MAX as usize { return Err(CsvReadError::TooManyRows); }
+        max_columns = max_columns.max(record.len());
+        records.push(record);
+    }
+    Ok(CsvSheet { records, max_columns })
+}
+
+impl CsvSheet {
+    /// Prepare unformatted, unmerged cells for preliminary layout detection.
+    /// Empty fields have no layout effect; their record/column positions remain
+    /// available in `records` and `max_columns`.
+    pub fn layout_cells(&self) -> Result<Vec<crate::machine_readability_layout::LayoutCell>, CsvReadError> {
+        use crate::machine_readability_layout::{LayoutCell, LayoutValue};
+        let mut cells = Vec::new();
+        for (row, record) in self.records.iter().enumerate() {
+            for (column, value) in record.iter().enumerate() {
+                if let Some(value) = value {
+                    cells.push(LayoutCell { row: u32::try_from(row).map_err(|_| CsvReadError::TooManyRows)?, column: u32::try_from(column).map_err(|_| CsvReadError::TooManyColumns)?, value: Some(LayoutValue::Text(value.clone())), bold: false, merged: false, formula: None });
+                }
+            }
+        }
+        Ok(cells)
+    }
+}
