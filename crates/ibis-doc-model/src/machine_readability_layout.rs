@@ -663,3 +663,52 @@ pub fn merge_form_fragments(candidates: &[IslandWithHeaders], cells: &[LayoutCel
     result.extend(new_regions);
     Some(result)
 }
+
+/// A table with the layout information needed for header inheritance.
+/// Values are supplied by the reader and earlier inference passes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedIsland {
+    pub candidate: IslandCandidate,
+    pub headers: HeaderRows,
+    pub column_headers: Vec<InferredColumnHeader>,
+    pub column_schemas: Vec<InferredColumnSchema>,
+    pub stub_columns: Vec<u32>,
+    pub footer_rows: Vec<u32>,
+    pub abstain: bool,
+}
+
+/// Inherit column labels from the nearest eligible preceding table with the
+/// same column span. If the target has no schemas and the source has schemas,
+/// infer new schemas from the target's own body rather than copying types.
+/// Complete body cell metadata is required. Returns `None` for invalid ranges,
+/// duplicate cell positions, or an unreasonable number of generated columns.
+pub fn inherit_headers_from_above(tables: &[ResolvedIsland], cells: &[LayoutCell]) -> Option<Vec<ResolvedIsland>> {
+    if tables.iter().any(|t| t.candidate.range.first_row > t.candidate.range.last_row || t.candidate.range.first_column > t.candidate.range.last_column) { return None; }
+    let mut positions = BTreeSet::new();
+    if cells.iter().any(|c| !positions.insert((c.row, c.column))) { return None; }
+    let mut sorted = tables.to_vec();
+    if sorted.len() <= 1 { return Some(sorted); }
+    sorted.sort_by_key(|t| t.candidate.range.first_row);
+    for i in 0..sorted.len() {
+        if !sorted[i].headers.rows.is_empty() || !sorted[i].column_headers.is_empty() { continue; }
+        let target = sorted[i].candidate.range;
+        let source = (0..i).rev().find(|&j| {
+            let above = &sorted[j];
+            let range = above.candidate.range;
+            let gap = i64::from(target.first_row) - i64::from(range.last_row) - 1;
+            range.first_column == target.first_column && range.last_column == target.last_column && (0..=2).contains(&gap) && !above.column_headers.is_empty()
+        });
+        let Some(j) = source else { continue; };
+        let headers = sorted[j].column_headers.clone();
+        if sorted[i].column_schemas.is_empty() && !sorted[j].column_schemas.is_empty() {
+            let width = u64::from(target.last_column) - u64::from(target.first_column) + 1;
+            if width > 1_000_000 { return None; }
+            let mut by_column = BTreeMap::new();
+            for h in &headers { by_column.insert(h.column, h.label.as_str()); }
+            let columns: Vec<_> = (target.first_column..=target.last_column).map(|column| (column, by_column.get(&column).copied())).collect();
+            sorted[i].column_schemas = infer_column_schemas(&columns, sorted[i].headers.body_first, sorted[i].headers.body_last, cells)?;
+        }
+        sorted[i].column_headers = headers;
+    }
+    Some(sorted)
+}
