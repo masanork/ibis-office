@@ -943,3 +943,7 @@ jtd.export-docx	Word（表示中の内容、途中の罫線を除く）
 jtd.docx-exported	Wordに変換しました。途中の罫線、未対応の書式や画像は含まれません。
 jtd.export-html	HTML（表示中の内容、途中の罫線を除く）
 jtd.html-exported	HTMLに変換しました。途中の罫線、未対応の書式や画像は含まれません。
+file.standard-read-only	Office 2007 の暗号化ファイルを読み取り専用で開きました。別名保存したコピーは新しい暗号化方式になり、編集できます。
+file.standard-source-protected	元の Office 2007 暗号化ファイルには保存できません。別の名前で保存してください。
+file.standard-copy-saved	コピーを新しい暗号化方式で保存しました。元のファイルは変更されていません。
+file.standard-copy-format	パスワードを維持するため、コピーは Office 形式で保存してください。

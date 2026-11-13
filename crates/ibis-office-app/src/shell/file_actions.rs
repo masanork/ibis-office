@@ -133,6 +133,10 @@ impl SlideEditor {
     /// Write the file as it is now to `path`, leaving the file's own path.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn copy_to(&self, path: &std::path::Path) -> Result<(), String> {
+        self.check_standard_copy_format(path)?;
+        if self.standard_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, path)) {
+            return Err(crate::shell::i18n::text("file.standard-source-protected").to_string());
+        }
         if self.is_jtd_read_only() { return Err(crate::shell::i18n::text("jtd.read-only").to_string()); }
         if self.jtd_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::jtd::is_native_extension)) {
             return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
@@ -277,7 +281,13 @@ impl SlideEditor {
         let picked = cx.prompt_for_new_path(&directory, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = picked.await else { return };
-            this.update_in(cx, |this, window, cx| then(this, path, window, cx)).ok();
+            this.update_in(cx, |this, window, cx| {
+                if this.standard_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &path)) {
+                    this.report(Err(crate::shell::i18n::text("file.standard-source-protected").to_string()), cx);
+                    return;
+                }
+                then(this, path, window, cx)
+            }).ok();
         })
         .detach();
     }
@@ -302,7 +312,7 @@ impl SlideEditor {
         {
             let (stem, ext) = self.name_parts();
             self.ask_path(crate::shell::i18n::format("file.copy-name", &[("name", &stem), ("ext", &ext)]), window, cx, |this, path, _, cx| {
-                let result = this.copy_to(&path).map(|()| crate::shell::i18n::text("_shell.copy-saved").to_string()).map_err(|e| crate::shell::i18n::format("file.copy-failed", &[("error", &e)]));
+                let result = this.copy_to(&path).map(|()| crate::shell::i18n::text(if this.standard_read_only { "file.standard-copy-saved" } else { "_shell.copy-saved" }).to_string()).map_err(|e| crate::shell::i18n::format("file.copy-failed", &[("error", &e)]));
                 this.report(result, cx);
             });
         }
@@ -321,6 +331,9 @@ impl SlideEditor {
     /// (the slides, handouts, colour, frame).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_pdf_with(&self, pdf: std::path::PathBuf, printing: bool) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        if self.standard_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &pdf)) {
+            return Err(crate::shell::i18n::text("file.standard-source-protected").to_string());
+        }
         if self.jtd_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &pdf)) {
             return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
         }
@@ -455,6 +468,9 @@ impl SlideEditor {
     /// and drawn by this program's `--export png` (on another thread).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_png(&self, png: std::path::PathBuf, slide: Option<usize>) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        if self.standard_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &png)) {
+            return Err(crate::shell::i18n::text("file.standard-source-protected").to_string());
+        }
         if self.jtd_source_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &png)) {
             return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
         }
@@ -463,6 +479,7 @@ impl SlideEditor {
         }
         let bytes = self.current_bytes()?;
         let jtd_original_path = self.is_jtd_read_only().then(|| self.path.clone()).flatten();
+        let standard_original_path = self.standard_source_path.clone();
         let (stem, mut ext) = self.name_parts();
         if self.is_jtd_read_only() { ext = "docx".into(); }
         let print_bg = self.is_print_backgrounds();
@@ -512,6 +529,9 @@ impl SlideEditor {
                 let target_stem = png.file_stem().and_then(|s| s.to_str()).unwrap_or(&stem);
                 for (idx, p) in made.iter().enumerate() {
                     let dest = parent.join(format!("{target_stem}-{:02}.png", idx + 1));
+                    if standard_original_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &dest)) {
+                        return Err(crate::shell::i18n::text("file.standard-source-protected").to_string());
+                    }
                     if jtd_original_path.as_deref().is_some_and(|original| crate::shell::save::same_file(original, &dest)) {
                         return Err(crate::shell::i18n::text("jtd.read-only").to_string());
                     }
@@ -527,6 +547,7 @@ impl SlideEditor {
     /// ファイル > 書き出し > アニメーション GIF（.gif）: the presentation as an animated GIF picture.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_gif(&self, gif_path: std::path::PathBuf, seconds_per_slide: Option<f32>) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        self.check_standard_output(&gif_path).map_err(|e| e.to_string())?;
         let bytes = self.current_bytes()?;
         let (stem, ext) = self.name_parts();
         let print_bg = self.is_print_backgrounds();

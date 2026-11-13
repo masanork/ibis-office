@@ -644,6 +644,7 @@ impl SlideEditor {
     }
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_merged_documents_range(&self,path:&std::path::Path,range:MergePrintRange)->Result<usize,String> {
+        self.check_standard_output(path).map_err(|e| e.to_string())?;
         let (merged,count)=self.merged_document_for_range(range)?;
         let source=self.source.clone().ok_or_else(||crate::shell::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string())?;
         let mut presentation=self.presentation().clone();presentation.flow=Some(Arc::new(merged));
@@ -787,7 +788,9 @@ impl SlideEditor {
             let mut presentation = self.presentation().clone();
             presentation.flow = Some(Arc::new(merged));
             let bytes = source.save(&presentation, ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?;
-            crate::shell::save::write_replacing(&directory.join(format!("{stem} {count}.docx")), &bytes).map_err(|e| e.to_string())?;
+            let target = directory.join(format!("{stem} {count}.docx"));
+            self.check_standard_output(&target).map_err(|e| e.to_string())?;
+            crate::shell::save::write_replacing(&target, &bytes).map_err(|e| e.to_string())?;
         }
         Ok(count)
     }
@@ -883,6 +886,7 @@ impl SlideEditor {
     /// 差し込み印刷の PDF を書き出す (DOCX-MERGE-014).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write_merged_pdf(&self, pdf_path: &std::path::Path, range: ibis_doc_model::merge::MergePrintRange) -> Result<usize, String> {
+        self.check_standard_output(pdf_path).map_err(|e| e.to_string())?;
         let Some(m) = self.merge_state() else {
             return Err(crate::shell::i18n::text("docx.merge-panel.there-no-recipient-list").to_string());
         };

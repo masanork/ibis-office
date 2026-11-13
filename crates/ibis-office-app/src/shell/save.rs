@@ -16,6 +16,29 @@ use crate::shell::editor::SlideEditor;
 use crate::{Save, SaveAs};
 
 impl SlideEditor {
+    /// A copy made while viewing Standard encryption must stay password-protected.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn check_standard_copy_format(&self, path: &std::path::Path) -> Result<(), String> {
+        if !self.standard_read_only { return Ok(()); }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let valid = if self.is_document() {
+            matches!(ext.as_str(), "docx" | "docm" | "dotx" | "dotm")
+        } else if self.is_workbook() {
+            matches!(ext.as_str(), "xlsx" | "xlsm" | "xltx" | "xltm")
+        } else {
+            matches!(ext.as_str(), "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm")
+        };
+        if valid { Ok(()) } else { Err(crate::shell::i18n::text("file.standard-copy-format").to_string()) }
+    }
+
+    pub(crate) fn check_standard_output(&self, path: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(not(target_family = "wasm"))]
+        if self.standard_source_path.as_deref().is_some_and(|original| same_file(original, path)) {
+            return Err(std::io::Error::other(crate::shell::i18n::text("file.standard-source-protected").to_string()));
+        }
+        let _ = path;
+        Ok(())
+    }
     /// ⌘S: save to the file it was opened from (or ask where, for a file
     /// that has no path yet).
     pub(crate) fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
@@ -26,7 +49,7 @@ impl SlideEditor {
         self.commit_edit(window, cx);
         #[cfg(not(target_family = "wasm"))]
         // A file opened read-only for its password to modify is not written over: 名前を付けて保存 (as Office does).
-        match self.path.clone().filter(|_| !self.is_modify_locked()) {
+        match self.path.clone().filter(|_| !self.is_modify_locked() && !self.standard_read_only) {
             Some(path) => {
                 let result = self.save_to(path, window);
                 self.report_save(result, cx);
@@ -115,7 +138,7 @@ impl SlideEditor {
         self.commit_edit(window, cx);
         #[cfg(not(target_family = "wasm"))]
         {
-            if let Some(path) = self.path.clone().filter(|_| !self.is_modify_locked()) {
+            if let Some(path) = self.path.clone().filter(|_| !self.is_modify_locked() && !self.standard_read_only) {
                 let result = self.save_to(path, window);
                 let saved = result.is_ok();
                 self.report_save(result, cx);
@@ -171,6 +194,15 @@ impl SlideEditor {
     fn save_formats(&self) -> Vec<SaveFormat> {
         use crate::shell::i18n::text;
         let format = |label: &str, extensions: &[&str]| SaveFormat { label: text(label), extensions: extensions.iter().map(|e| e.to_string()).collect() };
+        if self.standard_read_only {
+            return if self.is_workbook() {
+                vec![format("file.save-format.xlsx", &["xlsx", "xlsm", "xltx", "xltm"])]
+            } else if self.is_presentation() {
+                vec![format("file.save-format.pptx", &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm"])]
+            } else {
+                vec![format("file.save-format.docx", &["docx", "docm", "dotx", "dotm"])]
+            };
+        }
         if self.is_workbook() {
             vec![
                 format("file.save-format.xlsx", &["xlsx"]),
@@ -190,6 +222,10 @@ impl SlideEditor {
     /// Save to `path`, and make it the file's path.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
+        self.check_standard_copy_format(&path)?;
+        if self.standard_source_path.as_deref().is_some_and(|original| same_file(original, &path)) {
+            return Err(crate::shell::i18n::text("file.standard-source-protected").to_string());
+        }
         if self.is_jtd_read_only() { return Err(crate::shell::i18n::text("jtd.read-only").to_string()); }
         if self.jtd_source_path.as_deref().is_some_and(|original| same_file(original, &path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::jtd::is_native_extension)) {
             return Err(crate::shell::i18n::text("jtd.source-protected").to_string());
@@ -255,6 +291,11 @@ impl SlideEditor {
         // Protected with the password the file has (パスワードを使用して暗号化).
         let bytes = if let (Some(password), false, false, false, false) = (&self.protection_password, csv, tsv, ods, xls) { protect(&bytes, password)? } else { bytes };
         write_replacing(&path, &bytes).map_err(|e| crate::shell::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)]))?;
+        if self.standard_read_only {
+            self.standard_read_only = false;
+            self.document.set_read_only(self.read_only);
+            self.save_note = Some(crate::shell::i18n::text("file.standard-copy-saved"));
+        }
         let name: SharedString = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
         window.set_window_title(&format!("{name} - Sorane Docs"));
         self.file_name = Some(name);
@@ -286,11 +327,9 @@ impl SlideEditor {
 /// `package` protected with `password`: an OOXML package kept encrypted in a compound file.
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn protect(package: &[u8], password: &str) -> Result<Vec<u8>, String> {
-    let mut urandom = std::fs::File::open("/dev/urandom").map_err(|_| crate::shell::i18n::text("_shell.passwords-cannot-be-set-in-this-environment").to_string())?;
     let mut failed = false;
     let encrypted = ibis_pptx::encrypt(package, password, &mut |bytes: &mut [u8]| {
-        use std::io::Read;
-        if urandom.read_exact(bytes).is_err() {
+        if getrandom::getrandom(bytes).is_err() {
             failed = true;
         }
     });
@@ -314,5 +353,5 @@ pub(crate) fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> std::io::
 /// Whether `a` and `b` are one file (the same path, or one that links to the other).
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a == b || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    a == b || same_file::is_same_file(a, b).unwrap_or(false) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
