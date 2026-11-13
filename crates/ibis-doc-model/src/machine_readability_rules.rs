@@ -135,3 +135,52 @@ pub fn one_table_per_sheet(current: CellRange, tables: Option<&[DetectedTable]>)
     let findings = considered.iter().map(|t| Finding { location: range_address(t.range), severity: FindingSeverity::Warning }).collect();
     result("L1-02", false, 0.85, Severity::Fatal, findings)
 }
+
+/// The input encoding as established by the reader. XLSX has no text encoding
+/// classification; UTF-8 includes UTF-8 with BOM. Unknown must not be guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextEncoding { Xlsx, Utf8, Cp932, Unknown }
+
+fn roman_classification_code(value: &str) -> bool {
+    // Python's str.strip includes the four ASCII information separators.
+    let trimmed = value.trim_matches(|c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}'));
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else { return false; };
+    if !(('\u{2160}'..='\u{217f}').contains(&first) && matches!(chars.next(), Some('ー' | '－' | '-'))) { return false; }
+    let mut digits = 0usize;
+    for c in chars {
+        if !(c.is_ascii_digit() || ('０'..='９').contains(&c)) { return false; }
+        digits += 1;
+    }
+    digits > 0
+}
+
+/// L1-08: inspect text values within a provided table range. A caller must
+/// supply the reader's encoding; Unknown is skipped rather than assuming UTF-8.
+pub fn platform_characters(sheet: &Sheet, table: CellRange, encoding: TextEncoding) -> RuleEvaluation {
+    use crate::machine_readability::{character_risk, CharacterRisk};
+    if encoding == TextEncoding::Unknown || table.first_row > table.last_row || table.first_column > table.last_column {
+        return result("L1-08", true, 0.0, Severity::Critical, Vec::new());
+    }
+    let mut findings = Vec::new();
+    let mut any_warning = false;
+    for cell in sheet.cells.iter().filter(|c| c.row >= table.first_row && c.row <= table.last_row && c.column >= table.first_column && c.column <= table.last_column) {
+        let CellValue::Text(value) = &cell.value else { continue; };
+        let roman_code = roman_classification_code(value);
+        let mut info = false;
+        let mut warning = false;
+        for c in value.chars() {
+            match character_risk(c) {
+                Some(CharacterRisk::Info) => info = true,
+                Some(CharacterRisk::Warning) if roman_code && ('\u{2160}'..='\u{217f}').contains(&c) => info = true,
+                Some(CharacterRisk::Warning) => warning = true,
+                None => {},
+            }
+        }
+        if warning || info {
+            any_warning |= warning;
+            findings.push(Finding { location: address(cell.row, cell.column), severity: if warning { FindingSeverity::Warning } else { FindingSeverity::Info } });
+        }
+    }
+    result("L1-08", encoding != TextEncoding::Cp932 || !any_warning, 0.95, Severity::Critical, findings)
+}

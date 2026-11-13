@@ -22,17 +22,24 @@ pub struct Candidate {
 /// Reference: digital-go-jp/machine_readability_rule, MIT license,
 /// harunobu/rules/level1/L1_08_platform_dependent_chars.py (commit 88014ff9).
 /// Copyright (c) 2026 Digital Agency of Japan; see ../HARUNOBU-MIT.txt.
-fn platform_character_candidate(value: &str) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CharacterRisk { Info, Warning }
+
+/// Character-level classification; table and encoding policy are separate.
+pub(crate) fn character_risk(c: char) -> Option<CharacterRisk> {
     const UNITS: &str = "㎡㎥㎢㎠㎝㎞㎜㎏㎎㎍㎅㎄㎃㎖㎗㎘㏄㏊";
-    value.chars().any(|c| {
-        if matches!(c, '㋿' | '〜' | '～') { return true; }
-        let cp = c as u32;
-        if UNITS.contains(c) { return false; }
-        matches!(cp, 0x2460..=0x2473 | 0x3251..=0x325f | 0x32b1..=0x32bf
-            | 0x2160..=0x217f | 0xff10..=0xff19 | 0xff21..=0xff3a | 0xff41..=0xff5a
-            | 0x3220..=0x3243 | 0x3280..=0x32fe | 0x3300..=0x33ff | 0xfe30..=0xfe4f)
-    })
+    if matches!(c, '㋿' | '〜' | '～') { return Some(CharacterRisk::Warning); }
+    if UNITS.contains(c) { return None; }
+    let cp = c as u32;
+    if matches!(cp, 0xff10..=0xff19 | 0xff21..=0xff3a | 0xff41..=0xff5a) { return Some(CharacterRisk::Info); }
+    if matches!(cp, 0x2460..=0x2473 | 0x3251..=0x325f | 0x32b1..=0x32bf
+        | 0x2160..=0x217f | 0x3220..=0x3243 | 0x3280..=0x32fe | 0x3300..=0x33ff | 0xfe30..=0xfe4f) {
+        return Some(CharacterRisk::Warning);
+    }
+    None
 }
+
+fn platform_character_candidate(value: &str) -> bool { value.chars().any(|c| character_risk(c).is_some()) }
 
 /// Inspect the current sheet in memory. Formatting-only cells do not define
 /// the data extent; candidates are not compliance decisions or scores.

@@ -269,3 +269,28 @@ fn rust_csv_rules_match_pinned_harunobu() {
     assert!(!outside_result.result.passed, "global diagnostics affect the verdict");
     assert!(outside_result.findings.is_empty(), "samples are limited to the supplied table rows");
 }
+
+#[test]
+fn rust_character_rule_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{platform_characters, FindingSeverity, TextEncoding};
+    use ibis_doc_model::sheet::CellRange;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-character-rule-reference.json")).unwrap()).unwrap();
+    assert_eq!(fixture["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let values = fixture["values"].as_array().unwrap();
+    let csv = values.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>().join("\n");
+    let bytes = ibis_pptx::csv::workbook_from(&csv, "Cases").unwrap();
+    let p = ibis_pptx::read(&bytes).unwrap();
+    let sheet = sheet_of_slide(&p.slides[0]).unwrap();
+    let table = CellRange { first_row: 0, last_row: values.len() as u32 - 1, first_column: 0, last_column: 0 };
+    for expected in fixture["cases"].as_array().unwrap() {
+        let encoding = match expected["encoding"].as_str().unwrap() { "xlsx" => TextEncoding::Xlsx, "utf8" => TextEncoding::Utf8, "cp932" => TextEncoding::Cp932, _ => panic!("bad encoding") };
+        let actual = platform_characters(sheet, table, encoding);
+        assert_eq!(actual.result.passed, expected["passed"].as_bool().unwrap(), "{}", expected["encoding"]);
+        assert_eq!(actual.result.confidence, expected["confidence"].as_f64().unwrap());
+        assert_eq!(actual.findings.iter().map(|f| f.location.as_str()).collect::<Vec<_>>(), expected["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>());
+        let severities: Vec<_> = actual.findings.iter().map(|f| match f.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" }).collect();
+        assert_eq!(severities, expected["severities"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>());
+    }
+    assert_eq!(platform_characters(sheet, table, TextEncoding::Unknown).result.confidence, 0.0);
+}

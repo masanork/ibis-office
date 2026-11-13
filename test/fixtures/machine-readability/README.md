@@ -43,3 +43,7 @@ or infer tables.
 
 `harunobu-csv-rules-reference.json` records L1-14 and L1-15 rule outcomes
 on those same diagnostics with a supplied table range.
+
+`harunobu-character-rule-reference.json` records L1-08 outcomes for the same
+text values under XLSX, UTF-8, and CP932 encoding policies, including Roman
+classification codes and mixed warning/information cases.
