@@ -694,7 +694,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 ### Harunobu
 
 ```text
-Harunobu character classification (modified)
+Harunobu character classification, rule checks, CSV diagnostics and scoring (modified)
 Source: https://github.com/digital-go-jp/machine_readability_rule
 Revision: 88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f
 

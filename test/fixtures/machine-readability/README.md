@@ -24,3 +24,26 @@ See https://github.com/digital-go-jp/machine_readability_rule#ライセンスに
 the same pinned Harunobu version for synthetic Unicode examples. The live
 scanner checks the whole sheet and does not apply table, encoding, or score
 semantics; these examples do not establish full rule parity.
+
+`harunobu-scoring-reference.json` records the default `LevelScorer` results
+for synthetic rule outcomes at all three levels, including skipped and fatal
+rules, default severity, saturation, and repeated rule IDs. It is generated
+by `scripts/machine-readability-reference.py`. This tests scoring only, not
+rule execution, table detection, or end-to-end parity.
+
+`harunobu-workbook-rules-reference.json` records synthetic L1-01 and L1-02
+outcomes with supplied file format and table regions. It does not test file
+signature validation or layout detection.
+
+`harunobu-csv-diagnostics-reference.json` records raw diagnostics for
+synthetic CSV and TSV, including quoting, embedded line breaks, field counts,
+the bounded-sample and truncation limits, and 100 seeded synthetic inputs.
+It does not test decoding bytes
+or infer tables.
+
+`harunobu-csv-rules-reference.json` records L1-14 and L1-15 rule outcomes
+on those same diagnostics with a supplied table range.
+
+`harunobu-character-rule-reference.json` records L1-08 outcomes for the same
+text values under XLSX, UTF-8, and CP932 encoding policies, including Roman
+classification codes and mixed warning/information cases.

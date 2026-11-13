@@ -36,6 +36,7 @@ jobs:
       - run: cargo test --locked -p ibis-emf
       - run: 'cargo test --locked -p ibis-pptx --lib jtd::'
       - run: cargo test --locked -p ibis-pptx --test html_export
+      - run: cargo test --locked -p ibis-pptx --test machine_readability_reference
       - name: Test browser touch gesture arbitration
         run: |
           rustc --edition 2024 --test forks/gpui-pre-web/src/touch_pinch.rs -o "$RUNNER_TEMP/touch-pinch-test"
