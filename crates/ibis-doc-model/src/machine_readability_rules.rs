@@ -237,3 +237,16 @@ pub fn one_data_per_cell(sheet: &Sheet, table: CellRange, columns: Option<&std::
     let passed = findings.is_empty();
     result("L1-07", passed, if passed { 0.82 } else { 0.78 }, Severity::Critical, findings)
 }
+
+/// A cell separated from every detected table by the layout engine.
+/// Coordinates use the sheet model's zero-based convention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutsideTableCell { pub row: u32, pub column: u32 }
+
+/// L1-04: inspect the layout engine's complete `others` list. `None` means
+/// layout detection did not complete and is not an indication of a clean sheet.
+pub fn irrelevant_information(others: Option<&[OutsideTableCell]>) -> RuleEvaluation {
+    let Some(others) = others else { return result("L1-04", true, 0.0, Severity::Major, Vec::new()); };
+    let findings = others.iter().map(|cell| Finding { location: address(cell.row, cell.column), severity: FindingSeverity::Warning }).collect::<Vec<_>>();
+    result("L1-04", findings.is_empty(), 0.9, Severity::Major, findings)
+}
