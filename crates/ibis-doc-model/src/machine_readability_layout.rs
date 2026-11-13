@@ -51,9 +51,10 @@ pub fn trimmed_region_confidence(region: CellRange, occupied: &[(u32, u32)]) -> 
 }
 
 /// Value category required by layout inference. Numbers and booleans are
-/// Numeric; Other includes dates and errors. `None` means no cell value.
+/// Numeric; Date represents date/time values and Other covers errors.
+/// `None` means no cell value.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LayoutValue { Text(String), Numeric, Other }
+pub enum LayoutValue { Text(String), Numeric, Date, Other }
 
 /// Reader-provided cell data; formula includes the leading `=` as in Harunobu.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,11 +175,13 @@ pub fn evaluate_island(region: CellRange, cells: &[LayoutCell]) -> Option<Island
 
 /// Whether a text cell matches Harunobu's CSV numeric patterns and represents
 /// a data-like value rather than a short column number.
-fn is_data_like_numeric(value: &str) -> bool {
+fn is_numeric_string(value: &str) -> bool {
     use std::sync::OnceLock;
     static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
-    let pattern = PATTERN.get_or_init(|| regex::Regex::new(r"^[+-]?(?:\d+|\d+\.\d+|\d{1,3}(?:,\d{3})*(?:\.\d+)?)$").unwrap());
-    pattern.is_match(value) && (value.contains(',') || value.contains('.') || value.trim_start_matches(['+', '-']).chars().count() >= 3)
+    PATTERN.get_or_init(|| regex::Regex::new(r"^[+-]?(?:\d+|\d+\.\d+|\d{1,3}(?:,\d{3})*(?:\.\d+)?)$").unwrap()).is_match(value)
+}
+fn is_data_like_numeric(value: &str) -> bool {
+    is_numeric_string(value) && (value.contains(',') || value.contains('.') || value.trim_start_matches(['+', '-']).chars().count() >= 3)
 }
 
 /// Header signal for one row, before any header-row selection. Returns
@@ -413,4 +416,71 @@ pub fn infer_header_rows(region: CellRange, cells: &[LayoutCell], merges: &[Cell
     if headers.len() >= 5 && body_count <= 2 { headers.truncate(1); body_first = headers[0] + 1; }
     else if headers.len() > MAX as usize { headers.truncate(MAX as usize); body_first = headers[headers.len()-1] + 1; }
     Some(HeaderRows { rows: headers, body_first, body_last: region.last_row })
+}
+
+/// Harunobu's inferred type for the nonempty values of one body column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InferredColumnType { Numeric, Text, Date, Mixed, Empty }
+
+fn is_missing_placeholder(value: &str) -> bool {
+    matches!(value, "-" | "－" | "–" | "―" | "…" | "‥" | "*" | "×" | "x" | "X" | "N/A" | "n/a" | "NA" | "-\u{3000}")
+}
+fn is_date_string(value: &str) -> bool {
+    use std::sync::OnceLock;
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| regex::Regex::new(r"^(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})$").unwrap()).is_match(value)
+}
+
+/// Infer one column from complete reader-provided cells in the inclusive body
+/// range. An empty/reversed body is Empty, as in Harunobu. Missing and
+/// whitespace-only values do not influence the 80% threshold. Duplicate cell
+/// coordinates make the result unknown instead of silently choosing a value.
+pub fn infer_column_type(column: u32, body_first: u32, body_last: u32, cells: &[LayoutCell]) -> Option<InferredColumnType> {
+    Some(infer_column_schemas(&[(column, None)], body_first, body_last, cells)?.first()?.kind)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InferredColumnSchema { pub column: u32, pub kind: InferredColumnType, pub has_header: bool }
+
+/// Construct a schema for a column using a previously generated header label.
+/// An absent or empty label means no header; a nonempty label is retained as-is.
+pub fn infer_column_schema(column: u32, body_first: u32, body_last: u32, cells: &[LayoutCell], header_label: Option<&str>) -> Option<InferredColumnSchema> {
+    infer_column_schemas(&[(column, header_label)], body_first, body_last, cells)?.into_iter().next()
+}
+
+/// Infer several column schemas in one pass over cells. The supplied column
+/// identifiers must be unique; output preserves the caller's column order.
+pub fn infer_column_schemas(columns: &[(u32, Option<&str>)], body_first: u32, body_last: u32, cells: &[LayoutCell]) -> Option<Vec<InferredColumnSchema>> {
+    let mut counts = BTreeMap::<u32, (u64, u64, u64)>::new();
+    for &(column, _) in columns { if counts.insert(column, (0, 0, 0)).is_some() { return None; } }
+    let mut positions = BTreeSet::new();
+    for cell in cells {
+        if !positions.insert((cell.row, cell.column)) { return None; }
+        if cell.row < body_first || cell.row > body_last { continue; }
+        let Some((numeric, text, date)) = counts.get_mut(&cell.column) else { continue; };
+        match &cell.value {
+            None => (),
+            Some(LayoutValue::Numeric) => *numeric += 1,
+            Some(LayoutValue::Date) => *date += 1,
+            Some(LayoutValue::Other) => *text += 1,
+            Some(LayoutValue::Text(value)) => {
+                let value = value.trim_matches(python_space);
+                if value.is_empty() || is_missing_placeholder(value) { continue; }
+                if is_date_string(value) { *date += 1; }
+                else if is_numeric_string(value) { *numeric += 1; }
+                else { *text += 1; }
+            }
+        }
+    }
+    Some(columns.iter().map(|&(column, label)| {
+        let &(numeric, text, date) = counts.get(&column).unwrap();
+        let total = numeric + text + date;
+        let threshold = total as f64 * 0.8;
+        let kind = if total == 0 { InferredColumnType::Empty }
+            else if numeric as f64 >= threshold { InferredColumnType::Numeric }
+            else if date as f64 >= threshold { InferredColumnType::Date }
+            else if text as f64 >= threshold { InferredColumnType::Text }
+            else { InferredColumnType::Mixed };
+        InferredColumnSchema { column, kind, has_header: label.is_some_and(|s| !s.is_empty()) }
+    }).collect())
 }
