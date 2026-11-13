@@ -3531,6 +3531,7 @@ dependencies = [
  "ibis-ooxml",
  "miniz_oxide 0.8.9",
  "roxmltree 0.21.1",
+ "serde_json",
 ]
 
 [[package]]

@@ -2827,3 +2827,14 @@ xlsx.format-pane.underline	下線
 xlsx.format-pane.stop-color	ストップの色
 xlsx.format-pane.stop-position	ストップの位置
 xlsx.format-pane.remove-stop	ストップを削除
+
+xlsx.machine-readability.menu	機械可読性チェック…
+xlsx.machine-readability.title	機械可読性チェック
+xlsx.machine-readability.scope	結合セル・非表示行列・数式を確認します。候補の一覧であり、合否や点数ではありません。表の領域と非表示シート、その他の項目は未検査です。編集後は再検査してください。
+xlsx.machine-readability.loading	CSV を読み込み中です。完了後に再検査してください。
+xlsx.machine-readability.none	確認する候補はありません。ほかの項目は未検査です。
+xlsx.machine-readability.merge	L1-12 結合セル：見出しとデータのどちらか確認してください。
+xlsx.machine-readability.hidden-row	L1-13 非表示の行
+xlsx.machine-readability.hidden-column	L1-13 非表示の列
+xlsx.machine-readability.formula	L2-06 数式：公開データとして値が必要か確認してください。
+xlsx.machine-readability.omitted	表示していない候補の件数

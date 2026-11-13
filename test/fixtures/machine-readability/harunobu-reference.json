@@ -1,0 +1,79 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "harunobu_version": "0.2.2",
+  "mode": "standard",
+  "ai_disabled": true,
+  "fixtures": {
+    "structure": {
+      "format": "xlsx",
+      "rules": [
+        {
+          "sheet": "Data",
+          "table": "A1:C5",
+          "rule": "L1-12",
+          "passed": false,
+          "skipped": false,
+          "locations": [
+            "A2:A3"
+          ]
+        },
+        {
+          "sheet": "Data",
+          "table": "A1:C5",
+          "rule": "L1-13",
+          "passed": false,
+          "skipped": false,
+          "locations": [
+            "行3",
+            "列2"
+          ]
+        },
+        {
+          "sheet": "Data",
+          "table": "A1:C5",
+          "rule": "L2-06",
+          "passed": false,
+          "skipped": false,
+          "locations": [
+            "C5"
+          ]
+        }
+      ]
+    },
+    "csv": {
+      "format": "csv",
+      "rules": []
+    },
+    "header": {
+      "format": "xlsx",
+      "rules": [
+        {
+          "sheet": "Header",
+          "table": "A1:C4",
+          "rule": "L1-12",
+          "passed": true,
+          "skipped": false,
+          "locations": [
+            "B1:C1"
+          ]
+        },
+        {
+          "sheet": "Header",
+          "table": "A1:C4",
+          "rule": "L1-13",
+          "passed": true,
+          "skipped": false,
+          "locations": []
+        },
+        {
+          "sheet": "Header",
+          "table": "A1:C4",
+          "rule": "L2-06",
+          "passed": true,
+          "skipped": false,
+          "locations": []
+        }
+      ]
+    }
+  }
+}

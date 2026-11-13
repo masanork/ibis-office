@@ -29,6 +29,7 @@ pub mod flow_command;
 pub mod data_table;
 pub mod geometry;
 pub mod math;
+pub mod machine_readability;
 pub mod latex;
 pub mod forecast_sheet;
 pub mod goal_seek;
