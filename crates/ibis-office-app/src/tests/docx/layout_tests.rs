@@ -14,6 +14,7 @@ use super::flow_layout::{Item, Page, Pagination};
 #[cfg(not(windows))]
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
     vec![
+        ("docx::layout::justified_list_tab_stays_inside_cell", justified_list_tab_stays_inside_cell),
         ("docx::layout::a10_text_that_cannot_sit_beside_a_table_starts_under_it", a10_text_that_cannot_sit_beside_a_table_starts_under_it),
         ("docx::layout::a10_empty_paragraphs_go_under_the_table", a10_empty_paragraphs_go_under_the_table),
         ("docx::layout::t7_page_break_in_a_cell_adds_no_line", t7_page_break_in_a_cell_adds_no_line),
@@ -151,6 +152,21 @@ fn find(glyphs: &[Glyph], text: &str) -> f32 {
 
 fn near(actual: f32, expected: f32, tolerance: f32) -> bool {
     (actual - expected).abs() <= tolerance
+}
+
+/// Both wrapped lines are justified within the same cell. The first has a
+/// bullet and a tab; the second has neither. Their right edges should agree.
+#[cfg_attr(windows, test)]
+fn justified_list_tab_stays_inside_cell() {
+    let pages = laid_out("list-justify-cell-synthetic.docx");
+    let gs = glyphs(&pages.pages[0]);
+    let mut ys: Vec<f32> = gs.iter().filter(|g| ('ぁ'..='龯').contains(&g.c)).map(|g| g.y).collect();
+    ys.sort_by(f32::total_cmp);
+    ys.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    assert!(ys.len() >= 3, "the paragraph wraps to at least three lines");
+    let right = |y: f32| gs.iter().filter(|g| (g.y - y).abs() < 0.5).map(|g| g.x).fold(f32::MIN, f32::max);
+    let (first, second) = (right(ys[0]), right(ys[1]));
+    assert!((first - second).abs() < 1.0, "first line ends at {first:.2}, next line at {second:.2}");
 }
 
 /// A10: text that cannot sit beside a floating table starts right under it (Word's trial files f2, f8: 25.0pt from the last row's

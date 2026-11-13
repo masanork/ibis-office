@@ -3606,7 +3606,27 @@ impl<'r> Layouter<'r> {
             // justification over.
             // What counts of the line: up to where the characters standing past the edge start, without its trailing spaces.
             let visible_end = slice[..hang_at - s].iter().rposition(|u| unit_char(u).is_none_or(|c| c != ' ')).map_or(0, |p| p + 1);
-            let used: f32 = slice[..visible_end].iter().map(unit_width).sum();
+            // ListTab has no intrinsic width: its advance depends on the label,
+            // indent and tab stops. Count that advance before distributing the
+            // remaining space, and distribute only over the text after the tab.
+            let list_tab = slice[..visible_end].iter().position(|u| matches!(u, Unit::ListTab));
+            let list_gap = list_tab.map_or(0.0, |k| {
+                let at = start_x + slice[..k].iter().map(unit_width).sum::<f32>();
+                if left > at + 0.01 {
+                    left - at
+                } else {
+                    let tab = p.tabs.iter().find(|t| pt(t.position) > at + 0.01);
+                    let stop = tab.map(|t| pt(t.position)).unwrap_or(((at / tab_default).floor() + 1.0) * tab_default);
+                    let rest: f32 = slice[k + 1..].iter().take_while(|u| !matches!(u, Unit::Tab | Unit::PositionalTab { .. } | Unit::LineBreak | Unit::PageBreak | Unit::ColumnBreak)).map(unit_width).sum();
+                    let stop = match tab.map(|t| t.align) {
+                        Some(TabAlign::Right) => (stop - rest).max(at),
+                        Some(TabAlign::Center) => (stop - rest / 2.0).max(at),
+                        _ => stop,
+                    };
+                    stop - at
+                }
+            });
+            let used: f32 = slice[..visible_end].iter().map(unit_width).sum::<f32>() + list_gap;
             let last = n + 1 == lines.len() || forced;
             let justify = match p.align {
                 // The last line of a paragraph is not spread, but one that took its last word by narrowing its spaces (above) is drawn narrowed (Word's PDF of corpus 124:
@@ -3621,7 +3641,17 @@ impl<'r> Layouter<'r> {
             // The characters that hang past the edge of the line (the splitting's `hang`) are not spread over the room: the characters before
             // them are, and they follow the last of them past the edge (Word's PDFs of `kinsoku-both-normal-probe.docx`: 46 kana and a 。
             // that hangs keep their pitch, GitHub issue #68 D4).
-            let extras = if justify && !has_tab && (used < room || p.align == FlowAlign::Justify) { spread_extras(&slice[..visible_end], room - used, p.align == FlowAlign::Distribute, marks) } else { Vec::new() };
+            let extras = if justify && !has_tab && (used < room || p.align == FlowAlign::Justify) {
+                if let Some(k) = list_tab {
+                    let mut extras = vec![0.0; k + 1];
+                    let body = &slice[k + 1..visible_end];
+                    let body_marks = body.iter().filter(|u| unit_char(u) == Some('\u{200b}')).count();
+                    extras.extend(spread_extras(body, room - used, p.align == FlowAlign::Distribute, body_marks));
+                    extras
+                } else {
+                    spread_extras(&slice[..visible_end], room - used, p.align == FlowAlign::Distribute, marks)
+                }
+            } else { Vec::new() };
             // A displayed formula alone on its line is centred.
             let align = if slice.iter().any(|u| matches!(u, Unit::Math { display: true, .. })) && slice.iter().all(|u| !matches!(u, Unit::Char { c, .. } if !c.is_whitespace())) { FlowAlign::Center } else { p.align };
             let shift = if has_ptab {
