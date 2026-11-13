@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { wasmVersion } from './browser-test-version.mjs';
 
 const url = process.env.IBIS_TOUCH_URL ?? 'http://127.0.0.1:8793/editor.html?open=./samples/sorane-welcome.docx';
 const executablePath = process.env.IBIS_CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -52,9 +53,10 @@ try {
     if (message.type() === 'error') console.error('Browser console:', message.text());
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
-  await page.addInitScript(() => {
+  await page.addInitScript(version => {
     Error.stackTraceLimit = 100;
-    localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1');
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
     window.__ibisTouchEvents = [];
     window.__ibisTouchTrace = [];
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
@@ -65,7 +67,7 @@ try {
         }
       }, true);
     }
-  });
+  }, wasmVersion);
   await page.goto(url);
   if (process.env.IBIS_TOUCH_WEBGL === '1') {
     assert.equal(await page.evaluate(async () => !!(await navigator.gpu?.requestAdapter())), false, 'WebGL test must not have a WebGPU adapter');
@@ -134,7 +136,10 @@ try {
   phone.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
-  await phone.addInitScript(() => localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1'));
+  await phone.addInitScript(version => {
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
+  }, wasmVersion);
   await phone.goto(url);
   await phone.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
   await waitForEditorFrame(phone);
@@ -234,7 +239,11 @@ try {
   editing.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
   });
-  await editing.addInitScript(() => { localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1'); window.addEventListener('ibisoffice:download', event => { window.__ibisDownloaded = Array.from(event.detail.bytes); }); });
+  await editing.addInitScript(version => {
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
+    window.addEventListener('ibisoffice:download', event => { window.__ibisDownloaded = Array.from(event.detail.bytes); });
+  }, wasmVersion);
   const editingUrl = new URL(url);
   editingUrl.searchParams.set('download', '1');
   await editing.goto(editingUrl.href);

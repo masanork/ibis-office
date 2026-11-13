@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
+import { wasmVersion } from './browser-test-version.mjs';
 
 const root = process.env.IBIS_HTML_TEST_ROOT ?? 'http://127.0.0.1:8795';
 const executablePath = process.env.IBIS_CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -13,7 +14,11 @@ for (const ext of ['xlsx', 'pptx']) {
     const page = await browser.newPage({ viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1, acceptDownloads: true });
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) errors.push(message.text()); });
-    await page.addInitScript(() => { localStorage.setItem('ibisoffice-lang', 'ja'); localStorage.setItem('ibisOffice.font-setup.skip.ipamjm.ttf', '1'); });
+    await page.addInitScript(version => {
+      localStorage.setItem('ibisoffice-lang', 'ja');
+      localStorage.setItem('ibisOffice.app.last-started-version', version);
+      localStorage.setItem('ibisOffice.font-setup.checked-version', version);
+    }, wasmVersion);
     await page.goto(`${root}/www/editor.html?open=../test/web/fixtures/html-export.${ext}`);
     await page.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
     await page.waitForTimeout(3000);
