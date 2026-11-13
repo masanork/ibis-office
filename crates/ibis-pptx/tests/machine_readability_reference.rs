@@ -294,3 +294,32 @@ fn rust_character_rule_matches_pinned_harunobu() {
     }
     assert_eq!(platform_characters(sheet, table, TextEncoding::Unknown).result.confidence, 0.0);
 }
+
+#[test]
+fn private_use_is_a_separate_live_advisory() {
+    use ibis_doc_model::machine_readability::{candidates, CandidateKind};
+    use ibis_doc_model::machine_readability_rules::{platform_characters, TextEncoding};
+    use ibis_doc_model::sheet::{CellRange, CellValue};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let p = ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet = (**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let template = sheet.cells[0].clone();
+    let samples = ["\u{e000}", "\u{f8ff}", "\u{f0000}", "\u{ffffd}", "\u{100000}", "\u{10fffd}",
+        "葛\u{e0100}", "A\u{fe0f}", "\u{ffffe}", "\u{fffff}", "\u{10fffe}", "\u{10ffff}"];
+    sheet.cells.clear();
+    for (row, value) in samples.into_iter().enumerate() {
+        let mut cell = template.clone();
+        cell.row = row as u32;
+        cell.column = 0;
+        cell.value = CellValue::Text(value.to_string());
+        cell.text = value.to_string();
+        cell.formula = None;
+        sheet.cells.push(cell);
+    }
+    let rows: Vec<_> = candidates(&sheet).into_iter().filter(|c| c.kind == CandidateKind::PrivateUseCharacters).map(|c| c.range.first_row).collect();
+    assert_eq!(rows, vec![0, 1, 2, 3, 4, 5]);
+    let table = CellRange { first_row: 0, last_row: 11, first_column: 0, last_column: 0 };
+    let l1_08 = platform_characters(&sheet, table, TextEncoding::Xlsx);
+    assert!(l1_08.result.passed);
+    assert!(l1_08.findings.is_empty(), "private-use advisories must not alter Harunobu L1-08");
+}

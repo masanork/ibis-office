@@ -198,6 +198,7 @@ def write(build):
     # in its Resources; the web version serves its PNG files one by one.
     ecma_art = open(os.path.join(ROOT, "crates", "ibis-pptx", "data", "artborders", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
     harunobu = open(os.path.join(ROOT, "crates", "ibis-doc-model", "HARUNOBU-MIT.txt"), encoding="utf-8").read().strip()
+    gjs = open(os.path.join(ROOT, "crates", "ibis-doc-model", "GJS-MIT.txt"), encoding="utf-8").read().strip()
     plex = open(os.path.join(ROOT, "crates", "ibis-office-app", "fonts", "OFL.txt"), encoding="utf-8").read().strip()
     carlito = open(os.path.join(ROOT, "crates", "ibis-office-render", "fonts", "carlito", "OFL.txt"), encoding="utf-8").read().strip()
     assets = json.loads(run("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", target))
@@ -254,6 +255,10 @@ def write(build):
           "### Harunobu",
           "",
           "```text", harunobu, "```",
+          "",
+          "### gjs character classification",
+          "",
+          "```text", gjs, "```",
           "",
           "### Lucide",
           "",
