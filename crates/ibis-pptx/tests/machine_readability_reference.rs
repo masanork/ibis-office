@@ -212,3 +212,60 @@ fn rust_workbook_rules_match_pinned_harunobu() {
     let invalid = DetectedTable { range: CellRange::default(), confidence: f64::NAN };
     assert_eq!(one_table_per_sheet(CellRange::default(), Some(&[invalid])).result.confidence, 0.0);
 }
+
+#[test]
+fn rust_csv_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_csv::{diagnose, Delimiter, IssueKind};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-csv-diagnostics-reference.json")).unwrap()).unwrap();
+    assert_eq!(fixture["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let kinds = [(IssueKind::Multiline, "multiline_record"), (IssueKind::UnclosedQuote, "unclosed_quote"),
+        (IssueKind::UnquotedQuote, "unquoted_quote"), (IssueKind::FieldCountMismatch, "field_count_mismatch")];
+    for case in fixture["cases"].as_array().unwrap() {
+        let delimiter = match case["delimiter"].as_str().unwrap() { "," => Delimiter::Comma, "\t" => Delimiter::Tab, other => panic!("bad delimiter {other}") };
+        let actual = diagnose(case["text"].as_str().unwrap(), delimiter);
+        for (kind, name) in kinds {
+            assert_eq!(actual.count(kind), case["counts"][name].as_u64().unwrap_or(0) as usize, "{} {name}", case["name"]);
+        }
+        let samples: Vec<_> = actual.samples.iter().map(|s| serde_json::json!({
+            "kind": kinds.iter().find(|(k, _)| *k == s.kind).unwrap().1,
+            "row": s.row, "column": s.column, "start": s.physical_start, "end": s.physical_end,
+            "fields": s.fields, "expected": s.expected_fields
+        })).collect();
+        assert_eq!(samples, case["samples"].as_array().unwrap().clone(), "{} samples", case["name"]);
+        assert_eq!(serde_json::json!(actual.expected_fields), case["expected_fields"], "{} fields", case["name"]);
+        assert_eq!(actual.total_records as u64, case["total_records"].as_u64().unwrap(), "{} records", case["name"]);
+        assert_eq!(actual.truncated, case["truncated"].as_bool().unwrap(), "{} truncated", case["name"]);
+        assert_eq!(actual.confidence, case["confidence"].as_f64().unwrap(), "{} confidence", case["name"]);
+    }
+}
+
+#[test]
+fn rust_csv_rules_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_csv::{diagnose, single_line_records, valid_quoting, Delimiter};
+    use ibis_doc_model::machine_readability_rules::FindingSeverity;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let diagnostics: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-csv-diagnostics-reference.json")).unwrap()).unwrap();
+    let rules: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-csv-rules-reference.json")).unwrap()).unwrap();
+    assert_eq!(rules["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (input, reference) in diagnostics["cases"].as_array().unwrap().iter().zip(rules["cases"].as_array().unwrap()) {
+        assert_eq!(input["name"], reference["name"]);
+        let delimiter = if input["delimiter"] == "," { Delimiter::Comma } else { Delimiter::Tab };
+        let d = diagnose(input["text"].as_str().unwrap(), delimiter);
+        for actual in [single_line_records(Some(&d), 1, 2000), valid_quoting(Some(&d), 1, 2000)] {
+            let expected = reference["results"].as_array().unwrap().iter().find(|r| r["rule"] == actual.result.rule_id).unwrap();
+            assert_eq!(actual.result.passed, expected["passed"].as_bool().unwrap(), "{} {}", input["name"], actual.result.rule_id);
+            assert_eq!(actual.result.confidence, expected["confidence"].as_f64().unwrap());
+            assert_eq!(actual.findings.iter().map(|f| f.location.as_str()).collect::<Vec<_>>(), expected["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>());
+            let severities: Vec<&str> = actual.findings.iter().map(|f| match f.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" }).collect();
+            assert_eq!(severities, expected["severities"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>());
+        }
+    }
+    assert_eq!(single_line_records(None, 1, 2).result.confidence, 0.0);
+    assert_eq!(valid_quoting(None, 1, 2).result.confidence, 0.0);
+    assert_eq!(single_line_records(Some(&diagnose("a", Delimiter::Comma)), 2, 1).result.confidence, 0.0);
+    let outside = diagnose("a,b\n1,\"x\ny\"\n", Delimiter::Comma);
+    let outside_result = single_line_records(Some(&outside), 1, 1);
+    assert!(!outside_result.result.passed, "global diagnostics affect the verdict");
+    assert!(outside_result.findings.is_empty(), "samples are limited to the supplied table rows");
+}

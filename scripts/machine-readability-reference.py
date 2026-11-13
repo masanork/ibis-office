@@ -104,3 +104,69 @@ process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-
     text=True, capture_output=True, check=True)
 workbook_rules = {"harunobu_commit": COMMIT, **json.loads(process.stdout)}
 (FIXTURES / "harunobu-workbook-rules-reference.json").write_text(json.dumps(workbook_rules, ensure_ascii=False, indent=2) + "\n")
+
+csv_diagnostics_script = r'''import json
+from harunobu.core.reader import _build_csv_diagnostics
+cases = [
+    ("empty", "", ","), ("one", "a,b\n1,2\n", ","),
+    ("bom", "\ufeffa,b\n1,2", ","), ("crlf", "a,b\r\n1,2\r\n", ","),
+    ("quoted", "a,b\n1,\"a,b\"\n", ","), ("escaped", "a,b\n1,\"a\"\"\"b\"\n", ","),
+    ("embedded", "a,b\n1,\"first\nsecond\"\n2,3\n", ","),
+    ("embedded_crlf", "a,b\r\n1,\"first\r\nsecond\"\r\n2,3", ","),
+    ("unclosed", "a,b\n1,\"first\nsecond\n", ","),
+    ("quote_in_unquoted", "a,b\n1,a\"b\n", ","),
+    ("trailing_junk", "a,b\n1,\"x\"q\n", ","),
+    ("mismatch", "a,b\n1,2,3\n4\n", ","),
+    ("blank", "a,b\n\n1,2\n", ","), ("single_newline", "\n", ","),
+    ("tabs", "a\tb\r\n1\t\"x\ny\"\r\n", "\t"),
+    ("trailing_delimiter", "a,b,\n1,2,", ","),
+    ("many_bad_rows", "a,b\n" + "1,2,3\n" * 1005, ","),
+    ("many_bad_fields", "a\n" + ",".join(['a\"b'] * 1050), ","),
+]
+for cp in range(0x1c, 0x20):
+    cases.append((f"python_space_{cp:02x}", '"x"' + chr(cp) + '\n', ','))
+import random
+random_source = random.Random(20261113)
+for index in range(100):
+    alphabet = ['a', 'b', 'あ', ' ', '\u3000', '\t', ',', '\"', '\r', '\n', '\x1c']
+    text = ''.join(random_source.choice(alphabet) for _ in range(random_source.randrange(0, 100)))
+    cases.append((f"random_{index:03}", text, ',' if index % 2 == 0 else '\t'))
+out=[]
+for name,text,delimiter in cases:
+    d = _build_csv_diagnostics(text, delimiter)
+    samples=[dict(kind=x.issue_type, row=x.logical_row, column=x.col, start=x.physical_start_line,
+        end=x.physical_end_line, fields=x.field_count, expected=x.expected_field_count) for x in d.issue_samples]
+    out.append(dict(name=name, text=text, delimiter=delimiter, counts=d.issue_counts, samples=samples,
+        expected_fields=d.expected_field_count, total_records=d.total_records, truncated=d.truncated, confidence=d.confidence))
+print(json.dumps(out, ensure_ascii=False))
+'''
+process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-c", csv_diagnostics_script],
+    text=True, capture_output=True, check=True)
+csv_reference = {"harunobu_commit": COMMIT, "cases": json.loads(process.stdout)}
+(FIXTURES / "harunobu-csv-diagnostics-reference.json").write_text(json.dumps(csv_reference, ensure_ascii=False, separators=(',', ':')) + "\n")
+
+csv_rules_script = """import json, sys
+from harunobu.core.reader import _build_csv_diagnostics
+from harunobu.core.models import Sheet, WorkBook, TableContext, TableRegion, CellRange
+from harunobu.rules.level1.L1_14_csv_single_line import CsvSingleLineRule
+from harunobu.rules.level1.L1_15_csv_quoting import CsvQuotingRule
+cases = json.load(sys.stdin)
+out = []
+for case in cases:
+    diagnostic = _build_csv_diagnostics(case['text'], case['delimiter'])
+    sheet = Sheet(name='CSV', csv_diagnostics=diagnostic)
+    workbook = WorkBook(file_name='data.csv', file_format='csv' if case['delimiter'] == ',' else 'tsv', sheets=[sheet])
+    region = TableRegion(range=CellRange(start_row=1, start_col=1, end_row=2000, end_col=4), confidence=1.0)
+    context = TableContext(workbook=workbook, sheet=sheet, table_region=region)
+    results = []
+    for rule in [CsvSingleLineRule(), CsvQuotingRule()]:
+        r = rule.check(context)
+        results.append(dict(rule=r.rule_id, passed=r.passed, confidence=r.confidence,
+            locations=[v.cell_range for v in r.violations], severities=[v.severity for v in r.violations]))
+    out.append(dict(name=case['name'], results=results))
+print(json.dumps(out, ensure_ascii=False))
+"""
+process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-c", csv_rules_script],
+    input=json.dumps(csv_reference['cases'], ensure_ascii=False), text=True, capture_output=True, check=True)
+csv_rules = {"harunobu_commit": COMMIT, "cases": json.loads(process.stdout)}
+(FIXTURES / "harunobu-csv-rules-reference.json").write_text(json.dumps(csv_rules, ensure_ascii=False, separators=(',', ':')) + "\n")
