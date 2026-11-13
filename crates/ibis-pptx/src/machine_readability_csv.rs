@@ -45,12 +45,18 @@ pub fn decode_cp932(bytes: &[u8]) -> Result<String, CsvInputError> {
 /// single BOM, then fall back to strict CP932. No encoding guess is guaranteed
 /// to recover the author's intent when a byte sequence is valid in both.
 pub fn read_csv_bytes(bytes: &[u8], delimiter: Delimiter) -> Result<CsvInput, CsvInputError> {
+    let (text, encoding) = decode_csv_bytes(bytes)?;
+    let sheet = read_sheet(&text, delimiter).map_err(CsvInputError::InvalidCsv)?;
+    Ok(CsvInput { sheet, encoding })
+}
+
+/// Decode bytes while retaining the detected encoding for raw diagnostics.
+pub fn decode_csv_bytes(bytes: &[u8]) -> Result<(std::borrow::Cow<'_, str>, CsvInputEncoding), CsvInputError> {
     let utf8 = bytes.strip_prefix(b"\xef\xbb\xbf");
     let candidate = utf8.unwrap_or(bytes);
     let (text, encoding) = match std::str::from_utf8(candidate) {
         Ok(text) => (std::borrow::Cow::Borrowed(text), if utf8.is_some() { CsvInputEncoding::Utf8Bom } else { CsvInputEncoding::Utf8 }),
         Err(_) => (std::borrow::Cow::Owned(decode_cp932(bytes)?), CsvInputEncoding::Cp932),
     };
-    let sheet = read_sheet(&text, delimiter).map_err(CsvInputError::InvalidCsv)?;
-    Ok(CsvInput { sheet, encoding })
+    Ok((text, encoding))
 }
