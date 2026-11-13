@@ -2830,3 +2830,14 @@ xlsx.format-pane.underline	Underline
 xlsx.format-pane.stop-color	Stop Color
 xlsx.format-pane.stop-position	Stop Position
 xlsx.format-pane.remove-stop	Remove Stop
+
+xlsx.machine-readability.menu	Machine Readability Check…
+xlsx.machine-readability.title	Machine Readability Check
+xlsx.machine-readability.scope	Review merged cells, hidden rows and columns, and formulas. These are candidates, not a compliance result or score. Table regions, hidden sheets and other rules are not checked. Recheck after editing.
+xlsx.machine-readability.loading	CSV is still loading. Recheck when loading finishes.
+xlsx.machine-readability.none	No candidates found. Other rules have not been checked.
+xlsx.machine-readability.merge	L1-12 Merged cells: check whether this is a header or data.
+xlsx.machine-readability.hidden-row	L1-13 Hidden row
+xlsx.machine-readability.hidden-column	L1-13 Hidden column
+xlsx.machine-readability.formula	L2-06 Formula: check whether published data needs a value.
+xlsx.machine-readability.omitted	Additional candidates not shown

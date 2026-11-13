@@ -245,6 +245,7 @@ impl SheetSteps for Scenario {
 #[path="dropdown_position_20261106.rs"] mod dropdown_position_20261106;
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
     let mut all: Vec<(&'static str, fn())> = vec![
+        ("xlsx::machine_readability_candidates_and_live_edits", machine_readability_candidates_and_live_edits),
         ("xlsx::issue96_hidden_group_box_takes_no_click",issue96_hidden_group_box::hidden_group_box_takes_no_click),
         ("xlsx::sheet_tab_selection_reveals_neighbour",sheet_tab_visibility::selected_tab_reveals_neighbour),
         ("xlsx::sheet_tab_double_click_requires_same_sheet",sheet_tab_visibility::double_click_requires_same_sheet),
@@ -29644,4 +29645,29 @@ fn edit_single_line_arrows_and_status() {
     assert!(s.with(|e, _| e.cell_edit().is_none()));
     assert_eq!(s.selected(), "B4");
     assert_eq!(s.shown("B3"), "abc");
+}
+
+
+/// Review candidates are shown for live workbook contents and can be selected.
+fn machine_readability_candidates_and_live_edits() {
+    use ibis_doc_model::machine_readability::CandidateKind;
+    let mut s = Scenario::open("test/fixtures/machine-readability/structure.xlsx");
+    s.menu("xlsx.machine-readability.menu");
+    s.settle();
+    s.screenshot("machine-readability");
+    let index = s.with(|e, _| {
+        let panel = e.wb().panels.machine_readability.as_ref().expect("review panel");
+        assert_eq!(panel.findings.len(), 4);
+        panel.findings.iter().position(|f| f.kind == CandidateKind::Formula).unwrap()
+    });
+    s.update(|e, _, cx| e.jump_machine_readability(index, cx));
+    assert_eq!(s.selected(), "C5");
+    s.type_text("42");
+    s.key("enter");
+    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    s.with(|e, _| {
+        let panel = e.wb().panels.machine_readability.as_ref().unwrap();
+        assert_eq!(panel.findings.len(), 3);
+        assert!(!panel.findings.iter().any(|f| f.kind == CandidateKind::Formula));
+    });
 }
