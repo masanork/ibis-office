@@ -1151,3 +1151,32 @@ pub fn xlsx_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32],
     for (_, cols) in names { if cols.len() > 1 { for col in cols { findings.push(Finding { location: location(col), severity: FindingSeverity::Error }); } } }
     Some(result("L2-03", findings.is_empty(), 0.95, Severity::Fatal, findings))
 }
+
+/// L3-07 across files, using each file's first available table header labels.
+/// Each inner list must already reflect the reference's nonempty-label filter
+/// followed by trimming; an empty list denotes a missing extractable header.
+pub fn bulk_format_consistency(file_headers: &[Vec<String>]) -> RuleEvaluation {
+    if file_headers.len() < 2 { return result("L3-07", true, 0.5, Severity::Critical, Vec::new()); }
+    let mut findings = Vec::new();
+    if file_headers.iter().any(Vec::is_empty) { findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning }); }
+    let files: Vec<_> = file_headers.iter().filter(|v| !v.is_empty()).collect();
+    if files.len() < 2 { return result("L3-07", findings.is_empty(), 0.5, Severity::Critical, findings); }
+    let sets: Vec<BTreeSet<&str>> = files.iter().map(|v| v.iter().map(String::as_str).collect()).collect();
+    let mut min_jaccard = 1.0f64;
+    for i in 0..sets.len() { for j in i+1..sets.len() {
+        let union = sets[i].union(&sets[j]).count();
+        if union > 0 { min_jaccard = min_jaccard.min(sets[i].intersection(&sets[j]).count() as f64 / union as f64); }
+    }}
+    if min_jaccard < 0.8 { findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning }); }
+    let mean = files.iter().map(|v| v.len() as f64).sum::<f64>() / files.len() as f64;
+    let deviation = (files.iter().map(|v| (v.len() as f64 - mean).powi(2)).sum::<f64>() / files.len() as f64).sqrt();
+    if deviation > 1.5 { findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning }); }
+    let common = sets.iter().skip(1).fold(sets[0].clone(), |acc, set| acc.intersection(set).copied().collect());
+    if common.len() >= 2 {
+        let reference: Vec<_> = files[0].iter().filter(|v| common.contains(v.as_str())).collect();
+        if files.iter().skip(1).any(|headers| headers.iter().filter(|v| common.contains(v.as_str())).collect::<Vec<_>>() != reference) {
+            findings.push(Finding { location: String::new(), severity: FindingSeverity::Info });
+        }
+    }
+    result("L3-07", findings.is_empty(), 0.8, Severity::Critical, findings)
+}

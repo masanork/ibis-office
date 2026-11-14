@@ -33,7 +33,7 @@ for i in range(100):
         for level,ids in [(t.mr_result.level1,ids1),(t.mr_result.level2,ids2),(t.mr_result.level3,ids3)]:
             for id in ids:
                 r=level[id];checks.append(dict(id=id,passed=r.passed,confidence=r.confidence,severity=r.severity.value,findings=[[v.cell_range,v.severity] for v in r.violations]))
-        r=t.range;tables.append(dict(range=[r.start_row-1,r.start_col-1,r.end_row-1,r.end_col-1],headers=[v-1 for v in t.layout.header_rows],confidence=t.confidence,checks=checks))
+        r=t.range;tables.append(dict(range=[r.start_row-1,r.start_col-1,r.end_row-1,r.end_col-1],headers=[v-1 for v in t.layout.header_rows],column_headers=[dict(column=h.col_index-1,rows=[r-1 for r in h.header_rows],label=h.label,merged=h.is_merged) for h in t.column_headers],confidence=t.confidence,checks=checks))
     scores=LevelScorer().score_analysis(result)
     out.append(dict(name=f'generated-{i}',bytes=raw.hex(),tables=tables,scores=[scores.per_level[n].model_dump(mode='json') for n in (1,2,3)]))
 print(json.dumps(out,ensure_ascii=False))

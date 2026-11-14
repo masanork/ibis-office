@@ -256,6 +256,8 @@ pub fn inspect_xlsx_formula_artifacts(bytes: &[u8]) -> Result<Vec<XlsxFormulaArt
 pub struct PartialXlsxStructure {
     pub table: ibis_doc_model::machine_readability_rules::DetectedTable,
     pub header_rows: Vec<u32>,
+    /// None means the reader could not faithfully stringify a source value.
+    pub column_headers: Option<Vec<ibis_doc_model::machine_readability_layout::InferredColumnHeader>>,
     pub checks: Vec<ibis_doc_model::machine_readability_rules::RuleEvaluation>,
     /// Rules omitted because this adapter cannot represent a source value.
     pub unavailable: Vec<&'static str>,
@@ -267,6 +269,7 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
     use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_choice_standardization, csv_item_abbreviations, csv_other_details, csv_time_axis, file_format, format_based_semantics, formula_artifacts, header_start_position, hidden_rows_columns, irrelevant_information, merged_cells, object_artifacts, one_data_per_cell, one_table_per_sheet, platform_characters, reference_skipped_level3, whitespace_formatting, xlsx_column_headers, xlsx_data_fragmentation, xlsx_data_units, xlsx_numeric_purity, xlsx_region_codes, xlsx_unique_headers, xlsx_vertical_format, ColumnType, DetectedTable, OutsideTableCell, TextEncoding, UsedExtent, WorkbookFormat};
     use ibis_doc_model::sheet::CellRange;
     let saved = read_xlsx_saved_sheet(bytes, sheet_index)?;
+    let text_view = xlsx_reference_text_sheet(&saved).ok();
     // Reference skips only L2-06 if package-wide formula inspection fails.
     let artifacts = inspect_xlsx_formula_artifacts(bytes).ok().and_then(|v| v.get(sheet_index).cloned());
     let objects = inspect_xlsx_object_artifacts(bytes).ok().and_then(|v| v.get(sheet_index).cloned());
@@ -275,11 +278,10 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
     let preliminary = preliminary_islands(&saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
     let columns = merge_column_adjacent_regions(&preliminary.candidates, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
     let forms = merge_form_fragments(&columns, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
-    // Header labels are used here only to preserve header presence/inheritance;
-    // column types are inferred from the saved, reader-normalized body values.
+    let text_cells: BTreeMap<_, _> = text_view.as_ref().map(|sheet| sheet.cells.iter().map(|c| ((c.row, c.column), &c.value)).collect()).unwrap_or_default();
     let header_cells: Vec<_> = saved.layout.cells.iter().map(|c| {
         let master = saved.layout.merges.iter().find(|m| c.row >= m.first_row && c.row <= m.last_row && c.column >= m.first_column && c.column <= m.last_column).map(|m| (m.first_row, m.first_column));
-        let value = match &c.value { Some(LayoutValue::Text(v)) => Some(v.clone()), Some(_) => Some("0".to_string()), None => None };
+        let value = if text_view.is_some() { match text_cells.get(&(c.row, c.column)) { Some(CellValue::Text(v)) => Some(v.clone()), _ => None } } else { match &c.value { Some(LayoutValue::Text(v)) => Some(v.clone()), Some(_) => Some("0".to_string()), None => None } };
         HeaderCell { row: c.row, column: c.column, value, merged: c.merged, master }
     }).collect();
     let mut resolved = Vec::new();
@@ -309,7 +311,6 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
         let dependent = bytes.len() <= 5 * 1024 * 1024 && saved.sheet.merges.iter().any(|m| cell.row >= m.first_row && cell.row <= m.last_row && cell.column >= m.first_column && cell.column <= m.last_column && (cell.row != m.first_row || cell.column != m.first_column));
         if dependent || matches!(&cell.value, CellValue::Text(value) if value.starts_with('=')) { cell.value = CellValue::Empty; cell.kind = CellKind::Empty; }
     }
-    let text_view = xlsx_reference_text_sheet(&saved).ok();
     let used = match saved.window { XlsxReadWindow::Empty => UsedExtent::Empty, XlsxReadWindow::Through { last_row, last_column } => UsedExtent::Range(CellRange { first_row: 0, first_column: 0, last_row, last_column }) };
     regions.iter().map(|region| {
         let range = region.candidate.range;
@@ -347,7 +348,7 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
         if let Some(text) = &text_view {
             if let Some(r) = xlsx_vertical_format(text, range, &region.headers.rows, &falsy) { checks.push(r); } else { unavailable.push("L3-09"); }
         } else { unavailable.push("L3-09"); }
-        Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), checks, unavailable, complete: false })
+        Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), column_headers: text_view.as_ref().map(|_| region.column_headers.clone()), checks, unavailable, complete: false })
     }).collect()
 }
 
@@ -585,4 +586,17 @@ pub fn score_xlsx_tables_partial(tables: &[PartialXlsxStructure]) -> Option<[ibi
     if tables.iter().any(|t| !t.unavailable.is_empty()) { return None; }
     let collect = |prefix: &str| -> Vec<RuleResult> { tables.iter().flat_map(|t| t.checks.iter().filter(|c| c.result.rule_id.starts_with(prefix)).map(|c| c.result.clone())).collect() };
     Some([score_level(Level::One, &collect("L1-")), score_level(Level::Two, &collect("L2-")), score_level(Level::Three, &collect("L3-"))])
+}
+
+/// Header labels from the first XLSX table with extractable headers. `None`
+/// means an earlier table's headers are unknown and cannot safely be skipped.
+pub fn first_xlsx_headers(sheets: &[Vec<PartialXlsxStructure>]) -> Option<Vec<String>> {
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    for sheet in sheets {
+        for table in sheet {
+            let labels: Vec<_> = table.column_headers.as_ref()?.iter().filter(|h| !h.label.is_empty()).map(|h| h.label.trim_matches(space).to_string()).collect();
+            if !labels.is_empty() { return Some(labels); }
+        }
+    }
+    Some(Vec::new())
 }
