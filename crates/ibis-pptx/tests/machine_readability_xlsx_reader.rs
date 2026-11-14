@@ -481,6 +481,7 @@ fn generated_xlsx_checks_match_thorough_reference() {
         let expected = case["tables"].as_array().unwrap(); assert_eq!(got.len(), expected.len(), "{name}");
         for (table, reference) in got.iter().zip(expected) {
             assert!(table.unavailable.is_empty(), "{name}: {:?}", table.unavailable);
+            assert!(table.diagnostics.is_some(), "{name}: missing diagnostics");
             let r=table.table.range;
             assert_eq!([r.first_row,r.first_column,r.last_row,r.last_column],std::array::from_fn(|i| reference["range"][i].as_u64().unwrap() as u32),"{name}");
             assert_eq!(table.header_rows, reference["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>(), "{name}");
@@ -491,6 +492,12 @@ fn generated_xlsx_checks_match_thorough_reference() {
                 let id=b["id"].as_str().unwrap();
                 if table.unavailable.contains(&id) { continue; }
                 let a=table.checks.iter().find(|v| v.result.rule_id==id).unwrap_or_else(|| panic!("{name}: missing {id}"));
+                let diagnostic=table.diagnostics.as_ref().unwrap().iter().flatten().find(|d|d.evaluation.result.rule_id==id).unwrap();
+                assert_eq!(diagnostic.message,b["message"].as_str().unwrap(),"{name}: {id}");
+                let mut descriptions:Vec<_>=diagnostic.evaluation.findings.iter().zip(&diagnostic.descriptions).map(|(f,d)|(f.location.as_str(),d.as_str())).collect();
+                let mut expected_descriptions:Vec<_>=b["descriptions"].as_array().unwrap().iter().map(|v|(v[0].as_str().unwrap(),v[1].as_str().unwrap())).collect();
+                if id=="L2-04" { descriptions.sort();expected_descriptions.sort(); }
+                assert_eq!(descriptions,expected_descriptions,"{name}: {id}");
                 assert_eq!(a.result.passed,b["passed"].as_bool().unwrap(),"{name}: {id}");
                 assert_eq!(a.result.confidence,b["confidence"].as_f64().unwrap(),"{name}: {id}");
                 let severity=match a.result.severity.unwrap() { Severity::Fatal=>"fatal",Severity::Critical=>"critical",Severity::Major=>"major",Severity::Minor=>"minor",Severity::Info=>"info" };
@@ -546,5 +553,52 @@ fn partial_xlsx_scores_match_reference_aggregation() {
             assert_eq!(ids,expected,"{name}");
             assert_eq!(!got.forced_zero_rules.is_empty(),wanted["forced_zero"].as_bool().unwrap(),"{name}");
         }
+    }
+}
+
+#[test]
+fn generated_xlsx_reports_match_reference_for_all_modes() {
+    use ibis_pptx::machine_readability_xlsx::analyze_xlsx_report_experimental;
+    fn normalize(report:&mut serde_json::Value) {
+        for level in ["1","2","3"] { if let Some(score)=report["レベル別スコア"][level].as_object_mut() {
+            for key in ["失敗ルール","強制0点ルール"] { if let Some(rules)=score.get_mut(key).and_then(|v|v.as_array_mut()) { rules.sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string()); } }
+        }}
+        for sheet in report["sheets"].as_array_mut().unwrap() { for table in sheet["評価対象エリア"].as_array_mut().unwrap() {
+            table["評価内容"].as_array_mut().unwrap().sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string());
+        }}
+    }
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-generated-reference.json")).unwrap()).unwrap();
+    for case in data["cases"].as_array().unwrap() {
+        let name=case["name"].as_str().unwrap();
+        let bytes:Vec<_>=case["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+        for mode in ["lite","standard","thorough"] {
+            let mut got=analyze_xlsx_report_experimental(&bytes,"fixture.xlsx",mode).unwrap_or_else(|e|panic!("{name} {mode}: {e:?}"));
+            let compressed:Vec<_>=case["reports"][mode].as_str().unwrap().as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+            let reference=miniz_oxide::inflate::decompress_to_vec_zlib(&compressed).unwrap();
+            let mut expected:serde_json::Value=serde_json::from_slice(&reference).unwrap(); normalize(&mut got);normalize(&mut expected);
+            assert_eq!(got,expected,"{name} {mode}");
+        }
+    }
+}
+
+#[test]
+fn hidden_worksheets_are_analyzed_in_workbook_order() {
+    use ibis_pptx::machine_readability_xlsx::analyze_xlsx_report_experimental;
+    fn normalize(report:&mut serde_json::Value) {
+        for level in ["1","2","3"] { if let Some(score)=report["レベル別スコア"][level].as_object_mut() {
+            for key in ["失敗ルール","強制0点ルール"] { if let Some(rules)=score.get_mut(key).and_then(|v|v.as_array_mut()) { rules.sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string()); } }
+        }}
+        for sheet in report["sheets"].as_array_mut().unwrap() { for table in sheet["評価対象エリア"].as_array_mut().unwrap() {
+            table["評価内容"].as_array_mut().unwrap().sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string());
+        }}
+    }
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let case:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-hidden-reference.json")).unwrap()).unwrap();
+    let bytes:Vec<_>=case["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+    for mode in ["lite","standard","thorough"] {
+        let mut got=analyze_xlsx_report_experimental(&bytes,"hidden.xlsx",mode).unwrap();
+        let mut expected=case["reports"][mode].clone();normalize(&mut got);normalize(&mut expected);
+        assert_eq!(got,expected,"{mode}");
     }
 }
