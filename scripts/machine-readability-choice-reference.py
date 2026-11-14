@@ -7,7 +7,7 @@ if subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).
 code=r'''
 import json,random
 from harunobu.core.models import Cell,CellPosition,ColumnSchema,Sheet,WorkBook,TableContext,TableRegion,TableLayout,CellRange
-from harunobu.rules.level2.L2_04_choice_standardization import ChoiceStandardizationRule
+from harunobu.rules.level2.L2_04_choice_standardization import ChoiceStandardizationRule, _find_outliers, _is_variant_of, _normalize
 rng=random.Random(204);cases=[]
 for i in range(100):
     cols=rng.randint(1,4);rows=rng.randint(15,45);cells=[]
@@ -21,7 +21,18 @@ for i in range(100):
     columns=[ColumnSchema(col_index=c+1,inferred_type=kind) for c,kind in schemas]
     region=TableRegion(range=CellRange(start_row=1,start_col=1,end_row=rows,end_col=cols),layout=TableLayout(columns=columns,body_start_row=1,body_end_row=rows),confidence=1)
     result=ChoiceStandardizationRule().check(TableContext(workbook=workbook,sheet=sheet,table_region=region))
-    cases.append(dict(rows=rows,cols=cols,schemas=schemas,cells=cells,passed=result.passed,confidence=result.confidence,findings=[[v.cell_range,v.severity] for v in result.violations]))
+    alternatives=[]
+    for violation in result.violations:
+        item=next(cell for cell in mapping.values() if str(cell.pos)==violation.cell_range)
+        candidate=str(item.value).strip(); col_values={}
+        for row in range(1,rows+1):
+            cell=sheet.get_cell(row,item.pos.col)
+            if cell and cell.value is not None and str(cell.value).strip(): col_values.setdefault(str(cell.value).strip(),[]).append(row)
+        outliers=_find_outliers(col_values,sum(len(v) for v in col_values.values()))
+        matches=[v for v in col_values if v not in outliers and _is_variant_of(candidate,{v:_normalize(v)})[0]]
+        count=len(col_values[candidate])
+        alternatives.append([violation.cell_range,[f"表記揺れの可能性: '{candidate}' は '{value}' と類似（出現{count}回）" for value in matches]])
+    cases.append(dict(rows=rows,cols=cols,schemas=schemas,cells=cells,passed=result.passed,confidence=result.confidence,message=result.message,descriptions=alternatives,findings=[[v.cell_range,v.severity] for v in result.violations]))
 print(json.dumps(cases,ensure_ascii=False))
 '''
 env={k:v for k,v in os.environ.items() if not k.startswith('HARUNOBU_') and k not in {'OPENAI_API_KEY','ANTHROPIC_API_KEY','GOOGLE_API_KEY','AZURE_OPENAI_API_KEY'}};env['HARUNOBU_AI_DISABLED']='1'
