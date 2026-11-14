@@ -23,7 +23,7 @@ test('home stays put and links to the editor and a distributable sample', () => 
 });
 
  test('public gallery links point to bundled documents with source attribution', () => {
-  for (const name of ['data-action-plan-2023.pptx', 'urban-comfort-analysis.xlsx', 'hokkaido-landscape-comparison.jtd']) {
+  for (const name of ['data-action-plan-2023.pptx', 'urban-comfort-analysis.xlsx', 'hokkaido-landscape-comparison.jtd', 'mynumber-law-2023-comparison.jtd']) {
     assert.ok(home.includes(`open=%2Fsamples%2F${name}`));
     assert.ok(existsSync(new URL(`../../www/samples/${name}`, import.meta.url)));
   }
