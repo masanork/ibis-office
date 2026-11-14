@@ -235,11 +235,14 @@ pub fn inspect_xlsx_formula_artifacts(bytes: &[u8]) -> Result<Vec<XlsxFormulaArt
         let mut sheet = XlsxFormulaArtifacts::default();
         for cell in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "c") {
             let Some(cell_ref) = cell.attribute("r") else { continue; };
-            let formula = cell.children().any(|n| n.is_element() && n.tag_name().name() == "f");
+            let formula_node = cell.children().find(|n| n.is_element() && n.tag_name().name() == "f");
+            let formula = formula_node.is_some();
             let value = cell.children().find(|n| n.is_element() && n.tag_name().name() == "v").and_then(|n| n.text());
             if !formula && !(cell.attribute("t") == Some("e") && value == Some("#REF!")) { continue; }
             let (row, column) = source_cell_position(cell_ref)?;
-            let artifact = FormulaArtifact { row, column, cell_ref: cell_ref.to_string() };
+            let artifact = FormulaArtifact { row, column, cell_ref: cell_ref.to_string(),
+                formula_text: formula_node.and_then(|node| node.text()).map(str::to_string),
+                formula_type: formula_node.and_then(|node| node.attribute("t")).map(str::to_string) };
             if formula { formula_count += 1; sheet.formulas.push(artifact.clone()); }
             if value == Some("#REF!") && (formula || cell.attribute("t") == Some("e")) { error_count += 1; sheet.errors.push(artifact); }
             if formula_count > MAX_REFS || error_count > MAX_REFS { return Err(XlsxInputError::FormulaInspectionLimit); }

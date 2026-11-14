@@ -11,10 +11,20 @@
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          "SUM(C2:C4)",
+          null
         ]
       ],
-      "errors": []
+      "errors": [],
+      "reports": [
+        {
+          "message": "数式残存: 1件検出",
+          "descriptions": [
+            "数式が残存しています: =SUM(C2:C4)"
+          ]
+        }
+      ]
     },
     {
       "file": "xlsx-cache-missing.xlsx",
@@ -26,10 +36,20 @@
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          "SUM(C2:C4)",
+          null
         ]
       ],
-      "errors": []
+      "errors": [],
+      "reports": [
+        {
+          "message": "数式残存: 1件検出",
+          "descriptions": [
+            "数式が残存しています: =SUM(C2:C4)"
+          ]
+        }
+      ]
     },
     {
       "file": "xlsx-cache-numeric.xlsx",
@@ -41,10 +61,20 @@
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          "SUM(C2:C4)",
+          null
         ]
       ],
-      "errors": []
+      "errors": [],
+      "reports": [
+        {
+          "message": "数式残存: 1件検出",
+          "descriptions": [
+            "数式が残存しています: =SUM(C2:C4)"
+          ]
+        }
+      ]
     },
     {
       "file": "xlsx-cache-boolean.xlsx",
@@ -56,10 +86,20 @@
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          "SUM(C2:C4)",
+          null
         ]
       ],
-      "errors": []
+      "errors": [],
+      "reports": [
+        {
+          "message": "数式残存: 1件検出",
+          "descriptions": [
+            "数式が残存しています: =SUM(C2:C4)"
+          ]
+        }
+      ]
     },
     {
       "file": "xlsx-cache-text.xlsx",
@@ -71,10 +111,20 @@
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          "SUM(C2:C4)",
+          null
         ]
       ],
-      "errors": []
+      "errors": [],
+      "reports": [
+        {
+          "message": "数式残存: 1件検出",
+          "descriptions": [
+            "数式が残存しています: =SUM(C2:C4)"
+          ]
+        }
+      ]
     },
     {
       "file": "xlsx-cache-formula_text.xlsx",
@@ -86,10 +136,20 @@
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          "SUM(C2:C4)",
+          null
         ]
       ],
-      "errors": []
+      "errors": [],
+      "reports": [
+        {
+          "message": "数式残存: 1件検出",
+          "descriptions": [
+            "数式が残存しています: =SUM(C2:C4)"
+          ]
+        }
+      ]
     },
     {
       "file": "xlsx-cache-error.xlsx",
@@ -101,10 +161,20 @@
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          "SUM(C2:C4)",
+          null
         ]
       ],
-      "errors": []
+      "errors": [],
+      "reports": [
+        {
+          "message": "数式残存: 1件検出",
+          "descriptions": [
+            "数式が残存しています: =SUM(C2:C4)"
+          ]
+        }
+      ]
     },
     {
       "file": "xlsx-artifact-errors.xlsx",
@@ -116,7 +186,9 @@
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          "SUM(C2:C4)",
+          null
         ]
       ],
       "errors": [
@@ -124,14 +196,27 @@
           "Data",
           1,
           0,
-          "A2"
+          "A2",
+          null,
+          null
         ],
         [
           "Data",
           4,
           2,
-          "C5"
+          "C5",
+          null,
+          null
         ]
+      ],
+      "reports": [
+        {
+          "message": "数式残存: 2件検出",
+          "descriptions": [
+            "参照切れエラーが残存しています: #REF!",
+            "参照切れエラーが残存しています: #REF!"
+          ]
+        }
       ]
     },
     {
@@ -145,13 +230,17 @@
           "First",
           1,
           1,
-          "B2"
+          "B2",
+          "1+1",
+          null
         ],
         [
           "Second",
           2,
           2,
-          "C3"
+          "C3",
+          "2+2",
+          null
         ]
       ],
       "errors": [
@@ -159,14 +248,34 @@
           "First",
           2,
           0,
-          "A3"
+          "A3",
+          null,
+          null
         ],
         [
           "Second",
           3,
           3,
-          "D4"
+          "D4",
+          null,
+          null
         ]
+      ],
+      "reports": [
+        {
+          "message": "数式残存: 2件検出",
+          "descriptions": [
+            "参照切れエラーが残存しています: #REF!",
+            "数式が残存しています: =1+1"
+          ]
+        },
+        {
+          "message": "数式残存: 2件検出",
+          "descriptions": [
+            "参照切れエラーが残存しています: #REF!",
+            "数式が残存しています: =2+2"
+          ]
+        }
       ]
     }
   ]
