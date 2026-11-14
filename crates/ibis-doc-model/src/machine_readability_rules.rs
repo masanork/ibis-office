@@ -538,6 +538,32 @@ pub fn csv_column_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], 
     Some(result("L1-05", findings.is_empty(), if findings.is_empty() { 0.8 } else { 0.85 }, Severity::Critical, findings))
 }
 
+pub fn csv_column_headers_report(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleDiagnostics> {
+    let evaluation = csv_column_headers(sheet, table, header_rows, body_first, body_last)?;
+    let last_header = header_rows.last().copied().unwrap_or(table.first_row);
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let width = u64::from(table.last_column) - u64::from(table.first_column) + 1;
+    let mut values = std::collections::BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row == last_header && c.column >= table.first_column && c.column <= table.last_column) {
+        if let CellValue::Text(value) = &cell.value { let value = value.trim_matches(space); if !value.is_empty() { values.insert(cell.column,value); } }
+    }
+    let sequential = width >= 2 && values.len() as u64 == width && evaluation.findings.len() as u64 == width;
+    let mut descriptions = Vec::new();
+    for (index, finding) in evaluation.findings.iter().enumerate() {
+        if sequential {
+            let col = table.first_column.checked_add(index as u32)?;
+            if finding.location != address(last_header,col) { return None; }
+            let value = values.get(&col)?;
+            descriptions.push(format!("列{}（{}）のヘッダー「{value}」は連番の数値です。意味のある列名を設定してください。",u64::from(col)+1,finding.location));
+        } else {
+            let col = (table.first_column..=table.last_column).find(|&col| finding.location == address(header_rows.first().copied().unwrap_or(table.first_row),col))?;
+            descriptions.push(format!("列{}（{}）にヘッダーがありません。",u64::from(col)+1,finding.location));
+        }
+    }
+    let message = if descriptions.is_empty() { "すべての列にヘッダーが設定されています。".into() } else { format!("{}列でヘッダーが欠落しています。",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L1-09 explicitly abstains when the reference AI checker is unavailable.
 /// This does not implement the optional AI-assisted judgment.
 pub fn blank_vs_zero_ai_disabled() -> RuleEvaluation {
@@ -1453,6 +1479,40 @@ pub fn xlsx_column_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32],
         }
     }
     Some(result("L1-05", findings.is_empty(), if findings.is_empty() { 0.8 } else { 0.85 }, Severity::Critical, findings))
+}
+
+/// XLSX L1-05 diagnostics; `text_sheet` must contain faithful reference
+/// string representations of the same saved cells (including numeric lexemes).
+pub fn xlsx_column_headers_report(sheet: &Sheet, text_sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, read_only: bool) -> Option<RuleDiagnostics> {
+    let evaluation = xlsx_column_headers(sheet,table,header_rows,body_first,body_last,read_only)?;
+    let first_header = header_rows.first().copied().unwrap_or(table.first_row);
+    let last_header = header_rows.last().copied().unwrap_or(table.first_row);
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let width = u64::from(table.last_column) - u64::from(table.first_column) + 1;
+    let mut values = std::collections::BTreeMap::new();
+    for cell in text_sheet.cells.iter().filter(|c| c.row == last_header && c.column >= table.first_column && c.column <= table.last_column) {
+        if let CellValue::Text(value) = &cell.value { let value = value.trim_matches(space); if !value.is_empty() { values.insert(cell.column,value); } }
+    }
+    let sequential = width >= 2 && values.len() as u64 == width && evaluation.findings.len() as u64 == width
+        && (table.first_column..=table.last_column).all(|col| {
+            if !read_only && sheet.merges.iter().any(|m| last_header >= m.first_row && last_header <= m.last_row && col >= m.first_column && col <= m.last_column && (last_header != m.first_row || col != m.first_column)) { return false; }
+            sheet.cells.iter().find(|c|c.row == last_header && c.column == col).is_some_and(|cell|match &cell.value {
+                CellValue::Number(_) => true, CellValue::Text(v) => v.trim_matches(space).replace('_', "").parse::<f64>().is_ok(), _ => false,
+            })
+        })
+        && evaluation.findings.iter().enumerate().all(|(i,f)| f.location == address(last_header,table.first_column + i as u32));
+    let mut descriptions = Vec::new();
+    for (index,finding) in evaluation.findings.iter().enumerate() {
+        if sequential {
+            let col = table.first_column.checked_add(index as u32)?; let value = values.get(&col)?;
+            descriptions.push(format!("列{}（{}）のヘッダー「{value}」は連番の数値です。意味のある列名を設定してください。",u64::from(col)+1,finding.location));
+        } else {
+            let col = (table.first_column..=table.last_column).find(|&col|finding.location == address(first_header,col))?;
+            descriptions.push(format!("列{}（{}）にヘッダーがありません。",u64::from(col)+1,finding.location));
+        }
+    }
+    let message = if descriptions.is_empty() { "すべての列にヘッダーが設定されています。".into() } else { format!("{}列でヘッダーが欠落しています。",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
 }
 
 /// A drawing anchor observed in the original XLSX package.

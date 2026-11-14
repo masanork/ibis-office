@@ -414,7 +414,7 @@ fn csv_fragmentation_matches_pinned_harunobu() {
 
 #[test]
 fn csv_column_headers_match_pinned_harunobu() {
-    use ibis_doc_model::machine_readability_rules::{csv_column_headers, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{csv_column_headers, csv_column_headers_report, FindingSeverity};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-headers-reference.json")).unwrap()).unwrap();
@@ -429,6 +429,10 @@ fn csv_column_headers_match_pinned_harunobu() {
         }).collect::<Vec<_>>().into();
         let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
         let got = csv_column_headers(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        let report = csv_column_headers_report(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
