@@ -756,3 +756,102 @@ pub fn csv_time_axis(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_
     }
     Some(result("L3-05", findings.is_empty(), 0.75, Severity::Major, findings))
 }
+
+/// L3-06 for unmerged CSV/TSV cells. Embedded region-name sets are derived
+/// from the pinned Harunobu resource, not from a runtime Python installation.
+pub fn csv_region_codes(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    static DICT: OnceLock<[BTreeSet<&'static str>; 4]> = OnceLock::new();
+    static KEYWORDS: OnceLock<regex::Regex> = OnceLock::new();
+    let dict = DICT.get_or_init(|| {
+        let mut sets = std::array::from_fn(|_| BTreeSet::new());
+        for line in include_str!("../resources/harunobu-region-names.tsv").lines() {
+            if let Some((tag, value)) = line.split_once('\t') {
+                let index = match tag { "P" => 0, "S" => 1, "M" => 2, "A" => 3, _ => continue };
+                sets[index].insert(value);
+            }
+        }
+        sets
+    });
+    let keywords = KEYWORDS.get_or_init(|| regex::Regex::new(r"(?i)(都道府県|地域|地区|市区町村|自治体|所在地|住所|県|府|市|町|村|region|prefecture|city|address|地域コード|団体コード)").unwrap());
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let Some(&header) = header_rows.last() else { return Some(result("L3-06", true, 0.5, Severity::Critical, Vec::new())); };
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column && (c.row == header || (c.row >= body_first && c.row <= body_last))) {
+        let value = match &cell.value { CellValue::Text(v) => v.as_str(), CellValue::Empty => "", _ => return None };
+        cells.insert((cell.row, cell.column), value);
+    }
+    let mut region_cols = Vec::new();
+    for col in table.first_column..=table.last_column {
+        if let Some(value) = cells.get(&(header, col)).filter(|v| !v.is_empty()) {
+            let value = value.trim_matches(space);
+            if keywords.is_match(value) { region_cols.push((col, value)); }
+        }
+    }
+    if region_cols.is_empty() {
+        for col in table.first_column..=table.last_column {
+            let mut total = 0usize; let mut count = 0usize;
+            for row in body_first..=body_last.min(body_first.saturating_add(29)) {
+                if let Some(value) = cells.get(&(row, col)).filter(|v| !v.is_empty()) {
+                    total += 1;
+                    if dict.iter().any(|set| set.contains(value.trim_matches(space))) { count += 1; }
+                }
+            }
+            if total > 0 && count * 2 >= total { region_cols.push((col, cells.get(&(header, col)).copied().unwrap_or("").trim_matches(space))); }
+        }
+    }
+    if region_cols.is_empty() { return Some(result("L3-06", true, 0.6, Severity::Critical, Vec::new())); }
+    let has_code = region_cols.iter().any(|(_, h)| h.contains("コード") || h.to_lowercase().contains("code"));
+    let mut info = false; let mut findings = Vec::new();
+    for (col, _) in region_cols {
+        for row in body_first..=body_last {
+            let Some(value) = cells.get(&(row, col)).map(|v| v.trim_matches(space)).filter(|v| !v.is_empty()) else { continue; };
+            let abbreviated = (dict[1].contains(value) && !dict[0].contains(value)) || (dict[3].contains(value) && !dict[2].contains(value));
+            if abbreviated { findings.push(Finding { location: address(row, col), severity: FindingSeverity::Warning }); }
+            else if !info && !has_code && (dict[0].contains(value) || dict[2].contains(value)) {
+                findings.push(Finding { location: address(row, col), severity: FindingSeverity::Info }); info = true;
+            }
+        }
+    }
+    Some(result("L3-06", findings.is_empty(), 0.70, Severity::Critical, findings))
+}
+
+/// L3-04 for unmerged CSV/TSV text cells, with AI unavailable.
+pub fn csv_data_units(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    struct Patterns { numeric: regex::Regex, unit: regex::Regex }
+    static P: OnceLock<Patterns> = OnceLock::new();
+    let p = P.get_or_init(|| Patterns {
+        numeric: regex::Regex::new(r"^[\s\x1c-\x1f\-ー−▲△]*[\d,]+\.?\d*[\s\x1c-\x1f]*$").unwrap(),
+        unit: regex::Regex::new(r"[（(](人|件|円|千円|百万円|億円|万円|%|％|kg|km|m|cm|mm|g|t|ha|㎡|㎢|個|台|回|本|枚|箇所|か所|世帯|戸|社|校|棟|隻|機|両|組|点|冊|食|泊|日|月|年|時間|分|秒|歳|才|度|kW|kWh|MW|GW|L|mL|dL)[）)]").unwrap(),
+    });
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let Some(&header) = header_rows.last() else { return Some(result("L3-04", true, 0.5, Severity::Major, Vec::new())); };
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column && (c.row == header || (c.row >= body_first && c.row <= body_last))) {
+        match &cell.value { CellValue::Text(v) => { cells.insert((cell.row, cell.column), v.as_str()); }, CellValue::Empty => {}, _ => return None }
+    }
+    let implied = ["金額","価格","費用","コスト","売上","収入","支出","人口","人数","従業員数","利用者数","面積","距離","長さ","高さ","幅","重量","重さ","質量","割合","率","比率","構成比","年齢","年数","温度","気温"];
+    let suffix = ["件数","枚数","回数","か所数","箇所数","人数","数"];
+    let unitless = ["コード","code","番号","No","ID","指数","指標","順位","ランク","フラグ","区分"];
+    let english = ["id","code","key","name","type","flag","status","index","sort","rank","order","level","class","year","month","date","fiscal_year","survey_year","number","count","cnt","num","no","row","col","seq","version","is","has","will","can","use"];
+    let mut findings = Vec::new();
+    for col in table.first_column..=table.last_column {
+        let mut total = 0usize; let mut numeric = 0usize;
+        for row in body_first..=body_last.min(body_first.saturating_add(29)) {
+            if let Some(value) = cells.get(&(row, col)) { total += 1; if p.numeric.is_match(value.trim_matches(space)) { numeric += 1; } }
+        }
+        if total == 0 || numeric * 10 < total * 7 { continue; }
+        let Some(header) = cells.get(&(header, col)).map(|v| v.trim_matches(space)) else { continue; };
+        let digits = !header.is_empty() && header.chars().all(|c| c.is_numeric());
+        if digits && !header.is_ascii() { return None; }
+        let lowered = header.to_lowercase().replace('-', "_");
+        if p.unit.is_match(header) || implied.iter().any(|v| header.contains(v)) || suffix.iter().any(|v| header.ends_with(v)) || unitless.iter().any(|v| header.contains(v)) || digits || lowered.split('_').any(|v| english.contains(&v)) { continue; }
+        findings.push(Finding { location: address(*header_rows.last()?, col), severity: FindingSeverity::Warning });
+    }
+    Some(result("L3-04", findings.is_empty(), 0.65, Severity::Major, findings))
+}

@@ -127,3 +127,8 @@ and compares finding locations without assuming Python set iteration order.
 columns, missing header cells and the 101-column boundary with AI disabled.
 `harunobu-time-axis-reference.json` compares 160 L3-05 table layouts, including
 ISO dates, Japanese era dates, fiscal years, and mixed date formats.
+`harunobu-region-reference.json` and `harunobu-data-units-reference.json`
+compare 160 AI-disabled L3-06 and L3-04 layouts each. The embedded region names
+are extracted from Harunobu's `harunobu/resources/region_dict.json` at the
+pinned revision by `scripts/machine-readability-region-data.py`; the source
+resource cites the Japanese local-government codes (JIS X 0401/0402).

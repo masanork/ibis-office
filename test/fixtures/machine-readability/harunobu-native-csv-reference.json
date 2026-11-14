@@ -25,11 +25,39 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "B1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -208,11 +236,39 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "B1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -391,11 +447,35 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "C1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -579,11 +659,39 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "C1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -767,11 +875,39 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "C1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -970,11 +1106,39 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "B2",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A3",
+              "warning"
+            ],
+            [
+              "A4",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -1158,11 +1322,39 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "C1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -1346,10 +1538,24 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": true,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": []
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
+          "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": true,
+          "confidence": 0.6,
+          "severity": "critical",
           "findings": []
         },
         {
@@ -1538,10 +1744,29 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "C1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
+          "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": true,
+          "confidence": 0.7,
+          "severity": "critical",
           "findings": []
         },
         {
@@ -1726,11 +1951,39 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "C1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -1918,6 +2171,18 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": false,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": [
+            [
+              "C1",
+              "warning"
+            ]
+          ]
+        },
+        {
           "id": "L3-05",
           "passed": false,
           "confidence": 0.75,
@@ -1929,6 +2194,26 @@
             ],
             [
               "A1",
+              "warning"
+            ]
+          ]
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "B2",
+              "warning"
+            ],
+            [
+              "B3",
+              "warning"
+            ],
+            [
+              "B4",
               "warning"
             ]
           ]
@@ -2110,11 +2395,34 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": true,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": []
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -2298,11 +2606,30 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": true,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": []
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "info"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -2486,10 +2813,24 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": true,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": []
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
+          "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": true,
+          "confidence": 0.6,
+          "severity": "critical",
           "findings": []
         },
         {
@@ -2678,11 +3019,38 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": true,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": []
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ],
+            [
+              "A4",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -2866,11 +3234,34 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": true,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": []
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A4",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -3059,11 +3450,30 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": true,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": []
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
@@ -3251,11 +3661,42 @@
           "findings": []
         },
         {
+          "id": "L3-04",
+          "passed": true,
+          "confidence": 0.65,
+          "severity": "major",
+          "findings": []
+        },
+        {
           "id": "L3-05",
           "passed": true,
           "confidence": 0.75,
           "severity": "major",
           "findings": []
+        },
+        {
+          "id": "L3-06",
+          "passed": false,
+          "confidence": 0.7,
+          "severity": "critical",
+          "findings": [
+            [
+              "A2",
+              "warning"
+            ],
+            [
+              "A3",
+              "warning"
+            ],
+            [
+              "B2",
+              "warning"
+            ],
+            [
+              "B3",
+              "warning"
+            ]
+          ]
         },
         {
           "id": "L3-07",
