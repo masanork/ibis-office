@@ -187,8 +187,10 @@ jobs:
           (cd "$RUNNER_TEMP/verify-linux" && "$image" --appimage-extract)
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOfficeUpdater"
+          cmp target/dist/onnxruntime/lib/libonnxruntime.so.1.22.0 "$RUNNER_TEMP/verify-linux/squashfs-root/usr/lib/libonnxruntime.so.1"
           python3 scripts/test-appimage-recovery.py "$image"
           test -s "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/third-party-licenses.md"
+          test -s "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/ONNXRuntime-ThirdPartyNotices.txt"
           set +e
           "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" --export invalid
           result=$?
