@@ -55,3 +55,12 @@ and credentials, separate production resources and credentials,
 operator enrollment, observability, privacy and content review, and an actual
 end-to-end Mikaki login, authorization, upload, readback and logout check. The
 current tests include a mock issuer and do not establish real Passkey behavior.
+
+## Private user files (prototype)
+
+Authenticated Mikaki users can keep their own DOCX/XLSX/PPTX objects in a
+separate R2 bucket (`FILES`). The list and editor round-trip live at `/files`
+and `/api/files`. Production still needs the `sorane-docs-files` bucket and
+the `0005_user_files.sql` D1 migration; this repository change does not
+create either. See `docs/sorane-user-files.md` for operator steps, limits and
+the local procedure.
