@@ -23,11 +23,11 @@ test('home stays put and links to the editor and a distributable sample', () => 
 });
 
  test('public gallery links point to bundled documents with source attribution', () => {
-  for (const name of ['digital-priority-2023.pptx', 'fisheries-balance-2023.xlsx', 'digital-priority-text-2023.docx']) {
+  for (const name of ['data-action-plan-2023.pptx', 'urban-comfort-analysis.xlsx']) {
     assert.ok(home.includes(`open=%2Fsamples%2F${name}`));
     assert.ok(existsSync(new URL(`../../www/samples/${name}`, import.meta.url)));
   }
-  assert.match(home, /digital\.go\.jp\/policies\/priority-policy-program-past/);
-  assert.match(home, /data\.e-gov\.go\.jp/);
+  assert.match(home, /digital\.go\.jp\/councils\/digital-system-reform/);
+  assert.match(home, /www\.mlit\.go\.jp/);
   assert.match(home, /Sorane Docs が加工/);
 });
