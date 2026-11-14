@@ -351,6 +351,16 @@ fn xlsx_object_inspection_respects_table_confidence() {
 }
 
 #[test]
+fn multiple_xlsx_drawings_follow_relationship_order() {
+    use ibis_pptx::machine_readability_xlsx::inspect_xlsx_object_artifacts;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let sheets = inspect_xlsx_object_artifacts(&std::fs::read(root.join("xlsx-multiple-drawings.xlsx")).unwrap()).unwrap();
+    let objects: Vec<_> = sheets[0].iter().map(|o| (o.row, o.column, o.drawing_part.as_str())).collect();
+    // Harunobu's inspector returns one-based coordinates; these are zero-based.
+    assert_eq!(objects, [(1, 1, "xl/drawings/drawing1.xml"), (19, 12, "xl/drawings/drawing1.xml"), (4, 3, "xl/drawings/drawing2.xml"), (19, 12, "xl/drawings/drawing2.xml")]);
+}
+
+#[test]
 fn xlsx_direct_formats_match_both_reference_reader_modes() {
     use ibis_ooxml::zip::{Archive, Writer, EntryMeta, STORED, crc32};
     use ibis_pptx::machine_readability_xlsx::inspect_xlsx_cell_formats;
