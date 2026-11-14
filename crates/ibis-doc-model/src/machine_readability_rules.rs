@@ -545,6 +545,7 @@ pub fn csv_other_details(sheet: &Sheet, table: CellRange, body_first: u32, body_
         let mut values: Vec<(&str, Vec<u32>)> = Vec::new();
         for &(row, value) in cells.iter() {
             if let Some((_, rows)) = values.iter_mut().find(|(v, _)| *v == value) { rows.push(row); } else { values.push((value, vec![row])); }
+            if values.len() > 20 { break; }
         }
         if values.len() > 20 { continue; }
         analyzed = true;
@@ -555,4 +556,91 @@ pub fn csv_other_details(sheet: &Sheet, table: CellRange, body_first: u32, body_
         }
     }
     Some(result("L2-05", findings.is_empty(), if analyzed { 0.8 } else { 0.0 }, Severity::Major, findings))
+}
+
+/// Normalize a category value the way Harunobu's L2-04 does before comparing.
+fn normalized_choice(value: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let value: String = value.nfkc().collect();
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut seen = false;
+    let mut cut = value.len();
+    for (index, c) in value.char_indices() {
+        if seen && matches!(c, '※' | '＊' | '＃' | '#' | '（' | '(' | '「' | '【') { cut = index; break; }
+        if !space(c) { seen = true; }
+    }
+    value[..cut].trim_matches(space).to_string()
+}
+
+/// Matching-character count from Python difflib.SequenceMatcher (no junk),
+/// including its popular-character heuristic for sequences of length >= 200.
+fn sequence_matches(a: &[char], b: &[char]) -> usize {
+    use std::collections::BTreeMap;
+    let mut positions: BTreeMap<char, Vec<usize>> = BTreeMap::new();
+    for (j, &c) in b.iter().enumerate() { positions.entry(c).or_default().push(j); }
+    if b.len() >= 200 { let threshold = b.len() / 100 + 1; positions.retain(|_, v| v.len() <= threshold); }
+    let mut ranges = vec![(0, a.len(), 0, b.len())];
+    let mut matches = 0;
+    while let Some((alo, ahi, blo, bhi)) = ranges.pop() {
+        let (mut ai, mut bj, mut best) = (alo, blo, 0usize);
+        let mut previous: BTreeMap<usize, usize> = BTreeMap::new();
+        for i in alo..ahi {
+            let mut current = BTreeMap::new();
+            if let Some(js) = positions.get(&a[i]) {
+                for &j in js.iter().filter(|&&j| j >= blo && j < bhi) {
+                    let size = j.checked_sub(1).and_then(|j| previous.get(&j)).copied().unwrap_or(0) + 1;
+                    current.insert(j, size);
+                    if size > best { ai = i + 1 - size; bj = j + 1 - size; best = size; }
+                }
+            }
+            previous = current;
+        }
+        while ai > alo && bj > blo && a[ai - 1] == b[bj - 1] { ai -= 1; bj -= 1; best += 1; }
+        while ai + best < ahi && bj + best < bhi && a[ai + best] == b[bj + best] { best += 1; }
+        if best > 0 {
+            matches += best;
+            if alo < ai && blo < bj { ranges.push((alo, ai, blo, bj)); }
+            if ai + best < ahi && bj + best < bhi { ranges.push((ai + best, ahi, bj + best, bhi)); }
+        }
+    }
+    matches
+}
+
+/// L2-04 for unmerged CSV/TSV with AI unavailable. Category values whose
+/// comparison would exceed the bounded work limit return None, not a pass.
+pub fn csv_choice_standardization(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)]) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use crate::machine_readability_layout::InferredColumnType;
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let schema_map: BTreeMap<_, _> = schemas.iter().copied().collect();
+    let mut columns: BTreeMap<u32, Vec<(u32, &str)>> = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= body_first && c.row <= body_last && c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        if !value.is_empty() { columns.entry(cell.column).or_default().push((cell.row, value)); }
+    }
+    let mut analyzed = false;
+    let mut findings = Vec::new();
+    for col in table.first_column..=table.last_column {
+        if matches!(schema_map.get(&col), Some(InferredColumnType::Numeric | InferredColumnType::Date | InferredColumnType::Empty)) { continue; }
+        let Some(cells) = columns.get_mut(&col) else { continue; };
+        cells.sort_by_key(|v| v.0);
+        if cells.len() < 20 { continue; }
+        let mut values: Vec<(&str, Vec<u32>)> = Vec::new();
+        for &(row, value) in cells.iter() {
+            if let Some((_, rows)) = values.iter_mut().find(|(v, _)| *v == value) { rows.push(row); } else { values.push((value, vec![row])); }
+            if values.len() > 20 { break; }
+        }
+        if values.len() > 20 { continue; }
+        analyzed = true;
+        let outlier = |rows: &[u32]| rows.len() <= 2 && rows.len() * 20 <= cells.len();
+        let dominant: Vec<Vec<char>> = values.iter().filter(|(_, rows)| !outlier(rows)).map(|(v, _)| normalized_choice(v).chars().collect()).collect();
+        for (value, rows) in values.iter().filter(|(_, rows)| outlier(rows)) {
+            let candidate: Vec<_> = normalized_choice(value).chars().collect();
+            if candidate.len() > 4096 || dominant.iter().any(|v| v.len() > 4096) { return None; }
+            let variant = dominant.iter().any(|v| candidate == *v || (candidate.len().min(v.len()) >= 2 && 8 * sequence_matches(&candidate, v) >= 3 * (candidate.len() + v.len())));
+            if variant { findings.push(Finding { location: address(rows[0], col), severity: FindingSeverity::Warning }); }
+        }
+    }
+    Some(result("L2-04", findings.is_empty(), if analyzed { 0.7 } else { 0.0 }, Severity::Critical, findings))
 }
