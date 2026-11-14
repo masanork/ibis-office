@@ -19,7 +19,7 @@ for pattern in patterns:
         entries.append(S(file_name=f'f{i}.csv',analysis=S(sheets=[S(tables=[S(column_headers=columns)])])))
     normalized=[[v.strip() for v in headers if v] for headers in pattern]
     result=FormatConsistencyRule().check_bulk(entries)
-    cases.append(dict(headers=normalized,passed=result.passed,confidence=result.confidence,severities=[v.severity for v in result.violations]))
+    cases.append(dict(headers=normalized,passed=result.passed,confidence=result.confidence,severities=[v.severity for v in result.violations],message=result.message,descriptions=[v.description for v in result.violations]))
 print(json.dumps(cases,ensure_ascii=False))
 '''
 env={k:v for k,v in os.environ.items() if not k.startswith('HARUNOBU_')};env['HARUNOBU_AI_DISABLED']='1'
