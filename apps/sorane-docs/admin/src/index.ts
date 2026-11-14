@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { BROWSER, random, hash, escape, cookieHeader, HttpError, fail, cookie, baseHeaders, redirect, readForm, current, formCsrf, login, callback, backchannel, logout, cleanup } from '../vendor/mikaki-oidc';
+import { BROWSER, random, hash, cookieHeader, HttpError, fail, cookie, baseHeaders, redirect, readForm, current, formCsrf, login, callback, backchannel, logout, cleanup } from '../vendor/mikaki-oidc';
+import { SAMPLE_MAX_FILE, boundedBody, looksLikeOffice } from './office-file';
+import { FILE_PATH, NEXT, deleteFile, filesHome, filesPage, isUserFilesApi, jsonError, listFiles, nextDestination, readFile, saveFile, uploadFile, type FileEnv } from './files';
 
-type Env = { DB: D1Database; SAMPLES: R2Bucket; AUTH_LIMITER: RateLimit; ISSUER: string; RP_ORIGIN: string; CLIENT_ID: string; RP_PRIVATE_JWK: string; LOCAL_ONLY?: string };
-const maxFile = 2 * 1024 * 1024;
+type Env = FileEnv & { SAMPLES: R2Bucket; AUTH_LIMITER: RateLimit };
 function page(env: Env, content: string, status = 200, browser?: string): Response {
   const headers = baseHeaders(env);
   headers.set('Content-Type', 'text/html; charset=utf-8');
   headers.set('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self' ${env.ISSUER}; frame-ancestors 'none'; base-uri 'none'`);
   if (browser) headers.append('Set-Cookie', cookieHeader(BROWSER, browser, 86400));
+  headers.append('Set-Cookie', cookieHeader(NEXT, '/admin', 600));
   return new Response(`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>サンプル管理 · Sorane Docs</title><style>body{font:16px system-ui;max-width:46rem;margin:3rem auto;padding:0 1rem;color:#17233d}input,button{font:inherit;padding:.6rem}form{margin:1rem 0}label{display:block;margin:1rem 0}small{color:#53627b}button{cursor:pointer}</style><main><h1>サンプル管理</h1>${content}</main></html>`, { status, headers });
 }
 async function admin(request: Request, env: Env) {
@@ -34,38 +36,6 @@ async function enroll(request: Request, env: Env): Promise<Response> {
   if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) fail(403, 'invalid_invitation');
   return redirect(env, '/admin');
 }
-async function boundedBody(request: Request): Promise<Uint8Array> {
-  const declared = Number(request.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxFile) fail(413, 'file_too_large');
-  if (!request.body) fail(400, 'missing_file');
-  const reader = request.body.getReader(); const chunks: Uint8Array[] = []; let length = 0;
-  while (true) { const {done,value} = await reader.read(); if (done) break; length += value.length; if (length > maxFile) { await reader.cancel(); fail(413, 'file_too_large'); } chunks.push(value); }
-  const body = new Uint8Array(length); let offset = 0; for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.length; } return body;
-}
-// Check the ZIP directory without expanding uploaded data. This is a bounded
-// structural filter, not a full OOXML validator or malware scan.
-function looksLikeOffice(bytes: Uint8Array, name: string): boolean {
-  if (bytes.length < 22) return false;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const u16 = (p: number) => view.getUint16(p, true), u32 = (p: number) => view.getUint32(p, true);
-  let end = -1;
-  for (let p = bytes.length - 22; p >= Math.max(0, bytes.length - 65557); p--) {
-    if (u32(p) === 0x06054b50 && p + 22 + u16(p + 20) === bytes.length) { end = p; break; }
-  }
-  if (end < 0 || u16(end + 4) !== 0 || u16(end + 6) !== 0) return false;
-  const count = u16(end + 10), size = u32(end + 12), start = u32(end + 16);
-  if (count === 0xffff || size === 0xffffffff || start === 0xffffffff || start + size !== end) return false;
-  const expected = name.endsWith('.docx') ? 'word/document.xml' : name.endsWith('.xlsx') ? 'xl/workbook.xml' : 'ppt/presentation.xml';
-  let p = start, contentTypes = false, document = false;
-  for (let i = 0; i < count; i++) {
-    if (p + 46 > end || u32(p) !== 0x02014b50 || (u16(p + 8) & 1) !== 0) return false;
-    const fileLength = u16(p + 28), extra = u16(p + 30), comment = u16(p + 32), next = p + 46 + fileLength + extra + comment;
-    if (next > end) return false;
-    const path = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + fileLength));
-    contentTypes ||= path === '[Content_Types].xml'; document ||= path === expected; p = next;
-  }
-  return p === end && contentTypes && document;
-}
 async function upload(request: Request, env: Env) {
   if (request.headers.get('origin') !== env.RP_ORIGIN) fail(403, 'invalid_origin');
   const browser = cookie(request, BROWSER);
@@ -75,7 +45,7 @@ async function upload(request: Request, env: Env) {
   let title = '';
   try { title = decodeURIComponent(request.headers.get('x-sample-title') ?? '').trim(); } catch { fail(400, 'invalid_metadata'); }
   if (!/^[a-zA-Z0-9_-]{1,80}\.(docx|xlsx|pptx)$/i.test(name) || !title || title.length > 100 || /[\u0000-\u001f\u007f]/.test(title)) fail(400, 'invalid_metadata');
-  const bytes = await boundedBody(request);
+  const bytes = await boundedBody(request, SAMPLE_MAX_FILE);
   if (!looksLikeOffice(bytes, name.toLowerCase())) fail(400, 'invalid_file');
   const id = crypto.randomUUID(), key = `samples/${id}`;
   const object = await env.SAMPLES.put(key, bytes, { httpMetadata: { contentType: 'application/octet-stream' }, onlyIf: { etagDoesNotMatch: '*' } });
@@ -85,16 +55,32 @@ async function upload(request: Request, env: Env) {
   await env.DB.prepare('INSERT INTO samples(id,object_key,name,title,size,created_at,created_by) VALUES(?,?,?,?,?,?,?)').bind(id,key,name,title,bytes.length,Math.floor(Date.now()/1000),session.sub).run();
   return Response.json({ id }, {status:201,headers:baseHeaders(env)});
 }
+async function finishLogin(request: Request, env: Env, url: URL): Promise<Response> {
+  const response = await callback(request, env, url, nextDestination(request));
+  const headers = new Headers(response.headers);
+  headers.append('Set-Cookie', cookieHeader(NEXT, '', 0));
+  return new Response(response.body, { status: response.status, headers });
+}
 export default {
  async fetch(request: Request, env: Env): Promise<Response> {
+  let path = '';
   try {
    const url = new URL(request.url);
+   path = url.pathname;
    if (url.origin !== env.RP_ORIGIN || new URL(env.ISSUER).origin !== env.ISSUER || !env.CLIENT_ID || (env.LOCAL_ONLY !== 'true' && (url.protocol !== 'https:' || !env.ISSUER.startsWith('https://')))) fail(400, 'invalid_configuration');
    if (env.LOCAL_ONLY === 'true' && request.method === 'GET' && url.pathname === '/') return redirect(env, '/admin');
-   if (request.method === 'POST' && ['/login','/admin/samples','/admin/enroll'].includes(url.pathname)) {
+   const writingFiles = isUserFilesApi(url.pathname) && ['POST', 'PUT', 'DELETE'].includes(request.method);
+   if ((request.method === 'POST' && ['/login','/admin/samples','/admin/enroll'].includes(url.pathname)) || writingFiles) {
     const key = request.headers.get('cf-connecting-ip') || cookie(request,BROWSER) || 'unknown';
     if (!(await env.AUTH_LIMITER.limit({key:`${url.pathname}:${await hash(key)}`})).success) fail(429,'rate_limited');
    }
+   if (request.method === 'GET' && url.pathname === '/files') return await filesHome(request, env);
+   if (request.method === 'GET' && url.pathname === '/api/files') return await listFiles(request, env);
+   if (request.method === 'POST' && url.pathname === '/api/files') return await uploadFile(request, env);
+   const filePath = FILE_PATH.exec(url.pathname);
+   if (filePath && (request.method === 'GET' || request.method === 'HEAD')) return await readFile(request, env, filePath[1], filePath[2]);
+   if (filePath && request.method === 'PUT') return await saveFile(request, env, filePath[1], filePath[2]);
+   if (filePath && request.method === 'DELETE') return await deleteFile(request, env, filePath[1], filePath[2]);
    if (request.method === 'GET' && url.pathname === '/admin') {
     const browser = cookie(request,BROWSER) || random(); const session = await current(request,env);
     const csrf = await hash(browser);
@@ -104,7 +90,7 @@ export default {
     return page(env, `${body}<form method="post" action="/logout">${formCsrf(csrf)}<button>ログアウト</button></form>`,200,browser);
    }
    if (request.method === 'POST' && url.pathname === '/login') return await login(request,env,'ja');
-   if (request.method === 'GET' && url.pathname === '/callback') return await callback(request,env,url,'/admin');
+   if (request.method === 'GET' && url.pathname === '/callback') return await finishLogin(request,env,url);
    if (request.method === 'POST' && url.pathname === '/logout') return await logout(request,env);
    if (request.method === 'POST' && url.pathname === '/backchannel') return await backchannel(request,env);
    if (request.method === 'POST' && url.pathname === '/admin/samples') return await upload(request,env);
@@ -120,7 +106,14 @@ export default {
     return new Response(object.body,{headers:{'Content-Type':'application/octet-stream','Content-Disposition':`attachment; filename="${row.name}"`,'X-Content-Type-Options':'nosniff','Cache-Control':'no-store'}});
    }
    fail(404,'not_found');
-  } catch(error) { const status=error instanceof HttpError?error.status:503; if (!(error instanceof HttpError)) console.error(JSON.stringify({event:'admin_request_failed',error:error instanceof Error?error.name:'unknown'})); return page(env,`<p>操作を完了できませんでした。</p><p><a href="/admin">管理画面へ戻る</a></p>`,status); }
+  } catch(error) {
+    const status=error instanceof HttpError?error.status:503;
+    if (!(error instanceof HttpError)) console.error(JSON.stringify({event:'admin_request_failed',error:error instanceof Error?error.name:'unknown'}));
+    const message=error instanceof HttpError?error.message:'unavailable';
+    if (isUserFilesApi(path)) return jsonError(env, status, message);
+    if (path === '/files') return filesPage(env,`<p>操作を完了できませんでした。</p><p><a href="/files">保存したファイルへ戻る</a></p>`,status);
+    return page(env,`<p>操作を完了できませんでした。</p><p><a href="/admin">管理画面へ戻る</a></p>`,status);
+  }
  },
  async scheduled(_event: ScheduledController, env: Env): Promise<void> { await cleanup(env); }
 } satisfies ExportedHandler<Env>;
