@@ -69,8 +69,9 @@ pub fn analyze_csv_tables_partial(bytes: &[u8], delimiter: Delimiter) -> Result<
         let headers = generate_column_headers(&region.headers.rows, &indices, &header_cells).ok_or(NativeCsvError::UnknownLayout)?;
         let labels: BTreeMap<_, _> = headers.iter().map(|h| (h.column, h.label.as_str())).collect();
         let schema_input: Vec<_> = indices.iter().map(|&c| (c, labels.get(&c).copied())).collect();
-        let schemas = infer_column_schemas(&schema_input, region.headers.body_first, region.headers.body_last, &cells).ok_or(NativeCsvError::UnknownLayout)?;
-        let stubs = estimate_stub_columns(range.first_column, range.last_column, region.headers.body_first, region.headers.body_last, &stub_cells, &schemas).ok_or(NativeCsvError::UnknownLayout)?;
+        // The reference returns immediately without schemas or stubs for headerless layouts.
+        let schemas = if region.headers.rows.is_empty() { Vec::new() } else { infer_column_schemas(&schema_input, region.headers.body_first, region.headers.body_last, &cells).ok_or(NativeCsvError::UnknownLayout)? };
+        let stubs = if region.headers.rows.is_empty() { Vec::new() } else { estimate_stub_columns(range.first_column, range.last_column, region.headers.body_first, region.headers.body_last, &stub_cells, &schemas).ok_or(NativeCsvError::UnknownLayout)? };
         let abstain = region.candidate.confidence < 0.7;
         regions.push(ResolvedIsland { candidate: region.candidate, headers: region.headers, column_headers: headers, column_schemas: schemas, stub_columns: stubs, footer_rows: Vec::new(), abstain });
     }
