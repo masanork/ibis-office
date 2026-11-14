@@ -712,7 +712,6 @@ pub fn analyze_xlsx_report_experimental(bytes: &[u8], file_name: &str, mode: &st
                         let lexeme=saved.numeric_lexemes.get(&position).and_then(XlsxNumericLexeme::reference_text).ok_or(XlsxInputError::UnsupportedReferenceValue)?;
                         let parsed:serde_json::Value=serde_json::from_str(&lexeme).map_err(|_|XlsxInputError::UnsupportedReferenceValue)?;
                         if !parsed.is_number() { return Err(XlsxInputError::UnsupportedReferenceValue); }
-                        if matches!(saved.numeric_lexemes.get(&position),Some(XlsxNumericLexeme::Integer(_))) && parsed.as_i64().is_none() && parsed.as_u64().is_none() { return Err(XlsxInputError::UnsupportedReferenceValue); }
                         parsed
                     }, _=>return Err(XlsxInputError::UnsupportedReferenceValue),
                 },
