@@ -1288,6 +1288,35 @@ pub fn format_based_semantics(sheet: &Sheet, table: CellRange, body_first: u32, 
     result("L1-11", findings.is_empty(), 0.75, Severity::Critical, findings)
 }
 
+/// L1-11 diagnostic text for complete, reference-normalized cell formatting.
+pub fn format_based_semantics_report(sheet: &Sheet, table: CellRange, body_first: u32, formats: Option<&std::collections::BTreeMap<(u32, u32), ReferenceCellFormat>>) -> Option<RuleDiagnostics> {
+    use std::collections::BTreeMap;
+    let evaluation = format_based_semantics(sheet, table, body_first, formats);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let formats = formats?;
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut columns: BTreeMap<u32, Vec<&ReferenceCellFormat>> = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= body_first && c.row <= table.last_row && c.column >= table.first_column && c.column <= table.last_column) {
+        let nonempty = match &cell.value { CellValue::Empty => false, CellValue::Text(v) => !v.trim_matches(space).is_empty(), _ => true };
+        if nonempty { columns.entry(cell.column).or_default().push(formats.get(&(cell.row, cell.column))?); }
+    }
+    let mut descriptions = Vec::new();
+    for (column, cells) in columns {
+        if cells.len() < 2 { continue; }
+        let col = u64::from(column) + 1;
+        let font: BTreeSet<_> = cells.iter().map(|v|v.font_color.as_deref()).collect();
+        let background: BTreeSet<_> = cells.iter().map(|v|v.background.as_deref()).collect();
+        let bold = cells.iter().filter(|v|v.bold).count();
+        let italic = cells.iter().filter(|v|v.italic).count();
+        if font.len() >= 2 && font.iter().any(|v| !matches!(v, None | Some("000000") | Some("FF000000"))) { descriptions.push(format!("列{col}でフォント色が複数使用されています（{}種類）。書式ではなくデータ値で区別してください。",font.len())); }
+        if background.len() >= 2 { descriptions.push(format!("列{col}で背景色または塗りの有無が異なっています（{}種類）。書式だけでデータを区別していないか確認してください。",background.len())); }
+        if bold > 0 && bold < cells.len() { descriptions.push(format!("列{col}で一部のセルのみが太字です（{bold}/{}）。書式ではなくデータ値で区別してください。",cells.len())); }
+        if italic > 0 && italic < cells.len() { descriptions.push(format!("列{col}で一部のセルのみが斜体です（{italic}/{}）。書式ではなくデータ値で区別してください。",cells.len())); }
+    }
+    let message = if descriptions.is_empty() { "書式によるデータ区別は検出されませんでした。".into() } else { format!("{}件の書式によるデータ区別が検出されました。",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L2-03 over reference-stringified XLSX cells and source merge metadata.
 pub fn xlsx_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, merges: &[CellRange]) -> Option<RuleEvaluation> {
     use std::collections::BTreeMap;

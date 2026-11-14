@@ -19,6 +19,8 @@ from harunobu.rules.registry import registry
 from harunobu.rules.level3.L3_01_header_start_position import HeaderStartPositionRule
 from harunobu.rules.level2.L2_06_formula_to_value import FormulaToValueRule
 from harunobu.rules.level1.L1_10_objects import ObjectsRule
+from harunobu.rules.level1.L1_11_format_based_semantics import FormatBasedSemanticsRule
+from harunobu.core.models import Cell, CellPosition, CellFormat, Sheet
 rng=random.Random(112); cases=[]
 for i in range(160):
     merges=[]
@@ -79,12 +81,25 @@ for i in range(130):
     abstain=rng.choice([True,False])
     result=ObjectsRule()._check_from_object_refs(S(name='表',object_refs=refs),CellRange(start_row=2,start_col=2,end_row=6,end_col=5),abstain)
     object_cases.append(dict(objects=objects,abstain=abstain,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
+format_cases=[]
+for i in range(120):
+    entries=[];cells={}
+    for row in range(1,7):
+        for col in range(1,5):
+            if rng.randrange(5)==0: continue
+            value=rng.choice(['項目',' ',None,'0']); font=rng.choice([None,'000000','FF0000','FF000000']);bg=rng.choice([None,'FFFFFFFF','FF00FF00','FF000000']);bold=bool(rng.randrange(2));italic=bool(rng.randrange(2))
+            cell=Cell(pos=CellPosition(row=row,col=col),value=value,fmt=CellFormat(font_color=font,bg_color=bg,bold=bold,italic=italic)); cells[(row,col)]=cell
+            entries.append(dict(row=row-1,col=col-1,value=value,font=font,bg=(None if bg is None or bg[-6:]=='FFFFFF' else bg[-6:]),bold=bold,italic=italic))
+    sheet=Sheet(name='表',cells=cells,max_row=6,max_col=4)
+    context=S(workbook=S(file_format='xlsx',file_path=None),sheet=sheet,table_region=S(range=CellRange(start_row=1,start_col=1,end_row=6,end_col=4),layout=S(body_start_row=2)))
+    result=FormatBasedSemanticsRule().check(context)
+    format_cases.append(dict(entries=entries,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
 registry.discover()
 skipped=[]
 for rule_id in ['L1-09','L3-02','L3-03','L3-07','L3-08']:
     result=registry.get(rule_id).check(None)
     skipped.append(dict(id=rule_id,message=result.message,confidence=result.confidence,passed=result.passed))
-print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases,objects=object_cases),ensure_ascii=False))
+print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases,objects=object_cases,formats_semantics=format_cases),ensure_ascii=False))
 '''
 data=json.loads(subprocess.check_output([str(repo/'.venv/bin/python'),'-I','-X','utf8','-c',code],cwd=repo,text=True))
 out=Path(__file__).resolve().parent.parent/'test/fixtures/machine-readability/harunobu-basic-diagnostics-reference.json'
