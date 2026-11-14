@@ -127,13 +127,11 @@ impl SlideEditor {
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx.background_executor().spawn(async move {
-                super::harunobu::runtime().and_then(|bin| {
-                    if let Some((source, presentation)) = snapshot {
-                        let bytes = source.save(&presentation, ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?;
-                        super::harunobu::analyze_snapshot(&bin, &paths[0], &bytes, mode)
-                    } else if bulk { super::harunobu::analyze_bulk(&bin, &paths, mode) }
-                    else { super::harunobu::analyze(&bin, &paths[0], mode) }
-                })
+                if let Some((source, presentation)) = snapshot {
+                    let bytes = source.save(&presentation, ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?;
+                    super::harunobu::analyze_snapshot(&paths[0], &bytes, mode)
+                } else if bulk { super::harunobu::analyze_bulk(&paths, mode) }
+                else { super::harunobu::analyze(&paths[0], mode) }
             }).await;
             this.update_in(cx, |this, _window, cx| {
                 if this.file_id != document_id { return; }
@@ -144,10 +142,8 @@ impl SlideEditor {
                     Ok(report) => panel.full = Some(std::sync::Arc::new(report)),
                     Err(error) => {
                         let message = match error.as_str() {
-                            "Harunobu runtime is not installed" | "Harunobu executable is missing" => text("xlsx.harunobu.runtime-missing").to_string(),
-                            "Harunobu runtime version does not match" | "Harunobu runtime source is modified" | "Cannot verify Harunobu runtime" => text("xlsx.harunobu.runtime-invalid").to_string(),
                             "Unsupported input format" => text("xlsx.harunobu.unsupported").to_string(),
-                            "Harunobu timed out" => text("xlsx.harunobu.timeout").to_string(),
+                            "Native analysis unavailable" => text("xlsx.harunobu.analysis-unavailable").to_string(),
                             _ => error,
                         };
                         panel.full_error = Some(message);

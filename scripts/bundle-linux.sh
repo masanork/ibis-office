@@ -70,6 +70,7 @@ cp "$LIC/LICENSE" "$DOC/LICENSE"
 cp "$LIC/COMMERCIAL-LICENSE.md" "$DOC/COMMERCIAL-LICENSE.md"
 [[ -f $LIC/NOTICE ]] && cp "$LIC/NOTICE" "$DOC/NOTICE"
 cp crates/ibis-office-app/linux/license.md "$DOC/third-party-licenses.md"
+cp crates/ibis-office-xlsx/licenses/onnxruntime-1.22.0/ThirdPartyNotices.txt "$DOC/ONNXRuntime-ThirdPartyNotices.txt"
 cp crates/ibis-office-render/fonts/carlito/OFL.txt "$DOC/Carlito-OFL.txt"
 
 OUT="target/dist/ibisOffice-$VERSION-Linux.AppImage"
