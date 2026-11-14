@@ -370,3 +370,16 @@ fn rust_irrelevant_information_matches_pinned_harunobu() {
     }
     assert_eq!(irrelevant_information(None).result.confidence, 0.0);
 }
+
+#[test]
+fn whitespace_cell_issues_match_reference() {
+    use ibis_doc_model::machine_readability_rules::whitespace_issues;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-whitespace-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let got = whitespace_issues(case["value"].as_str().unwrap(), case["address"].as_bool().unwrap());
+        let expected: Vec<_> = case["issues"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(got, expected, "case {i}: {case}");
+    }
+}

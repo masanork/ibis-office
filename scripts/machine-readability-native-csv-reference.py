@@ -10,7 +10,8 @@ import json
 from harunobu.core.reader import _read_csv_data
 from harunobu.core.analyzer import Analyzer
 inputs=[('clean','地域,年度,人数\n東京,2024,5\n大阪,2025,10\n','utf-8',','),('bom','地域,年度,人数\n東京,2024,5\n大阪,2025,10\n','utf-8-sig',','),('cp932','品目,区分,数量\n①,A,10\n大阪,B,20\n','cp932',','),('enum','地域,内容,数量\n東京,A、B、C,10\n大阪,通常,20\n','utf-8',','),('multi','地域,内容,数量\n東京,"一行\n二行",10\n大阪,通常,20\n','utf-8',','),('title','調査の表,,\n地域,年度,人数\n東京,2024,5\n大阪,2025,10\n','utf-8',','),('tsv','地域\t内容\t数量\n東京\tA・B・C\t10\n大阪\t通常\t20\n','utf-8','\t'),('fullwidth','項目,値,数\nＡ,通常,1\nＢ,通常,2\n','utf-8',',')]
-ids=['L1-01','L1-02','L1-04','L1-07','L1-08','L1-14','L1-15']
+inputs.extend([('address','住所,内容,数量\n東京都\u3000千代田区,通常,1\n大阪府\u3000大阪市,空白\u3000あり,2\n','utf-8',','),('whitespace','地域,内容,数量\n東京, 先頭,1\n大阪,通常  空白,2\n','utf-8',',')])
+ids=['L1-01','L1-02','L1-04','L1-06','L1-07','L1-08','L1-14','L1-15']
 out=[]
 for name,text,enc,delimiter in inputs:
     raw=text.encode(enc);wb=_read_csv_data('fixture.csv',raw,delimiter);result=Analyzer('lite').analyze(wb);tables=result.sheets[0].tables

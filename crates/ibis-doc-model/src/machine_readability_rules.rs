@@ -250,3 +250,55 @@ pub fn irrelevant_information(others: Option<&[OutsideTableCell]>) -> RuleEvalua
     let findings = others.iter().map(|cell| Finding { location: address(cell.row, cell.column), severity: FindingSeverity::Warning }).collect::<Vec<_>>();
     result("L1-04", findings.is_empty(), 0.9, Severity::Major, findings)
 }
+
+/// Harunobu L1-06 issue descriptions for one cell. Address columns and
+/// several semantic uses of full-width spaces are treated as exceptions.
+pub fn whitespace_issues(value: &str, is_address_column: bool) -> Vec<&'static str> {
+    use std::sync::OnceLock;
+    static SEMANTIC: OnceLock<regex::Regex> = OnceLock::new();
+    static CONSECUTIVE: OnceLock<regex::Regex> = OnceLock::new();
+    let semantic = SEMANTIC.get_or_init(|| regex::Regex::new(concat!(
+        r"^(?:[ア-ンa-zａ-ｚ①-⑳（(][）)]?\u{3000}|※\d*\u{3000}|第[０-９0-9一二三四五六七八九十]+\u{3000}",
+        r"|\u{3000}+〃(?:\n)?$|\u{3000}+[○●・◯]\u{3000}?|\[.+?\]\u{3000}?[0-9０-９]",
+        r"|[\u{2160}-\u{217f}][．.]\u{3000}?|[0-9０-９]+[．.]\u{3000}|\u{3000}{2,}[0-9０-９]+[．.])",
+        r"|\([A-Za-z]\)/\([A-Za-z]\)\u{3000}"
+    )).unwrap());
+    let consecutive = CONSECUTIVE.get_or_init(|| regex::Regex::new(r"[ \u{3000}]{2,}").unwrap());
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let semantic = semantic.is_match(value);
+    let mut issues = Vec::new();
+    let check = value.trim_end_matches('\n');
+    if check != check.trim_matches(space) && !semantic { issues.push("先頭または末尾に空白があります"); }
+    if !is_address_column && value.contains('\u{3000}') && !semantic { issues.push("全角スペースが含まれています"); }
+    if !is_address_column && consecutive.is_match(value.trim_matches(space)) && !semantic { issues.push("連続するスペースが含まれています"); }
+    let content = value.trim_end_matches(['\r', '\n']);
+    if (content.contains('\n') || content.contains('\r')) && value.chars().filter(|&c| space(c)).count() as f64 / value.chars().count().max(1) as f64 > 0.10 {
+        issues.push("セル内に体裁目的の改行が含まれています");
+    }
+    issues
+}
+
+/// L1-06 over the supplied table and header rows. `None` means header metadata
+/// is unavailable; an empty list uses the first table row as in Harunobu.
+pub fn whitespace_formatting(sheet: &Sheet, table: CellRange, header_rows: Option<&[u32]>) -> RuleEvaluation {
+    use std::sync::OnceLock;
+    static ADDRESS: OnceLock<regex::Regex> = OnceLock::new();
+    if table.first_row > table.last_row || table.first_column > table.last_column || header_rows.is_none() {
+        return result("L1-06", true, 0.0, Severity::Critical, Vec::new());
+    }
+    let address_re = ADDRESS.get_or_init(|| regex::Regex::new(r"(?i)(住所|所在地|address|addr|勤務地|居所|連絡先住所|本籍|現住所|送付先)").unwrap());
+    let headers = header_rows.unwrap();
+    let header_rows: BTreeSet<_> = if headers.is_empty() { BTreeSet::from([table.first_row]) } else { headers.iter().copied().collect() };
+    let address_columns: BTreeSet<_> = sheet.cells.iter().filter_map(|c| {
+        if !header_rows.contains(&c.row) || c.column < table.first_column || c.column > table.last_column { return None; }
+        match &c.value { CellValue::Text(value) if address_re.is_match(value) => Some(c.column), _ => None }
+    }).collect();
+    let findings: Vec<_> = sheet.cells.iter().filter_map(|cell| {
+        if cell.row < table.first_row || cell.row > table.last_row || cell.column < table.first_column || cell.column > table.last_column { return None; }
+        match &cell.value {
+            CellValue::Text(value) if !value.is_empty() && !whitespace_issues(value, address_columns.contains(&cell.column)).is_empty() => Some(Finding { location: address(cell.row, cell.column), severity: FindingSeverity::Warning }),
+            _ => None,
+        }
+    }).collect();
+    result("L1-06", findings.is_empty(), 0.95, Severity::Critical, findings)
+}
