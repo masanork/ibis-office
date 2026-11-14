@@ -25,8 +25,9 @@ pub fn read_xlsx_layout_auto(bytes: &[u8], sheet_index: usize) -> Result<(XlsxRe
 }
 
 /// Original saved values and formulas, plus the reference reader window and
-/// layout projection. Formula values come from the XLSX cache; `text` remains
-/// display metadata and must not be used as an authoritative saved value.
+/// layout projection. Cells are restricted to the reader window; formula values
+/// come from the XLSX cache. `text` remains display metadata and must not be
+/// used as an authoritative saved value.
 #[derive(Clone, Debug)]
 pub struct XlsxSavedSheet { pub window: XlsxReadWindow, pub layout: XlsxLayoutInput, pub sheet: Sheet }
 
@@ -84,9 +85,9 @@ fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxRe
     let input = prepare_xlsx_layout_for_mode(sheet, window, &caches, mode).map_err(XlsxInputError::Layout)?;
     let saved = if include_sheet {
         let mut saved = (**sheet).clone();
+        saved.cells.retain(|cell| match window { XlsxReadWindow::Empty => false, XlsxReadWindow::Through { last_row, last_column } => cell.row <= last_row && cell.column <= last_column });
         for cell in &mut saved.cells {
-            let within = match window { XlsxReadWindow::Empty => false, XlsxReadWindow::Through { last_row, last_column } => cell.row <= last_row && cell.column <= last_column };
-            if within && cell.formula.is_some() {
+            if cell.formula.is_some() {
                 cell.value = caches.get(&(cell.row, cell.column)).ok_or(XlsxInputError::FormulaModelMismatch)?.clone();
                 cell.kind = CellKind::of(&cell.value);
             }

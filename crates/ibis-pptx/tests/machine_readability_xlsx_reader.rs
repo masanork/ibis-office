@@ -211,3 +211,12 @@ fn xlsx_formula_artifacts_match_pinned_harunobu() {
         }
     }
 }
+
+#[test]
+fn saved_xlsx_values_are_limited_to_reference_window() {
+    use ibis_pptx::machine_readability_xlsx::read_xlsx_saved_sheet;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let saved = read_xlsx_saved_sheet(&std::fs::read(root.join("xlsx-window-cases.xlsx")).unwrap(), 3).unwrap();
+    assert_eq!(saved.window, XlsxReadWindow::Through { last_row: 100, last_column: 5 });
+    assert!(saved.sheet.cells.iter().all(|c| c.row <= 100 && c.column <= 5));
+}
