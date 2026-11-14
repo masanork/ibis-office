@@ -22,6 +22,7 @@ use ibis_ooxml::{NodeId, Package, XmlDocument};
 
 use super::unsupported;
 use crate::Error;
+use crate::docx::ParaIds;
 
 /// Where one position of a paragraph came from. Paths are below the
 /// paragraph's `w:p`.
@@ -560,12 +561,80 @@ fn write_theme(package: &mut Package, main: &str, colors: &[(String, ibis_doc_mo
     Ok(())
 }
 
+/// Write an identity using the part's Word 2010 prefix (which need not be w14).
+fn set_para_id(doc: &mut XmlDocument, p: NodeId, id: &str) {
+    let prefix = match doc.lookup_prefix(p, W14_NS) {
+        Some(prefix) => prefix,
+        None => {
+            let root = doc.root_element().unwrap_or(XmlDocument::ROOT);
+            doc.set_attr(root, "xmlns:w14", W14_NS);
+            "w14".to_string()
+        }
+    };
+    doc.set_attr(p, &format!("{prefix}:paraId"), id);
+}
+
+/// Reserve identities before writing any part, and apply identities repaired
+/// on read even when the paragraph's text and formatting have not changed.
+fn paragraph_identities(package: &mut Package, map: &SourceMap, cur: &FlowDocument) -> Result<ParaIds, Error> {
+    let mut ids = ParaIds::default();
+    let parts: Vec<String> = package.names().filter(|p| p.ends_with(".xml")).map(str::to_string).collect();
+    for part in parts {
+        let bytes = package.read(&part)?;
+        if let Ok(xml) = std::str::from_utf8(&bytes) {
+            ids.reserve_xml(xml);
+        }
+    }
+    let mut blocks = HashMap::new();
+    index_blocks(&cur.body, &mut blocks);
+    for (_, own) in own_parts(cur) {
+        index_blocks(own, &mut blocks);
+    }
+    for note in cur.footnotes.iter().chain(&cur.endnotes) {
+        index_blocks(&note.blocks, &mut blocks);
+    }
+    for comment in &cur.comments {
+        index_blocks(&comment.blocks, &mut blocks);
+        if let Some(id) = &comment.para_id {
+            ids.reserve(id);
+        }
+    }
+    let mut by_part = std::collections::BTreeMap::<&str, Vec<(&[u32], &str)>>::new();
+    for block in blocks.values() {
+        let Block::Paragraph(p) = block else { continue };
+        let Some(id) = &p.para_id else { continue };
+        ids.reserve(id);
+        if let Some(source) = map.paragraphs.get(&p.id) {
+            by_part.entry(&source.part).or_default().push((&source.path, id));
+        }
+    }
+    for (part, paragraphs) in by_part {
+        let pristine = package.xml(part)?;
+        let mut repairs = Vec::new();
+        for (path, id) in paragraphs {
+            if let Some(node) = pristine.by_path(path)
+                && pristine.attr_local(node, "paraId") != Some(id)
+            {
+                repairs.push((node, id));
+            }
+        }
+        if !repairs.is_empty() {
+            let doc = package.xml_mut(part)?;
+            for (node, id) in repairs {
+                set_para_id(doc, node, id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
 pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &Presentation, current: &Presentation, new_charts: &HashMap<ibis_doc_model::ShapeId, super::NewChartEntry>, chart_data: &super::pptx_chart_data::ChartDataEdits) -> Result<(), Error> {
     let (base, cur) = match (&baseline.flow, &current.flow) {
         (Some(a), Some(b)) => (a, b),
         (None, None) => return Ok(()),
         _ => return Err(unsupported("文書の変更")),
     };
+    let mut para_ids = paragraph_identities(package, map, cur)?;
     let theme_changed = baseline.theme_colors != current.theme_colors
         || baseline.theme_fonts != current.theme_fonts
         || baseline.theme_effects != current.theme_effects;
@@ -756,7 +825,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         let pristine = package.xml(&part)?;
         let doc = package.xml_mut(&part)?;
         let root = doc.root_element();
-        let mut writer = Writer { doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures: &pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: if fresh { root } else { None }, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &base.shape_groups, new_shape_groups: &cur.shape_groups };
+        let mut writer = Writer { para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures: &pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: if fresh { root } else { None }, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &base.shape_groups, new_shape_groups: &cur.shape_groups };
         writer.resolve_nodes();
         writer.list(old, new)?;
         if body {
@@ -913,7 +982,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         let doc = package.xml_mut(&part)?;
         let root = doc.root_element().ok_or_else(|| unsupported("空の脚注のパーツ"))?;
         let element = if endnote { "endnote" } else { "footnote" };
-        let mut writer = Writer { doc, pristine: &pristine, map, part: &part, old_blocks: &old_notes, new_blocks: &new_notes, pictures: &pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
+        let mut writer = Writer { para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_notes, new_blocks: &new_notes, pictures: &pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
         writer.resolve_nodes();
         let find = |w: &Writer, id: u32| {
             w.doc.elements(root).find(|&e| {
@@ -947,7 +1016,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         }
     }
     if base.comments != cur.comments {
-        write_comments(package, map, &base.comments, &cur.comments, &pictures)?;
+        write_comments(package, map, &base.comments, &cur.comments, &pictures, &mut para_ids)?;
     }
     Ok(())
 }
@@ -957,7 +1026,7 @@ const W15_NS: &str = "http://schemas.microsoft.com/office/word/2012/wordml";
 
 /// The comments (`comments.xml`, made if missing) and which answers which
 /// and which are resolved (`commentsExtended.xml`, written again).
-fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model::Comment], new: &[ibis_doc_model::Comment], pictures: &HashMap<MediaId, (u32, usize)>) -> Result<(), Error> {
+fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model::Comment], new: &[ibis_doc_model::Comment], pictures: &HashMap<MediaId, (u32, usize)>, para_ids: &mut ParaIds) -> Result<(), Error> {
     let dir = map.body_part.rsplit_once('/').map_or("", |(d, _)| d);
     let in_dir = |name: &str| if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") };
     let part = match &map.comments_part {
@@ -994,7 +1063,7 @@ fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model:
             doc.set_attr(root, "xmlns:w14", W14_NS);
         }
         let w14 = doc.lookup_prefix(root, W14_NS).unwrap_or_else(|| "w14".into());
-        let mut writer = Writer { doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
+        let mut writer = Writer { para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
         writer.resolve_nodes();
         let find = |w: &Writer, id: u32| w.doc.elements(root).find(|&e| w.doc.local_name(e) == "comment" && w.doc.attr_local(e, "id") == Some(id.to_string().as_str()));
         for c in old {
@@ -1871,6 +1940,7 @@ struct Writer<'a> {
     /// The group hierarchies (`wpg:wgp`) in the baseline and current documents.
     old_shape_groups: &'a [ibis_doc_model::ShapeGroup],
     new_shape_groups: &'a [ibis_doc_model::ShapeGroup],
+    para_ids: &'a mut ParaIds,
 }
 
 /// CT_RPr's children in order.
@@ -2976,6 +3046,7 @@ impl Writer<'_> {
                     for attr in ["w14:paraId", "w14:textId"] {
                         self.doc.remove_attr(tr, attr);
                     }
+                    // new_cell writes each copied paragraph with a fresh identity.
                     match previous {
                         Some(prev) => self.doc.insert_after(prev, tr),
                         None => {
@@ -4777,7 +4848,9 @@ impl Writer<'_> {
     /// Remove from a copied paragraph what must be unique or belongs to the
     /// original (bookmarks, comment ranges, ids, a section break).
     fn clean_copy(&mut self, p: NodeId) {
-        for attr in ["w14:paraId", "w14:textId", "w:rsidR", "w:rsidRPr", "w:rsidRDefault", "w:rsidP"] {
+        let id = self.para_ids.fresh();
+        set_para_id(self.doc, p, &id);
+        for attr in ["w14:textId", "w:rsidR", "w:rsidRPr", "w:rsidRDefault", "w:rsidP"] {
             self.doc.remove_attr(p, attr);
         }
         for node in self.doc.descendants(p) {
@@ -7263,6 +7336,8 @@ impl Writer<'_> {
 
     /// Write the paragraph's own formatting (`w:pPr`).
     fn paragraph_props(&mut self, p: NodeId, old: &FlowParagraph, new: &FlowParagraph) -> Result<(), Error> {
+        let id = new.para_id.clone().or_else(|| self.doc.attr_local(p, "paraId").map(str::to_string)).unwrap_or_else(|| self.para_ids.fresh());
+        set_para_id(self.doc, p, &id);
         if old.bookmarks != new.bookmarks || old.field_start != new.field_start || old.field_end != new.field_end {
             self.paragraph_marks(p, old, new)?;
         }
@@ -7681,7 +7756,8 @@ fn write_styles(package: &mut Package, map: &SourceMap, old: &ibis_doc_model::Fl
     let none_added = HashMap::new();
     let none_svg = HashSet::new();
     let none_links = HashMap::new();
-    let mut writer = Writer { doc, pristine: &pristine, map, part: &part, old_blocks: &none_blocks, new_blocks: &none_blocks, pictures: &none_pictures, nodes: HashMap::new(), added: &none_added, svg_media: &none_svg, empty_parent: None, link_rels: &none_links, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
+    let mut para_ids = ParaIds::default();
+    let mut writer = Writer { para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &none_blocks, new_blocks: &none_blocks, pictures: &none_pictures, nodes: HashMap::new(), added: &none_added, svg_media: &none_svg, empty_parent: None, link_rels: &none_links, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
     let element_of = |doc: &XmlDocument, id: &str| doc.children_named(root, "style").find(|&e| doc.attr(e, "w:styleId") == Some(id));
     if old.defaults_run != new.defaults_run {
         let defaults = writer.ensure(root, "docDefaults", &["docDefaults", "latentStyles", "style"]);
