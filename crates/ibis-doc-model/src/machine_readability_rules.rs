@@ -441,10 +441,11 @@ pub fn header_start_position(table: CellRange, header_rows: &[u32], body_first: 
     Some(result("L3-01", findings.is_empty(), 0.95, severity, findings))
 }
 
-/// L3 rules that the pinned reference always marks outside the assessment.
-pub fn reference_skipped_level3() -> [RuleEvaluation; 3] {
+/// L3 rules skipped by the pinned reference for single-file assessment.
+pub fn reference_skipped_level3() -> [RuleEvaluation; 4] {
     [result("L3-02", true, 0.0, Severity::Critical, Vec::new()),
      result("L3-03", true, 0.0, Severity::Major, Vec::new()),
+     result("L3-07", true, 0.0, Severity::Critical, Vec::new()),
      result("L3-08", true, 0.0, Severity::Major, Vec::new())]
 }
 
@@ -473,4 +474,85 @@ pub fn csv_item_abbreviations(sheet: &Sheet, stub_columns: &[u32], body_first: u
         }
     }
     Some(result("L2-02", findings.is_empty(), 0.70, Severity::Fatal, findings))
+}
+
+/// L2-01 for unmerged CSV/TSV text cells with reader-inferred column schemas,
+/// with AI unavailable. A missing schema map uses the reference fallback.
+pub fn csv_numeric_purity(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)]) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    use crate::machine_readability_layout::InferredColumnType;
+    struct Patterns { pure: regex::Regex, strict: regex::Regex, unit: regex::Regex, percent_unit: regex::Regex, note: regex::Regex, percent: regex::Regex, triangle: regex::Regex, has_digit: regex::Regex }
+    static PATTERNS: OnceLock<Patterns> = OnceLock::new();
+    let p = PATTERNS.get_or_init(|| Patterns {
+        pure: regex::Regex::new(r"^[\s\x1c-\x1f\-ー−▲△▼]*[\d,]+\.?\d*[\s\x1c-\x1f]*$").unwrap(),
+        strict: regex::Regex::new(r"^[\s\x1c-\x1f\-ー−]*[\d,]+\.?\d*[\s\x1c-\x1f]*$").unwrap(),
+        unit: regex::Regex::new(r"^[\d,.]+[\s\x1c-\x1f]*(人|件|円|千円|百万円|億円|万|千|kg|km|m|g|t|ha|㎡|個|台|回|本|枚|箇所|か所|世帯|戸|社|校|棟|隻|機|両|組|点|冊|食|泊|日|月|年|時間|分|秒|歳|才|度|号|丁目)$").unwrap(),
+        percent_unit: regex::Regex::new(r"^[\d,.]+[\s\x1c-\x1f]*(%|％)$").unwrap(),
+        note: regex::Regex::new(r"^[\d,.]+[\s\x1c-\x1f]*[（(].*[）)]$").unwrap(),
+        percent: regex::Regex::new(r"^[\s\x1c-\x1f\-ー−▲△▼]*[\d,.]+[\s\x1c-\x1f]*(%|％)[\s\x1c-\x1f]*$").unwrap(),
+        triangle: regex::Regex::new(r"^[▲△▼][\s\x1c-\x1f]*[\d,]+\.?\d*[\s\x1c-\x1f]*$").unwrap(),
+        has_digit: regex::Regex::new(r"\d").unwrap(),
+    });
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new();
+    let mut columns: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= body_first && c.row <= body_last && c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        if !value.is_empty() { cells.insert((cell.row, cell.column), value); columns.entry(cell.column).or_default().push(value); }
+    }
+    let schema_map: BTreeMap<_, _> = schemas.iter().copied().collect();
+    let mut numeric = BTreeSet::new();
+    let mut percent = BTreeSet::new();
+    for col in table.first_column..=table.last_column {
+        let vals = columns.get(&col).map_or(&[][..], Vec::as_slice);
+        let majority = || !vals.is_empty() && vals.iter().filter(|v| p.pure.is_match(v) || p.unit.is_match(v) || p.percent_unit.is_match(v) || p.note.is_match(v)).count() * 2 > vals.len();
+        let selected = if schema_map.is_empty() { majority() } else { match schema_map.get(&col) { Some(InferredColumnType::Numeric) => true, Some(InferredColumnType::Mixed) => majority(), _ => false } };
+        if selected {
+            numeric.insert(col);
+            if !vals.is_empty() && vals.iter().filter(|v| p.percent.is_match(v)).count() * 2 >= vals.len() { percent.insert(col); }
+        }
+    }
+    let mut findings = Vec::new();
+    for (&(row, col), &value) in &cells {
+        if !numeric.contains(&col) || p.strict.is_match(value) || !p.has_digit.is_match(value) || (percent.contains(&col) && p.percent.is_match(value)) { continue; }
+        let severity = if !p.triangle.is_match(value) && !p.unit.is_match(value) && !p.percent_unit.is_match(value) && p.note.is_match(value) { FindingSeverity::Warning } else { FindingSeverity::Error };
+        findings.push(Finding { location: address(row, col), severity });
+    }
+    Some(result("L2-01", findings.is_empty(), 0.85, Severity::Fatal, findings))
+}
+
+/// L2-05 for unmerged CSV/TSV, with AI unavailable.
+pub fn csv_other_details(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)]) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use crate::machine_readability_layout::InferredColumnType;
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let schema_map: BTreeMap<_, _> = schemas.iter().copied().collect();
+    let mut columns: BTreeMap<u32, Vec<(u32, &str)>> = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= body_first && c.row <= body_last && c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        if !value.is_empty() { columns.entry(cell.column).or_default().push((cell.row, value)); }
+    }
+    let mut analyzed = false;
+    let mut findings = Vec::new();
+    for col in table.first_column..=table.last_column {
+        if matches!(schema_map.get(&col), Some(InferredColumnType::Numeric | InferredColumnType::Date | InferredColumnType::Empty)) { continue; }
+        let Some(cells) = columns.get_mut(&col) else { continue; };
+        cells.sort_by_key(|v| v.0);
+        if cells.len() < 20 { continue; }
+        let mut values: Vec<(&str, Vec<u32>)> = Vec::new();
+        for &(row, value) in cells.iter() {
+            if let Some((_, rows)) = values.iter_mut().find(|(v, _)| *v == value) { rows.push(row); } else { values.push((value, vec![row])); }
+        }
+        if values.len() > 20 { continue; }
+        analyzed = true;
+        if values.iter().filter(|(value, _)| value.contains("その他")).count() >= 2 {
+            for (_, rows) in values.iter().filter(|(value, rows)| value.contains("その他") && rows.len() < 3) {
+                findings.push(Finding { location: address(rows[0], col), severity: FindingSeverity::Warning });
+            }
+        }
+    }
+    Some(result("L2-05", findings.is_empty(), if analyzed { 0.8 } else { 0.0 }, Severity::Major, findings))
 }
