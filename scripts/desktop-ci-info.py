@@ -35,7 +35,7 @@ def main():
                 "runner_os": os.environ.get("RUNNER_OS"), "runner_arch": os.environ.get("RUNNER_ARCH"),
                 "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
                 "repository": os.environ.get("GITHUB_REPOSITORY"),
-                "note": "CI build record; not signed provenance or a distribution release."}
+                "note": "CI build record; not signed provenance."}
         (out / "build-info.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     else:
         files = sorted(p for p in out.iterdir() if p.is_file() and p.name != "SHA256SUMS")

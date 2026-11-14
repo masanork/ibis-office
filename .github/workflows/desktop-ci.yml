@@ -1,8 +1,9 @@
-# CI artifacts are for validation, not public releases or update feeds.
+# Branch builds are CI artifacts; sorane-v* tags publish milestone releases.
 name: Desktop build CI
 on:
   push:
     branches: [masanork]
+    tags: ["sorane-v*"]
   pull_request:
     branches: [masanork]
   workflow_dispatch:
@@ -20,8 +21,28 @@ env:
   CARGO_TERM_COLOR: never
 
 jobs:
+  validate-source:
+    name: Validate release source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require tagged commit in masanork history
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sorane-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/masanork
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+
   desktop:
     name: ${{ matrix.name }}
+    needs: validate-source
     strategy:
       fail-fast: false
       matrix:
@@ -109,6 +130,7 @@ jobs:
 
   linux:
     name: Linux x64 AppImage
+    needs: validate-source
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
@@ -180,3 +202,49 @@ jobs:
           path: ci-artifact/
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish milestone release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [validate-source, desktop, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-ci-*
+          path: artifacts
+      - name: Verify and publish the built packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG" +refs/heads/masanork:refs/remotes/origin/masanork
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/masanork
+          mkdir release
+          for platform in linux-x64 macos-arm64 windows-x64; do
+            dir="artifacts/desktop-ci-$platform"
+            (cd "$dir" && sha256sum -c SHA256SUMS)
+            python3 -c 'import json,os,sys; assert json.load(open(sys.argv[1]))["source_sha"] == os.environ["EXPECTED_SOURCE_SHA"]' "$dir/build-info.json"
+            case "$platform" in
+              linux-x64) package=desktop-linux-x64-ci.AppImage ;;
+              macos-arm64) package=desktop-macos-arm64-ci.zip ;;
+              windows-x64) package=desktop-windows-x64-ci.zip ;;
+            esac
+            cp "$dir/$package" release/
+            cp "$dir/build-info.json" "release/build-info-$platform.json"
+          done
+          (cd release && sha256sum * > SHA256SUMS)
+          release_flags=()
+          [[ "$TAG" == *-*.*.*-* ]] && release_flags+=(--prerelease)
+          gh release create "$TAG" --verify-tag "${release_flags[@]}" --title "Sorane Docs $TAG" \
+            --notes "Milestone build from commit $EXPECTED_SOURCE_SHA. macOS is ad-hoc signed and not notarized; Windows is unsigned. These builds are not an automatic update feed." \
+            release/*

@@ -75,10 +75,29 @@ macOS arm64、Windows x64、Linux x64 AppImage をビルドする。PR はマー
 `SHA256SUMS` とともに Actions artifact として14日間保存する。
 
 これらは **CI 検証用**であり、公開リリースではない。macOS は ad-hoc 署名で
-公証されておらず、Windows も配布署名はない。現行の名前・ロゴと upstream の
-自動更新先も配布向けには整理が必要。タグ付けや GitHub Release への自動添付、
-署名鍵、デプロイ権限はこの workflow に含めない。CI の起動テストは異常な引数の
+公証されておらず、Windows も配布署名はない。通常のブランチ CI は GitHub Release を作成せず、署名鍵やデプロイ権限も含めない。
+CI の起動テストは異常な引数の
 終了コードやパッケージ構造を確認するもので、GUI 操作の検証ではない。
+
+## マイルストーン Release
+
+`masanork` の履歴にある検証済みコミットに `sorane-v1.2.3` のようなタグを
+push すると、Desktop build CI が同じコミットの Linux x64 AppImage、macOS arm64、
+Windows x64 をビルド・検証し、全ジョブ成功後に GitHub Release を作成する。
+`-rc.1` のようなハイフン付き接尾辞は prerelease として公開される。
+上流タグと区別するため `sorane-v` を使う。
+
+```sh
+git fetch origin masanork
+git tag -a sorane-v1.2.3 origin/masanork -m 'Sorane Docs milestone 1.2.3'
+git push origin sorane-v1.2.3
+```
+
+Release には各パッケージ、ビルド情報、SHA256SUMS を添付する。タグが指すコミットが
+公開時にも `masanork` の履歴にあることを確認し、既存 Release は上書きしない。
+タグを付け替えて再利用せず、修正には新しいタグを使う。Release は自動公開される。
+macOS は公証されず Windows は未署名であり、自動更新フィードではない。
+公開前には対象コミットの CI と配布内容を確認する。
 
 ## Desktop branding and updates
 
