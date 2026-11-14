@@ -5,12 +5,13 @@ from pathlib import Path
 commit='88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f';repo=Path(sys.argv[1]).resolve()
 if subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip()!=commit: raise SystemExit('Harunobu checkout is not at the pinned revision')
 code=r'''
-import datetime,io,json,random
+import datetime,io,json,random,zlib
 from openpyxl import Workbook
 from openpyxl.styles import Border,Font,PatternFill,Side
 from harunobu.core.reader import read_workbook
 from harunobu.core.analyzer import Analyzer
 from harunobu.core.scorer import LevelScorer
+from harunobu.output.json_writer import to_dict
 rng=random.Random(110621);out=[]
 ids1=['L1-01','L1-02','L1-03','L1-04','L1-05','L1-06','L1-07','L1-08','L1-09','L1-10','L1-11','L1-12','L1-13']
 ids2=['L2-01','L2-02','L2-03','L2-04','L2-05','L2-06'];ids3=['L3-01','L3-02','L3-03','L3-04','L3-05','L3-06','L3-07','L3-08','L3-09']
@@ -32,10 +33,11 @@ for i in range(100):
         checks=[]
         for level,ids in [(t.mr_result.level1,ids1),(t.mr_result.level2,ids2),(t.mr_result.level3,ids3)]:
             for id in ids:
-                r=level[id];checks.append(dict(id=id,passed=r.passed,confidence=r.confidence,severity=r.severity.value,findings=[[v.cell_range,v.severity] for v in r.violations]))
+                r=level[id];checks.append(dict(id=id,passed=r.passed,confidence=r.confidence,severity=r.severity.value,message=r.message,descriptions=[[v.cell_range,v.description] for v in r.violations],findings=[[v.cell_range,v.severity] for v in r.violations]))
         r=t.range;tables.append(dict(range=[r.start_row-1,r.start_col-1,r.end_row-1,r.end_col-1],headers=[v-1 for v in t.layout.header_rows],column_headers=[dict(column=h.col_index-1,rows=[r-1 for r in h.header_rows],label=h.label,merged=h.is_merged) for h in t.column_headers],confidence=t.confidence,checks=checks))
     scores=LevelScorer().score_analysis(result)
-    out.append(dict(name=f'generated-{i}',bytes=raw.hex(),tables=tables,scores=[scores.per_level[n].model_dump(mode='json') for n in (1,2,3)]))
+    reports={mode:zlib.compress(json.dumps(to_dict(result if mode=='thorough' else Analyzer(mode).analyze(wb)),ensure_ascii=False,separators=(',',':')).encode()).hex() for mode in ['lite','standard','thorough']}
+    out.append(dict(name=f'generated-{i}',bytes=raw.hex(),tables=tables,reports=reports,scores=[scores.per_level[n].model_dump(mode='json') for n in (1,2,3)]))
 print(json.dumps(out,ensure_ascii=False))
 '''
 env={k:v for k,v in os.environ.items() if not k.startswith('HARUNOBU_') and k not in {'OPENAI_API_KEY','ANTHROPIC_API_KEY','GOOGLE_API_KEY','AZURE_OPENAI_API_KEY'}};env['HARUNOBU_AI_DISABLED']='1'

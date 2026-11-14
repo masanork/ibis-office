@@ -82,8 +82,10 @@ pub fn read_xlsx_saved_sheet(bytes: &[u8], sheet_index: usize) -> Result<XlsxSav
 fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxReadWindow>, include_sheet: bool) -> Result<(XlsxReadWindow, XlsxLayoutInput, Option<(Sheet, BTreeMap<(u32, u32), XlsxNumericLexeme>, bool)>), XlsxInputError> {
     let mode = if bytes.len() > 5 * 1024 * 1024 { XlsxReaderMode::TwoPass } else { XlsxReaderMode::SinglePass };
     let (presentation, sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
-    let slide = presentation.slides.get(sheet_index).ok_or(XlsxInputError::SheetUnavailable)?;
-    let sheet = sheet_of_slide(slide).ok_or(XlsxInputError::SheetUnavailable)?;
+    let entry = presentation.workbook.as_ref().and_then(|w|w.sheets.get(sheet_index)).ok_or(XlsxInputError::SheetUnavailable)?;
+    let sheet = if let Some(slide_id) = entry.slide {
+        sheet_of_slide(presentation.slide(slide_id).ok_or(XlsxInputError::SheetUnavailable)?).ok_or(XlsxInputError::SheetUnavailable)?
+    } else { entry.hidden.as_ref().ok_or(XlsxInputError::SheetUnavailable)? };
     let part = sources.sheet_parts.get(sheet_index).and_then(Option::as_deref).ok_or(XlsxInputError::SheetUnavailable)?;
     let package = crate::package::Package::new(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
     let xml = package.read_xml(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
@@ -261,6 +263,8 @@ pub struct PartialXlsxStructure {
     pub header_rows: Vec<u32>,
     /// None means the reader could not faithfully stringify a source value.
     pub column_headers: Option<Vec<ibis_doc_model::machine_readability_layout::InferredColumnHeader>>,
+    pub column_schemas: Vec<ibis_doc_model::machine_readability_layout::InferredColumnSchema>,
+    pub diagnostics: Option<[Vec<ibis_doc_model::machine_readability_rules::RuleDiagnostics>; 3]>,
     pub checks: Vec<ibis_doc_model::machine_readability_rules::RuleEvaluation>,
     /// Rules omitted because this adapter cannot represent a source value.
     pub unavailable: Vec<&'static str>,
@@ -268,6 +272,12 @@ pub struct PartialXlsxStructure {
 }
 
 pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Result<Vec<PartialXlsxStructure>, XlsxInputError> {
+    let (presentation, _) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e|XlsxInputError::Workbook(e.to_string()))?;
+    let name = presentation.workbook.as_ref().and_then(|w|w.sheets.get(sheet_index)).map(|sheet|sheet.name.as_str()).ok_or(XlsxInputError::SheetUnavailable)?;
+    analyze_xlsx_structure_named(bytes,sheet_index,name)
+}
+
+fn analyze_xlsx_structure_named(bytes: &[u8], sheet_index: usize, sheet_name: &str) -> Result<Vec<PartialXlsxStructure>, XlsxInputError> {
     use ibis_doc_model::machine_readability_layout::{estimate_stub_columns, generate_column_headers, infer_column_schemas, inherit_headers_from_above, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue, ResolvedIsland};
     use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_choice_standardization, csv_item_abbreviations, csv_other_details, csv_time_axis, file_format, format_based_semantics, formula_artifacts, header_start_position, hidden_rows_columns, irrelevant_information, merged_cells, object_artifacts, one_data_per_cell, one_table_per_sheet, platform_characters, reference_skipped_level3, whitespace_formatting, xlsx_column_headers, xlsx_data_fragmentation, xlsx_data_units, xlsx_numeric_purity, xlsx_region_codes, xlsx_unique_headers, xlsx_vertical_format, ColumnType, DetectedTable, OutsideTableCell, TextEncoding, UsedExtent, WorkbookFormat};
     use ibis_doc_model::sheet::CellRange;
@@ -309,6 +319,11 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
     regions.sort_by(|a, b| b.candidate.confidence.total_cmp(&a.candidate.confidence));
     let tables: Vec<_> = regions.iter().map(|r| DetectedTable { range: r.candidate.range, confidence: r.candidate.confidence }).collect();
     let others: Vec<_> = preliminary.others.iter().map(|o| OutsideTableCell { row: o.row, column: o.column }).collect();
+    let outside: Option<Vec<_>> = text_view.as_ref().map(|text| preliminary.others.iter().map(|o| {
+        let kind = match o.kind { ibis_doc_model::machine_readability_layout::OtherRegion::Title=>"title", ibis_doc_model::machine_readability_layout::OtherRegion::Total=>"total", ibis_doc_model::machine_readability_layout::OtherRegion::Note=>"note", ibis_doc_model::machine_readability_layout::OtherRegion::Source=>"source", ibis_doc_model::machine_readability_layout::OtherRegion::Isolated=>"isolated" };
+        let value = text.cells.iter().find(|c|c.row==o.row && c.column==o.column).and_then(|c|match &c.value { CellValue::Text(v)=>Some(v.as_str()),_=>None });
+        ibis_doc_model::machine_readability_rules::OutsideCellText { cell:OutsideTableCell { row:o.row,column:o.column },region_type:kind,value }
+    }).collect());
     let mut reference_sheet = saved.sheet.clone();
     for cell in &mut reference_sheet.cells {
         let dependent = bytes.len() <= 5 * 1024 * 1024 && saved.sheet.merges.iter().any(|m| cell.row >= m.first_row && cell.row <= m.last_row && cell.column >= m.first_column && cell.column <= m.last_column && (cell.row != m.first_row || cell.column != m.first_column));
@@ -351,7 +366,27 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
         if let Some(text) = &text_view {
             if let Some(r) = xlsx_vertical_format(text, range, &region.headers.rows, &falsy) { checks.push(r); } else { unavailable.push("L3-09"); }
         } else { unavailable.push("L3-09"); }
-        Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), column_headers: text_view.as_ref().map(|_| region.column_headers.clone()), checks, unavailable, complete: false })
+        let diagnostics = if unavailable.is_empty() {
+            (|| -> Option<[Vec<ibis_doc_model::machine_readability_rules::RuleDiagnostics>;3]> {
+                use ibis_doc_model::machine_readability_rules::*;
+                let text=text_view.as_ref()?;
+                let level1=vec![file_format_report("","xlsx"),one_table_per_sheet_report(sheet_name,range,Some(&tables))?,xlsx_fragmentation_report(&saved.sheet,range,&tables,bytes.len()>5*1024*1024)?,irrelevant_information_report(Some(outside.as_deref()?))?,xlsx_column_headers_report(&saved.sheet,text,range,&region.headers.rows,region.headers.body_first,region.headers.body_last,bytes.len()>5*1024*1024)?,whitespace_formatting_report(text,range,Some(&region.headers.rows))?,one_data_per_cell_report(text,range,Some(&column_types))?,platform_characters_report(text,range,TextEncoding::Xlsx)?,blank_vs_zero_ai_disabled_report(),object_artifacts_report(range,region.abstain,objects.as_deref())?,format_based_semantics_report(&reference_sheet,range,region.headers.body_first,formats.as_ref())?,merged_cells_report(&saved.sheet,range,Some(&header_rows))?,hidden_rows_columns_report(&saved.sheet,used)?];
+                let artifacts=artifacts.as_ref()?;
+                let level2=vec![numeric_purity_report(text,range,region.headers.body_first,region.headers.body_last,&numeric_schemas,&typed_numeric)?,csv_item_abbreviations_report(text,&region.stub_columns,region.headers.body_first,region.headers.body_last)?,xlsx_unique_headers_report(text,range,&region.headers.rows,region.headers.body_first,region.headers.body_last,&saved.layout.merges)?,csv_choice_standardization_report(text,range,region.headers.body_first,region.headers.body_last,&numeric_schemas)?,csv_other_details_report(text,range,region.headers.body_first,region.headers.body_last,&numeric_schemas)?,formula_artifacts_report(range,Some((&artifacts.formulas,&artifacts.errors)))?];
+                let skipped=reference_skipped_level3_reports();
+                let mut level3=vec![header_start_position_report(range,&region.headers.rows,region.headers.body_first)?];
+                level3.extend(skipped[..2].iter().cloned());
+                level3.push(data_units_report(text,range,&region.headers.rows,region.headers.body_first,region.headers.body_last,&typed_numeric)?);
+                level3.push(time_axis_report(text,range,&region.headers.rows,region.headers.body_first,region.headers.body_last)?);
+                level3.push(region_codes_report(text,range,&region.headers.rows,region.headers.body_first,region.headers.body_last,&falsy)?);
+                level3.extend(skipped[2..].iter().cloned());
+                level3.push(vertical_format_report(text,range,&region.headers.rows,&falsy)?);
+                let all=level1.iter().chain(&level2).chain(&level3).map(|d|&d.evaluation);
+                if !all.eq(checks.iter()) { return None; }
+                Some([level1,level2,level3])
+            })()
+        } else { None };
+        Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), column_headers: text_view.as_ref().map(|_| region.column_headers.clone()), column_schemas: region.column_schemas.clone(), diagnostics, checks, unavailable, complete: false })
     }).collect()
 }
 
@@ -600,4 +635,63 @@ pub fn first_xlsx_headers(sheets: &[Vec<PartialXlsxStructure>]) -> Option<Vec<St
         }
     }
     Some(Vec::new())
+}
+
+/// Experimental full-workbook JSON report, restricted to reader-representable
+/// worksheets. Unsupported values, inspections and non-worksheet parts fail
+/// closed; application backend integration remains separate.
+pub fn analyze_xlsx_report_experimental(bytes: &[u8], file_name: &str, mode: &str) -> Result<serde_json::Value, XlsxInputError> {
+    use ibis_doc_model::machine_readability_layout::{preliminary_islands, LayoutValue, OtherRegion};
+    use ibis_doc_model::SheetState;
+    use crate::machine_readability_report::{file_report_json, FileReport, OtherCell, SheetProperty, SheetReport, TableReport};
+    let path=std::path::Path::new(file_name);
+    if path.file_name().and_then(|v|v.to_str()) != Some(file_name) || !matches!(path.extension().and_then(|v|v.to_str()).map(str::to_ascii_lowercase).as_deref(),Some("xlsx" | "xlsm")) { return Err(XlsxInputError::UnsupportedReferenceValue); }
+    let levels=match mode { "lite"=>1,"standard"=>2,"thorough"=>3,_=>return Err(XlsxInputError::UnsupportedReferenceValue) };
+    let (presentation,_) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e|XlsxInputError::Workbook(e.to_string()))?;
+    let workbook=presentation.workbook.as_ref().ok_or(XlsxInputError::SheetUnavailable)?;
+    if workbook.sheets.iter().any(|s|s.other) { return Err(XlsxInputError::SheetUnavailable); }
+    struct OwnedSheet { name:String, hidden:bool, rows:u32, cols:u32, used:String, tables:Vec<PartialXlsxStructure>, others:Vec<(u32,u32,String,serde_json::Value)> }
+    let mut owned=Vec::new();
+    for (index,entry) in workbook.sheets.iter().enumerate() {
+        let saved=read_xlsx_saved_sheet(bytes,index)?;
+        let text=xlsx_reference_text_sheet(&saved)?;
+        let layout=preliminary_islands(&saved.layout.cells,&saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+        let mut others=Vec::new();
+        for other in &layout.others {
+            let kind=match other.kind { OtherRegion::Title=>"title",OtherRegion::Total=>"total",OtherRegion::Note=>"note",OtherRegion::Source=>"source",OtherRegion::Isolated=>"isolated" };
+            let position=(other.row,other.column);
+            let layout_cell=saved.layout.cells.iter().find(|c|(c.row,c.column)==position).ok_or(XlsxInputError::UnsupportedReferenceValue)?;
+            let text_value=text.cells.iter().find(|c|(c.row,c.column)==position).and_then(|c|match &c.value { CellValue::Text(s)=>Some(s.as_str()),_=>None });
+            let original=saved.sheet.cells.iter().find(|c|(c.row,c.column)==position);
+            let value=match &layout_cell.value {
+                None=>serde_json::Value::Null,
+                Some(LayoutValue::Text(_))=>serde_json::json!(text_value.ok_or(XlsxInputError::UnsupportedReferenceValue)?),
+                Some(LayoutValue::Numeric)=>match original.map(|c|&c.value) {
+                    Some(CellValue::Bool(v))=>serde_json::json!(v),
+                    Some(CellValue::Number(_))=>{
+                        let lexeme=saved.numeric_lexemes.get(&position).and_then(XlsxNumericLexeme::reference_text).ok_or(XlsxInputError::UnsupportedReferenceValue)?;
+                        let parsed:serde_json::Value=serde_json::from_str(&lexeme).map_err(|_|XlsxInputError::UnsupportedReferenceValue)?;
+                        if !parsed.is_number() { return Err(XlsxInputError::UnsupportedReferenceValue); }
+                        if matches!(saved.numeric_lexemes.get(&position),Some(XlsxNumericLexeme::Integer(_))) && parsed.as_i64().is_none() && parsed.as_u64().is_none() { return Err(XlsxInputError::UnsupportedReferenceValue); }
+                        parsed
+                    }, _=>return Err(XlsxInputError::UnsupportedReferenceValue),
+                },
+                Some(LayoutValue::Date)=>serde_json::json!(text_value.ok_or(XlsxInputError::UnsupportedReferenceValue)?.replace(' ',"T")),
+                Some(LayoutValue::Other)=>return Err(XlsxInputError::UnsupportedReferenceValue),
+            };
+            others.push((other.row,other.column,kind.to_string(),value));
+        }
+        let (rows,cols)=match saved.window { XlsxReadWindow::Empty=>(0,0),XlsxReadWindow::Through { last_row,last_column }=>(last_row+1,last_column+1) };
+        let used=if rows>0 && cols>0 { let mut n=u64::from(cols);let mut chars=Vec::new();while n>0 {n-=1;chars.push((b'A'+(n%26) as u8) as char);n/=26;} format!("A1:{}{rows}",chars.into_iter().rev().collect::<String>()) } else { String::new() };
+        let tables=analyze_xlsx_structure_named(bytes,index,&entry.name)?;
+        if tables.iter().any(|t|t.diagnostics.is_none() || t.column_headers.is_none()) { return Err(XlsxInputError::UnsupportedReferenceValue); }
+        owned.push(OwnedSheet { name:entry.name.clone(),hidden:entry.state == SheetState::Hidden,rows,cols,used,tables,others });
+    }
+    let table_groups:Vec<Vec<_>>=owned.iter().map(|sheet|sheet.tables.iter().map(|table| {
+        let checks=table.diagnostics.as_ref().unwrap();
+        TableReport { range:table.table.range,confidence:table.table.confidence,header_rows:&table.header_rows,column_headers:table.column_headers.as_ref().unwrap(),columns:&table.column_schemas,checks:[&checks[0],if levels>=2 {&checks[1]} else {&[]},if levels>=3 {&checks[2]} else {&[]}] }
+    }).collect()).collect();
+    let other_groups:Vec<Vec<_>>=owned.iter().map(|sheet|sheet.others.iter().map(|(row,col,kind,value)|OtherCell { row:*row,column:*col,region_type:kind,value:value.clone() }).collect()).collect();
+    let sheets:Vec<_>=owned.iter().zip(&table_groups).zip(&other_groups).map(|((sheet,tables),others)|SheetReport { name:&sheet.name,used_range:&sheet.used,hidden:sheet.hidden,property:Some(SheetProperty { name:&sheet.name,max_row:sheet.rows,max_col:sheet.cols,hidden:sheet.hidden }),others,tables }).collect();
+    file_report_json(&FileReport { name:file_name,size:bytes.len() as u64,format:"xlsx",sheet_count:sheets.len(),sheets:&sheets }).ok_or(XlsxInputError::UnsupportedReferenceValue)
 }
