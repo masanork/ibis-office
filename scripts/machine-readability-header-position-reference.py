@@ -10,6 +10,7 @@ from harunobu.core.models import Sheet, WorkBook, TableContext, TableRegion, Tab
 from harunobu.rules.level3.L3_01_header_start_position import HeaderStartPositionRule
 from harunobu.rules.level3.L3_02_code_table import CodeTableRule
 from harunobu.rules.level3.L3_03_special_symbols import SpecialSymbolsRule
+from harunobu.rules.level3.L3_07_format_consistency import FormatConsistencyRule
 from harunobu.rules.level3.L3_08_metadata import MetadataRule
 rng=random.Random(301); cases=[]; sheet=Sheet(name='Sheet'); workbook=WorkBook(file_name='x.csv',file_format='csv',sheets=[sheet])
 for i in range(180):
@@ -18,7 +19,7 @@ for i in range(180):
     region=TableRegion(range=CellRange(start_row=start+1,start_col=1,end_row=end+1,end_col=3),layout=TableLayout(header_rows=[v+1 for v in headers],body_start_row=body+1,body_end_row=end+1))
     context=TableContext(workbook=workbook,sheet=sheet,table_region=region)
     checks=[]
-    for rule in [HeaderStartPositionRule(),CodeTableRule(),SpecialSymbolsRule(),MetadataRule()]:
+    for rule in [HeaderStartPositionRule(),CodeTableRule(),SpecialSymbolsRule(),FormatConsistencyRule(),MetadataRule()]:
         result=rule.check(context)
         checks.append(dict(id=rule.rule_id,passed=result.passed,confidence=result.confidence,severity=(result.severity or rule.severity).value,findings=[[v.cell_range,v.severity] for v in result.violations]))
     cases.append(dict(start=start,end=end,headers=headers,body=body,checks=checks))

@@ -112,7 +112,12 @@ unmerged CSV table layouts, including missing, duplicate and multirow names.
 The partial analyzer also compares this rule through the standard analyzer.
 
 `harunobu-header-position-reference.json` covers 180 Level 3 header layouts
-and the reference's three always-skipped rules. The end-to-end CSV fixture uses
+and four rules skipped for single-file analysis. The end-to-end CSV fixture uses
 thorough mode and AI disabled, including row-label abbreviation cases.
 `harunobu-abbreviation-reference.json` covers 180 unmerged row-header layouts,
 including missing cells, empty values, abbreviation markers, and finding order.
+
+`harunobu-numeric-purity-reference.json` and
+`harunobu-other-details-reference.json` cover synthetic AI-disabled L2-01 and
+L2-05 layouts, including numeric schemas, unit and note values, category
+cardinality, sample thresholds, and violation locations.
