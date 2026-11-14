@@ -261,13 +261,17 @@ fn detected_xlsx_structure_matches_thorough_reference() {
             let wanted = sheet["tables"].as_array().unwrap();
             assert_eq!(tables.len(), wanted.len(), "{file} sheet {i}");
             for (got, expected) in tables.iter().zip(wanted) {
+                if file == "xlsx-date-values.xlsx" || file == "xlsx-date-1904.xlsx" || file == "xlsx-duration-values.xlsx" { assert!(got.unavailable.is_empty()); }
                 let r = got.table.range;
                 assert_eq!([r.first_row, r.first_column, r.last_row, r.last_column], std::array::from_fn(|n| expected["range"][n].as_u64().unwrap() as u32), "{file}");
                 assert_eq!(got.header_rows, expected["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>(), "{file}");
                 assert_eq!(got.table.confidence, expected["confidence"].as_f64().unwrap(), "{file}");
                 let checks = expected["checks"].as_array().unwrap();
-                assert_eq!(got.checks.len(), checks.len(), "{file}");
-                for (a,b) in got.checks.iter().zip(checks) {
+                assert_eq!(got.checks.len() + got.unavailable.len(), checks.len(), "{file}");
+                for b in checks {
+                    let id = b["id"].as_str().unwrap();
+                    if got.unavailable.contains(&id) { assert!(got.checks.iter().all(|v| v.result.rule_id != id), "{file}: {id}"); continue; }
+                    let a = got.checks.iter().find(|v| v.result.rule_id == id).unwrap_or_else(|| panic!("{file}: missing {id}"));
                     assert_eq!(a.result.rule_id, b["id"].as_str().unwrap(), "{file}");
                     assert_eq!(a.result.passed, b["passed"].as_bool().unwrap(), "{file}: {}", a.result.rule_id);
                     assert_eq!(a.result.confidence, b["confidence"].as_f64().unwrap(), "{file}: {}", a.result.rule_id);
@@ -370,6 +374,123 @@ fn xlsx_direct_formats_match_both_reference_reader_modes() {
             assert_eq!(fmt.background.as_deref(), v["bg"].as_str(), "{row} {col}");
             assert_eq!(fmt.bold, v["bold"].as_bool().unwrap(), "{row} {col}");
             assert_eq!(fmt.italic, v["italic"].as_bool().unwrap(), "{row} {col}");
+            assert_eq!(fmt.stub_background_nonwhite, v["stub_bg"].as_bool().unwrap(), "{row} {col}");
+            assert_eq!(fmt.border_left, v["left"].as_bool().unwrap(), "{row} {col}");
+            assert_eq!(fmt.border_right, v["right"].as_bool().unwrap(), "{row} {col}");
         }
+    }
+}
+
+#[test]
+fn saved_xlsx_numeric_lexemes_keep_integer_and_float_distinct() {
+    use ibis_pptx::machine_readability_xlsx::{read_xlsx_saved_sheet, XlsxNumericLexeme};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-numeric-lexeme-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let saved = read_xlsx_saved_sheet(&std::fs::read(root.join("xlsx-numeric-lexemes.xlsx")).unwrap(), 0).unwrap();
+    for case in data["cases"].as_array().unwrap() {
+        let position = (case["row"].as_u64().unwrap() as u32, case["col"].as_u64().unwrap() as u32);
+        let expected = case["raw"].as_str().unwrap().to_string();
+        let lexeme = match case["kind"].as_str().unwrap() { "integer" => XlsxNumericLexeme::Integer(expected), "float" => XlsxNumericLexeme::Float(expected), other => panic!("unknown {other}") };
+        assert_eq!(saved.numeric_lexemes.get(&position), Some(&lexeme), "{position:?}");
+    }
+}
+
+#[test]
+fn xlsx_numeric_text_matches_reference_for_sampled_values() {
+    use ibis_pptx::machine_readability_xlsx::XlsxNumericLexeme;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-number-text-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let raw = case["raw"].as_str().unwrap().to_string();
+        let value = if case["kind"] == "integer" { XlsxNumericLexeme::Integer(raw) } else { XlsxNumericLexeme::Float(raw) };
+        assert_eq!(value.reference_text().as_deref(), case["expected"].as_str(), "case {i}");
+    }
+}
+
+#[test]
+fn xlsx_reference_text_view_preserves_numeric_reader_spelling() {
+    use ibis_doc_model::sheet::CellValue;
+    use ibis_pptx::machine_readability_xlsx::{read_xlsx_saved_sheet, xlsx_reference_text_sheet};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-numeric-lexeme-reference.json")).unwrap()).unwrap();
+    let saved = read_xlsx_saved_sheet(&std::fs::read(root.join("xlsx-numeric-lexemes.xlsx")).unwrap(), 0).unwrap();
+    let sheet = xlsx_reference_text_sheet(&saved).unwrap();
+    for case in data["cases"].as_array().unwrap() {
+        let position = (case["row"].as_u64().unwrap() as u32, case["col"].as_u64().unwrap() as u32);
+        let cell = sheet.cells.iter().find(|c| (c.row, c.column) == position).unwrap();
+        assert_eq!(cell.value, CellValue::Text(case["reference"].as_str().unwrap().to_string()), "{position:?}");
+    }
+}
+
+#[test]
+fn xlsx_date_text_matches_reference_across_epochs() {
+    use ibis_pptx::machine_readability_xlsx::xlsx_date_reference_text;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-date-text-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let got = xlsx_date_reference_text(case["value"].as_str().unwrap().parse().unwrap(), case["date1904"].as_bool().unwrap());
+        assert_eq!(got.as_deref(), case["expected"].as_str(), "case {i}: {case}");
+    }
+}
+
+#[test]
+fn generated_xlsx_checks_match_thorough_reference() {
+    use ibis_doc_model::machine_readability_rules::FindingSeverity;
+    use ibis_doc_model::machine_readability_scoring::Severity;
+    use ibis_pptx::machine_readability_xlsx::analyze_xlsx_structure_partial;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-generated-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for case in data["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let bytes: Vec<_> = case["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap()).collect();
+        let got = analyze_xlsx_structure_partial(&bytes, 0).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let expected = case["tables"].as_array().unwrap(); assert_eq!(got.len(), expected.len(), "{name}");
+        for (table, reference) in got.iter().zip(expected) {
+            assert!(table.unavailable.is_empty(), "{name}: {:?}", table.unavailable);
+            let r=table.table.range;
+            assert_eq!([r.first_row,r.first_column,r.last_row,r.last_column],std::array::from_fn(|i| reference["range"][i].as_u64().unwrap() as u32),"{name}");
+            assert_eq!(table.header_rows, reference["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>(), "{name}");
+            assert_eq!(table.table.confidence, reference["confidence"].as_f64().unwrap(), "{name}");
+            for b in reference["checks"].as_array().unwrap() {
+                let id=b["id"].as_str().unwrap();
+                if table.unavailable.contains(&id) { continue; }
+                let a=table.checks.iter().find(|v| v.result.rule_id==id).unwrap_or_else(|| panic!("{name}: missing {id}"));
+                assert_eq!(a.result.passed,b["passed"].as_bool().unwrap(),"{name}: {id}");
+                assert_eq!(a.result.confidence,b["confidence"].as_f64().unwrap(),"{name}: {id}");
+                let severity=match a.result.severity.unwrap() { Severity::Fatal=>"fatal",Severity::Critical=>"critical",Severity::Major=>"major",Severity::Minor=>"minor",Severity::Info=>"info" };
+                assert_eq!(severity,b["severity"].as_str().unwrap(),"{name}: {id}");
+                let mut findings: Vec<_>=a.findings.iter().map(|v|(v.location.as_str(),match v.severity { FindingSeverity::Error=>"error",FindingSeverity::Warning=>"warning",FindingSeverity::Info=>"info" })).collect();
+                let mut wanted: Vec<_>=b["findings"].as_array().unwrap().iter().map(|v|(v[0].as_str().unwrap(),v[1].as_str().unwrap())).collect();
+                if id=="L2-04" { findings.sort();wanted.sort(); }
+                assert_eq!(findings,wanted,"{name}: {id}");
+            }
+        }
+    }
+}
+
+#[test]
+fn xlsx_vertical_format_excludes_falsy_numeric_headers() {
+    use ibis_doc_model::machine_readability_rules::xlsx_vertical_format;
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let mut sheet = Sheet::default();
+    sheet.cells = ["値1", "値2", "値3", "値4", "False"].iter().enumerate().map(|(col, value)| SheetCell { row: 0, column: col as u32, value: CellValue::Text((*value).to_string()), text: (*value).to_string(), kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }).collect::<Vec<_>>().into();
+    let table = CellRange { first_row: 0, first_column: 0, last_row: 2, last_column: 4 };
+    let falsy = std::collections::BTreeSet::from([(0, 4)]);
+    assert!(xlsx_vertical_format(&sheet, table, &[0], &falsy).unwrap().result.passed);
+}
+
+#[test]
+fn xlsx_duration_text_matches_reference_samples() {
+    use ibis_pptx::machine_readability_xlsx::xlsx_duration_reference_text;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-duration-text-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let got = xlsx_duration_reference_text(case["value"].as_str().unwrap().parse().unwrap());
+        assert_eq!(got.as_deref(), case["expected"].as_str(), "case {i}: {case}");
     }
 }

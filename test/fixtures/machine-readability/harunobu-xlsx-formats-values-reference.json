@@ -9,40 +9,55 @@
           "col": 0,
           "font": null,
           "bg": null,
+          "stub_bg": false,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": false,
+          "right": false
         },
         {
           "row": 1,
           "col": 0,
           "font": null,
           "bg": null,
+          "stub_bg": false,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": false,
+          "right": false
         },
         {
           "row": 2,
           "col": 0,
           "font": "00FF0000",
           "bg": "00FF00",
+          "stub_bg": true,
           "bold": true,
-          "italic": true
+          "italic": true,
+          "left": false,
+          "right": true
         },
         {
           "row": 2,
           "col": 1,
           "font": "000000FF",
           "bg": null,
+          "stub_bg": true,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": true,
+          "right": false
         },
         {
           "row": 3,
           "col": 0,
           "font": null,
           "bg": null,
+          "stub_bg": false,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": false,
+          "right": false
         }
       ]
     },
@@ -54,40 +69,55 @@
           "col": 0,
           "font": null,
           "bg": null,
+          "stub_bg": false,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": false,
+          "right": false
         },
         {
           "row": 1,
           "col": 0,
           "font": null,
           "bg": null,
+          "stub_bg": false,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": false,
+          "right": false
         },
         {
           "row": 2,
           "col": 0,
           "font": null,
           "bg": "00FF00",
+          "stub_bg": true,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": false,
+          "right": false
         },
         {
           "row": 2,
           "col": 1,
           "font": null,
           "bg": null,
+          "stub_bg": true,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": false,
+          "right": false
         },
         {
           "row": 3,
           "col": 0,
           "font": null,
           "bg": null,
+          "stub_bg": false,
           "bold": false,
-          "italic": false
+          "italic": false,
+          "left": false,
+          "right": false
         }
       ]
     }

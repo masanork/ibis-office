@@ -362,18 +362,19 @@ pub fn csv_column_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], 
     if width >= 2 && values.len() as u64 == width {
         static NUMBER: OnceLock<regex::Regex> = OnceLock::new();
         let number = NUMBER.get_or_init(|| regex::Regex::new(r"^[+-]?(?:(?:[0-9](?:_?[0-9])*)(?:\.(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?$").unwrap());
-        let mut nums = Vec::new();
+        let mut nums = Vec::new(); let mut unknown = false; let mut nonnumeric = false;
         for value in values.values() {
             if !number.is_match(value) {
                 let numeric_shape = value.chars().any(|c| !c.is_ascii() && c.is_numeric()) && value.chars().all(|c| c.is_numeric() || matches!(c, '+' | '-' | '.' | '_' | 'e' | 'E'));
-                if numeric_shape || matches!(value.to_ascii_lowercase().as_str(), "nan" | "+nan" | "-nan" | "inf" | "+inf" | "-inf" | "infinity" | "+infinity" | "-infinity") { return None; }
-                nums.clear(); break;
+                if numeric_shape || matches!(value.to_ascii_lowercase().as_str(), "nan" | "+nan" | "-nan" | "inf" | "+inf" | "-inf" | "infinity" | "+infinity" | "-infinity") { unknown = true; continue; }
+                nonnumeric = true; break;
             }
             let n: f64 = value.replace('_', "").parse().ok()?;
-            if !n.is_finite() || n.abs() >= 9_007_199_254_740_992.0 { return None; }
+            if !n.is_finite() || n.abs() >= 9_007_199_254_740_992.0 { unknown = true; continue; }
             nums.push(n);
         }
-        if nums.len() as u64 == width && nums.iter().all(|n| n.fract() == 0.0) && nums.windows(2).all(|pair| pair[1] - pair[0] == 1.0) {
+        if unknown && !nonnumeric { return None; }
+        if !nonnumeric && nums.len() as u64 == width && nums.iter().all(|n| n.fract() == 0.0) && nums.windows(2).all(|pair| pair[1] - pair[0] == 1.0) {
             for column in table.first_column..=table.last_column { findings.push(Finding { location: address(last_header, column), severity: FindingSeverity::Error }); }
         }
     }
@@ -479,6 +480,15 @@ pub fn csv_item_abbreviations(sheet: &Sheet, stub_columns: &[u32], body_first: u
 /// L2-01 for unmerged CSV/TSV text cells with reader-inferred column schemas,
 /// with AI unavailable. A missing schema map uses the reference fallback.
 pub fn csv_numeric_purity(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)]) -> Option<RuleEvaluation> {
+    numeric_purity(sheet, table, body_first, body_last, schemas, &BTreeSet::new())
+}
+
+/// L2-01 on reference-stringified XLSX values, with typed numeric positions.
+pub fn xlsx_numeric_purity(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)], typed_numeric: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
+    numeric_purity(sheet, table, body_first, body_last, schemas, typed_numeric)
+}
+
+fn numeric_purity(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)], typed_numeric: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     use crate::machine_readability_layout::InferredColumnType;
@@ -497,26 +507,26 @@ pub fn csv_numeric_purity(sheet: &Sheet, table: CellRange, body_first: u32, body
     if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
     let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
     let mut cells = BTreeMap::new();
-    let mut columns: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+    let mut columns: BTreeMap<u32, Vec<(&str, bool)>> = BTreeMap::new();
     for cell in sheet.cells.iter().filter(|c| c.row >= body_first && c.row <= body_last && c.column >= table.first_column && c.column <= table.last_column) {
         let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
-        if !value.is_empty() { cells.insert((cell.row, cell.column), value); columns.entry(cell.column).or_default().push(value); }
+        if !value.is_empty() { cells.insert((cell.row, cell.column), value); columns.entry(cell.column).or_default().push((value, typed_numeric.contains(&(cell.row, cell.column)))); }
     }
     let schema_map: BTreeMap<_, _> = schemas.iter().copied().collect();
     let mut numeric = BTreeSet::new();
     let mut percent = BTreeSet::new();
     for col in table.first_column..=table.last_column {
         let vals = columns.get(&col).map_or(&[][..], Vec::as_slice);
-        let majority = || !vals.is_empty() && vals.iter().filter(|v| p.pure.is_match(v) || p.unit.is_match(v) || p.percent_unit.is_match(v) || p.note.is_match(v)).count() * 2 > vals.len();
+        let majority = || !vals.is_empty() && vals.iter().filter(|(v, typed)| *typed || p.pure.is_match(v) || p.unit.is_match(v) || p.percent_unit.is_match(v) || p.note.is_match(v)).count() * 2 > vals.len();
         let selected = if schema_map.is_empty() { majority() } else { match schema_map.get(&col) { Some(InferredColumnType::Numeric) => true, Some(InferredColumnType::Mixed) => majority(), _ => false } };
         if selected {
             numeric.insert(col);
-            if !vals.is_empty() && vals.iter().filter(|v| p.percent.is_match(v)).count() * 2 >= vals.len() { percent.insert(col); }
+            if !vals.is_empty() && vals.iter().filter(|(v, _)| p.percent.is_match(v)).count() * 2 >= vals.len() { percent.insert(col); }
         }
     }
     let mut findings = Vec::new();
     for (&(row, col), &value) in &cells {
-        if !numeric.contains(&col) || p.strict.is_match(value) || !p.has_digit.is_match(value) || (percent.contains(&col) && p.percent.is_match(value)) { continue; }
+        if !numeric.contains(&col) || typed_numeric.contains(&(row, col)) || p.strict.is_match(value) || !p.has_digit.is_match(value) || (percent.contains(&col) && p.percent.is_match(value)) { continue; }
         let severity = if !p.triangle.is_match(value) && !p.unit.is_match(value) && !p.percent_unit.is_match(value) && p.note.is_match(value) { FindingSeverity::Warning } else { FindingSeverity::Error };
         findings.push(Finding { location: address(row, col), severity });
     }
@@ -647,6 +657,15 @@ pub fn csv_choice_standardization(sheet: &Sheet, table: CellRange, body_first: u
 
 /// L3-09 for unmerged CSV/TSV header text, with AI unavailable.
 pub fn csv_vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32]) -> Option<RuleEvaluation> {
+    vertical_format(sheet, table, header_rows, &BTreeSet::new())
+}
+
+/// L3-09 on reference-stringified XLSX values with Python-falsy numeric cells.
+pub fn xlsx_vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32], falsy: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
+    vertical_format(sheet, table, header_rows, falsy)
+}
+
+fn vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32], falsy: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     struct Patterns { year: regex::Regex, month: regex::Regex, period: regex::Regex, era: regex::Regex, numbered: regex::Regex }
@@ -682,7 +701,7 @@ pub fn csv_vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32])
     if let Some(wide) = groups.iter().find(|v| v.len() >= 3) {
         findings.push(Finding { location: range(wide[0], *wide.last()?), severity: FindingSeverity::Warning });
     } else {
-        let nonempty: Vec<_> = cells.iter().filter_map(|(&col, value)| value.filter(|v| !v.is_empty()).map(|v| (col, v.trim_matches(space)))).collect();
+        let nonempty: Vec<_> = cells.iter().filter_map(|(&col, value)| value.filter(|v| !v.is_empty() && !falsy.contains(&(header, col))).map(|v| (col, v.trim_matches(space)))).collect();
         if nonempty.len() >= 5 {
             let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
             for (col, value) in nonempty {
@@ -760,6 +779,15 @@ pub fn csv_time_axis(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_
 /// L3-06 for unmerged CSV/TSV cells. Embedded region-name sets are derived
 /// from the pinned Harunobu resource, not from a runtime Python installation.
 pub fn csv_region_codes(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    region_codes(sheet, table, header_rows, body_first, body_last, &BTreeSet::new())
+}
+
+/// L3-06 on reference-stringified XLSX values with Python-falsy numeric cells.
+pub fn xlsx_region_codes(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, falsy: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
+    region_codes(sheet, table, header_rows, body_first, body_last, falsy)
+}
+
+fn region_codes(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, falsy: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     static DICT: OnceLock<[BTreeSet<&'static str>; 4]> = OnceLock::new();
@@ -794,7 +822,7 @@ pub fn csv_region_codes(sheet: &Sheet, table: CellRange, header_rows: &[u32], bo
         for col in table.first_column..=table.last_column {
             let mut total = 0usize; let mut count = 0usize;
             for row in body_first..=body_last.min(body_first.saturating_add(29)) {
-                if let Some(value) = cells.get(&(row, col)).filter(|v| !v.is_empty()) {
+                if let Some(value) = cells.get(&(row, col)).filter(|v| !v.is_empty() && !falsy.contains(&(row, col))) {
                     total += 1;
                     if dict.iter().any(|set| set.contains(value.trim_matches(space))) { count += 1; }
                 }
@@ -820,6 +848,15 @@ pub fn csv_region_codes(sheet: &Sheet, table: CellRange, header_rows: &[u32], bo
 
 /// L3-04 for unmerged CSV/TSV text cells, with AI unavailable.
 pub fn csv_data_units(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    data_units(sheet, table, header_rows, body_first, body_last, &BTreeSet::new())
+}
+
+/// L3-04 on reference-stringified XLSX values, with typed numeric positions.
+pub fn xlsx_data_units(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, typed_numeric: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
+    data_units(sheet, table, header_rows, body_first, body_last, typed_numeric)
+}
+
+fn data_units(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, typed_numeric: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     struct Patterns { numeric: regex::Regex, unit: regex::Regex }
@@ -843,12 +880,21 @@ pub fn csv_data_units(sheet: &Sheet, table: CellRange, header_rows: &[u32], body
     for col in table.first_column..=table.last_column {
         let mut total = 0usize; let mut numeric = 0usize;
         for row in body_first..=body_last.min(body_first.saturating_add(29)) {
-            if let Some(value) = cells.get(&(row, col)) { total += 1; if p.numeric.is_match(value.trim_matches(space)) { numeric += 1; } }
+            if let Some(value) = cells.get(&(row, col)) { total += 1; if typed_numeric.contains(&(row, col)) || p.numeric.is_match(value.trim_matches(space)) { numeric += 1; } }
         }
         if total == 0 || numeric * 10 < total * 7 { continue; }
         let Some(header) = cells.get(&(header, col)).map(|v| v.trim_matches(space)) else { continue; };
-        let digits = !header.is_empty() && header.chars().all(|c| c.is_numeric());
-        if digits && !header.is_ascii() { return None; }
+        use unicode_normalization::UnicodeNormalization;
+        let mut digits = !header.is_empty();
+        let mut unknown_digit = false;
+        for ch in header.chars() {
+            if ch.is_ascii_digit() { continue; }
+            if !ch.is_numeric() { digits = false; unknown_digit = false; break; }
+            let text = ch.to_string();
+            let normalized: Vec<_> = text.nfkc().collect();
+            if normalized.len() != 1 || !normalized[0].is_ascii_digit() { unknown_digit = true; }
+        }
+        if digits && unknown_digit { return None; }
         let lowered = header.to_lowercase().replace('-', "_");
         if p.unit.is_match(header) || implied.iter().any(|v| header.contains(v)) || suffix.iter().any(|v| header.ends_with(v)) || unitless.iter().any(|v| header.contains(v)) || digits || lowered.split('_').any(|v| english.contains(&v)) { continue; }
         findings.push(Finding { location: address(*header_rows.last()?, col), severity: FindingSeverity::Warning });
@@ -994,30 +1040,31 @@ pub fn xlsx_column_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32],
     }
     let width = u64::from(table.last_column) - u64::from(table.first_column) + 1;
     if width >= 2 {
-        let mut nums = Vec::new();
+        let mut nums = Vec::new(); let mut unknown = false; let mut nonnumeric = false;
         for col in table.first_column..=table.last_column {
-            let Some(cell) = cells.get(&(last_header, col)) else { nums.clear(); break; };
+            let Some(cell) = cells.get(&(last_header, col)) else { nonnumeric = true; break; };
             let n = match &cell.value {
                 CellValue::Number(n) => {
                     let style = sheet.styles.get(cell.style as usize)?;
-                    if classify_xlsx_number_format(&style.number_format) != XlsxNumberFormat::Numeric { nums.clear(); break; }
+                    if classify_xlsx_number_format(&style.number_format) != XlsxNumberFormat::Numeric { nonnumeric = true; break; }
                     *n
                 }
                 CellValue::Text(value) => {
                     let value = value.trim_matches(space);
                     if !number.is_match(value) {
                         let numeric_shape = value.chars().any(|c| !c.is_ascii() && c.is_numeric()) && value.chars().all(|c| c.is_numeric() || matches!(c, '+' | '-' | '.' | '_' | 'e' | 'E'));
-                        if numeric_shape || matches!(value.to_ascii_lowercase().as_str(), "nan" | "+nan" | "-nan" | "inf" | "+inf" | "-inf" | "infinity" | "+infinity" | "-infinity") { return None; }
-                        nums.clear(); break;
+                        if numeric_shape || matches!(value.to_ascii_lowercase().as_str(), "nan" | "+nan" | "-nan" | "inf" | "+inf" | "-inf" | "infinity" | "+infinity" | "-infinity") { unknown = true; continue; }
+                        nonnumeric = true; break;
                     }
                     value.replace('_', "").parse::<f64>().ok()?
                 }
-                _ => { nums.clear(); break; }
+                _ => { nonnumeric = true; break; }
             };
-            if !n.is_finite() || n.abs() >= 9_007_199_254_740_992.0 { return None; }
+            if !n.is_finite() || n.abs() >= 9_007_199_254_740_992.0 { unknown = true; continue; }
             nums.push(n);
         }
-        if nums.len() as u64 == width && nums.iter().all(|n| n.fract() == 0.0) && nums.windows(2).all(|v| v[1] - v[0] == 1.0) {
+        if unknown && !nonnumeric { return None; }
+        if !nonnumeric && nums.len() as u64 == width && nums.iter().all(|n| n.fract() == 0.0) && nums.windows(2).all(|v| v[1] - v[0] == 1.0) {
             for col in table.first_column..=table.last_column { findings.push(Finding { location: address(last_header, col), severity: FindingSeverity::Error }); }
         }
     }
@@ -1038,7 +1085,7 @@ pub fn object_artifacts(table: CellRange, abstain: bool, objects: Option<&[Objec
 
 /// Reader-normalized direct formatting used by the reference L1-11 rule.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ReferenceCellFormat { pub font_color: Option<String>, pub background: Option<String>, pub bold: bool, pub italic: bool }
+pub struct ReferenceCellFormat { pub font_color: Option<String>, pub background: Option<String>, pub stub_background_nonwhite: bool, pub bold: bool, pub italic: bool, pub border_left: bool, pub border_right: bool }
 
 /// L1-11; incomplete formatting metadata abstains instead of producing a pass.
 pub fn format_based_semantics(sheet: &Sheet, table: CellRange, body_first: u32, formats: Option<&std::collections::BTreeMap<(u32, u32), ReferenceCellFormat>>) -> RuleEvaluation {
@@ -1067,4 +1114,40 @@ pub fn format_based_semantics(sheet: &Sheet, table: CellRange, body_first: u32, 
         if italic > 0 && italic < cells.len() { findings.push(Finding { location, severity: FindingSeverity::Info }); }
     }
     result("L1-11", findings.is_empty(), 0.75, Severity::Critical, findings)
+}
+
+/// L2-03 over reference-stringified XLSX cells and source merge metadata.
+pub fn xlsx_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, merges: &[CellRange]) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    if table.first_row > table.last_row || table.first_column > table.last_column || merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let Some(&last_header) = header_rows.last() else { return Some(result("L2-03", true, 0.4, Severity::Fatal, Vec::new())); };
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new(); let mut body_columns = BTreeSet::new();
+    for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        if cell.row >= body_first && cell.row <= body_last && !value.is_empty() { body_columns.insert(cell.column); }
+        cells.insert((cell.row, cell.column), value);
+    }
+    let location = |col| if cells.contains_key(&(last_header, col)) { address(last_header, col) } else { format!("R{}C{}", u64::from(last_header) + 1, u64::from(col) + 1) };
+    let mut names: Vec<(String, Vec<u32>)> = Vec::new(); let mut seen_merges = BTreeSet::new(); let mut findings = Vec::new();
+    for col in table.first_column..=table.last_column {
+        let merge_at = |row| merges.iter().find(|m| row >= m.first_row && row <= m.last_row && col >= m.first_column && col <= m.last_column);
+        let dependent = header_rows.iter().any(|&row| merge_at(row).is_some_and(|m| row != m.first_row || col != m.first_column));
+        if dependent {
+            let merged = header_rows.iter().find_map(|&row| merge_at(row))?;
+            let label = if merged.first_row == merged.last_row && merged.first_column == merged.last_column { address(merged.first_row, merged.first_column) } else { range_address(*merged) };
+            if seen_merges.insert(label.clone()) { findings.push(Finding { location: label, severity: FindingSeverity::Error }); }
+            continue;
+        }
+        let mut parts = Vec::new();
+        for &row in header_rows { if let Some(&value) = cells.get(&(row, col)) { if !value.is_empty() && !parts.contains(&value) { parts.push(value); } } }
+        if parts.is_empty() {
+            if body_columns.contains(&col) { findings.push(Finding { location: location(col), severity: FindingSeverity::Error }); }
+        } else {
+            let name = parts.join("_");
+            if let Some((_, cols)) = names.iter_mut().find(|(n, _)| n == &name) { cols.push(col); } else { names.push((name, vec![col])); }
+        }
+    }
+    for (_, cols) in names { if cols.len() > 1 { for col in cols { findings.push(Finding { location: location(col), severity: FindingSeverity::Error }); } } }
+    Some(result("L2-03", findings.is_empty(), 0.95, Severity::Fatal, findings))
 }

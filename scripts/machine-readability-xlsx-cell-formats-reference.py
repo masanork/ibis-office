@@ -23,7 +23,7 @@ for padded in [False,True]:
         cell=sheet.get_cell(row,col);fmt=cell.fmt
         bg=fmt.bg_color[-6:].upper() if fmt.bg_color else None
         if bg=='FFFFFF':bg=None
-        entries.append(dict(row=row-1,col=col-1,font=fmt.font_color,bg=bg,bold=fmt.bold,italic=fmt.italic))
+        entries.append(dict(row=row-1,col=col-1,font=fmt.font_color,bg=bg,stub_bg=fmt.bg_color is not None and fmt.bg_color != "FFFFFFFF",bold=fmt.bold,italic=fmt.italic,left=fmt.border_left is not None,right=fmt.border_right is not None))
     out.append(dict(padded=padded,entries=entries))
 print(json.dumps(out,ensure_ascii=False))
 '''
