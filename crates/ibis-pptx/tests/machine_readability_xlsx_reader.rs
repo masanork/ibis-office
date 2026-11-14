@@ -345,3 +345,31 @@ fn xlsx_object_inspection_respects_table_confidence() {
     assert_eq!(uncertain.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), ["B2", "M20"]);
     assert_eq!(object_artifacts(range, false, None).result.confidence, 0.0);
 }
+
+#[test]
+fn xlsx_direct_formats_match_both_reference_reader_modes() {
+    use ibis_ooxml::zip::{Archive, Writer, EntryMeta, STORED, crc32};
+    use ibis_pptx::machine_readability_xlsx::inspect_xlsx_cell_formats;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-formats-values-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let raw = std::fs::read(root.join("xlsx-format-variation.xlsx")).unwrap();
+    for case in data["cases"].as_array().unwrap() {
+        let bytes = if case["padded"].as_bool().unwrap() {
+            let source = Archive::new(raw.clone().into()).unwrap(); let mut writer = Writer::new();
+            for entry in source.entries() { writer.add(&entry.name, entry.meta, &source.read(entry).unwrap()).unwrap(); }
+            let padding = vec![0u8; 5 * 1024 * 1024];
+            writer.add_raw("reference-padding.bin", EntryMeta::new(), STORED, crc32(&padding), padding.len(), &padding).unwrap();
+            writer.finish().unwrap()
+        } else { raw.clone() };
+        let formats = inspect_xlsx_cell_formats(&bytes, 0).unwrap();
+        for v in case["entries"].as_array().unwrap() {
+            let row = v["row"].as_u64().unwrap() as u32; let col = v["col"].as_u64().unwrap() as u32;
+            let fmt = formats.get(&(row, col)).unwrap();
+            assert_eq!(fmt.font_color.as_deref(), v["font"].as_str(), "{row} {col}");
+            assert_eq!(fmt.background.as_deref(), v["bg"].as_str(), "{row} {col}");
+            assert_eq!(fmt.bold, v["bold"].as_bool().unwrap(), "{row} {col}");
+            assert_eq!(fmt.italic, v["italic"].as_bool().unwrap(), "{row} {col}");
+        }
+    }
+}

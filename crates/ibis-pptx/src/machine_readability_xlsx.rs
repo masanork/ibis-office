@@ -206,12 +206,13 @@ pub struct PartialXlsxStructure {
 
 pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Result<Vec<PartialXlsxStructure>, XlsxInputError> {
     use ibis_doc_model::machine_readability_layout::{generate_column_headers, infer_column_schemas, inherit_headers_from_above, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue, ResolvedIsland};
-    use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, file_format, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, object_artifacts, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, xlsx_column_headers, xlsx_data_fragmentation, ColumnType, DetectedTable, OutsideTableCell, TextEncoding, UsedExtent, WorkbookFormat};
+    use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, file_format, format_based_semantics, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, object_artifacts, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, xlsx_column_headers, xlsx_data_fragmentation, ColumnType, DetectedTable, OutsideTableCell, TextEncoding, UsedExtent, WorkbookFormat};
     use ibis_doc_model::sheet::CellRange;
     let saved = read_xlsx_saved_sheet(bytes, sheet_index)?;
     // Reference skips only L2-06 if package-wide formula inspection fails.
     let artifacts = inspect_xlsx_formula_artifacts(bytes).ok().and_then(|v| v.get(sheet_index).cloned());
     let objects = inspect_xlsx_object_artifacts(bytes).ok().and_then(|v| v.get(sheet_index).cloned());
+    let formats = inspect_xlsx_cell_formats(bytes, sheet_index).ok();
     let preliminary = preliminary_islands(&saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
     let columns = merge_column_adjacent_regions(&preliminary.candidates, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
     let forms = merge_form_fragments(&columns, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
@@ -250,7 +251,7 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
         // guessing their L1-07 interpretation until duration formatting is ported.
         if saved.layout.cells.iter().any(|c| c.row >= range.first_row && c.row <= range.last_row && c.column >= range.first_column && c.column <= range.last_column && c.value == Some(LayoutValue::Other)) { return Err(XlsxInputError::InvalidWindowMetadata); }
         let column_types: BTreeMap<_, _> = region.column_schemas.iter().map(|c| (c.column, if c.kind == InferredColumnType::Numeric { ColumnType::Numeric } else { ColumnType::Other })).collect();
-        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), xlsx_column_headers(&saved.sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, whitespace_formatting(&reference_sheet, range, Some(&region.headers.rows)), one_data_per_cell(&reference_sheet, range, Some(&column_types)), platform_characters(&reference_sheet, range, TextEncoding::Xlsx), blank_vs_zero_ai_disabled(), object_artifacts(range, region.abstain, objects.as_deref()), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
+        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), xlsx_column_headers(&saved.sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, whitespace_formatting(&reference_sheet, range, Some(&region.headers.rows)), one_data_per_cell(&reference_sheet, range, Some(&column_types)), platform_characters(&reference_sheet, range, TextEncoding::Xlsx), blank_vs_zero_ai_disabled(), object_artifacts(range, region.abstain, objects.as_deref()), format_based_semantics(&reference_sheet, range, region.headers.body_first, formats.as_ref()), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
         Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), checks, complete: false })
     }).collect()
 }
@@ -298,4 +299,60 @@ pub fn inspect_xlsx_object_artifacts(bytes: &[u8]) -> Result<Vec<Vec<ibis_doc_mo
         output.push(sheet);
     }
     Ok(output)
+}
+
+/// Read direct RGB font/fill metadata and bold/italic flags as the reference
+/// reader does. Unknown style representations are rejected, not guessed.
+pub fn inspect_xlsx_cell_formats(bytes: &[u8], sheet_index: usize) -> Result<BTreeMap<(u32, u32), ibis_doc_model::machine_readability_rules::ReferenceCellFormat>, XlsxInputError> {
+    use ibis_doc_model::machine_readability_rules::ReferenceCellFormat;
+    let (_, sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let package = crate::package::Package::new(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let rgb = |color: roxmltree::Node<'_, '_>| -> Result<Option<String>, XlsxInputError> {
+        let Some(value) = color.attribute("rgb") else { return Ok(None); };
+        if !matches!(value.len(), 6 | 8) || !value.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(XlsxInputError::InvalidWindowMetadata); }
+        Ok(Some(if value.len() == 6 { format!("00{value}") } else { value.to_string() }))
+    };
+    let flag = |parent: roxmltree::Node<'_, '_>, name: &str| -> Result<bool, XlsxInputError> {
+        let Some(node) = parent.children().find(|n| n.is_element() && n.tag_name().name() == name) else { return Ok(false); };
+        match node.attribute("val") { None | Some("1") | Some("true") | Some("on") => Ok(true), Some("0") | Some("false") | Some("off") => Ok(false), _ => Err(XlsxInputError::InvalidWindowMetadata) }
+    };
+    let mut styles = vec![ReferenceCellFormat::default()];
+    if let Some(part) = sources.styles.as_deref() {
+        let xml = package.read_xml(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+        let doc = roxmltree::Document::parse(&xml).map_err(|_| XlsxInputError::InvalidWindowMetadata)?;
+        let root = doc.root_element();
+        let fonts = root.children().find(|n| n.is_element() && n.tag_name().name() == "fonts").ok_or(XlsxInputError::InvalidWindowMetadata)?;
+        let fills = root.children().find(|n| n.is_element() && n.tag_name().name() == "fills").ok_or(XlsxInputError::InvalidWindowMetadata)?;
+        let xfs = root.children().find(|n| n.is_element() && n.tag_name().name() == "cellXfs").ok_or(XlsxInputError::InvalidWindowMetadata)?;
+        let fonts: Vec<_> = fonts.children().filter(|n| n.is_element() && n.tag_name().name() == "font").collect();
+        let fills: Vec<_> = fills.children().filter(|n| n.is_element() && n.tag_name().name() == "fill").collect();
+        styles.clear();
+        for xf in xfs.children().filter(|n| n.is_element() && n.tag_name().name() == "xf") {
+            let font_id = xf.attribute("fontId").unwrap_or("0").parse::<usize>().map_err(|_| XlsxInputError::InvalidWindowMetadata)?;
+            let fill_id = xf.attribute("fillId").unwrap_or("0").parse::<usize>().map_err(|_| XlsxInputError::InvalidWindowMetadata)?;
+            let font = *fonts.get(font_id).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+            let fill = *fills.get(fill_id).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+            let color = font.children().find(|n| n.is_element() && n.tag_name().name() == "color").map(&rgb).transpose()?.flatten().filter(|v| v != "00000000");
+            let pattern = fill.children().find(|n| n.is_element() && n.tag_name().name() == "patternFill");
+            let bg = if let Some(pattern) = pattern.filter(|n| n.attribute("patternType").is_some_and(|v| v != "none")) {
+                match pattern.children().find(|n| n.is_element() && n.tag_name().name() == "fgColor") { Some(color) => rgb(color)?, None => Some("00000000".to_string()) }
+            } else { None };
+            let bg = bg.map(|v| v[v.len()-6..].to_ascii_uppercase()).filter(|v| v != "FFFFFF");
+            styles.push(ReferenceCellFormat { font_color: color, background: bg, bold: flag(font, "b")?, italic: flag(font, "i")? });
+        }
+    }
+    let part = sources.sheet_parts.get(sheet_index).and_then(Option::as_deref).ok_or(XlsxInputError::SheetUnavailable)?;
+    let xml = package.read_xml(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let doc = roxmltree::Document::parse(&xml).map_err(|_| XlsxInputError::InvalidWindowMetadata)?;
+    let read_only = bytes.len() > 5 * 1024 * 1024;
+    let mut cells = BTreeMap::new();
+    for cell in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "c") {
+        let Some(reference) = cell.attribute("r") else { continue; };
+        let position = source_cell_position(reference)?;
+        let index = cell.attribute("s").unwrap_or("0").parse::<usize>().map_err(|_| XlsxInputError::InvalidWindowMetadata)?;
+        let mut format = styles.get(index).cloned().ok_or(XlsxInputError::InvalidWindowMetadata)?;
+        if read_only { format.font_color = None; format.bold = false; format.italic = false; }
+        if cells.insert(position, format).is_some() { return Err(XlsxInputError::InvalidWindowMetadata); }
+    }
+    Ok(cells)
 }
