@@ -626,7 +626,7 @@ fn csv_choice_standardization_matches_pinned_harunobu() {
 
 #[test]
 fn csv_vertical_format_matches_pinned_harunobu() {
-    use ibis_doc_model::machine_readability_rules::{csv_vertical_format, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{csv_vertical_format, vertical_format_report, FindingSeverity};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-vertical-reference.json")).unwrap()).unwrap();
@@ -641,6 +641,10 @@ fn csv_vertical_format_matches_pinned_harunobu() {
         }).collect::<Vec<_>>().into();
         let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
         let got = csv_vertical_format(&sheet, table, &headers).unwrap();
+        let report = vertical_format_report(&sheet, table, &headers, &std::collections::BTreeSet::new()).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
@@ -651,7 +655,7 @@ fn csv_vertical_format_matches_pinned_harunobu() {
 
 #[test]
 fn csv_time_axis_matches_pinned_harunobu() {
-    use ibis_doc_model::machine_readability_rules::{csv_time_axis, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{csv_time_axis, time_axis_report, FindingSeverity};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-time-axis-reference.json")).unwrap()).unwrap();
@@ -666,6 +670,10 @@ fn csv_time_axis_matches_pinned_harunobu() {
         }).collect::<Vec<_>>().into();
         let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
         let got = csv_time_axis(&sheet, table, &headers, 1, table.last_row).unwrap();
+        let report = time_axis_report(&sheet, table, &headers, 1, table.last_row).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
