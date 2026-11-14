@@ -4,7 +4,7 @@
 //! are read from worksheet XML, not from the editor's recalculated values.
 use std::collections::{BTreeMap, BTreeSet};
 use ibis_doc_model::machine_readability_xlsx::{prepare_xlsx_layout_for_mode, XlsxLayoutError, XlsxLayoutInput, XlsxReaderMode, XlsxReadWindow};
-use ibis_doc_model::sheet::{CellError, CellValue};
+use ibis_doc_model::sheet::{CellError, CellKind, CellValue, Sheet};
 use ibis_doc_model::sheet_calc::sheet_of_slide;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,17 +14,28 @@ pub enum XlsxInputError { Workbook(String), SheetUnavailable, InvalidFormulaCach
 /// reader window; this function does not yet infer Harunobu's dimension limits.
 /// Out-of-range date and duration serials are rejected rather than guessed.
 pub fn read_xlsx_layout(bytes: &[u8], sheet_index: usize, window: XlsxReadWindow) -> Result<XlsxLayoutInput, XlsxInputError> {
-    read_xlsx_layout_impl(bytes, sheet_index, Some(window)).map(|(_, input)| input)
+    read_xlsx_layout_impl(bytes, sheet_index, Some(window), false).map(|(_, input, _)| input)
 }
 
 /// Derive the default Harunobu reader window from worksheet XML, then prepare
 /// layout input using the matching single-pass or large-file two-pass format
 /// and blank-cell semantics.
 pub fn read_xlsx_layout_auto(bytes: &[u8], sheet_index: usize) -> Result<(XlsxReadWindow, XlsxLayoutInput), XlsxInputError> {
-    read_xlsx_layout_impl(bytes, sheet_index, None)
+    read_xlsx_layout_impl(bytes, sheet_index, None, false).map(|(window, input, _)| (window, input))
 }
 
-fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxReadWindow>) -> Result<(XlsxReadWindow, XlsxLayoutInput), XlsxInputError> {
+/// Original saved values and formulas, plus the reference reader window and
+/// layout projection. Formula values come from the XLSX cache; `text` remains
+/// display metadata and must not be used as an authoritative saved value.
+#[derive(Clone, Debug)]
+pub struct XlsxSavedSheet { pub window: XlsxReadWindow, pub layout: XlsxLayoutInput, pub sheet: Sheet }
+
+pub fn read_xlsx_saved_sheet(bytes: &[u8], sheet_index: usize) -> Result<XlsxSavedSheet, XlsxInputError> {
+    let (window, layout, sheet) = read_xlsx_layout_impl(bytes, sheet_index, None, true)?;
+    Ok(XlsxSavedSheet { window, layout, sheet: sheet.expect("saved-sheet input requested") })
+}
+
+fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxReadWindow>, include_sheet: bool) -> Result<(XlsxReadWindow, XlsxLayoutInput, Option<Sheet>), XlsxInputError> {
     let mode = if bytes.len() > 5 * 1024 * 1024 { XlsxReaderMode::TwoPass } else { XlsxReaderMode::SinglePass };
     let (presentation, sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
     let slide = presentation.slides.get(sheet_index).ok_or(XlsxInputError::SheetUnavailable)?;
@@ -71,7 +82,18 @@ fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxRe
         if within && !formula_positions.contains(&(row, column)) { return Err(XlsxInputError::FormulaModelMismatch); }
     }
     let input = prepare_xlsx_layout_for_mode(sheet, window, &caches, mode).map_err(XlsxInputError::Layout)?;
-    Ok((window, input))
+    let saved = if include_sheet {
+        let mut saved = (**sheet).clone();
+        for cell in &mut saved.cells {
+            let within = match window { XlsxReadWindow::Empty => false, XlsxReadWindow::Through { last_row, last_column } => cell.row <= last_row && cell.column <= last_column };
+            if within && cell.formula.is_some() {
+                cell.value = caches.get(&(cell.row, cell.column)).ok_or(XlsxInputError::FormulaModelMismatch)?.clone();
+                cell.kind = CellKind::of(&cell.value);
+            }
+        }
+        Some(saved)
+    } else { None };
+    Ok((window, input, saved))
 }
 
 fn source_cell_position(address: &str) -> Result<(u32, u32), XlsxInputError> {
