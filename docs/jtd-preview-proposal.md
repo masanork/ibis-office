@@ -10,8 +10,10 @@ The importer recognizes selected text, paragraph and character formatting,
 vertical writing, ruby and some table/border records. Other records and
 geometry remain incomplete. For tightly spaced vertical lines, underlines are
 positioned within the available gap where possible, preserving their line
-style and thickness. Detected omitted sheets and embedded objects are
-reported. The optional image gallery shows observed WMF candidates without
+style and thickness. An observed additional view-setting field no longer causes
+a valid per-page line count to be replaced by the default. The additional
+field's meaning is not inferred. Detected omitted sheets and embedded objects
+are reported. The optional image gallery shows observed WMF candidates without
 asserting their original placement, page, ordering or size. The saved
 thumbnail is a separate snapshot that can be stale and is not evidence of
 page fidelity. Unsupported or encrypted variants may not open.
