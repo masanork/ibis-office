@@ -802,7 +802,7 @@ impl LineDecorations {
         let mut b_items = self.highlights;
         for u in self.underlines {
             let mut items = underline_items(u.style, u.size, u.x, u.w, u.baseline, u.color);
-            if vertical_right { mirror_vertical_underline(&mut items, u.baseline, u.size); }
+            if vertical_right { mirror_vertical_underline(&mut items, u.baseline, u.size, line.height); }
             b_items.extend(items);
         }
         for b in self.borders {
@@ -8165,8 +8165,29 @@ pub fn expand_pages(presentation: &mut ibis_doc_model::Presentation, res: &Resou
 
 /// Mirror underline geometry around the vertical text cell before the page is
 /// rotated clockwise. Ordinary rectangles and strikes are intentionally untouched.
-fn mirror_vertical_underline(items: &mut [Item], baseline: f32, size: f32) {
-    let twice_axis = 2.0 * baseline - 0.85 * size;
+#[path = "vertical_underline.rs"]
+mod vertical_underline;
+
+fn mirror_vertical_underline(items: &mut [Item], baseline: f32, size: f32, line_height: f32) {
+    // `turn_cell_text` places the upright em box with its right edge at
+    // w - baseline + 0.85 * size. In a tight grid the usual underline
+    // distance can put the entire stroke in the preceding column's em box.
+    // Fit the complete decoration in the available inter-column gap when
+    // possible, without changing its stroke width or dash pattern.
+    let mut low = f32::INFINITY;
+    let mut high = f32::NEG_INFINITY;
+    for item in items.iter() {
+        let bounds = match item {
+            Item::Rect { y, h, .. } => Some((*y, *y + *h)),
+            Item::Stroke { y, y2, w, .. } => Some((y.min(*y2) - w / 2.0, y.max(*y2) + w / 2.0)),
+            _ => None,
+        };
+        if let Some((a, b)) = bounds { low = low.min(a); high = high.max(b); }
+    }
+    let correction = if low.is_finite() && high.is_finite() {
+        vertical_underline::tight_grid_correction(size, line_height, (low - baseline).max(0.0), high - low)
+    } else { 0.0 };
+    let twice_axis = 2.0 * baseline - 0.85 * size + correction;
     for item in items {
         match item {
             Item::Rect { y, h, .. } => *y = twice_axis - *y - *h,
@@ -8552,14 +8573,42 @@ mod turn_japanese_tests {
     use std::sync::Arc;
 
     #[test]
+    fn vertical_underline_stays_between_tightly_spaced_columns() {
+        use ibis_doc_model::{CellDirection, UnderlineStyle};
+        let (size, pitch, baseline) = (10.45, 153_007.0 / 12_700.0, 20.0);
+        let text = Item::Text { x: 10.0, y: baseline, text: "縦".into(), offsets: Arc::from([0.0f32]), font: gpui_kit::font("Test"), size, color: gpui_kit::black() };
+        for style in [UnderlineStyle::Single, UnderlineStyle::Double, UnderlineStyle::Dotted, UnderlineStyle::Wave] {
+            let mut decoration = super::underline_items(style, size, 10.0, 10.0, baseline, gpui_kit::black());
+            super::mirror_vertical_underline(&mut decoration, baseline, size, pitch);
+            let mut input = vec![text.clone()]; input.extend(decoration);
+            let out = super::turn_page_items(input, CellDirection::TbRl, 800.0, 600.0, &|_, _, s| s);
+            let Item::Text { x, .. } = &out[0] else { panic!("vertical text missing") };
+            let (right, previous_left) = (*x + size, *x + pitch);
+            for item in &out[1..] {
+                let (left, end) = match item {
+                    Item::Rect { x, w, .. } => (*x, x + w),
+                    Item::Stroke { x, x2, w, .. } => (x.min(*x2) - w / 2.0, x.max(*x2) + w / 2.0),
+                    _ => panic!("unexpected decoration"),
+                };
+                assert!(left >= right - 0.001, "{style:?}: decoration crosses its own em box");
+                // A double or wavy decoration may be wider than the gap; it
+                // must still be as close as possible without changing shape.
+                if matches!(style, UnderlineStyle::Single | UnderlineStyle::Dotted) {
+                    assert!(end <= previous_left + 0.001, "{style:?}: decoration crosses the previous em box");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn vertical_page_underlines_follow_the_right_side_of_the_text() {
         use ibis_doc_model::{CellDirection, UnderlineStyle};
         let text = Item::Text { x: 10.0, y: 20.0, text: "縦".into(), offsets: Arc::from([0.0f32]), font: gpui_kit::font("Test"), size: 10.0, color: gpui_kit::black() };
         for style in [UnderlineStyle::Single, UnderlineStyle::Double, UnderlineStyle::Dotted, UnderlineStyle::Wave] {
             let mut decoration = super::underline_items(style, 10.0, 10.0, 10.0, 20.0, gpui_kit::black());
-            super::mirror_vertical_underline(&mut decoration, 20.0, 10.0);
+            super::mirror_vertical_underline(&mut decoration, 20.0, 10.0, 20.0);
             let mut input = vec![text.clone()]; input.extend(decoration);
-            let out = super::turn_page_items(input, CellDirection::TbRl, 800.0, 600.0);
+            let out = super::turn_page_items(input, CellDirection::TbRl, 800.0, 600.0, &|_, _, size| size);
             let Item::Text { x, size, .. } = &out[0] else { panic!("vertical text missing") };
             let right = *x + *size;
             for item in &out[1..] {

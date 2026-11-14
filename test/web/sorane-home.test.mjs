@@ -21,3 +21,14 @@ test('home stays put and links to the editor and a distributable sample', () => 
   assert.match(home, /href="\.\/editor\.html\?open=%2Fsamples%2Fsorane-welcome\.docx"/);
   assert.ok(existsSync(new URL('../../www/samples/sorane-welcome.docx', import.meta.url)));
 });
+
+ test('public gallery links point to bundled documents with source attribution', () => {
+  for (const name of ['data-action-plan-2023.pptx', 'urban-comfort-analysis.xlsx', 'hokkaido-landscape-comparison.jtd', 'mynumber-law-2023-comparison.jtd']) {
+    assert.ok(home.includes(`open=%2Fsamples%2F${name}`));
+    assert.ok(existsSync(new URL(`../../www/samples/${name}`, import.meta.url)));
+  }
+  assert.match(home, /digital\.go\.jp\/councils\/digital-system-reform/);
+  assert.match(home, /www\.mlit\.go\.jp/);
+  assert.match(home, /Sorane Docs が加工/);
+  assert.match(home, /pref\.hokkaido\.lg\.jp/);
+});

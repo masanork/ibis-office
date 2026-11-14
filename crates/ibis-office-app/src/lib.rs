@@ -669,6 +669,9 @@ pub fn run_native() {
         });
 }
 
+#[cfg(any(target_family = "wasm", test))]
+mod web_font_fallback;
+
 #[cfg(target_family = "wasm")]
 mod web {
     use std::borrow::Cow;
@@ -754,8 +757,21 @@ mod web {
         Ok(())
     }
 
+    fn resolved_web_font_alias<'a>(fonts: &'a SuppliedFonts, name: &str) -> Option<&'a String> {
+        if let Some(exact) = fonts.aliases.get(name) { return Some(exact); }
+        if !fonts.face_mode { return None; }
+        match crate::web_font_fallback::face_hint(name)? {
+            crate::web_font_fallback::Face::Mincho => Some(&fonts.default_family),
+            crate::web_font_fallback::Face::Gothic => fonts.aliases.get("Noto Sans CJK JP"),
+        }
+    }
+
     pub(crate) fn font_alias(name: &str) -> Option<SharedString> {
-        SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref()?.aliases.get(name).cloned().map(Into::into))
+        SUPPLIED_FONTS.with(|fonts| {
+            let fonts = fonts.borrow();
+            let fonts = fonts.as_ref()?;
+            resolved_web_font_alias(fonts, name).cloned().map(Into::into)
+        })
     }
 
     pub(crate) fn default_font_family() -> Option<SharedString> {
@@ -772,7 +788,7 @@ mod web {
             let fonts = fonts.as_ref()?;
             if !fonts.face_mode { return Some(FontFallbacks::from_fonts(fonts.families.clone())); }
             let gothic = fonts.aliases.get("Noto Sans CJK JP");
-            let requested_family = requested.and_then(|name| fonts.aliases.get(name));
+            let requested_family = requested.and_then(|name| resolved_web_font_alias(fonts, name));
             let category = if gothic.is_some() && requested_family == gothic { "NotoSansCJKJP" } else { "ipamjm" };
             let mut families: Vec<String> = fonts.face_fonts.iter()
                 .filter(|(face, _)| face == "acgjm")
