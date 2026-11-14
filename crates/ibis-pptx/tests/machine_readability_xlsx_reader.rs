@@ -154,3 +154,30 @@ fn large_xlsx_reader_matches_reference_two_pass_semantics() {
         assert_eq!(input.cells, expected, "cells in {name}");
     }
 }
+
+#[test]
+fn saved_xlsx_values_preserve_original_formula_caches() {
+    use ibis_doc_model::sheet::CellValue;
+    use ibis_pptx::machine_readability_xlsx::read_xlsx_saved_sheet;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-saved-values-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for case in data["cases"].as_array().unwrap() {
+        let name = case["file"].as_str().unwrap();
+        let bytes = std::fs::read(root.join(name)).unwrap();
+        let saved = read_xlsx_saved_sheet(&bytes, 0).unwrap();
+        let cell = saved.sheet.cells.iter().find(|c| c.row == 4 && c.column == 2).unwrap();
+        assert!(cell.formula.is_some(), "{name}");
+        match (&cell.value, case["kind"].as_str().unwrap()) {
+            (CellValue::Empty, "none") => {},
+            (CellValue::Number(n), "number") => assert_eq!(*n, case["value"].as_f64().unwrap(), "{name}"),
+            (CellValue::Bool(v), "bool") => assert_eq!(*v, case["value"].as_bool().unwrap(), "{name}"),
+            (CellValue::Text(v), "text") => assert_eq!(v, case["value"].as_str().unwrap(), "{name}"),
+            (CellValue::Error(v), "text") => assert_eq!(v.as_str(), case["value"].as_str().unwrap(), "{name}"),
+            // The reference treats a cached string beginning '=' as another
+            // formula; the raw source adapter must preserve the saved string.
+            (CellValue::Text(v), "none") if name.contains("formula_text") => assert_eq!(v, "=cached"),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
