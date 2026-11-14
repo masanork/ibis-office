@@ -978,6 +978,38 @@ pub fn csv_choice_standardization(sheet: &Sheet, table: CellRange, body_first: u
     Some(result("L2-04", findings.is_empty(), if analyzed { 0.7 } else { 0.0 }, Severity::Critical, findings))
 }
 
+/// L2-04 report. Harunobu selects a similar value from a Python set, whose
+/// order is not stable; use the first matching value in sheet order.
+pub fn csv_choice_standardization_report(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)]) -> Option<RuleDiagnostics> {
+    let evaluation = csv_choice_standardization(sheet,table,body_first,body_last,schemas)?;
+    if evaluation.result.confidence == 0.0 { return Some(RuleDiagnostics { evaluation, message: "分布分析に十分なデータがないため、選択肢標準化チェックをスキップしました。".into(), descriptions: Vec::new() }); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut descriptions = Vec::new();
+    for finding in &evaluation.findings {
+        let first = sheet.cells.iter().find(|c| address(c.row,c.column) == finding.location)?;
+        let CellValue::Text(candidate) = &first.value else { return None; };
+        let candidate = candidate.trim_matches(space);
+        let mut values: Vec<(&str, usize)> = Vec::new(); let mut total = 0usize;
+        for cell in sheet.cells.iter().filter(|c|c.column == first.column && c.row >= body_first && c.row <= body_last) {
+            let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+            if value.is_empty() { continue; }
+            total += 1;
+            if let Some((_, count)) = values.iter_mut().find(|(v,_)|*v == value) { *count += 1; } else { values.push((value,1)); }
+        }
+        let count = values.iter().find(|(v,_)|*v == candidate)?.1;
+        let normalized: Vec<_> = normalized_choice(candidate).chars().collect();
+        let mut matching = Vec::new();
+        for &(value,n) in &values {
+            if n <= 2 && n * 20 <= total { continue; }
+            let dominant: Vec<_> = normalized_choice(value).chars().collect();
+            if normalized == dominant || (normalized.len().min(dominant.len()) >= 2 && 8 * sequence_matches(&normalized,&dominant) >= 3 * (normalized.len()+dominant.len())) { matching.push(value); }
+        }
+        descriptions.push(format!("表記揺れの可能性: '{candidate}' は '{}' と類似（出現{count}回）",matching.first()?));
+    }
+    let message = if descriptions.is_empty() { "選択肢の表記は統一されています".into() } else { format!("選択肢表記の不統一: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L3-09 for unmerged CSV/TSV header text, with AI unavailable.
 pub fn csv_vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32]) -> Option<RuleEvaluation> {
     vertical_format(sheet, table, header_rows, &BTreeSet::new())
