@@ -160,3 +160,63 @@ pub fn bulk_report_json(files: &[FileReport<'_>], checks: &[RuleDiagnostics]) ->
     };
     Some(json!({"複数ファイル総合スコア":total,"ファイル数":files.len(),"ファイル横断チェック":checks_json,"ファイル別平均スコア":summaries,"ファイル別結果":reports}))
 }
+
+const CSV_HEADER: [&str; 17] = ["ファイル名","シート名","テーブル範囲","ヘッダー範囲","列数","ルールID","ルール名","ルール説明","合否","判定対象外","重大度","信頼度","違反数","違反箇所","違反内容","違反重大度","メッセージ"];
+fn csv_record(out: &mut String, fields: &[String]) {
+    for (i,field) in fields.iter().enumerate() {
+        if i > 0 { out.push(','); }
+        if field.chars().any(|ch|matches!(ch,','|'"'|'\r'|'\n')) { out.push('"'); for ch in field.chars() { if ch == '"' { out.push('"'); } out.push(ch); } out.push('"'); }
+        else { out.push_str(field); }
+    }
+    out.push_str("\r\n");
+}
+fn str_field<'a>(value: &'a Value, name: &str) -> Option<&'a str> { value.get(name)?.as_str() }
+fn csv_check_fields(check: &Value, bulk: bool) -> Option<Vec<String>> {
+    let violations = check.get("違反")?.as_array()?;
+    let mut locations = Vec::new(); let mut descriptions = Vec::new(); let mut severities = Vec::new();
+    for v in violations { locations.push(format!("{}!{}",str_field(v,"シート")?,str_field(v,"セル範囲")?)); descriptions.push(str_field(v,"説明")?.to_string()); severities.push(str_field(v,"違反重大度")?.to_string()); }
+    if !bulk && violations.len() > 20 {
+        let groups = check.get("違反グループ")?.get("グループ")?.as_array()?;
+        locations = vec![format!("{} 他（計 {} 件）",locations.iter().take(3).cloned().collect::<Vec<_>>().join("; "),violations.len())];
+        descriptions.clear(); severities.clear();
+        for group in groups {
+            let sheet=str_field(group,"シート")?; let severity=str_field(group,"重大度")?; let count=group.get("件数")?.as_u64()?;
+            descriptions.push(format!("{sheet}/{severity}: {count}件")); severities.push(format!("{severity}: {count}件"));
+        }
+    }
+    Some(vec![str_field(check,"ルールID")?.into(),str_field(check,"ルール名")?.into(),str_field(check,"ルール説明")?.into(),
+        if check.get("合否")?.as_bool()? { "合格" } else { "不合格" }.into(),
+        if check.get("判定対象外")?.as_bool()? { "○" } else { "" }.into(),str_field(check,"重大度")?.into(),
+        format!("{:.2}",check.get("信頼度")?.as_f64()?),violations.len().to_string(),locations.join("; "),descriptions.join("; "),severities.join("; "),str_field(check,"メッセージ")?.into()])
+}
+fn append_file_csv(out: &mut String, file: &Value) -> Option<()> {
+    let name=str_field(file,"inputファイル名")?;
+    for sheet in file.get("sheets")?.as_array()? {
+        let sheet_name=str_field(sheet,"シート名")?;
+        for table in sheet.get("評価対象エリア")?.as_array()? {
+            let range=str_field(table,"範囲")?; let header=table.get("ヘッダー範囲")?;
+            let header=if header.is_null() { "" } else { header.as_str()? };
+            let width=table.get("列数")?.as_u64()?.to_string();
+            for check in table.get("評価内容")?.as_array()? {
+                let mut row=vec![name.into(),sheet_name.into(),range.into(),header.into(),width.clone()];
+                row.extend(csv_check_fields(check,false)?); csv_record(out,&row);
+            }
+        }
+    }
+    Some(())
+}
+/// Render a default Harunobu CSV from a fully assembled single-file JSON report.
+pub fn file_report_csv(file: &Value) -> Option<String> {
+    let mut out=String::new(); csv_record(&mut out,&CSV_HEADER.iter().map(|v|v.to_string()).collect::<Vec<_>>());
+    append_file_csv(&mut out,file)?; Some(out)
+}
+/// Render a default Harunobu CSV from a fully assembled bulk JSON report.
+pub fn bulk_report_csv(bulk: &Value) -> Option<String> {
+    let mut out=String::new(); csv_record(&mut out,&CSV_HEADER.iter().map(|v|v.to_string()).collect::<Vec<_>>());
+    for file in bulk.get("ファイル別結果")?.as_array()? { append_file_csv(&mut out,file)?; }
+    for (_,check) in bulk.get("ファイル横断チェック")?.as_object()? {
+        let mut row=vec!["(bulk)".into(),String::new(),String::new(),String::new(),String::new()];
+        row.extend(csv_check_fields(check,true)?); csv_record(&mut out,&row);
+    }
+    Some(out)
+}
