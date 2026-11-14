@@ -87,9 +87,13 @@ strings and out-of-range date serials rather than claiming equivalence for
 unsupported source metadata. The fixture also covers reference two-pass reader
 behavior above 5 MiB using a synthetic padding part generated in memory.
 
-`harunobu-native-csv-reference.json` records seven Level 1 rule outcomes for
+`harunobu-native-csv-reference.json` records eight Level 1 rule outcomes for
 synthetic one-table CSV/TSV inputs, generated with the pinned Harunobu analyzer
 and AI disabled. The native partial analyzer covers these checks without a
 score, explicitly reports incomplete coverage, and rejects zero or multiple
 detected tables. It is not connected to the application UI and does not yet
 provide complete Harunobu report compatibility.
+
+`harunobu-whitespace-reference.json` compares synthetic cell-level L1-06
+whitespace findings, including address columns and semantic full-width spaces,
+against the pinned Harunobu implementation.

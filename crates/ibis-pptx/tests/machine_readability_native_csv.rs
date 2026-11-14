@@ -34,9 +34,9 @@ fn native_csv_checks_match_reference_without_claiming_complete_coverage() {
             let wanted: Vec<_> = expected["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
             assert_eq!(findings, wanted, "{name}: {}", got.result.rule_id);
         }
-        assert_eq!(actual.checks.len(), 7);
+        assert_eq!(actual.checks.len(), 8);
     }
-    assert_eq!(UNIMPLEMENTED_CSV_LEVEL1, &["L1-03", "L1-05", "L1-06", "L1-09"]);
+    assert_eq!(UNIMPLEMENTED_CSV_LEVEL1, &["L1-03", "L1-05", "L1-09"]);
     assert_eq!(analyze_csv_partial(b"", Delimiter::Comma), Err(NativeCsvError::UnsupportedTableCount(0)));
     assert_eq!(analyze_csv_partial(b"A,B\n1,2\n\n\n\nA,B\n3,4\n", Delimiter::Comma), Err(NativeCsvError::UnsupportedTableCount(2)));
 }
