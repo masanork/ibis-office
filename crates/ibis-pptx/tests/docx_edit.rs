@@ -33,6 +33,8 @@ fn normalized(doc: &FlowDocument) -> FlowDocument {
             match b {
                 Block::Paragraph(p) => {
                     p.id = *next;
+                    // Saving assigns identities to paragraphs that had none in the model.
+                    p.para_id = None;
                     // A comment's marker draws nothing and has no run properties in the file: the style a command gives it from the text beside it
                     // (its `w:hint`, of no use to a mark) is not kept.
                     for run in &mut p.runs {
@@ -425,8 +427,12 @@ fn splitting_keeps_floating_shapes_single() {
     let (a0, b0, p0) = count(&original);
     let (a1, b1, p1) = count(&out.saved);
     assert_eq!((a1, b1), (a0, b0));
-    // The new paragraph has no paraId of its own (Word gives one); none is repeated.
-    assert_eq!(p1, p0);
+    // The split-off paragraph gets a fresh identity; the first keeps its own.
+    assert_eq!(p1, p0 + 1);
+    let before = body_para_ids(&original);
+    let after = body_para_ids(&out.saved);
+    assert_eq!(after[0], before[0]);
+    assert_valid_para_ids(&after);
 }
 
 // P5–P7: lists of the document's own definitions.
@@ -8185,4 +8191,178 @@ fn literal_soft_hyphen_and_softhyphen_element_survive_an_edit_and_save() {
     assert!(saved.contains("a\u{ad}b"), "the literal U+00AD is still in w:t");
     assert!(saved.contains("<w:softHyphen/>"), "the optional hyphen is still the element: {}", saved.split("<w:p>").last().unwrap_or(""));
     assert!(!saved.contains(ibis_doc_model::OPTIONAL_HYPHEN), "the model's mark is never written");
+}
+
+/// A small synthetic package, with identities reserved in parts outside the body.
+fn para_id_docx(body: &str) -> Vec<u8> {
+    use ibis_ooxml::zip::{EntryMeta, Writer};
+    let w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    let w14 = "http://schemas.microsoft.com/office/word/2010/wordml";
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let mut zip = Writer::new();
+    let mut add = |part: &str, xml: String| zip.add(part, EntryMeta::default(), xml.as_bytes()).unwrap();
+    let mut types = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>"#.to_string();
+    for (part, kind) in [("document.xml", "document.main"), ("header1.xml", "header"), ("footer1.xml", "footer"), ("footnotes.xml", "footnotes"), ("comments.xml", "comments")] {
+        types += &format!(r#"<Override PartName="/word/{part}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml"/>"#);
+    }
+    types += r#"<Override PartName="/word/commentsExtended.xml" ContentType="application/vnd.ms-word.commentsExtended+xml"/></Types>"#;
+    add("[Content_Types].xml", types);
+    add("_rels/.rels", format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="{rel}/officeDocument" Target="word/document.xml"/></Relationships>"#));
+    add("word/document.xml", format!(r#"<w:document xmlns:w="{w}" xmlns:w14="{w14}" xmlns:r="{rel}"><w:body>{body}<w:sectPr><w:headerReference w:type="default" r:id="header"/><w:footerReference w:type="default" r:id="footer"/></w:sectPr></w:body></w:document>"#));
+    add("word/_rels/document.xml.rels", format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="header" Type="{rel}/header" Target="header1.xml"/><Relationship Id="footer" Type="{rel}/footer" Target="footer1.xml"/><Relationship Id="notes" Type="{rel}/footnotes" Target="footnotes.xml"/><Relationship Id="comments" Type="{rel}/comments" Target="comments.xml"/><Relationship Id="extended" Type="http://schemas.microsoft.com/office/2011/relationships/commentsExtended" Target="commentsExtended.xml"/></Relationships>"#));
+    for (part, root, content) in [
+        ("header1.xml", "hdr", r#"<w:p w14:paraId="00000001"/>"#),
+        ("footer1.xml", "ftr", r#"<w:p w14:paraId="00000002"/>"#),
+        ("footnotes.xml", "footnotes", r#"<w:footnote w:id="1"><w:p w14:paraId="00000003"/></w:footnote>"#),
+        ("comments.xml", "comments", r#"<w:comment w:id="0" w:author="Test"><w:p w14:paraId="00000004"/></w:comment>"#),
+    ] {
+        add(&format!("word/{part}"), format!(r#"<w:{root} xmlns:w="{w}" xmlns:w14="{w14}">{content}</w:{root}>"#));
+    }
+    add("word/commentsExtended.xml", r#"<w15:commentsEx xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"><w15:commentEx w15:paraId="00000004" w15:done="1"/></w15:commentsEx>"#.into());
+    zip.finish().unwrap()
+}
+
+fn body_para_ids(data: &[u8]) -> Vec<String> {
+    let package = ibis_ooxml::Package::open(data.to_vec()).unwrap();
+    let bytes = package.read("word/document.xml").unwrap();
+    let doc = roxmltree::Document::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "p").filter_map(|p| p.attribute(("http://schemas.microsoft.com/office/word/2010/wordml", "paraId")).map(str::to_string)).collect()
+}
+
+fn assert_valid_para_ids(ids: &[String]) {
+    let mut used = std::collections::HashSet::new();
+    for id in ids {
+        assert_eq!(id.len(), 8, "{id}");
+        assert!(id.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        let value = u32::from_str_radix(id, 16).unwrap();
+        assert!(value > 0 && value < 0x8000_0000, "{id}");
+        assert_eq!(*id, id.to_ascii_uppercase());
+        assert!(used.insert(value), "duplicate {id}");
+    }
+}
+
+#[test]
+fn paragraph_id_roundtrip_and_text_edit() {
+    let data = para_id_docx(r#"<w:p w14:paraId="1234ABCD"><w:r><w:t>First</w:t></w:r></w:p><w:p w14:paraId="76543210"><w:r><w:t>Second</w:t></w:r></w:p>"#);
+    let opened = ibis_pptx::open(data.clone()).unwrap();
+    let ids = body_para_ids(&data);
+    assert_eq!(body_paragraphs(flow(&opened.presentation))[0].para_id.as_deref(), Some("1234ABCD"));
+    let saved = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+    assert_eq!(saved, data);
+    assert_eq!(body_para_ids(&saved), ids);
+    let out = scenario_data("paragraph identities", data, BODY, |doc| vec![FlowCommand::InsertText { at: FlowPos::new(body_paragraphs(doc)[0].id, 2), text: "!".into(), format: None }]);
+    assert_eq!(body_para_ids(&out.saved), ids);
+}
+
+#[test]
+fn paragraph_id_repairs_are_deterministic_and_package_wide() {
+    let data = para_id_docx(r#"<w:p w14:paraId="00000010"/><w:p w14:paraId="00000010"/><w:p w14:paraId="garbage!"/><w:p w14:paraId="00000005"/><w:p w14:paraId="00000004"/><w:p w14:paraId="00000000"/><w:p w14:paraId="80000000"/><w:p w14:paraId="0000010"/><w:p w14:paraId="1234abcd"/>"#);
+    let save = || {
+        let opened = ibis_pptx::open(data.clone()).unwrap();
+        assert!(flow(&opened.presentation).comments[0].done);
+        let model: Vec<_> = body_paragraphs(flow(&opened.presentation)).iter().map(|p| p.para_id.clone().unwrap()).collect();
+        let saved = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+        assert_eq!(body_para_ids(&saved), model);
+        assert!(flow(&ibis_pptx::read(&saved).unwrap()).comments[0].done);
+        model
+    };
+    let ids = save();
+    assert_eq!(ids, save());
+    assert_valid_para_ids(&ids);
+    assert_eq!(ids[0], "00000010");
+    assert_eq!(ids[3], "00000005");
+    assert_eq!(ids[8], "1234ABCD");
+    for reserved in ["00000001", "00000002", "00000003", "00000004"] {
+        assert!(!ids.iter().any(|id| id == reserved));
+    }
+}
+
+#[test]
+fn paragraph_id_missing_is_minted_only_when_written() {
+    let data = para_id_docx("<w:p><w:r><w:t>First</w:t></w:r></w:p><w:p/>");
+    let opened = ibis_pptx::open(data.clone()).unwrap();
+    assert!(body_paragraphs(flow(&opened.presentation)).iter().all(|p| p.para_id.is_none()));
+    assert_eq!(opened.source.save(&opened.presentation, SaveOptions::default()).unwrap(), data);
+    let out = scenario_data("missing paragraph identities", data, BODY, |doc| vec![FlowCommand::InsertText { at: FlowPos::new(body_paragraphs(doc)[0].id, 2), text: "!".into(), format: None }]);
+    let ids = body_para_ids(&out.saved);
+    assert_eq!(ids, ["00000005"]);
+    let reread = ibis_pptx::read(&out.saved).unwrap();
+    assert!(body_paragraphs(flow(&reread))[1].para_id.is_none());
+}
+
+#[test]
+fn paragraph_id_split_and_copy_are_fresh() {
+    let data = para_id_docx(r#"<w:p w14:paraId="00000010"><w:r><w:t>First</w:t></w:r></w:p>"#);
+    let out = scenario_data("split paragraph identities", data.clone(), BODY, |doc| vec![FlowCommand::InsertText { at: FlowPos::new(body_paragraphs(doc)[0].id, 2), text: "\n".into(), format: None }]);
+    let ids = body_para_ids(&out.saved);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], "00000010");
+    assert_valid_para_ids(&ids);
+    let opened = ibis_pptx::open(data).unwrap();
+    let mut edited = opened.presentation.clone();
+    let doc = Arc::make_mut(edited.flow.as_mut().unwrap());
+    let mut next = doc.new_id();
+    let copy = ibis_doc_model::flow_command::renumbered(&doc.body, &mut next);
+    doc.body.extend(copy);
+    assert!(body_paragraphs(doc)[1].para_id.is_none());
+    let saved = opened.source.save(&edited, SaveOptions::default()).unwrap();
+    let ids = body_para_ids(&saved);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], "00000010");
+    assert_valid_para_ids(&ids);
+    assert_eq!(saved, opened.source.save(&edited, SaveOptions::default()).unwrap());
+}
+
+#[test]
+fn paragraph_id_new_row_is_fresh() {
+    let data = para_id_docx(r#"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc><w:tcPr/><w:p w14:paraId="00000010"><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#);
+    let opened = ibis_pptx::open(data).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let table = first_table(flow(document.presentation()), 1, 1).id;
+    document.execute(vec![Command::Flow(FlowCommand::EditTable { table, edit: ibis_doc_model::TableEdit::InsertRow { row: 0, below: true } })]).unwrap();
+    assert!(paragraphs(flow(document.presentation()))[1].para_id.is_none());
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let ids = body_para_ids(&saved);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], "00000010");
+    assert_valid_para_ids(&ids);
+    assert!(!ids.iter().any(|id| matches!(id.as_str(), "00000001" | "00000002" | "00000003" | "00000004")));
+}
+
+#[test]
+fn paragraph_id_model_value_overwrites_xml_and_is_reserved() {
+    let data = para_id_docx(r#"<w:p w14:paraId="00000010"><w:r><w:t>First</w:t></w:r></w:p>"#);
+    let opened = ibis_pptx::open(data).unwrap();
+    let mut edited = opened.presentation.clone();
+    let doc = Arc::make_mut(edited.flow.as_mut().unwrap());
+    let mut next = doc.new_id();
+    let copy = ibis_doc_model::flow_command::renumbered(&doc.body, &mut next);
+    let Block::Paragraph(p) = &mut doc.body[0] else { panic!() };
+    p.para_id = Some("00000005".into());
+    doc.body.extend(copy);
+    let saved = opened.source.save(&edited, SaveOptions::default()).unwrap();
+    assert_eq!(body_para_ids(&saved), ["00000005", "00000006"]);
+}
+
+#[test]
+fn paragraph_id_comments_keep_their_thread_identity() {
+    use ibis_doc_model::flow_command::{CommentAuthor, reply_comment};
+    let data = para_id_docx(r#"<w:p w14:paraId="00000010"><w:r><w:t>First</w:t></w:r></w:p>"#);
+    let who = CommentAuthor { author: "Test".into(), initials: "T".into(), date: "2026-10-01T00:00:00Z".into() };
+    let out = scenario_data("comment paragraph identities", data, &["*"], |doc| reply_comment(doc, 0, &who, "Reply").unwrap());
+    let reread = ibis_pptx::read(&out.saved).unwrap();
+    let comments = &flow(&reread).comments;
+    assert_eq!(comments[0].para_id.as_deref(), Some("00000004"));
+    assert!(comments[0].done);
+    assert_eq!(comments[1].parent, Some(0));
+    assert!(!comments[1].done);
+    let package = ibis_ooxml::Package::open(out.saved).unwrap();
+    let mut ids = Vec::new();
+    for part in package.names().filter(|p| p.ends_with(".xml")) {
+        let bytes = package.read(part).unwrap();
+        let xml = roxmltree::Document::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+        ids.extend(xml.descendants().filter(|n| n.is_element() && n.tag_name().name() == "p").filter_map(|p| p.attribute(("http://schemas.microsoft.com/office/word/2010/wordml", "paraId")).map(str::to_string)));
+    }
+    assert_eq!(ids.len(), 6);
+    assert_valid_para_ids(&ids);
 }
