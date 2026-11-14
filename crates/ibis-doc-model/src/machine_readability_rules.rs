@@ -320,6 +320,23 @@ pub fn one_data_per_cell(sheet: &Sheet, table: CellRange, columns: Option<&std::
     result("L1-07", passed, if passed { 0.82 } else { 0.78 }, Severity::Critical, findings)
 }
 
+pub fn one_data_per_cell_report(sheet: &Sheet, table: CellRange, columns: Option<&std::collections::BTreeMap<u32, ColumnType>>) -> Option<RuleDiagnostics> {
+    let evaluation = one_data_per_cell(sheet, table, columns);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let mut descriptions = Vec::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= table.first_row && c.row <= table.last_row && c.column >= table.first_column && c.column <= table.last_column) {
+        if let CellValue::Text(value) = &cell.value {
+            if value.trim().is_empty() { continue; }
+            if let Some(reason) = multiple_data_reason(value, columns.and_then(|c|c.get(&cell.column).copied())) {
+                let pos = address(cell.row, cell.column); let snippet: String = value.chars().take(50).collect();
+                descriptions.push(format!("{pos}: {reason}（値: '{snippet}'）"));
+            }
+        }
+    }
+    let message = if descriptions.is_empty() { "すべてのセルが1セル1データです。".into() } else { format!("{}件のセルで複数データが検出されました。",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// A cell separated from every detected table by the layout engine.
 /// Coordinates use the sheet model's zero-based convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,19 +379,22 @@ pub fn whitespace_issues(value: &str, is_address_column: bool) -> Vec<&'static s
 
 /// L1-06 over the supplied table and header rows. `None` means header metadata
 /// is unavailable; an empty list uses the first table row as in Harunobu.
-pub fn whitespace_formatting(sheet: &Sheet, table: CellRange, header_rows: Option<&[u32]>) -> RuleEvaluation {
+fn whitespace_address_columns(sheet: &Sheet, table: CellRange, headers: &[u32]) -> BTreeSet<u32> {
     use std::sync::OnceLock;
     static ADDRESS: OnceLock<regex::Regex> = OnceLock::new();
+    let address_re = ADDRESS.get_or_init(|| regex::Regex::new(r"(?i)(住所|所在地|address|addr|勤務地|居所|連絡先住所|本籍|現住所|送付先)").unwrap());
+    let header_rows: BTreeSet<_> = if headers.is_empty() { BTreeSet::from([table.first_row]) } else { headers.iter().copied().collect() };
+    sheet.cells.iter().filter_map(|c| {
+        if !header_rows.contains(&c.row) || c.column < table.first_column || c.column > table.last_column { return None; }
+        match &c.value { CellValue::Text(value) if address_re.is_match(value) => Some(c.column), _ => None }
+    }).collect()
+}
+
+pub fn whitespace_formatting(sheet: &Sheet, table: CellRange, header_rows: Option<&[u32]>) -> RuleEvaluation {
     if table.first_row > table.last_row || table.first_column > table.last_column || header_rows.is_none() {
         return result("L1-06", true, 0.0, Severity::Critical, Vec::new());
     }
-    let address_re = ADDRESS.get_or_init(|| regex::Regex::new(r"(?i)(住所|所在地|address|addr|勤務地|居所|連絡先住所|本籍|現住所|送付先)").unwrap());
-    let headers = header_rows.unwrap();
-    let header_rows: BTreeSet<_> = if headers.is_empty() { BTreeSet::from([table.first_row]) } else { headers.iter().copied().collect() };
-    let address_columns: BTreeSet<_> = sheet.cells.iter().filter_map(|c| {
-        if !header_rows.contains(&c.row) || c.column < table.first_column || c.column > table.last_column { return None; }
-        match &c.value { CellValue::Text(value) if address_re.is_match(value) => Some(c.column), _ => None }
-    }).collect();
+    let address_columns = whitespace_address_columns(sheet, table, header_rows.unwrap());
     let findings: Vec<_> = sheet.cells.iter().filter_map(|cell| {
         if cell.row < table.first_row || cell.row > table.last_row || cell.column < table.first_column || cell.column > table.last_column { return None; }
         match &cell.value {
@@ -383,6 +403,24 @@ pub fn whitespace_formatting(sheet: &Sheet, table: CellRange, header_rows: Optio
         }
     }).collect();
     result("L1-06", findings.is_empty(), 0.95, Severity::Critical, findings)
+}
+
+pub fn whitespace_formatting_report(sheet: &Sheet, table: CellRange, header_rows: Option<&[u32]>) -> Option<RuleDiagnostics> {
+    let evaluation = whitespace_formatting(sheet, table, header_rows);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let columns = whitespace_address_columns(sheet, table, header_rows?);
+    let mut descriptions = Vec::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= table.first_row && c.row <= table.last_row && c.column >= table.first_column && c.column <= table.last_column) {
+        let CellValue::Text(value) = &cell.value else { continue; };
+        let issues = whitespace_issues(value, columns.contains(&cell.column));
+        if !issues.is_empty() {
+            let position = address(cell.row, cell.column);
+            let snippet: String = value.chars().take(30).collect();
+            descriptions.push(format!("{position}: {}（値: '{snippet}'）", issues.join("; ")));
+        }
+    }
+    let message = if descriptions.is_empty() { "体裁用スペース・改行は検出されませんでした。".into() } else { format!("{}件の体裁用スペース・改行が検出されました。",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
 }
 
 /// L1-03 for a single, unmerged CSV/TSV table containing only text cells.

@@ -1031,3 +1031,49 @@ fn formatting_diagnostics_match_pinned_harunobu() {
     }
     assert!(format_based_semantics_report(&sheet,table,1,None).is_none());
 }
+
+#[test]
+fn whitespace_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::whitespace_formatting_report;
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let table=CellRange { first_row:0,first_column:0,last_row:3,last_column:3 };
+    for (i,case) in data["whitespace"].as_array().unwrap().iter().enumerate() {
+        sheet.cells=case["entries"].as_array().unwrap().iter().map(|v| {
+            let text=v["value"].as_str().unwrap_or("").to_string();
+            SheetCell { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None }
+        }).collect::<Vec<_>>().into();
+        let headers:Vec<_>=case["headers"].as_array().unwrap().iter().map(|v|v.as_u64().unwrap() as u32).collect();
+        let got=whitespace_formatting_report(&sheet,table,Some(&headers)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(whitespace_formatting_report(&sheet,table,None).is_none());
+}
+
+#[test]
+fn multiple_data_diagnostics_match_pinned_harunobu() {
+    use std::collections::BTreeMap;
+    use ibis_doc_model::machine_readability_rules::{one_data_per_cell_report, ColumnType};
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let table=CellRange { first_row:0,first_column:0,last_row:3,last_column:3 };
+    for (i,case) in data["multiple"].as_array().unwrap().iter().enumerate() {
+        sheet.cells=case["entries"].as_array().unwrap().iter().map(|v| {
+            let text=v["value"].as_str().unwrap_or("").to_string();
+            SheetCell { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None }
+        }).collect::<Vec<_>>().into();
+        let columns:BTreeMap<_,_>=case["types"].as_array().unwrap().iter().enumerate().map(|(c,v)|(c as u32,if v=="numeric" {ColumnType::Numeric} else {ColumnType::Other})).collect();
+        let got=one_data_per_cell_report(&sheet,table,Some(&columns)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
