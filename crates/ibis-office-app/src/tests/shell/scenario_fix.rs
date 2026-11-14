@@ -8960,15 +8960,15 @@ fn fix_embed_view_mode_and_bars() {
     assert!(is_view_only() && show_menu_bar() && show_tool_bar());
     set_embed_options(false, false, false, true, true);
 
-    // Also verify `www/main.ts` matches `?? true` for both `menuBar` and `toolBar`.
+    // The standalone phone default hides both bars; an explicit view=1 does not select it.
     let main_ts = std::fs::read_to_string(crate::shell::scenario::repo_root().join("www/main.ts"))
         .expect("read www/main.ts");
     assert!(
-        main_ts.contains("menuBar: js.menuBar ?? flag(params, 'menuBar') ?? flag(params, 'menubar') ?? true"),
+        main_ts.contains("menuBar: js.menuBar ?? flag(params, 'menuBar') ?? flag(params, 'menubar') ?? !phoneViewer"),
         "www/main.ts must default menuBar to true even when view=1"
     );
     assert!(
-        main_ts.contains("toolBar: js.toolBar ?? flag(params, 'toolBar') ?? flag(params, 'toolbar') ?? true"),
+        main_ts.contains("toolBar: js.toolBar ?? flag(params, 'toolBar') ?? flag(params, 'toolbar') ?? !phoneViewer"),
         "www/main.ts must default toolBar to true even when view=1"
     );
 
