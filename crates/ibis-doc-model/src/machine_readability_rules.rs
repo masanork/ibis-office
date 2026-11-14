@@ -639,6 +639,30 @@ pub fn csv_item_abbreviations(sheet: &Sheet, stub_columns: &[u32], body_first: u
     Some(result("L2-02", findings.is_empty(), 0.70, Severity::Fatal, findings))
 }
 
+pub fn csv_item_abbreviations_report(sheet: &Sheet, stub_columns: &[u32], body_first: u32, body_last: u32) -> Option<RuleDiagnostics> {
+    let evaluation = csv_item_abbreviations(sheet, stub_columns, body_first, body_last)?;
+    if stub_columns.is_empty() { return Some(RuleDiagnostics { evaluation, message: "行ヘッダーが検出できなかったため判定対象外".into(), descriptions: Vec::new() }); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = std::collections::BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= body_first && c.row <= body_last && stub_columns.contains(&c.column)) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        cells.insert((cell.row, cell.column), value);
+    }
+    let mut descriptions = Vec::new();
+    for &col in stub_columns {
+        let mut seen = false;
+        for row in body_first..=body_last {
+            let value = cells.get(&(row, col)).copied().unwrap_or("");
+            if matches!(value, "〃" | "同上" | "同左" | "同右" | "〇" | "仝" | "ヽ" | "々") {
+                descriptions.push(format!("省略記号が使用されています: '{value}'"));
+            } else if value.is_empty() && seen { descriptions.push("行ヘッダーの値が欠落しています（空白による省略の可能性）".into()); }
+            else if !value.is_empty() { seen = true; }
+        }
+    }
+    let message = if descriptions.is_empty() { "項目名の省略なし".into() } else { format!("項目名省略: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L2-01 for unmerged CSV/TSV text cells with reader-inferred column schemas,
 /// with AI unavailable. A missing schema map uses the reference fallback.
 pub fn csv_numeric_purity(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)]) -> Option<RuleEvaluation> {
