@@ -136,3 +136,7 @@ resource cites the Japanese local-government codes (JIS X 0401/0402).
 separated and side-by-side tables, including cells outside tables.
 `harunobu-multitable-csv-reference.json` compares all currently ported rule
 outcomes for multiple detected tables against the thorough reference analyzer.
+`harunobu-xlsx-saved-values-reference.json` checks cached XLSX formula values.
+The raw saved-value adapter preserves a cached string starting with `=` even
+though the Harunobu layout reader interprets it as a formula; callers must
+apply reference interpretation when using those values in rules.
