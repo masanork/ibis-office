@@ -36,7 +36,7 @@ fn native_csv_checks_match_reference_without_claiming_complete_coverage() {
         }
         assert_eq!(actual.checks.len(), 11);
         assert_eq!(actual.level2_checks.len(), 5);
-        assert_eq!(actual.level3_checks.len(), 7);
+        assert_eq!(actual.level3_checks.len(), 9);
     }
     assert_eq!(UNIMPLEMENTED_CSV_LEVEL1, &["L1-09"]);
     assert_eq!(analyze_csv_partial(b"", Delimiter::Comma), Err(NativeCsvError::UnsupportedTableCount(0)));
