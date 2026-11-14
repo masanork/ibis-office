@@ -545,6 +545,34 @@ pub fn csv_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], 
     Some(result("L2-03", findings.is_empty(), 0.95, Severity::Fatal, findings))
 }
 
+pub fn csv_unique_headers_report(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleDiagnostics> {
+    let evaluation = csv_unique_headers(sheet, table, header_rows, body_first, body_last)?;
+    if header_rows.is_empty() { return Some(RuleDiagnostics { evaluation, message: "ヘッダー行が検出されなかったためスキップ".into(), descriptions: Vec::new() }); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = std::collections::BTreeMap::new();
+    let mut body_columns = BTreeSet::new();
+    for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        if cell.row >= body_first && cell.row <= body_last && !value.is_empty() { body_columns.insert(cell.column); }
+        cells.insert((cell.row, cell.column), value);
+    }
+    let mut names: Vec<(String, usize)> = Vec::new();
+    let mut descriptions = Vec::new();
+    for col in table.first_column..=table.last_column {
+        let mut parts = Vec::new();
+        for &row in header_rows { if let Some(&value) = cells.get(&(row, col)) { if !value.is_empty() && !parts.contains(&value) { parts.push(value); } } }
+        if parts.is_empty() { if body_columns.contains(&col) { descriptions.push("項目名が空です".into()); } }
+        else {
+            let name = parts.join("_");
+            if let Some((_, count)) = names.iter_mut().find(|(existing, _)| *existing == name) { *count += 1; }
+            else { names.push((name, 1)); }
+        }
+    }
+    for (name, count) in names { if count > 1 { for _ in 0..count { descriptions.push(format!("項目名 '{name}' が重複しています（{count}列）")); } } }
+    let message = if descriptions.is_empty() { "すべての項目名が一意です".into() } else { format!("一意でない項目名: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L3-01 using a detected table and the layout's zero-based header/body rows.
 pub fn header_start_position(table: CellRange, header_rows: &[u32], body_first: u32) -> Option<RuleEvaluation> {
     if table.first_row > table.last_row || table.first_column > table.last_column { return None; }
@@ -1413,6 +1441,35 @@ pub fn xlsx_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32],
     }
     for (_, cols) in names { if cols.len() > 1 { for col in cols { findings.push(Finding { location: location(col), severity: FindingSeverity::Error }); } } }
     Some(result("L2-03", findings.is_empty(), 0.95, Severity::Fatal, findings))
+}
+
+pub fn xlsx_unique_headers_report(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, merges: &[CellRange]) -> Option<RuleDiagnostics> {
+    let evaluation = xlsx_unique_headers(sheet, table, header_rows, body_first, body_last, merges)?;
+    if header_rows.is_empty() { return Some(RuleDiagnostics { evaluation, message: "ヘッダー行が検出されなかったためスキップ".into(), descriptions: Vec::new() }); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = std::collections::BTreeMap::new(); let mut body_columns = BTreeSet::new();
+    for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        if cell.row >= body_first && cell.row <= body_last && !value.is_empty() { body_columns.insert(cell.column); }
+        cells.insert((cell.row, cell.column), value);
+    }
+    let mut names: Vec<(String, usize)> = Vec::new(); let mut seen_merges = BTreeSet::new(); let mut descriptions = Vec::new();
+    for col in table.first_column..=table.last_column {
+        let merge_at = |row| merges.iter().find(|m| row >= m.first_row && row <= m.last_row && col >= m.first_column && col <= m.last_column);
+        if header_rows.iter().any(|&row| merge_at(row).is_some_and(|m| row != m.first_row || col != m.first_column)) {
+            let merged = header_rows.iter().find_map(|&row| merge_at(row))?;
+            let label = if merged.first_row == merged.last_row && merged.first_column == merged.last_column { address(merged.first_row, merged.first_column) } else { range_address(*merged) };
+            if seen_merges.insert(label) { descriptions.push("結合ヘッダーの従属セルがあり、列を一意に識別できません".into()); }
+            continue;
+        }
+        let mut parts = Vec::new();
+        for &row in header_rows { if let Some(&value) = cells.get(&(row, col)) { if !value.is_empty() && !parts.contains(&value) { parts.push(value); } } }
+        if parts.is_empty() { if body_columns.contains(&col) { descriptions.push("項目名が空です".into()); } }
+        else { let name = parts.join("_"); if let Some((_, count)) = names.iter_mut().find(|(existing, _)| *existing == name) { *count += 1; } else { names.push((name, 1)); } }
+    }
+    for (name, count) in names { if count > 1 { for _ in 0..count { descriptions.push(format!("項目名 '{name}' が重複しています（{count}列）")); } } }
+    let message = if descriptions.is_empty() { "すべての項目名が一意です".into() } else { format!("一意でない項目名: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
 }
 
 /// L3-07 across files, using each file's first available table header labels.
