@@ -732,11 +732,17 @@ fn view_style_lines(data: &[u8]) -> Option<u16> {
         if tag == 0x100d {
             let record = data.get(at..stop)?;
             let mask = *record.first()?;
-            if mask & 0x02 == 0 || mask & !0x03 != 0 || found.is_some() {
+            if mask & 0x02 == 0 || mask & !0x0b != 0 || found.is_some() {
                 return None;
             }
             let offset = 1 + usize::from(mask & 1 != 0);
             let bytes = record.get(offset..offset + 2)?;
+            // Observed 0x08 follows the line count as a four-byte field;
+            // its meaning is still unknown, but it does not shift the count.
+            // Do not accept a truncated or otherwise unrecognized record.
+            if mask & 0x08 != 0 && record.len() != offset + 2 + 4 {
+                return None;
+            }
             let lines = u16::from_be_bytes([bytes[0], bytes[1]]);
             if !(2..=500).contains(&lines) {
                 return None;
@@ -2742,6 +2748,10 @@ mod tests {
         }
         assert_eq!(view_style_lines(&styles(&[0x02, 0, 26])), Some(26));
         assert_eq!(view_style_lines(&styles(&[0x03, 7, 0, 45])), Some(45));
+        assert_eq!(view_style_lines(&styles(&[0x0a, 0, 25, 0, 0, 0, 2])), Some(25));
+        assert_eq!(view_style_lines(&styles(&[0x0b, 7, 0, 25, 0, 0, 0, 2])), Some(25));
+        assert_eq!(view_style_lines(&styles(&[0x0a, 0, 25, 0, 0, 0])), None);
+        assert_eq!(view_style_lines(&styles(&[0x0a, 0, 25, 0, 0, 0, 2, 0])), None);
         assert_eq!(view_style_lines(&styles(&[0x02, 0, 0])), None);
         assert_eq!(view_style_lines(&styles(&[0x06, 0, 26])), None);
         assert_eq!(view_style_lines(&styles(&[0x03, 7, 0])), None);
