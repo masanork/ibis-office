@@ -8,7 +8,7 @@ use ibis_doc_model::sheet::{CellError, CellKind, CellValue, Sheet};
 use ibis_doc_model::sheet_calc::sheet_of_slide;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum XlsxInputError { Workbook(String), SheetUnavailable, InvalidFormulaCache, UnsupportedFormulaCache, FormulaModelMismatch, InvalidWindowMetadata, Layout(XlsxLayoutError) }
+pub enum XlsxInputError { Workbook(String), SheetUnavailable, InvalidFormulaCache, UnsupportedFormulaCache, FormulaModelMismatch, InvalidWindowMetadata, FormulaInspectionLimit, Layout(XlsxLayoutError) }
 
 /// Read one worksheet from the original bytes. The caller supplies the exact
 /// reader window; this function does not yet infer Harunobu's dimension limits.
@@ -151,4 +151,43 @@ fn derive_window(root: roxmltree::Node<'_, '_>, merges: &[ibis_doc_model::sheet:
     let last_row = max_row.min(9_999);
     let last_column = if mode == XlsxReaderMode::SinglePass && max_column >= 255 { sample_column.saturating_add(5).min(max_column).min(499) } else { max_column.min(499) };
     Ok(XlsxReadWindow::Through { last_row, last_column })
+}
+
+/// Formula references from the original package, in worksheet XML order.
+/// Both lists cover every worksheet or this function returns an error; this
+/// matters because the reference skips L2-06 when package inspection fails.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct XlsxFormulaArtifacts {
+    pub formulas: Vec<ibis_doc_model::machine_readability_rules::FormulaArtifact>,
+    pub errors: Vec<ibis_doc_model::machine_readability_rules::FormulaArtifact>,
+}
+
+pub fn inspect_xlsx_formula_artifacts(bytes: &[u8]) -> Result<Vec<XlsxFormulaArtifacts>, XlsxInputError> {
+    use ibis_doc_model::machine_readability_rules::FormulaArtifact;
+    const MAX_REFS: usize = 50_000;
+    const MAX_XML_BYTES: usize = 100 * 1024 * 1024;
+    let (_, sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let package = crate::package::Package::new(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let mut output = Vec::with_capacity(sources.sheet_parts.len());
+    let (mut formula_count, mut error_count) = (0usize, 0usize);
+    for part in &sources.sheet_parts {
+        let part = part.as_deref().ok_or(XlsxInputError::SheetUnavailable)?;
+        let xml = package.read_xml(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+        if xml.len() > MAX_XML_BYTES { return Err(XlsxInputError::FormulaInspectionLimit); }
+        let doc = roxmltree::Document::parse(&xml).map_err(|_| XlsxInputError::InvalidFormulaCache)?;
+        let mut sheet = XlsxFormulaArtifacts::default();
+        for cell in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "c") {
+            let Some(cell_ref) = cell.attribute("r") else { continue; };
+            let formula = cell.children().any(|n| n.is_element() && n.tag_name().name() == "f");
+            let value = cell.children().find(|n| n.is_element() && n.tag_name().name() == "v").and_then(|n| n.text());
+            if !formula && !(cell.attribute("t") == Some("e") && value == Some("#REF!")) { continue; }
+            let (row, column) = source_cell_position(cell_ref)?;
+            let artifact = FormulaArtifact { row, column, cell_ref: cell_ref.to_string() };
+            if formula { formula_count += 1; sheet.formulas.push(artifact.clone()); }
+            if value == Some("#REF!") && (formula || cell.attribute("t") == Some("e")) { error_count += 1; sheet.errors.push(artifact); }
+            if formula_count > MAX_REFS || error_count > MAX_REFS { return Err(XlsxInputError::FormulaInspectionLimit); }
+        }
+        output.push(sheet);
+    }
+    Ok(output)
 }
