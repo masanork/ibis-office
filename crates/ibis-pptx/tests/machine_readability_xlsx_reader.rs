@@ -303,3 +303,28 @@ fn xlsx_fragmentation_matches_merged_reference_cases() {
         assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
     }
 }
+
+#[test]
+fn xlsx_column_headers_match_typed_merged_reference_cases() {
+    use ibis_doc_model::machine_readability_rules::xlsx_column_headers;
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellStyle, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-headers-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let mut sheet = Sheet::default();
+        if sheet.styles.is_empty() { sheet.styles.push(CellStyle::default()); }
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let v = &c[2];
+            let value = if let Some(v) = v.as_str() { CellValue::Text(v.into()) } else if let Some(v) = v.as_bool() { CellValue::Bool(v) } else { CellValue::Number(v.as_f64().unwrap()) };
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, kind: CellKind::of(&value), value, text: String::new(), formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        sheet.merges = case["merges"].as_array().unwrap().iter().map(|v| CellRange { first_row: v[0].as_u64().unwrap() as u32, first_column: v[1].as_u64().unwrap() as u32, last_row: v[2].as_u64().unwrap() as u32, last_column: v[3].as_u64().unwrap() as u32 }).collect();
+        let range = CellRange { first_row: 0, first_column: 0, last_row: case["rows"].as_u64().unwrap() as u32 - 1, last_column: case["cols"].as_u64().unwrap() as u32 - 1 };
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = xlsx_column_headers(&sheet, range, &headers, 1, range.last_row, case["read_only"].as_bool().unwrap()).unwrap();
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+    }
+}

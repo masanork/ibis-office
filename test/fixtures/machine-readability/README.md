@@ -146,3 +146,5 @@ inspection, including multiple worksheets and a formula with a cached `#REF!`.
 format, table count, fragmentation, outside-cell, merge, hidden and formula
 checks in thorough mode. `harunobu-xlsx-fragmentation-reference.json` checks
 merged-cell behavior in single-pass and read-only-style contexts.
+`harunobu-xlsx-headers-reference.json` compares 160 L1-05 XLSX layouts with
+merged headers and typed number, Boolean and text cells.

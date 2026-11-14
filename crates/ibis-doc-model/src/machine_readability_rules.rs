@@ -955,3 +955,71 @@ pub fn xlsx_data_fragmentation(sheet: &Sheet, current: CellRange, tables: &[Dete
     }
     Some(result("L1-03", findings.is_empty(), if findings.is_empty() { 0.85 } else { 0.9 }, Severity::Critical, findings))
 }
+
+/// L1-05 for XLSX, respecting header merges and saved typed cell values.
+pub fn xlsx_column_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, read_only: bool) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    use crate::machine_readability_xlsx::{classify_xlsx_number_format, XlsxNumberFormat};
+    static NUMBER: OnceLock<regex::Regex> = OnceLock::new();
+    let number = NUMBER.get_or_init(|| regex::Regex::new(r"^[+-]?(?:(?:[0-9](?:_?[0-9])*)(?:\.(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?$").unwrap());
+    if table.first_row > table.last_row || table.first_column > table.last_column || sheet.merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let fallback = [table.first_row];
+    let headers = if header_rows.is_empty() { &fallback[..] } else { header_rows };
+    let last_header = *headers.last()?;
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new();
+    let mut body_columns = BTreeSet::new(); let mut header_columns = BTreeSet::new();
+    for cell in sheet.cells.iter() {
+        let dependent = sheet.merges.iter().any(|m| cell.row >= m.first_row && cell.row <= m.last_row && cell.column >= m.first_column && cell.column <= m.last_column && (cell.row != m.first_row || cell.column != m.first_column));
+        if !read_only && dependent { continue; }
+        let nonempty = match &cell.value { CellValue::Empty => false, CellValue::Text(v) => !v.starts_with('=') && !v.trim_matches(space).is_empty(), _ => true };
+        if nonempty {
+            cells.insert((cell.row, cell.column), cell);
+            if cell.row >= body_first && cell.row <= body_last { body_columns.insert(cell.column); }
+            if headers.contains(&cell.row) { header_columns.insert(cell.column); }
+        }
+    }
+    let mut covered = BTreeSet::new();
+    for merge in &sheet.merges {
+        let overlaps = headers.iter().any(|&r| r >= merge.first_row && r <= merge.last_row) || (merge.first_row < headers[0] && merge.last_row >= headers[0]);
+        if overlaps && cells.contains_key(&(merge.first_row, merge.first_column)) {
+            for col in merge.first_column.max(table.first_column)..=merge.last_column.min(table.last_column) { covered.insert(col); }
+        }
+    }
+    let mut findings = Vec::new();
+    for col in table.first_column..=table.last_column {
+        if covered.contains(&col) { continue; }
+        if body_columns.contains(&col) && !header_columns.contains(&col) { findings.push(Finding { location: address(headers[0], col), severity: FindingSeverity::Error }); }
+    }
+    let width = u64::from(table.last_column) - u64::from(table.first_column) + 1;
+    if width >= 2 {
+        let mut nums = Vec::new();
+        for col in table.first_column..=table.last_column {
+            let Some(cell) = cells.get(&(last_header, col)) else { nums.clear(); break; };
+            let n = match &cell.value {
+                CellValue::Number(n) => {
+                    let style = sheet.styles.get(cell.style as usize)?;
+                    if classify_xlsx_number_format(&style.number_format) != XlsxNumberFormat::Numeric { nums.clear(); break; }
+                    *n
+                }
+                CellValue::Text(value) => {
+                    let value = value.trim_matches(space);
+                    if !number.is_match(value) {
+                        let numeric_shape = value.chars().any(|c| !c.is_ascii() && c.is_numeric()) && value.chars().all(|c| c.is_numeric() || matches!(c, '+' | '-' | '.' | '_' | 'e' | 'E'));
+                        if numeric_shape || matches!(value.to_ascii_lowercase().as_str(), "nan" | "+nan" | "-nan" | "inf" | "+inf" | "-inf" | "infinity" | "+infinity" | "-infinity") { return None; }
+                        nums.clear(); break;
+                    }
+                    value.replace('_', "").parse::<f64>().ok()?
+                }
+                _ => { nums.clear(); break; }
+            };
+            if !n.is_finite() || n.abs() >= 9_007_199_254_740_992.0 { return None; }
+            nums.push(n);
+        }
+        if nums.len() as u64 == width && nums.iter().all(|n| n.fract() == 0.0) && nums.windows(2).all(|v| v[1] - v[0] == 1.0) {
+            for col in table.first_column..=table.last_column { findings.push(Finding { location: address(last_header, col), severity: FindingSeverity::Error }); }
+        }
+    }
+    Some(result("L1-05", findings.is_empty(), if findings.is_empty() { 0.8 } else { 0.85 }, Severity::Critical, findings))
+}
