@@ -164,3 +164,14 @@ with mixed types, styles, dates, hidden rows and merged cells across all rules.
 The generated CSV and XLSX fixtures also capture per-level score aggregation.
 Failed-rule lists are compared without ordering because the reference executes
 rules concurrently and their completion order can vary.
+
+File identification deliberately differs from the pinned Harunobu Magika labels
+in `harunobu-magika-reference.json`: the native checker validates ZIP/OOXML
+structure, recognizes common binary signatures, and uses the actual UTF-8 or
+CP932 decoder for text. A text stream can be both CSV and TSV (or look like
+JSON or XML); the selected extension determines its delimiter without claiming
+its content uniquely identifies the format. Empty text and quoted tabs are
+accepted. UTF-16 and NUL-containing input are rejected by this identification
+step; UTF-16 is also unsupported by the current CSV reader. ZIP metadata is
+inspected with a bounded read; an inconclusive ZIP is left to the workbook
+parser. Signature detection is intentionally not an exhaustive type registry.

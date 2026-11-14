@@ -49,6 +49,8 @@ mod chart;
 mod chart_ex;
 pub mod csv;
 pub mod machine_readability_csv;
+#[cfg(not(target_family = "wasm"))]
+pub mod machine_readability_detect;
 pub mod machine_readability_xlsx;
 pub mod machine_readability_native;
 pub mod machine_readability_report;

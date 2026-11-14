@@ -199,8 +199,6 @@ def write(build):
     ecma_art = open(os.path.join(ROOT, "crates", "ibis-pptx", "data", "artborders", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
     harunobu = open(os.path.join(ROOT, "crates", "ibis-doc-model", "HARUNOBU-MIT.txt"), encoding="utf-8").read().strip()
     unicode_notice = open(os.path.join(ROOT, "crates", "ibis-doc-model", "UNICODE-LICENSE.txt"), encoding="utf-8").read().strip()
-    onnx_root = os.path.join(ROOT, "crates", "ibis-office-xlsx", "licenses", "onnxruntime-1.22.0")
-    onnx_license = open(os.path.join(onnx_root, "LICENSE.txt"), encoding="utf-8").read().strip()
     gjs = open(os.path.join(ROOT, "crates", "ibis-doc-model", "GJS-MIT.txt"), encoding="utf-8").read().strip()
     plex = open(os.path.join(ROOT, "crates", "ibis-office-app", "fonts", "OFL.txt"), encoding="utf-8").read().strip()
     carlito = open(os.path.join(ROOT, "crates", "ibis-office-render", "fonts", "carlito", "OFL.txt"), encoding="utf-8").read().strip()
@@ -223,8 +221,6 @@ def write(build):
     # embedded in the binary on both builds.
     bundled.append(("Material Symbols（Google）", "タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み）", "Apache-2.0"))
     bundled.append(("Unicode 15.0", "文字の表示可否データ", "Unicode-3.0"))
-    if build != "web":
-        bundled.append(("ONNX Runtime 1.22.0", "ファイル形式の判定", "MIT"))
     material_readme = open(os.path.join(ROOT, "crates", "ibis-office-shell", "icons", "material", "README.md"), encoding="utf-8").read()
     material_source = next((l[2:] for l in material_readme.splitlines() if l.startswith("- 出典")), "")
     where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）", "windows": " Windows 版"}[build]
@@ -266,7 +262,6 @@ def write(build):
           "",
           "```text", unicode_notice, "```",
           "",
-          *(["### ONNX Runtime", "", "```text", onnx_license, "```", "", "ONNX Runtime の依存部品の通知は同梱の `ONNXRuntime-ThirdPartyNotices.txt` を参照してください。", ""] if build != "web" else []),
           "### gjs character classification",
           "",
           "```text", gjs, "```",

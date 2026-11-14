@@ -81,6 +81,16 @@ impl<'a> Archive<'a> {
         self.entries.contains_key(name)
     }
 
+    /// Read untrusted package metadata with a cap on the declared and actual size.
+    pub(crate) fn read_bounded(&self, name: &str, limit: usize) -> Result<Option<Vec<u8>>, Error> {
+        if let Some(entry) = self.entries.get(name) {
+            if entry.size > limit || (entry.method == 0 && entry.compressed_size > limit) {
+                return Err(Error::new(format!("{name} が大きすぎます")));
+            }
+        }
+        self.read(name)
+    }
+
     /// The uncompressed contents of `name`, or `None` if there is no such entry.
     pub(crate) fn read(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
         let Some(entry) = self.entries.get(name) else { return Ok(None) };
@@ -146,6 +156,14 @@ mod tests {
         assert!(archive.contains("a/b.xml"));
         assert_eq!(archive.read("a/b.xml").unwrap().as_deref(), Some(&b"<x/>"[..]));
         assert_eq!(archive.read("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn bounded_read_rejects_large_stored_metadata() {
+        let bytes = stored_zip("metadata", b"0123456789");
+        let archive = Archive::new(&bytes).unwrap();
+        assert!(archive.read_bounded("metadata", 9).is_err());
+        assert_eq!(archive.read_bounded("metadata", 10).unwrap().as_deref(), Some(&b"0123456789"[..]));
     }
 
     #[test]

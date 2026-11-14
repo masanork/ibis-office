@@ -14,9 +14,8 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 | Unicode 15.0 | 文字の表示可否データ | Unicode-3.0 |
-| ONNX Runtime 1.22.0 | ファイル形式の判定 | MIT |
 
-## Rust の部品（492 件）
+## Rust の部品（483 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -253,12 +252,10 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | lyon_tessellation | 1.0.22 | MIT OR Apache-2.0 | https://github.com/nical/lyon |
 | mac | 0.1.1 | MIT/Apache-2.0 | https://github.com/reem/rust-mac.git |
 | mach2 | 0.5.0 | BSD-2-Clause OR MIT OR Apache-2.0 | https://github.com/JohnTitor/mach2 |
-| magika | 1.0.0 | Apache-2.0 | https://github.com/google/magika |
 | malloc_buf | 0.0.6 | MIT | https://github.com/SSheldon/malloc_buf |
 | markdown | 1.0.0 | MIT | https://github.com/wooorm/markdown-rs |
 | markup5ever | 0.12.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever |
 | markup5ever_rcdom | 0.3.0 | MIT OR Apache-2.0 | https://github.com/servo/html5ever |
-| matrixmultiply | 0.3.11 | MIT/Apache-2.0 | https://github.com/bluss/matrixmultiply/ |
 | md-5 | 0.10.6 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | memchr | 2.8.3 | Unlicense OR MIT | https://github.com/BurntSushi/memchr |
 | memmap2 | 0.9.11 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/memmap2-rs |
@@ -269,7 +266,6 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/moxcms.git |
 | multiversion_no_op | 1.0.0 | Apache-2.0 OR MIT | https://github.com/hsivonen/multiversion_no_op |
-| ndarray | 0.16.1 | MIT OR Apache-2.0 | https://github.com/rust-ndarray/ndarray |
 | new_debug_unreachable | 1.0.6 | MIT | https://github.com/mbrubeck/rust-debug-unreachable |
 | nohash-hasher | 0.2.0 | Apache-2.0 OR MIT | https://github.com/paritytech/nohash-hasher |
 | normpath | 1.5.2 | MIT OR Apache-2.0 | https://github.com/dylni/normpath |
@@ -277,7 +273,6 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | notify-types | 1.0.1 | MIT OR Apache-2.0 | https://github.com/notify-rs/notify.git |
 | nu-ansi-term | 0.50.3 | MIT | https://github.com/nushell/nu-ansi-term |
 | num-complex | 0.4.6 | MIT OR Apache-2.0 | https://github.com/rust-num/num-complex |
-| num-integer | 0.1.47 | MIT OR Apache-2.0 | https://github.com/rust-num/num-integer |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | https://github.com/rust-num/num-traits |
 | num_cpus | 1.17.0 | MIT OR Apache-2.0 | https://github.com/seanmonstar/num_cpus |
 | objc | 0.2.7 | MIT | http://github.com/SSheldon/rust-objc |
@@ -304,8 +299,6 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | object | 0.37.3 | Apache-2.0 OR MIT | https://github.com/gimli-rs/object |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell |
 | option-ext | 0.2.0 | MPL-2.0 | https://github.com/soc/option-ext.git |
-| ort | 2.0.0-rc.10 | MIT OR Apache-2.0 | https://github.com/pykeio/ort |
-| ort-sys | 2.0.0-rc.10 | MIT OR Apache-2.0 | https://github.com/pykeio/ort |
 | parking | 2.2.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/parking |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
@@ -349,7 +342,6 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | rand_core | 0.9.5 | MIT OR Apache-2.0 | https://github.com/rust-random/rand |
 | rand_xorshift | 0.4.0 | MIT OR Apache-2.0 | https://github.com/rust-random/rngs |
 | raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | https://github.com/rust-windowing/raw-window-handle |
-| rawpointer | 0.2.1 | MIT/Apache-2.0 | https://github.com/bluss/rawpointer/ |
 | rayon | 1.12.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon |
 | rayon-core | 1.13.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon |
 | read-fonts | 0.37.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
@@ -409,7 +401,6 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | slab | 0.4.12 | MIT | https://github.com/tokio-rs/slab |
 | slotmap | 1.1.1 | Zlib | https://github.com/orlp/slotmap |
 | smallvec | 1.16.1 | MIT OR Apache-2.0 | https://github.com/servo/rust-smallvec |
-| smallvec | 2.0.0-alpha.10 | MIT OR Apache-2.0 | https://github.com/servo/rust-smallvec |
 | smol | 2.0.2 | Apache-2.0 OR MIT | https://github.com/smol-rs/smol |
 | smol_str | 0.3.6 | MIT OR Apache-2.0 | https://github.com/rust-lang/rust-analyzer/tree/master/lib/smol_str |
 | spin | 0.10.1 | MIT | https://github.com/mvdnes/spin-rs.git |
@@ -442,7 +433,6 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | tiny-skia-path | 0.12.0 | BSD-3-Clause | https://github.com/linebender/tiny-skia/tree/master/path |
 | tinystr | 0.8.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/tinyvec |
-| tokio | 1.53.1 | MIT | https://github.com/tokio-rs/tokio |
 | toml | 0.8.23 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml |
 | toml_datetime | 0.6.11 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml |
 | toml_datetime | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml |
@@ -779,34 +769,6 @@ authorization of the copyright holder.
 SPDX-License-Identifier: Unicode-3.0
 ```
 
-### ONNX Runtime
-
-```text
-MIT License
-
-Copyright (c) Microsoft Corporation
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-ONNX Runtime の依存部品の通知は同梱の `ONNXRuntime-ThirdPartyNotices.txt` を参照してください。
-
 ### gjs character classification
 
 ```text
@@ -1106,11 +1068,9 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **log 0.4.34**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers
 - **lsp-types 0.97.0**：Copyright (c) 2016 Markus Westerlind
 - **mach2 0.5.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2019 Nick Fitzgerald, 2021 Yuki Okushi
-- **magika 1.0.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **markdown 1.0.0**：Copyright (c) 2022 Titus Wormer <tituswormer@gmail.com>
 - **markup5ever 0.12.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The html5ever Project Developers
 - **markup5ever_rcdom 0.3.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The html5ever Project Developers
-- **matrixmultiply 0.3.11**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 - 2023 Ulrik Sverdrup "bluss" / Copyright (c) 2021 DutchGhost [constparse.rs]
 - **md-5 0.10.6**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2006-2009 Graydon Hoare / Copyright (c) 2009-2013 Mozilla Foundation / Copyright (c) 2016 Artyom Pavlov
 - **memchr 2.8.3**：Copyright (c) 2015 Andrew Gallant
 - **memmap2 0.9.11**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright [2015] [Dan Burkert] / Copyright (c) 2020 Yevhenii Reizner / Copyright (c) 2015 Dan Burkert
@@ -1121,22 +1081,18 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **miniz_oxide 0.9.1**：Copyright 2013-2014 RAD Game Tools and Valve Software / Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC / Copyright (c) 2017 Frommi / Copyright (c) 2017-2024 oyvindln / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020 Frommi
 - **moxcms 0.8.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2024 Radzivon Bartoshyk / Copyright (c) Radzivon Bartoshyk. All rights reserved.
 - **multiversion_no_op 1.0.0**：Copyright Mozilla Foundation / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
-- **ndarray 0.16.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 - 2021 Ulrik Sverdrup "bluss",
 - **new_debug_unreachable 1.0.6**：Copyright (c) 2015 Jonathan Reem
 - **nohash-hasher 0.2.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2018 Parity Technologies (UK) Ltd.
 - **normpath 1.5.2**：Copyright (c) 2020 dylni (https://github.com/dylni) / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020 Nikolai Vazquez
 - **notify-types 1.0.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2023 Notify Contributors / Copyright (c) 2023 Notify Contributors
 - **nu-ansi-term 0.50.3**：Copyright (c) 2014 Benjamin Sago / Copyright (c) 2021-2022 The Nushell Project Developers
 - **num-complex 0.4.6**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers
-- **num-integer 0.1.47**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers
 - **num-traits 0.2.19**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers
 - **num_cpus 1.17.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015-2025 Sean McArthur
 - **objc 0.2.7**：Copyright (c) Steven Sheldon
 - **object 0.37.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 The Gimli Developers
 - **once_cell 1.21.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **option-ext 0.2.0**：(c) under Patent Claims infringed by Covered Software in the absence of
-- **ort 2.0.0-rc.10**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2023-2025 pyke.io / Copyright (c) 2020 Nicolas Bigaouette
-- **ort-sys 2.0.0-rc.10**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2023-2025 pyke.io / Copyright (c) 2020 Nicolas Bigaouette
 - **parking 2.2.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2014-2020 The Rust Project Developers
 - **parking_lot 0.12.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers
 - **parking_lot_core 0.9.12**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers
@@ -1175,7 +1131,6 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **rand_core 0.9.5**：Copyrights in the Rand project are retained by their contributors. No / copyright assignment is required to contribute to the Rand project. / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2018 Developers of the Rand project / Copyright (c) 2014 The Rust Project Developers
 - **rand_xorshift 0.4.0**：Copyrights in the Rand project are retained by their contributors. No / copyright assignment is required to contribute to the Rand project. / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2018 Developers of the Rand project / Copyright (c) 2014 The Rust Project Developers
 - **raw-window-handle 0.6.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2019 Osspial / Copyright (c) 2020 Osspial
-- **rawpointer 0.2.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015
 - **rayon 1.12.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2010 The Rust Project Developers
 - **rayon-core 1.13.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2010 The Rust Project Developers
 - **read-fonts 0.37.0**：Copyright 2019 Colin Rothfels / Copyright (c) 2019 Colin Rothfels
@@ -1232,7 +1187,6 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **slab 0.4.12**：Copyright (c) 2019 Carl Lerche
 - **slotmap 1.1.1**：Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com>
 - **smallvec 1.16.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 The Servo Project Developers
-- **smallvec 2.0.0-alpha.10**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 The Servo Project Developers
 - **smol 2.0.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **smol_str 0.3.6**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **spin 0.10.1**：Copyright (c) 2014 Mathijs van de Nes
@@ -1263,7 +1217,6 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **tiny-skia-path 0.12.0**：Copyright (c) 2011 Google Inc. All rights reserved. / Copyright (c) 2020 Yevhenii Reizner All rights reserved.
 - **tinystr 0.8.4**：COPYRIGHT AND PERMISSION NOTICE / Copyright © 2020-2024 Unicode, Inc.
 - **tinyvec 1.13.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2019 Daniel "Lokathor" Gee.
-- **tokio 1.53.1**：Copyright (c) Tokio Contributors
 - **toml 0.8.23**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) Individual contributors
 - **toml_datetime 0.6.11**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) Individual contributors
 - **toml_datetime 1.1.1+spec-1.1.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) Individual contributors

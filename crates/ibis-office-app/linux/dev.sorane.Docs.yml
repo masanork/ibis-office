@@ -28,7 +28,6 @@ modules:
     buildsystem: simple
     build-commands:
       - install -Dm755 staged/bin/ibisOffice /app/bin/ibisOffice
-      - install -Dm755 staged/lib/libonnxruntime.so.1 /app/lib/libonnxruntime.so.1
       - install -Dm644 staged/share/applications/dev.sorane.Docs.desktop /app/share/applications/dev.sorane.Docs.desktop
       - install -Dm644 staged/share/metainfo/dev.sorane.Docs.metainfo.xml /app/share/metainfo/dev.sorane.Docs.metainfo.xml
       - |
@@ -42,7 +41,6 @@ modules:
       - install -Dm644 staged/share/doc/ibisOffice/COMMERCIAL-LICENSE.md /app/share/doc/ibisOffice/COMMERCIAL-LICENSE.md
       - install -Dm644 staged/share/doc/ibisOffice/NOTICE /app/share/doc/ibisOffice/NOTICE
       - install -Dm644 staged/share/doc/ibisOffice/third-party-licenses.md /app/share/doc/ibisOffice/third-party-licenses.md
-      - install -Dm644 staged/share/doc/ibisOffice/ONNXRuntime-ThirdPartyNotices.txt /app/share/doc/ibisOffice/ONNXRuntime-ThirdPartyNotices.txt
       - install -Dm644 staged/share/doc/ibisOffice/Carlito-OFL.txt /app/share/doc/ibisOffice/Carlito-OFL.txt
     sources:
       - type: dir

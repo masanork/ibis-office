@@ -2,29 +2,18 @@
 // Copyright (c) ibis inc.
 //! Local in-process machine-readability analysis.
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone)]
 pub(crate) struct Report { pub(crate) json: serde_json::Value, pub(crate) csv: String, pub(crate) bulk: bool, pub(crate) snapshot: bool, pub(crate) sources: Vec<PathBuf> }
 
-/// A failed Magika initialization or identification follows Harunobu's
-/// extension-only fallback; no network service or Python interpreter is used.
-fn content_label(bytes: &[u8]) -> Option<String> {
-    static MAGIKA: OnceLock<Option<Mutex<magika::Session>>> = OnceLock::new();
-    MAGIKA.get_or_init(||magika::Session::new().ok().map(Mutex::new)).as_ref()
-        .and_then(|session|session.lock().ok())
-        .and_then(|mut session|session.identify_content_sync(bytes).ok())
-        .map(|result|result.info().label.to_string())
-}
-
+/// Detect content independently from the filename; an ambiguous text stream can
+/// be valid CSV and TSV, so the extension still selects its delimiter.
 fn validate_content(name: &str, bytes: &[u8]) -> Result<(), String> {
-    let label = content_label(bytes);
+    use ibis_pptx::machine_readability_detect::{detect, Content};
     let extension=Path::new(name).extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
-    let valid=match (extension.as_str(),label.as_deref()) {
-        ("xlsx" | "xlsm",Some("xlsx" | "zip")) | ("csv",Some("csv" | "txt")) | ("tsv",Some("csv" | "tsv" | "txt")) => true,
-        ("xlsx" | "xlsm" | "csv" | "tsv",None) => true,
-        _ => false,
-    };
+    let valid=matches!((extension.as_str(), detect(bytes)),
+        ("xlsx" | "xlsm", Content::Workbook | Content::Zip)
+        | ("csv" | "tsv", Content::Text));
     if valid { Ok(()) } else { Err("Unsupported input format".into()) }
 }
 
@@ -93,19 +82,11 @@ pub(crate) fn cell_location(value: &str) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
     #[test]
-    fn native_magika_matches_pinned_reference_labels() {
-        let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
-        let reference:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-magika-reference.json")).unwrap()).unwrap();
-        assert_eq!(reference["harunobu_commit"],"88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
-        let mut fixtures=std::collections::BTreeMap::new();
-        for (i,case) in reference["cases"].as_array().unwrap().iter().enumerate() {
-            let raw=if let Some(name)=case["fixture"].as_str() {
-                let data=fixtures.entry(name.to_string()).or_insert_with(||serde_json::from_slice::<serde_json::Value>(&std::fs::read(root.join(name)).unwrap()).unwrap());
-                data["cases"][case["index"].as_u64().unwrap() as usize]["bytes"].as_str().unwrap()
-            } else { case["bytes"].as_str().unwrap() };
-            let bytes:Vec<_>=raw.as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
-            assert_eq!(content_label(&bytes).as_deref(),case["label"].as_str(),"case {i}");
-        }
+    fn content_validation_rejects_binary_but_preserves_ambiguous_text() {
+        assert!(validate_content("table.csv", b"\"alpha\tbeta\"\n\"gamma\tdelta\"\n").is_ok());
+        assert!(validate_content("table.tsv", b"[1,2,3]\n").is_ok());
+        assert!(validate_content("image.csv", b"GIF89a\0\0").is_err());
+        assert!(validate_content("book.xlsx", b"not a workbook").is_err());
     }
     #[test]
     fn analysis_uses_native_reports_without_runtime_lookup() {
@@ -115,5 +96,7 @@ mod tests {
         let report=analyze(&xlsx,"thorough").unwrap();assert!(report.json["sheets"].is_array());
         let report=analyze_bulk(&[csv,xlsx],"standard").unwrap();assert_eq!(report.json["ファイル数"],2);assert!(report.json["ファイル横断チェック"]["L3-07"].is_object());
         assert!(validate_content("fake.csv",b"PK\x03\x04\0\0\0\0").is_err());
+        let docx=std::fs::read(root.join("../../benchmark/securities-registration-statement.docx")).unwrap();
+        assert!(analyze_bytes(Path::new("not-a-workbook.xlsx"),&docx,"standard").is_err());
     }
 }

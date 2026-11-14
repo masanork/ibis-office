@@ -91,6 +91,7 @@ jobs:
           set -e
           test "$result" -eq 1
           test -s "$app/Contents/Resources/Licenses/license.md"
+          test -z "$(find "$app" -iname '*onnx*' -print -quit)"
           test -s "$app/Contents/Resources/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip"
           ditto -c -k --keepParent "$app" ci-artifact/desktop-macos-arm64-ci.zip
           mkdir -p "$RUNNER_TEMP/verify-app"
@@ -110,7 +111,7 @@ jobs:
           Copy-Item target/release/ibisOffice.exe,target/release/ibisOfficeUpdater.exe $dir
           Copy-Item crates/ibis-pptx/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip,crates/ibis-pptx/data/artborders/ECMA-NOTICE.txt "$dir/Resources/artborders"
           Copy-Item LICENSE,NOTICE,COMMERCIAL-LICENSE.md,crates/ibis-office-app/windows/license.md,crates/ibis-office-render/fonts/carlito/OFL.txt "$dir/Resources/Licenses"
-          Copy-Item crates/ibis-office-xlsx/licenses/onnxruntime-1.22.0/ThirdPartyNotices.txt "$dir/Resources/Licenses/ONNXRuntime-ThirdPartyNotices.txt"
+          if (Get-ChildItem $dir -Recurse -Filter "*onnx*") { throw 'unexpected ONNX package content' }
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path "$dir/ibisOffice.exe"))
           $offset = [BitConverter]::ToInt32($bytes, 0x3c)
           if ([BitConverter]::ToUInt32($bytes, $offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, $offset + 4) -ne 0x8664) { throw 'expected x64 PE executable' }
@@ -167,13 +168,6 @@ jobs:
           done
       - name: Record clean source and toolchain
         run: python3 scripts/desktop-ci-info.py source ci-artifact
-      - name: Verify ONNX Runtime on glibc 2.31
-        shell: bash
-        run: |
-          set -euo pipefail
-          ort_root=$(scripts/prepare-linux-onnxruntime.sh x86_64 "$PWD/target/dist/onnxruntime")
-          cc -I"$ort_root/include" scripts/test-linux-onnxruntime.c -ldl -o target/dist/onnxruntime-probe
-          target/dist/onnxruntime-probe "$ort_root/lib/libonnxruntime.so.1"
       - name: Test updater and AppImage runtime
         env:
           SORANE_UPDATER_PROCESS_TEST: "1"
@@ -194,10 +188,9 @@ jobs:
           (cd "$RUNNER_TEMP/verify-linux" && "$image" --appimage-extract)
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOfficeUpdater"
-          cmp target/dist/onnxruntime/lib/libonnxruntime.so.1.22.0 "$RUNNER_TEMP/verify-linux/squashfs-root/usr/lib/libonnxruntime.so.1"
+          test -z "$(find "$RUNNER_TEMP/verify-linux/squashfs-root" -iname '*onnx*' -print -quit)"
           python3 scripts/test-appimage-recovery.py "$image"
           test -s "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/third-party-licenses.md"
-          test -s "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/ONNXRuntime-ThirdPartyNotices.txt"
           set +e
           "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" --export invalid
           result=$?
