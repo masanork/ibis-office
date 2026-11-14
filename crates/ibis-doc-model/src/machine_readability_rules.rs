@@ -387,6 +387,52 @@ pub fn irrelevant_information(others: Option<&[OutsideTableCell]>) -> RuleEvalua
     result("L1-04", findings.is_empty(), 0.9, Severity::Major, findings)
 }
 
+/// Reference-stringified source value and region type for a detected outside cell.
+pub struct OutsideCellText<'a> { pub cell: OutsideTableCell, pub region_type: &'a str, pub value: Option<&'a str> }
+
+/// Python 3.12 / Unicode 15 string repr, used by Harunobu for outside-cell previews.
+/// The generated printability table is Unicode data; see ../UNICODE-LICENSE.txt.
+fn reference_string_repr(value: &str) -> String {
+    use std::sync::OnceLock;
+    static NONPRINTABLE: OnceLock<Vec<(u32,u32)>> = OnceLock::new();
+    let ranges = NONPRINTABLE.get_or_init(|| include_str!("../resources/harunobu-python-nonprintable.tsv").lines().filter_map(|line| {
+        let (a,b) = line.split_once('\t')?; Some((u32::from_str_radix(a,16).ok()?,u32::from_str_radix(b,16).ok()?))
+    }).collect());
+    let quote = if value.contains('\'') && !value.contains('"') { '"' } else { '\'' };
+    let mut out = String::new(); out.push(quote);
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"), '\n' => out.push_str("\\n"), '\r' => out.push_str("\\r"), '\t' => out.push_str("\\t"),
+            c if c == quote => { out.push('\\'); out.push(c); },
+            c => {
+                let cp = c as u32; let i = ranges.partition_point(|&(start,_)|start <= cp);
+                if i > 0 && cp <= ranges[i-1].1 {
+                    if cp <= 0xff { out.push_str(&format!("\\x{cp:02x}")); }
+                    else if cp <= 0xffff { out.push_str(&format!("\\u{cp:04x}")); }
+                    else { out.push_str(&format!("\\U{cp:08x}")); }
+                } else { out.push(c); }
+            }
+        }
+    }
+    out.push(quote); out
+}
+
+pub fn irrelevant_information_report(others: Option<&[OutsideCellText<'_>]>) -> Option<RuleDiagnostics> {
+    let others = others?;
+    let cells: Vec<_> = others.iter().map(|other|other.cell).collect();
+    let evaluation = irrelevant_information(Some(&cells));
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let descriptions = others.iter().map(|other| {
+        let value = other.value.unwrap_or("").trim_matches(space);
+        let mut preview: String = value.chars().take(50).collect();
+        if value.chars().count() > 50 { preview.push('…'); }
+        let repr = if preview.is_empty() { "(空)".into() } else { reference_string_repr(&preview) };
+        format!("テーブル外セル（others / {}）{}: {repr}",other.region_type,address(other.cell.row,other.cell.column))
+    }).collect();
+    let message = if others.is_empty() { "テーブル外（others）に分離されたセルはありません。".into() } else { format!("テーブル外（others）に{}件のセルがあります。",others.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// Harunobu L1-06 issue descriptions for one cell. Address columns and
 /// several semantic uses of full-width spaces are treated as exceptions.
 pub fn whitespace_issues(value: &str, is_address_column: bool) -> Vec<&'static str> {
