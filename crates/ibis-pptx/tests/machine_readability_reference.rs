@@ -1005,3 +1005,29 @@ fn csv_diagnostics_report_matches_pinned_harunobu() {
     }
     assert!(diagnostics_report(None,1,5,Delimiter::Comma,false).is_none());
 }
+
+#[test]
+fn formatting_diagnostics_match_pinned_harunobu() {
+    use std::collections::BTreeMap;
+    use ibis_doc_model::machine_readability_rules::{format_based_semantics_report, ReferenceCellFormat};
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let table=CellRange { first_row:0,first_column:0,last_row:5,last_column:3 };
+    for (i,case) in data["formats_semantics"].as_array().unwrap().iter().enumerate() {
+        let mut formats=BTreeMap::new();
+        sheet.cells=case["entries"].as_array().unwrap().iter().map(|v| {
+            let row=v["row"].as_u64().unwrap() as u32; let column=v["col"].as_u64().unwrap() as u32;
+            formats.insert((row,column),ReferenceCellFormat { font_color:v["font"].as_str().map(str::to_string),background:v["bg"].as_str().map(str::to_string),bold:v["bold"].as_bool().unwrap(),italic:v["italic"].as_bool().unwrap(),..Default::default() });
+            let text=v["value"].as_str().unwrap_or("").to_string();
+            SheetCell { row,column,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None }
+        }).collect::<Vec<_>>().into();
+        let got=format_based_semantics_report(&sheet,table,1,Some(&formats)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(format_based_semantics_report(&sheet,table,1,None).is_none());
+}
