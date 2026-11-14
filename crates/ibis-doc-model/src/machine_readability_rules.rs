@@ -855,3 +855,34 @@ pub fn csv_data_units(sheet: &Sheet, table: CellRange, header_rows: &[u32], body
     }
     Some(result("L3-04", findings.is_empty(), 0.65, Severity::Major, findings))
 }
+
+/// L1-03 for an unmerged CSV sheet with all detected table ranges supplied.
+/// Inter-table blank rows are attributed only to the first table in row order.
+pub fn csv_fragmentation_with_tables(sheet: &Sheet, current: CellRange, tables: &[DetectedTable]) -> Option<RuleEvaluation> {
+    if tables.is_empty() || tables.iter().any(|t| t.range.first_row > t.range.last_row || t.range.first_column > t.range.last_column) { return None; }
+    if !tables.iter().any(|t| t.range == current) { return None; }
+    let mut checks = csv_data_fragmentation(sheet, current)?;
+    if tables.len() <= 1 { return Some(checks); }
+    let mut sorted = tables.to_vec();
+    sorted.sort_by_key(|t| (t.range.first_row, t.range.first_column));
+    if (current.first_row, current.first_column) != (sorted[0].range.first_row, sorted[0].range.first_column) { return Some(checks); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut occupied = BTreeSet::new();
+    for cell in sheet.cells.iter() {
+        match &cell.value {
+            CellValue::Text(value) => if !value.trim_matches(space).is_empty() { occupied.insert(cell.row); },
+            CellValue::Empty => {},
+            _ => return None,
+        }
+    }
+    for pair in sorted.windows(2) {
+        let prev = pair[0].range; let next = pair[1].range;
+        if prev.last_row >= next.first_row { continue; }
+        for row in (u64::from(prev.last_row) + 1)..u64::from(next.first_row) {
+            if !occupied.contains(&(row as u32)) { checks.findings.push(Finding { location: format!("行{}", row + 1), severity: FindingSeverity::Error }); }
+        }
+    }
+    checks.result.passed = checks.findings.is_empty();
+    checks.result.confidence = if checks.result.passed { 0.85 } else { 0.9 };
+    Some(checks)
+}

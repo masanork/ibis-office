@@ -132,3 +132,7 @@ compare 160 AI-disabled L3-06 and L3-04 layouts each. The embedded region names
 are extracted from Harunobu's `harunobu/resources/region_dict.json` at the
 pinned revision by `scripts/machine-readability-region-data.py`; the source
 resource cites the Japanese local-government codes (JIS X 0401/0402).
+`harunobu-multitable-reference.json` compares L1-03 across synthetic overlapping,
+separated and side-by-side tables, including cells outside tables.
+`harunobu-multitable-csv-reference.json` compares all currently ported rule
+outcomes for multiple detected tables against the thorough reference analyzer.
