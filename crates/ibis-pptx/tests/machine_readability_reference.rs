@@ -569,3 +569,30 @@ fn csv_other_details_matches_pinned_harunobu() {
         assert_eq!(actual, wanted, "case {i}: {case}");
     }
 }
+
+#[test]
+fn csv_choice_standardization_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_layout::InferredColumnType;
+    use ibis_doc_model::machine_readability_rules::{csv_choice_standardization, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-choice-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let rows = case["rows"].as_u64().unwrap() as u32; let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: rows - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let schemas: Vec<_> = case["schemas"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, match v[1].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "mixed" => InferredColumnType::Mixed, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "empty" => InferredColumnType::Empty, _ => panic!("invalid schema") })).collect();
+        let got = csv_choice_standardization(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let mut actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let mut wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        actual.sort(); wanted.sort();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}

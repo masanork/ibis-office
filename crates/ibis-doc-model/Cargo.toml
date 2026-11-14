@@ -10,3 +10,4 @@ publish.workspace = true
 ibis-calc.workspace = true
 unicode-segmentation = "1"
 regex = "1"
+unicode-normalization = "0.1.26"
