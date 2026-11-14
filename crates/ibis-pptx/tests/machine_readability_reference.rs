@@ -1153,3 +1153,28 @@ fn platform_character_diagnostics_match_pinned_harunobu() {
         assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
     }
 }
+
+#[test]
+fn file_report_assembly_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_layout::{InferredColumnHeader,InferredColumnSchema,InferredColumnType};
+    use ibis_doc_model::machine_readability_rules::{Finding,FindingSeverity,RuleDiagnostics,RuleEvaluation};
+    use ibis_doc_model::machine_readability_scoring::{RuleResult,Severity};
+    use ibis_doc_model::sheet::CellRange;
+    use ibis_pptx::machine_readability_report::{file_report_json,bulk_report_json,FileReport,SheetReport,SheetProperty,OtherCell,TableReport};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let reference:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-report-assembly-reference.json")).unwrap()).unwrap();
+    let first=RuleDiagnostics { evaluation:RuleEvaluation { result:RuleResult { rule_id:"L1-01".into(),passed:true,confidence:1.0,severity:Some(Severity::Fatal) },findings:vec![] },message:"ok".into(),descriptions:vec![] };
+    let second=RuleDiagnostics { evaluation:RuleEvaluation { result:RuleResult { rule_id:"L2-03".into(),passed:false,confidence:0.95,severity:Some(Severity::Fatal) },findings:vec![Finding { location:"A2".into(),severity:FindingSeverity::Error }] },message:"重複".into(),descriptions:vec!["重複".into()] };
+    let checks1=[first]; let checks2=[second];
+    let headers=[InferredColumnHeader { column:0,rows:vec![1],label:"項目".into(),merged:false }];
+    let columns=[InferredColumnSchema { column:0,kind:InferredColumnType::Text,has_header:true }];
+    let tables=[TableReport { range:CellRange { first_row:1,first_column:0,last_row:3,last_column:1 },confidence:0.9,header_rows:&[1],column_headers:&headers,columns:&columns,checks:[&checks1,&checks2,&[]] }];
+    let others=[OtherCell { row:0,column:0,value:serde_json::json!("タイトル"),region_type:"title" }];
+    let sheets=[SheetReport { name:"表",used_range:"A1:B4",hidden:false,property:Some(SheetProperty { name:"表",max_row:4,max_col:2,hidden:false }),others:&others,tables:&tables },SheetReport { name:"空",used_range:"",hidden:true,property:None,others:&[],tables:&[] }];
+    let file=FileReport { name:"例.xlsx",size:123,format:"xlsx",sheet_count:2,sheets:&sheets };
+    assert_eq!(file_report_json(&file).unwrap(),reference["expected"]["file"]);
+    let empty=FileReport { name:"空.csv",size:0,format:"csv",sheet_count:0,sheets:&[] };
+    let bulk=RuleDiagnostics { evaluation:RuleEvaluation { result:RuleResult { rule_id:"L3-07".into(),passed:false,confidence:0.8,severity:Some(Severity::Critical) },findings:vec![Finding { location:"".into(),severity:FindingSeverity::Warning }] },message:"相違".into(),descriptions:vec!["相違".into()] };
+    assert_eq!(bulk_report_json(&[file,empty],&[bulk]).unwrap(),reference["expected"]["bulk"]);
+    assert_eq!(bulk_report_json(&[],&[]).unwrap(),reference["expected"]["empty"]);
+}
