@@ -615,6 +615,29 @@ pub fn xlsx_duration_reference_text(value: f64) -> Option<String> {
     if days == 0 { Some(time) } else { Some(format!("{days} day{}, {time}", if days == 1 { "" } else { "s" })) }
 }
 
+/// Pydantic's JSON representation of the reader's millisecond-rounded timedelta.
+pub fn xlsx_duration_reference_json(value: f64) -> Option<String> {
+    if !value.is_finite() || !(0.0..=2_900_000.0).contains(&value) { return None; }
+    let whole_days=value.floor() as i64;
+    let fractional=((value-value.floor())*86_400_000_000.0).round_ties_even() as i64;
+    let micros=whole_days.checked_mul(86_400_000_000)?.checked_add(fractional)?;
+    let seconds=micros / 1_000_000;
+    let mut millis=((micros % 1_000_000) as f64 / 1000.0).round_ties_even() as i64;
+    let seconds=if millis >= 1000 { millis-=1000;seconds+1 } else { seconds };
+    let total_days=seconds/86_400;let years=total_days/365;let days=total_days%365;let hours=(seconds/3600)%24;let minutes=(seconds/60)%60;let secs=seconds%60;
+    let mut out=String::from("P");
+    if years>0 { out.push_str(&format!("{years}Y")); }
+    if days>0 { out.push_str(&format!("{days}D")); }
+    if hours>0 || minutes>0 || secs>0 || millis>0 || total_days==0 {
+        out.push('T');
+        if hours>0 { out.push_str(&format!("{hours}H")); }
+        if minutes>0 { out.push_str(&format!("{minutes}M")); }
+        if millis>0 { let frac=format!("{millis:03}");out.push_str(&format!("{secs}.{}S",frac.trim_end_matches('0'))); }
+        else if secs>0 || (hours==0 && minutes==0) { out.push_str(&format!("{secs}S")); }
+    }
+    Some(out)
+}
+
 /// Score supplied XLSX table checks only when all required metadata was
 /// available. The result is still experimental and is not a complete report.
 pub fn score_xlsx_tables_partial(tables: &[PartialXlsxStructure]) -> Option<[ibis_doc_model::machine_readability_scoring::LevelScore; 3]> {
@@ -677,7 +700,10 @@ pub fn analyze_xlsx_report_experimental(bytes: &[u8], file_name: &str, mode: &st
                     }, _=>return Err(XlsxInputError::UnsupportedReferenceValue),
                 },
                 Some(LayoutValue::Date)=>serde_json::json!(text_value.ok_or(XlsxInputError::UnsupportedReferenceValue)?.replace(' ',"T")),
-                Some(LayoutValue::Other)=>return Err(XlsxInputError::UnsupportedReferenceValue),
+                Some(LayoutValue::Other)=>match original.map(|c|&c.value) {
+                    Some(CellValue::Number(value))=>serde_json::json!(xlsx_duration_reference_json(*value).ok_or(XlsxInputError::UnsupportedReferenceValue)?),
+                    _=>return Err(XlsxInputError::UnsupportedReferenceValue),
+                },
             };
             others.push((other.row,other.column,kind.to_string(),value));
         }
