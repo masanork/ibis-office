@@ -497,7 +497,7 @@ fn header_position_and_skipped_rules_match_pinned_harunobu() {
 
 #[test]
 fn csv_item_abbreviations_match_pinned_harunobu() {
-    use ibis_doc_model::machine_readability_rules::{csv_item_abbreviations, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{csv_item_abbreviations, csv_item_abbreviations_report, FindingSeverity};
     use ibis_doc_model::sheet::{CellKind, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-abbreviation-reference.json")).unwrap()).unwrap();
@@ -510,6 +510,10 @@ fn csv_item_abbreviations_match_pinned_harunobu() {
         }).collect::<Vec<_>>().into();
         let stubs: Vec<_> = case["stubs"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
         let got = csv_item_abbreviations(&sheet, &stubs, 0, case["rows"].as_u64().unwrap() as u32 - 1).unwrap();
+        let report = csv_item_abbreviations_report(&sheet, &stubs, 0, case["rows"].as_u64().unwrap() as u32 - 1).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
