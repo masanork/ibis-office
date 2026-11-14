@@ -1248,6 +1248,37 @@ pub fn csv_fragmentation_with_tables(sheet: &Sheet, current: CellRange, tables: 
     Some(checks)
 }
 
+fn fragmentation_report(evaluation: RuleEvaluation, inside_count: usize, table: CellRange) -> Option<RuleDiagnostics> {
+    let mut descriptions = Vec::new(); let (mut rows, mut cols, mut gaps) = (0usize, 0usize, 0usize);
+    for (i, finding) in evaluation.findings.iter().enumerate() {
+        if i >= inside_count {
+            let row = finding.location.strip_prefix('行')?; gaps += 1;
+            descriptions.push(format!("テーブル間の行{row}が空白です。空白行で分断せず、1 つの表にまとめてください。"));
+        } else if let Some(row) = finding.location.strip_prefix('行') {
+            rows += 1; descriptions.push(format!("データ範囲内の行{row}が空白です。不要な空白行を削除してください。"));
+        } else if let Some(col) = finding.location.strip_prefix('列') {
+            cols += 1; descriptions.push(format!("データ範囲内の列{col}が空白です。不要な空白列を削除してください。"));
+        } else { return None; }
+    }
+    let message = if descriptions.is_empty() {
+        if u64::from(table.last_row) - u64::from(table.first_row) + 1 <= 2 { "小さな領域のためチェック対象外です。".into() }
+        else { "データ範囲内に不要な空白行・列はありません。".into() }
+    } else {
+        let mut parts = Vec::new();
+        if rows > 0 { parts.push(format!("空白行{rows}件")); }
+        if cols > 0 { parts.push(format!("空白列{cols}件")); }
+        if gaps > 0 { parts.push(format!("テーブル間空白行{gaps}件")); }
+        format!("データ範囲内に{}が検出されました。",parts.join("、"))
+    };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
+pub fn csv_fragmentation_report(sheet: &Sheet, current: CellRange, tables: &[DetectedTable]) -> Option<RuleDiagnostics> {
+    let baseline = csv_data_fragmentation(sheet,current)?;
+    let evaluation = csv_fragmentation_with_tables(sheet,current,tables)?;
+    fragmentation_report(evaluation,baseline.findings.len(),current)
+}
+
 /// A formula or cached #REF! reference found in the original OOXML package.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormulaArtifact {
@@ -1347,6 +1378,12 @@ pub fn xlsx_data_fragmentation(sheet: &Sheet, current: CellRange, tables: &[Dete
         }
     }
     Some(result("L1-03", findings.is_empty(), if findings.is_empty() { 0.85 } else { 0.9 }, Severity::Critical, findings))
+}
+
+pub fn xlsx_fragmentation_report(sheet: &Sheet, current: CellRange, tables: &[DetectedTable], read_only: bool) -> Option<RuleDiagnostics> {
+    let baseline = xlsx_data_fragmentation(sheet,current,&[DetectedTable { range: current, confidence: 1.0 }],read_only)?;
+    let evaluation = xlsx_data_fragmentation(sheet,current,tables,read_only)?;
+    fragmentation_report(evaluation,baseline.findings.len(),current)
 }
 
 /// L1-05 for XLSX, respecting header merges and saved typed cell values.
