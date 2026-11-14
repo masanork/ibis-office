@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use ibis_doc_model::machine_readability_csv::{diagnose, read_sheet, single_line_records, valid_quoting, Delimiter};
 use ibis_doc_model::machine_readability_layout::{estimate_stub_columns, generate_column_headers, infer_column_schemas, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue, StubCell, StubValue};
-use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_choice_standardization, csv_column_headers, csv_data_fragmentation, csv_item_abbreviations, csv_numeric_purity, csv_other_details, csv_unique_headers, file_format, header_start_position, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, reference_skipped_level3, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
+use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_choice_standardization, csv_column_headers, csv_data_fragmentation, csv_item_abbreviations, csv_numeric_purity, csv_other_details, csv_unique_headers, csv_vertical_format, file_format, header_start_position, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, reference_skipped_level3, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
 use ibis_doc_model::sheet::{CellKind, CellValue, Sheet, SheetCell};
 use crate::machine_readability_csv::{decode_csv_bytes, CsvInputEncoding, CsvInputError};
 
@@ -79,5 +79,6 @@ pub fn analyze_csv_partial(bytes: &[u8], delimiter: Delimiter) -> Result<Partial
     let level2_checks = vec![csv_numeric_purity(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?, csv_item_abbreviations(&sheet, &stubs, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, csv_unique_headers(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, csv_choice_standardization(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?, csv_other_details(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?];
     let mut level3_checks = vec![header_start_position(range, &region.headers.rows, region.headers.body_first).ok_or(NativeCsvError::UnknownLayout)?];
     level3_checks.extend(reference_skipped_level3());
+    level3_checks.push(csv_vertical_format(&sheet, range, &region.headers.rows).ok_or(NativeCsvError::UnknownLayout)?);
     Ok(PartialCsvAnalysis { encoding, table, header_rows: region.headers.rows.clone(), checks, level2_checks, level3_checks, complete: false })
 }
