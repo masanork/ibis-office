@@ -1,0 +1,33 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "cases": [
+    {
+      "row": 1,
+      "col": 0,
+      "raw": "9007199254740993",
+      "kind": "integer",
+      "reference": "9007199254740993"
+    },
+    {
+      "row": 2,
+      "col": 1,
+      "raw": "1.0",
+      "kind": "float",
+      "reference": "1.0"
+    },
+    {
+      "row": 3,
+      "col": 2,
+      "raw": "1e+20",
+      "kind": "float",
+      "reference": "1e+20"
+    },
+    {
+      "row": 4,
+      "col": 2,
+      "raw": "1.0",
+      "kind": "float",
+      "reference": "1.0"
+    }
+  ]
+}

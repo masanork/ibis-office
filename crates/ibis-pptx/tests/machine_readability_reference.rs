@@ -370,3 +370,849 @@ fn rust_irrelevant_information_matches_pinned_harunobu() {
     }
     assert_eq!(irrelevant_information(None).result.confidence, 0.0);
 }
+
+#[test]
+fn whitespace_cell_issues_match_reference() {
+    use ibis_doc_model::machine_readability_rules::whitespace_issues;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-whitespace-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let got = whitespace_issues(case["value"].as_str().unwrap(), case["address"].as_bool().unwrap());
+        let expected: Vec<_> = case["issues"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(got, expected, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn csv_fragmentation_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_data_fragmentation, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-fragmentation-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let n = |i| case["range"][i].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: n(0), first_column: n(1), last_row: n(2), last_column: n(3) };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let got = csv_data_fragmentation(&sheet, table).unwrap();
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert!(got.findings.iter().all(|v| v.severity == FindingSeverity::Error));
+    }
+    let mut sheet = Sheet::default();
+    let table = CellRange { first_row: 0, first_column: 0, last_row: 2, last_column: 1 };
+    sheet.merges.push(table);
+    assert!(csv_data_fragmentation(&sheet, table).is_none());
+    assert!(csv_data_fragmentation(&Sheet::default(), CellRange { first_row: 3, ..table }).is_none());
+}
+
+#[test]
+fn csv_column_headers_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_column_headers, csv_column_headers_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-headers-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let n = |i| case["range"][i].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: n(0), first_column: n(1), last_row: n(2), last_column: n(3) };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = csv_column_headers(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        let report = csv_column_headers_report(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert!(got.findings.iter().all(|v| v.severity == FindingSeverity::Error));
+    }
+    let table = CellRange { first_row: 0, first_column: 0, last_row: 2, last_column: 1 };
+    let mut sheet = Sheet::default();
+    sheet.merges.push(table);
+    assert!(csv_column_headers(&sheet, table, &[0], 1, 2).is_none());
+    sheet.merges.clear();
+    for value in ["１２", "NaN", "9007199254740992"] {
+        sheet.cells = [value, "2"].iter().enumerate().map(|(column, value)| SheetCell { row: 0, column: column as u32, value: CellValue::Text((*value).into()), text: (*value).into(), kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }).collect::<Vec<_>>().into();
+        assert!(csv_column_headers(&sheet, table, &[0], 1, 2).is_none(), "{value}");
+    }
+}
+
+#[test]
+fn csv_unique_headers_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_unique_headers, csv_unique_headers_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-unique-headers-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let n = |i| case["range"][i].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: n(0), first_column: n(1), last_row: n(2), last_column: n(3) };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = csv_unique_headers(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        let report = csv_unique_headers_report(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert!(got.findings.iter().all(|v| v.severity == FindingSeverity::Error));
+    }
+}
+
+#[test]
+fn header_position_and_skipped_rules_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{header_start_position, reference_skipped_level3, FindingSeverity};
+    use ibis_doc_model::machine_readability_scoring::Severity;
+    use ibis_doc_model::sheet::CellRange;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-header-position-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let table = CellRange { first_row: case["start"].as_u64().unwrap() as u32, first_column: 0, last_row: case["end"].as_u64().unwrap() as u32, last_column: 2 };
+        let mut checks = vec![header_start_position(table, &headers, case["body"].as_u64().unwrap() as u32).unwrap()];
+        checks.extend(reference_skipped_level3());
+        for (got, expected) in checks.iter().zip(case["checks"].as_array().unwrap()) {
+            assert_eq!(got.result.rule_id, expected["id"].as_str().unwrap(), "case {i}");
+            assert_eq!(got.result.passed, expected["passed"].as_bool().unwrap(), "case {i}");
+            assert_eq!(got.result.confidence, expected["confidence"].as_f64().unwrap(), "case {i}");
+            let severity = match got.result.severity.unwrap() { Severity::Fatal => "fatal", Severity::Critical => "critical", Severity::Major => "major", Severity::Minor => "minor", Severity::Info => "info" };
+            assert_eq!(severity, expected["severity"].as_str().unwrap(), "case {i}");
+            let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+            let wanted: Vec<_> = expected["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+            assert_eq!(actual, wanted, "case {i}");
+        }
+    }
+}
+
+#[test]
+fn csv_item_abbreviations_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_item_abbreviations, csv_item_abbreviations_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-abbreviation-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let stubs: Vec<_> = case["stubs"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = csv_item_abbreviations(&sheet, &stubs, 0, case["rows"].as_u64().unwrap() as u32 - 1).unwrap();
+        let report = csv_item_abbreviations_report(&sheet, &stubs, 0, case["rows"].as_u64().unwrap() as u32 - 1).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}");
+    }
+}
+
+#[test]
+fn csv_numeric_purity_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_layout::InferredColumnType;
+    use ibis_doc_model::machine_readability_rules::{csv_numeric_purity, numeric_purity_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-numeric-purity-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let rows = case["rows"].as_u64().unwrap() as u32; let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: rows - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let schemas: Vec<_> = case["schemas"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, match v[1].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "mixed" => InferredColumnType::Mixed, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "empty" => InferredColumnType::Empty, _ => panic!("invalid schema") })).collect();
+        let got = csv_numeric_purity(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        let report = numeric_purity_report(&sheet, table, 0, rows - 1, &schemas, &std::collections::BTreeSet::new()).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn csv_other_details_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_layout::InferredColumnType;
+    use ibis_doc_model::machine_readability_rules::{csv_other_details, csv_other_details_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-other-details-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let rows = case["rows"].as_u64().unwrap() as u32; let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: rows - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let schemas: Vec<_> = case["schemas"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, match v[1].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "mixed" => InferredColumnType::Mixed, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "empty" => InferredColumnType::Empty, _ => panic!("invalid schema") })).collect();
+        let got = csv_other_details(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        let report = csv_other_details_report(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn csv_choice_standardization_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_layout::InferredColumnType;
+    use ibis_doc_model::machine_readability_rules::{csv_choice_standardization, csv_choice_standardization_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-choice-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let rows = case["rows"].as_u64().unwrap() as u32; let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: rows - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let schemas: Vec<_> = case["schemas"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, match v[1].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "mixed" => InferredColumnType::Mixed, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "empty" => InferredColumnType::Empty, _ => panic!("invalid schema") })).collect();
+        let got = csv_choice_standardization(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        let report = csv_choice_standardization_report(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        for (finding,description) in report.evaluation.findings.iter().zip(&report.descriptions) {
+            let expected=case["descriptions"].as_array().unwrap().iter().find(|v|v[0]==finding.location).unwrap();
+            assert!(expected[1].as_array().unwrap().iter().any(|v|v.as_str()==Some(description)), "case {i}");
+        }
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let mut actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let mut wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        actual.sort(); wanted.sort();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn csv_vertical_format_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_vertical_format, vertical_format_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-vertical-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = csv_vertical_format(&sheet, table, &headers).unwrap();
+        let report = vertical_format_report(&sheet, table, &headers, &std::collections::BTreeSet::new()).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn csv_time_axis_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_time_axis, time_axis_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-time-axis-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: case["rows"].as_u64().unwrap() as u32 - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = csv_time_axis(&sheet, table, &headers, 1, table.last_row).unwrap();
+        let report = time_axis_report(&sheet, table, &headers, 1, table.last_row).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn csv_region_codes_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_region_codes, region_codes_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-region-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: case["rows"].as_u64().unwrap() as u32 - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = csv_region_codes(&sheet, table, &headers, 1, table.last_row).unwrap();
+        let report = region_codes_report(&sheet, table, &headers, 1, table.last_row, &std::collections::BTreeSet::new()).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn csv_data_units_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_data_units, data_units_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-data-units-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: case["rows"].as_u64().unwrap() as u32 - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = csv_data_units(&sheet, table, &headers, 1, table.last_row).unwrap();
+        let report = data_units_report(&sheet, table, &headers, 1, table.last_row, &std::collections::BTreeSet::new()).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn csv_multitable_fragmentation_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_fragmentation_with_tables, csv_fragmentation_report, DetectedTable};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-multitable-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let tables: Vec<_> = case["tables"].as_array().unwrap().iter().map(|v| DetectedTable { range: CellRange { first_row: v[0].as_u64().unwrap() as u32, first_column: v[1].as_u64().unwrap() as u32, last_row: v[2].as_u64().unwrap() as u32, last_column: v[3].as_u64().unwrap() as u32 }, confidence: 0.9 }).collect();
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let got = csv_fragmentation_with_tables(&sheet, tables[case["current"].as_u64().unwrap() as usize].range, &tables).unwrap();
+        let report = csv_fragmentation_report(&sheet, tables[case["current"].as_u64().unwrap() as usize].range, &tables).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+    }
+}
+
+#[test]
+fn xlsx_numeric_purity_matches_typed_reference() {
+    use ibis_doc_model::machine_readability_layout::InferredColumnType;
+    use ibis_doc_model::machine_readability_rules::{xlsx_numeric_purity, numeric_purity_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-numeric-purity-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let rows = case["rows"].as_u64().unwrap() as u32; let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: rows - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let schemas: Vec<_> = case["schemas"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, match v[1].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "mixed" => InferredColumnType::Mixed, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "empty" => InferredColumnType::Empty, _ => panic!("invalid schema") })).collect();
+        let typed: std::collections::BTreeSet<_> = case["cells"].as_array().unwrap().iter().filter(|v| v[3].as_bool().unwrap()).map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32)).collect();
+        let got = xlsx_numeric_purity(&sheet, table, 0, rows - 1, &schemas, &typed).unwrap();
+        let report = numeric_purity_report(&sheet, table, 0, rows - 1, &schemas, &typed).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+
+#[test]
+fn xlsx_data_units_matches_typed_reference() {
+    use ibis_doc_model::machine_readability_rules::{xlsx_data_units, data_units_report, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-data-units-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let cols = case["cols"].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: 0, first_column: 0, last_row: case["rows"].as_u64().unwrap() as u32 - 1, last_column: cols - 1 };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let typed: std::collections::BTreeSet<_> = case["cells"].as_array().unwrap().iter().filter(|v| v[3].as_bool().unwrap()).map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32)).collect();
+        let got = xlsx_data_units(&sheet, table, &headers, 1, table.last_row, &typed).unwrap();
+        let report = data_units_report(&sheet, table, &headers, 1, table.last_row, &typed).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+        let wanted: Vec<_> = case["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+        assert_eq!(actual, wanted, "case {i}: {case}");
+    }
+}
+
+#[test]
+fn bulk_format_consistency_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{bulk_format_consistency, bulk_format_consistency_report, FindingSeverity};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-bulk-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"],"88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i,case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let headers:Vec<Vec<String>>=case["headers"].as_array().unwrap().iter().map(|h|h.as_array().unwrap().iter().map(|v|v.as_str().unwrap().to_string()).collect()).collect();
+        let got=bulk_format_consistency(&headers);
+        let names:Vec<_>=(0..headers.len()).map(|n|format!("f{n}.csv")).collect();
+        let named:Vec<_>=names.iter().zip(&headers).map(|(n,h)|(n.as_str(),h.as_slice())).collect();
+        let report=bulk_format_consistency_report(&named);
+        assert_eq!(report.evaluation,got,"case {i}");
+        assert_eq!(report.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(report.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.result.passed,case["passed"].as_bool().unwrap(),"case {i}");
+        assert_eq!(got.result.confidence,case["confidence"].as_f64().unwrap(),"case {i}");
+        assert_eq!(got.result.severity,Some(ibis_doc_model::machine_readability_scoring::Severity::Major),"case {i}");
+        assert_eq!(case["severity"],"major","case {i}");
+        let severities:Vec<_>=got.findings.iter().map(|v|match v.severity { FindingSeverity::Error=>"error",FindingSeverity::Warning=>"warning",FindingSeverity::Info=>"info" }).collect();
+        assert_eq!(severities,case["severities"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn bulk_score_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_scoring::{score_bulk, score_level, Level, RuleResult, Severity};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-bulk-score-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"],"88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let read_rule=|v:&serde_json::Value| RuleResult { rule_id:v["rule_id"].as_str().unwrap().to_string(), passed:v["passed"].as_bool().unwrap(), confidence:v["confidence"].as_f64().unwrap(), severity:Some(match v["severity"].as_str().unwrap() { "fatal"=>Severity::Fatal,"critical"=>Severity::Critical,"major"=>Severity::Major,"minor"=>Severity::Minor,"info"=>Severity::Info,_=>panic!("severity") }) };
+    for (i,case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let files:Vec<_>=case["files"].as_array().unwrap().iter().map(|file| {
+            let levels=[Level::One,Level::Two,Level::Three];
+            std::array::from_fn(|n| { let rules:Vec<_>=file[n].as_array().unwrap().iter().map(&read_rule).collect(); score_level(levels[n],&rules) })
+        }).collect();
+        let checks:Vec<_>=case["checks"].as_array().unwrap().iter().map(&read_rule).collect();
+        assert_eq!(u64::from(score_bulk(&files,&checks)),case["total"].as_u64().unwrap(),"case {i}: {case}");
+    }
+}
+
+#[test]
+fn rule_metadata_has_all_pinned_rule_names_and_descriptions() {
+    use ibis_doc_model::machine_readability_rule_metadata::{rule_metadata, RULE_METADATA};
+    assert_eq!(RULE_METADATA.len(), 30);
+    for (i, rule) in RULE_METADATA.iter().enumerate() {
+        assert_eq!(rule_metadata(rule.id), Some(rule));
+        assert!(!rule.name.is_empty() && !rule.description.is_empty());
+        assert!(!RULE_METADATA[..i].iter().any(|other| other.id == rule.id));
+    }
+    assert!(rule_metadata("L9-99").is_none());
+}
+
+#[test]
+fn check_json_matches_pinned_harunobu_including_large_groups() {
+    use ibis_doc_model::machine_readability_rules::{Finding, FindingSeverity, RuleEvaluation};
+    use ibis_doc_model::machine_readability_scoring::{RuleResult, Severity};
+    use ibis_pptx::machine_readability_report::{check_json, FindingText};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-report-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let raw = case["findings"].as_array().unwrap();
+        let findings = raw.iter().map(|v| Finding { location:v["cell_range"].as_str().unwrap().into(), severity:match v["severity"].as_str().unwrap() { "error"=>FindingSeverity::Error, "warning"=>FindingSeverity::Warning, "info"=>FindingSeverity::Info, _=>panic!("severity") } }).collect();
+        let check = RuleEvaluation { result: RuleResult { rule_id:case["rule_id"].as_str().unwrap().into(), passed:case["passed"].as_bool().unwrap(), confidence:case["confidence"].as_f64().unwrap(), severity:case["severity"].as_str().map(|s| match s { "fatal"=>Severity::Fatal, "critical"=>Severity::Critical, "major"=>Severity::Major, "minor"=>Severity::Minor, "info"=>Severity::Info, _=>panic!("severity") }) }, findings };
+        let texts: Vec<_> = raw.iter().map(|v| FindingText { sheet:v["sheet"].as_str().unwrap(), description:v["description"].as_str().unwrap() }).collect();
+        assert_eq!(check_json(&check, case["message"].as_str().unwrap(), &texts).unwrap(), case["expected"], "case {i}");
+        if !texts.is_empty() { assert!(check_json(&check, "", &texts[1..]).is_none()); }
+    }
+}
+
+#[test]
+fn level_score_json_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_scoring::{score_level, Level, RuleResult, Severity};
+    use ibis_pptx::machine_readability_report::level_score_json;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-report-reference.json")).unwrap()).unwrap();
+    for (i, case) in data["scores"].as_array().unwrap().iter().enumerate() {
+        let level = match case["level"].as_u64().unwrap() { 1=>Level::One, 2=>Level::Two, 3=>Level::Three, _=>panic!("level") };
+        let rules: Vec<_> = case["inputs"].as_array().unwrap().iter().map(|index| { let v = &data["cases"][index.as_u64().unwrap() as usize]; RuleResult { rule_id:v["rule_id"].as_str().unwrap().into(), passed:v["passed"].as_bool().unwrap(), confidence:v["confidence"].as_f64().unwrap(), severity:v["severity"].as_str().map(|s|match s { "fatal"=>Severity::Fatal, "critical"=>Severity::Critical, "major"=>Severity::Major, "minor"=>Severity::Minor, "info"=>Severity::Info, _=>panic!("severity") }) } }).collect();
+        assert_eq!(level_score_json(&score_level(level, &rules)), case["expected"], "case {i}");
+    }
+}
+
+#[test]
+fn merged_cell_diagnostics_match_pinned_harunobu() {
+    use std::collections::BTreeSet;
+    use ibis_doc_model::machine_readability_rules::merged_cells_report;
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"],"88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let table=CellRange { first_row:1,first_column:1,last_row:5,last_column:4 };
+    for (i,case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        sheet.merges=case["merges"].as_array().unwrap().iter().map(|m| CellRange { first_row:m[0].as_u64().unwrap() as u32,first_column:m[1].as_u64().unwrap() as u32,last_row:m[2].as_u64().unwrap() as u32,last_column:m[3].as_u64().unwrap() as u32 }).collect();
+        let headers:BTreeSet<_>=case["headers"].as_array().unwrap().iter().map(|v|v.as_u64().unwrap() as u32).collect();
+        let got=merged_cells_report(&sheet,table,Some(&headers)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(merged_cells_report(&sheet,table,None).is_none());
+}
+
+#[test]
+fn file_format_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::file_format_report;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    for (i,case) in data["formats"].as_array().unwrap().iter().enumerate() {
+        let got=file_format_report(case["name"].as_str().unwrap(),case["format"].as_str().unwrap());
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn hidden_rows_and_columns_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{hidden_rows_columns_report, UsedExtent};
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    for (i,case) in data["hidden"].as_array().unwrap().iter().enumerate() {
+        sheet.hidden_rows=case["rows"].as_array().unwrap().iter().map(|v|(v.as_u64().unwrap() as u32,0)).collect();
+        sheet.hidden_columns=case["cols"].as_array().unwrap().iter().map(|v|(v.as_u64().unwrap() as u32,0)).collect();
+        let used=UsedExtent::Range(CellRange { first_row:0,first_column:0,last_row:case["max_row"].as_u64().unwrap() as u32,last_column:case["max_col"].as_u64().unwrap() as u32 });
+        let got=hidden_rows_columns_report(&sheet,used).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(hidden_rows_columns_report(&sheet,UsedExtent::Unknown).is_none());
+}
+
+#[test]
+fn skipped_rule_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled_report, reference_skipped_level3_reports};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let reports=std::iter::once(blank_vs_zero_ai_disabled_report()).chain(reference_skipped_level3_reports());
+    for (report, case) in reports.zip(data["skipped"].as_array().unwrap()) {
+        assert_eq!(report.evaluation.result.rule_id,case["id"].as_str().unwrap());
+        assert_eq!(report.message,case["message"].as_str().unwrap());
+        assert_eq!(report.evaluation.result.confidence,case["confidence"].as_f64().unwrap());
+        assert_eq!(report.evaluation.result.passed,case["passed"].as_bool().unwrap());
+        assert!(report.descriptions.is_empty());
+    }
+}
+
+#[test]
+fn multiple_table_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{DetectedTable, one_table_per_sheet_report};
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    for (i,case) in data["tables"].as_array().unwrap().iter().enumerate() {
+        let tables:Vec<_>=case["ranges"].as_array().unwrap().iter().zip(case["confidences"].as_array().unwrap()).map(|(r,c)| DetectedTable { range:CellRange { first_row:r[0].as_u64().unwrap() as u32,first_column:r[1].as_u64().unwrap() as u32,last_row:r[2].as_u64().unwrap() as u32,last_column:r[3].as_u64().unwrap() as u32 },confidence:c.as_f64().unwrap() }).collect();
+        let current=tables[case["current"].as_u64().unwrap() as usize].range;
+        let got=one_table_per_sheet_report("表 1",current,Some(&tables)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert!(one_table_per_sheet_report("表 1",current,None).is_none());
+    }
+}
+
+#[test]
+fn header_start_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::header_start_position_report;
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    for (i,case) in data["start"].as_array().unwrap().iter().enumerate() {
+        let table=CellRange { first_row:case["first"].as_u64().unwrap() as u32,first_column:0,last_row:13,last_column:3 };
+        let headers:Vec<_>=case["headers"].as_array().unwrap().iter().map(|v|v.as_u64().unwrap() as u32).collect();
+        let got=header_start_position_report(table,&headers,case["body"].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn formula_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{formula_artifacts_report, FormulaArtifact};
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let table=CellRange { first_row:1,first_column:1,last_row:5,last_column:2 };
+    let read=|v:&serde_json::Value| FormulaArtifact { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32,cell_ref:v["cell_ref"].as_str().unwrap().into(),formula_text:v["formula_text"].as_str().map(str::to_string),formula_type:v["formula_type"].as_str().map(str::to_string) };
+    for (i,case) in data["formula"].as_array().unwrap().iter().enumerate() {
+        let refs:Vec<_>=case["refs"].as_array().unwrap().iter().map(&read).collect();
+        let errors:Vec<_>=case["errors"].as_array().unwrap().iter().map(&read).collect();
+        let got=formula_artifacts_report(table,Some((&refs,&errors))).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn object_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{object_artifacts_report, ObjectArtifact};
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let table=CellRange { first_row:1,first_column:1,last_row:5,last_column:4 };
+    for (i,case) in data["objects"].as_array().unwrap().iter().enumerate() {
+        let objects:Vec<_>=case["objects"].as_array().unwrap().iter().map(|v|ObjectArtifact { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32,kind:v["kind"].as_str().unwrap().into(),name:v["name"].as_str().map(str::to_string),drawing_part:v["drawing"].as_str().unwrap().into() }).collect();
+        let got=object_artifacts_report(table,case["abstain"].as_bool().unwrap(),Some(&objects)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(object_artifacts_report(table,false,None).is_none());
+}
+
+#[test]
+fn csv_diagnostics_report_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_csv::{diagnose, diagnostics_report, Delimiter};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let inputs:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-csv-diagnostics-reference.json")).unwrap()).unwrap();
+    let expected:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-csv-report-reference.json")).unwrap()).unwrap();
+    assert_eq!(expected["harunobu_commit"],"88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (case,reference) in inputs["cases"].as_array().unwrap().iter().zip(expected["cases"].as_array().unwrap()) {
+        let delimiter=if case["delimiter"]=="," { Delimiter::Comma } else { Delimiter::Tab };
+        let diag=diagnose(case["text"].as_str().unwrap(),delimiter);
+        for (index,quoting) in [false,true].into_iter().enumerate() {
+            let got=diagnostics_report(Some(&diag),1,2000,delimiter,quoting).unwrap();
+            assert_eq!(got.message,reference["results"][index]["message"].as_str().unwrap(),"{}",case["name"]);
+            assert_eq!(got.descriptions,reference["results"][index]["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"{}",case["name"]);
+        }
+    }
+    assert!(diagnostics_report(None,1,5,Delimiter::Comma,false).is_none());
+}
+
+#[test]
+fn formatting_diagnostics_match_pinned_harunobu() {
+    use std::collections::BTreeMap;
+    use ibis_doc_model::machine_readability_rules::{format_based_semantics_report, ReferenceCellFormat};
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let table=CellRange { first_row:0,first_column:0,last_row:5,last_column:3 };
+    for (i,case) in data["formats_semantics"].as_array().unwrap().iter().enumerate() {
+        let mut formats=BTreeMap::new();
+        sheet.cells=case["entries"].as_array().unwrap().iter().map(|v| {
+            let row=v["row"].as_u64().unwrap() as u32; let column=v["col"].as_u64().unwrap() as u32;
+            formats.insert((row,column),ReferenceCellFormat { font_color:v["font"].as_str().map(str::to_string),background:v["bg"].as_str().map(str::to_string),bold:v["bold"].as_bool().unwrap(),italic:v["italic"].as_bool().unwrap(),..Default::default() });
+            let text=v["value"].as_str().unwrap_or("").to_string();
+            SheetCell { row,column,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None }
+        }).collect::<Vec<_>>().into();
+        let got=format_based_semantics_report(&sheet,table,1,Some(&formats)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(format_based_semantics_report(&sheet,table,1,None).is_none());
+}
+
+#[test]
+fn whitespace_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::whitespace_formatting_report;
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let table=CellRange { first_row:0,first_column:0,last_row:3,last_column:3 };
+    for (i,case) in data["whitespace"].as_array().unwrap().iter().enumerate() {
+        sheet.cells=case["entries"].as_array().unwrap().iter().map(|v| {
+            let text=v["value"].as_str().unwrap_or("").to_string();
+            SheetCell { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None }
+        }).collect::<Vec<_>>().into();
+        let headers:Vec<_>=case["headers"].as_array().unwrap().iter().map(|v|v.as_u64().unwrap() as u32).collect();
+        let got=whitespace_formatting_report(&sheet,table,Some(&headers)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(whitespace_formatting_report(&sheet,table,None).is_none());
+}
+
+#[test]
+fn multiple_data_diagnostics_match_pinned_harunobu() {
+    use std::collections::BTreeMap;
+    use ibis_doc_model::machine_readability_rules::{one_data_per_cell_report, ColumnType};
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let table=CellRange { first_row:0,first_column:0,last_row:3,last_column:3 };
+    for (i,case) in data["multiple"].as_array().unwrap().iter().enumerate() {
+        sheet.cells=case["entries"].as_array().unwrap().iter().map(|v| {
+            let text=v["value"].as_str().unwrap_or("").to_string();
+            SheetCell { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None }
+        }).collect::<Vec<_>>().into();
+        let columns:BTreeMap<_,_>=case["types"].as_array().unwrap().iter().enumerate().map(|(c,v)|(c as u32,if v=="numeric" {ColumnType::Numeric} else {ColumnType::Other})).collect();
+        let got=one_data_per_cell_report(&sheet,table,Some(&columns)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn merged_header_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::xlsx_unique_headers_report;
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,Sheet,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-unique-headers-reference.json")).unwrap()).unwrap();
+    let table=CellRange { first_row:0,first_column:0,last_row:3,last_column:3 };
+    let merges=[CellRange { first_row:0,first_column:0,last_row:0,last_column:1 }];
+    for (i,case) in data["merged"].as_array().unwrap().iter().enumerate() {
+        let mut sheet=Sheet::default();
+        sheet.cells=case["cells"].as_array().unwrap().iter().map(|v| { let text=v[2].as_str().unwrap().to_string(); SheetCell { row:v[0].as_u64().unwrap() as u32,column:v[1].as_u64().unwrap() as u32,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None } }).collect::<Vec<_>>().into();
+        let got=xlsx_unique_headers_report(&sheet,table,&[0],1,3,&merges).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn platform_character_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{platform_characters_report, TextEncoding};
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,Sheet,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let table=CellRange { first_row:0,first_column:0,last_row:8,last_column:0 };
+    for (i,case) in data["characters"].as_array().unwrap().iter().enumerate() {
+        let mut sheet=Sheet::default();
+        sheet.cells=case["values"].as_array().unwrap().iter().enumerate().map(|(row,v)| { let text=v.as_str().unwrap_or("").to_string(); SheetCell { row:row as u32,column:0,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None } }).collect::<Vec<_>>().into();
+        let encoding=match case["encoding"].as_str() { Some("cp932")=>TextEncoding::Cp932,Some("utf-8")=>TextEncoding::Utf8,None=>TextEncoding::Xlsx,_=>panic!("encoding") };
+        let got=platform_characters_report(&sheet,table,encoding).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn file_report_assembly_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_layout::{InferredColumnHeader,InferredColumnSchema,InferredColumnType};
+    use ibis_doc_model::machine_readability_rules::{Finding,FindingSeverity,RuleDiagnostics,RuleEvaluation};
+    use ibis_doc_model::machine_readability_scoring::{RuleResult,Severity};
+    use ibis_doc_model::sheet::CellRange;
+    use ibis_pptx::machine_readability_report::{file_report_json,bulk_report_json,file_report_csv,bulk_report_csv,FileReport,SheetReport,SheetProperty,OtherCell,TableReport};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let reference:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-report-assembly-reference.json")).unwrap()).unwrap();
+    let first=RuleDiagnostics { evaluation:RuleEvaluation { result:RuleResult { rule_id:"L1-01".into(),passed:true,confidence:1.0,severity:Some(Severity::Fatal) },findings:vec![] },message:"ok".into(),descriptions:vec![] };
+    let second=RuleDiagnostics { evaluation:RuleEvaluation { result:RuleResult { rule_id:"L2-03".into(),passed:false,confidence:0.95,severity:Some(Severity::Fatal) },findings:vec![Finding { location:"A2".into(),severity:FindingSeverity::Error }] },message:"重複".into(),descriptions:vec!["重複".into()] };
+    let third=RuleDiagnostics { evaluation:RuleEvaluation { result:RuleResult { rule_id:"L3-09".into(),passed:false,confidence:0.7,severity:Some(Severity::Major) },findings:(0..25).map(|i|Finding { location:format!("B{}",i+1),severity:if i%2==0 {FindingSeverity::Info} else {FindingSeverity::Warning} }).collect() },message:"引用: \"a,b\"\n次行".into(),descriptions:(0..25).map(|i|format!("詳細,\"{i}\"")).collect() };
+    let checks1=[first]; let checks2=[second]; let checks3=[third];
+    let headers=[InferredColumnHeader { column:0,rows:vec![1],label:"項目".into(),merged:false }];
+    let columns=[InferredColumnSchema { column:0,kind:InferredColumnType::Text,has_header:true }];
+    let tables=[TableReport { range:CellRange { first_row:1,first_column:0,last_row:3,last_column:1 },confidence:0.9,header_rows:&[1],column_headers:&headers,columns:&columns,checks:[&checks1,&checks2,&checks3] }];
+    let others=[OtherCell { row:0,column:0,value:serde_json::json!("タイトル"),region_type:"title" }];
+    let sheets=[SheetReport { name:"表",used_range:"A1:B4",hidden:false,property:Some(SheetProperty { name:"表",max_row:4,max_col:2,hidden:false }),others:&others,tables:&tables },SheetReport { name:"空",used_range:"",hidden:true,property:None,others:&[],tables:&[] }];
+    let file=FileReport { name:"例.xlsx",size:123,format:"xlsx",sheet_count:2,sheets:&sheets };
+    let file_json=file_report_json(&file).unwrap();
+    assert_eq!(file_json,reference["expected"]["file"]);
+    assert_eq!(file_report_csv(&file_json).unwrap(),reference["expected"]["file_csv"].as_str().unwrap());
+    let empty=FileReport { name:"空.csv",size:0,format:"csv",sheet_count:0,sheets:&[] };
+    let bulk=RuleDiagnostics { evaluation:RuleEvaluation { result:RuleResult { rule_id:"L3-07".into(),passed:false,confidence:0.8,severity:Some(Severity::Critical) },findings:vec![Finding { location:"".into(),severity:FindingSeverity::Warning }] },message:"相違".into(),descriptions:vec!["相違".into()] };
+    let bulk_json=bulk_report_json(&[file,empty],&[bulk]).unwrap();
+    assert_eq!(bulk_json,reference["expected"]["bulk"]);
+    assert_eq!(bulk_report_csv(&bulk_json).unwrap(),reference["expected"]["bulk_csv"].as_str().unwrap());
+    let empty_json=bulk_report_json(&[],&[]).unwrap();
+    assert_eq!(empty_json,reference["expected"]["empty"]);
+    assert_eq!(bulk_report_csv(&empty_json).unwrap(),reference["expected"]["empty_csv"].as_str().unwrap());
+}
+
+#[test]
+fn outside_cell_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{irrelevant_information_report, OutsideCellText, OutsideTableCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    for (i,case) in data["others"].as_array().unwrap().iter().enumerate() {
+        let others:Vec<_>=case["others"].as_array().unwrap().iter().map(|v|OutsideCellText { cell:OutsideTableCell { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32 },region_type:v["kind"].as_str().unwrap(),value:v["value"].as_str() }).collect();
+        let got=irrelevant_information_report(Some(&others)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(irrelevant_information_report(None).is_none());
+}

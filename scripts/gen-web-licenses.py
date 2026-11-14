@@ -198,6 +198,7 @@ def write(build):
     # in its Resources; the web version serves its PNG files one by one.
     ecma_art = open(os.path.join(ROOT, "crates", "ibis-pptx", "data", "artborders", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
     harunobu = open(os.path.join(ROOT, "crates", "ibis-doc-model", "HARUNOBU-MIT.txt"), encoding="utf-8").read().strip()
+    unicode_notice = open(os.path.join(ROOT, "crates", "ibis-doc-model", "UNICODE-LICENSE.txt"), encoding="utf-8").read().strip()
     gjs = open(os.path.join(ROOT, "crates", "ibis-doc-model", "GJS-MIT.txt"), encoding="utf-8").read().strip()
     plex = open(os.path.join(ROOT, "crates", "ibis-office-app", "fonts", "OFL.txt"), encoding="utf-8").read().strip()
     carlito = open(os.path.join(ROOT, "crates", "ibis-office-render", "fonts", "carlito", "OFL.txt"), encoding="utf-8").read().strip()
@@ -219,6 +220,7 @@ def write(build):
     # Material Symbols: the chrome's icons (crates/ibis-office-shell/icons/material/),
     # embedded in the binary on both builds.
     bundled.append(("Material Symbols（Google）", "タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み）", "Apache-2.0"))
+    bundled.append(("Unicode 15.0", "文字の表示可否データ", "Unicode-3.0"))
     material_readme = open(os.path.join(ROOT, "crates", "ibis-office-shell", "icons", "material", "README.md"), encoding="utf-8").read()
     material_source = next((l[2:] for l in material_readme.splitlines() if l.startswith("- 出典")), "")
     where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）", "windows": " Windows 版"}[build]
@@ -255,6 +257,10 @@ def write(build):
           "### Harunobu",
           "",
           "```text", harunobu, "```",
+          "",
+          "### Unicode data",
+          "",
+          "```text", unicode_notice, "```",
           "",
           "### gjs character classification",
           "",

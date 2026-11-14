@@ -199,6 +199,37 @@ fn check_diagnostics(diag: Option<&Diagnostics>, first_row: usize, last_row: usi
     RuleEvaluation { result: RuleResult { rule_id: id.to_string(), passed: total == 0, confidence: diag.confidence, severity: Some(Severity::Fatal) }, findings }
 }
 
+/// Report text for the raw CSV checks, given complete diagnostics and a table range.
+pub fn diagnostics_report(diag: Option<&Diagnostics>, first_row: usize, last_row: usize, delimiter: Delimiter, quoting: bool) -> Option<crate::machine_readability_rules::RuleDiagnostics> {
+    use crate::machine_readability_rules::RuleDiagnostics;
+    let evaluation = check_diagnostics(diag, first_row, last_row, quoting);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let diag = diag?;
+    let relevant = |kind| if quoting { matches!(kind, IssueKind::UnquotedQuote | IssueKind::UnclosedQuote | IssueKind::FieldCountMismatch) } else { matches!(kind, IssueKind::Multiline | IssueKind::UnclosedQuote) };
+    let kinds = [IssueKind::Multiline, IssueKind::UnclosedQuote, IssueKind::UnquotedQuote, IssueKind::FieldCountMismatch];
+    let total: usize = kinds.into_iter().filter(|kind| relevant(*kind)).map(|kind| diag.count(kind)).fold(0, usize::saturating_add);
+    let descriptions = diag.samples.iter().filter(|s| relevant(s.kind) && s.row >= first_row && s.row <= last_row).map(|sample| {
+        if !quoting {
+            let physical = if sample.physical_end == sample.physical_start { format!("物理行{}", sample.physical_start) } else { format!("物理行{}-{}", sample.physical_start, sample.physical_end) };
+            let suffix = if sample.kind == IssueKind::UnclosedQuote { " クォートが閉じられていない可能性があります。" } else { "" };
+            format!("論理行{}が{physical}にまたがっています。{suffix}", sample.row)
+        } else {
+            match sample.kind {
+                IssueKind::FieldCountMismatch => format!("論理行{}: 基準列数{}に対して{}列です。未クォートの{}により列数が崩れている可能性があります。", sample.row, sample.expected_fields.map_or_else(|| "None".into(), |v|v.to_string()), sample.fields.map_or_else(|| "None".into(), |v|v.to_string()), if delimiter == Delimiter::Comma { "カンマ" } else { "タブ" }),
+                IssueKind::UnclosedQuote => format!("論理行{}: クォートが閉じられていません。ダブルクォーテーションの対応を確認してください。", sample.row),
+                IssueKind::UnquotedQuote => { let cell = sample.column.map(|col|format!("{}{}",column_letters(col),sample.row)).unwrap_or_else(||format!("{}:{}",sample.row,sample.row)); format!("{cell}: ダブルクォーテーションを含むフィールドがクォートされていません。フィールド全体をダブルクォーテーションで囲み、値中の\"は\"\"としてエスケープしてください。") },
+                IssueKind::Multiline => unreachable!(),
+            }
+        }
+    }).collect();
+    let message = if total == 0 { if quoting { "クォーティングに問題はありません。" } else { "データ内改行は検出されませんでした。" }.into() }
+        else if quoting && diag.truncated { format!("少なくとも{total}件のクォーティング問題が検出されたため、診断収集を途中で打ち切りました。") }
+        else if quoting { format!("{total}件のクォーティング問題が検出されました。") }
+        else if diag.truncated { format!("少なくとも{total}件のデータ内改行またはクォート不整合が検出されたため、診断収集を途中で打ち切りました。") }
+        else { format!("{total}件のデータ内改行またはクォート不整合が検出されました。") };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L1-14 for a detected table's inclusive, one-based row range. Missing raw
 /// diagnostics are skipped; a truncated scan retains the reference confidence.
 pub fn single_line_records(diag: Option<&Diagnostics>, first_row: usize, last_row: usize) -> crate::machine_readability_rules::RuleEvaluation {
@@ -208,4 +239,98 @@ pub fn single_line_records(diag: Option<&Diagnostics>, first_row: usize, last_ro
 /// L1-15 for a detected table's inclusive, one-based row range.
 pub fn valid_quoting(diag: Option<&Diagnostics>, first_row: usize, last_row: usize) -> crate::machine_readability_rules::RuleEvaluation {
     check_diagnostics(diag, first_row, last_row, true)
+}
+
+/// A decoded CSV/TSV sheet as Harunobu's byte-stream reader sees it. Values
+/// remain strings, including values that resemble numbers, dates or formulas.
+/// Empty fields are represented as `None`; a blank line is an empty record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CsvSheet { pub records: Vec<Vec<Option<String>>>, pub max_columns: usize }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CsvReadError { UnquotedCarriageReturn, FieldTooLong, TooManyRows, TooManyColumns }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReaderState { RecordStart, FieldStart, Unquoted, Quoted, AfterQuote }
+
+/// Parse a decoded string with the pinned Harunobu reader's `csv.reader`
+/// dialect and `io.StringIO` newline behavior. This is separate from the app's
+/// CSV import, which intentionally coerces types. Encoding selection belongs
+/// to the byte reader, not this function.
+pub fn read_sheet(text: &str, delimiter: Delimiter) -> Result<CsvSheet, CsvReadError> {
+    const MAX_FIELD: usize = 131_072; // CPython's default csv.field_size_limit
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut field_chars = 0usize;
+    let mut state = ReaderState::RecordStart;
+    let mut input = text.chars().peekable();
+    let mut max_columns = 0usize;
+    let append = |field: &mut String, count: &mut usize, c: char| -> Result<(), CsvReadError> {
+        *count += 1;
+        if *count > MAX_FIELD { return Err(CsvReadError::FieldTooLong); }
+        field.push(c);
+        Ok(())
+    };
+    let finish_field = |record: &mut Vec<Option<String>>, field: &mut String, count: &mut usize| -> Result<(), CsvReadError> {
+        if record.len() >= u32::MAX as usize { return Err(CsvReadError::TooManyColumns); }
+        record.push(if field.is_empty() { None } else { Some(std::mem::take(field)) });
+        *count = 0;
+        Ok(())
+    };
+    while let Some(ch) = input.next() {
+        if state == ReaderState::Quoted {
+            if ch == '"' { state = ReaderState::AfterQuote; }
+            else { append(&mut field, &mut field_chars, ch)?; }
+            continue;
+        }
+        if state == ReaderState::AfterQuote && ch == '"' {
+            append(&mut field, &mut field_chars, '"')?;
+            state = ReaderState::Quoted;
+            continue;
+        }
+        if ch == delimiter.character() {
+            finish_field(&mut record, &mut field, &mut field_chars)?;
+            state = ReaderState::FieldStart;
+        } else if ch == '\r' || ch == '\n' {
+            if ch == '\r' {
+                while input.peek() == Some(&'\r') { input.next(); }
+                if input.peek() == Some(&'\n') { input.next(); }
+                else if input.peek().is_some() { return Err(CsvReadError::UnquotedCarriageReturn); }
+            }
+            if state != ReaderState::RecordStart { finish_field(&mut record, &mut field, &mut field_chars)?; }
+            if records.len() >= u32::MAX as usize { return Err(CsvReadError::TooManyRows); }
+            max_columns = max_columns.max(record.len());
+            records.push(std::mem::take(&mut record));
+            state = ReaderState::RecordStart;
+        } else if ch == '"' && matches!(state, ReaderState::RecordStart | ReaderState::FieldStart) {
+            state = ReaderState::Quoted;
+        } else {
+            append(&mut field, &mut field_chars, ch)?;
+            state = ReaderState::Unquoted;
+        }
+    }
+    if state != ReaderState::RecordStart {
+        finish_field(&mut record, &mut field, &mut field_chars)?;
+        if records.len() >= u32::MAX as usize { return Err(CsvReadError::TooManyRows); }
+        max_columns = max_columns.max(record.len());
+        records.push(record);
+    }
+    Ok(CsvSheet { records, max_columns })
+}
+
+impl CsvSheet {
+    /// Prepare unformatted, unmerged cells for preliminary layout detection.
+    /// Empty fields have no layout effect; their record/column positions remain
+    /// available in `records` and `max_columns`.
+    pub fn layout_cells(&self) -> Result<Vec<crate::machine_readability_layout::LayoutCell>, CsvReadError> {
+        use crate::machine_readability_layout::{LayoutCell, LayoutValue};
+        let mut cells = Vec::new();
+        for (row, record) in self.records.iter().enumerate() {
+            for (column, value) in record.iter().enumerate() {
+                if let Some(value) = value {
+                    cells.push(LayoutCell { row: u32::try_from(row).map_err(|_| CsvReadError::TooManyRows)?, column: u32::try_from(column).map_err(|_| CsvReadError::TooManyColumns)?, value: Some(LayoutValue::Text(value.clone())), bold: false, merged: false, formula: None });
+                }
+            }
+        }
+        Ok(cells)
+    }
 }
