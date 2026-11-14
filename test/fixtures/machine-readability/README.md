@@ -140,3 +140,5 @@ outcomes for multiple detected tables against the thorough reference analyzer.
 The raw saved-value adapter preserves a cached string starting with `=` even
 though the Harunobu layout reader interprets it as a formula; callers must
 apply reference interpretation when using those values in rules.
+`harunobu-xlsx-artifacts-reference.json` compares OOXML formula and `#REF!`
+inspection, including multiple worksheets and a formula with a cached `#REF!`.
