@@ -137,15 +137,19 @@ pub fn file_report_json(file: &FileReport<'_>) -> Option<Value> {
 
 /// Assemble a bulk report from complete file inputs and cross-file diagnostics.
 pub fn bulk_report_json(files: &[FileReport<'_>], checks: &[RuleDiagnostics]) -> Option<Value> {
-    let mut reports = Vec::new(); let mut summaries = Vec::new(); let mut scores = Vec::new();
-    for file in files {
-        let report = file_report_json(file)?;
-        let levels = &report["レベル別スコア"];
+    let reports:Vec<_> = files.iter().map(file_report_json).collect::<Option<_>>()?;
+    bulk_report_from_json(&reports,checks)
+}
+
+/// Aggregate already assembled single-file reports and cross-file diagnostics.
+pub fn bulk_report_from_json(reports: &[Value], checks: &[RuleDiagnostics]) -> Option<Value> {
+    let mut summaries = Vec::new(); let mut scores = Vec::new();
+    for report in reports {
+        let levels = report.get("レベル別スコア")?;
         let active: Vec<_> = ["1","2","3"].into_iter().filter_map(|level|levels[level]["スコア"].as_u64()).collect();
         let average = if active.is_empty() { None } else { Some((active.iter().sum::<u64>() as f64 / active.len() as f64).round_ties_even() as u8) };
         if let Some(score) = average { scores.push(score); }
-        summaries.push(json!({"ファイル名":file.name,"平均スコア":average}));
-        reports.push(report);
+        summaries.push(json!({"ファイル名":report.get("inputファイル名")?.as_str()?,"平均スコア":average}));
     }
     let mut checks_json = serde_json::Map::new();
     for check in checks {
@@ -154,11 +158,11 @@ pub fn bulk_report_json(files: &[FileReport<'_>], checks: &[RuleDiagnostics]) ->
     }
     let average = if scores.is_empty() { 100.0 } else { scores.iter().map(|s|f64::from(*s)).sum::<f64>() / scores.len() as f64 };
     let active: Vec<_> = checks.iter().filter(|check|check.evaluation.result.confidence > 0.0).collect();
-    let total = if files.is_empty() { 100 } else if active.is_empty() { average.round_ties_even() as u8 } else {
+    let total = if reports.is_empty() { 100 } else if active.is_empty() { average.round_ties_even() as u8 } else {
         let rate = active.iter().filter(|check|check.evaluation.result.passed).count() as f64 / active.len() as f64 * 100.0;
         (average * 0.7 + rate * 0.3).round_ties_even() as u8
     };
-    Some(json!({"複数ファイル総合スコア":total,"ファイル数":files.len(),"ファイル横断チェック":checks_json,"ファイル別平均スコア":summaries,"ファイル別結果":reports}))
+    Some(json!({"複数ファイル総合スコア":total,"ファイル数":reports.len(),"ファイル横断チェック":checks_json,"ファイル別平均スコア":summaries,"ファイル別結果":reports}))
 }
 
 const CSV_HEADER: [&str; 17] = ["ファイル名","シート名","テーブル範囲","ヘッダー範囲","列数","ルールID","ルール名","ルール説明","合否","判定対象外","重大度","信頼度","違反数","違反箇所","違反内容","違反重大度","メッセージ"];
@@ -219,4 +223,27 @@ pub fn bulk_report_csv(bulk: &Value) -> Option<String> {
         row.extend(csv_check_fields(check,true)?); csv_record(&mut out,&row);
     }
     Some(out)
+}
+
+/// Run the pinned reference's cross-file checks over already analyzed files.
+pub fn combine_native_reports(files: &[Value]) -> Option<Value> {
+    use ibis_doc_model::machine_readability_rules::bulk_format_consistency_report;
+    let mut names = Vec::new(); let mut headers = Vec::new();
+    let space = |c: char|c.is_whitespace() || matches!(c,'\u{1c}'..='\u{1f}');
+    for file in files {
+        names.push(file.get("inputファイル名")?.as_str()?.to_string());
+        let mut found = Vec::new();
+        'sheets: for sheet in file.get("sheets")?.as_array()? {
+            for table in sheet.get("評価対象エリア")?.as_array()? {
+                if let Some(columns) = table.get("columnHeaders").and_then(Value::as_array) {
+                    let labels: Vec<_> = columns.iter().filter_map(|c|c.get("label").and_then(Value::as_str)).filter(|v|!v.is_empty()).map(|v|v.trim_matches(space).to_string()).collect();
+                    if !labels.is_empty() { found=labels;break 'sheets; }
+                }
+            }
+        }
+        headers.push(found);
+    }
+    if files.len()<2 { return bulk_report_from_json(files,&[]); }
+    let named:Vec<_>=names.iter().zip(&headers).map(|(n,h)|(n.as_str(),h.as_slice())).collect();
+    bulk_report_from_json(files,&[bulk_format_consistency_report(&named)])
 }

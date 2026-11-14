@@ -844,6 +844,8 @@ fn bulk_format_consistency_matches_pinned_harunobu() {
         assert_eq!(report.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
         assert_eq!(got.result.passed,case["passed"].as_bool().unwrap(),"case {i}");
         assert_eq!(got.result.confidence,case["confidence"].as_f64().unwrap(),"case {i}");
+        assert_eq!(got.result.severity,Some(ibis_doc_model::machine_readability_scoring::Severity::Major),"case {i}");
+        assert_eq!(case["severity"],"major","case {i}");
         let severities:Vec<_>=got.findings.iter().map(|v|match v.severity { FindingSeverity::Error=>"error",FindingSeverity::Warning=>"warning",FindingSeverity::Info=>"info" }).collect();
         assert_eq!(severities,case["severities"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
     }
