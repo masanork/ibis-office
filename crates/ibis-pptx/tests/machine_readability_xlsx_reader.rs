@@ -324,7 +324,7 @@ fn xlsx_fragmentation_matches_merged_reference_cases() {
 
 #[test]
 fn xlsx_column_headers_match_typed_merged_reference_cases() {
-    use ibis_doc_model::machine_readability_rules::xlsx_column_headers;
+    use ibis_doc_model::machine_readability_rules::{xlsx_column_headers, xlsx_column_headers_report};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellStyle, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-headers-reference.json")).unwrap()).unwrap();
@@ -341,6 +341,12 @@ fn xlsx_column_headers_match_typed_merged_reference_cases() {
         let range = CellRange { first_row: 0, first_column: 0, last_row: case["rows"].as_u64().unwrap() as u32 - 1, last_column: case["cols"].as_u64().unwrap() as u32 - 1 };
         let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
         let got = xlsx_column_headers(&sheet, range, &headers, 1, range.last_row, case["read_only"].as_bool().unwrap()).unwrap();
+        let mut text_sheet = sheet.clone();
+        text_sheet.cells = case["text_cells"].as_array().unwrap().iter().map(|c| { let text=c[2].as_str().unwrap().to_string(); SheetCell { row:c[0].as_u64().unwrap() as u32,column:c[1].as_u64().unwrap() as u32,kind:CellKind::Text,value:CellValue::Text(text.clone()),text,formula:None,style:0,phonetic:None,runs:None } }).collect::<Vec<_>>().into();
+        let report = xlsx_column_headers_report(&sheet, &text_sheet, range, &headers, 1, range.last_row, case["read_only"].as_bool().unwrap()).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
