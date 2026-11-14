@@ -489,6 +489,8 @@ pub(crate) struct Layouter<'r> {
     /// The same, as this pass lays them out.
     page_anchors: std::cell::RefCell<std::collections::HashMap<usize, usize>>,
     body_section: std::cell::Cell<usize>,
+    /// Sections whose horizontal layout will be rotated into right-to-left vertical writing.
+    vertical_sections: Vec<bool>,
     /// The footnotes' and endnotes' numbers (by the order of their marks),
     /// as shown.
     note_numbers: std::collections::HashMap<(bool, u32), String>,
@@ -796,19 +798,12 @@ struct LineDecorations {
 }
 
 impl LineDecorations {
-    /// `vertical`: the line is of a `tbRl` section's across layout; the page is turned a quarter afterwards, which would put an underline
-    /// (below the baseline) on the left of the column. Word's is on the right: the underline is mirrored in the characters' em box
-    /// (0.85 em above the baseline, 0.15 em below, as `turn_cell_text` places an upright character).
-    fn finish(self, line: &mut LineBox, vertical: bool) {
+    fn finish(self, line: &mut LineBox, vertical_right: bool) {
         let mut b_items = self.highlights;
         for u in self.underlines {
-            let baseline = if vertical {
-                let (top, thick) = underline_band(u.style, u.size);
-                u.baseline - 0.7 * u.size - 2.0 * top - thick
-            } else {
-                u.baseline
-            };
-            b_items.extend(underline_items(u.style, u.size, u.x, u.w, baseline, u.color));
+            let mut items = underline_items(u.style, u.size, u.x, u.w, u.baseline, u.color);
+            if vertical_right { mirror_vertical_underline(&mut items, u.baseline, u.size, line.height); }
+            b_items.extend(items);
         }
         for b in self.borders {
             let extra_bw = (pt(b.border.total()) - pt(b.border.width)).max(0.0);
@@ -3368,7 +3363,7 @@ impl<'r> Layouter<'r> {
                         }
                     }
                     flush(&mut run, &mut line, &mut dec);
-                    dec.finish(&mut line, self.vertical.get());
+                    dec.finish(&mut line, self.vertical_underline_right());
                     let end = positions.get(seg.e).map_or(p.len(), |&(position, _)| position);
                     stops.push((end, x - line_x));
                     line.items.push(Item::Line { para: p.id, x: line_x, y: 0.0, h: line.height, stops: stops.into(), vertical: false, list_tab, base: line.baseline + line.text_dy, avail: (seg.slot_x + seg.slot_w - line_x).max(0.0) });
@@ -4205,7 +4200,7 @@ impl<'r> Layouter<'r> {
                 }
             }
             flush(&mut run, &mut line, &mut dec);
-            dec.finish(&mut line, self.vertical.get());
+            dec.finish(&mut line, self.vertical_underline_right());
             // Where the line's text ends: the next line's first position.
             let end = positions.get(e).map_or(p.len(), |&(position, _)| position);
             stops.push((end, x - line_x));
@@ -4245,9 +4240,14 @@ struct LineSettings {
     default_tab_stop: Option<Emu>,
     char_grid: bool,
     char_space: Option<Emu>,
+    vertical_underline_right: bool,
 }
 
 impl Layouter<'_> {
+    fn vertical_underline_right(&self) -> bool {
+        self.vertical_sections.get(self.body_section.get()).copied().unwrap_or(false)
+    }
+
     fn line_settings(&self) -> LineSettings {
         LineSettings {
             compat_mode: self.doc.compat_mode,
@@ -4260,6 +4260,7 @@ impl Layouter<'_> {
             default_tab_stop: self.doc.default_tab_stop,
             char_grid: self.char_grid.get(),
             char_space: self.char_space.get(),
+            vertical_underline_right: self.vertical_underline_right(),
         }
     }
 }
@@ -7810,6 +7811,8 @@ fn paginate_whole(doc: &FlowDocument, res: &Resources) -> Pagination {
             anchor_pages: anchors,
             page_anchors: std::cell::RefCell::new(std::collections::HashMap::new()),
             body_section: std::cell::Cell::new(0),
+            vertical_sections: ids.iter().map(|id| ibis_doc_model::flow_command::section_setup(doc, *id)
+                .is_some_and(|setup| setup.page.direction == ibis_doc_model::CellDirection::TbRl)).collect(),
             note_numbers: known_notes.unwrap_or_else(|| note_numbers(doc)),
             current_note: std::cell::RefCell::new(String::new()),
             contextual: contextual_spacing(doc),
@@ -8129,6 +8132,40 @@ pub fn expand_pages(presentation: &mut ibis_doc_model::Presentation, res: &Resou
     presentation.slides = slides;
 }
 
+
+/// Mirror underline geometry around the vertical text cell before the page is
+/// rotated clockwise. Ordinary rectangles and strikes are intentionally untouched.
+#[path = "vertical_underline.rs"]
+mod vertical_underline;
+
+fn mirror_vertical_underline(items: &mut [Item], baseline: f32, size: f32, line_height: f32) {
+    // `turn_cell_text` places the upright em box with its right edge at
+    // w - baseline + 0.85 * size. In a tight grid the usual underline
+    // distance can put the entire stroke in the preceding column's em box.
+    // Fit the complete decoration in the available inter-column gap when
+    // possible, without changing its stroke width or dash pattern.
+    let mut low = f32::INFINITY;
+    let mut high = f32::NEG_INFINITY;
+    for item in items.iter() {
+        let bounds = match item {
+            Item::Rect { y, h, .. } => Some((*y, *y + *h)),
+            Item::Stroke { y, y2, w, .. } => Some((y.min(*y2) - w / 2.0, y.max(*y2) + w / 2.0)),
+            _ => None,
+        };
+        if let Some((a, b)) = bounds { low = low.min(a); high = high.max(b); }
+    }
+    let correction = if low.is_finite() && high.is_finite() {
+        vertical_underline::tight_grid_correction(size, line_height, (low - baseline).max(0.0), high - low)
+    } else { 0.0 };
+    let twice_axis = 2.0 * baseline - 0.85 * size + correction;
+    for item in items {
+        match item {
+            Item::Rect { y, h, .. } => *y = twice_axis - *y - *h,
+            Item::Stroke { y, y2, .. } => { *y = twice_axis - *y; *y2 = twice_axis - *y2; }
+            _ => {}
+        }
+    }
+}
 
 /// An underline's distance below the baseline and its thickness (points).
 fn underline_band(style: UnderlineStyle, size: f32) -> (f32, f32) {
@@ -8504,6 +8541,56 @@ fn turn_page_items(items: Vec<Item>, direction: ibis_doc_model::CellDirection, w
 mod turn_japanese_tests {
     use super::{Item, turn_japanese};
     use std::sync::Arc;
+
+    #[test]
+    fn vertical_underline_stays_between_tightly_spaced_columns() {
+        use ibis_doc_model::{CellDirection, UnderlineStyle};
+        let (size, pitch, baseline) = (10.45, 153_007.0 / 12_700.0, 20.0);
+        let text = Item::Text { x: 10.0, y: baseline, text: "縦".into(), offsets: Arc::from([0.0f32]), font: gpui_kit::font("Test"), size, color: gpui_kit::black() };
+        for style in [UnderlineStyle::Single, UnderlineStyle::Double, UnderlineStyle::Dotted, UnderlineStyle::Wave] {
+            let mut decoration = super::underline_items(style, size, 10.0, 10.0, baseline, gpui_kit::black());
+            super::mirror_vertical_underline(&mut decoration, baseline, size, pitch);
+            let mut input = vec![text.clone()]; input.extend(decoration);
+            let out = super::turn_page_items(input, CellDirection::TbRl, 800.0, 600.0, &|_, _, s| s);
+            let Item::Text { x, .. } = &out[0] else { panic!("vertical text missing") };
+            let (right, previous_left) = (*x + size, *x + pitch);
+            for item in &out[1..] {
+                let (left, end) = match item {
+                    Item::Rect { x, w, .. } => (*x, x + w),
+                    Item::Stroke { x, x2, w, .. } => (x.min(*x2) - w / 2.0, x.max(*x2) + w / 2.0),
+                    _ => panic!("unexpected decoration"),
+                };
+                assert!(left >= right - 0.001, "{style:?}: decoration crosses its own em box");
+                // A double or wavy decoration may be wider than the gap; it
+                // must still be as close as possible without changing shape.
+                if matches!(style, UnderlineStyle::Single | UnderlineStyle::Dotted) {
+                    assert!(end <= previous_left + 0.001, "{style:?}: decoration crosses the previous em box");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vertical_page_underlines_follow_the_right_side_of_the_text() {
+        use ibis_doc_model::{CellDirection, UnderlineStyle};
+        let text = Item::Text { x: 10.0, y: 20.0, text: "縦".into(), offsets: Arc::from([0.0f32]), font: gpui_kit::font("Test"), size: 10.0, color: gpui_kit::black() };
+        for style in [UnderlineStyle::Single, UnderlineStyle::Double, UnderlineStyle::Dotted, UnderlineStyle::Wave] {
+            let mut decoration = super::underline_items(style, 10.0, 10.0, 10.0, 20.0, gpui_kit::black());
+            super::mirror_vertical_underline(&mut decoration, 20.0, 10.0, 20.0);
+            let mut input = vec![text.clone()]; input.extend(decoration);
+            let out = super::turn_page_items(input, CellDirection::TbRl, 800.0, 600.0, &|_, _, size| size);
+            let Item::Text { x, size, .. } = &out[0] else { panic!("vertical text missing") };
+            let right = *x + *size;
+            for item in &out[1..] {
+                let line_x = match item {
+                    Item::Rect { x, .. } => *x,
+                    Item::Stroke { x, x2, .. } => x.min(*x2),
+                    _ => panic!("unexpected decoration"),
+                };
+                assert!(line_x > right, "{style:?}: line {line_x} should be right of {right}");
+            }
+        }
+    }
 
     // `lrTbV` turns its Japanese characters left, including the ones squeezed one by one (bold fixed-width font, `w:w`, `fitText`).
     #[test]

@@ -8,7 +8,9 @@ not implement writing or round-tripping the original Ichitaro format.
 
 The importer recognizes selected text, paragraph and character formatting,
 vertical writing, ruby and some table/border records. Other records and
-geometry remain incomplete. Detected omitted sheets and embedded objects are
+geometry remain incomplete. For tightly spaced vertical lines, underlines are
+positioned within the available gap where possible, preserving their line
+style and thickness. Detected omitted sheets and embedded objects are
 reported. The optional image gallery shows observed WMF candidates without
 asserting their original placement, page, ordering or size. The saved
 thumbnail is a separate snapshot that can be stale and is not evidence of
