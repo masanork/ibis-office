@@ -10,15 +10,18 @@ import io,json,sys
 from pathlib import Path
 from harunobu.core.reader import read_workbook
 from harunobu.core.analyzer import Analyzer
+from openpyxl import Workbook
+book=Workbook();sheet=book.active;sheet.title='Text'
+sheet.append(['住所','内容','数']);sheet.append(['東京都　千代田区',' 先頭と末尾 ',1]);sheet.append(['大阪府 大阪市','①Ａ',2]);book.save(Path(sys.argv[1])/'xlsx-text-checks.xlsx')
 out=[]
-for file in ['structure.xlsx','header-merge.xlsx','xlsx-artifact-errors.xlsx','xlsx-artifact-multisheet.xlsx']:
+for file in ['structure.xlsx','header-merge.xlsx','xlsx-artifact-errors.xlsx','xlsx-artifact-multisheet.xlsx','xlsx-text-checks.xlsx']:
     wb=read_workbook(file,io.BytesIO((Path(sys.argv[1])/file).read_bytes()));result=Analyzer('thorough').analyze(wb)
     sheets=[]
     for raw_sheet,sheet in zip(wb.sheets,result.sheets):
         tables=[]
         for t in sheet.tables:
             checks=[]
-            for group,ids in [(t.mr_result.level1,['L1-01','L1-02','L1-03','L1-04','L1-05','L1-12','L1-13']),(t.mr_result.level2,['L2-06'])]:
+            for group,ids in [(t.mr_result.level1,['L1-01','L1-02','L1-03','L1-04','L1-05','L1-06','L1-08','L1-12','L1-13']),(t.mr_result.level2,['L2-06'])]:
                 for id in ids:
                     r=group[id];checks.append(dict(id=id,passed=r.passed,confidence=r.confidence,severity=r.severity.value,findings=[[v.cell_range,v.severity] for v in r.violations]))
             r=t.range;tables.append(dict(range=[r.start_row-1,r.start_col-1,r.end_row-1,r.end_col-1],headers=[r-1 for r in t.layout.header_rows],confidence=t.confidence,checks=checks))
