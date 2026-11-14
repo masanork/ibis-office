@@ -1060,6 +1060,34 @@ fn region_codes(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first
     Some(result("L3-06", findings.is_empty(), 0.70, Severity::Critical, findings))
 }
 
+/// L3-06 report for CSV or reference-stringified Excel region data.
+pub fn region_codes_report(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, falsy: &BTreeSet<(u32, u32)>) -> Option<RuleDiagnostics> {
+    use std::sync::OnceLock;
+    static PREFECTURES: OnceLock<[BTreeSet<&'static str>; 2]> = OnceLock::new();
+    let evaluation = region_codes(sheet, table, header_rows, body_first, body_last, falsy)?;
+    if header_rows.is_empty() { return Some(RuleDiagnostics { evaluation, message: "ヘッダー行が検出されなかったためスキップ".into(), descriptions: Vec::new() }); }
+    if evaluation.result.confidence == 0.6 { return Some(RuleDiagnostics { evaluation, message: "地域データ列が検出されませんでした".into(), descriptions: Vec::new() }); }
+    let sets = PREFECTURES.get_or_init(|| {
+        let mut sets = std::array::from_fn(|_| BTreeSet::new());
+        for line in include_str!("../resources/harunobu-region-names.tsv").lines() {
+            if let Some((tag, value)) = line.split_once('\t') { match tag { "P" => { sets[0].insert(value); }, "S" => { sets[1].insert(value); }, _ => {} } }
+        }
+        sets
+    });
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut descriptions = Vec::new();
+    for finding in &evaluation.findings {
+        if finding.severity == FindingSeverity::Info { descriptions.push("地域コード列が見つかりません。標準地域コードの列を追加してください".into()); continue; }
+        let cell = sheet.cells.iter().find(|c| address(c.row,c.column) == finding.location)?;
+        let CellValue::Text(value) = &cell.value else { return None; };
+        let value = value.trim_matches(space);
+        let kind = if sets[1].contains(value) && !sets[0].contains(value) { "都道府県" } else { "市区町村" };
+        descriptions.push(format!("{kind}名が省略されています: '{value}' → 正式名称を使用してください"));
+    }
+    let message = if descriptions.is_empty() { "地域コード/名称は適切に表記されています".into() } else { format!("地域コード/名称の問題: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L3-04 for unmerged CSV/TSV text cells, with AI unavailable.
 pub fn csv_data_units(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
     data_units(sheet, table, header_rows, body_first, body_last, &BTreeSet::new())
