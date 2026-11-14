@@ -418,3 +418,59 @@ pub fn csv_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], 
     for (_, columns) in groups { if columns.len() > 1 { for col in columns { findings.push(Finding { location: location(col), severity: FindingSeverity::Error }); } } }
     Some(result("L2-03", findings.is_empty(), 0.95, Severity::Fatal, findings))
 }
+
+/// L3-01 using a detected table and the layout's zero-based header/body rows.
+pub fn header_start_position(table: CellRange, header_rows: &[u32], body_first: u32) -> Option<RuleEvaluation> {
+    if table.first_row > table.last_row || table.first_column > table.last_column { return None; }
+    let mut findings = Vec::new();
+    let mut fatal = false;
+    if table.first_row > 0 {
+        findings.push(Finding { location: format!("A1:A{}", table.first_row), severity: FindingSeverity::Error });
+        fatal = true;
+    }
+    if let Some(&last) = header_rows.iter().max() {
+        if u64::from(body_first) > u64::from(last) + 1 {
+            findings.push(Finding { location: format!("A{}:A{}", u64::from(last) + 2, body_first), severity: FindingSeverity::Error });
+            fatal = true;
+        }
+        if header_rows.len() >= 3 {
+            findings.push(Finding { location: format!("A{}:A{}", u64::from(*header_rows.iter().min()?) + 1, u64::from(last) + 1), severity: FindingSeverity::Info });
+        }
+    }
+    let severity = if !findings.is_empty() && !fatal { Severity::Major } else { Severity::Fatal };
+    Some(result("L3-01", findings.is_empty(), 0.95, severity, findings))
+}
+
+/// L3 rules that the pinned reference always marks outside the assessment.
+pub fn reference_skipped_level3() -> [RuleEvaluation; 3] {
+    [result("L3-02", true, 0.0, Severity::Critical, Vec::new()),
+     result("L3-03", true, 0.0, Severity::Major, Vec::new()),
+     result("L3-08", true, 0.0, Severity::Major, Vec::new())]
+}
+
+/// L2-02 for an unmerged CSV table, with AI unavailable and inferred stub columns supplied.
+pub fn csv_item_abbreviations(sheet: &Sheet, stub_columns: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    if !sheet.merges.is_empty() { return None; }
+    if stub_columns.is_empty() { return Some(result("L2-02", true, 0.0, Severity::Fatal, Vec::new())); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= body_first && c.row <= body_last && stub_columns.contains(&c.column)) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        cells.insert((cell.row, cell.column), value);
+    }
+    let mut findings = Vec::new();
+    for &col in stub_columns {
+        let mut seen = false;
+        for row in body_first..=body_last {
+            let cell = cells.get(&(row, col));
+            let value = cell.copied().unwrap_or("");
+            let marker = matches!(value, "〃" | "同上" | "同左" | "同右" | "〇" | "仝" | "ヽ" | "々");
+            if marker || (value.is_empty() && seen) {
+                let location = if cell.is_some() { address(row, col) } else { format!("R{}C{}", u64::from(row) + 1, u64::from(col) + 1) };
+                findings.push(Finding { location, severity: if marker { FindingSeverity::Error } else { FindingSeverity::Warning } });
+            } else if !value.is_empty() { seen = true; }
+        }
+    }
+    Some(result("L2-02", findings.is_empty(), 0.70, Severity::Fatal, findings))
+}

@@ -110,3 +110,9 @@ unimplemented. Numeric header syntax that cannot be matched safely is rejected.
 `harunobu-unique-headers-reference.json` covers L2-03 for 160 synthetic
 unmerged CSV table layouts, including missing, duplicate and multirow names.
 The partial analyzer also compares this rule through the standard analyzer.
+
+`harunobu-header-position-reference.json` covers 180 Level 3 header layouts
+and the reference's three always-skipped rules. The end-to-end CSV fixture uses
+thorough mode and AI disabled, including row-label abbreviation cases.
+`harunobu-abbreviation-reference.json` covers 180 unmerged row-header layouts,
+including missing cells, empty values, abbreviation markers, and finding order.
