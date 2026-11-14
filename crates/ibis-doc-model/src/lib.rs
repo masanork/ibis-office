@@ -7,6 +7,7 @@
 //! browser client (wasm), the server and native builds, and published as OSS.
 
 pub mod analysis;
+pub mod repertoire;
 pub mod cmyk;
 pub mod ibis_text;
 pub mod animation;

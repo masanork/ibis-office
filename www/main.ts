@@ -2,7 +2,10 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { run, set_embed_options } from './pkg/ibis_office_app.js';
+import init, { configure_fonts, enable_dynamic_fonts, enable_face_fonts, add_dynamic_font, add_face_font, run, set_embed_options } from './pkg/ibis_office_app.js';
+import { loadWebFonts } from './font-loader.js';
+import { DynamicFonts, FaceSubsetProvider } from './dynamic-fonts.js';
+import { fontCoverage } from './font-coverage.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -456,7 +459,37 @@ if (!('gpu' in navigator)) {
     : 'This browser does not support WebGPU. Please use the latest Chrome, Edge or Safari.');
 } else {
   try {
-    const [, file] = await Promise.all([init({ module_or_path: fetchWasm() }), initialFile()]);
+    const [, file, fonts] = await Promise.all([
+      init({ module_or_path: fetchWasm() }), initialFile(),
+      loadWebFonts(new URL('./fonts.json', import.meta.url)),
+    ]);
+    if (fonts) configure_fonts(fonts.data, fonts.aliases, fonts.defaultFamily, fonts.browserFallback, fonts.uiFamily);
+    if (fonts?.dynamic) {
+      if (fonts.dynamic.strategy === 'faces') enable_face_fonts();
+      const provider = fonts.dynamic.strategy === 'faces'
+        ? new FaceSubsetProvider(fonts.dynamic.endpoint, add_face_font)
+        : new DynamicFonts(fonts.dynamic, add_dynamic_font);
+      for (let i = 0; i < fonts.data.length; i++) {
+        const covers = fontCoverage(fonts.data[i]);
+        if (provider instanceof FaceSubsetProvider) {
+          const family = fonts.families[i];
+          const gothic = fonts.aliases['Noto Sans CJK JP'] ?? fonts.uiFamily;
+          if (family === fonts.defaultFamily) provider.seed('ipamjm', covers);
+          if (family === gothic) provider.seed('NotoSansCJKJP', covers);
+          if (family !== fonts.defaultFamily && family !== gothic) {
+            provider.seed('ipamjm', covers); provider.seed('NotoSansCJKJP', covers);
+          }
+        } else provider.seed(covers);
+      }
+      Object.assign(window, {
+        ibisOfficeMissingGlyphs: (glyphs: string[]) => provider.request(glyphs),
+        ibisOfficePreloadFonts: async (text: string) => {
+          showStatus(ja ? '文書のフォントを読み込んでいます…' : 'Loading document fonts…');
+          await provider.preload(text);
+        },
+      });
+      enable_dynamic_fonts();
+    }
     // Icons load from <base>/assets/icons/*.svg, next to this page (the site
     // may live under a path, as on GitHub Pages). The base must be absolute:
     // the icon loader fetches with reqwest, which rejects relative URLs.

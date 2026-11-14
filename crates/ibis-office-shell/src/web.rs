@@ -6,6 +6,20 @@
 
 use wasm_bindgen::prelude::*;
 
+type FontPreload = fn(ibis_doc_model::Presentation, String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), JsValue>>>>;
+thread_local! { static FONT_PRELOAD: std::cell::Cell<Option<FontPreload>> = const { std::cell::Cell::new(None) }; }
+pub fn set_font_preload(callback: FontPreload) { FONT_PRELOAD.with(|slot| slot.set(Some(callback))); }
+pub async fn preload_document_fonts(presentation: &ibis_doc_model::Presentation, name: &str) -> Result<(), JsValue> {
+    let callback = FONT_PRELOAD.with(|slot| slot.get());
+    match callback { Some(callback) => callback(presentation.clone(), name.to_string()).await, None => Ok(()) }
+}
+pub fn font_preload_error(error: JsValue) -> String {
+    error.as_string().or_else(|| js_sys::Reflect::get(&error, &JsValue::from_str("message"))
+        .ok().and_then(|message| message.as_string()))
+        .unwrap_or_else(|| "Document fonts could not be loaded; retry opening the file".to_string())
+}
+
+
 /// Whether the browser runs on a Mac (or an iPad, which reports itself as
 /// one), where shortcuts use Command. Same test as gpui-pre-web's.
 pub fn is_mac() -> bool {

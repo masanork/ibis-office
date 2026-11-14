@@ -1502,3 +1502,6 @@ impl SlideEditor {
     }
 }
 
+
+/// Rebuild document layout after browser fonts have been added.
+pub fn relayout_after_font_change(editor: &mut SlideEditor, cx: &mut Context<SlideEditor>) { editor.relayout_now(cx); }

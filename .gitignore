@@ -2,6 +2,13 @@
 /www/pkg
 /www/assets
 /www/main.js
+/www/font-loader.js
+/www/font-coverage.js
+/www/dynamic-fonts.js
+/www/fonts.json
+/worker/*.js
+/crates/ibis-font-subsetter/pkg
+/data/fonts
 /node_modules
 /test/private/
 __pycache__/

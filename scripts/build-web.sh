@@ -29,6 +29,12 @@ PROFILE=debug
 FLAGS=()
 if [[ "${1:-}" == "--release" ]]; then PROFILE=release; FLAGS=(--release); fi
 
+# Optional self-hosted fonts. No font source or endpoint is selected by default.
+if [[ -n "${IBIS_WEB_FONTS_CONFIG:-}" ]]; then
+  scripts/build-font-subsetter.sh
+  node scripts/build-web-fonts.mjs "$IBIS_WEB_FONTS_CONFIG" www
+fi
+
 # A deep UI tree needs more than wasm-ld's default 1 MiB stack in debug builds
 # (gpui-component's own web gallery does the same).
 # The paths of this machine are not to go into the wasm (see bundle-macos.sh):

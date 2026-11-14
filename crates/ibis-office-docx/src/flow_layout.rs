@@ -102,7 +102,7 @@ const TEXT_ORIGIN_X: f32 = 0.0;
 // The markup display types are in the drawing crate (`Resources::markup_view` holds one): ibis-office-render/src/markup_view.rs.
 pub use ibis_office_render::markup_view::{MarkupDisplayMode, MarkupView};
 
-pub(crate) fn clear_layout_caches() {
+pub fn clear_layout_caches() {
     PIECES.with(|c| c.borrow_mut().clear());
     PAGINATIONS.with(|c| c.borrow_mut().clear());
 }

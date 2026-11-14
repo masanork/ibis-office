@@ -24,4 +24,4 @@
 	url = https://github.com/ibisjp/gpui-pre-linux.git
 [submodule "forks/gpui-pre-wgpu"]
 	path = forks/gpui-pre-wgpu
-	url = https://github.com/ibisjp/gpui-pre-wgpu.git
+	url = https://github.com/masanork/gpui-pre-wgpu.git

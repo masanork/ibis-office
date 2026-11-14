@@ -1184,6 +1184,9 @@ const TYPEFACE_ALIASES: &[(&str, &str)] = &[
 /// Hiragino, wrapped).
 #[cfg(target_family = "wasm")]
 fn browser_fallbacks(style: &TextStyle) -> Option<FontFallbacks> {
+    if let Some(fallbacks) = web_font_fallbacks(style.font.as_deref().or(style.fallback_font.as_deref())) {
+        return Some(fallbacks);
+    }
     let names = browser_fallback_names(style);
     (!names.is_empty()).then(|| FontFallbacks::from_fonts(names))
 }
@@ -1263,6 +1266,34 @@ const BUNDLED_FONTS: &[&[u8]] = &[
 const BUNDLED_FONTS: &[&[u8]] = &[];
 /// The family of `BUNDLED_FONTS`.
 const BUNDLED_FAMILY: &str = "Carlito";
+
+#[cfg(target_family = "wasm")]
+type WebFontHooks = (fn() -> Option<SharedString>, fn(&str) -> Option<SharedString>, fn(Option<&str>) -> Option<FontFallbacks>);
+#[cfg(target_family = "wasm")]
+static WEB_FONT_HOOKS: std::sync::Mutex<Option<WebFontHooks>> = std::sync::Mutex::new(None);
+/// Connect the browser-supplied font selection to the shared renderer.
+#[cfg(target_family = "wasm")]
+pub fn set_web_font_hooks(default: fn() -> Option<SharedString>, alias: fn(&str) -> Option<SharedString>, fallbacks: fn(Option<&str>) -> Option<FontFallbacks>) {
+    *WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()) = Some((default, alias, fallbacks));
+}
+#[cfg(target_family = "wasm")]
+fn web_font_default() -> Option<SharedString> {
+    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(default, _, _)| default())
+}
+#[cfg(target_family = "wasm")]
+fn web_font_fallbacks(name: Option<&str>) -> Option<FontFallbacks> {
+    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(_, _, fallbacks)| fallbacks(name))
+}
+#[cfg(target_family = "wasm")]
+fn web_font_alias(name: &str) -> Option<SharedString> {
+    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(_, alias, _)| alias(name))
+}
+
+fn default_font_family() -> SharedString {
+    #[cfg(target_family = "wasm")]
+    if let Some(family) = web_font_default() { return family; }
+    ".SystemUIFont".into()
+}
 
 /// The fonts the user downloaded with セットアップ (`ibis_office_base::app_data::fonts_dir`), as font files each (a collection is split).
 /// In the browser they are what the page read from IndexedDB at start (`set_web_fonts`).
@@ -2155,7 +2186,11 @@ impl Fonts {
                 log::warn!("downloaded fonts could not be loaded: {err}");
             }
         }
-        let east_asian_fallback = first_installed_family(&EAST_ASIAN_FALLBACKS, &installed, None, true);
+        #[cfg(target_family = "wasm")]
+        let supplied_default = web_font_default();
+        #[cfg(not(target_family = "wasm"))]
+        let supplied_default: Option<SharedString> = None;
+        let east_asian_fallback = supplied_default.or_else(|| first_installed_family(&EAST_ASIAN_FALLBACKS, &installed, None, true));
         Self {
             installed,
             embedded_index: OpenTypeIndex::default(),
@@ -2174,7 +2209,7 @@ impl Fonts {
     fn font(&self, style: &TextStyle) -> Font {
         let (family, mut weight) = match &style.font {
             Some(name) => self.family(name),
-            None => (SharedString::from(".SystemUIFont"), FontWeight::NORMAL),
+            None => (default_font_family(), FontWeight::NORMAL),
         };
         // The web build carries a few fonts only. A family the text system does not have makes GPUI resolve the font to its
         // fallback stack, which has none of the browser fallbacks below (`browser_fallbacks`): a docx's typefaces (Times New
@@ -2222,6 +2257,10 @@ impl Fonts {
     /// ("Poppins SemiBold" is Poppins at 600, "Segoe UI Semilight" is
     /// Segoe UI at 350).
     fn available(&self, name: &str) -> Option<(SharedString, FontWeight)> {
+        #[cfg(target_family = "wasm")]
+        if let Some(family) = web_font_alias(name) {
+            return Some((family, FontWeight::NORMAL));
+        }
         let name = self.resolve(name);
         resolve_font_with_index(name, &self.installed, Some(&self.embedded_index), true)
             // A font downloaded since the document was opened (`add_fonts_now`).
@@ -2287,7 +2326,7 @@ impl Fonts {
             }
             _ if is_serif_latin_typeface(name) => match ["Times New Roman", "Liberation Serif", "Tinos", "Georgia"].into_iter().find(|f| self.installed.contains(*f)) {
                 Some(serif) => (serif.into(), weight),
-                None => (".SystemUIFont".into(), weight),
+                None => (default_font_family(), weight),
             },
             // Humanist sans-serifs whose widths match Calibri (`Carlito`) closer than Arial.
             _ if name.starts_with("Meta") && self.installed.contains(BUNDLED_FAMILY) => (BUNDLED_FAMILY.into(), weight),
@@ -2320,7 +2359,7 @@ impl Fonts {
             // (the system UI font is wider than most: a line takes 13% more room).
             _ => match ["Arial", "Helvetica", "Liberation Sans"].into_iter().find(|f| self.installed.contains(*f)) {
                 Some(common) => (common.into(), weight),
-                None => (".SystemUIFont".into(), weight),
+                None => (default_font_family(), weight),
             },
         }
     }

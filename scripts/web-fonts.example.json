@@ -1,0 +1,27 @@
+{
+  "defaultFont": "gothic",
+  "browserFallback": false,
+  "fonts": [
+    {
+      "id": "gothic",
+      "path": "../data/fonts/NotoSansCJKjp-Regular.otf",
+      "aliases": [
+        "游ゴシック",
+        "Yu Gothic",
+        "MS Gothic",
+        "ＭＳ ゴシック",
+        "メイリオ",
+        "Meiryo"
+      ]
+    },
+    {
+      "id": "latin",
+      "path": "../crates/ibis-office-render/fonts/carlito/Carlito-Regular.ttf",
+      "text": " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:;!?+-*/=()[]{}%#@&_\"'<>\\|~`^$",
+      "aliases": [
+        "Calibri"
+      ],
+      "licenseFile": "../crates/ibis-office-render/fonts/carlito/OFL.txt"
+    }
+  ]
+}

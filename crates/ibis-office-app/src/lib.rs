@@ -676,7 +676,8 @@ pub fn run_native() {
 #[cfg(target_family = "wasm")]
 mod web {
     use std::borrow::Cow;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
     use std::sync::Arc;
 
@@ -687,7 +688,213 @@ mod web {
 
     thread_local! {
         static APPLICATION: RefCell<Option<ApplicationHandle>> = const { RefCell::new(None) };
+        static MISSING_SUBSCRIPTION: RefCell<Option<Subscription>> = const { RefCell::new(None) };
+        static DYNAMIC_ENABLED: RefCell<bool> = const { RefCell::new(false) };
+        static SUPPLIED_FONTS: RefCell<Option<SuppliedFonts>> = const { RefCell::new(None) };
+        static STARTING: Cell<bool> = const { Cell::new(false) };
+        static FONT_PREFETCH_DEPTH: Cell<usize> = const { Cell::new(0) };
     }
+
+    struct SuppliedFonts {
+        data: Vec<Vec<u8>>,
+        families: Vec<String>,
+        aliases: HashMap<String, String>,
+        default_family: String,
+        ui_family: String,
+        browser_fallback: bool,
+        face_mode: bool,
+        face_fonts: Vec<(String, String)>,
+    }
+
+    /// Supply self-hosted TTF/OTF data before `run`, so the first document and
+    /// every later one share the same fonts. `aliases` maps Office typeface
+    /// names to the actual families in the supplied font files.
+    /// The optional UI family does not change document aliases or fallback.
+    #[wasm_bindgen]
+    pub fn configure_fonts(
+        fonts: js_sys::Array,
+        aliases: js_sys::Object,
+        default_family: String,
+        browser_fallback: bool,
+        ui_family: Option<String>,
+    ) -> Result<(), JsValue> {
+        if APPLICATION.with(|app| app.borrow().is_some()) {
+            return Err(JsValue::from_str("Fonts must be configured before run"));
+        }
+        let mut data = Vec::new();
+        let mut families = Vec::new();
+        for value in fonts {
+            let bytes = value.dyn_into::<js_sys::Uint8Array>()?.to_vec();
+            let family = ibis_eot::family_name(&bytes)
+                .ok_or_else(|| JsValue::from_str("Supplied font has no readable family name"))?;
+            if !families.contains(&family) {
+                families.push(family);
+            }
+            data.push(bytes);
+        }
+        let available: HashSet<_> = families.iter().cloned().collect();
+        if !available.contains(&default_family) {
+            return Err(JsValue::from_str("Default font is not supplied"));
+        }
+        let ui_family = ui_family.unwrap_or_else(|| default_family.clone());
+        if !available.contains(&ui_family) {
+            return Err(JsValue::from_str("UI font is not supplied"));
+        }
+        let mut mapping = HashMap::new();
+        for entry in js_sys::Object::entries(&aliases) {
+            let pair = js_sys::Array::from(&entry);
+            let source = pair.get(0).as_string().ok_or_else(|| JsValue::from_str("Invalid font alias"))?;
+            let target = pair.get(1).as_string().ok_or_else(|| JsValue::from_str("Invalid font alias target"))?;
+            if !available.contains(&target) {
+                return Err(JsValue::from_str("Font alias refers to an unsupplied family"));
+            }
+            mapping.insert(source, target);
+        }
+        SUPPLIED_FONTS.with(|fonts| *fonts.borrow_mut() = Some(SuppliedFonts {
+            data, families, aliases: mapping, default_family, ui_family, browser_fallback,
+            face_mode: false, face_fonts: Vec::new(),
+        }));
+        ibis_office_render::shape_view::set_web_font_hooks(default_font_family, font_alias, font_fallbacks);
+        Ok(())
+    }
+
+    pub(crate) fn font_alias(name: &str) -> Option<SharedString> {
+        SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref()?.aliases.get(name).cloned().map(Into::into))
+    }
+
+    pub(crate) fn default_font_family() -> Option<SharedString> {
+        SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref().map(|fonts| fonts.default_family.clone().into()))
+    }
+
+    fn ui_font_family() -> Option<SharedString> {
+        SUPPLIED_FONTS.with(|fonts| fonts.borrow().as_ref().map(|fonts| fonts.ui_family.clone().into()))
+    }
+
+    pub(crate) fn font_fallbacks(requested: Option<&str>) -> Option<FontFallbacks> {
+        SUPPLIED_FONTS.with(|fonts| {
+            let fonts = fonts.borrow();
+            let fonts = fonts.as_ref()?;
+            if !fonts.face_mode { return Some(FontFallbacks::from_fonts(fonts.families.clone())); }
+            let gothic = fonts.aliases.get("Noto Sans CJK JP");
+            let requested_family = requested.and_then(|name| fonts.aliases.get(name));
+            let category = if gothic.is_some() && requested_family == gothic { "NotoSansCJKJP" } else { "ipamjm" };
+            let mut families: Vec<String> = fonts.face_fonts.iter()
+                .filter(|(face, _)| face == "acgjm")
+                .chain(fonts.face_fonts.iter().filter(|(face, _)| face == category))
+                .map(|(_, family)| family.clone()).collect();
+            let primary = if category == "NotoSansCJKJP" { gothic } else { Some(&fonts.default_family) };
+            if let Some(primary) = primary { families.insert(0, primary.clone()); }
+            Some(FontFallbacks::from_fonts(families))
+        })
+    }
+
+    #[wasm_bindgen]
+    pub fn enable_face_fonts() -> Result<(), JsValue> {
+        SUPPLIED_FONTS.with(|fonts| {
+            let mut fonts = fonts.borrow_mut();
+            let fonts = fonts.as_mut().ok_or_else(|| JsValue::from_str("Fonts are not configured"))?;
+            fonts.face_mode = true;
+            Ok(())
+        })
+    }
+
+    #[wasm_bindgen]
+    pub fn enable_dynamic_fonts() -> Result<(), JsValue> {
+        if APPLICATION.with(|app| app.borrow().is_some()) {
+            return Err(JsValue::from_str("Dynamic fonts must be enabled before run"));
+        }
+        DYNAMIC_ENABLED.with(|enabled| *enabled.borrow_mut() = true);
+        Ok(())
+    }
+
+    #[wasm_bindgen]
+    pub fn add_dynamic_font(data: Vec<u8>) -> Result<(), JsValue> {
+        install_dynamic_font(data, None)
+    }
+
+    #[wasm_bindgen]
+    pub fn add_face_font(data: Vec<u8>, face: String) -> Result<(), JsValue> {
+        if !matches!(face.as_str(), "ipamjm" | "NotoSansCJKJP" | "acgjm") {
+            return Err(JsValue::from_str("Unknown dynamic face"));
+        }
+        install_dynamic_font(data, Some(face))
+    }
+
+    fn install_dynamic_font(data: Vec<u8>, face: Option<String>) -> Result<(), JsValue> {
+        let family = ibis_eot::family_name(&data).ok_or_else(|| JsValue::from_str("Invalid dynamic font"))?;
+        if APPLICATION.with(|app| app.borrow().is_none()) {
+            return SUPPLIED_FONTS.with(|fonts| {
+                let mut fonts = fonts.borrow_mut();
+                let fonts = fonts.as_mut().ok_or_else(|| JsValue::from_str("Fonts are not configured"))?;
+                if let Some(face) = face { fonts.face_fonts.push((face, family.clone())); }
+                fonts.families.push(family);
+                fonts.data.push(data);
+                Ok(())
+            });
+        }
+        APPLICATION.with(|app| {
+            let app = app.borrow();
+            let app = app.as_ref().ok_or_else(|| JsValue::from_str("Editor is not running"))?;
+            app.update(|cx| {
+                cx.text_system().add_fonts(vec![Cow::Owned(data)])
+                    .map_err(|e| JsValue::from_str(&format!("Dynamic font: {e}")))?;
+                if !cx.text_system().all_font_names().contains(&family) {
+                    return Err(JsValue::from_str("Dynamic font could not be registered"));
+                }
+                SUPPLIED_FONTS.with(|fonts| {
+                    if let Some(fonts) = fonts.borrow_mut().as_mut() {
+                        if let Some(face) = face { fonts.face_fonts.push((face, family.clone())); }
+                        fonts.families.push(family);
+                    }
+                });
+                // A whole-file prefetch may install many subsets. Its caller
+                // lays out the newly opened model once after all are ready.
+                if FONT_PREFETCH_DEPTH.with(|depth| depth.get() != 0) { return Ok(()); }
+                crate::docx::flow_layout::clear_layout_caches();
+                for window in cx.windows() {
+                    if let Some(root) = window.downcast::<gpui_kit::component::Root>() {
+                        let _ = root.update(cx, |root, window, cx| {
+                            if let Ok(editor) = root.view().clone().downcast::<crate::shell::editor::SlideEditor>() {
+                                editor.update(cx, |editor, cx| crate::docx::relayout_after_font_change(editor, cx));
+                            }
+                            window.refresh();
+                        });
+                    }
+                }
+                Ok(())
+            })
+        })
+    }
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_name = ibisOfficeMissingGlyphs)]
+        fn missing_glyphs_js(glyphs: js_sys::Array);
+        #[wasm_bindgen(catch, js_name = ibisOfficePreloadFonts)]
+        fn preload_fonts_js(text: &str) -> Result<js_sys::Promise, JsValue>;
+    }
+
+    pub(crate) async fn preload_document_fonts(presentation: &ibis_doc_model::Presentation, name: &str) -> Result<(), JsValue> {
+        if !DYNAMIC_ENABLED.with(|enabled| *enabled.borrow()) { return Ok(()); }
+        // Existing custom embeddings that only implement reactive loading keep
+        // working; the bundled browser client supplies the preload callback.
+        if !js_sys::Reflect::get(&js_sys::global(), &"ibisOfficePreloadFonts".into()).is_ok_and(|value| value.is_function()) { return Ok(()); }
+        struct Prefetch;
+        impl Drop for Prefetch {
+            fn drop(&mut self) {
+                FONT_PREFETCH_DEPTH.with(|depth| depth.set(depth.get() - 1));
+                crate::docx::flow_layout::clear_layout_caches();
+            }
+        }
+        FONT_PREFETCH_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        let _prefetch = Prefetch;
+        let mut text = ibis_doc_model::repertoire::font_repertoire(presentation);
+        text.push('\n'); text.push_str(name);
+        wasm_bindgen_futures::JsFuture::from(preload_fonts_js(&text)?).await?;
+        Ok(())
+    }
+
+
 
     /// UI font bundled with the app. The browser has no system fonts GPUI can
     /// load, and GPUI's `.SystemUIFont` alias resolves to IBM Plex Sans on web.
@@ -702,27 +909,32 @@ mod web {
     /// cannot be read) the editor shows the start view.
     #[wasm_bindgen]
     pub async fn run(asset_base: Option<String>, file_name: Option<String>, file: Option<Vec<u8>>) -> Result<(), JsValue> {
-        let document = file.and_then(|data| match ibis_pptx::read(&data) {
-            Ok(presentation) => Some((presentation, file_name.unwrap_or_default().into())),
-            Err(err) => {
-                log::error!("{err}");
-                None
-            }
-        });
-        // The fonts downloaded with セットアップ are kept in the browser's IndexedDB; they are given to the text system when the
-        // first document is drawn (render::shape_view), so they are read before the editor starts.
+        if APPLICATION.with(|app| app.borrow().is_some()) || STARTING.with(|starting| starting.replace(true)) {
+            return Err(JsValue::from_str("The editor is already running"));
+        }
+        struct Starting;
+        impl Drop for Starting { fn drop(&mut self) { STARTING.with(|starting| starting.set(false)); } }
+        let _starting = Starting;
+        let initial_file = file.map(|data| (file_name.unwrap_or_default(), data));
         crate::render::shape_view::set_web_fonts(crate::shell::web::load_downloaded_fonts().await);
         crate::register_hooks();
+        crate::shell::web::set_font_preload(|presentation, name| Box::pin(async move { preload_document_fonts(&presentation, &name).await }));
         gpui_kit::platform::web_init();
 
         // Single-threaded: needs no SharedArrayBuffer, so no COOP/COEP headers.
-        // Japanese text (and emoji) the bundled font lacks is drawn by the
-        // browser's Canvas 2D with the viewer's local fonts, so no multi-MB
-        // CJK font has to ship in the wasm.
+        // A configured font set uses GPUI's own shaping/rasterization, including
+        // CJK. Local browser fonts are only used when explicitly permitted.
+        let canvas_fallback = SUPPLIED_FONTS.with(|fonts| {
+            if fonts.borrow().as_ref().is_some_and(|fonts| !fonts.browser_fallback) {
+                CanvasFontFallback::Disabled
+            } else {
+                CanvasFontFallback::EmojiAndCjk
+            }
+        });
         let platform = Rc::new(WebPlatform::new_with_backend_and_font_fallback(
             false,
             WebBackendPreference::Auto,
-            CanvasFontFallback::EmojiAndCjk,
+            canvas_fallback,
         ));
         // Dates typed without a year take this year, and TODAY and NOW the
         // time now: the calculator cannot read the clock in the browser, so the
@@ -739,18 +951,40 @@ mod web {
                 asset_base.unwrap_or_default(),
             ));
 
-        let handle = app.run_embedded(|cx| {
-            cx.text_system()
-                .add_fonts(vec![Cow::Borrowed(UI_FONT)])
-                .expect("failed to load the UI font");
-            super::init(cx);
-            Theme::global_mut(cx).font_family = "IBM Plex Sans".into();
-            let blank = document.is_none().then(crate::shell::web::new_kind_of_address).flatten();
-            super::open_editor(document, None, cx);
-            if let Some(kind) = blank {
-                crate::shell::app::new_file_in_page(kind, cx);
+        // Fonts must be registered before init/open_editor populate their font
+        // lists. Validate registration before entering GPUI's event loop.
+        let mut font_data = vec![Cow::Borrowed(UI_FONT)];
+        SUPPLIED_FONTS.with(|fonts| {
+            if let Some(fonts) = fonts.borrow_mut().as_mut() {
+                font_data.extend(std::mem::take(&mut fonts.data).into_iter().map(Cow::Owned));
             }
-            // The fonts that can be downloaded, asked about at the first start of a version (セットアップ).
+        });
+        app.text_system().add_fonts(font_data).map_err(|err| JsValue::from_str(&format!("Could not load supplied fonts: {err}")))?;
+        let registered: HashSet<_> = app.text_system().all_font_names().into_iter().collect();
+        let missing = SUPPLIED_FONTS.with(|fonts| {
+            fonts.borrow().as_ref().and_then(|fonts| fonts.families.iter().find(|family| !registered.contains(*family)).cloned())
+        });
+        if let Some(family) = missing {
+            return Err(JsValue::from_str(&format!("Could not register font family: {family}")));
+        }
+        let handle = app.run_embedded(|cx| {
+            super::init(cx);
+            if DYNAMIC_ENABLED.with(|enabled| *enabled.borrow()) {
+                let subscription = cx.on_missing_glyphs(|glyphs, _| {
+                    let values = js_sys::Array::new();
+                    for glyph in glyphs { values.push(&JsValue::from_str(glyph.grapheme())); }
+                    missing_glyphs_js(values);
+                });
+                MISSING_SUBSCRIPTION.with(|slot| *slot.borrow_mut() = Some(subscription));
+            }
+            Theme::global_mut(cx).font_family = ui_font_family().unwrap_or_else(|| "IBM Plex Sans".into());
+            let blank = initial_file.is_none().then(crate::shell::web::new_kind_of_address).flatten();
+            if let Some((name, data)) = initial_file {
+                super::open_window_with(cx, move |editor, window, cx| editor.open_web_bytes(name, data, true, window, cx));
+            } else {
+                super::open_editor(None, None, cx);
+            }
+            if let Some(kind) = blank { crate::shell::app::new_file_in_page(kind, cx); }
             crate::shell::font_setup_dialog::start(cx);
         });
         APPLICATION.with(|app| *app.borrow_mut() = Some(handle));
