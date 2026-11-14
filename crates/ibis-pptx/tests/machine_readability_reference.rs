@@ -533,7 +533,7 @@ fn csv_item_abbreviations_match_pinned_harunobu() {
 #[test]
 fn csv_numeric_purity_matches_pinned_harunobu() {
     use ibis_doc_model::machine_readability_layout::InferredColumnType;
-    use ibis_doc_model::machine_readability_rules::{csv_numeric_purity, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{csv_numeric_purity, numeric_purity_report, FindingSeverity};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-numeric-purity-reference.json")).unwrap()).unwrap();
@@ -548,6 +548,10 @@ fn csv_numeric_purity_matches_pinned_harunobu() {
         }).collect::<Vec<_>>().into();
         let schemas: Vec<_> = case["schemas"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, match v[1].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "mixed" => InferredColumnType::Mixed, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "empty" => InferredColumnType::Empty, _ => panic!("invalid schema") })).collect();
         let got = csv_numeric_purity(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        let report = numeric_purity_report(&sheet, table, 0, rows - 1, &schemas, &std::collections::BTreeSet::new()).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
@@ -749,7 +753,7 @@ fn csv_multitable_fragmentation_matches_pinned_harunobu() {
 #[test]
 fn xlsx_numeric_purity_matches_typed_reference() {
     use ibis_doc_model::machine_readability_layout::InferredColumnType;
-    use ibis_doc_model::machine_readability_rules::{xlsx_numeric_purity, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{xlsx_numeric_purity, numeric_purity_report, FindingSeverity};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-numeric-purity-reference.json")).unwrap()).unwrap();
@@ -765,6 +769,10 @@ fn xlsx_numeric_purity_matches_typed_reference() {
         let schemas: Vec<_> = case["schemas"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, match v[1].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "mixed" => InferredColumnType::Mixed, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "empty" => InferredColumnType::Empty, _ => panic!("invalid schema") })).collect();
         let typed: std::collections::BTreeSet<_> = case["cells"].as_array().unwrap().iter().filter(|v| v[3].as_bool().unwrap()).map(|v| (v[0].as_u64().unwrap() as u32, v[1].as_u64().unwrap() as u32)).collect();
         let got = xlsx_numeric_purity(&sheet, table, 0, rows - 1, &schemas, &typed).unwrap();
+        let report = numeric_purity_report(&sheet, table, 0, rows - 1, &schemas, &typed).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
