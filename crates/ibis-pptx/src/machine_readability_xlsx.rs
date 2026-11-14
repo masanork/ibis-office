@@ -367,11 +367,9 @@ pub fn inspect_xlsx_object_artifacts(bytes: &[u8]) -> Result<Vec<Vec<ibis_doc_mo
     let mut total = 0usize;
     for part in &sources.sheet_parts {
         let part = part.as_deref().ok_or(XlsxInputError::SheetUnavailable)?;
-        let relationships = package.relationships(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
-        let drawings: Vec<_> = relationships.values().filter(|r| r.kind == DRAWING).collect();
-        // A HashMap does not retain XML relationship order. Avoid claiming
-        // equivalent finding order when a sheet has multiple drawings.
-        if drawings.len() > 1 || drawings.iter().any(|r| r.external) { return Err(XlsxInputError::InvalidWindowMetadata); }
+        let relationships = package.ordered_relationships(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+        let drawings: Vec<_> = relationships.iter().map(|(_, r)| r).filter(|r| r.kind == DRAWING).collect();
+        if drawings.iter().any(|r| r.external) { return Err(XlsxInputError::InvalidWindowMetadata); }
         let mut sheet = Vec::new();
         for drawing in drawings {
             if !archive.contains(&drawing.target) { continue; }
