@@ -5,13 +5,13 @@
 use std::collections::BTreeMap;
 use ibis_doc_model::machine_readability_csv::{diagnose, read_sheet, single_line_records, valid_quoting, Delimiter};
 use ibis_doc_model::machine_readability_layout::{generate_column_headers, infer_column_schemas, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue};
-use ibis_doc_model::machine_readability_rules::{file_format, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
+use ibis_doc_model::machine_readability_rules::{csv_data_fragmentation, file_format, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
 use ibis_doc_model::sheet::{CellKind, CellValue, Sheet, SheetCell};
 use crate::machine_readability_csv::{decode_csv_bytes, CsvInputEncoding, CsvInputError};
 
 /// The checks currently missing from the Level 1 CSV/TSV implementation.
 /// Excel-only rules L1-10 through L1-13 do not apply to this input.
-pub const UNIMPLEMENTED_CSV_LEVEL1: &[&str] = &["L1-03", "L1-05", "L1-09"];
+pub const UNIMPLEMENTED_CSV_LEVEL1: &[&str] = &["L1-05", "L1-09"];
 #[derive(Clone, Debug, PartialEq)]
 pub struct PartialCsvAnalysis {
     pub encoding: CsvInputEncoding,
@@ -56,7 +56,7 @@ pub fn analyze_csv_partial(bytes: &[u8], delimiter: Delimiter) -> Result<Partial
     let format = match delimiter { Delimiter::Comma => WorkbookFormat::Csv, Delimiter::Tab => WorkbookFormat::Tsv };
     let text_encoding = match encoding { CsvInputEncoding::Utf8 | CsvInputEncoding::Utf8Bom => TextEncoding::Utf8, CsvInputEncoding::Cp932 => TextEncoding::Cp932 };
     let diagnostics = diagnose(&text, delimiter);
-    let checks = vec![file_format(format), one_table_per_sheet(range, Some(&[table])), irrelevant_information(Some(&others)),
+    let checks = vec![file_format(format), one_table_per_sheet(range, Some(&[table])), csv_data_fragmentation(&sheet, range).ok_or(NativeCsvError::UnknownLayout)?, irrelevant_information(Some(&others)),
         whitespace_formatting(&sheet, range, Some(&region.headers.rows)), one_data_per_cell(&sheet, range, Some(&column_types)), platform_characters(&sheet, range, text_encoding),
         single_line_records(Some(&diagnostics), range.first_row as usize + 1, range.last_row as usize + 1),
         valid_quoting(Some(&diagnostics), range.first_row as usize + 1, range.last_row as usize + 1)];

@@ -302,3 +302,32 @@ pub fn whitespace_formatting(sheet: &Sheet, table: CellRange, header_rows: Optio
     }).collect();
     result("L1-06", findings.is_empty(), 0.95, Severity::Critical, findings)
 }
+
+/// L1-03 for a single, unmerged CSV/TSV table containing only text cells.
+/// The caller must establish that there are no other tables on the sheet.
+/// Unsupported input returns None instead of treating it as a clean result.
+pub fn csv_data_fragmentation(sheet: &Sheet, table: CellRange) -> Option<RuleEvaluation> {
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() {
+        return None;
+    }
+    let mut rows = BTreeSet::new();
+    let mut columns = BTreeSet::new();
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    for cell in sheet.cells.iter().filter(|c| c.row >= table.first_row && c.row <= table.last_row && c.column >= table.first_column && c.column <= table.last_column) {
+        match &cell.value {
+            CellValue::Text(value) => if !value.trim_matches(space).is_empty() { rows.insert(cell.row); columns.insert(cell.column); },
+            CellValue::Empty => {},
+            _ => return None,
+        }
+    }
+    let mut findings = Vec::new();
+    if u64::from(table.last_row) - u64::from(table.first_row) + 1 > 2 {
+        for row in table.first_row..=table.last_row {
+            if !rows.contains(&row) { findings.push(Finding { location: format!("行{}", u64::from(row) + 1), severity: FindingSeverity::Error }); }
+        }
+        for col in table.first_column..=table.last_column {
+            if !columns.contains(&col) { findings.push(Finding { location: format!("列{}", u64::from(col) + 1), severity: FindingSeverity::Error }); }
+        }
+    }
+    Some(result("L1-03", findings.is_empty(), if findings.is_empty() { 0.85 } else { 0.9 }, Severity::Critical, findings))
+}
