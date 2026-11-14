@@ -267,6 +267,43 @@ pub fn platform_characters(sheet: &Sheet, table: CellRange, encoding: TextEncodi
     result("L1-08", encoding != TextEncoding::Cp932 || !any_warning, 0.95, Severity::Critical, findings)
 }
 
+pub fn platform_characters_report(sheet: &Sheet, table: CellRange, encoding: TextEncoding) -> Option<RuleDiagnostics> {
+    let evaluation = platform_characters(sheet, table, encoding);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let mut descriptions = Vec::new(); let mut warnings = 0usize; let mut infos = 0usize;
+    for cell in sheet.cells.iter().filter(|c| c.row >= table.first_row && c.row <= table.last_row && c.column >= table.first_column && c.column <= table.last_column) {
+        let CellValue::Text(value) = &cell.value else { continue; };
+        let roman_code = roman_classification_code(value);
+        let mut groups: Vec<(&str, bool, String)> = Vec::new();
+        for c in value.chars() {
+            let cp = c as u32;
+            let category = match c {
+                '㋿' => Some(("令和合字", true)), '〜' => Some(("波ダッシュ", true)), '～' => Some(("全角チルダ", true)),
+                _ if matches!(cp, 0x2460..=0x2473 | 0x3251..=0x325f | 0x32b1..=0x32bf) => Some(("丸数字",true)),
+                _ if (0x2160..=0x217f).contains(&cp) => Some((if roman_code { "ローマ数字（分類コード）" } else { "ローマ数字" }, !roman_code)),
+                _ if matches!(cp, 0xff10..=0xff19 | 0xff21..=0xff3a | 0xff41..=0xff5a) => Some(("全角英数字",false)),
+                _ if "㎡㎥㎢㎠㎝㎞㎜㎏㎎㎍㎅㎄㎃㎖㎗㎘㏄㏊".contains(c) => None,
+                _ if matches!(cp,0x3220..=0x3243 | 0x3280..=0x32fe | 0x3300..=0x33ff | 0xfe30..=0xfe4f) => Some(("機種依存記号",true)),
+                _ => None,
+            };
+            if let Some((label, warning)) = category {
+                if let Some(group) = groups.iter_mut().find(|group|group.0 == label) { if group.2.chars().count() < 5 { group.2.push(c); } }
+                else { groups.push((label,warning,c.to_string())); }
+            }
+        }
+        if groups.is_empty() { continue; }
+        if groups.iter().any(|g|g.1) { warnings += 1; } else { infos += 1; }
+        let position = address(cell.row,cell.column);
+        let parts = groups.iter().map(|(label,_,sample)|format!("{label}: {sample}")).collect::<Vec<_>>().join("; ");
+        descriptions.push(format!("{position}: {parts}"));
+    }
+    let message = if descriptions.is_empty() { "機種依存文字は検出されませんでした。".into() }
+        else if encoding == TextEncoding::Cp932 && warnings > 0 { let suffix = if infos > 0 { format!(" また、{infos}件のセルで全角英数字が検出されました。") } else { String::new() }; format!("{warnings}件のセルで機種依存文字が検出されました。{suffix}") }
+        else if encoding == TextEncoding::Cp932 { format!("{infos}件のセルで全角英数字が検出されました（機種依存文字ではありませんが、半角の使用を推奨します）。") }
+        else { format!("{}件のセルで機種依存文字または全角英数字が検出されました（UTF-8 / xlsx のため互換性リスクは低く warning として参考報告します）。",warnings + infos) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// A layout detector's inferred column type for L1-07. `None` at the call
 /// site means no schema is available, matching Harunobu's unguarded fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -780,6 +817,27 @@ pub fn csv_other_details(sheet: &Sheet, table: CellRange, body_first: u32, body_
         }
     }
     Some(result("L2-05", findings.is_empty(), if analyzed { 0.8 } else { 0.0 }, Severity::Major, findings))
+}
+
+pub fn csv_other_details_report(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)]) -> Option<RuleDiagnostics> {
+    let evaluation = csv_other_details(sheet, table, body_first, body_last, schemas)?;
+    if evaluation.result.confidence == 0.0 { return Some(RuleDiagnostics { evaluation, message: "対象となる選択肢列がないため、その他詳細分離チェックをスキップしました。".into(), descriptions: Vec::new() }); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut descriptions = Vec::new();
+    for finding in &evaluation.findings {
+        let first = sheet.cells.iter().find(|c| address(c.row,c.column) == finding.location)?;
+        let CellValue::Text(value) = &first.value else { return None; };
+        let value = value.trim_matches(space);
+        let mut values = std::collections::BTreeMap::<&str, usize>::new();
+        for cell in sheet.cells.iter().filter(|c| c.column == first.column && c.row >= body_first && c.row <= body_last) {
+            let text = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+            if text.contains("その他") { *values.entry(text).or_default() += 1; }
+        }
+        let count = values.get(value)?;
+        descriptions.push(format!("「その他」の詳細が同一セルに記入されている可能性があります: '{value}'（「その他」を含む{}種類の値のうち{count}回のみ出現）",values.len()));
+    }
+    let message = if descriptions.is_empty() { "「その他」と詳細は適切に分離されています".into() } else { format!("「その他」詳細の未分離: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
 }
 
 /// Normalize a category value the way Harunobu's L2-04 does before comparing.
