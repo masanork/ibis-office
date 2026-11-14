@@ -23,6 +23,7 @@ static DOWNLOAD: AtomicBool = AtomicBool::new(false);
 static VIEW_ONLY: AtomicBool = AtomicBool::new(false);
 static SHOW_MENU_BAR: AtomicBool = AtomicBool::new(true);
 static SHOW_TOOL_BAR: AtomicBool = AtomicBool::new(true);
+static PHONE_VIEWER: AtomicBool = AtomicBool::new(false);
 
 /// Whether the page shows the close button and the download button (both off
 /// by default), whether it runs in read-only viewing mode (`?view=1`), and
@@ -36,6 +37,16 @@ pub fn set_embed_options(close: bool, download: bool, view: bool, menu_bar: bool
     VIEW_ONLY.store(view, Ordering::Relaxed);
     SHOW_MENU_BAR.store(menu_bar, Ordering::Relaxed);
     SHOW_TOOL_BAR.store(tool_bar, Ordering::Relaxed);
+}
+
+/// The standalone page selects its compact phone controls explicitly.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn set_phone_viewer(enabled: bool) {
+    PHONE_VIEWER.store(enabled, Ordering::Relaxed);
+}
+
+pub(crate) fn phone_viewer() -> bool {
+    PHONE_VIEWER.load(Ordering::Relaxed)
 }
 
 #[allow(dead_code)]
