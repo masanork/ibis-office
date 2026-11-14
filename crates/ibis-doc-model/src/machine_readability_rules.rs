@@ -1035,3 +1035,36 @@ pub fn object_artifacts(table: CellRange, abstain: bool, objects: Option<&[Objec
     let findings: Vec<_> = objects.iter().filter(|v| abstain || (v.row >= table.first_row && v.row <= table.last_row && v.column >= table.first_column && v.column <= table.last_column)).map(|v| Finding { location: address(v.row, v.column), severity: FindingSeverity::Error }).collect();
     result("L1-10", findings.is_empty(), 1.0, Severity::Critical, findings)
 }
+
+/// Reader-normalized direct formatting used by the reference L1-11 rule.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReferenceCellFormat { pub font_color: Option<String>, pub background: Option<String>, pub bold: bool, pub italic: bool }
+
+/// L1-11; incomplete formatting metadata abstains instead of producing a pass.
+pub fn format_based_semantics(sheet: &Sheet, table: CellRange, body_first: u32, formats: Option<&std::collections::BTreeMap<(u32, u32), ReferenceCellFormat>>) -> RuleEvaluation {
+    use std::collections::BTreeMap;
+    let Some(formats) = formats else { return result("L1-11", true, 0.0, Severity::Critical, Vec::new()); };
+    if table.first_row > table.last_row || table.first_column > table.last_column { return result("L1-11", true, 0.0, Severity::Critical, Vec::new()); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut columns: BTreeMap<u32, Vec<&ReferenceCellFormat>> = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row >= body_first && c.row <= table.last_row && c.column >= table.first_column && c.column <= table.last_column) {
+        let nonempty = match &cell.value { CellValue::Empty => false, CellValue::Text(v) => !v.trim_matches(space).is_empty(), _ => true };
+        if !nonempty { continue; }
+        let Some(format) = formats.get(&(cell.row, cell.column)) else { return result("L1-11", true, 0.0, Severity::Critical, Vec::new()); };
+        columns.entry(cell.column).or_default().push(format);
+    }
+    let mut findings = Vec::new();
+    for (col, cells) in columns {
+        if cells.len() < 2 { continue; }
+        let font: BTreeSet<_> = cells.iter().map(|v| v.font_color.as_deref()).collect();
+        let background: BTreeSet<_> = cells.iter().map(|v| v.background.as_deref()).collect();
+        let bold = cells.iter().filter(|v| v.bold).count();
+        let italic = cells.iter().filter(|v| v.italic).count();
+        let location = format!("列{}", u64::from(col) + 1);
+        if font.len() >= 2 && font.iter().any(|v| !matches!(v, None | Some("000000") | Some("FF000000"))) { findings.push(Finding { location: location.clone(), severity: FindingSeverity::Warning }); }
+        if background.len() >= 2 { findings.push(Finding { location: location.clone(), severity: FindingSeverity::Warning }); }
+        if bold > 0 && bold < cells.len() { findings.push(Finding { location: location.clone(), severity: FindingSeverity::Info }); }
+        if italic > 0 && italic < cells.len() { findings.push(Finding { location, severity: FindingSeverity::Info }); }
+    }
+    result("L1-11", findings.is_empty(), 0.75, Severity::Critical, findings)
+}

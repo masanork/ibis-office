@@ -154,3 +154,6 @@ text cases to the XLSX structural analyzer comparison.
 `xlsx-text-checks.xlsx` also contains a multi-item cell for L1-07.
 `xlsx-chart-anchors.xlsx` checks objects inside and outside a detected table;
 uncertain-table behavior is also exercised against both anchors.
+`xlsx-format-variation.xlsx` exercises font color, background, bold and italic
+variation; `harunobu-xlsx-formats-values-reference.json` also compares the
+normal and large-file reader formatting on those cells.
