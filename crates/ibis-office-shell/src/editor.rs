@@ -1130,6 +1130,7 @@ impl SlideEditor {
         // fitted to the width without it): `FormatEditor::sidebar_on_request`.
         self.sidebar_open = !self.is_read_only() && !with_format!(self, sidebar_on_request());
         self.document = Document::new(presentation);
+        self.document.set_read_only(self.read_only);
         self.document_memory = Default::default();
         self.source = None;
         #[cfg(not(target_family = "wasm"))]
