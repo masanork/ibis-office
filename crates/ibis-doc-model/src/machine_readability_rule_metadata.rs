@@ -18,4 +18,3 @@ include!("machine_readability_rule_metadata_generated.rs");
 pub fn rule_metadata(id: &str) -> Option<&'static RuleMetadata> {
     RULE_METADATA.iter().find(|rule| rule.id == id)
 }
-

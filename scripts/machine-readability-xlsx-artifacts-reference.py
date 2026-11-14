@@ -15,7 +15,7 @@ with zipfile.ZipFile(root/'structure.xlsx') as src, zipfile.ZipFile(root/'xlsx-a
                 assert count==1
             data=text.encode('utf8')
         dst.writestr(info,data)
-code=r''' 
+code=r'''
 import io,json,sys
 from pathlib import Path
 from harunobu.core.ooxml_inspector import inspect_formula_artifacts
