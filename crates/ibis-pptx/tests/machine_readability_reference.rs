@@ -1200,3 +1200,17 @@ fn file_report_assembly_matches_pinned_harunobu() {
     assert_eq!(empty_json,reference["expected"]["empty"]);
     assert_eq!(bulk_report_csv(&empty_json).unwrap(),reference["expected"]["empty_csv"].as_str().unwrap());
 }
+
+#[test]
+fn outside_cell_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{irrelevant_information_report, OutsideCellText, OutsideTableCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    for (i,case) in data["others"].as_array().unwrap().iter().enumerate() {
+        let others:Vec<_>=case["others"].as_array().unwrap().iter().map(|v|OutsideCellText { cell:OutsideTableCell { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32 },region_type:v["kind"].as_str().unwrap(),value:v["value"].as_str() }).collect();
+        let got=irrelevant_information_report(Some(&others)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(irrelevant_information_report(None).is_none());
+}
