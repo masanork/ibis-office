@@ -3,9 +3,9 @@
 //! Experimental in-process CSV/TSV rule execution. It is intentionally
 //! incomplete and must not replace or be presented as a full Harunobu report.
 use std::collections::BTreeMap;
-use ibis_doc_model::machine_readability_csv::{diagnose, read_sheet, single_line_records, valid_quoting, Delimiter};
-use ibis_doc_model::machine_readability_layout::{estimate_stub_columns, generate_column_headers, infer_column_schemas, inherit_headers_from_above, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue, ResolvedIsland, StubCell, StubValue};
-use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_choice_standardization, csv_column_headers, csv_data_units, csv_fragmentation_with_tables, csv_item_abbreviations, csv_numeric_purity, csv_other_details, csv_region_codes, csv_time_axis, csv_unique_headers, csv_vertical_format, file_format, header_start_position, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, reference_skipped_level3, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
+use ibis_doc_model::machine_readability_csv::{diagnose, diagnostics_report, read_sheet, Delimiter};
+use ibis_doc_model::machine_readability_layout::{estimate_stub_columns, generate_column_headers, infer_column_schemas, inherit_headers_from_above, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnSchema, InferredColumnType, LayoutValue, ResolvedIsland, StubCell, StubValue};
+use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled_report, csv_choice_standardization_report, csv_column_headers_report, csv_fragmentation_report, csv_item_abbreviations_report, csv_other_details_report, csv_unique_headers_report, data_units_report, file_format_report, header_start_position_report, irrelevant_information_report, numeric_purity_report, one_data_per_cell_report, one_table_per_sheet_report, platform_characters_report, reference_skipped_level3_reports, region_codes_report, time_axis_report, vertical_format_report, whitespace_formatting_report, ColumnType, DetectedTable, OutsideCellText, OutsideTableCell, RuleDiagnostics, RuleEvaluation, TextEncoding};
 use ibis_doc_model::sheet::{CellKind, CellValue, Sheet, SheetCell};
 use crate::machine_readability_csv::{decode_csv_bytes, CsvInputEncoding, CsvInputError};
 
@@ -18,6 +18,8 @@ pub struct PartialCsvAnalysis {
     pub table: DetectedTable,
     pub header_rows: Vec<u32>,
     pub column_headers: Vec<ibis_doc_model::machine_readability_layout::InferredColumnHeader>,
+    pub column_schemas: Vec<InferredColumnSchema>,
+    pub diagnostics: [Vec<RuleDiagnostics>; 3],
     pub checks: Vec<RuleEvaluation>,
     /// Experimental Level 2 checks; no Level 2 score is produced.
     pub level2_checks: Vec<RuleEvaluation>,
@@ -27,7 +29,7 @@ pub struct PartialCsvAnalysis {
     pub complete: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NativeCsvError { Input(CsvInputError), UnknownLayout, UnsupportedTableCount(usize), TooManyColumns }
+pub enum NativeCsvError { Input(CsvInputError), UnknownLayout, UnsupportedTableCount(usize), TooManyColumns, InvalidReportInput }
 
 /// Execute partial checks for one table. The result has no score and remains incomplete.
 pub fn analyze_csv_partial(bytes: &[u8], delimiter: Delimiter) -> Result<PartialCsvAnalysis, NativeCsvError> {
@@ -39,6 +41,17 @@ pub fn analyze_csv_partial(bytes: &[u8], delimiter: Delimiter) -> Result<Partial
 /// Execute partial checks for all detected tables. Unknown input is rejected;
 /// neither this result nor its checks are a complete Harunobu report.
 pub fn analyze_csv_tables_partial(bytes: &[u8], delimiter: Delimiter) -> Result<Vec<PartialCsvAnalysis>, NativeCsvError> {
+    Ok(prepare_csv(bytes, delimiter, "").map(|p|p.tables)?)
+}
+
+struct PreparedCsv {
+    tables: Vec<PartialCsvAnalysis>,
+    others: Vec<(u32,u32,String,Option<String>)>,
+    rows: u32,
+    columns: u32,
+}
+
+fn prepare_csv(bytes: &[u8], delimiter: Delimiter, sheet_name: &str) -> Result<PreparedCsv, NativeCsvError> {
     let (text, encoding) = decode_csv_bytes(bytes).map_err(NativeCsvError::Input)?;
     let parsed = read_sheet(&text, delimiter).map_err(|e| NativeCsvError::Input(CsvInputError::InvalidCsv(e)))?;
     let cells = parsed.layout_cells().map_err(|e| NativeCsvError::Input(CsvInputError::InvalidCsv(e)))?;
@@ -79,8 +92,13 @@ pub fn analyze_csv_tables_partial(bytes: &[u8], delimiter: Delimiter) -> Result<
     let mut regions = inherit_headers_from_above(&regions, &cells).ok_or(NativeCsvError::UnknownLayout)?;
     regions.sort_by(|a, b| b.candidate.confidence.total_cmp(&a.candidate.confidence));
     let tables: Vec<_> = regions.iter().map(|r| DetectedTable { range: r.candidate.range, confidence: r.candidate.confidence }).collect();
-    let others: Vec<_> = preliminary.others.iter().map(|o| OutsideTableCell { row: o.row, column: o.column }).collect();
-    let format = match delimiter { Delimiter::Comma => WorkbookFormat::Csv, Delimiter::Tab => WorkbookFormat::Tsv };
+    let format = match delimiter { Delimiter::Comma => "csv", Delimiter::Tab => "tsv" };
+    let other_values: Vec<_> = preliminary.others.iter().map(|o| {
+        let kind = match o.kind { ibis_doc_model::machine_readability_layout::OtherRegion::Title=>"title", ibis_doc_model::machine_readability_layout::OtherRegion::Total=>"total", ibis_doc_model::machine_readability_layout::OtherRegion::Note=>"note", ibis_doc_model::machine_readability_layout::OtherRegion::Source=>"source", ibis_doc_model::machine_readability_layout::OtherRegion::Isolated=>"isolated" };
+        let value = sheet.cells.iter().find(|c|c.row == o.row && c.column == o.column).and_then(|c|match &c.value { CellValue::Text(v)=>Some(v.clone()), _=>None });
+        (o.row,o.column,kind.to_string(),value)
+    }).collect();
+    let outside: Vec<_> = other_values.iter().map(|(row,col,kind,value)|OutsideCellText { cell:OutsideTableCell { row:*row,column:*col },region_type:kind,value:value.as_deref() }).collect();
     let text_encoding = match encoding { CsvInputEncoding::Utf8 | CsvInputEncoding::Utf8Bom => TextEncoding::Utf8, CsvInputEncoding::Cp932 => TextEncoding::Cp932 };
     let diagnostics = diagnose(&text, delimiter);
     let mut results = Vec::new();
@@ -90,23 +108,50 @@ pub fn analyze_csv_tables_partial(bytes: &[u8], delimiter: Delimiter) -> Result<
         let schemas = &region.column_schemas;
         let stubs = &region.stub_columns;
         let column_types: BTreeMap<_, _> = schemas.iter().map(|s| (s.column, if s.kind == InferredColumnType::Numeric { ColumnType::Numeric } else { ColumnType::Other })).collect();
-    let checks = vec![file_format(format), one_table_per_sheet(range, Some(&tables)), csv_fragmentation_with_tables(&sheet, range, &tables).ok_or(NativeCsvError::UnknownLayout)?, irrelevant_information(Some(&others)), csv_column_headers(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?,
-        whitespace_formatting(&sheet, range, Some(&region.headers.rows)), one_data_per_cell(&sheet, range, Some(&column_types)), platform_characters(&sheet, range, text_encoding), blank_vs_zero_ai_disabled(),
-        single_line_records(Some(&diagnostics), range.first_row as usize + 1, range.last_row as usize + 1),
-        valid_quoting(Some(&diagnostics), range.first_row as usize + 1, range.last_row as usize + 1)];
-    let numeric_schemas: Vec<_> = schemas.iter().map(|s| (s.column, s.kind)).collect();
-    let level2_checks = vec![csv_numeric_purity(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?, csv_item_abbreviations(&sheet, &stubs, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, csv_unique_headers(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, csv_choice_standardization(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?, csv_other_details(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?];
-    let mut level3_checks = vec![header_start_position(range, &region.headers.rows, region.headers.body_first).ok_or(NativeCsvError::UnknownLayout)?];
-    let skipped = reference_skipped_level3();
-    level3_checks.extend(skipped[..2].iter().cloned());
-    level3_checks.push(csv_data_units(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?);
-    level3_checks.push(csv_time_axis(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?);
-    level3_checks.push(csv_region_codes(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?);
-    level3_checks.extend(skipped[2..].iter().cloned());
-    level3_checks.push(csv_vertical_format(&sheet, range, &region.headers.rows).ok_or(NativeCsvError::UnknownLayout)?);
-        results.push(PartialCsvAnalysis { encoding, table, header_rows: region.headers.rows.clone(), column_headers: region.column_headers.clone(), checks, level2_checks, level3_checks, complete: false });
+        let numeric_schemas: Vec<_> = schemas.iter().map(|s| (s.column, s.kind)).collect();
+        let no_positions = std::collections::BTreeSet::new();
+        let level1 = vec![file_format_report("",format), one_table_per_sheet_report(sheet_name,range,Some(&tables)).ok_or(NativeCsvError::UnknownLayout)?, csv_fragmentation_report(&sheet,range,&tables).ok_or(NativeCsvError::UnknownLayout)?, irrelevant_information_report(Some(&outside)).ok_or(NativeCsvError::UnknownLayout)?, csv_column_headers_report(&sheet,range,&region.headers.rows,region.headers.body_first,region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, whitespace_formatting_report(&sheet,range,Some(&region.headers.rows)).ok_or(NativeCsvError::UnknownLayout)?, one_data_per_cell_report(&sheet,range,Some(&column_types)).ok_or(NativeCsvError::UnknownLayout)?, platform_characters_report(&sheet,range,text_encoding).ok_or(NativeCsvError::UnknownLayout)?, blank_vs_zero_ai_disabled_report(), diagnostics_report(Some(&diagnostics),range.first_row as usize+1,range.last_row as usize+1,delimiter,false).ok_or(NativeCsvError::UnknownLayout)?, diagnostics_report(Some(&diagnostics),range.first_row as usize+1,range.last_row as usize+1,delimiter,true).ok_or(NativeCsvError::UnknownLayout)?];
+        let level2 = vec![numeric_purity_report(&sheet,range,region.headers.body_first,region.headers.body_last,&numeric_schemas,&no_positions).ok_or(NativeCsvError::UnknownLayout)?, csv_item_abbreviations_report(&sheet,stubs,region.headers.body_first,region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, csv_unique_headers_report(&sheet,range,&region.headers.rows,region.headers.body_first,region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, csv_choice_standardization_report(&sheet,range,region.headers.body_first,region.headers.body_last,&numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?, csv_other_details_report(&sheet,range,region.headers.body_first,region.headers.body_last,&numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?];
+        let skipped = reference_skipped_level3_reports();
+        let mut level3 = vec![header_start_position_report(range,&region.headers.rows,region.headers.body_first).ok_or(NativeCsvError::UnknownLayout)?];
+        level3.extend(skipped[..2].iter().cloned());
+        level3.push(data_units_report(&sheet,range,&region.headers.rows,region.headers.body_first,region.headers.body_last,&no_positions).ok_or(NativeCsvError::UnknownLayout)?);
+        level3.push(time_axis_report(&sheet,range,&region.headers.rows,region.headers.body_first,region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?);
+        level3.push(region_codes_report(&sheet,range,&region.headers.rows,region.headers.body_first,region.headers.body_last,&no_positions).ok_or(NativeCsvError::UnknownLayout)?);
+        level3.extend(skipped[2..].iter().cloned());
+        level3.push(vertical_format_report(&sheet,range,&region.headers.rows,&no_positions).ok_or(NativeCsvError::UnknownLayout)?);
+        let checks=level1.iter().map(|d|d.evaluation.clone()).collect();
+        let level2_checks=level2.iter().map(|d|d.evaluation.clone()).collect();
+        let level3_checks=level3.iter().map(|d|d.evaluation.clone()).collect();
+        results.push(PartialCsvAnalysis { encoding, table, header_rows:region.headers.rows.clone(), column_headers:region.column_headers.clone(), column_schemas:schemas.clone(), diagnostics:[level1,level2,level3], checks, level2_checks, level3_checks, complete:false });
     }
-    Ok(results)
+    Ok(PreparedCsv { tables:results, others:other_values, rows:u32::try_from(parsed.records.len()).map_err(|_|NativeCsvError::UnknownLayout)?, columns:u32::try_from(parsed.max_columns).map_err(|_|NativeCsvError::TooManyColumns)? })
+}
+
+/// Experimental end-to-end CSV/TSV JSON report. Input content validation and
+/// broader reference compatibility are not yet established; do not substitute
+/// this for the application's existing backend.
+pub fn analyze_csv_report_experimental(bytes: &[u8], file_name: &str, mode: &str) -> Result<serde_json::Value, NativeCsvError> {
+    use crate::machine_readability_report::{file_report_json, FileReport, OtherCell, SheetProperty, SheetReport, TableReport};
+    let path = std::path::Path::new(file_name);
+    if path.file_name().and_then(|n|n.to_str()) != Some(file_name) { return Err(NativeCsvError::InvalidReportInput); }
+    let (delimiter,format) = match path.extension().and_then(|s|s.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("csv") => (Delimiter::Comma,"csv"), Some("tsv") => (Delimiter::Tab,"tsv"), _ => return Err(NativeCsvError::InvalidReportInput),
+    };
+    let levels = match mode { "lite"=>1,"standard"=>2,"thorough"=>3,_=>return Err(NativeCsvError::InvalidReportInput) };
+    let sheet_name = path.file_stem().and_then(|s|s.to_str()).filter(|s|!s.is_empty()).ok_or(NativeCsvError::InvalidReportInput)?;
+    let prepared = prepare_csv(bytes,delimiter,sheet_name)?;
+    let tables:Vec<_> = prepared.tables.iter().map(|table|TableReport {
+        range:table.table.range, confidence:table.table.confidence, header_rows:&table.header_rows, column_headers:&table.column_headers, columns:&table.column_schemas,
+        checks:[&table.diagnostics[0],if levels >= 2 { &table.diagnostics[1] } else { &[] },if levels >= 3 { &table.diagnostics[2] } else { &[] }],
+    }).collect();
+    let others:Vec<_> = prepared.others.iter().map(|(row,column,kind,value)|OtherCell { row:*row,column:*column,region_type:kind,value:serde_json::json!(value) }).collect();
+    let used_range = if prepared.rows > 0 && prepared.columns > 0 {
+        let mut col = u64::from(prepared.columns); let mut letters = Vec::new(); while col > 0 { col -= 1; letters.push((b'A'+(col%26) as u8) as char); col /= 26; }
+        format!("A1:{}{}",letters.into_iter().rev().collect::<String>(),prepared.rows)
+    } else { String::new() };
+    let sheets = [SheetReport { name:sheet_name,used_range:&used_range,hidden:false,property:Some(SheetProperty { name:sheet_name,max_row:prepared.rows,max_col:prepared.columns,hidden:false }),others:&others,tables:&tables }];
+    file_report_json(&FileReport { name:file_name,size:bytes.len() as u64,format,sheet_count:1,sheets:&sheets }).ok_or(NativeCsvError::InvalidReportInput)
 }
 
 /// Score the currently returned CSV table results without presenting them as a
