@@ -7,12 +7,16 @@ commit = '88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f'
 if subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip() != commit:
     raise SystemExit('Harunobu checkout is not at the pinned revision')
 code = r'''
-import json, random
+import json, random, os
+os.environ['HARUNOBU_AI_DISABLED']='1'
 from types import SimpleNamespace as S
 from harunobu.core.models import MergedRange, CellRange
 from harunobu.rules.level1.L1_12_merged_cells import MergedCellsRule
 from harunobu.rules.level1.L1_01_file_format import FileFormatRule
+from harunobu.rules.level1.L1_02_one_table_per_sheet import OneTablePerSheetRule
 from harunobu.rules.level1.L1_13_hidden_rows_columns import HiddenRowsColumnsRule
+from harunobu.rules.registry import registry
+from harunobu.rules.level3.L3_01_header_start_position import HeaderStartPositionRule
 rng=random.Random(112); cases=[]
 for i in range(160):
     merges=[]
@@ -37,7 +41,26 @@ for i in range(140):
     max_row,max_col=rng.randrange(14),rng.randrange(14)
     result=HiddenRowsColumnsRule().check(S(workbook=S(file_format='xlsx'),sheet=S(name='表',hidden_rows=[r+1 for r in rows],hidden_cols=[c+1 for c in cols],max_row=max_row+1,max_col=max_col+1)))
     hidden.append(dict(rows=rows,cols=cols,max_row=max_row,max_col=max_col,message=result.message,descriptions=[v.description for v in result.violations]))
-print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden),ensure_ascii=False))
+tables_cases=[]
+for i in range(120):
+    ranges=[[r,0,r+1,2] for r in range(0,rng.randrange(1,5)*3,3)]
+    confidences=[rng.choice([0.2,0.49,0.5,0.8,1.0]) for _ in ranges]
+    tables=[S(range=CellRange(start_row=r+1,start_col=c+1,end_row=rr+1,end_col=cc+1),confidence=confidence) for (r,c,rr,cc),confidence in zip(ranges,confidences)]
+    current=rng.randrange(len(tables))
+    result=OneTablePerSheetRule().check(S(all_tables=tables,table_region=tables[current],sheet=S(name='表 1')))
+    tables_cases.append(dict(ranges=ranges,confidences=confidences,current=current,message=result.message,descriptions=[v.description for v in result.violations]))
+start_cases=[]
+for i in range(140):
+    first=rng.randrange(8); headers=[r for r in range(12) if rng.randrange(4)==0]; body=rng.randrange(14)
+    region=S(range=CellRange(start_row=first+1,start_col=1,end_row=14,end_col=4),layout=S(header_rows=[r+1 for r in headers],body_start_row=body+1))
+    result=HeaderStartPositionRule().check(S(table_region=region,sheet=S(name='表')))
+    start_cases.append(dict(first=first,headers=headers,body=body,message=result.message,descriptions=[v.description for v in result.violations]))
+registry.discover()
+skipped=[]
+for rule_id in ['L1-09','L3-02','L3-03','L3-07','L3-08']:
+    result=registry.get(rule_id).check(None)
+    skipped.append(dict(id=rule_id,message=result.message,confidence=result.confidence,passed=result.passed))
+print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases),ensure_ascii=False))
 '''
 data=json.loads(subprocess.check_output([str(repo/'.venv/bin/python'),'-I','-X','utf8','-c',code],cwd=repo,text=True))
 out=Path(__file__).resolve().parent.parent/'test/fixtures/machine-readability/harunobu-basic-diagnostics-reference.json'

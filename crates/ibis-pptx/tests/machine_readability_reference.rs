@@ -905,3 +905,49 @@ fn hidden_rows_and_columns_diagnostics_match_pinned_harunobu() {
     }
     assert!(hidden_rows_columns_report(&sheet,UsedExtent::Unknown).is_none());
 }
+
+#[test]
+fn skipped_rule_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled_report, reference_skipped_level3_reports};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let reports=std::iter::once(blank_vs_zero_ai_disabled_report()).chain(reference_skipped_level3_reports());
+    for (report, case) in reports.zip(data["skipped"].as_array().unwrap()) {
+        assert_eq!(report.evaluation.result.rule_id,case["id"].as_str().unwrap());
+        assert_eq!(report.message,case["message"].as_str().unwrap());
+        assert_eq!(report.evaluation.result.confidence,case["confidence"].as_f64().unwrap());
+        assert_eq!(report.evaluation.result.passed,case["passed"].as_bool().unwrap());
+        assert!(report.descriptions.is_empty());
+    }
+}
+
+#[test]
+fn multiple_table_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{DetectedTable, one_table_per_sheet_report};
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    for (i,case) in data["tables"].as_array().unwrap().iter().enumerate() {
+        let tables:Vec<_>=case["ranges"].as_array().unwrap().iter().zip(case["confidences"].as_array().unwrap()).map(|(r,c)| DetectedTable { range:CellRange { first_row:r[0].as_u64().unwrap() as u32,first_column:r[1].as_u64().unwrap() as u32,last_row:r[2].as_u64().unwrap() as u32,last_column:r[3].as_u64().unwrap() as u32 },confidence:c.as_f64().unwrap() }).collect();
+        let current=tables[case["current"].as_u64().unwrap() as usize].range;
+        let got=one_table_per_sheet_report("表 1",current,Some(&tables)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert!(one_table_per_sheet_report("表 1",current,None).is_none());
+    }
+}
+
+#[test]
+fn header_start_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::header_start_position_report;
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    for (i,case) in data["start"].as_array().unwrap().iter().enumerate() {
+        let table=CellRange { first_row:case["first"].as_u64().unwrap() as u32,first_column:0,last_row:13,last_column:3 };
+        let headers:Vec<_>=case["headers"].as_array().unwrap().iter().map(|v|v.as_u64().unwrap() as u32).collect();
+        let got=header_start_position_report(table,&headers,case["body"].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
