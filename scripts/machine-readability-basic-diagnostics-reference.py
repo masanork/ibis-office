@@ -20,6 +20,8 @@ from harunobu.rules.level3.L3_01_header_start_position import HeaderStartPositio
 from harunobu.rules.level2.L2_06_formula_to_value import FormulaToValueRule
 from harunobu.rules.level1.L1_10_objects import ObjectsRule
 from harunobu.rules.level1.L1_11_format_based_semantics import FormatBasedSemanticsRule
+from harunobu.rules.level1.L1_06_whitespace_formatting import WhitespaceFormattingRule
+from harunobu.rules.level1.L1_07_one_data_per_cell import OneDataPerCellRule
 from harunobu.core.models import Cell, CellPosition, CellFormat, Sheet
 rng=random.Random(112); cases=[]
 for i in range(160):
@@ -94,12 +96,36 @@ for i in range(120):
     context=S(workbook=S(file_format='xlsx',file_path=None),sheet=sheet,table_region=S(range=CellRange(start_row=1,start_col=1,end_row=6,end_col=4),layout=S(body_start_row=2)))
     result=FormatBasedSemanticsRule().check(context)
     format_cases.append(dict(entries=entries,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
+whitespace_cases=[]
+for i in range(100):
+    entries=[]; cells={}
+    for row in range(1,5):
+        for col in range(1,5):
+            value=rng.choice(['住所','項目','東京　千代田',' 前後 ','a  b','※1　注','改行\nあり','normal','',None,'長い文字列'*10+'　'])
+            entries.append(dict(row=row-1,col=col-1,value=value))
+            cells[(row,col)]=Cell(pos=CellPosition(row=row,col=col),value=value)
+    headers=rng.choice([[],[0],[0,1]])
+    sheet=Sheet(name='表',cells=cells,max_row=4,max_col=4)
+    context=S(sheet=sheet,table_region=S(range=CellRange(start_row=1,start_col=1,end_row=4,end_col=4),layout=S(header_rows=[r+1 for r in headers])))
+    result=WhitespaceFormattingRule().check(context)
+    whitespace_cases.append(dict(entries=entries,headers=headers,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
+multiple_cases=[]
+for i in range(100):
+    entries=[];cells={};types=[rng.choice(['text','numeric']) for _ in range(4)]
+    for row in range(1,5):
+        for col in range(1,5):
+            value=rng.choice(['東京','1,200','1,2','項目、値、数','A・B・C','123（45）','a\nb','',None,'あ'*55+',b'])
+            entries.append(dict(row=row-1,col=col-1,value=value));cells[(row,col)]=Cell(pos=CellPosition(row=row,col=col),value=value)
+    sheet=Sheet(name='表',cells=cells,max_row=4,max_col=4)
+    context=S(sheet=sheet,table_region=S(range=CellRange(start_row=1,start_col=1,end_row=4,end_col=4),layout=S(columns=[S(col_index=c+1,inferred_type=t) for c,t in enumerate(types)])))
+    result=OneDataPerCellRule().check(context)
+    multiple_cases.append(dict(entries=entries,types=types,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
 registry.discover()
 skipped=[]
 for rule_id in ['L1-09','L3-02','L3-03','L3-07','L3-08']:
     result=registry.get(rule_id).check(None)
     skipped.append(dict(id=rule_id,message=result.message,confidence=result.confidence,passed=result.passed))
-print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases,objects=object_cases,formats_semantics=format_cases),ensure_ascii=False))
+print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases,objects=object_cases,formats_semantics=format_cases,whitespace=whitespace_cases,multiple=multiple_cases),ensure_ascii=False))
 '''
 data=json.loads(subprocess.check_output([str(repo/'.venv/bin/python'),'-I','-X','utf8','-c',code],cwd=repo,text=True))
 out=Path(__file__).resolve().parent.parent/'test/fixtures/machine-readability/harunobu-basic-diagnostics-reference.json'
