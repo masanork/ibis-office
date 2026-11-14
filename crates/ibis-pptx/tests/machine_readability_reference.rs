@@ -696,3 +696,24 @@ fn csv_data_units_matches_pinned_harunobu() {
         assert_eq!(actual, wanted, "case {i}: {case}");
     }
 }
+
+#[test]
+fn csv_multitable_fragmentation_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_fragmentation_with_tables, DetectedTable};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-multitable-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let tables: Vec<_> = case["tables"].as_array().unwrap().iter().map(|v| DetectedTable { range: CellRange { first_row: v[0].as_u64().unwrap() as u32, first_column: v[1].as_u64().unwrap() as u32, last_row: v[2].as_u64().unwrap() as u32, last_column: v[3].as_u64().unwrap() as u32 }, confidence: 0.9 }).collect();
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let got = csv_fragmentation_with_tables(&sheet, tables[case["current"].as_u64().unwrap() as usize].range, &tables).unwrap();
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+    }
+}

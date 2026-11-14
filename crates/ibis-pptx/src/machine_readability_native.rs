@@ -4,8 +4,8 @@
 //! incomplete and must not replace or be presented as a full Harunobu report.
 use std::collections::BTreeMap;
 use ibis_doc_model::machine_readability_csv::{diagnose, read_sheet, single_line_records, valid_quoting, Delimiter};
-use ibis_doc_model::machine_readability_layout::{estimate_stub_columns, generate_column_headers, infer_column_schemas, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue, StubCell, StubValue};
-use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_choice_standardization, csv_column_headers, csv_data_fragmentation, csv_data_units, csv_item_abbreviations, csv_numeric_purity, csv_other_details, csv_region_codes, csv_time_axis, csv_unique_headers, csv_vertical_format, file_format, header_start_position, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, reference_skipped_level3, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
+use ibis_doc_model::machine_readability_layout::{estimate_stub_columns, generate_column_headers, infer_column_schemas, inherit_headers_from_above, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue, ResolvedIsland, StubCell, StubValue};
+use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_choice_standardization, csv_column_headers, csv_data_units, csv_fragmentation_with_tables, csv_item_abbreviations, csv_numeric_purity, csv_other_details, csv_region_codes, csv_time_axis, csv_unique_headers, csv_vertical_format, file_format, header_start_position, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, reference_skipped_level3, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
 use ibis_doc_model::sheet::{CellKind, CellValue, Sheet, SheetCell};
 use crate::machine_readability_csv::{decode_csv_bytes, CsvInputEncoding, CsvInputError};
 
@@ -28,28 +28,22 @@ pub struct PartialCsvAnalysis {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeCsvError { Input(CsvInputError), UnknownLayout, UnsupportedTableCount(usize), TooManyColumns }
 
-/// Execute the currently ported Level 1 rules for an explicitly supplied CSV
-/// or TSV byte stream, limited to one detected table. It returns no score;
-/// unknown layouts and zero/multiple tables are errors, never clean passes.
+/// Execute partial checks for one table. The result has no score and remains incomplete.
 pub fn analyze_csv_partial(bytes: &[u8], delimiter: Delimiter) -> Result<PartialCsvAnalysis, NativeCsvError> {
+    let mut tables = analyze_csv_tables_partial(bytes, delimiter)?;
+    if tables.len() != 1 { return Err(NativeCsvError::UnsupportedTableCount(tables.len())); }
+    Ok(tables.remove(0))
+}
+
+/// Execute partial checks for all detected tables. Unknown input is rejected;
+/// neither this result nor its checks are a complete Harunobu report.
+pub fn analyze_csv_tables_partial(bytes: &[u8], delimiter: Delimiter) -> Result<Vec<PartialCsvAnalysis>, NativeCsvError> {
     let (text, encoding) = decode_csv_bytes(bytes).map_err(NativeCsvError::Input)?;
     let parsed = read_sheet(&text, delimiter).map_err(|e| NativeCsvError::Input(CsvInputError::InvalidCsv(e)))?;
     let cells = parsed.layout_cells().map_err(|e| NativeCsvError::Input(CsvInputError::InvalidCsv(e)))?;
     let preliminary = preliminary_islands(&cells, &[]).ok_or(NativeCsvError::UnknownLayout)?;
     let columns = merge_column_adjacent_regions(&preliminary.candidates, &cells, &[]).ok_or(NativeCsvError::UnknownLayout)?;
     let forms = merge_form_fragments(&columns, &cells, &[]).ok_or(NativeCsvError::UnknownLayout)?;
-    if forms.len() != 1 { return Err(NativeCsvError::UnsupportedTableCount(forms.len())); }
-    let region = &forms[0];
-    let range = region.candidate.range;
-    let width = u64::from(range.last_column) - u64::from(range.first_column) + 1;
-    if width > 1_000_000 { return Err(NativeCsvError::TooManyColumns); }
-    let indices: Vec<_> = (range.first_column..=range.last_column).collect();
-    let header_cells: Vec<_> = cells.iter().map(|c| HeaderCell { row: c.row, column: c.column, value: match &c.value { Some(LayoutValue::Text(s)) => Some(s.clone()), _ => None }, merged: false, master: None }).collect();
-    let headers = generate_column_headers(&region.headers.rows, &indices, &header_cells).ok_or(NativeCsvError::UnknownLayout)?;
-    let labels: BTreeMap<_, _> = headers.iter().map(|h| (h.column, h.label.as_str())).collect();
-    let schema_input: Vec<_> = indices.iter().map(|&c| (c, labels.get(&c).copied())).collect();
-    let schemas = infer_column_schemas(&schema_input, region.headers.body_first, region.headers.body_last, &cells).ok_or(NativeCsvError::UnknownLayout)?;
-    let column_types: BTreeMap<_, _> = schemas.iter().map(|s| (s.column, if s.kind == InferredColumnType::Numeric { ColumnType::Numeric } else { ColumnType::Other })).collect();
     // Harunobu creates a cell for every CSV field, including empty fields;
     // preserve that distinction from missing fields for violation locations.
     let mut sheet = Sheet::default();
@@ -64,17 +58,40 @@ pub fn analyze_csv_partial(bytes: &[u8], delimiter: Delimiter) -> Result<Partial
         }
     }
     sheet.cells = sheet_cells.into();
-    let table = DetectedTable { range, confidence: region.candidate.confidence };
+    let header_cells: Vec<_> = cells.iter().map(|c| HeaderCell { row: c.row, column: c.column, value: match &c.value { Some(LayoutValue::Text(s)) => Some(s.clone()), _ => None }, merged: false, master: None }).collect();
+    let stub_cells: Vec<_> = cells.iter().map(|c| StubCell { row: c.row, column: c.column, value: c.value.as_ref().map(|_| StubValue::Other), bold: false, background_nonwhite: false, border_left: false, border_right: false }).collect();
+    let mut regions = Vec::new();
+    for region in forms {
+        let range = region.candidate.range;
+        let width = u64::from(range.last_column) - u64::from(range.first_column) + 1;
+        if width > 1_000_000 { return Err(NativeCsvError::TooManyColumns); }
+        let indices: Vec<_> = (range.first_column..=range.last_column).collect();
+        let headers = generate_column_headers(&region.headers.rows, &indices, &header_cells).ok_or(NativeCsvError::UnknownLayout)?;
+        let labels: BTreeMap<_, _> = headers.iter().map(|h| (h.column, h.label.as_str())).collect();
+        let schema_input: Vec<_> = indices.iter().map(|&c| (c, labels.get(&c).copied())).collect();
+        let schemas = infer_column_schemas(&schema_input, region.headers.body_first, region.headers.body_last, &cells).ok_or(NativeCsvError::UnknownLayout)?;
+        let stubs = estimate_stub_columns(range.first_column, range.last_column, region.headers.body_first, region.headers.body_last, &stub_cells, &schemas).ok_or(NativeCsvError::UnknownLayout)?;
+        let abstain = region.candidate.confidence < 0.7;
+        regions.push(ResolvedIsland { candidate: region.candidate, headers: region.headers, column_headers: headers, column_schemas: schemas, stub_columns: stubs, footer_rows: Vec::new(), abstain });
+    }
+    let mut regions = inherit_headers_from_above(&regions, &cells).ok_or(NativeCsvError::UnknownLayout)?;
+    regions.sort_by(|a, b| b.candidate.confidence.total_cmp(&a.candidate.confidence));
+    let tables: Vec<_> = regions.iter().map(|r| DetectedTable { range: r.candidate.range, confidence: r.candidate.confidence }).collect();
     let others: Vec<_> = preliminary.others.iter().map(|o| OutsideTableCell { row: o.row, column: o.column }).collect();
     let format = match delimiter { Delimiter::Comma => WorkbookFormat::Csv, Delimiter::Tab => WorkbookFormat::Tsv };
     let text_encoding = match encoding { CsvInputEncoding::Utf8 | CsvInputEncoding::Utf8Bom => TextEncoding::Utf8, CsvInputEncoding::Cp932 => TextEncoding::Cp932 };
     let diagnostics = diagnose(&text, delimiter);
-    let checks = vec![file_format(format), one_table_per_sheet(range, Some(&[table])), csv_data_fragmentation(&sheet, range).ok_or(NativeCsvError::UnknownLayout)?, irrelevant_information(Some(&others)), csv_column_headers(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?,
+    let mut results = Vec::new();
+    for region in &regions {
+        let range = region.candidate.range;
+        let table = DetectedTable { range, confidence: region.candidate.confidence };
+        let schemas = &region.column_schemas;
+        let stubs = &region.stub_columns;
+        let column_types: BTreeMap<_, _> = schemas.iter().map(|s| (s.column, if s.kind == InferredColumnType::Numeric { ColumnType::Numeric } else { ColumnType::Other })).collect();
+    let checks = vec![file_format(format), one_table_per_sheet(range, Some(&tables)), csv_fragmentation_with_tables(&sheet, range, &tables).ok_or(NativeCsvError::UnknownLayout)?, irrelevant_information(Some(&others)), csv_column_headers(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?,
         whitespace_formatting(&sheet, range, Some(&region.headers.rows)), one_data_per_cell(&sheet, range, Some(&column_types)), platform_characters(&sheet, range, text_encoding), blank_vs_zero_ai_disabled(),
         single_line_records(Some(&diagnostics), range.first_row as usize + 1, range.last_row as usize + 1),
         valid_quoting(Some(&diagnostics), range.first_row as usize + 1, range.last_row as usize + 1)];
-    let stub_cells: Vec<_> = cells.iter().map(|c| StubCell { row: c.row, column: c.column, value: c.value.as_ref().map(|_| StubValue::Other), bold: false, background_nonwhite: false, border_left: false, border_right: false }).collect();
-    let stubs = estimate_stub_columns(range.first_column, range.last_column, region.headers.body_first, region.headers.body_last, &stub_cells, &schemas).ok_or(NativeCsvError::UnknownLayout)?;
     let numeric_schemas: Vec<_> = schemas.iter().map(|s| (s.column, s.kind)).collect();
     let level2_checks = vec![csv_numeric_purity(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?, csv_item_abbreviations(&sheet, &stubs, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, csv_unique_headers(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?, csv_choice_standardization(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?, csv_other_details(&sheet, range, region.headers.body_first, region.headers.body_last, &numeric_schemas).ok_or(NativeCsvError::UnknownLayout)?];
     let mut level3_checks = vec![header_start_position(range, &region.headers.rows, region.headers.body_first).ok_or(NativeCsvError::UnknownLayout)?];
@@ -85,5 +102,7 @@ pub fn analyze_csv_partial(bytes: &[u8], delimiter: Delimiter) -> Result<Partial
     level3_checks.push(csv_region_codes(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?);
     level3_checks.extend(skipped[2..].iter().cloned());
     level3_checks.push(csv_vertical_format(&sheet, range, &region.headers.rows).ok_or(NativeCsvError::UnknownLayout)?);
-    Ok(PartialCsvAnalysis { encoding, table, header_rows: region.headers.rows.clone(), checks, level2_checks, level3_checks, complete: false })
+        results.push(PartialCsvAnalysis { encoding, table, header_rows: region.headers.rows.clone(), checks, level2_checks, level3_checks, complete: false });
+    }
+    Ok(results)
 }

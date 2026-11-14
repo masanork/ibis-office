@@ -42,3 +42,38 @@ fn native_csv_checks_match_reference_without_claiming_complete_coverage() {
     assert_eq!(analyze_csv_partial(b"", Delimiter::Comma), Err(NativeCsvError::UnsupportedTableCount(0)));
     assert_eq!(analyze_csv_partial(b"A,B\n1,2\n\n\n\nA,B\n3,4\n", Delimiter::Comma), Err(NativeCsvError::UnsupportedTableCount(2)));
 }
+
+#[test]
+fn native_multitable_csv_checks_match_reference() {
+    use ibis_pptx::machine_readability_native::analyze_csv_tables_partial;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-multitable-csv-reference.json");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for case in data["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let bytes: Vec<_> = case["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap()).collect();
+        let actual = analyze_csv_tables_partial(&bytes, Delimiter::Comma).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let tables = case["tables"].as_array().unwrap();
+        assert_eq!(actual.len(), tables.len(), "{name}");
+        for (got, expected) in actual.iter().zip(tables) {
+            assert!(!got.complete);
+            let r = got.table.range;
+            assert_eq!([r.first_row, r.first_column, r.last_row, r.last_column], std::array::from_fn(|i| expected["range"][i].as_u64().unwrap() as u32), "{name}");
+            assert_eq!(got.header_rows, expected["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>(), "{name}");
+            assert_eq!(got.table.confidence, expected["confidence"].as_f64().unwrap(), "{name}");
+            let checks: Vec<_> = got.checks.iter().chain(&got.level2_checks).chain(&got.level3_checks).collect();
+            let wanted = expected["checks"].as_array().unwrap();
+            assert_eq!(checks.len(), wanted.len(), "{name}");
+            for (a, b) in checks.iter().zip(wanted) {
+                assert_eq!(a.result.rule_id, b["id"].as_str().unwrap(), "{name}");
+                assert_eq!(a.result.passed, b["passed"].as_bool().unwrap(), "{name}: {}", a.result.rule_id);
+                assert_eq!(a.result.confidence, b["confidence"].as_f64().unwrap(), "{name}: {}", a.result.rule_id);
+                let severity = match a.result.severity.unwrap() { Severity::Fatal => "fatal", Severity::Critical => "critical", Severity::Major => "major", Severity::Minor => "minor", Severity::Info => "info" };
+                assert_eq!(severity, b["severity"].as_str().unwrap(), "{name}: {}", a.result.rule_id);
+                let findings: Vec<_> = a.findings.iter().map(|f| (f.location.as_str(), match f.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+                let expected: Vec<_> = b["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+                assert_eq!(findings, expected, "{name}: {}", a.result.rule_id);
+            }
+        }
+    }
+}
