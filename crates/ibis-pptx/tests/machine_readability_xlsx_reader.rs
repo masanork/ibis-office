@@ -645,3 +645,24 @@ fn xlsx_large_integer_matches_reference_without_rounding() {
         assert_eq!(got,expected,"{mode}");
     }
 }
+
+#[test]
+fn xlsx_iso_date_cells_match_reference() {
+    use ibis_pptx::machine_readability_xlsx::analyze_xlsx_report_experimental;
+    fn normalize(report:&mut serde_json::Value) {
+        for level in ["1","2","3"] { if let Some(score)=report["レベル別スコア"][level].as_object_mut() {
+            for key in ["失敗ルール","強制0点ルール"] { if let Some(rules)=score.get_mut(key).and_then(|v|v.as_array_mut()) { rules.sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string()); } }
+        }}
+        for sheet in report["sheets"].as_array_mut().unwrap() { for table in sheet["評価対象エリア"].as_array_mut().unwrap() {
+            table["評価内容"].as_array_mut().unwrap().sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string());
+        }}
+    }
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let case:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-iso-date-reference.json")).unwrap()).unwrap();
+    let bytes:Vec<_>=case["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+    for mode in ["lite","standard","thorough"] {
+        let mut got=analyze_xlsx_report_experimental(&bytes,"iso-date.xlsx",mode).unwrap();
+        let mut expected=case["reports"][mode].clone();normalize(&mut got);normalize(&mut expected);
+        assert_eq!(got,expected,"{mode}");
+    }
+}
