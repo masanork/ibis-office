@@ -89,15 +89,17 @@ pub struct XlsxSavedSheet {
     /// and integer precision that the editor's floating-point model cannot.
     pub numeric_lexemes: BTreeMap<(u32, u32), XlsxNumericLexeme>,
     pub date1904: bool,
+    /// Python text and JSON spellings for ISO-encoded date cells.
+    pub iso_dates: BTreeMap<(u32, u32), (String, String)>,
 }
 
 pub fn read_xlsx_saved_sheet(bytes: &[u8], sheet_index: usize) -> Result<XlsxSavedSheet, XlsxInputError> {
     let (window, layout, saved) = read_xlsx_layout_impl(bytes, sheet_index, None, true)?;
-    let (sheet, numeric_lexemes, date1904) = saved.expect("saved-sheet input requested");
-    Ok(XlsxSavedSheet { window, layout, sheet, numeric_lexemes, date1904 })
+    let (sheet, numeric_lexemes, date1904, iso_dates) = saved.expect("saved-sheet input requested");
+    Ok(XlsxSavedSheet { window, layout, sheet, numeric_lexemes, date1904, iso_dates })
 }
 
-fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxReadWindow>, include_sheet: bool) -> Result<(XlsxReadWindow, XlsxLayoutInput, Option<(Sheet, BTreeMap<(u32, u32), XlsxNumericLexeme>, bool)>), XlsxInputError> {
+fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxReadWindow>, include_sheet: bool) -> Result<(XlsxReadWindow, XlsxLayoutInput, Option<(Sheet, BTreeMap<(u32, u32), XlsxNumericLexeme>, bool, BTreeMap<(u32, u32), (String, String)>)>), XlsxInputError> {
     let mode = if bytes.len() > 5 * 1024 * 1024 { XlsxReaderMode::TwoPass } else { XlsxReaderMode::SinglePass };
     let (presentation, sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
     let entry = presentation.workbook.as_ref().and_then(|w|w.sheets.get(sheet_index)).ok_or(XlsxInputError::SheetUnavailable)?;
@@ -145,7 +147,17 @@ fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxRe
         let within = match window { XlsxReadWindow::Empty => false, XlsxReadWindow::Through { last_row, last_column } => row <= last_row && column <= last_column };
         if within && !formula_positions.contains(&(row, column)) { return Err(XlsxInputError::FormulaModelMismatch); }
     }
-    let input = prepare_xlsx_layout_for_mode(sheet, window, &caches, mode).map_err(XlsxInputError::Layout)?;
+    let mut input = prepare_xlsx_layout_for_mode(sheet, window, &caches, mode).map_err(XlsxInputError::Layout)?;
+    let mut iso_dates = BTreeMap::new();
+    for cell in root.descendants().filter(|n| n.is_element() && n.tag_name().name() == "c" && n.attribute("t") == Some("d")) {
+        let position = source_cell_position(cell.attribute("r").ok_or(XlsxInputError::InvalidWindowMetadata)?)?;
+        let Some(layout) = input.cells.iter_mut().find(|c| (c.row,c.column) == position) else { continue; };
+        if layout.value.is_none() { continue; }
+        let raw = cell.children().find(|n| n.is_element() && n.tag_name().name() == "v").and_then(|n| n.text()).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+        let value = iso_date_reference(raw).ok_or(XlsxInputError::UnsupportedReferenceValue)?;
+        if iso_dates.insert(position, value).is_some() { return Err(XlsxInputError::InvalidWindowMetadata); }
+        layout.value = Some(ibis_doc_model::machine_readability_layout::LayoutValue::Date);
+    }
     let saved = if include_sheet {
         let mut saved = (**sheet).clone();
         saved.cells.retain(|cell| match window { XlsxReadWindow::Empty => false, XlsxReadWindow::Through { last_row, last_column } => cell.row <= last_row && cell.column <= last_column });
@@ -168,7 +180,7 @@ fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxRe
             }
         }
         let date1904 = presentation.workbook.as_deref().is_some_and(|w| w.date1904);
-        Some((saved, lexemes, date1904))
+        Some((saved, lexemes, date1904, iso_dates))
     } else { None };
     Ok((window, input, saved))
 }
@@ -208,13 +220,13 @@ fn derive_window(root: roxmltree::Node<'_, '_>, merges: &[ibis_doc_model::sheet:
                     if *shared_empty.and_then(|s| s.get(index)).ok_or(XlsxInputError::InvalidWindowMetadata)? { return Err(XlsxInputError::InvalidWindowMetadata); }
                 }
                 if kind == "e" && !value.is_empty() && !CellError::parse(value).is_some_and(|e| e.as_str() == value) { return Err(XlsxInputError::InvalidWindowMetadata); }
-                if !matches!(kind, "n" | "b" | "e" | "str" | "s" | "inlineStr") { return Err(XlsxInputError::InvalidWindowMetadata); }
+                if !matches!(kind, "n" | "b" | "e" | "str" | "s" | "inlineStr" | "d") { return Err(XlsxInputError::InvalidWindowMetadata); }
                 if row >= 100 { continue; }
                 // Non-master cells in merged ranges are replaced by empty
                 // MergedCell objects by openpyxl before sampling.
                 if merges.iter().any(|m| row >= m.first_row && row <= m.last_row && column >= m.first_column && column <= m.last_column && (row != m.first_row || column != m.first_column)) { continue; }
                 let occupied = match kind {
-                    "n" | "b" | "e" | "str" | "s" => !value.is_empty(),
+                    "n" | "b" | "e" | "str" | "s" | "d" => !value.is_empty(),
                     "inlineStr" => cell.children().find(|n| n.is_element() && n.tag_name().name() == "is").is_some_and(|is| {
                         is.children().any(|n| n.is_element() && ((n.tag_name().name() == "t" && n.text().is_some_and(|t| !t.is_empty())) || (n.tag_name().name() == "r" && n.children().any(|t| t.is_element() && t.tag_name().name() == "t" && t.text().is_some_and(|s| !s.is_empty())))))
                     }),
@@ -531,8 +543,11 @@ pub fn xlsx_reference_text_sheet(saved: &XlsxSavedSheet) -> Result<Sheet, XlsxIn
                 _ => return Err(XlsxInputError::UnsupportedReferenceValue),
             },
             Some(LayoutValue::Date) => {
-                let value = match original.get(&position).map(|c| &c.value) { Some(CellValue::Number(v)) => *v, _ => return Err(XlsxInputError::UnsupportedReferenceValue) };
-                Some(xlsx_date_reference_text(value, saved.date1904).ok_or(XlsxInputError::UnsupportedReferenceValue)?)
+                if let Some((text, _)) = saved.iso_dates.get(&position) { Some(text.clone()) }
+                else {
+                    let value = match original.get(&position).map(|c| &c.value) { Some(CellValue::Number(v)) => *v, _ => return Err(XlsxInputError::UnsupportedReferenceValue) };
+                    Some(xlsx_date_reference_text(value, saved.date1904).ok_or(XlsxInputError::UnsupportedReferenceValue)?)
+                }
             }
             Some(LayoutValue::Other) => {
                 let value = match original.get(&position).map(|c| &c.value) { Some(CellValue::Number(v)) => *v, _ => return Err(XlsxInputError::UnsupportedReferenceValue) };
@@ -548,6 +563,41 @@ pub fn xlsx_reference_text_sheet(saved: &XlsxSavedSheet) -> Result<Sheet, XlsxIn
     // Merged-cell presence and masking are already represented in the view.
     sheet.merges.clear();
     Ok(sheet)
+}
+
+/// Canonical ISO date/time cells as interpreted by openpyxl. Unknown forms
+/// remain unsupported rather than being treated as text.
+fn iso_date_reference(raw: &str) -> Option<(String, String)> {
+    use ibis_calc::eval::convert::{civil_from_days, days_from_civil};
+    let raw = raw.strip_suffix('Z').unwrap_or(raw);
+    if !raw.is_ascii() { return None; }
+    let date = if raw.len() >= 10 && &raw[4..5] == "-" && &raw[7..8] == "-" {
+        let year: i64 = raw[0..4].parse().ok()?;
+        let month: u32 = raw[5..7].parse().ok()?;
+        let day: u32 = raw[8..10].parse().ok()?;
+        if year < 1 || !(1..=12).contains(&month) || !(1..=31).contains(&day) || civil_from_days(days_from_civil(year, month.into(), day.into())) != (year, month, day) { return None; }
+        Some(&raw[..10])
+    } else { None };
+    let rest = if date.is_some() { raw.get(10..)? } else { raw };
+    let rest = rest.strip_prefix('T').unwrap_or(rest);
+    if rest.is_empty() { let date = date?; return Some((date.into(), date.into())); }
+    let mut parts = rest.split(':');
+    let hours = parts.next()?;
+    let minutes = parts.next()?;
+    if hours.len() != 2 || minutes.len() != 2 { return None; }
+    let hours: u32 = hours.parse().ok()?;
+    let minutes: u32 = minutes.parse().ok()?;
+    let seconds = parts.next().unwrap_or("00");
+    if parts.next().is_some() || hours > 23 || minutes > 59 { return None; }
+    let (sec, frac) = seconds.split_once('.').map_or((seconds, ""), |v| v);
+    if sec.len() != 2 || (seconds.contains('.') && frac.is_empty()) { return None; }
+    let seconds: u32 = sec.parse().ok()?;
+    if seconds > 59 || frac.len() > 3 || !frac.bytes().all(|c| c.is_ascii_digit()) { return None; }
+    let micros: u32 = if frac.is_empty() { 0 } else { frac.parse::<u32>().ok()? * 10u32.pow(6 - frac.len() as u32) };
+    let mut time = format!("{hours:02}:{minutes:02}:{seconds:02}");
+    if micros != 0 { time.push_str(&format!(".{micros:06}")); }
+    if let Some(date) = date { Some((format!("{date} {time}"), format!("{date}T{time}"))) }
+    else { Some((time.clone(), time)) }
 }
 
 /// Render an Excel date serial as the reference reader's Python date/time text.
@@ -715,7 +765,7 @@ pub fn analyze_xlsx_report_experimental(bytes: &[u8], file_name: &str, mode: &st
                         parsed
                     }, _=>return Err(XlsxInputError::UnsupportedReferenceValue),
                 },
-                Some(LayoutValue::Date)=>serde_json::json!(text_value.ok_or(XlsxInputError::UnsupportedReferenceValue)?.replace(' ',"T")),
+                Some(LayoutValue::Date)=>serde_json::json!(if let Some((_,json))=saved.iso_dates.get(&position) { json.clone() } else { text_value.ok_or(XlsxInputError::UnsupportedReferenceValue)?.replace(' ',"T") }),
                 Some(LayoutValue::Other)=>match original.map(|c|&c.value) {
                     Some(CellValue::Number(value))=>serde_json::json!(xlsx_duration_reference_json(*value).ok_or(XlsxInputError::UnsupportedReferenceValue)?),
                     _=>return Err(XlsxInputError::UnsupportedReferenceValue),
