@@ -698,3 +698,61 @@ pub fn csv_vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32])
     }
     Some(result("L3-09", findings.is_empty(), 0.7, Severity::Major, findings))
 }
+
+/// L3-05 for unmerged CSV/TSV text cells and known layout rows.
+pub fn csv_time_axis(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    struct Patterns { wareki: regex::Regex, wareki_start: regex::Regex, seireki: regex::Regex, nendo: regex::Regex, estat: regex::Regex, iso: regex::Regex, jis: regex::Regex, nonstandard: regex::Regex, keyword: regex::Regex }
+    static P: OnceLock<Patterns> = OnceLock::new();
+    let p = P.get_or_init(|| Patterns {
+        wareki: regex::Regex::new(r"(明治|大正|昭和|平成|令和|M|T|S|H|R)[\s\x1c-\x1f]*\d{1,2}[\s\x1c-\x1f]*(年|\.|-|/)").unwrap(),
+        wareki_start: regex::Regex::new(r"^(明治|大正|昭和|平成|令和|M|T|S|H|R)[\s\x1c-\x1f]*\d{1,2}[\s\x1c-\x1f]*(年|\.|-|/)").unwrap(),
+        seireki: regex::Regex::new(r"^(19|20)\d{2}[\s\x1c-\x1f]*(年|/|-|\.)").unwrap(),
+        nendo: regex::Regex::new(r"^(19|20)\d{2}[\s\x1c-\x1f]*年度").unwrap(),
+        estat: regex::Regex::new(r"^(19|20)\d{2}(年\d{1,2}月(\d{1,2}日)?|/\d{1,2}(/\d{1,2})?|-\d{1,2}(-\d{1,2})?)$").unwrap(),
+        iso: regex::Regex::new(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$").unwrap(),
+        jis: regex::Regex::new(r"^[MTSHR]\d{1,2}\.\d{1,2}\.\d{1,2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$").unwrap(),
+        nonstandard: regex::Regex::new(r"^(\d{2}/\d{1,2}/\d{1,2}|(明治|大正|昭和|平成|令和)\d{1,2})$").unwrap(),
+        keyword: regex::Regex::new(r"(?i)(年|月|日|年度|時期|期間|期日|日付|日時|時点|年月|調査時点|対象期間|date|year|month|period)").unwrap(),
+    });
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let Some(&header) = header_rows.last() else { return Some(result("L3-05", true, 0.5, Severity::Major, Vec::new())); };
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column && (c.row == header || (c.row >= body_first && c.row <= body_last))) {
+        let value = match &cell.value { CellValue::Text(v) => v.as_str(), CellValue::Empty => "", _ => return None };
+        cells.insert((cell.row, cell.column), value);
+    }
+    let mut time_cols = Vec::new();
+    let mut findings = Vec::new();
+    for col in table.first_column..=table.last_column {
+        if let Some(&value) = cells.get(&(header, col)) {
+            if !value.is_empty() && p.keyword.is_match(value) { time_cols.push(col); }
+            let value = value.trim_matches(space);
+            if !p.iso.is_match(value) && !p.jis.is_match(value) && p.wareki_start.is_match(value) {
+                findings.push(Finding { location: address(header, col), severity: FindingSeverity::Warning });
+            }
+        }
+    }
+    for col in time_cols {
+        let mut formats = BTreeSet::new();
+        for row in body_first..=body_last {
+            let Some(value) = cells.get(&(row, col)).map(|v| v.trim_matches(space)) else { continue; };
+            if value.is_empty() { continue; }
+            let format = if p.jis.is_match(value) { Some("jis_wareki") }
+                else if p.iso.is_match(value) { Some(if value.contains('T') { "iso8601_datetime" } else { "iso8601_date" }) }
+                else if p.wareki.is_match(value) { Some("wareki") }
+                else if p.nonstandard.is_match(value) { Some("nonstandard") }
+                else if p.nendo.is_match(value) { Some("nendo") }
+                else if p.estat.is_match(value) { Some(if value.contains('年') { "estat_kanji" } else if value.contains('/') { "estat_slash" } else { "estat_hyphen" }) }
+                else if p.seireki.is_match(value) { Some("seireki_other") } else { None };
+            if let Some(format) = format {
+                if format == "wareki" || format == "nonstandard" { findings.push(Finding { location: address(row, col), severity: if format == "wareki" { FindingSeverity::Error } else { FindingSeverity::Warning } }); }
+                else { formats.insert(format); }
+            }
+        }
+        if formats.len() > 1 { findings.push(Finding { location: address(header, col), severity: FindingSeverity::Warning }); }
+    }
+    Some(result("L3-05", findings.is_empty(), 0.75, Severity::Major, findings))
+}
