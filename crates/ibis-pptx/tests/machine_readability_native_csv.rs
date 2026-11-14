@@ -148,3 +148,33 @@ fn native_csv_and_tsv_reports_match_encoded_reference_inputs() {
         assert_eq!(got,expected,"case {i}");
     }
 }
+
+#[test]
+fn mixed_bulk_reports_match_pinned_harunobu() {
+    use ibis_pptx::machine_readability_native::analyze_csv_report_experimental;
+    use ibis_pptx::machine_readability_xlsx::analyze_xlsx_report_experimental;
+    use ibis_pptx::machine_readability_report::combine_native_reports;
+    fn normalize(report:&mut serde_json::Value) {
+        for file in report["ファイル別結果"].as_array_mut().unwrap() {
+            for level in ["1","2","3"] { if let Some(score)=file["レベル別スコア"][level].as_object_mut() {
+                for key in ["失敗ルール","強制0点ルール"] { if let Some(rules)=score.get_mut(key).and_then(|v|v.as_array_mut()) { rules.sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string()); } }
+            }}
+            for sheet in file["sheets"].as_array_mut().unwrap() { for table in sheet["評価対象エリア"].as_array_mut().unwrap() {
+                table["評価内容"].as_array_mut().unwrap().sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string());
+            }}
+        }
+    }
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-bulk-e2e-reference.json");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let inputs=data["inputs"].as_array().unwrap();
+    for (i,case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let mode=case["mode"].as_str().unwrap();let mut files=Vec::new();
+        for index in case["indices"].as_array().unwrap() {
+            let input=&inputs[index.as_u64().unwrap() as usize];let name=input["name"].as_str().unwrap();
+            let bytes:Vec<_>=input["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+            files.push(if name.ends_with(".xlsx") { analyze_xlsx_report_experimental(&bytes,name,mode).unwrap() } else { analyze_csv_report_experimental(&bytes,name,mode).unwrap() });
+        }
+        let mut got=combine_native_reports(&files).unwrap();let mut expected=case["report"].clone();normalize(&mut got);normalize(&mut expected);
+        assert_eq!(got,expected,"case {i}");
+    }
+}

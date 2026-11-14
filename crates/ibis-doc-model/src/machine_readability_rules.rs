@@ -1806,7 +1806,7 @@ pub type BulkConsistencyReport = RuleDiagnostics;
 
 pub fn bulk_format_consistency_report(files: &[(&str, &[String])]) -> BulkConsistencyReport {
     let finish = |findings: Vec<Finding>, descriptions: Vec<String>, confidence: f64, message: String| {
-        BulkConsistencyReport { evaluation: result("L3-07", findings.is_empty(), confidence, Severity::Critical, findings), message, descriptions }
+        BulkConsistencyReport { evaluation: result("L3-07", findings.is_empty(), confidence, Severity::Major, findings), message, descriptions }
     };
     if files.len() < 2 { return finish(Vec::new(), Vec::new(), 0.5, "bulk評価対象が1ファイル以下のためスキップ".into()); }
     let mut findings = Vec::new();
