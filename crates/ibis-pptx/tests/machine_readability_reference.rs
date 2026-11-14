@@ -351,3 +351,22 @@ fn rust_one_data_per_cell_matches_pinned_harunobu() {
     let invalid = CellRange { first_row: 2, last_row: 1, ..table };
     assert_eq!(one_data_per_cell(&sheet, invalid, None).result.confidence, 0.0);
 }
+
+#[test]
+fn rust_irrelevant_information_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{irrelevant_information, FindingSeverity, OutsideTableCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-irrelevant-reference.json")).unwrap()).unwrap();
+    assert_eq!(fixture["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for case in fixture["cases"].as_array().unwrap() {
+        let cells: Vec<_> = case["others"].as_array().unwrap().iter().map(|v| OutsideTableCell {
+            row: v[0].as_u64().unwrap() as u32 - 1, column: v[1].as_u64().unwrap() as u32 - 1,
+        }).collect();
+        let got = irrelevant_information(Some(&cells));
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap());
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap());
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>());
+        assert!(got.findings.iter().all(|v| v.severity == FindingSeverity::Warning));
+    }
+    assert_eq!(irrelevant_information(None).result.confidence, 0.0);
+}
