@@ -125,3 +125,5 @@ cardinality, sample thresholds, and violation locations.
 and compares finding locations without assuming Python set iteration order.
 `harunobu-vertical-reference.json` covers L3-09 time-axis headers, numbered
 columns, missing header cells and the 101-column boundary with AI disabled.
+`harunobu-time-axis-reference.json` compares 160 L3-05 table layouts, including
+ISO dates, Japanese era dates, fiscal years, and mixed date formats.
