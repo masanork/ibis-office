@@ -1156,27 +1156,62 @@ pub fn xlsx_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32],
 /// Each inner list must already reflect the reference's nonempty-label filter
 /// followed by trimming; an empty list denotes a missing extractable header.
 pub fn bulk_format_consistency(file_headers: &[Vec<String>]) -> RuleEvaluation {
-    if file_headers.len() < 2 { return result("L3-07", true, 0.5, Severity::Critical, Vec::new()); }
+    let named: Vec<_> = file_headers.iter().map(|headers| ("", headers.as_slice())).collect();
+    bulk_format_consistency_report(&named).evaluation
+}
+
+/// The reference's L3-07 result, including the text needed in user reports.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BulkConsistencyReport {
+    pub evaluation: RuleEvaluation,
+    pub message: String,
+    /// Descriptions correspond one-to-one with evaluation.findings.
+    pub descriptions: Vec<String>,
+}
+
+pub fn bulk_format_consistency_report(files: &[(&str, &[String])]) -> BulkConsistencyReport {
+    let finish = |findings: Vec<Finding>, descriptions: Vec<String>, confidence: f64, message: String| {
+        BulkConsistencyReport { evaluation: result("L3-07", findings.is_empty(), confidence, Severity::Critical, findings), message, descriptions }
+    };
+    if files.len() < 2 { return finish(Vec::new(), Vec::new(), 0.5, "bulk評価対象が1ファイル以下のためスキップ".into()); }
     let mut findings = Vec::new();
-    if file_headers.iter().any(Vec::is_empty) { findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning }); }
-    let files: Vec<_> = file_headers.iter().filter(|v| !v.is_empty()).collect();
-    if files.len() < 2 { return result("L3-07", findings.is_empty(), 0.5, Severity::Critical, findings); }
-    let sets: Vec<BTreeSet<&str>> = files.iter().map(|v| v.iter().map(String::as_str).collect()).collect();
+    let mut descriptions = Vec::new();
+    let missing: Vec<_> = files.iter().filter(|(_, headers)| headers.is_empty()).map(|(name, _)| *name).collect();
+    if !missing.is_empty() {
+        findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning });
+        descriptions.push(format!("以下のファイルからヘッダーを抽出できなかったため、フォーマット一貫性評価から除外しています: {}。ヘッダー行が認識できるよう構造を見直してください。", missing.join(", ")));
+    }
+    let evaluable: Vec<_> = files.iter().filter(|(_, headers)| !headers.is_empty()).collect();
+    if evaluable.len() < 2 {
+        let message = if findings.is_empty() { "評価対象が不足しているためスキップ" } else { "ヘッダー抽出可能なファイルが 2 件未満のため、ファイル横断の一貫性評価をスキップしました" };
+        return finish(findings, descriptions, 0.5, message.into());
+    }
+    let sets: Vec<BTreeSet<&str>> = evaluable.iter().map(|(_, headers)| headers.iter().map(String::as_str).collect()).collect();
     let mut min_jaccard = 1.0f64;
     for i in 0..sets.len() { for j in i+1..sets.len() {
         let union = sets[i].union(&sets[j]).count();
         if union > 0 { min_jaccard = min_jaccard.min(sets[i].intersection(&sets[j]).count() as f64 / union as f64); }
     }}
-    if min_jaccard < 0.8 { findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning }); }
-    let mean = files.iter().map(|v| v.len() as f64).sum::<f64>() / files.len() as f64;
-    let deviation = (files.iter().map(|v| (v.len() as f64 - mean).powi(2)).sum::<f64>() / files.len() as f64).sqrt();
-    if deviation > 1.5 { findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning }); }
+    if min_jaccard < 0.8 {
+        findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning });
+        let names = evaluable.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ");
+        descriptions.push(format!("ファイル間でヘッダー集合が大きく異なります（Jaccard類似度 {min_jaccard:.2} < 0.8）。対象ファイル: {names}"));
+    }
+    let mean = evaluable.iter().map(|(_, v)| v.len() as f64).sum::<f64>() / evaluable.len() as f64;
+    let deviation = (evaluable.iter().map(|(_, v)| (v.len() as f64 - mean).powi(2)).sum::<f64>() / evaluable.len() as f64).sqrt();
+    if deviation > 1.5 {
+        findings.push(Finding { location: String::new(), severity: FindingSeverity::Warning });
+        let counts: Vec<_> = evaluable.iter().map(|(_, v)| v.len()).collect();
+        descriptions.push(format!("ファイル間で列数が変動しています（標準偏差 {deviation:.2}, 列数: {counts:?}）"));
+    }
     let common = sets.iter().skip(1).fold(sets[0].clone(), |acc, set| acc.intersection(set).copied().collect());
     if common.len() >= 2 {
-        let reference: Vec<_> = files[0].iter().filter(|v| common.contains(v.as_str())).collect();
-        if files.iter().skip(1).any(|headers| headers.iter().filter(|v| common.contains(v.as_str())).collect::<Vec<_>>() != reference) {
+        let reference: Vec<_> = evaluable[0].1.iter().filter(|v| common.contains(v.as_str())).collect();
+        if evaluable.iter().skip(1).any(|(_, headers)| headers.iter().filter(|v| common.contains(v.as_str())).collect::<Vec<_>>() != reference) {
             findings.push(Finding { location: String::new(), severity: FindingSeverity::Info });
+            descriptions.push("ファイル間で共通ヘッダーの並び順が変動しています。時系列での自動結合・比較に支障が出る可能性があります".into());
         }
     }
-    result("L3-07", findings.is_empty(), 0.8, Severity::Critical, findings)
+    let message = if findings.is_empty() { format!("{}ファイル間でフォーマットの一貫性が保たれています", files.len()) } else { format!("複数ファイル間のフォーマット不整合: {}件検出", findings.len()) };
+    finish(findings, descriptions, 0.8, message)
 }
