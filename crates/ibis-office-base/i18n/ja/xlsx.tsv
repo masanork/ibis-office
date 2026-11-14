@@ -2904,3 +2904,5 @@ xlsx.hf.back-to-page-setup	ページ設定に戻る
 xlsx.validation.list-needs-extension	この設定は Excel にない機能です（Excel では入力規則が働きません）。使いますか？
 xlsx.design-mode.close	デザイン モードを閉じる
 xlsx.sheet.delete-ask	シートを削除してよろしいですか？
+
+xlsx.machine-readability.private-use	私用文字：環境によって表示や文字の意味が異なる場合があります。利用先のフォントや対応表を確認してください。
