@@ -1021,6 +1021,10 @@ pub fn xlsx_vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32]
 }
 
 fn vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32], falsy: &BTreeSet<(u32, u32)>) -> Option<RuleEvaluation> {
+    Some(vertical_format_report(sheet,table,header_rows,falsy)?.evaluation)
+}
+
+pub fn vertical_format_report(sheet: &Sheet, table: CellRange, header_rows: &[u32], falsy: &BTreeSet<(u32, u32)>) -> Option<RuleDiagnostics> {
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     struct Patterns { year: regex::Regex, month: regex::Regex, period: regex::Regex, era: regex::Regex, numbered: regex::Regex }
@@ -1033,9 +1037,9 @@ fn vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32], falsy: 
         numbered: regex::Regex::new(r"^(.+?)[\s\x1c-\x1f_\-]?(\d+)$").unwrap(),
     });
     if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
-    let Some(&header) = header_rows.last() else { return Some(result("L3-09", true, 0.5, Severity::Major, Vec::new())); };
+    let Some(&header) = header_rows.last() else { return Some(RuleDiagnostics { evaluation:result("L3-09", true, 0.5, Severity::Major, Vec::new()), message:"ヘッダー行が検出されなかったためスキップ".into(), descriptions:Vec::new() }); };
     let width = u64::from(table.last_column) - u64::from(table.first_column) + 1;
-    if width < 4 { return Some(result("L3-09", true, 0.8, Severity::Major, Vec::new())); }
+    if width < 4 { return Some(RuleDiagnostics { evaluation:result("L3-09", true, 0.8, Severity::Major, Vec::new()), message:"列数が少ないため横持ちの判定対象外".into(), descriptions:Vec::new() }); }
     let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
     let mut cells = BTreeMap::new();
     for cell in sheet.cells.iter().filter(|c| c.row == header && c.column >= table.first_column && c.column <= table.last_column) {
@@ -1044,8 +1048,8 @@ fn vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32], falsy: 
     }
     let location = |column| if cells.contains_key(&column) { address(header, column) } else { format!("R{}C{}", u64::from(header) + 1, u64::from(column) + 1) };
     let range = |start, end| format!("{}:{}", location(start), location(end));
-    let mut findings = Vec::new();
-    if width > 100 { findings.push(Finding { location: range(table.first_column, table.last_column), severity: FindingSeverity::Error }); }
+    let mut findings = Vec::new(); let mut descriptions = Vec::new();
+    if width > 100 { findings.push(Finding { location: range(table.first_column, table.last_column), severity: FindingSeverity::Error }); descriptions.push(format!("列数が {width} 列と過大です（100 列超）。横持ち形式の典型例であり、縦持ち形式への変換を強く推奨します")); }
     let mut groups: [Vec<u32>; 4] = std::array::from_fn(|_| Vec::new());
     for (&col, value) in &cells {
         if let Some(value) = value {
@@ -1053,8 +1057,9 @@ fn vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32], falsy: 
             if p.year.is_match(value) { groups[0].push(col); } else if p.month.is_match(value) { groups[1].push(col); } else if p.period.is_match(value) { groups[2].push(col); } else if p.era.is_match(value) { groups[3].push(col); }
         }
     }
-    if let Some(wide) = groups.iter().find(|v| v.len() >= 3) {
+    if let Some((kind,wide)) = ["年","月","期","年（和暦）"].into_iter().zip(groups.iter()).find(|(_,v)| v.len() >= 3) {
         findings.push(Finding { location: range(wide[0], *wide.last()?), severity: FindingSeverity::Warning });
+        descriptions.push(format!("横持ち形式が検出されました: {kind}が{}列にわたって列名になっています。縦持ち形式への変換を推奨します",wide.len()));
     } else {
         let nonempty: Vec<_> = cells.iter().filter_map(|(&col, value)| value.filter(|v| !v.is_empty() && !falsy.contains(&(header, col))).map(|v| (col, v.trim_matches(space)))).collect();
         if nonempty.len() >= 5 {
@@ -1067,14 +1072,19 @@ fn vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32], falsy: 
                     if let Some((_, cols)) = groups.iter_mut().find(|(v, _)| v == base) { cols.push(col); } else { groups.push((base.to_string(), vec![col])); }
                 }
             }
-            for (_, cols) in groups { if cols.len() >= 4 { findings.push(Finding { location: range(cols[0], *cols.last()?), severity: FindingSeverity::Info }); } }
+            for (base, cols) in groups { if cols.len() >= 4 { findings.push(Finding { location: range(cols[0], *cols.last()?), severity: FindingSeverity::Info }); descriptions.push(format!("類似名称の列が{}列並んでいます（'{base}1', '{base}2', ...）。横持ち形式の可能性があります",cols.len())); } }
         }
     }
-    Some(result("L3-09", findings.is_empty(), 0.7, Severity::Major, findings))
+    let message = if descriptions.is_empty() { "データは縦持ち形式です".into() } else { format!("横持ちフォーマット検出: {}件",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation:result("L3-09", findings.is_empty(), 0.7, Severity::Major, findings), message, descriptions })
 }
 
 /// L3-05 for unmerged CSV/TSV text cells and known layout rows.
 pub fn csv_time_axis(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    Some(time_axis_report(sheet,table,header_rows,body_first,body_last)?.evaluation)
+}
+
+pub fn time_axis_report(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleDiagnostics> {
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     struct Patterns { wareki: regex::Regex, wareki_start: regex::Regex, seireki: regex::Regex, nendo: regex::Regex, estat: regex::Regex, iso: regex::Regex, jis: regex::Regex, nonstandard: regex::Regex, keyword: regex::Regex }
@@ -1091,7 +1101,7 @@ pub fn csv_time_axis(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_
         keyword: regex::Regex::new(r"(?i)(年|月|日|年度|時期|期間|期日|日付|日時|時点|年月|調査時点|対象期間|date|year|month|period)").unwrap(),
     });
     if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
-    let Some(&header) = header_rows.last() else { return Some(result("L3-05", true, 0.5, Severity::Major, Vec::new())); };
+    let Some(&header) = header_rows.last() else { return Some(RuleDiagnostics { evaluation:result("L3-05", true, 0.5, Severity::Major, Vec::new()), message:"ヘッダー行が検出されなかったためスキップ".into(), descriptions:Vec::new() }); };
     let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
     let mut cells = BTreeMap::new();
     for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column && (c.row == header || (c.row >= body_first && c.row <= body_last))) {
@@ -1100,12 +1110,14 @@ pub fn csv_time_axis(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_
     }
     let mut time_cols = Vec::new();
     let mut findings = Vec::new();
+    let mut descriptions = Vec::new();
     for col in table.first_column..=table.last_column {
         if let Some(&value) = cells.get(&(header, col)) {
             if !value.is_empty() && p.keyword.is_match(value) { time_cols.push(col); }
             let value = value.trim_matches(space);
             if !p.iso.is_match(value) && !p.jis.is_match(value) && p.wareki_start.is_match(value) {
                 findings.push(Finding { location: address(header, col), severity: FindingSeverity::Warning });
+                descriptions.push(format!("ヘッダーに和暦表記が使用されています: '{value}'"));
             }
         }
     }
@@ -1122,13 +1134,21 @@ pub fn csv_time_axis(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_
                 else if p.estat.is_match(value) { Some(if value.contains('年') { "estat_kanji" } else if value.contains('/') { "estat_slash" } else { "estat_hyphen" }) }
                 else if p.seireki.is_match(value) { Some("seireki_other") } else { None };
             if let Some(format) = format {
-                if format == "wareki" || format == "nonstandard" { findings.push(Finding { location: address(row, col), severity: if format == "wareki" { FindingSeverity::Error } else { FindingSeverity::Warning } }); }
-                else { formats.insert(format); }
+                if format == "wareki" || format == "nonstandard" {
+                    findings.push(Finding { location: address(row, col), severity: if format == "wareki" { FindingSeverity::Error } else { FindingSeverity::Warning } });
+                    descriptions.push(if format == "wareki" { format!("和暦表記が使用されています: '{value}'。西暦に統一してください") } else { format!("非標準的な日付表記です: '{value}'") });
+                } else { formats.insert(format); }
             }
         }
-        if formats.len() > 1 { findings.push(Finding { location: address(header, col), severity: FindingSeverity::Warning }); }
+        if formats.len() > 1 {
+            findings.push(Finding { location: address(header, col), severity: FindingSeverity::Warning });
+            let name = cells.get(&(header,col)).copied().filter(|v|!v.is_empty()).map(str::to_string).unwrap_or_else(||format!("列{}",u64::from(col)+1));
+            let list = formats.iter().map(|f|format!("'{f}'")).collect::<Vec<_>>().join(", ");
+            descriptions.push(format!("列 '{name}' 内で日付フォーマットが混在しています: [{list}]"));
+        }
     }
-    Some(result("L3-05", findings.is_empty(), 0.75, Severity::Major, findings))
+    let message = if descriptions.is_empty() { "時間軸の表記は標準化されています".into() } else { format!("時間軸表記の問題: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation:result("L3-05", findings.is_empty(), 0.75, Severity::Major, findings), message, descriptions })
 }
 
 /// L3-06 for unmerged CSV/TSV cells. Embedded region-name sets are derived
