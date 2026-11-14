@@ -298,7 +298,7 @@ fn detected_xlsx_structure_matches_thorough_reference() {
 
 #[test]
 fn xlsx_fragmentation_matches_merged_reference_cases() {
-    use ibis_doc_model::machine_readability_rules::{xlsx_data_fragmentation, DetectedTable};
+    use ibis_doc_model::machine_readability_rules::{xlsx_data_fragmentation, xlsx_fragmentation_report, DetectedTable};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-fragmentation-reference.json")).unwrap()).unwrap();
@@ -312,6 +312,10 @@ fn xlsx_fragmentation_matches_merged_reference_cases() {
         sheet.merges = case["merges"].as_array().unwrap().iter().map(|v| CellRange { first_row: v[0].as_u64().unwrap() as u32, first_column: v[1].as_u64().unwrap() as u32, last_row: v[2].as_u64().unwrap() as u32, last_column: v[3].as_u64().unwrap() as u32 }).collect();
         let range = CellRange { first_row: 0, first_column: 0, last_row: case["rows"].as_u64().unwrap() as u32 - 1, last_column: case["cols"].as_u64().unwrap() as u32 - 1 };
         let got = xlsx_data_fragmentation(&sheet, range, &[DetectedTable { range, confidence: 1.0 }], case["read_only"].as_bool().unwrap()).unwrap();
+        let report = xlsx_fragmentation_report(&sheet, range, &[DetectedTable { range, confidence: 1.0 }], case["read_only"].as_bool().unwrap()).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
