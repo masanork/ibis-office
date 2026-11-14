@@ -6,13 +6,14 @@ commit='88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f';repo=Path(sys.argv[1]).resolve
 if subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip()!=commit: raise SystemExit('Harunobu checkout is not at the pinned revision')
 root=Path(__file__).resolve().parent.parent/'test/fixtures/machine-readability'
 code=r'''
-import io,json,sys
+import datetime,io,json,sys
 from pathlib import Path
 from harunobu.core.reader import read_workbook
 from harunobu.core.analyzer import Analyzer
 from openpyxl import Workbook
 from openpyxl.chart import BarChart,Reference
-from openpyxl.styles import Font,PatternFill
+from openpyxl.styles import Border,Font,PatternFill,Side
+from openpyxl.utils.datetime import CALENDAR_MAC_1904
 book=Workbook();sheet=book.active;sheet.title='Text'
 sheet.append(['住所','内容','数']);sheet.append(['東京都　千代田区',' 先頭と末尾 ',1]);sheet.append(['大阪府 大阪市','①Ａ',2]);sheet.append(['京都府 京都市','A、B、C',3]);book.save(Path(sys.argv[1])/'xlsx-text-checks.xlsx')
 book=Workbook();sheet=book.active;sheet.title='Tables'
@@ -27,16 +28,27 @@ book=Workbook();sheet=book.active;sheet.title='Style'
 for row in [['項目','値'],['A',1],['B',2],['C',3]]: sheet.append(row)
 sheet['A3'].font=Font(color='FF0000',bold=True,italic=True);sheet['A3'].fill=PatternFill('solid',fgColor='00FF00')
 sheet['B3'].font=Font(color='0000FF');sheet['B3'].fill=PatternFill('solid',fgColor='FFFFFF')
+sheet['A3'].border=Border(left=Side(),right=Side(style='thin'),top=Side(),bottom=Side());sheet['B3'].border=Border(left=Side(style='thin'),right=Side(),top=Side(),bottom=Side())
 book.save(Path(sys.argv[1])/'xlsx-format-variation.xlsx')
+book=Workbook();sheet=book.active;sheet.title='Dates'
+for row in [['地域','日付','数'],['東京',datetime.datetime(2024,1,2),1],['大阪',datetime.datetime(2024,1,3),2]]: sheet.append(row)
+book.save(Path(sys.argv[1])/'xlsx-date-values.xlsx')
+book.epoch=CALENDAR_MAC_1904;book.save(Path(sys.argv[1])/'xlsx-date-1904.xlsx')
+book=Workbook();sheet=book.active;sheet.title='Abbrev'
+for row in [['地域','値'],['東京',1],['同上',2],['大阪',3]]: sheet.append(row)
+book.save(Path(sys.argv[1])/'xlsx-abbreviations.xlsx')
+book=Workbook();sheet=book.active;sheet.title='Duration'
+for row in [['地域','期間','値'],['東京',datetime.timedelta(days=1,hours=2),1],['大阪',datetime.timedelta(hours=3,minutes=5),2],['京都',datetime.timedelta(days=2,seconds=2),3]]: sheet.append(row)
+book.save(Path(sys.argv[1])/'xlsx-duration-values.xlsx')
 out=[]
-for file in ['structure.xlsx','header-merge.xlsx','xlsx-artifact-errors.xlsx','xlsx-artifact-multisheet.xlsx','xlsx-text-checks.xlsx','xlsx-multiple-tables.xlsx','xlsx-chart-anchors.xlsx','xlsx-format-variation.xlsx']:
+for file in ['structure.xlsx','header-merge.xlsx','xlsx-artifact-errors.xlsx','xlsx-artifact-multisheet.xlsx','xlsx-text-checks.xlsx','xlsx-multiple-tables.xlsx','xlsx-chart-anchors.xlsx','xlsx-format-variation.xlsx','xlsx-date-values.xlsx','xlsx-date-1904.xlsx','xlsx-abbreviations.xlsx','xlsx-duration-values.xlsx']:
     wb=read_workbook(file,io.BytesIO((Path(sys.argv[1])/file).read_bytes()));result=Analyzer('thorough').analyze(wb)
     sheets=[]
     for raw_sheet,sheet in zip(wb.sheets,result.sheets):
         tables=[]
         for t in sheet.tables:
             checks=[]
-            for group,ids in [(t.mr_result.level1,['L1-01','L1-02','L1-03','L1-04','L1-05','L1-06','L1-07','L1-08','L1-09','L1-10','L1-11','L1-12','L1-13']),(t.mr_result.level2,['L2-06'])]:
+            for group,ids in [(t.mr_result.level1,['L1-01','L1-02','L1-03','L1-04','L1-05','L1-06','L1-07','L1-08','L1-09','L1-10','L1-11','L1-12','L1-13']),(t.mr_result.level2,['L2-01','L2-02','L2-03','L2-04','L2-05','L2-06']),(t.mr_result.level3,['L3-01','L3-02','L3-03','L3-04','L3-05','L3-06','L3-07','L3-08','L3-09'])]:
                 for id in ids:
                     r=group[id];checks.append(dict(id=id,passed=r.passed,confidence=r.confidence,severity=r.severity.value,findings=[[v.cell_range,v.severity] for v in r.violations]))
             r=t.range;tables.append(dict(range=[r.start_row-1,r.start_col-1,r.end_row-1,r.end_col-1],headers=[r-1 for r in t.layout.header_rows],confidence=t.confidence,checks=checks))
