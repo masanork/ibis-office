@@ -150,3 +150,5 @@ merged-cell behavior in single-pass and read-only-style contexts.
 merged headers and typed number, Boolean and text cells.
 `xlsx-text-checks.xlsx` adds address, whitespace, circled-number and full-width
 text cases to the XLSX structural analyzer comparison.
+`xlsx-multiple-tables.xlsx` verifies detected-table ordering and common checks;
+`xlsx-text-checks.xlsx` also contains a multi-item cell for L1-07.

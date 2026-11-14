@@ -205,15 +205,34 @@ pub struct PartialXlsxStructure {
 }
 
 pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Result<Vec<PartialXlsxStructure>, XlsxInputError> {
-    use ibis_doc_model::machine_readability_layout::{merge_column_adjacent_regions, merge_form_fragments, preliminary_islands};
-    use ibis_doc_model::machine_readability_rules::{file_format, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, one_table_per_sheet, platform_characters, whitespace_formatting, xlsx_column_headers, xlsx_data_fragmentation, DetectedTable, OutsideTableCell, TextEncoding, UsedExtent, WorkbookFormat};
+    use ibis_doc_model::machine_readability_layout::{generate_column_headers, infer_column_schemas, inherit_headers_from_above, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue, ResolvedIsland};
+    use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, file_format, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, xlsx_column_headers, xlsx_data_fragmentation, ColumnType, DetectedTable, OutsideTableCell, TextEncoding, UsedExtent, WorkbookFormat};
     use ibis_doc_model::sheet::CellRange;
     let saved = read_xlsx_saved_sheet(bytes, sheet_index)?;
     // Reference skips only L2-06 if package-wide formula inspection fails.
     let artifacts = inspect_xlsx_formula_artifacts(bytes).ok().and_then(|v| v.get(sheet_index).cloned());
     let preliminary = preliminary_islands(&saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
     let columns = merge_column_adjacent_regions(&preliminary.candidates, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
-    let mut regions = merge_form_fragments(&columns, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+    let forms = merge_form_fragments(&columns, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+    // Header labels are used here only to preserve header presence/inheritance;
+    // column types are inferred from the saved, reader-normalized body values.
+    let header_cells: Vec<_> = saved.layout.cells.iter().map(|c| {
+        let master = saved.layout.merges.iter().find(|m| c.row >= m.first_row && c.row <= m.last_row && c.column >= m.first_column && c.column <= m.last_column).map(|m| (m.first_row, m.first_column));
+        let value = match &c.value { Some(LayoutValue::Text(v)) => Some(v.clone()), Some(_) => Some("0".to_string()), None => None };
+        HeaderCell { row: c.row, column: c.column, value, merged: c.merged, master }
+    }).collect();
+    let mut resolved = Vec::new();
+    for region in forms {
+        let range = region.candidate.range;
+        let indices: Vec<_> = (range.first_column..=range.last_column).collect();
+        let headers = generate_column_headers(&region.headers.rows, &indices, &header_cells).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+        let labels: BTreeMap<_, _> = headers.iter().map(|h| (h.column, h.label.as_str())).collect();
+        let schema_input: Vec<_> = indices.iter().map(|&c| (c, labels.get(&c).copied())).collect();
+        let schemas = if region.headers.rows.is_empty() { Vec::new() } else { infer_column_schemas(&schema_input, region.headers.body_first, region.headers.body_last, &saved.layout.cells).ok_or(XlsxInputError::InvalidWindowMetadata)? };
+        let abstain = region.candidate.confidence < 0.7;
+        resolved.push(ResolvedIsland { candidate: region.candidate, headers: region.headers, column_headers: headers, column_schemas: schemas, stub_columns: Vec::new(), footer_rows: Vec::new(), abstain });
+    }
+    let mut regions = inherit_headers_from_above(&resolved, &saved.layout.cells).ok_or(XlsxInputError::InvalidWindowMetadata)?;
     regions.sort_by(|a, b| b.candidate.confidence.total_cmp(&a.candidate.confidence));
     let tables: Vec<_> = regions.iter().map(|r| DetectedTable { range: r.candidate.range, confidence: r.candidate.confidence }).collect();
     let others: Vec<_> = preliminary.others.iter().map(|o| OutsideTableCell { row: o.row, column: o.column }).collect();
@@ -226,7 +245,11 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
     regions.iter().map(|region| {
         let range = region.candidate.range;
         let header_rows: BTreeSet<_> = region.headers.rows.iter().copied().collect();
-        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), xlsx_column_headers(&saved.sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, whitespace_formatting(&reference_sheet, range, Some(&region.headers.rows)), platform_characters(&reference_sheet, range, TextEncoding::Xlsx), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
+        // Duration values stringify with commas in the reference; avoid
+        // guessing their L1-07 interpretation until duration formatting is ported.
+        if saved.layout.cells.iter().any(|c| c.row >= range.first_row && c.row <= range.last_row && c.column >= range.first_column && c.column <= range.last_column && c.value == Some(LayoutValue::Other)) { return Err(XlsxInputError::InvalidWindowMetadata); }
+        let column_types: BTreeMap<_, _> = region.column_schemas.iter().map(|c| (c.column, if c.kind == InferredColumnType::Numeric { ColumnType::Numeric } else { ColumnType::Other })).collect();
+        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), xlsx_column_headers(&saved.sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, whitespace_formatting(&reference_sheet, range, Some(&region.headers.rows)), one_data_per_cell(&reference_sheet, range, Some(&column_types)), platform_characters(&reference_sheet, range, TextEncoding::Xlsx), blank_vs_zero_ai_disabled(), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
         Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), checks, complete: false })
     }).collect()
 }
