@@ -191,3 +191,14 @@ process = subprocess.run([str(repo / ".venv/bin/python"), "-I", "-X", "utf8", "-
     input=json.dumps(character_values, ensure_ascii=False), text=True, capture_output=True, check=True)
 character_rule = {"harunobu_commit": COMMIT, "values": character_values, "cases": json.loads(process.stdout)}
 (FIXTURES / "harunobu-character-rule-reference.json").write_text(json.dumps(character_rule, ensure_ascii=False, indent=2) + "\n")
+
+# L1-07 is compared independently of layout inference. Column type is supplied
+# explicitly so the numeric-column exception can be checked in isolation.
+one_data_script = r'''import json
+from harunobu.rules.level1.L1_07_one_data_per_cell import OneDataPerCellRule
+values = ["", " ", "普通の文字", "a\nb", "a\n\n", "1（2）", " １（２） ", "A、B、C", "A、B", "A・B・C", "A・B", "a,b", "1,2", "1,234", "12,345,678.90", "1234,567", "1,23", "1,2,3", "1,２", "１,２", "a,1", "1,a", ",", "1,", ",2", "a （x,y）", "1（2,3）", "1, 2", "1,\t2", "a\n b, c", "(1,2)", "1.0,2.0", "001,002", "١,٢", "😀,😀", "\u001c1（2）\u001c", "1,\u001c2", "\u001c\na"]
+r = OneDataPerCellRule()
+print(json.dumps([dict(value=v, column=c, reason=r._has_multiple_data(v, col_type=c)) for v in values for c in [None, 'text', 'numeric']], ensure_ascii=False))
+'''
+process = subprocess.run([str(repo / '.venv/bin/python'), '-I', '-X', 'utf8', '-c', one_data_script], text=True, capture_output=True, check=True)
+(FIXTURES / 'harunobu-one-data-reference.json').write_text(json.dumps({'harunobu_commit': COMMIT, 'cases': json.loads(process.stdout)}, ensure_ascii=False, indent=2) + '\n')

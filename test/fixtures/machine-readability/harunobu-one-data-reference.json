@@ -1,0 +1,575 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "cases": [
+    {
+      "value": "",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": " ",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": " ",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": " ",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "普通の文字",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "普通の文字",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "普通の文字",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "a\nb",
+      "column": null,
+      "reason": "セル内改行による複数データ"
+    },
+    {
+      "value": "a\nb",
+      "column": "text",
+      "reason": "セル内改行による複数データ"
+    },
+    {
+      "value": "a\nb",
+      "column": "numeric",
+      "reason": "セル内改行による複数データ"
+    },
+    {
+      "value": "a\n\n",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "a\n\n",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "a\n\n",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1（2）",
+      "column": null,
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": "1（2）",
+      "column": "text",
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": "1（2）",
+      "column": "numeric",
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": " １（２） ",
+      "column": null,
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": " １（２） ",
+      "column": "text",
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": " １（２） ",
+      "column": "numeric",
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": "A、B、C",
+      "column": null,
+      "reason": "読点（、）による列挙"
+    },
+    {
+      "value": "A、B、C",
+      "column": "text",
+      "reason": "読点（、）による列挙"
+    },
+    {
+      "value": "A、B、C",
+      "column": "numeric",
+      "reason": "読点（、）による列挙"
+    },
+    {
+      "value": "A、B",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "A、B",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "A、B",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "A・B・C",
+      "column": null,
+      "reason": "中黒（・）による列挙"
+    },
+    {
+      "value": "A・B・C",
+      "column": "text",
+      "reason": "中黒（・）による列挙"
+    },
+    {
+      "value": "A・B・C",
+      "column": "numeric",
+      "reason": "中黒（・）による列挙"
+    },
+    {
+      "value": "A・B",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "A・B",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "A・B",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "a,b",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "a,b",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "a,b",
+      "column": "numeric",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,2",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,2",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,2",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1,234",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "1,234",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "1,234",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "12,345,678.90",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "12,345,678.90",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "12,345,678.90",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1234,567",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1234,567",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1234,567",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1,23",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,23",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,23",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1,2,3",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,2,3",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,2,3",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1,２",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,２",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,２",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "１,２",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "１,２",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "１,２",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "a,1",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "a,1",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "a,1",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1,a",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,a",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,a",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": ",",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": ",",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": ",",
+      "column": "numeric",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": ",2",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": ",2",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": ",2",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "a （x,y）",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "a （x,y）",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "a （x,y）",
+      "column": "numeric",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1（2,3）",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "1（2,3）",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "1（2,3）",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1, 2",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1, 2",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1, 2",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1,\t2",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,\t2",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,\t2",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "a\n b, c",
+      "column": null,
+      "reason": "セル内改行による複数データ"
+    },
+    {
+      "value": "a\n b, c",
+      "column": "text",
+      "reason": "セル内改行による複数データ"
+    },
+    {
+      "value": "a\n b, c",
+      "column": "numeric",
+      "reason": "セル内改行による複数データ"
+    },
+    {
+      "value": "(1,2)",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "(1,2)",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "(1,2)",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "1.0,2.0",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1.0,2.0",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1.0,2.0",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "001,002",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "001,002",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "001,002",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "١,٢",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "١,٢",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "١,٢",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "😀,😀",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "😀,😀",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "😀,😀",
+      "column": "numeric",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "\u001c1（2）\u001c",
+      "column": null,
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": "\u001c1（2）\u001c",
+      "column": "text",
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": "\u001c1（2）\u001c",
+      "column": "numeric",
+      "reason": "全角括弧内に別数値（複数指標の混在）"
+    },
+    {
+      "value": "1,\u001c2",
+      "column": null,
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,\u001c2",
+      "column": "text",
+      "reason": "カンマ区切りによる複数データ"
+    },
+    {
+      "value": "1,\u001c2",
+      "column": "numeric",
+      "reason": null
+    },
+    {
+      "value": "\u001c\na",
+      "column": null,
+      "reason": null
+    },
+    {
+      "value": "\u001c\na",
+      "column": "text",
+      "reason": null
+    },
+    {
+      "value": "\u001c\na",
+      "column": "numeric",
+      "reason": null
+    }
+  ]
+}
