@@ -33,7 +33,7 @@ for name,text,enc,delimiter in inputs:
         l2=table.mr_result.level2[id]
         level2_checks.append(dict(id=id,passed=l2.passed,confidence=l2.confidence,severity=l2.severity.value,findings=[[v.cell_range,v.severity] for v in l2.violations]))
     level3_checks=[]
-    for id in ['L3-01','L3-02','L3-03','L3-05','L3-07','L3-08','L3-09']:
+    for id in ['L3-01','L3-02','L3-03','L3-04','L3-05','L3-06','L3-07','L3-08','L3-09']:
         r=table.mr_result.level3[id]
         level3_checks.append(dict(id=id,passed=r.passed,confidence=r.confidence,severity=r.severity.value,findings=[[v.cell_range,v.severity] for v in r.violations]))
     r=table.range
