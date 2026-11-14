@@ -447,7 +447,7 @@ fn csv_column_headers_match_pinned_harunobu() {
 
 #[test]
 fn csv_unique_headers_match_pinned_harunobu() {
-    use ibis_doc_model::machine_readability_rules::{csv_unique_headers, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{csv_unique_headers, csv_unique_headers_report, FindingSeverity};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-unique-headers-reference.json")).unwrap()).unwrap();
@@ -462,6 +462,10 @@ fn csv_unique_headers_match_pinned_harunobu() {
         }).collect::<Vec<_>>().into();
         let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
         let got = csv_unique_headers(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        let report = csv_unique_headers_report(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
@@ -1076,6 +1080,24 @@ fn multiple_data_diagnostics_match_pinned_harunobu() {
         }).collect::<Vec<_>>().into();
         let columns:BTreeMap<_,_>=case["types"].as_array().unwrap().iter().enumerate().map(|(c,v)|(c as u32,if v=="numeric" {ColumnType::Numeric} else {ColumnType::Other})).collect();
         let got=one_data_per_cell_report(&sheet,table,Some(&columns)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn merged_header_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::xlsx_unique_headers_report;
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,Sheet,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-unique-headers-reference.json")).unwrap()).unwrap();
+    let table=CellRange { first_row:0,first_column:0,last_row:3,last_column:3 };
+    let merges=[CellRange { first_row:0,first_column:0,last_row:0,last_column:1 }];
+    for (i,case) in data["merged"].as_array().unwrap().iter().enumerate() {
+        let mut sheet=Sheet::default();
+        sheet.cells=case["cells"].as_array().unwrap().iter().map(|v| { let text=v[2].as_str().unwrap().to_string(); SheetCell { row:v[0].as_u64().unwrap() as u32,column:v[1].as_u64().unwrap() as u32,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None } }).collect::<Vec<_>>().into();
+        let got=xlsx_unique_headers_report(&sheet,table,&[0],1,3,&merges).unwrap();
         assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
         assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
         assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
