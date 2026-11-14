@@ -555,7 +555,7 @@ fn csv_numeric_purity_matches_pinned_harunobu() {
 #[test]
 fn csv_other_details_matches_pinned_harunobu() {
     use ibis_doc_model::machine_readability_layout::InferredColumnType;
-    use ibis_doc_model::machine_readability_rules::{csv_other_details, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{csv_other_details, csv_other_details_report, FindingSeverity};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-other-details-reference.json")).unwrap()).unwrap();
@@ -570,6 +570,10 @@ fn csv_other_details_matches_pinned_harunobu() {
         }).collect::<Vec<_>>().into();
         let schemas: Vec<_> = case["schemas"].as_array().unwrap().iter().map(|v| (v[0].as_u64().unwrap() as u32, match v[1].as_str().unwrap() { "numeric" => InferredColumnType::Numeric, "mixed" => InferredColumnType::Mixed, "text" => InferredColumnType::Text, "date" => InferredColumnType::Date, "empty" => InferredColumnType::Empty, _ => panic!("invalid schema") })).collect();
         let got = csv_other_details(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        let report = csv_other_details_report(&sheet, table, 0, rows - 1, &schemas).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         let actual: Vec<_> = got.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
@@ -1110,6 +1114,24 @@ fn merged_header_diagnostics_match_pinned_harunobu() {
         let mut sheet=Sheet::default();
         sheet.cells=case["cells"].as_array().unwrap().iter().map(|v| { let text=v[2].as_str().unwrap().to_string(); SheetCell { row:v[0].as_u64().unwrap() as u32,column:v[1].as_u64().unwrap() as u32,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None } }).collect::<Vec<_>>().into();
         let got=xlsx_unique_headers_report(&sheet,table,&[0],1,3,&merges).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn platform_character_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{platform_characters_report, TextEncoding};
+    use ibis_doc_model::sheet::{CellKind,CellRange,CellValue,Sheet,SheetCell};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let table=CellRange { first_row:0,first_column:0,last_row:8,last_column:0 };
+    for (i,case) in data["characters"].as_array().unwrap().iter().enumerate() {
+        let mut sheet=Sheet::default();
+        sheet.cells=case["values"].as_array().unwrap().iter().enumerate().map(|(row,v)| { let text=v.as_str().unwrap_or("").to_string(); SheetCell { row:row as u32,column:0,value:CellValue::Text(text.clone()),text,kind:CellKind::Text,formula:None,style:0,phonetic:None,runs:None } }).collect::<Vec<_>>().into();
+        let encoding=match case["encoding"].as_str() { Some("cp932")=>TextEncoding::Cp932,Some("utf-8")=>TextEncoding::Utf8,None=>TextEncoding::Xlsx,_=>panic!("encoding") };
+        let got=platform_characters_report(&sheet,table,encoding).unwrap();
         assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
         assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
         assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");

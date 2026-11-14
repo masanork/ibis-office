@@ -22,6 +22,7 @@ from harunobu.rules.level1.L1_10_objects import ObjectsRule
 from harunobu.rules.level1.L1_11_format_based_semantics import FormatBasedSemanticsRule
 from harunobu.rules.level1.L1_06_whitespace_formatting import WhitespaceFormattingRule
 from harunobu.rules.level1.L1_07_one_data_per_cell import OneDataPerCellRule
+from harunobu.rules.level1.L1_08_platform_dependent_chars import PlatformDependentCharsRule
 from harunobu.core.models import Cell, CellPosition, CellFormat, Sheet
 rng=random.Random(112); cases=[]
 for i in range(160):
@@ -120,12 +121,21 @@ for i in range(100):
     context=S(sheet=sheet,table_region=S(range=CellRange(start_row=1,start_col=1,end_row=4,end_col=4),layout=S(columns=[S(col_index=c+1,inferred_type=t) for c,t in enumerate(types)])))
     result=OneDataPerCellRule().check(context)
     multiple_cases.append(dict(entries=entries,types=types,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
+characters=[]
+for i in range(100):
+    values=[rng.choice(['Ⅰ-0','ⅠとⅡ','①②①③④⑤⑥','㋿〜～','１２Ａ','㎡','一般','㍻㈱','',None]) for _ in range(9)]
+    cells={(r+1,1):Cell(pos=CellPosition(row=r+1,col=1),value=v) for r,v in enumerate(values)}
+    sheet=Sheet(name='表',cells=cells,max_row=9,max_col=1)
+    encoding=rng.choice(['cp932','utf-8',None])
+    context=S(sheet=sheet,workbook=S(encoding=encoding),table_region=S(range=CellRange(start_row=1,start_col=1,end_row=9,end_col=1)))
+    result=PlatformDependentCharsRule().check(context)
+    characters.append(dict(values=values,encoding=encoding,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
 registry.discover()
 skipped=[]
 for rule_id in ['L1-09','L3-02','L3-03','L3-07','L3-08']:
     result=registry.get(rule_id).check(None)
     skipped.append(dict(id=rule_id,message=result.message,confidence=result.confidence,passed=result.passed))
-print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases,objects=object_cases,formats_semantics=format_cases,whitespace=whitespace_cases,multiple=multiple_cases),ensure_ascii=False))
+print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases,objects=object_cases,formats_semantics=format_cases,whitespace=whitespace_cases,multiple=multiple_cases,characters=characters),ensure_ascii=False))
 '''
 data=json.loads(subprocess.check_output([str(repo/'.venv/bin/python'),'-I','-X','utf8','-c',code],cwd=repo,text=True))
 out=Path(__file__).resolve().parent.parent/'test/fixtures/machine-readability/harunobu-basic-diagnostics-reference.json'
