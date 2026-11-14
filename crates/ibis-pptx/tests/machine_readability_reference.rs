@@ -444,3 +444,27 @@ fn csv_column_headers_match_pinned_harunobu() {
         assert!(csv_column_headers(&sheet, table, &[0], 1, 2).is_none(), "{value}");
     }
 }
+
+#[test]
+fn csv_unique_headers_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{csv_unique_headers, FindingSeverity};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-unique-headers-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let n = |i| case["range"][i].as_u64().unwrap() as u32;
+        let table = CellRange { first_row: n(0), first_column: n(1), last_row: n(2), last_column: n(3) };
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        let headers: Vec<_> = case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let got = csv_unique_headers(&sheet, table, &headers, case["body"][0].as_u64().unwrap() as u32, case["body"][1].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+        assert!(got.findings.iter().all(|v| v.severity == FindingSeverity::Error));
+    }
+}
