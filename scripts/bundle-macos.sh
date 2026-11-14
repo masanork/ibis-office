@@ -65,6 +65,7 @@ cp crates/ibis-office-app/macos/AppIcon.icns "$APP/Contents/Resources/AppIcon.ic
 python3 scripts/gen-web-licenses.py macos
 mkdir -p "$APP/Contents/Resources/Licenses"
 cp crates/ibis-office-app/macos/license.md "$APP/Contents/Resources/Licenses/license.md"
+cp crates/ibis-office-xlsx/licenses/onnxruntime-1.22.0/ThirdPartyNotices.txt "$APP/Contents/Resources/Licenses/ONNXRuntime-ThirdPartyNotices.txt"
 cp crates/ibis-office-render/fonts/carlito/OFL.txt "$APP/Contents/Resources/Licenses/Carlito-OFL.txt"
 # The pictures of Word's art page borders: ECMA-376's zip, unmodified, with
 # its notice (read when a document uses an art border; not in the executable).
