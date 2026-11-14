@@ -16,6 +16,15 @@ pub struct Finding { pub location: String, pub severity: FindingSeverity }
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuleEvaluation { pub result: RuleResult, pub findings: Vec<Finding> }
 
+/// Exact diagnostic text associated with an evaluated rule.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuleDiagnostics {
+    pub evaluation: RuleEvaluation,
+    pub message: String,
+    /// Descriptions correspond one-to-one with evaluation.findings.
+    pub descriptions: Vec<String>,
+}
+
 fn result(id: &str, passed: bool, confidence: f64, severity: Severity, findings: Vec<Finding>) -> RuleEvaluation {
     RuleEvaluation { result: RuleResult { rule_id: id.to_string(), passed, confidence, severity: Some(severity) }, findings }
 }
@@ -51,6 +60,30 @@ pub fn merged_cells(sheet: &Sheet, table: CellRange, header_rows: Option<&BTreeS
     result("L1-12", !has_data_merge, 1.0, severity, findings)
 }
 
+/// Excel L1-12 result and diagnostic text; unknown inputs cannot produce a report.
+pub fn merged_cells_report(sheet: &Sheet, table: CellRange, header_rows: Option<&BTreeSet<u32>>) -> Option<RuleDiagnostics> {
+    let evaluation = merged_cells(sheet, table, header_rows);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let headers = header_rows?;
+    let mut descriptions = Vec::new();
+    let mut header_count = 0usize;
+    let mut data_count = 0usize;
+    for &merge in sheet.merges.iter().filter(|&&m| intersects(m, table)) {
+        let is_header = headers.range(merge.first_row..=merge.last_row).count() as u64 == u64::from(merge.last_row) - u64::from(merge.first_row) + 1;
+        let label = if is_header { header_count += 1; "ヘッダ領域" } else { data_count += 1; "データ領域" };
+        descriptions.push(format!("セル結合（{label}）: {}（{}行 x {}列）", range_address(merge), u64::from(merge.last_row) - u64::from(merge.first_row) + 1, u64::from(merge.last_column) - u64::from(merge.first_column) + 1));
+    }
+    let message = if descriptions.is_empty() { "セル結合は検出されませんでした。".into() } else {
+        let mut parts = Vec::new();
+        if header_count > 0 { parts.push(format!("ヘッダ領域{header_count}件")); }
+        if data_count > 0 { parts.push(format!("データ領域{data_count}件")); }
+        let detail = format!("（{}）", parts.join("、"));
+        if data_count > 0 { format!("データ領域にセル結合が{data_count}件検出されました{detail}。") }
+        else { format!("ヘッダ領域のセル結合が{header_count}件検出されました{detail}。L1では許容しますが、L2-03で一意な項目名の観点から再評価されます。") }
+    };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// A reader's knowledge of the used extent, with inclusive zero-based coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsedExtent { Unknown, Empty, Range(CellRange) }
@@ -78,6 +111,27 @@ pub fn hidden_rows_columns(sheet: &Sheet, used: UsedExtent) -> RuleEvaluation {
         }
     }
     result("L1-13", findings.is_empty(), 1.0, Severity::Critical, findings)
+}
+
+/// Excel L1-13 diagnostics; an unknown used extent is not reportable.
+pub fn hidden_rows_columns_report(sheet: &Sheet, used: UsedExtent) -> Option<RuleDiagnostics> {
+    let evaluation = hidden_rows_columns(sheet, used);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let (rows, cols) = match used {
+        UsedExtent::Range(range) => (sheet.hidden_rows.keys().filter(|&&r| r <= range.last_row).count(), sheet.hidden_columns.keys().filter(|&&c| c <= range.last_column).count()),
+        UsedExtent::Empty => (0, 0),
+        UsedExtent::Unknown => return None,
+    };
+    let descriptions: Option<Vec<_>> = evaluation.findings.iter().map(|finding| {
+        let (kind, numbers) = if let Some(n) = finding.location.strip_prefix('行') { ("行", n) } else { ("列", finding.location.strip_prefix('列')?) };
+        if let Some((first, last)) = numbers.split_once('-') {
+            let first: u64 = first.parse().ok()?; let last: u64 = last.parse().ok()?;
+            Some(format!("シート使用範囲内の{kind}{first}〜{last}が非表示です（{}{kind}）。", last.checked_sub(first)? + 1))
+        } else { Some(format!("シート使用範囲内の{kind}{numbers}が非表示です。")) }
+    }).collect();
+    let message = if evaluation.findings.is_empty() { "シート使用範囲内に非表示の行・列はありません。".into() }
+        else { format!("シート使用範囲内の非表示行{rows}件、非表示列{cols}件が検出されました。") };
+    Some(RuleDiagnostics { evaluation, message, descriptions: descriptions? })
 }
 
 /// Excel-only L2-06 fallback over the parsed sheet. `complete` must be false if the reader
@@ -110,6 +164,18 @@ pub fn file_format(format: WorkbookFormat) -> RuleEvaluation {
             vec![Finding { location: "ファイル全体".to_string(), severity: FindingSeverity::Error }]),
         WorkbookFormat::Xlsx | WorkbookFormat::Csv | WorkbookFormat::Tsv => result("L1-01", true, 1.0, Severity::Fatal, Vec::new()),
     }
+}
+
+/// L1-01 diagnostic text for an explicitly known reference reader format.
+pub fn file_format_report(file_name: &str, format: &str) -> RuleDiagnostics {
+    let known = match format { "xlsx" => WorkbookFormat::Xlsx, "csv" => WorkbookFormat::Csv, "tsv" => WorkbookFormat::Tsv, _ => WorkbookFormat::Other };
+    let evaluation = file_format(known);
+    let descriptions = if evaluation.result.passed { Vec::new() } else {
+        vec![format!("ファイル '{file_name}' の形式 '{format}' は許可されていません。xlsx/csv/tsvのいずれかに変換してください。")]
+    };
+    let status = if evaluation.result.passed { "許可された形式です" } else { "非推奨です" };
+    let message = format!("ファイル形式 '{format}' は{status}。");
+    RuleDiagnostics { evaluation, message, descriptions }
 }
 
 /// A table detected by a separate layout engine. Confidence is the reference
@@ -1161,13 +1227,7 @@ pub fn bulk_format_consistency(file_headers: &[Vec<String>]) -> RuleEvaluation {
 }
 
 /// The reference's L3-07 result, including the text needed in user reports.
-#[derive(Clone, Debug, PartialEq)]
-pub struct BulkConsistencyReport {
-    pub evaluation: RuleEvaluation,
-    pub message: String,
-    /// Descriptions correspond one-to-one with evaluation.findings.
-    pub descriptions: Vec<String>,
-}
+pub type BulkConsistencyReport = RuleDiagnostics;
 
 pub fn bulk_format_consistency_report(files: &[(&str, &[String])]) -> BulkConsistencyReport {
     let finish = |findings: Vec<Finding>, descriptions: Vec<String>, confidence: f64, message: String| {
