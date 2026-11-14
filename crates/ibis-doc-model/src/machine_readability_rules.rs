@@ -1116,6 +1116,21 @@ fn data_units(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: 
     Some(result("L3-04", findings.is_empty(), 0.65, Severity::Major, findings))
 }
 
+/// L3-04 text for CSV or reference-stringified Excel cells.
+pub fn data_units_report(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32, typed_numeric: &BTreeSet<(u32, u32)>) -> Option<RuleDiagnostics> {
+    let evaluation = data_units(sheet, table, header_rows, body_first, body_last, typed_numeric)?;
+    let Some(&header) = header_rows.last() else { return Some(RuleDiagnostics { evaluation, message: "ヘッダー行が検出されなかったためスキップ".into(), descriptions: Vec::new() }); };
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut descriptions = Vec::new();
+    for finding in &evaluation.findings {
+        let cell = sheet.cells.iter().find(|cell| cell.row == header && address(cell.row, cell.column) == finding.location)?;
+        let CellValue::Text(value) = &cell.value else { return None; };
+        descriptions.push(format!("数値列 '{}' に単位の記載がありません", value.trim_matches(space)));
+    }
+    let message = if descriptions.is_empty() { "すべての数値列に単位が記載されています".into() } else { format!("単位未記載の数値列: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L1-03 for an unmerged CSV sheet with all detected table ranges supplied.
 /// Inter-table blank rows are attributed only to the first table in row order.
 pub fn csv_fragmentation_with_tables(sheet: &Sheet, current: CellRange, tables: &[DetectedTable]) -> Option<RuleEvaluation> {
