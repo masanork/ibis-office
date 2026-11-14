@@ -90,7 +90,7 @@ pub struct XlsxSavedSheet {
     pub numeric_lexemes: BTreeMap<(u32, u32), XlsxNumericLexeme>,
     pub date1904: bool,
     /// Python text and JSON spellings for ISO-encoded date cells.
-    pub iso_dates: BTreeMap<(u32, u32), (String, String)>,
+    pub iso_dates: BTreeMap<(u32, u32), (String, String, bool)>,
 }
 
 pub fn read_xlsx_saved_sheet(bytes: &[u8], sheet_index: usize) -> Result<XlsxSavedSheet, XlsxInputError> {
@@ -99,7 +99,7 @@ pub fn read_xlsx_saved_sheet(bytes: &[u8], sheet_index: usize) -> Result<XlsxSav
     Ok(XlsxSavedSheet { window, layout, sheet, numeric_lexemes, date1904, iso_dates })
 }
 
-fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxReadWindow>, include_sheet: bool) -> Result<(XlsxReadWindow, XlsxLayoutInput, Option<(Sheet, BTreeMap<(u32, u32), XlsxNumericLexeme>, bool, BTreeMap<(u32, u32), (String, String)>)>), XlsxInputError> {
+fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxReadWindow>, include_sheet: bool) -> Result<(XlsxReadWindow, XlsxLayoutInput, Option<(Sheet, BTreeMap<(u32, u32), XlsxNumericLexeme>, bool, BTreeMap<(u32, u32), (String, String, bool)>)>), XlsxInputError> {
     let mode = if bytes.len() > 5 * 1024 * 1024 { XlsxReaderMode::TwoPass } else { XlsxReaderMode::SinglePass };
     let (presentation, sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
     let entry = presentation.workbook.as_ref().and_then(|w|w.sheets.get(sheet_index)).ok_or(XlsxInputError::SheetUnavailable)?;
@@ -155,8 +155,9 @@ fn read_xlsx_layout_impl(bytes: &[u8], sheet_index: usize, window: Option<XlsxRe
         if layout.value.is_none() { continue; }
         let raw = cell.children().find(|n| n.is_element() && n.tag_name().name() == "v").and_then(|n| n.text()).ok_or(XlsxInputError::InvalidWindowMetadata)?;
         let value = iso_date_reference(raw).ok_or(XlsxInputError::UnsupportedReferenceValue)?;
+        let duration = value.2;
         if iso_dates.insert(position, value).is_some() { return Err(XlsxInputError::InvalidWindowMetadata); }
-        layout.value = Some(ibis_doc_model::machine_readability_layout::LayoutValue::Date);
+        layout.value = Some(if duration { ibis_doc_model::machine_readability_layout::LayoutValue::Other } else { ibis_doc_model::machine_readability_layout::LayoutValue::Date });
     }
     let saved = if include_sheet {
         let mut saved = (**sheet).clone();
@@ -543,15 +544,18 @@ pub fn xlsx_reference_text_sheet(saved: &XlsxSavedSheet) -> Result<Sheet, XlsxIn
                 _ => return Err(XlsxInputError::UnsupportedReferenceValue),
             },
             Some(LayoutValue::Date) => {
-                if let Some((text, _)) = saved.iso_dates.get(&position) { Some(text.clone()) }
+                if let Some((text, _, _)) = saved.iso_dates.get(&position) { Some(text.clone()) }
                 else {
                     let value = match original.get(&position).map(|c| &c.value) { Some(CellValue::Number(v)) => *v, _ => return Err(XlsxInputError::UnsupportedReferenceValue) };
                     Some(xlsx_date_reference_text(value, saved.date1904).ok_or(XlsxInputError::UnsupportedReferenceValue)?)
                 }
             }
             Some(LayoutValue::Other) => {
-                let value = match original.get(&position).map(|c| &c.value) { Some(CellValue::Number(v)) => *v, _ => return Err(XlsxInputError::UnsupportedReferenceValue) };
-                Some(xlsx_duration_reference_text(value).ok_or(XlsxInputError::UnsupportedReferenceValue)?)
+                if let Some((text, _, _)) = saved.iso_dates.get(&position) { Some(text.clone()) }
+                else {
+                    let value = match original.get(&position).map(|c| &c.value) { Some(CellValue::Number(v)) => *v, _ => return Err(XlsxInputError::UnsupportedReferenceValue) };
+                    Some(xlsx_duration_reference_text(value).ok_or(XlsxInputError::UnsupportedReferenceValue)?)
+                }
             }
         };
         let value = text.as_ref().map_or(CellValue::Empty, |v| CellValue::Text(v.clone()));
@@ -567,8 +571,49 @@ pub fn xlsx_reference_text_sheet(saved: &XlsxSavedSheet) -> Result<Sheet, XlsxIn
 
 /// Canonical ISO date/time cells as interpreted by openpyxl. Unknown forms
 /// remain unsupported rather than being treated as text.
-fn iso_date_reference(raw: &str) -> Option<(String, String)> {
+fn iso_date_reference(raw: &str) -> Option<(String, String, bool)> {
     use ibis_calc::eval::convert::{civil_from_days, days_from_civil};
+    if let Some(mut rest) = raw.strip_prefix("PT") {
+        let mut total_microseconds = 0u128;
+        let mut previous = 0u8;
+        while !rest.is_empty() {
+            let len = rest.bytes().take_while(|b| b.is_ascii_digit() || *b == b'.').count();
+            if len == 0 || len == rest.len() { return None; }
+            let (number, suffix) = rest.split_at(len);
+            let unit = suffix.as_bytes()[0];
+            rest = &suffix[1..];
+            let order = match unit { b'H' => 1, b'M' => 2, b'S' => 3, _ => return None };
+            if order <= previous { return None; }
+            previous = order;
+            let (whole, fraction) = number.split_once('.').map_or((number, ""), |v| v);
+            if whole.is_empty() || (number.contains('.') && (unit != b'S' || fraction.is_empty() || fraction.len() > 3)) || !fraction.bytes().all(|b| b.is_ascii_digit()) { return None; }
+            let whole: u128 = whole.parse().ok()?;
+            let multiplier = match unit { b'H' => 3_600_000_000u128, b'M' => 60_000_000, _ => 1_000_000 };
+            total_microseconds = total_microseconds.checked_add(whole.checked_mul(multiplier)?)?;
+            if !fraction.is_empty() { total_microseconds = total_microseconds.checked_add(fraction.parse::<u128>().ok()?.checked_mul(10u128.pow(6 - fraction.len() as u32))?)?; }
+        }
+        if previous == 0 { return None; }
+        let seconds = total_microseconds / 1_000_000;
+        let millis = (total_microseconds % 1_000_000) / 1000;
+        let days = seconds / 86_400;
+        if days > 999_999_999 { return None; }
+        let hours = seconds / 3600 % 24;
+        let minutes = seconds / 60 % 60;
+        let sec = seconds % 60;
+        let time = if millis == 0 { format!("{hours}:{minutes:02}:{sec:02}") } else { format!("{hours}:{minutes:02}:{sec:02}.{:06}", millis * 1000) };
+        let text = if days == 0 { time } else { format!("{days} day{}, {time}", if days == 1 { "" } else { "s" }) };
+        let mut json = String::from("P");
+        if days >= 365 { json.push_str(&format!("{}Y", days / 365)); }
+        if days % 365 != 0 { json.push_str(&format!("{}D", days % 365)); }
+        if hours > 0 || minutes > 0 || sec > 0 || millis > 0 || days == 0 {
+            json.push('T');
+            if hours > 0 { json.push_str(&format!("{hours}H")); }
+            if minutes > 0 { json.push_str(&format!("{minutes}M")); }
+            if millis > 0 { let frac=format!("{millis:03}");json.push_str(&format!("{sec}.{}S", frac.trim_end_matches('0'))); }
+            else if sec > 0 || (hours == 0 && minutes == 0) { json.push_str(&format!("{sec}S")); }
+        }
+        return Some((text, json, true));
+    }
     let raw = raw.strip_suffix('Z').unwrap_or(raw);
     if !raw.is_ascii() { return None; }
     let date = if raw.len() >= 10 && &raw[4..5] == "-" && &raw[7..8] == "-" {
@@ -580,7 +625,7 @@ fn iso_date_reference(raw: &str) -> Option<(String, String)> {
     } else { None };
     let rest = if date.is_some() { raw.get(10..)? } else { raw };
     let rest = rest.strip_prefix('T').unwrap_or(rest);
-    if rest.is_empty() { let date = date?; return Some((date.into(), date.into())); }
+    if rest.is_empty() { let date = date?; return Some((date.into(), date.into(), false)); }
     let mut parts = rest.split(':');
     let hours = parts.next()?;
     let minutes = parts.next()?;
@@ -596,8 +641,8 @@ fn iso_date_reference(raw: &str) -> Option<(String, String)> {
     let micros: u32 = if frac.is_empty() { 0 } else { frac.parse::<u32>().ok()? * 10u32.pow(6 - frac.len() as u32) };
     let mut time = format!("{hours:02}:{minutes:02}:{seconds:02}");
     if micros != 0 { time.push_str(&format!(".{micros:06}")); }
-    if let Some(date) = date { Some((format!("{date} {time}"), format!("{date}T{time}"))) }
-    else { Some((time.clone(), time)) }
+    if let Some(date) = date { Some((format!("{date} {time}"), format!("{date}T{time}"), false)) }
+    else { Some((time.clone(), time, false)) }
 }
 
 /// Render an Excel date serial as the reference reader's Python date/time text.
@@ -765,8 +810,9 @@ pub fn analyze_xlsx_report_experimental(bytes: &[u8], file_name: &str, mode: &st
                         parsed
                     }, _=>return Err(XlsxInputError::UnsupportedReferenceValue),
                 },
-                Some(LayoutValue::Date)=>serde_json::json!(if let Some((_,json))=saved.iso_dates.get(&position) { json.clone() } else { text_value.ok_or(XlsxInputError::UnsupportedReferenceValue)?.replace(' ',"T") }),
+                Some(LayoutValue::Date)=>serde_json::json!(if let Some((_,json,_))=saved.iso_dates.get(&position) { json.clone() } else { text_value.ok_or(XlsxInputError::UnsupportedReferenceValue)?.replace(' ',"T") }),
                 Some(LayoutValue::Other)=>match original.map(|c|&c.value) {
+                    _ if saved.iso_dates.contains_key(&position)=>serde_json::json!(saved.iso_dates[&position].1.clone()),
                     Some(CellValue::Number(value))=>serde_json::json!(xlsx_duration_reference_json(*value).ok_or(XlsxInputError::UnsupportedReferenceValue)?),
                     _=>return Err(XlsxInputError::UnsupportedReferenceValue),
                 },
