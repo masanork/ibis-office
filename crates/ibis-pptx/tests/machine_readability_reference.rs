@@ -969,3 +969,39 @@ fn formula_diagnostics_match_pinned_harunobu() {
         assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
     }
 }
+
+#[test]
+fn object_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{object_artifacts_report, ObjectArtifact};
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let table=CellRange { first_row:1,first_column:1,last_row:5,last_column:4 };
+    for (i,case) in data["objects"].as_array().unwrap().iter().enumerate() {
+        let objects:Vec<_>=case["objects"].as_array().unwrap().iter().map(|v|ObjectArtifact { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32,kind:v["kind"].as_str().unwrap().into(),name:v["name"].as_str().map(str::to_string),drawing_part:v["drawing"].as_str().unwrap().into() }).collect();
+        let got=object_artifacts_report(table,case["abstain"].as_bool().unwrap(),Some(&objects)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(object_artifacts_report(table,false,None).is_none());
+}
+
+#[test]
+fn csv_diagnostics_report_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_csv::{diagnose, diagnostics_report, Delimiter};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let inputs:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-csv-diagnostics-reference.json")).unwrap()).unwrap();
+    let expected:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-csv-report-reference.json")).unwrap()).unwrap();
+    assert_eq!(expected["harunobu_commit"],"88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (case,reference) in inputs["cases"].as_array().unwrap().iter().zip(expected["cases"].as_array().unwrap()) {
+        let delimiter=if case["delimiter"]=="," { Delimiter::Comma } else { Delimiter::Tab };
+        let diag=diagnose(case["text"].as_str().unwrap(),delimiter);
+        for (index,quoting) in [false,true].into_iter().enumerate() {
+            let got=diagnostics_report(Some(&diag),1,2000,delimiter,quoting).unwrap();
+            assert_eq!(got.message,reference["results"][index]["message"].as_str().unwrap(),"{}",case["name"]);
+            assert_eq!(got.descriptions,reference["results"][index]["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"{}",case["name"]);
+        }
+    }
+    assert!(diagnostics_report(None,1,5,Delimiter::Comma,false).is_none());
+}

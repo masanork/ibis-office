@@ -18,6 +18,7 @@ from harunobu.rules.level1.L1_13_hidden_rows_columns import HiddenRowsColumnsRul
 from harunobu.rules.registry import registry
 from harunobu.rules.level3.L3_01_header_start_position import HeaderStartPositionRule
 from harunobu.rules.level2.L2_06_formula_to_value import FormulaToValueRule
+from harunobu.rules.level1.L1_10_objects import ObjectsRule
 rng=random.Random(112); cases=[]
 for i in range(160):
     merges=[]
@@ -71,12 +72,19 @@ for i in range(120):
     sheet=S(name='表',formula_refs_loaded=True,formula_refs=formula_refs,formula_error_refs=formula_errors)
     result=FormulaToValueRule().check(S(sheet=sheet,table_region=S(range=CellRange(start_row=2,start_col=2,end_row=6,end_col=3))))
     formula_cases.append(dict(refs=refs,errors=errors,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
+object_cases=[]
+for i in range(130):
+    objects=[dict(row=rng.randrange(8),col=rng.randrange(6),kind=rng.choice(['image','chart','shape','connector']),name=rng.choice([None,'','図形 1']),drawing='xl/drawings/drawing1.xml') for _ in range(rng.randrange(8))]
+    refs=[S(row=o['row']+1,col=o['col']+1,object_type=o['kind'],name=o['name'],drawing_part=o['drawing']) for o in objects]
+    abstain=rng.choice([True,False])
+    result=ObjectsRule()._check_from_object_refs(S(name='表',object_refs=refs),CellRange(start_row=2,start_col=2,end_row=6,end_col=5),abstain)
+    object_cases.append(dict(objects=objects,abstain=abstain,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
 registry.discover()
 skipped=[]
 for rule_id in ['L1-09','L3-02','L3-03','L3-07','L3-08']:
     result=registry.get(rule_id).check(None)
     skipped.append(dict(id=rule_id,message=result.message,confidence=result.confidence,passed=result.passed))
-print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases),ensure_ascii=False))
+print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases,objects=object_cases),ensure_ascii=False))
 '''
 data=json.loads(subprocess.check_output([str(repo/'.venv/bin/python'),'-I','-X','utf8','-c',code],cwd=repo,text=True))
 out=Path(__file__).resolve().parent.parent/'test/fixtures/machine-readability/harunobu-basic-diagnostics-reference.json'

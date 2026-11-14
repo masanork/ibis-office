@@ -199,6 +199,37 @@ fn check_diagnostics(diag: Option<&Diagnostics>, first_row: usize, last_row: usi
     RuleEvaluation { result: RuleResult { rule_id: id.to_string(), passed: total == 0, confidence: diag.confidence, severity: Some(Severity::Fatal) }, findings }
 }
 
+/// Report text for the raw CSV checks, given complete diagnostics and a table range.
+pub fn diagnostics_report(diag: Option<&Diagnostics>, first_row: usize, last_row: usize, delimiter: Delimiter, quoting: bool) -> Option<crate::machine_readability_rules::RuleDiagnostics> {
+    use crate::machine_readability_rules::RuleDiagnostics;
+    let evaluation = check_diagnostics(diag, first_row, last_row, quoting);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let diag = diag?;
+    let relevant = |kind| if quoting { matches!(kind, IssueKind::UnquotedQuote | IssueKind::UnclosedQuote | IssueKind::FieldCountMismatch) } else { matches!(kind, IssueKind::Multiline | IssueKind::UnclosedQuote) };
+    let kinds = [IssueKind::Multiline, IssueKind::UnclosedQuote, IssueKind::UnquotedQuote, IssueKind::FieldCountMismatch];
+    let total: usize = kinds.into_iter().filter(|kind| relevant(*kind)).map(|kind| diag.count(kind)).fold(0, usize::saturating_add);
+    let descriptions = diag.samples.iter().filter(|s| relevant(s.kind) && s.row >= first_row && s.row <= last_row).map(|sample| {
+        if !quoting {
+            let physical = if sample.physical_end == sample.physical_start { format!("物理行{}", sample.physical_start) } else { format!("物理行{}-{}", sample.physical_start, sample.physical_end) };
+            let suffix = if sample.kind == IssueKind::UnclosedQuote { " クォートが閉じられていない可能性があります。" } else { "" };
+            format!("論理行{}が{physical}にまたがっています。{suffix}", sample.row)
+        } else {
+            match sample.kind {
+                IssueKind::FieldCountMismatch => format!("論理行{}: 基準列数{}に対して{}列です。未クォートの{}により列数が崩れている可能性があります。", sample.row, sample.expected_fields.map_or_else(|| "None".into(), |v|v.to_string()), sample.fields.map_or_else(|| "None".into(), |v|v.to_string()), if delimiter == Delimiter::Comma { "カンマ" } else { "タブ" }),
+                IssueKind::UnclosedQuote => format!("論理行{}: クォートが閉じられていません。ダブルクォーテーションの対応を確認してください。", sample.row),
+                IssueKind::UnquotedQuote => { let cell = sample.column.map(|col|format!("{}{}",column_letters(col),sample.row)).unwrap_or_else(||format!("{}:{}",sample.row,sample.row)); format!("{cell}: ダブルクォーテーションを含むフィールドがクォートされていません。フィールド全体をダブルクォーテーションで囲み、値中の\"は\"\"としてエスケープしてください。") },
+                IssueKind::Multiline => unreachable!(),
+            }
+        }
+    }).collect();
+    let message = if total == 0 { if quoting { "クォーティングに問題はありません。" } else { "データ内改行は検出されませんでした。" }.into() }
+        else if quoting && diag.truncated { format!("少なくとも{total}件のクォーティング問題が検出されたため、診断収集を途中で打ち切りました。") }
+        else if quoting { format!("{total}件のクォーティング問題が検出されました。") }
+        else if diag.truncated { format!("少なくとも{total}件のデータ内改行またはクォート不整合が検出されたため、診断収集を途中で打ち切りました。") }
+        else { format!("{total}件のデータ内改行またはクォート不整合が検出されました。") };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L1-14 for a detected table's inclusive, one-based row range. Missing raw
 /// diagnostics are skipped; a truncated scan retains the reference confidence.
 pub fn single_line_records(diag: Option<&Diagnostics>, first_row: usize, last_row: usize) -> crate::machine_readability_rules::RuleEvaluation {

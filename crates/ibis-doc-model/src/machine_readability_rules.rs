@@ -1239,6 +1239,22 @@ pub fn object_artifacts(table: CellRange, abstain: bool, objects: Option<&[Objec
     result("L1-10", findings.is_empty(), 1.0, Severity::Critical, findings)
 }
 
+/// L1-10 diagnostic text for complete object inspection results.
+pub fn object_artifacts_report(table: CellRange, abstain: bool, objects: Option<&[ObjectArtifact]>) -> Option<RuleDiagnostics> {
+    let evaluation = object_artifacts(table, abstain, objects);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let objects = objects?;
+    let descriptions: Vec<_> = objects.iter().filter(|v| abstain || (v.row >= table.first_row && v.row <= table.last_row && v.column >= table.first_column && v.column <= table.last_column)).map(|v| {
+        let name = v.name.as_deref().filter(|name| !name.is_empty()).unwrap_or(&v.drawing_part);
+        if abstain { format!("テーブル検出が保留(abstain)のためオブジェクトを確認対象としました: 種類={}, 名前={name}", v.kind) }
+        else { format!("表の範囲({})内にオブジェクトが重なります: 種類={}, 名前={name}", range_address(table), v.kind) }
+    }).collect();
+    let message = if objects.is_empty() { "オブジェクトは検出されませんでした。".into() }
+        else if descriptions.is_empty() { "表の範囲内にオブジェクトは検出されませんでした。".into() }
+        else { format!("{}件のオブジェクトが表の範囲内に検出されました。", descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// Reader-normalized direct formatting used by the reference L1-11 rule.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReferenceCellFormat { pub font_color: Option<String>, pub background: Option<String>, pub stub_background_nonwhite: bool, pub bold: bool, pub italic: bool, pub border_left: bool, pub border_right: bool }
