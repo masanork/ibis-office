@@ -319,6 +319,9 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
         let typed_numeric: BTreeSet<_> = saved.layout.cells.iter().filter(|c| c.value == Some(LayoutValue::Numeric)).map(|c| (c.row, c.column)).collect();
         let falsy: BTreeSet<_> = saved.sheet.cells.iter().filter(|c| typed_numeric.contains(&(c.row, c.column)) && (matches!(&c.value, CellValue::Bool(false)) || matches!(&c.value, CellValue::Number(v) if *v == 0.0))).map(|c| (c.row, c.column)).collect();
         let mut unavailable = Vec::new();
+        if objects.is_none() { unavailable.push("L1-10"); }
+        if formats.is_none() { unavailable.push("L1-11"); }
+        if artifacts.is_none() { unavailable.push("L2-06"); }
         let mut checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), xlsx_column_headers(&saved.sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, whitespace_formatting(&reference_sheet, range, Some(&region.headers.rows))];
         if let Some(text) = &text_view { checks.push(one_data_per_cell(text, range, Some(&column_types))); } else { unavailable.push("L1-07"); }
         checks.extend([platform_characters(&reference_sheet, range, TextEncoding::Xlsx), blank_vs_zero_ai_disabled(), object_artifacts(range, region.abstain, objects.as_deref()), format_based_semantics(&reference_sheet, range, region.headers.body_first, formats.as_ref()), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used)]);
@@ -573,4 +576,13 @@ pub fn xlsx_duration_reference_text(value: f64) -> Option<String> {
     let days = seconds / 86_400; let hours = (seconds / 3600) % 24; let minutes = (seconds / 60) % 60; let sec = seconds % 60;
     let time = if millis == 0 { format!("{hours}:{minutes:02}:{sec:02}") } else { format!("{hours}:{minutes:02}:{sec:02}.{:06}", millis * 1000) };
     if days == 0 { Some(time) } else { Some(format!("{days} day{}, {time}", if days == 1 { "" } else { "s" })) }
+}
+
+/// Score supplied XLSX table checks only when all required metadata was
+/// available. The result is still experimental and is not a complete report.
+pub fn score_xlsx_tables_partial(tables: &[PartialXlsxStructure]) -> Option<[ibis_doc_model::machine_readability_scoring::LevelScore; 3]> {
+    use ibis_doc_model::machine_readability_scoring::{score_level, Level, RuleResult};
+    if tables.iter().any(|t| !t.unavailable.is_empty()) { return None; }
+    let collect = |prefix: &str| -> Vec<RuleResult> { tables.iter().flat_map(|t| t.checks.iter().filter(|c| c.result.rule_id.starts_with(prefix)).map(|c| c.result.clone())).collect() };
+    Some([score_level(Level::One, &collect("L1-")), score_level(Level::Two, &collect("L2-")), score_level(Level::Three, &collect("L3-"))])
 }

@@ -107,3 +107,13 @@ pub fn analyze_csv_tables_partial(bytes: &[u8], delimiter: Delimiter) -> Result<
     }
     Ok(results)
 }
+
+/// Score the currently returned CSV table results without presenting them as a
+/// complete report. The caller must disclose remaining analysis limitations.
+pub fn score_csv_tables_partial(tables: &[PartialCsvAnalysis]) -> [ibis_doc_model::machine_readability_scoring::LevelScore; 3] {
+    use ibis_doc_model::machine_readability_scoring::{score_level, Level};
+    let level1: Vec<_> = tables.iter().flat_map(|t| t.checks.iter().map(|c| c.result.clone())).collect();
+    let level2: Vec<_> = tables.iter().flat_map(|t| t.level2_checks.iter().map(|c| c.result.clone())).collect();
+    let level3: Vec<_> = tables.iter().flat_map(|t| t.level3_checks.iter().map(|c| c.result.clone())).collect();
+    [score_level(Level::One, &level1), score_level(Level::Two, &level2), score_level(Level::Three, &level3)]
+}
