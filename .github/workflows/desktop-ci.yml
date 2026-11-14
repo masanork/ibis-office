@@ -167,6 +167,13 @@ jobs:
           done
       - name: Record clean source and toolchain
         run: python3 scripts/desktop-ci-info.py source ci-artifact
+      - name: Verify ONNX Runtime on glibc 2.31
+        shell: bash
+        run: |
+          set -euo pipefail
+          ort_root=$(scripts/prepare-linux-onnxruntime.sh x86_64 "$PWD/target/dist/onnxruntime")
+          cc -I"$ort_root/include" scripts/test-linux-onnxruntime.c -ldl -o target/dist/onnxruntime-probe
+          target/dist/onnxruntime-probe "$ort_root/lib/libonnxruntime.so.1"
       - name: Test updater and AppImage runtime
         env:
           SORANE_UPDATER_PROCESS_TEST: "1"
