@@ -853,3 +853,55 @@ fn level_score_json_matches_pinned_harunobu() {
         assert_eq!(level_score_json(&score_level(level, &rules)), case["expected"], "case {i}");
     }
 }
+
+#[test]
+fn merged_cell_diagnostics_match_pinned_harunobu() {
+    use std::collections::BTreeSet;
+    use ibis_doc_model::machine_readability_rules::merged_cells_report;
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"],"88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    let table=CellRange { first_row:1,first_column:1,last_row:5,last_column:4 };
+    for (i,case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        sheet.merges=case["merges"].as_array().unwrap().iter().map(|m| CellRange { first_row:m[0].as_u64().unwrap() as u32,first_column:m[1].as_u64().unwrap() as u32,last_row:m[2].as_u64().unwrap() as u32,last_column:m[3].as_u64().unwrap() as u32 }).collect();
+        let headers:BTreeSet<_>=case["headers"].as_array().unwrap().iter().map(|v|v.as_u64().unwrap() as u32).collect();
+        let got=merged_cells_report(&sheet,table,Some(&headers)).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(merged_cells_report(&sheet,table,None).is_none());
+}
+
+#[test]
+fn file_format_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::file_format_report;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    for (i,case) in data["formats"].as_array().unwrap().iter().enumerate() {
+        let got=file_format_report(case["name"].as_str().unwrap(),case["format"].as_str().unwrap());
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
+
+#[test]
+fn hidden_rows_and_columns_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{hidden_rows_columns_report, UsedExtent};
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let p=ibis_pptx::read(&std::fs::read(root.join("structure.xlsx")).unwrap()).unwrap();
+    let mut sheet=(**sheet_of_slide(&p.slides[0]).unwrap()).clone();
+    for (i,case) in data["hidden"].as_array().unwrap().iter().enumerate() {
+        sheet.hidden_rows=case["rows"].as_array().unwrap().iter().map(|v|(v.as_u64().unwrap() as u32,0)).collect();
+        sheet.hidden_columns=case["cols"].as_array().unwrap().iter().map(|v|(v.as_u64().unwrap() as u32,0)).collect();
+        let used=UsedExtent::Range(CellRange { first_row:0,first_column:0,last_row:case["max_row"].as_u64().unwrap() as u32,last_column:case["max_col"].as_u64().unwrap() as u32 });
+        let got=hidden_rows_columns_report(&sheet,used).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+    assert!(hidden_rows_columns_report(&sheet,UsedExtent::Unknown).is_none());
+}
