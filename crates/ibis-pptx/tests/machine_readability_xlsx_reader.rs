@@ -454,6 +454,8 @@ fn generated_xlsx_checks_match_thorough_reference() {
             let r=table.table.range;
             assert_eq!([r.first_row,r.first_column,r.last_row,r.last_column],std::array::from_fn(|i| reference["range"][i].as_u64().unwrap() as u32),"{name}");
             assert_eq!(table.header_rows, reference["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>(), "{name}");
+            let labels:Vec<_>=table.column_headers.as_ref().unwrap().iter().map(|h|serde_json::json!({"column":h.column,"rows":h.rows,"label":h.label,"merged":h.merged})).collect();
+            assert_eq!(labels,*reference["column_headers"].as_array().unwrap(),"{name}: column headers");
             assert_eq!(table.table.confidence, reference["confidence"].as_f64().unwrap(), "{name}");
             for b in reference["checks"].as_array().unwrap() {
                 let id=b["id"].as_str().unwrap();
