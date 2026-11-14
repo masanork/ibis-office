@@ -152,3 +152,5 @@ merged headers and typed number, Boolean and text cells.
 text cases to the XLSX structural analyzer comparison.
 `xlsx-multiple-tables.xlsx` verifies detected-table ordering and common checks;
 `xlsx-text-checks.xlsx` also contains a multi-item cell for L1-07.
+`xlsx-chart-anchors.xlsx` checks objects inside and outside a detected table;
+uncertain-table behavior is also exercised against both anchors.

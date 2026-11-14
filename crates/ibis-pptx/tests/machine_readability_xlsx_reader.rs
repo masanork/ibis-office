@@ -328,3 +328,20 @@ fn xlsx_column_headers_match_typed_merged_reference_cases() {
         assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
     }
 }
+
+#[test]
+fn xlsx_object_inspection_respects_table_confidence() {
+    use ibis_doc_model::machine_readability_rules::object_artifacts;
+    use ibis_doc_model::sheet::CellRange;
+    use ibis_pptx::machine_readability_xlsx::inspect_xlsx_object_artifacts;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let sheets = inspect_xlsx_object_artifacts(&std::fs::read(root.join("xlsx-chart-anchors.xlsx")).unwrap()).unwrap();
+    assert_eq!(sheets.len(), 1);
+    assert_eq!(sheets[0].len(), 2);
+    let range = CellRange { first_row: 0, first_column: 0, last_row: 3, last_column: 1 };
+    let normal = object_artifacts(range, false, Some(&sheets[0]));
+    assert_eq!(normal.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), ["B2"]);
+    let uncertain = object_artifacts(range, true, Some(&sheets[0]));
+    assert_eq!(uncertain.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), ["B2", "M20"]);
+    assert_eq!(object_artifacts(range, false, None).result.confidence, 0.0);
+}

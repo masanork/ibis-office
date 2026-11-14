@@ -1023,3 +1023,15 @@ pub fn xlsx_column_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32],
     }
     Some(result("L1-05", findings.is_empty(), if findings.is_empty() { 0.8 } else { 0.85 }, Severity::Critical, findings))
 }
+
+/// A drawing anchor observed in the original XLSX package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectArtifact { pub row: u32, pub column: u32, pub kind: String, pub name: Option<String>, pub drawing_part: String }
+
+/// L1-10; absent inspection data produces the same skip as Harunobu.
+pub fn object_artifacts(table: CellRange, abstain: bool, objects: Option<&[ObjectArtifact]>) -> RuleEvaluation {
+    let Some(objects) = objects else { return result("L1-10", true, 0.0, Severity::Critical, Vec::new()); };
+    if table.first_row > table.last_row || table.first_column > table.last_column { return result("L1-10", true, 0.0, Severity::Critical, Vec::new()); }
+    let findings: Vec<_> = objects.iter().filter(|v| abstain || (v.row >= table.first_row && v.row <= table.last_row && v.column >= table.first_column && v.column <= table.last_column)).map(|v| Finding { location: address(v.row, v.column), severity: FindingSeverity::Error }).collect();
+    result("L1-10", findings.is_empty(), 1.0, Severity::Critical, findings)
+}
