@@ -249,6 +249,12 @@ try {
   await viewer.waitForTimeout(1000);
   const viewerCdp = await viewer.context().newCDPSession(viewer);
   const viewerTouch = (type, touchPoints) => viewerCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+  await tap(viewerTouch, 99, 120, 150);
+  await viewer.waitForTimeout(300);
+  const viewerMirror = viewer.locator('textarea');
+  if (await viewerMirror.count()) {
+    assert.equal(await viewerMirror.first().getAttribute('inputmode'), 'none', 'viewing must not open the virtual keyboard');
+  }
   const viewerChooser = viewer.waitForEvent('filechooser', { timeout: 15_000 });
   await tap(viewerTouch, 100, 350, 24);
   await (await viewerChooser).setFiles('www/samples/sorane-welcome.docx');
