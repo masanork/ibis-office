@@ -184,7 +184,7 @@ fn saved_xlsx_values_preserve_original_formula_caches() {
 
 #[test]
 fn xlsx_formula_artifacts_match_pinned_harunobu() {
-    use ibis_doc_model::machine_readability_rules::formula_artifacts;
+    use ibis_doc_model::machine_readability_rules::{formula_artifacts, formula_artifacts_report};
     use ibis_doc_model::sheet::CellRange;
     use ibis_pptx::machine_readability_xlsx::inspect_xlsx_formula_artifacts;
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
@@ -195,14 +195,24 @@ fn xlsx_formula_artifacts_match_pinned_harunobu() {
         let sheets = inspect_xlsx_formula_artifacts(&std::fs::read(root.join(name)).unwrap()).unwrap();
         let names = case["sheets"].as_array().unwrap();
         assert_eq!(sheets.len(), names.len(), "{name}");
-        for (actual, sheet_name) in sheets.iter().zip(names) {
+        for (sheet_index, (actual, sheet_name)) in sheets.iter().zip(names).enumerate() {
             for (list, key) in [(&actual.formulas, "formulas"), (&actual.errors, "errors")] {
                 let got: Vec<_> = list.iter().map(|v| (v.row, v.column, v.cell_ref.as_str())).collect();
                 let wanted: Vec<_> = case[key].as_array().unwrap().iter().filter(|v| v[0] == *sheet_name).map(|v| (v[1].as_u64().unwrap() as u32, v[2].as_u64().unwrap() as u32, v[3].as_str().unwrap())).collect();
                 assert_eq!(got, wanted, "{name}: {sheet_name} {key}");
+                if key == "formulas" {
+                    let actual_text:Vec<_>=list.iter().map(|v|(v.formula_text.as_deref(),v.formula_type.as_deref())).collect();
+                    let expected_text:Vec<_>=case[key].as_array().unwrap().iter().filter(|v|v[0]==*sheet_name).map(|v|(v[4].as_str(),v[5].as_str())).collect();
+                    assert_eq!(actual_text,expected_text,"{name}: {sheet_name}");
+                }
             }
             let table = CellRange { first_row: 0, first_column: 0, last_row: 10, last_column: 10 };
             let result = formula_artifacts(table, Some((&actual.formulas, &actual.errors)));
+            let report = formula_artifacts_report(table, Some((&actual.formulas, &actual.errors))).unwrap();
+            let expected_report = &case["reports"][sheet_index];
+            assert_eq!(report.message,expected_report["message"].as_str().unwrap(),"{name}: {sheet_name}");
+            assert_eq!(report.descriptions,expected_report["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"{name}: {sheet_name}");
+            assert!(formula_artifacts_report(table,None).is_none());
             if name == "xlsx-artifact-errors.xlsx" {
                 assert_eq!(result.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), ["A2", "C5"]);
                 assert!(!result.result.passed);

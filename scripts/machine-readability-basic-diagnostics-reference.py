@@ -17,6 +17,7 @@ from harunobu.rules.level1.L1_02_one_table_per_sheet import OneTablePerSheetRule
 from harunobu.rules.level1.L1_13_hidden_rows_columns import HiddenRowsColumnsRule
 from harunobu.rules.registry import registry
 from harunobu.rules.level3.L3_01_header_start_position import HeaderStartPositionRule
+from harunobu.rules.level2.L2_06_formula_to_value import FormulaToValueRule
 rng=random.Random(112); cases=[]
 for i in range(160):
     merges=[]
@@ -55,12 +56,27 @@ for i in range(140):
     region=S(range=CellRange(start_row=first+1,start_col=1,end_row=14,end_col=4),layout=S(header_rows=[r+1 for r in headers],body_start_row=body+1))
     result=HeaderStartPositionRule().check(S(table_region=region,sheet=S(name='表')))
     start_cases.append(dict(first=first,headers=headers,body=body,message=result.message,descriptions=[v.description for v in result.violations]))
+formula_cases=[]
+for i in range(120):
+    refs=[]
+    for j in range(rng.randrange(8)):
+        row,col=rng.randrange(7),rng.randrange(4)
+        refs.append(dict(row=row,col=col,cell_ref=f"{chr(65+col)}{row+1}",formula_text=rng.choice([None,'','1+1','=SUM(A1:A2)','式' * 52]),formula_type=rng.choice([None,'','shared','array'])))
+    errors=[]
+    for j in range(rng.randrange(4)):
+        row,col=rng.randrange(7),rng.randrange(4)
+        errors.append(dict(row=row,col=col,cell_ref=f"{chr(65+col)}{row+1}"))
+    formula_refs=[S(**{**r,'row':r['row']+1,'col':r['col']+1}) for r in refs]
+    formula_errors=[S(**{**r,'row':r['row']+1,'col':r['col']+1,'error_text':'#REF!'}) for r in errors]
+    sheet=S(name='表',formula_refs_loaded=True,formula_refs=formula_refs,formula_error_refs=formula_errors)
+    result=FormulaToValueRule().check(S(sheet=sheet,table_region=S(range=CellRange(start_row=2,start_col=2,end_row=6,end_col=3))))
+    formula_cases.append(dict(refs=refs,errors=errors,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
 registry.discover()
 skipped=[]
 for rule_id in ['L1-09','L3-02','L3-03','L3-07','L3-08']:
     result=registry.get(rule_id).check(None)
     skipped.append(dict(id=rule_id,message=result.message,confidence=result.confidence,passed=result.passed))
-print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases),ensure_ascii=False))
+print(json.dumps(dict(cases=cases,formats=formats,hidden=hidden,skipped=skipped,tables=tables_cases,start=start_cases,formula=formula_cases),ensure_ascii=False))
 '''
 data=json.loads(subprocess.check_output([str(repo/'.venv/bin/python'),'-I','-X','utf8','-c',code],cwd=repo,text=True))
 out=Path(__file__).resolve().parent.parent/'test/fixtures/machine-readability/harunobu-basic-diagnostics-reference.json'
