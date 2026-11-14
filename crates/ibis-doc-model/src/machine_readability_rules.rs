@@ -810,6 +810,31 @@ fn numeric_purity(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u
     Some(result("L2-01", findings.is_empty(), 0.85, Severity::Fatal, findings))
 }
 
+pub fn numeric_purity_report(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)], typed_numeric: &BTreeSet<(u32, u32)>) -> Option<RuleDiagnostics> {
+    use std::sync::OnceLock;
+    static TRIANGLE: OnceLock<regex::Regex> = OnceLock::new();
+    static UNIT: OnceLock<regex::Regex> = OnceLock::new();
+    static PERCENT: OnceLock<regex::Regex> = OnceLock::new();
+    let triangle = TRIANGLE.get_or_init(||regex::Regex::new(r"^[▲△▼][\s\x1c-\x1f]*[\d,]+\.?\d*[\s\x1c-\x1f]*$").unwrap());
+    let unit = UNIT.get_or_init(||regex::Regex::new(r"^[\d,.]+[\s\x1c-\x1f]*(人|件|円|千円|百万円|億円|万|千|kg|km|m|g|t|ha|㎡|個|台|回|本|枚|箇所|か所|世帯|戸|社|校|棟|隻|機|両|組|点|冊|食|泊|日|月|年|時間|分|秒|歳|才|度|号|丁目)$").unwrap());
+    let percent = PERCENT.get_or_init(||regex::Regex::new(r"^[\d,.]+[\s\x1c-\x1f]*(%|％)$").unwrap());
+    let evaluation = numeric_purity(sheet,table,body_first,body_last,schemas,typed_numeric)?;
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut descriptions = Vec::new();
+    for finding in &evaluation.findings {
+        let cell = sheet.cells.iter().find(|c|address(c.row,c.column) == finding.location)?;
+        let CellValue::Text(value) = &cell.value else { return None; };
+        let value = value.trim_matches(space);
+        let prefix = if triangle.is_match(value) { "数値に文字列が混在しています（負値は数値型で入力してください）" }
+            else if unit.is_match(value) || percent.is_match(value) { "数値に単位が混在しています" }
+            else if finding.severity == FindingSeverity::Warning { "数値に注釈が混在しています" }
+            else { "数値列に文字列が混在しています" };
+        descriptions.push(format!("{prefix}: '{value}'"));
+    }
+    let message = if descriptions.is_empty() { "数値データに文字列の混在なし".into() } else { format!("数値内文字列混在: {}件検出",descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L2-05 for unmerged CSV/TSV, with AI unavailable.
 pub fn csv_other_details(sheet: &Sheet, table: CellRange, body_first: u32, body_last: u32, schemas: &[(u32, crate::machine_readability_layout::InferredColumnType)]) -> Option<RuleEvaluation> {
     use std::collections::BTreeMap;
