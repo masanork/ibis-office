@@ -908,3 +908,50 @@ pub fn formula_artifacts(table: CellRange, references: Option<(&[FormulaArtifact
     }
     result("L2-06", findings.is_empty(), 1.0, Severity::Major, findings)
 }
+
+/// L1-03 for XLSX values and merge metadata from the reference reader window.
+/// `read_only` is true for the reference's large-file two-pass reader, which
+/// can retain cached values in non-master cells of merged regions.
+pub fn xlsx_data_fragmentation(sheet: &Sheet, current: CellRange, tables: &[DetectedTable], read_only: bool) -> Option<RuleEvaluation> {
+    if tables.is_empty() || !tables.iter().any(|t| t.range == current) || tables.iter().any(|t| t.range.first_row > t.range.last_row || t.range.first_column > t.range.last_column) { return None; }
+    if sheet.merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let is_nonmaster = |row: u32, col: u32| sheet.merges.iter().any(|m| row >= m.first_row && row <= m.last_row && col >= m.first_column && col <= m.last_column && col != m.first_column);
+    let is_merged_dependent = |row: u32, col: u32| sheet.merges.iter().any(|m| row >= m.first_row && row <= m.last_row && col >= m.first_column && col <= m.last_column && (row != m.first_row || col != m.first_column));
+    let mut occupied_rows = BTreeSet::new(); let mut occupied_cols = BTreeSet::new(); let mut all_occupied_rows = BTreeSet::new();
+    for cell in sheet.cells.iter() {
+        if !read_only && is_merged_dependent(cell.row, cell.column) { continue; }
+        let nonempty = match &cell.value {
+            CellValue::Empty => false,
+            CellValue::Text(value) => !value.starts_with('=') && !value.trim_matches(space).is_empty(),
+            CellValue::Number(_) | CellValue::Bool(_) | CellValue::Error(_) => true,
+        };
+        if !nonempty { continue; }
+        all_occupied_rows.insert(cell.row);
+        if cell.row >= current.first_row && cell.row <= current.last_row && cell.column >= current.first_column && cell.column <= current.last_column {
+            occupied_rows.insert(cell.row); occupied_cols.insert(cell.column);
+        }
+    }
+    let mut findings = Vec::new();
+    if u64::from(current.last_row) - u64::from(current.first_row) + 1 > 2 {
+        for row in current.first_row..=current.last_row { if !occupied_rows.contains(&row) { findings.push(Finding { location: format!("行{}", u64::from(row) + 1), severity: FindingSeverity::Error }); } }
+        for col in current.first_column..=current.last_column {
+            if !occupied_cols.contains(&col) && !(current.first_row..=current.last_row).all(|row| is_nonmaster(row, col)) {
+                findings.push(Finding { location: format!("列{}", u64::from(col) + 1), severity: FindingSeverity::Error });
+            }
+        }
+    }
+    if tables.len() > 1 {
+        let mut sorted = tables.to_vec(); sorted.sort_by_key(|t| (t.range.first_row, t.range.first_column));
+        if (current.first_row, current.first_column) == (sorted[0].range.first_row, sorted[0].range.first_column) {
+            for pair in sorted.windows(2) {
+                let prev = pair[0].range; let next = pair[1].range;
+                if prev.last_row >= next.first_row { continue; }
+                for row in (u64::from(prev.last_row) + 1)..u64::from(next.first_row) {
+                    if !all_occupied_rows.contains(&(row as u32)) { findings.push(Finding { location: format!("行{}", row + 1), severity: FindingSeverity::Error }); }
+                }
+            }
+        }
+    }
+    Some(result("L1-03", findings.is_empty(), if findings.is_empty() { 0.85 } else { 0.9 }, Severity::Critical, findings))
+}

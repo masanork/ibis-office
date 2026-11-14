@@ -1,0 +1,284 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "cases": [
+    {
+      "file": "structure.xlsx",
+      "sheets": [
+        {
+          "name": "Data",
+          "tables": [
+            {
+              "range": [
+                0,
+                0,
+                4,
+                2
+              ],
+              "headers": [
+                0
+              ],
+              "confidence": 1.0,
+              "checks": [
+                {
+                  "id": "L1-01",
+                  "passed": true,
+                  "confidence": 1.0,
+                  "severity": "fatal",
+                  "findings": []
+                },
+                {
+                  "id": "L1-02",
+                  "passed": true,
+                  "confidence": 0.85,
+                  "severity": "fatal",
+                  "findings": []
+                },
+                {
+                  "id": "L1-03",
+                  "passed": true,
+                  "confidence": 0.85,
+                  "severity": "critical",
+                  "findings": []
+                },
+                {
+                  "id": "L1-04",
+                  "passed": true,
+                  "confidence": 0.9,
+                  "severity": "major",
+                  "findings": []
+                },
+                {
+                  "id": "L1-12",
+                  "passed": false,
+                  "confidence": 1.0,
+                  "severity": "fatal",
+                  "findings": [
+                    [
+                      "A2:A3",
+                      "error"
+                    ]
+                  ]
+                },
+                {
+                  "id": "L1-13",
+                  "passed": false,
+                  "confidence": 1.0,
+                  "severity": "critical",
+                  "findings": [
+                    [
+                      "行3",
+                      "error"
+                    ],
+                    [
+                      "列2",
+                      "error"
+                    ]
+                  ]
+                },
+                {
+                  "id": "L2-06",
+                  "passed": false,
+                  "confidence": 1.0,
+                  "severity": "major",
+                  "findings": [
+                    [
+                      "C5",
+                      "error"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "header-merge.xlsx",
+      "sheets": [
+        {
+          "name": "Header",
+          "tables": [
+            {
+              "range": [
+                0,
+                0,
+                3,
+                2
+              ],
+              "headers": [
+                0
+              ],
+              "confidence": 1.0,
+              "checks": [
+                {
+                  "id": "L1-01",
+                  "passed": true,
+                  "confidence": 1.0,
+                  "severity": "fatal",
+                  "findings": []
+                },
+                {
+                  "id": "L1-02",
+                  "passed": true,
+                  "confidence": 0.85,
+                  "severity": "fatal",
+                  "findings": []
+                },
+                {
+                  "id": "L1-03",
+                  "passed": true,
+                  "confidence": 0.85,
+                  "severity": "critical",
+                  "findings": []
+                },
+                {
+                  "id": "L1-04",
+                  "passed": true,
+                  "confidence": 0.9,
+                  "severity": "major",
+                  "findings": []
+                },
+                {
+                  "id": "L1-12",
+                  "passed": true,
+                  "confidence": 1.0,
+                  "severity": "major",
+                  "findings": [
+                    [
+                      "B1:C1",
+                      "info"
+                    ]
+                  ]
+                },
+                {
+                  "id": "L1-13",
+                  "passed": true,
+                  "confidence": 1.0,
+                  "severity": "critical",
+                  "findings": []
+                },
+                {
+                  "id": "L2-06",
+                  "passed": true,
+                  "confidence": 1.0,
+                  "severity": "major",
+                  "findings": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "xlsx-artifact-errors.xlsx",
+      "sheets": [
+        {
+          "name": "Data",
+          "tables": [
+            {
+              "range": [
+                0,
+                0,
+                4,
+                2
+              ],
+              "headers": [
+                0
+              ],
+              "confidence": 1.0,
+              "checks": [
+                {
+                  "id": "L1-01",
+                  "passed": true,
+                  "confidence": 1.0,
+                  "severity": "fatal",
+                  "findings": []
+                },
+                {
+                  "id": "L1-02",
+                  "passed": true,
+                  "confidence": 0.85,
+                  "severity": "fatal",
+                  "findings": []
+                },
+                {
+                  "id": "L1-03",
+                  "passed": true,
+                  "confidence": 0.85,
+                  "severity": "critical",
+                  "findings": []
+                },
+                {
+                  "id": "L1-04",
+                  "passed": true,
+                  "confidence": 0.9,
+                  "severity": "major",
+                  "findings": []
+                },
+                {
+                  "id": "L1-12",
+                  "passed": false,
+                  "confidence": 1.0,
+                  "severity": "fatal",
+                  "findings": [
+                    [
+                      "A2:A3",
+                      "error"
+                    ]
+                  ]
+                },
+                {
+                  "id": "L1-13",
+                  "passed": false,
+                  "confidence": 1.0,
+                  "severity": "critical",
+                  "findings": [
+                    [
+                      "行3",
+                      "error"
+                    ],
+                    [
+                      "列2",
+                      "error"
+                    ]
+                  ]
+                },
+                {
+                  "id": "L2-06",
+                  "passed": false,
+                  "confidence": 1.0,
+                  "severity": "major",
+                  "findings": [
+                    [
+                      "A2",
+                      "error"
+                    ],
+                    [
+                      "C5",
+                      "error"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "xlsx-artifact-multisheet.xlsx",
+      "sheets": [
+        {
+          "name": "First",
+          "tables": []
+        },
+        {
+          "name": "Second",
+          "tables": []
+        }
+      ]
+    }
+  ]
+}
