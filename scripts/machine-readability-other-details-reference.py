@@ -21,7 +21,7 @@ for i in range(100):
     columns=[ColumnSchema(col_index=c+1,inferred_type=kind) for c,kind in schemas]
     region=TableRegion(range=CellRange(start_row=1,start_col=1,end_row=rows,end_col=cols),layout=TableLayout(columns=columns,body_start_row=1,body_end_row=rows),confidence=1)
     result=OtherDetailSeparationRule().check(TableContext(workbook=workbook,sheet=sheet,table_region=region))
-    cases.append(dict(rows=rows,cols=cols,schemas=schemas,cells=cells,passed=result.passed,confidence=result.confidence,findings=[[v.cell_range,v.severity] for v in result.violations]))
+    cases.append(dict(rows=rows,cols=cols,schemas=schemas,cells=cells,passed=result.passed,confidence=result.confidence,message=result.message,descriptions=[v.description for v in result.violations],findings=[[v.cell_range,v.severity] for v in result.violations]))
 print(json.dumps(cases,ensure_ascii=False))
 '''
 env={k:v for k,v in os.environ.items() if not k.startswith('HARUNOBU_') and k not in {'OPENAI_API_KEY','ANTHROPIC_API_KEY','GOOGLE_API_KEY','AZURE_OPENAI_API_KEY'}};env['HARUNOBU_AI_DISABLED']='1'
