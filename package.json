@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build:ts": "tsc -p www",
-    "test:web": "npm run build:font-engine && tsc --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom,dom.iterable --strict --skipLibCheck www/font-coverage.ts www/wasm-loader.ts www/font-loader.ts www/dynamic-fonts.ts worker/font-service.ts worker/sorane-gateway.ts && node --test test/web/*.test.mjs",
+    "test:web": "npm run build:font-engine && tsc --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom,dom.iterable --strict --skipLibCheck www/font-coverage.ts www/wasm-loader.ts www/font-loader.ts www/dynamic-fonts.ts worker/font-service.ts worker/sorane-gateway.ts worker/wasm-delivery.ts && node --test test/web/*.test.mjs",
     "build:fonts": "node scripts/build-web-fonts.mjs",
     "test:fonts": "npm run build:font-engine && tsc --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom,dom.iterable --strict --skipLibCheck www/font-coverage.ts www/wasm-loader.ts www/font-loader.ts www/dynamic-fonts.ts worker/font-service.ts && node --test test/web/font-*.test.mjs",
     "build:font-engine": "scripts/build-font-subsetter.sh",

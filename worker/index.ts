@@ -5,6 +5,7 @@ import build from '../crates/ibis-font-subsetter/pkg/build.json';
 import sources from '../fonts/sources.json';
 import { createFontService } from './font-service';
 import { dispatchSoraneAdmin } from './sorane-gateway';
+import { serveBrotliWasm } from './wasm-delivery';
 
 const instance = new WebAssembly.Instance(module, { './ibis_font_subsetter_bg.js': subsetter });
 subsetter.__wbg_set_wasm(instance.exports);
@@ -13,6 +14,8 @@ const serveFont = createFontService(sources.fonts, build.sha256, size => new sub
 
 export default {
   async fetch(request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> {
+    const wasmResponse = await serveBrotliWasm(request, env.ASSETS);
+    if (wasmResponse) return wasmResponse;
     const adminResponse = await dispatchSoraneAdmin(request, env.SORANE_ADMIN);
     if (adminResponse) return adminResponse;
     if (new URL(request.url).pathname !== '/api/font/subset') return env.ASSETS.fetch(request);
