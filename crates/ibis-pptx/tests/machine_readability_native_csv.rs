@@ -101,3 +101,50 @@ fn partial_csv_scores_match_reference_aggregation() {
         }
     }
 }
+
+#[test]
+fn native_csv_reports_match_reference_for_all_modes() {
+    use ibis_pptx::machine_readability_native::analyze_csv_report_experimental;
+    fn normalize(report:&mut serde_json::Value) {
+        for level in ["1","2","3"] { if let Some(score)=report["レベル別スコア"][level].as_object_mut() {
+            for key in ["失敗ルール","強制0点ルール"] { if let Some(rules)=score.get_mut(key).and_then(|v|v.as_array_mut()) { rules.sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string()); } }
+        }}
+        for sheet in report["sheets"].as_array_mut().unwrap() { for table in sheet["評価対象エリア"].as_array_mut().unwrap() {
+            table["評価内容"].as_array_mut().unwrap().sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string());
+        }}
+    }
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-multitable-csv-reference.json");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for case in data["cases"].as_array().unwrap() {
+        let name=case["name"].as_str().unwrap();
+        let bytes:Vec<_>=case["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+        for mode in ["lite","standard","thorough"] {
+            let mut got=analyze_csv_report_experimental(&bytes,"fixture.csv",mode).unwrap_or_else(|e|panic!("{name} {mode}: {e:?}"));
+            let compressed:Vec<_>=case["reports"][mode].as_str().unwrap().as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+            let reference=miniz_oxide::inflate::decompress_to_vec_zlib(&compressed).unwrap();
+            let mut expected:serde_json::Value=serde_json::from_slice(&reference).unwrap(); normalize(&mut got); normalize(&mut expected);
+            assert_eq!(got,expected,"{name} {mode}");
+        }
+    }
+}
+
+#[test]
+fn native_csv_and_tsv_reports_match_encoded_reference_inputs() {
+    use ibis_pptx::machine_readability_native::analyze_csv_report_experimental;
+    fn normalize(report:&mut serde_json::Value) {
+        for level in ["1","2","3"] { if let Some(score)=report["レベル別スコア"][level].as_object_mut() {
+            for key in ["失敗ルール","強制0点ルール"] { if let Some(rules)=score.get_mut(key).and_then(|v|v.as_array_mut()) { rules.sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string()); } }
+        }}
+        for sheet in report["sheets"].as_array_mut().unwrap() { for table in sheet["評価対象エリア"].as_array_mut().unwrap() {
+            table["評価内容"].as_array_mut().unwrap().sort_by_key(|v|v["ルールID"].as_str().unwrap().to_string());
+        }}
+    }
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability/harunobu-csv-report-e2e-reference.json");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for (i,case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let bytes:Vec<_>=case["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+        let mut got=analyze_csv_report_experimental(&bytes,case["name"].as_str().unwrap(),"thorough").unwrap_or_else(|e|panic!("case {i}: {e:?}"));
+        let mut expected=case["report"].clone(); normalize(&mut got); normalize(&mut expected);
+        assert_eq!(got,expected,"case {i}");
+    }
+}
