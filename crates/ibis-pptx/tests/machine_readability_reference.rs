@@ -774,13 +774,19 @@ fn xlsx_data_units_matches_typed_reference() {
 
 #[test]
 fn bulk_format_consistency_matches_pinned_harunobu() {
-    use ibis_doc_model::machine_readability_rules::{bulk_format_consistency, FindingSeverity};
+    use ibis_doc_model::machine_readability_rules::{bulk_format_consistency, bulk_format_consistency_report, FindingSeverity};
     let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-bulk-reference.json")).unwrap()).unwrap();
     assert_eq!(data["harunobu_commit"],"88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
     for (i,case) in data["cases"].as_array().unwrap().iter().enumerate() {
         let headers:Vec<Vec<String>>=case["headers"].as_array().unwrap().iter().map(|h|h.as_array().unwrap().iter().map(|v|v.as_str().unwrap().to_string()).collect()).collect();
         let got=bulk_format_consistency(&headers);
+        let names:Vec<_>=(0..headers.len()).map(|n|format!("f{n}.csv")).collect();
+        let named:Vec<_>=names.iter().zip(&headers).map(|(n,h)|(n.as_str(),h.as_slice())).collect();
+        let report=bulk_format_consistency_report(&named);
+        assert_eq!(report.evaluation,got,"case {i}");
+        assert_eq!(report.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(report.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
         assert_eq!(got.result.passed,case["passed"].as_bool().unwrap(),"case {i}");
         assert_eq!(got.result.confidence,case["confidence"].as_f64().unwrap(),"case {i}");
         let severities:Vec<_>=got.findings.iter().map(|v|match v.severity { FindingSeverity::Error=>"error",FindingSeverity::Warning=>"warning",FindingSeverity::Info=>"info" }).collect();
