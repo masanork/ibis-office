@@ -10,6 +10,24 @@ use ibis_doc_model::sheet_calc::sheet_of_slide;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum XlsxInputError { Workbook(String), SheetUnavailable, InvalidFormulaCache, UnsupportedFormulaCache, FormulaModelMismatch, InvalidWindowMetadata, FormulaInspectionLimit, UnsupportedReferenceValue, Layout(XlsxLayoutError) }
 
+// The editor's source map omits chart sheets, but Harunobu's OOXML
+// inspectors traverse them as well. Keep their positions for worksheet
+// indexing and reject unknown relationship types rather than guessing.
+fn inspection_sheet_parts(bytes: &[u8], sources: &crate::save::xlsx::SourceMap) -> Result<Vec<String>, XlsxInputError> {
+    let package = crate::package::Package::new(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let xml = package.read_xml(&sources.workbook).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let doc = roxmltree::Document::parse(&xml).map_err(|_| XlsxInputError::InvalidWindowMetadata)?;
+    let rels = package.relationships(&sources.workbook).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let sheets: Vec<_> = doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "sheet" && n.parent().is_some_and(|p| p.tag_name().name() == "sheets")).collect();
+    if sheets.len() != sources.sheet_parts.len() { return Err(XlsxInputError::InvalidWindowMetadata); }
+    sheets.into_iter().zip(&sources.sheet_parts).map(|(sheet, part)| {
+        if let Some(part) = part { return Ok(part.clone()); }
+        let id = sheet.attribute(("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id")).ok_or(XlsxInputError::SheetUnavailable)?;
+        let rel = rels.get(id).filter(|r| !r.external && r.kind == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet").ok_or(XlsxInputError::SheetUnavailable)?;
+        Ok(rel.target.clone())
+    }).collect()
+}
+
 /// Read one worksheet from the original bytes. The caller supplies the exact
 /// reader window; this function does not yet infer Harunobu's dimension limits.
 /// Out-of-range date and duration serials are rejected rather than guessed.
@@ -229,8 +247,7 @@ pub fn inspect_xlsx_formula_artifacts(bytes: &[u8]) -> Result<Vec<XlsxFormulaArt
     let package = crate::package::Package::new(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
     let mut output = Vec::with_capacity(sources.sheet_parts.len());
     let (mut formula_count, mut error_count) = (0usize, 0usize);
-    for part in &sources.sheet_parts {
-        let part = part.as_deref().ok_or(XlsxInputError::SheetUnavailable)?;
+    for part in &inspection_sheet_parts(bytes, &sources)? {
         let xml = package.read_xml(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
         if xml.len() > MAX_XML_BYTES { return Err(XlsxInputError::FormulaInspectionLimit); }
         let doc = roxmltree::Document::parse(&xml).map_err(|_| XlsxInputError::InvalidFormulaCache)?;
@@ -403,8 +420,7 @@ pub fn inspect_xlsx_object_artifacts(bytes: &[u8]) -> Result<Vec<Vec<ibis_doc_mo
     let package = crate::package::Package::new(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
     let mut output = Vec::with_capacity(sources.sheet_parts.len());
     let mut total = 0usize;
-    for part in &sources.sheet_parts {
-        let part = part.as_deref().ok_or(XlsxInputError::SheetUnavailable)?;
+    for part in &inspection_sheet_parts(bytes, &sources)? {
         let relationships = package.ordered_relationships(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
         let drawings: Vec<_> = relationships.iter().map(|(_, r)| r).filter(|r| r.kind == DRAWING).collect();
         if drawings.iter().any(|r| r.external) { return Err(XlsxInputError::InvalidWindowMetadata); }
@@ -662,7 +678,7 @@ pub fn first_xlsx_headers(sheets: &[Vec<PartialXlsxStructure>]) -> Option<Vec<St
 
 /// Experimental full-workbook JSON report, restricted to reader-representable
 /// worksheets. Unsupported values, inspections and non-worksheet parts fail
-/// closed; application backend integration remains separate.
+/// closed. Chart sheets are inspected but do not produce worksheet reports.
 pub fn analyze_xlsx_report_experimental(bytes: &[u8], file_name: &str, mode: &str) -> Result<serde_json::Value, XlsxInputError> {
     use ibis_doc_model::machine_readability_layout::{preliminary_islands, LayoutValue, OtherRegion};
     use ibis_doc_model::SheetState;
@@ -670,12 +686,13 @@ pub fn analyze_xlsx_report_experimental(bytes: &[u8], file_name: &str, mode: &st
     let path=std::path::Path::new(file_name);
     if path.file_name().and_then(|v|v.to_str()) != Some(file_name) || !matches!(path.extension().and_then(|v|v.to_str()).map(str::to_ascii_lowercase).as_deref(),Some("xlsx" | "xlsm")) { return Err(XlsxInputError::UnsupportedReferenceValue); }
     let levels=match mode { "lite"=>1,"standard"=>2,"thorough"=>3,_=>return Err(XlsxInputError::UnsupportedReferenceValue) };
-    let (presentation,_) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e|XlsxInputError::Workbook(e.to_string()))?;
+    let (presentation,sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e|XlsxInputError::Workbook(e.to_string()))?;
     let workbook=presentation.workbook.as_ref().ok_or(XlsxInputError::SheetUnavailable)?;
-    if workbook.sheets.iter().any(|s|s.other) { return Err(XlsxInputError::SheetUnavailable); }
+    inspection_sheet_parts(bytes, &sources)?;
     struct OwnedSheet { name:String, hidden:bool, rows:u32, cols:u32, used:String, tables:Vec<PartialXlsxStructure>, others:Vec<(u32,u32,String,serde_json::Value)> }
     let mut owned=Vec::new();
     for (index,entry) in workbook.sheets.iter().enumerate() {
+        if entry.other { continue; }
         let saved=read_xlsx_saved_sheet(bytes,index)?;
         let text=xlsx_reference_text_sheet(&saved)?;
         let layout=preliminary_islands(&saved.layout.cells,&saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
