@@ -121,3 +121,5 @@ including missing cells, empty values, abbreviation markers, and finding order.
 `harunobu-other-details-reference.json` cover synthetic AI-disabled L2-01 and
 L2-05 layouts, including numeric schemas, unit and note values, category
 cardinality, sample thresholds, and violation locations.
+`harunobu-choice-reference.json` covers AI-disabled L2-04 category distributions
+and compares finding locations without assuming Python set iteration order.
