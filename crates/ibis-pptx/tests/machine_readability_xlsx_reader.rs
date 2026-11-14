@@ -181,3 +181,33 @@ fn saved_xlsx_values_preserve_original_formula_caches() {
         }
     }
 }
+
+#[test]
+fn xlsx_formula_artifacts_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::formula_artifacts;
+    use ibis_doc_model::sheet::CellRange;
+    use ibis_pptx::machine_readability_xlsx::inspect_xlsx_formula_artifacts;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-artifacts-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for case in data["cases"].as_array().unwrap() {
+        let name = case["file"].as_str().unwrap();
+        let sheets = inspect_xlsx_formula_artifacts(&std::fs::read(root.join(name)).unwrap()).unwrap();
+        let names = case["sheets"].as_array().unwrap();
+        assert_eq!(sheets.len(), names.len(), "{name}");
+        for (actual, sheet_name) in sheets.iter().zip(names) {
+            for (list, key) in [(&actual.formulas, "formulas"), (&actual.errors, "errors")] {
+                let got: Vec<_> = list.iter().map(|v| (v.row, v.column, v.cell_ref.as_str())).collect();
+                let wanted: Vec<_> = case[key].as_array().unwrap().iter().filter(|v| v[0] == *sheet_name).map(|v| (v[1].as_u64().unwrap() as u32, v[2].as_u64().unwrap() as u32, v[3].as_str().unwrap())).collect();
+                assert_eq!(got, wanted, "{name}: {sheet_name} {key}");
+            }
+            let table = CellRange { first_row: 0, first_column: 0, last_row: 10, last_column: 10 };
+            let result = formula_artifacts(table, Some((&actual.formulas, &actual.errors)));
+            if name == "xlsx-artifact-errors.xlsx" {
+                assert_eq!(result.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), ["A2", "C5"]);
+                assert!(!result.result.passed);
+            }
+            assert_eq!(formula_artifacts(table, None).result.confidence, 0.0);
+        }
+    }
+}

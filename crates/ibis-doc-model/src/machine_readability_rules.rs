@@ -886,3 +886,25 @@ pub fn csv_fragmentation_with_tables(sheet: &Sheet, current: CellRange, tables: 
     checks.result.confidence = if checks.result.passed { 0.85 } else { 0.9 };
     Some(checks)
 }
+
+/// A formula or cached #REF! reference found in the original OOXML package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormulaArtifact { pub row: u32, pub column: u32, pub cell_ref: String }
+
+/// L2-06 over authoritative package-wide inspection results. `None` means the
+/// inspection failed or was incomplete and is reported as a skipped rule.
+pub fn formula_artifacts(table: CellRange, references: Option<(&[FormulaArtifact], &[FormulaArtifact])>) -> RuleEvaluation {
+    let Some((formulas, errors)) = references else { return result("L2-06", true, 0.0, Severity::Major, Vec::new()); };
+    if table.first_row > table.last_row || table.first_column > table.last_column { return result("L2-06", true, 0.0, Severity::Major, Vec::new()); }
+    let within = |v: &&FormulaArtifact| v.row >= table.first_row && v.row <= table.last_row && v.column >= table.first_column && v.column <= table.last_column;
+    let mut seen = BTreeSet::new();
+    let mut findings = Vec::new();
+    for artifact in errors.iter().filter(within) {
+        seen.insert((artifact.row, artifact.column));
+        findings.push(Finding { location: artifact.cell_ref.clone(), severity: FindingSeverity::Error });
+    }
+    for artifact in formulas.iter().filter(within) {
+        if seen.insert((artifact.row, artifact.column)) { findings.push(Finding { location: artifact.cell_ref.clone(), severity: FindingSeverity::Error }); }
+    }
+    result("L2-06", findings.is_empty(), 1.0, Severity::Major, findings)
+}
