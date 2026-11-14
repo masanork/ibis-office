@@ -96,6 +96,24 @@ extern "C" {
 
 #[cfg(target_arch = "wasm32")]
 impl SlideEditor {
+    /// Download the visible workbook sheets or slides as an HTML document.
+    pub(crate) fn export_office_html(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_pending_edit(window, cx);
+        let (stem, _) = self.name_parts();
+        let stem = if stem.is_empty() { "document" } else { &stem };
+        let result = if self.is_workbook() {
+            ibis_pptx::html_export::export_workbook_html(self.presentation(), stem)
+        } else {
+            ibis_pptx::html_export::export_slides_html(self.presentation(), stem)
+        };
+        match result {
+            Ok(bytes) => if let Err(error) = crate::web::download_html(&format!("{stem}.html"), bytes) {
+                self.set_status(crate::i18n::format("file.save-failed", &[("error", &format!("{error:?}"))]), cx);
+            },
+            Err(error) => self.set_status(crate::i18n::format("file.save-failed", &[("error", &error.to_string())]), cx),
+        }
+    }
+
     /// The close button: the embedding page is told to close the preview.
     pub(crate) fn embed_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);

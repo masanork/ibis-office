@@ -53,6 +53,7 @@ declare global {
     ibisOfficeFontDownload: (file: string, url: string, size: number) => Promise<number>;
     ibisOfficeFontsLoad: () => Promise<Uint8Array[]>;
     /** Called from Rust when the close or the download button is pressed. */
+    ibisOfficeDownloadHtml: (name: string, bytes: Uint8Array) => void;
     ibisOfficeEmbedAction: (kind: string, name: string, bytes?: Uint8Array) => void;
     /** Set by the embedding page before main.js. */
     ibisOfficeOptions?: EmbedOptions;
@@ -448,6 +449,14 @@ window.ibisOfficeFontFetchText = fontFetchText;
 window.ibisOfficeFontsInstalled = fontsInstalled;
 window.ibisOfficeFontDownload = fontDownload;
 window.ibisOfficeFontsLoad = fontsLoad;
+window.ibisOfficeDownloadHtml = (name, bytes) => {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'text/html;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+};
 window.ibisOfficeEmbedAction = embedAction;
 
 if (!('gpu' in navigator)) {

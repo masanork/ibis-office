@@ -30,8 +30,18 @@ impl SlideEditor {
         }
         #[cfg(target_family = "wasm")]
         {
-            let _ = format;
-            self.report(Err(text("_shell.exporting-is-not-yet-available-in-the-browser-ve").into()), cx);
+            if format != DocxConvertFormat::Html {
+                self.report(Err(text("_shell.exporting-is-not-yet-available-in-the-browser-ve").into()), cx);
+                return;
+            }
+            let (stem, _) = self.name_parts();
+            let name = format!("{}.html", if stem.is_empty() { "document" } else { &stem });
+            match export_docx_format(self.presentation(), format) {
+                Ok(bytes) => if let Err(error) = crate::shell::web::download_html(&name, bytes) {
+                    self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &format!("{error:?}"))]), cx);
+                },
+                Err(error) => self.set_status(crate::shell::i18n::format("file.save-failed", &[("error", &error.to_string())]), cx),
+            }
         }
     }
 

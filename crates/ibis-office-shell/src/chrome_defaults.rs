@@ -159,6 +159,10 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 item("file.export.gif", "animation").on(|this, window, cx| this.export_gif(window, cx)).into(),
                 item("file.export.svg", "draw").into(),
             ];
+            #[cfg(target_family = "wasm")]
+            if matches!(editor.kind(), ibis_pptx::Kind::Workbook | ibis_pptx::Kind::Presentation) {
+                entries.push(item_key("file.export.html", "description", "docx.convert.format.html").on(|this, window, cx| this.export_office_html(window, cx)).into());
+            }
             // The screen's own kinds of file (a presentation: OpenDocument).
             entries.extend(with_format!(editor, menu_items(editor, MenuPart::FileExport)));
             entries

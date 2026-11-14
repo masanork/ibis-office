@@ -51,6 +51,7 @@ pub mod csv;
 pub mod progress;
 mod docx;
 pub mod docx_convert;
+pub mod html_export;
 pub(crate) mod drawing_table_style;
 pub mod geometry;
 pub mod shape_clipboard;

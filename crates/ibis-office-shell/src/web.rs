@@ -161,3 +161,9 @@ pub fn new_query(kind: ibis_pptx::Kind) -> &'static str {
         ibis_pptx::Kind::Document => "?new=docx",
     }
 }
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = ibisOfficeDownloadHtml)]
+    pub fn download_html(name: &str, bytes: Vec<u8>) -> Result<(), JsValue>;
+}

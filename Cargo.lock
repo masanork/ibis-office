@@ -3524,6 +3524,7 @@ dependencies = [
 name = "ibis-pptx"
 version = "0.8.0"
 dependencies = [
+ "base64 0.22.1",
  "encoding_rs",
  "ibis-calc",
  "ibis-doc-model",
