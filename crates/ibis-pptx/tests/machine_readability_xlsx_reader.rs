@@ -220,3 +220,86 @@ fn saved_xlsx_values_are_limited_to_reference_window() {
     assert_eq!(saved.window, XlsxReadWindow::Through { last_row: 100, last_column: 5 });
     assert!(saved.sheet.cells.iter().all(|c| c.row <= 100 && c.column <= 5));
 }
+
+#[test]
+fn native_xlsx_structure_checks_match_reference() {
+    use ibis_doc_model::machine_readability_rules::FindingSeverity;
+    use ibis_doc_model::machine_readability_scoring::Severity;
+    use ibis_pptx::machine_readability_xlsx::analyze_xlsx_structure_partial;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (name, file) in [("structure", "structure.xlsx"), ("header", "header-merge.xlsx")] {
+        let actual = analyze_xlsx_structure_partial(&std::fs::read(root.join(file)).unwrap(), 0).unwrap();
+        assert_eq!(actual.len(), 1, "{name}");
+        assert!(!actual[0].complete);
+        for (got, expected) in actual[0].checks.iter().filter(|c| matches!(c.result.rule_id.as_str(), "L1-12" | "L1-13" | "L2-06")).zip(data["fixtures"][name]["rules"].as_array().unwrap()) {
+            assert_eq!(got.result.rule_id, expected["rule"].as_str().unwrap(), "{name}");
+            assert_eq!(got.result.passed, expected["passed"].as_bool().unwrap(), "{name}: {}", got.result.rule_id);
+            let severity = match got.result.severity.unwrap() { Severity::Fatal => "fatal", Severity::Critical => "critical", Severity::Major => "major", Severity::Minor => "minor", Severity::Info => "info" };
+            assert_eq!(severity, expected["severity"].as_str().unwrap(), "{name}: {}", got.result.rule_id);
+            assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), expected["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "{name}: {}", got.result.rule_id);
+            let severities: Vec<_> = got.findings.iter().map(|v| match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" }).collect();
+            assert_eq!(severities, expected["finding_severities"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "{name}: {}", got.result.rule_id);
+        }
+    }
+}
+
+#[test]
+fn detected_xlsx_structure_matches_thorough_reference() {
+    use ibis_doc_model::machine_readability_rules::FindingSeverity;
+    use ibis_doc_model::machine_readability_scoring::Severity;
+    use ibis_pptx::machine_readability_xlsx::analyze_xlsx_structure_partial;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-structure-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for case in data["cases"].as_array().unwrap() {
+        let file = case["file"].as_str().unwrap();
+        let bytes = std::fs::read(root.join(file)).unwrap();
+        for (i, sheet) in case["sheets"].as_array().unwrap().iter().enumerate() {
+            let tables = analyze_xlsx_structure_partial(&bytes, i).unwrap_or_else(|e| panic!("{file}: {e:?}"));
+            let wanted = sheet["tables"].as_array().unwrap();
+            assert_eq!(tables.len(), wanted.len(), "{file} sheet {i}");
+            for (got, expected) in tables.iter().zip(wanted) {
+                let r = got.table.range;
+                assert_eq!([r.first_row, r.first_column, r.last_row, r.last_column], std::array::from_fn(|n| expected["range"][n].as_u64().unwrap() as u32), "{file}");
+                assert_eq!(got.header_rows, expected["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>(), "{file}");
+                assert_eq!(got.table.confidence, expected["confidence"].as_f64().unwrap(), "{file}");
+                let checks = expected["checks"].as_array().unwrap();
+                assert_eq!(got.checks.len(), checks.len(), "{file}");
+                for (a,b) in got.checks.iter().zip(checks) {
+                    assert_eq!(a.result.rule_id, b["id"].as_str().unwrap(), "{file}");
+                    assert_eq!(a.result.passed, b["passed"].as_bool().unwrap(), "{file}: {}", a.result.rule_id);
+                    assert_eq!(a.result.confidence, b["confidence"].as_f64().unwrap(), "{file}: {}", a.result.rule_id);
+                    let severity = match a.result.severity.unwrap() { Severity::Fatal => "fatal", Severity::Critical => "critical", Severity::Major => "major", Severity::Minor => "minor", Severity::Info => "info" };
+                    assert_eq!(severity, b["severity"].as_str().unwrap(), "{file}: {}", a.result.rule_id);
+                    let findings: Vec<_> = a.findings.iter().map(|v| (v.location.as_str(), match v.severity { FindingSeverity::Error => "error", FindingSeverity::Warning => "warning", FindingSeverity::Info => "info" })).collect();
+                    let wanted: Vec<_> = b["findings"].as_array().unwrap().iter().map(|v| (v[0].as_str().unwrap(), v[1].as_str().unwrap())).collect();
+                    assert_eq!(findings, wanted, "{file}: {}", a.result.rule_id);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn xlsx_fragmentation_matches_merged_reference_cases() {
+    use ibis_doc_model::machine_readability_rules::{xlsx_data_fragmentation, DetectedTable};
+    use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-fragmentation-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let mut sheet = Sheet::default();
+        sheet.cells = case["cells"].as_array().unwrap().iter().map(|c| {
+            let value = c[2].as_str().unwrap().to_string();
+            SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
+        }).collect::<Vec<_>>().into();
+        sheet.merges = case["merges"].as_array().unwrap().iter().map(|v| CellRange { first_row: v[0].as_u64().unwrap() as u32, first_column: v[1].as_u64().unwrap() as u32, last_row: v[2].as_u64().unwrap() as u32, last_column: v[3].as_u64().unwrap() as u32 }).collect();
+        let range = CellRange { first_row: 0, first_column: 0, last_row: case["rows"].as_u64().unwrap() as u32 - 1, last_column: case["cols"].as_u64().unwrap() as u32 - 1 };
+        let got = xlsx_data_fragmentation(&sheet, range, &[DetectedTable { range, confidence: 1.0 }], case["read_only"].as_bool().unwrap()).unwrap();
+        assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
+        assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
+        assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
+    }
+}

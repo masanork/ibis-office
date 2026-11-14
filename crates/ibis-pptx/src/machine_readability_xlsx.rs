@@ -192,3 +192,36 @@ pub fn inspect_xlsx_formula_artifacts(bytes: &[u8]) -> Result<Vec<XlsxFormulaArt
     }
     Ok(output)
 }
+
+/// Experimental Excel-only checks for detected worksheet tables. Results have
+/// no score and do not cover the common or report rules; they are not a full
+/// machine-readability analysis.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartialXlsxStructure {
+    pub table: ibis_doc_model::machine_readability_rules::DetectedTable,
+    pub header_rows: Vec<u32>,
+    pub checks: Vec<ibis_doc_model::machine_readability_rules::RuleEvaluation>,
+    pub complete: bool,
+}
+
+pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Result<Vec<PartialXlsxStructure>, XlsxInputError> {
+    use ibis_doc_model::machine_readability_layout::{merge_column_adjacent_regions, merge_form_fragments, preliminary_islands};
+    use ibis_doc_model::machine_readability_rules::{file_format, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, one_table_per_sheet, xlsx_data_fragmentation, DetectedTable, OutsideTableCell, UsedExtent, WorkbookFormat};
+    use ibis_doc_model::sheet::CellRange;
+    let saved = read_xlsx_saved_sheet(bytes, sheet_index)?;
+    // Reference skips only L2-06 if package-wide formula inspection fails.
+    let artifacts = inspect_xlsx_formula_artifacts(bytes).ok().and_then(|v| v.get(sheet_index).cloned());
+    let preliminary = preliminary_islands(&saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+    let columns = merge_column_adjacent_regions(&preliminary.candidates, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+    let mut regions = merge_form_fragments(&columns, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
+    regions.sort_by(|a, b| b.candidate.confidence.total_cmp(&a.candidate.confidence));
+    let tables: Vec<_> = regions.iter().map(|r| DetectedTable { range: r.candidate.range, confidence: r.candidate.confidence }).collect();
+    let others: Vec<_> = preliminary.others.iter().map(|o| OutsideTableCell { row: o.row, column: o.column }).collect();
+    let used = match saved.window { XlsxReadWindow::Empty => UsedExtent::Empty, XlsxReadWindow::Through { last_row, last_column } => UsedExtent::Range(CellRange { first_row: 0, first_column: 0, last_row, last_column }) };
+    regions.iter().map(|region| {
+        let range = region.candidate.range;
+        let header_rows: BTreeSet<_> = region.headers.rows.iter().copied().collect();
+        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
+        Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), checks, complete: false })
+    }).collect()
+}
