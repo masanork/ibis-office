@@ -145,7 +145,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y ca-certificates curl git python3 build-essential pkg-config \
+          apt-get install -y ca-certificates curl git python3 build-essential pkg-config libssl-dev \
             libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
             libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
       - uses: actions/checkout@v4
