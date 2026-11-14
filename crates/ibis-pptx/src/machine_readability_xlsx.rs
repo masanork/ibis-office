@@ -587,29 +587,34 @@ fn iso_date_reference(raw: &str) -> Option<(String, String, bool)> {
             previous = order;
             let (whole, fraction) = number.split_once('.').map_or((number, ""), |v| v);
             if whole.is_empty() || (number.contains('.') && (unit != b'S' || fraction.is_empty() || fraction.len() > 3)) || !fraction.bytes().all(|b| b.is_ascii_digit()) { return None; }
-            let whole: u128 = whole.parse().ok()?;
             let multiplier = match unit { b'H' => 3_600_000_000u128, b'M' => 60_000_000, _ => 1_000_000 };
+            let whole: u128 = if unit == b'S' {
+                let seconds: f64 = number.parse().ok()?;
+                if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400_000_000_000.0 { return None; }
+                let integral = seconds.floor();
+                total_microseconds = total_microseconds.checked_add(((seconds - integral) * 1_000_000.0).round_ties_even() as u128)?;
+                integral as u128
+            } else { whole.parse().ok()? };
             total_microseconds = total_microseconds.checked_add(whole.checked_mul(multiplier)?)?;
-            if !fraction.is_empty() { total_microseconds = total_microseconds.checked_add(fraction.parse::<u128>().ok()?.checked_mul(10u128.pow(6 - fraction.len() as u32))?)?; }
         }
         if previous == 0 { return None; }
         let seconds = total_microseconds / 1_000_000;
-        let millis = (total_microseconds % 1_000_000) / 1000;
+        let micros = total_microseconds % 1_000_000;
         let days = seconds / 86_400;
         if days > 999_999_999 { return None; }
         let hours = seconds / 3600 % 24;
         let minutes = seconds / 60 % 60;
         let sec = seconds % 60;
-        let time = if millis == 0 { format!("{hours}:{minutes:02}:{sec:02}") } else { format!("{hours}:{minutes:02}:{sec:02}.{:06}", millis * 1000) };
+        let time = if micros == 0 { format!("{hours}:{minutes:02}:{sec:02}") } else { format!("{hours}:{minutes:02}:{sec:02}.{micros:06}") };
         let text = if days == 0 { time } else { format!("{days} day{}, {time}", if days == 1 { "" } else { "s" }) };
         let mut json = String::from("P");
         if days >= 365 { json.push_str(&format!("{}Y", days / 365)); }
         if days % 365 != 0 { json.push_str(&format!("{}D", days % 365)); }
-        if hours > 0 || minutes > 0 || sec > 0 || millis > 0 || days == 0 {
+        if hours > 0 || minutes > 0 || sec > 0 || micros > 0 || days == 0 {
             json.push('T');
             if hours > 0 { json.push_str(&format!("{hours}H")); }
             if minutes > 0 { json.push_str(&format!("{minutes}M")); }
-            if millis > 0 { let frac=format!("{millis:03}");json.push_str(&format!("{sec}.{}S", frac.trim_end_matches('0'))); }
+            if micros > 0 { let frac=format!("{micros:06}");json.push_str(&format!("{sec}.{}S", frac.trim_end_matches('0'))); }
             else if sec > 0 || (hours == 0 && minutes == 0) { json.push_str(&format!("{sec}S")); }
         }
         return Some((text, json, true));

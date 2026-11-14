@@ -10,7 +10,7 @@ from openpyxl import Workbook
 from harunobu.core.reader import read_workbook
 from harunobu.core.analyzer import Analyzer
 from harunobu.output.json_writer import to_dict
-values=['PT1H2M3.456S','PT0S','PT24H','PT1M','PT0.001S','PT36H12M5.009S','PT1000H2M1.999S','PT10000000H2M1.999S','PT23999999999H59M59.999S']
+values=['PT1H2M3.456S','PT0S','PT24H','PT1M','PT0.001S','PT36H12M5.009S','PT1000H2M1.999S','PT10000000H2M1.999S','PT23999999999H59M59.999S','PT1000000000000.999S']
 book=Workbook();sheet=book.active;sheet.title='値'
 for i in range(len(values)): sheet.cell(i*2+1,1,12345+i)
 stream=io.BytesIO();book.save(stream)
