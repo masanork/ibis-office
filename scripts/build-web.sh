@@ -48,7 +48,13 @@ fi
 # The wasm's size, for the download's progress bar: a server that compresses
 # it (GitHub Pages sends gzip) gives Content-Length of the compressed bytes,
 # while the browser hands main.ts the uncompressed ones.
-stat -f %z www/pkg/ibis_office_app_bg.wasm > www/pkg/ibis_office_app_bg.wasm.size
+if [[ "${IBIS_SPLIT_WASM:-0}" == 1 ]]; then
+  python3 scripts/split-web-wasm.py www/pkg/ibis_office_app_bg.wasm
+else
+  stat -f %z www/pkg/ibis_office_app_bg.wasm > www/pkg/ibis_office_app_bg.wasm.size
+  # Do not let a previous split build select stale assets on an ordinary build.
+  python3 -c 'from pathlib import Path; Path("www/pkg/ibis_office_app_bg.manifest.json").unlink(missing_ok=True)'
+fi
 
 # main.ts imports the typings wasm-bindgen just wrote.
 if [[ ! -x node_modules/.bin/tsc ]]; then

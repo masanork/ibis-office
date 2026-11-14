@@ -3,6 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
 import init, { run, set_embed_options } from './pkg/ibis_office_app.js';
+import { loadWasm } from './wasm-loader.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -373,6 +374,18 @@ async function wasmSize(): Promise<number> {
  * transfer is not compressed. The bar stays hidden when neither is known.
  */
 async function fetchWasm(): Promise<Response> {
+  const manifestUrl = new URL('./pkg/ibis_office_app_bg.manifest.json', import.meta.url);
+  const manifest = await fetch(manifestUrl);
+  if (manifest.ok && manifest.headers.get('content-type')?.includes('application/json')) {
+    if (progress) progress.style.display = 'block';
+    const response = await loadWasm(manifestUrl, (loaded, total) => {
+      if (progressFill) progressFill.style.width = `${Math.min(100, (loaded / total) * 100)}%`;
+    }, manifest);
+    progress?.classList.add('starting');
+    if (statusText) statusText.textContent = ja ? 'ibisOffice を起動しています…' : 'Starting ibisOffice…';
+    return response;
+  }
+  if (!manifest.ok && manifest.status !== 404) throw new Error(`Wasm manifest: HTTP ${manifest.status}`);
   const url = new URL('./pkg/ibis_office_app_bg.wasm', import.meta.url);
   const [response, size] = await Promise.all([fetch(url), wasmSize()]);
   if (!response.ok) {

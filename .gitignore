@@ -2,6 +2,7 @@
 /www/pkg
 /www/assets
 /www/main.js
+/www/wasm-loader.js
 /node_modules
 /test/private/
 __pycache__/
