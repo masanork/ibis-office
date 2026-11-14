@@ -22,7 +22,7 @@ for i in range(160):
     regions=[TableRegion(range=CellRange(start_row=a+1,start_col=b+1,end_row=c+1,end_col=d+1),confidence=.9) for a,b,c,d in tables]
     for index,region in enumerate(regions):
         result=DataFragmentationRule().check(TableContext(workbook=workbook,sheet=sheet,table_region=region,all_tables=regions))
-        cases.append(dict(tables=tables,current=index,cells=cells,passed=result.passed,confidence=result.confidence,locations=[v.cell_range for v in result.violations]))
+        cases.append(dict(tables=tables,current=index,cells=cells,passed=result.passed,confidence=result.confidence,message=result.message,descriptions=[v.description for v in result.violations],locations=[v.cell_range for v in result.violations]))
 print(json.dumps(cases,ensure_ascii=False))
 '''
 env={k:v for k,v in os.environ.items() if not k.startswith('HARUNOBU_')};env['HARUNOBU_AI_DISABLED']='1'

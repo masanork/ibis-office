@@ -719,7 +719,7 @@ fn csv_data_units_matches_pinned_harunobu() {
 
 #[test]
 fn csv_multitable_fragmentation_matches_pinned_harunobu() {
-    use ibis_doc_model::machine_readability_rules::{csv_fragmentation_with_tables, DetectedTable};
+    use ibis_doc_model::machine_readability_rules::{csv_fragmentation_with_tables, csv_fragmentation_report, DetectedTable};
     use ibis_doc_model::sheet::{CellKind, CellRange, CellValue, Sheet, SheetCell};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-multitable-reference.json")).unwrap()).unwrap();
@@ -732,6 +732,10 @@ fn csv_multitable_fragmentation_matches_pinned_harunobu() {
             SheetCell { row: c[0].as_u64().unwrap() as u32, column: c[1].as_u64().unwrap() as u32, value: CellValue::Text(value.clone()), text: value, kind: CellKind::Text, formula: None, style: 0, phonetic: None, runs: None }
         }).collect::<Vec<_>>().into();
         let got = csv_fragmentation_with_tables(&sheet, tables[case["current"].as_u64().unwrap() as usize].range, &tables).unwrap();
+        let report = csv_fragmentation_report(&sheet, tables[case["current"].as_u64().unwrap() as usize].range, &tables).unwrap();
+        assert_eq!(report.evaluation, got, "case {i}");
+        assert_eq!(report.message, case["message"].as_str().unwrap(), "case {i}");
+        assert_eq!(report.descriptions, case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
         assert_eq!(got.result.passed, case["passed"].as_bool().unwrap(), "case {i}");
         assert_eq!(got.result.confidence, case["confidence"].as_f64().unwrap(), "case {i}");
         assert_eq!(got.findings.iter().map(|v| v.location.as_str()).collect::<Vec<_>>(), case["locations"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), "case {i}");
