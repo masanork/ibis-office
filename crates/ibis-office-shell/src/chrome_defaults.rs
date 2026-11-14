@@ -159,6 +159,13 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 item("file.export.gif", "animation").on(|this, window, cx| this.export_gif(window, cx)).into(),
                 item("file.export.svg", "draw").into(),
             ];
+            if editor.is_jtd_read_only() && !editor.jtd_gallery {
+                entries.push(item("jtd.export-docx", "description").on(|this, window, cx| this.export_jtd_docx(window, cx)).into());
+                entries.push(item("jtd.export-html", "code").on(|this, window, cx| this.export_jtd_html(window, cx)).into());
+                if !editor.read_only {
+                    entries.push(item("jtd.edit-as-docx", "edit").on(|this, window, cx| this.edit_jtd_as_docx(window, cx)).into());
+                }
+            }
             // The screen's own kinds of file (a presentation: OpenDocument).
             entries.extend(with_format!(editor, menu_items(editor, MenuPart::FileExport)));
             entries
@@ -208,6 +215,19 @@ fn edit_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
 pub fn view_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
     // The screen's own lines come first: its views and what it shows.
     let mut entries = with_format!(editor, menu_items(editor, MenuPart::ViewStart));
+    if editor.is_jtd_read_only() {
+        if editor.jtd_thumbnail {
+            entries.push(item("jtd.thumbnail-back", "arrow_back").on(|this, window, cx| this.return_from_jtd_thumbnail(window, cx)).into());
+        } else {
+            entries.push(item("jtd.show-thumbnail", "image").on(|this, window, cx| this.show_jtd_thumbnail(window, cx)).into());
+            if !editor.jtd_gallery {
+                entries.push(item("jtd.show-images", "image").on(|this, window, cx| this.show_jtd_images(window, cx)).into());
+            } else if editor.jtd_gallery_body.is_some() {
+                entries.push(item("jtd.show-body", "description").on(|this, window, cx| this.show_jtd_body(window, cx)).into());
+            }
+        }
+        entries.push(SEP);
+    }
     entries.extend([
         MenuItem::tr("view.sidebar")
             .checked(editor.right_pane.shown)

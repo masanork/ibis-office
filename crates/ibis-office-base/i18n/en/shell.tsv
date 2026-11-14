@@ -1185,3 +1185,30 @@ shell.font-setup.progress	Downloading {name} ({index}/{count}, {received} / {tot
 shell.font-setup.failed	{name} could not be installed ({count} failed). {error}
 shell.font-setup.cancelled	Cancelled.
 shell.font-setup.done	Installed. The fonts are in the font lists now.
+jtd.read-only-notice	Ichitaro: Read-only preview with limited vertical text, ruby and tables. Table borders are approximate; formatting and images are omitted.
+jtd.gallery-heading	Some unplaced embedded images (original pages, position, size, and order are not reproduced; rendering is approximate).
+jtd.gallery-item	Embedded item {index}
+jtd.gallery-count	Showing {displayed} of {candidates} inspected image candidates. Other embedded content may not be included.
+jtd.gallery-notice	Some embedded images are shown as an unplaced list, not as the original document.
+jtd.gallery-unavailable	No displayable body text or embedded images were found.
+jtd.gallery-export-disabled	This reference view is not the original document and cannot be converted to Word.
+jtd.show-thumbnail	Show saved Ichitaro thumbnail
+jtd.thumbnail-back	Return to previous preview
+jtd.thumbnail-loading	Loading saved thumbnail…
+jtd.thumbnail-unavailable	No displayable saved thumbnail was found. The current view is unchanged.
+jtd.thumbnail-heading	Saved thumbnail (it may be outdated and is not a reconstruction of the current document).
+jtd.thumbnail-notice	This saved thumbnail may be outdated or show only part of the document.
+jtd.show-images	Show Ichitaro embedded images
+jtd.show-body	Return to Ichitaro body preview
+jtd.gallery-loading	Loading embedded images…
+jtd.no-embedded-images	No displayable embedded images were found. The body preview is unchanged.
+jtd.omitted-sheets	 {count} additional sheet(s) are not displayed or converted.
+jtd.omitted-objects	 {count} embedded-object storage(s) are not displayed or converted.
+jtd.read-only	Ichitaro documents are read-only
+jtd.edit-as-docx	Convert to Word and edit
+jtd.editable-notice	Converted to Word. Unsupported formatting, images and some table lines are omitted. Save separately from the original Ichitaro file.
+jtd.source-protected	Saving as an Ichitaro file is not supported. Save separately from the original file.
+jtd.export-docx	Word (preview; partial lines omitted)
+jtd.docx-exported	Converted to Word. Partial table lines, unsupported formatting and images are omitted.
+jtd.export-html	HTML (preview; partial lines omitted)
+jtd.html-exported	Converted to HTML. Partial table lines, unsupported formatting and images are omitted.

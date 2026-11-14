@@ -34,6 +34,7 @@ usvg = { version = "=0.46.0", default-features = false, features = ["text", "sys
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # The random bytes of a password-protected save (the OS generator on every OS: /dev/urandom is not on Windows).
 getrandom = "0.3"
+same-file = "1"
 ibis-office-updater = { path = "../ibis-office-updater" }
 notify = "7"
 futures = { version = "0.3", default-features = false, features = ["std"] }

@@ -16,6 +16,7 @@
 pub(crate) use ibis_office_base::clock;
 // The document screen is its own crate (tasks/doc/crate-split-plan.md, 15); the app and the tests name it `crate::docx`.
 pub(crate) use ibis_office_docx as docx;
+pub(crate) use ibis_office_shell::jtd_preview;
 #[cfg(windows)]
 mod open_with;
 // The presentation screen is its own crate (tasks/doc/crate-split-plan.md, 14); the app and its tests name it `crate::pptx`.
@@ -702,11 +703,16 @@ mod web {
     /// cannot be read) the editor shows the start view.
     #[wasm_bindgen]
     pub async fn run(asset_base: Option<String>, file_name: Option<String>, file: Option<Vec<u8>>) -> Result<(), JsValue> {
-        let document = file.and_then(|data| match ibis_pptx::read(&data) {
-            Ok(presentation) => Some((presentation, file_name.unwrap_or_default().into())),
-            Err(err) => {
-                log::error!("{err}");
-                None
+        let mut initial_jtd = None;
+        let document = file.and_then(|data| {
+            let name = file_name.unwrap_or_default();
+            if name.rsplit_once('.').is_some_and(|(_, ext)| ibis_pptx::jtd::is_extension(ext)) || ibis_pptx::jtd::is_jtd(&data) {
+                initial_jtd = Some((name, data));
+                return None;
+            }
+            match ibis_pptx::read(&data) {
+                Ok(presentation) => Some((presentation, name.into())),
+                Err(err) => { log::error!("{err}"); None }
             }
         });
         // The fonts downloaded with セットアップ are kept in the browser's IndexedDB; they are given to the text system when the
@@ -745,8 +751,12 @@ mod web {
                 .expect("failed to load the UI font");
             super::init(cx);
             Theme::global_mut(cx).font_family = "IBM Plex Sans".into();
-            let blank = document.is_none().then(crate::shell::web::new_kind_of_address).flatten();
-            super::open_editor(document, None, cx);
+            let blank = (document.is_none() && initial_jtd.is_none()).then(crate::shell::web::new_kind_of_address).flatten();
+            if let Some((name, data)) = initial_jtd {
+                super::open_window_with(cx, move |editor, window, cx| editor.open_web_bytes(name, data, true, window, cx));
+            } else {
+                super::open_editor(document, None, cx);
+            }
             if let Some(kind) = blank {
                 crate::shell::app::new_file_in_page(kind, cx);
             }

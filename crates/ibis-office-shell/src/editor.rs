@@ -447,6 +447,8 @@ pub struct SlideEditor {
     /// How many times a file was closed (`close_file`): a file still being
     /// read when the count changes is not opened.
     pub(crate) closed: u32,
+    #[cfg(target_family = "wasm")]
+    web_open_generation: u64,
     /// An empty document stands in for the file being read (`begin_loading`).
     pub loading: bool,
     /// What only the open document's format has (see `shell/format.rs`).
@@ -557,6 +559,20 @@ pub struct SlideEditor {
     pub opened_from_legacy: bool,
     /// Whether this document is opened in read-only / viewing mode (--read-only or ?view=1).
     pub read_only: bool,
+    /// Original JTD bytes: presence makes this document permanently read-only.
+    pub jtd_original: Option<std::sync::Arc<[u8]>>,
+    /// An auxiliary preview, not a reconstruction of the source document.
+    pub jtd_gallery: bool,
+    /// Body preview retained while its unplaced image list is open.
+    pub jtd_gallery_body: Option<Presentation>,
+    /// Embedded snapshot and the immediately preceding body or image-list view.
+    pub jtd_thumbnail: bool,
+    pub jtd_thumbnail_previous: Option<(Presentation, bool, Option<Presentation>)>,
+    /// Invalidates image-list work when the document or open request changes.
+    jtd_gallery_generation: u64,
+    /// Source path to protect after converting a JTD to an editable document.
+    #[cfg(not(target_family = "wasm"))]
+    pub jtd_source_path: Option<std::path::PathBuf>,
     /// The password to modify the file (書き込みパスワード) was given, or set here; until then a file that has one is read-only.
     pub(crate) modify_unlocked: bool,
     /// Whether the menu bar is shown (false by default when ?view=1 unless ?menuBar=1).
@@ -790,6 +806,8 @@ impl SlideEditor {
             recent_checking: Default::default(),
             has_document: false,
             closed: 0,
+            #[cfg(target_family = "wasm")]
+            web_open_generation: 0,
             loading: false,
             format,
             format_prefs: crate::format::drivers().iter().map(|(_, driver)| driver.new_prefs()).collect(),
@@ -851,6 +869,16 @@ impl SlideEditor {
             read_only: crate::embed::is_view_only(),
             #[cfg(not(target_arch = "wasm32"))]
             read_only: false,
+
+
+            jtd_original: None,
+            jtd_gallery: false,
+            jtd_gallery_body: None,
+            jtd_thumbnail: false,
+            jtd_thumbnail_previous: None,
+            jtd_gallery_generation: 0,
+            #[cfg(not(target_family = "wasm"))]
+            jtd_source_path: None,
             modify_unlocked: false,
             #[cfg(target_arch = "wasm32")]
             show_menu_bar: crate::embed::show_menu_bar(),
@@ -881,13 +909,170 @@ impl SlideEditor {
 
     /// Whether this editor is currently in read-only / viewing mode (either via `--read-only` or during CSV streaming).
     pub fn is_read_only(&self) -> bool {
-        self.read_only || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+        self.read_only || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+    }
+
+    pub fn is_jtd_read_only(&self) -> bool {
+        self.jtd_original.is_some()
+    }
+
+    fn jtd_omission_notice(notice: &mut String, omissions: Option<ibis_pptx::jtd::OmittedContent>) {
+        if let Some(omissions) = omissions {
+            if omissions.additional_sheets > 0 {
+                notice.push_str(&crate::i18n::format("jtd.omitted-sheets", &[("count", &omissions.additional_sheets)]));
+            }
+            if omissions.embedded_objects > 0 {
+                notice.push_str(&crate::i18n::format("jtd.omitted-objects", &[("count", &omissions.embedded_objects)]));
+            }
+        }
+    }
+
+    pub fn load_jtd(&mut self, presentation: Presentation, name: SharedString, bytes: impl Into<std::sync::Arc<[u8]>>, gallery: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let bytes = bytes.into();
+        let omissions = (!gallery).then(|| ibis_pptx::jtd::omitted_content(&bytes).ok()).flatten();
+        self.load(presentation, name, window, cx);
+        self.jtd_original = Some(bytes);
+        self.jtd_gallery = gallery;
+        self.document.set_read_only(true);
+        self.sidebar_open = false;
+        let mut notice = crate::i18n::text(if gallery { "jtd.gallery-notice" } else { "jtd.read-only-notice" }).to_string();
+        if !gallery { Self::jtd_omission_notice(&mut notice, omissions); }
+        self.set_status(notice, cx);
+    }
+
+    /// Inspect unplaced images without treating them as part of the body layout.
+    pub fn show_jtd_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.jtd_gallery { return; }
+        let Some(original) = self.jtd_original.clone() else { return; };
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
+        let generation = self.jtd_gallery_generation;
+        #[cfg(target_family = "wasm")]
+        self.set_status(crate::i18n::text("jtd.gallery-loading").to_string(), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            let current = this.update(cx, |this, _| {
+                this.jtd_gallery_generation == generation && !this.jtd_gallery
+                    && this.jtd_original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original))
+            }).unwrap_or(false);
+            if !current { return; }
+            let source = original.clone();
+            #[cfg(not(target_family = "wasm"))]
+            let result = cx.background_executor().spawn(async move { crate::jtd_preview::images(&source) }).await;
+            #[cfg(target_family = "wasm")]
+            let result = crate::jtd_preview::images(&source);
+            #[cfg(target_family = "wasm")]
+            if !this.update(cx, |this, _| this.jtd_gallery_generation == generation).unwrap_or(false) { return; }
+
+            this.update_in(cx, |this, window, cx| {
+                if this.jtd_gallery_generation != generation || this.jtd_gallery || !this.jtd_original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
+                match result {
+                    Ok(presentation) => {
+                        let body = this.presentation().clone();
+                        this.replace_jtd_preview(presentation, original.clone(), true, window, cx);
+                        this.jtd_gallery_body = Some(body);
+                    }
+                    Err(error) => this.set_status(error, cx),
+                }
+            }).ok();
+        }).detach();
+    }
+
+    pub fn show_jtd_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.jtd_gallery || self.jtd_thumbnail { return; }
+        let (Some(body), Some(original)) = (self.jtd_gallery_body.take(), self.jtd_original.clone()) else { return; };
+        self.replace_jtd_preview(body, original, false, window, cx);
+    }
+
+    /// Open a stored snapshot separately; it may be stale or incomplete.
+    pub fn show_jtd_thumbnail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.jtd_thumbnail { return; }
+        let Some(original) = self.jtd_original.clone() else { return; };
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
+        let generation = self.jtd_gallery_generation;
+        #[cfg(target_family = "wasm")]
+        self.set_status(crate::i18n::text("jtd.thumbnail-loading").to_string(), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            let current = this.update(cx, |this, _| this.jtd_gallery_generation == generation && !this.jtd_thumbnail
+                && this.jtd_original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original))).unwrap_or(false);
+            if !current { return; }
+            let source = original.clone();
+            #[cfg(not(target_family = "wasm"))]
+            let result = cx.background_executor().spawn(async move { crate::jtd_preview::thumbnail(&source) }).await;
+            #[cfg(target_family = "wasm")]
+            let result = crate::jtd_preview::thumbnail(&source);
+            #[cfg(target_family = "wasm")]
+            if !this.update(cx, |this, _| this.jtd_gallery_generation == generation).unwrap_or(false) { return; }
+
+            this.update_in(cx, |this, window, cx| {
+                if this.jtd_gallery_generation != generation || this.jtd_thumbnail || !this.jtd_original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
+                match result {
+                    Ok(presentation) => {
+                        let previous = (this.presentation().clone(), this.jtd_gallery, this.jtd_gallery_body.take());
+                        this.replace_jtd_preview(presentation, original.clone(), true, window, cx);
+                        this.jtd_thumbnail = true;
+                        this.jtd_thumbnail_previous = Some(previous);
+                        this.set_status(crate::i18n::text("jtd.thumbnail-notice").to_string(), cx);
+                    }
+                    Err(error) => this.set_status(error, cx),
+                }
+            }).ok();
+        }).detach();
+    }
+
+    pub fn return_from_jtd_thumbnail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.jtd_thumbnail { return; }
+        let (Some((previous, gallery, body)), Some(original)) = (self.jtd_thumbnail_previous.take(), self.jtd_original.clone()) else { return; };
+        self.replace_jtd_preview(previous, original, gallery, window, cx);
+        self.jtd_gallery_body = body;
+    }
+
+    fn replace_jtd_preview(&mut self, presentation: Presentation, bytes: std::sync::Arc<[u8]>, gallery: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.file_name.clone().unwrap_or_else(|| "document.jtd".into());
+        #[cfg(not(target_family = "wasm"))]
+        let (path, stamp) = (self.path.clone(), self.watch.known.clone());
+        self.load_jtd(presentation, name, bytes, gallery, window, cx);
+        #[cfg(not(target_family = "wasm"))]
+        { self.set_file_path(path); self.watch.known = stamp; }
+    }
+
+    /// Convert the recognized preview into a separate editable Word document.
+    pub fn edit_jtd_as_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_jtd_read_only() || self.read_only || self.jtd_gallery { return; }
+        let omissions = self.jtd_original.as_deref().and_then(|bytes| ibis_pptx::jtd::omitted_content(bytes).ok());
+        let result = ibis_pptx::jtd::export_docx(self.presentation()).and_then(ibis_pptx::open);
+        match result {
+            Ok(opened) => {
+                let name = self.file_name.as_deref().unwrap_or("document.jtd");
+                let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+                let name: SharedString = format!("{stem}.docx").into();
+                #[cfg(not(target_family = "wasm"))]
+                let original_path = self.path.clone();
+                self.load(opened.presentation, name, window, cx);
+                self.set_loaded_source(std::sync::Arc::new(opened.source));
+                #[cfg(not(target_family = "wasm"))]
+                { self.jtd_source_path = original_path; self.document.set_file(None); }
+                let mut notice = crate::i18n::text("jtd.editable-notice").to_string();
+                Self::jtd_omission_notice(&mut notice, omissions);
+                self.set_status(notice, cx);
+            }
+            Err(error) => self.set_status(crate::i18n::format("file.save-failed", &[("error", &error.to_string())]), cx),
+        }
     }
 
     /// Replace the open presentation, dropping undo history and selection.
     pub fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         with_format!(self, show_end(self, window, cx));
         self.opened_from_legacy = presentation.opened_from_legacy;
+        self.jtd_original = None;
+        self.jtd_gallery = false;
+        self.jtd_gallery_body = None;
+        self.jtd_thumbnail = false;
+        self.jtd_thumbnail_previous = None;
+        #[cfg(not(target_family = "wasm"))]
+        { self.jtd_source_path = None; }
         self.modify_unlocked = false;
         self.zoom_menu_open = false;
         self.editing = None;
@@ -1038,21 +1223,65 @@ impl SlideEditor {
                     return;
                 }
             };
+            this.update_in(cx, |this, window, cx| this.open_web_bytes(name, data, false, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Show the loading state before parsing and prefetching the complete
+    /// document. Initial links and the file picker use the same safe path.
+    #[cfg(target_family = "wasm")]
+    pub fn open_web_bytes(&mut self, name: String, data: Vec<u8>, initial: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
+        self.web_open_generation = self.web_open_generation.wrapping_add(1);
+        let generation = self.web_open_generation;
+        let closed = self.closed;
+        cx.spawn_in(window, async move |this, cx| {
             let name: SharedString = name.into();
-            let closed = this.update(cx, |this, _| this.closed).unwrap_or_default();
             let kind = name.rsplit_once('.').and_then(|(_, e)| ibis_pptx::Kind::from_extension(e));
-            this.update_in(cx, |this, window, cx| match kind {
-                Some(kind) if !this.has_document => this.begin_loading(kind, name.clone(), window, cx),
-                _ => this.set_status(crate::i18n::format("file.opening", &[("name", &name)]), cx),
-            })
-            .ok();
+            let Ok(true) = this.update_in(cx, |this, window, cx| {
+                if this.closed != closed || this.web_open_generation != generation { return false; }
+                match kind {
+                    Some(kind) if !this.has_document => this.begin_loading(kind, name.clone(), window, cx),
+                    _ => this.set_status(crate::i18n::format("file.opening", &[("name", &name)]), cx),
+                }
+                true
+            }) else { return; };
             // Let the empty document show before reading the file, which
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ibis_pptx::jtd::is_extension(ext)) || ibis_pptx::jtd::is_jtd(&data);
+            if is_jtd {
+                let result = crate::jtd_preview::read(&data);
+
+                this.update_in(cx, |this, window, cx| {
+                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    match result {
+                        Ok((presentation, gallery)) => this.load_jtd(presentation, name, data, gallery, window, cx),
+                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                    }
+                }).ok();
+                return;
+            }
+            // A download-enabled embed needs the original package to write
+            // edits back; ordinary initial previews keep the lighter read path.
+            if initial && !crate::embed::show_download() {
+                let result = ibis_pptx::read(&data).map_err(|e| e.to_string());
+
+                this.update_in(cx, |this, window, cx| {
+                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    match result {
+                        Ok(presentation) => this.load(presentation, name, window, cx),
+                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                    }
+                }).ok();
+                return;
+            }
             let result = ibis_pptx::open(data).map_err(|e| e.to_string());
+
             this.update_in(cx, |this, window, cx| match result {
                 // Closed (ファイル > 閉じる) while it was read.
-                _ if this.closed != closed => {}
+                _ if this.closed != closed || this.web_open_generation != generation => {}
                 Ok(opened) => {
                     let is_ppsx = name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::is_slideshow(e));
                     let is_tmpl = name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::is_template(e));
@@ -1097,6 +1326,7 @@ impl SlideEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         self.commit_edit(window, cx);
         let name: SharedString = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
         let kind = path.extension().and_then(|e| e.to_str()).and_then(ibis_pptx::Kind::from_extension);
@@ -1119,7 +1349,11 @@ impl SlideEditor {
                 _ if this.closed != closed => {}
                 Ok(loaded) => {
                     let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
-                    if is_tmpl {
+                    if let Some(bytes) = loaded.jtd_original {
+                        this.load_jtd(loaded.presentation, name, bytes, loaded.jtd_gallery, window, cx);
+                        this.set_file_path(Some(path.clone()));
+                        this.watch.known = stamp_before_read;
+                    } else if is_tmpl {
                         let tmpl_name = crate::file_actions::new_file_name(ibis_pptx::Kind::of(&loaded.presentation));
                         this.load(loaded.presentation, tmpl_name, window, cx);
                         this.set_loaded_source(loaded.source);
@@ -1143,8 +1377,9 @@ impl SlideEditor {
                         }
                         this.set_file_path(Some(path.clone()));
                         this.watch.known = stamp_before_read;
-                        this.protection_password = loaded.password;
+                        this.protection_password = loaded.password.clone();
                     }
+
                     // (A presentation opens with its notes pane as the file's normal view left it.)
                     with_format!(this, file_opened(this));
                     if let Some(rx) = loaded.csv_stream {
@@ -1282,6 +1517,7 @@ impl SlideEditor {
     /// ファイル > 閉じる: close the open file and show the start view
     /// (スタート画面) in the window, as Office does.
     pub fn close_file(&mut self, _: &CloseFile, window: &mut Window, cx: &mut Context<Self>) {
+        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         if !self.has_document {
             // The start window closes too (⌘W / Ctrl+W), so the windows can be closed one after
             // another; the app ends with its last window, as with the window's red button. Not in
@@ -1790,6 +2026,17 @@ impl SlideEditor {
     /// Open a new window duplicating current presentation or open path.
     pub fn new_window(&mut self, cx: &mut App) {
         let document_memory=self.document_memory.clone();
+
+
+        #[cfg(not(target_family = "wasm"))]
+        let protection_password = self.protection_password.clone();
+        let jtd_original = self.jtd_original.clone();
+        let jtd_gallery = self.jtd_gallery;
+        let jtd_gallery_body = self.jtd_gallery_body.clone();
+        let jtd_thumbnail = self.jtd_thumbnail;
+        let jtd_thumbnail_previous = self.jtd_thumbnail_previous.clone();
+        #[cfg(not(target_family = "wasm"))]
+        let jtd_source_path = self.jtd_source_path.clone();
         if self.format_info().several_windows.is_some() {
             // The same file in another window: the two share the document and the file's id.
             let file_id = if self.file_id == 0 {
@@ -1817,6 +2064,16 @@ impl SlideEditor {
                 editor.document_memory=document_memory.clone();
                 editor.set_file_path(path);
                 editor.source = source;
+
+                #[cfg(not(target_family = "wasm"))]
+                { editor.protection_password = protection_password; }
+                editor.jtd_original = jtd_original;
+                editor.jtd_gallery = jtd_gallery;
+                editor.jtd_gallery_body = jtd_gallery_body;
+                editor.jtd_thumbnail = jtd_thumbnail;
+                editor.jtd_thumbnail_previous = jtd_thumbnail_previous;
+                #[cfg(not(target_family = "wasm"))]
+                { editor.jtd_source_path = jtd_source_path; }
                 editor.file_id = file_id;
                 editor.window_number = Some(new_num);
                 editor.current_slide = current;

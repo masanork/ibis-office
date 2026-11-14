@@ -84,6 +84,8 @@ mod issue108_paste;
 mod issue105_editor;
 #[path = "tests/shell/find_shortcuts.rs"]
 mod find_shortcuts;
+#[path = "tests/shell/native_jtd.rs"]
+mod native_jtd_scenarios;
 #[path = "tests/shell/file_watch.rs"]
 mod file_watch_scenarios;
 #[path = "tests/shell/title_file_menu.rs"]
@@ -109,6 +111,7 @@ mod scenario_menu_search;
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
     let mut all = crate::shell::scenario_examples::all();
     all.extend(crate::native_quit_scenarios::all());
+    all.extend(native_jtd_scenarios::all());
     all.extend(crate::offscreen_3d_scenarios::all());
     all.extend(dialog_scenarios::all());
     all.push(("shell::submenu_viewport_fit",crate::shell::scenario::menu_viewport::run));

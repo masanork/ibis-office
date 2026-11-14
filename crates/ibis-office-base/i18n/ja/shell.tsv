@@ -1183,3 +1183,30 @@ shell.font-setup.progress	{name} をダウンロードしています（{index}/
 shell.font-setup.failed	{name} をインストールできませんでした（全{count}件）。{error}
 shell.font-setup.cancelled	取り消しました。
 shell.font-setup.done	インストールしました。書体の一覧から選べます。
+jtd.read-only-notice	一太郎文書: 読み取り専用。一部の縦書き・ルビ・表に対応。表の罫線は近似で、書式や画像は再現されません。
+jtd.gallery-heading	検出した埋め込み画像の一部（元のページ・位置・大きさ・順序は再現していません。画像の表示も近似です）
+jtd.gallery-item	埋め込み項目 {index}
+jtd.gallery-count	検査した画像候補 {candidates} 件のうち {displayed} 件を表示しています。他の埋め込みは含まれない場合があります。
+jtd.gallery-notice	埋め込み画像の一部を配置未確定の一覧として表示しています。元の文書の再現ではありません。
+jtd.gallery-unavailable	表示できる本文または埋め込み画像がありません。
+jtd.gallery-export-disabled	この参考表示は元の文書ではないため、Wordに変換できません。
+jtd.show-thumbnail	一太郎の保存済み縮小画像を表示
+jtd.thumbnail-back	前のプレビューに戻る
+jtd.thumbnail-loading	保存済み縮小画像を読み込んでいます…
+jtd.thumbnail-unavailable	表示できる保存済み縮小画像がありません。現在の表示はそのままです。
+jtd.thumbnail-heading	保存済み縮小画像（古い可能性があり、現在の文書の再現ではありません）
+jtd.thumbnail-notice	保存済みの縮小画像です。古い、または文書の一部のみである可能性があります。
+jtd.show-images	一太郎の埋め込み画像を一覧表示
+jtd.show-body	一太郎の本文プレビューに戻る
+jtd.gallery-loading	埋め込み画像を読み込んでいます…
+jtd.no-embedded-images	表示できる埋め込み画像がありません。本文はそのままです。
+jtd.omitted-sheets	 追加シート{count}件は表示・変換されません。
+jtd.omitted-objects	 埋め込み関連の格納領域{count}件は表示・変換されません。
+jtd.read-only	一太郎文書は読み取り専用です
+jtd.edit-as-docx	Word文書に変換して編集
+jtd.editable-notice	Word文書に変換しました。未対応の書式・画像や一部の罫線は失われます。元の一太郎文書とは別に保存してください。
+jtd.source-protected	一太郎形式には保存できません。元のファイルとは別に保存してください。
+jtd.export-docx	Word（表示中の内容、途中の罫線を除く）
+jtd.docx-exported	Wordに変換しました。途中の罫線、未対応の書式や画像は含まれません。
+jtd.export-html	HTML（表示中の内容、途中の罫線を除く）
+jtd.html-exported	HTMLに変換しました。途中の罫線、未対応の書式や画像は含まれません。

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use ibis_doc_model::{
     Block, FlowAlign, FlowDocument, FlowParagraph, FlowRun, FlowRunKind, Link,
-    Presentation, Rgb,
+    Presentation, Rgb, VerticalMerge,
 };
 use ibis_ooxml::cfb::{self, Item as CfbItem};
 use ibis_ooxml::zip::{EntryMeta, Writer};
@@ -87,7 +87,7 @@ impl DocxConvertFormat {
     }
 }
 
-fn xml_escape(s: &str) -> String {
+pub(crate) fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -1315,6 +1315,23 @@ pub fn import_doc(data: &[u8]) -> Result<Opened, Error> {
 // 4. HTML (.html / .htm) — DOCX-FILE-012
 // =========================================================================
 
+/// Keep executable or local-protocol links out of an exported HTML page.
+/// Relative references and common web, mail and phone links remain usable.
+fn safe_html_link(url: &str) -> Option<&str> {
+    let url = url.trim();
+    if url.is_empty() || url.chars().any(char::is_control) {
+        return None;
+    }
+    let first_delimiter = url.find(['/', '?', '#']).unwrap_or(url.len());
+    if let Some(colon) = url.find(':').filter(|&colon| colon < first_delimiter) {
+        let scheme = &url[..colon];
+        if !["http", "https", "mailto", "tel"].iter().any(|allowed| scheme.eq_ignore_ascii_case(allowed)) {
+            return None;
+        }
+    }
+    Some(url)
+}
+
 /// Export a `FlowDocument` as a standalone HTML5 document (`.html`).
 pub fn export_html(doc: &FlowDocument) -> String {
     let title = doc
@@ -1324,7 +1341,7 @@ pub fn export_html(doc: &FlowDocument) -> String {
         .filter(|t| !t.is_empty())
         .unwrap_or("Document");
     let mut out = format!(
-        "<!DOCTYPE html>\n<html lang=\"ja\">\n<head>\n<meta charset=\"UTF-8\">\n<title>{}</title>\n<style>body{{font-family:'Yu Gothic',Calibri,sans-serif;line-height:1.5;margin:2em;}}table{{border-collapse:collapse;width:100%;margin:1em 0;}}td,th{{border:1px solid #888;padding:6px 8px;}}</style>\n</head>\n<body>\n",
+        "<!DOCTYPE html>\n<html lang=\"ja\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>body{{font-family:'Yu Gothic',Calibri,sans-serif;line-height:1.5;margin:2em;}}table{{border-collapse:collapse;width:100%;margin:1em 0;}}td,th{{border:1px solid #888;padding:6px 8px;}}</style>\n</head>\n<body>\n",
         xml_escape(title)
     );
 
@@ -1364,7 +1381,12 @@ pub fn export_html(doc: &FlowDocument) -> String {
             if txt.is_empty() {
                 continue;
             }
-            let mut chunk = xml_escape(&txt);
+            let mut chunk = match &run.kind {
+                FlowRunKind::Ruby { base, text, .. } => format!(
+                    "<ruby>{}<rt>{}</rt></ruby>", xml_escape(base), xml_escape(text)
+                ),
+                _ => xml_escape(&txt),
+            };
             if run.style.bold {
                 chunk = format!("<strong>{chunk}</strong>");
             }
@@ -1383,7 +1405,9 @@ pub fn export_html(doc: &FlowDocument) -> String {
                     run.style.color.0 & 0xFF_FFFF
                 );
             }
-            if let Some(Link::Url(url)) = &run.link {
+            if let Some(Link::Url(url)) = &run.link
+                && let Some(url) = safe_html_link(url)
+            {
                 chunk = format!("<a href=\"{}\">{chunk}</a>", xml_escape(url));
             }
             out.push_str(&chunk);
@@ -1396,11 +1420,39 @@ pub fn export_html(doc: &FlowDocument) -> String {
             Block::Paragraph(p) => render_para(&mut out, p),
             Block::Table(t) => {
                 out.push_str("<table>\n");
-                for row in &t.rows {
+                for (row_index, row) in t.rows.iter().enumerate() {
                     out.push_str("<tr>");
                     let cell_tag = if row.header { "th" } else { "td" };
+                    let mut column = 0;
                     for cell in &row.cells {
-                        out.push_str(&format!("<{cell_tag}>"));
+                        let start_column = column;
+                        let span = cell.span.max(1) as usize;
+                        column += span;
+                        if cell.merge == VerticalMerge::Continue {
+                            continue;
+                        }
+                        out.push_str(&format!("<{cell_tag}"));
+                        if span > 1 {
+                            out.push_str(&format!(" colspan=\"{span}\""));
+                        }
+                        if cell.merge == VerticalMerge::Start {
+                            let mut rows = 1;
+                            for next_row in &t.rows[row_index + 1..] {
+                                let mut next_column = 0;
+                                let continued = next_row.cells.iter().any(|next| {
+                                    let start = next_column;
+                                    next_column += next.span.max(1) as usize;
+                                    start == start_column && next_column == column
+                                        && next.merge == VerticalMerge::Continue
+                                });
+                                if !continued { break; }
+                                rows += 1;
+                            }
+                            if rows > 1 {
+                                out.push_str(&format!(" rowspan=\"{rows}\""));
+                            }
+                        }
+                        out.push('>');
                         for b in &cell.blocks {
                             if let Block::Paragraph(p) = b {
                                 render_para(&mut out, p);

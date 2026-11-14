@@ -30,6 +30,7 @@ pub mod web;
 pub mod app;
 #[cfg(not(target_family = "wasm"))]
 pub mod read_file;
+pub mod jtd_preview;
 #[cfg(not(target_family = "wasm"))]
 pub mod timing;
 pub mod linux_desktop;

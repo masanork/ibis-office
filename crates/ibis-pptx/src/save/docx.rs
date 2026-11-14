@@ -585,11 +585,11 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         return Ok(());
     }
     if base.styles != cur.styles {
-        let without = |s: &ibis_doc_model::FlowStyles| ibis_doc_model::FlowStyles { numbering: Default::default(), styles: Default::default(), ..s.clone() };
+        let without = |s: &ibis_doc_model::FlowStyles| ibis_doc_model::FlowStyles { numbering: Default::default(), styles: Default::default(), defaults_run: Default::default(), ..s.clone() };
         if without(&base.styles) != without(&cur.styles) {
             return Err(unsupported("文書の既定の書式の変更"));
         }
-        if base.styles.styles != cur.styles.styles {
+        if base.styles.styles != cur.styles.styles || base.styles.defaults_run != cur.styles.defaults_run {
             write_styles(package, map, &base.styles, &cur.styles)?;
         }
         if base.styles.numbering != cur.styles.numbering {
@@ -3387,6 +3387,16 @@ impl Writer<'_> {
                 if cell.span > 1 {
                     let e = self.doc.append_element(tc_pr, &w("gridSpan"));
                     self.doc.set_attr(e, "w:val", &cell.span.to_string());
+                }
+                // A newly constructed table may have per-cell rules even
+                // when its table-level grid is absent (for example, an
+                // imported document with different borders on each row).
+                if cell.own_borders.iter().any(Option::is_some) {
+                    let borders = self.doc.append_element(tc_pr, &w("tcBorders"));
+                    const EDGES: &[&str] = &["top", "start", "left", "bottom", "end", "right", "insideH", "insideV", "tl2br", "tr2bl"];
+                    for (i, name) in ["top", "right", "bottom", "left"].into_iter().enumerate() {
+                        self.border_property(borders, name, cell.own_borders[i], EDGES);
+                    }
                 }
                 if cell.direction != ibis_doc_model::CellDirection::LrTb {
                     let d = match cell.direction {
@@ -7673,6 +7683,11 @@ fn write_styles(package: &mut Package, map: &SourceMap, old: &ibis_doc_model::Fl
     let none_links = HashMap::new();
     let mut writer = Writer { doc, pristine: &pristine, map, part: &part, old_blocks: &none_blocks, new_blocks: &none_blocks, pictures: &none_pictures, nodes: HashMap::new(), added: &none_added, svg_media: &none_svg, empty_parent: None, link_rels: &none_links, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
     let element_of = |doc: &XmlDocument, id: &str| doc.children_named(root, "style").find(|&e| doc.attr(e, "w:styleId") == Some(id));
+    if old.defaults_run != new.defaults_run {
+        let defaults = writer.ensure(root, "docDefaults", &["docDefaults", "latentStyles", "style"]);
+        let run_default = writer.ensure(defaults, "rPrDefault", &["rPrDefault", "pPrDefault"]);
+        writer.run_props(run_default, &old.defaults_run, &None, &new.defaults_run, &None, false);
+    }
     for (id, style) in &new.styles {
         let was = old.styles.get(id);
         if was == Some(style) {

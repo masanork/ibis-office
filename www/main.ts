@@ -53,6 +53,8 @@ declare global {
     ibisOfficeFontDownload: (file: string, url: string, size: number) => Promise<number>;
     ibisOfficeFontsLoad: () => Promise<Uint8Array[]>;
     /** Called from Rust when the close or the download button is pressed. */
+    ibisOfficeDownloadDocx: (name: string, bytes: Uint8Array) => void;
+    ibisOfficeDownloadHtml: (name: string, bytes: Uint8Array) => void;
     ibisOfficeEmbedAction: (kind: string, name: string, bytes?: Uint8Array) => void;
     /** Set by the embedding page before main.js. */
     ibisOfficeOptions?: EmbedOptions;
@@ -128,7 +130,7 @@ function pickFile(accept?: string): Promise<PickedFile | null> {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = accept ?? '.pptx,.xlsx,.docx,.ppt,.xls,.doc,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    input.accept = accept ?? '.jtd,.jtt,.jttc,.pptx,.xlsx,.docx,.ppt,.xls,.doc,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     input.addEventListener('change', () => {
       const file = input.files?.[0];
       if (!file) {
@@ -448,6 +450,17 @@ window.ibisOfficeFontFetchText = fontFetchText;
 window.ibisOfficeFontsInstalled = fontsInstalled;
 window.ibisOfficeFontDownload = fontDownload;
 window.ibisOfficeFontsLoad = fontsLoad;
+function downloadJtdConversion(name: string, bytes: Uint8Array, type: string): void {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+window.ibisOfficeDownloadDocx = (name, bytes) => downloadJtdConversion(name, bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+window.ibisOfficeDownloadHtml = (name, bytes) => downloadJtdConversion(name, bytes, 'text/html;charset=utf-8');
+
 window.ibisOfficeEmbedAction = embedAction;
 
 if (!('gpu' in navigator)) {

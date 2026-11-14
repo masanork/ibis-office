@@ -76,6 +76,8 @@ mod xlsb_formula;
 mod ods_write;
 mod xls;
 mod msdoc;
+/// Read-only Ichitaro text import.
+pub mod jtd;
 pub mod odp;
 mod odp_anim;
 mod odp_shape;
@@ -199,6 +201,7 @@ pub fn is_legacy_binary(data: &[u8]) -> bool {
 /// `.docx` document (see [`read_docx`]): which one is told by the package's
 /// main part.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
+    if jtd::is_jtd(data) { return jtd::read(data); }
     // An old workbook (.xls) is read as the .xlsx made from it.
     let converted;
     let data = if ppt::is_ppt(data) {
@@ -250,13 +253,13 @@ impl Kind {
         match extension.to_ascii_lowercase().as_str() {
             "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" => Some(Kind::Presentation),
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" => Some(Kind::Workbook),
-            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" => Some(Kind::Document),
+            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "jtd" | "jtt" | "jttc" => Some(Kind::Document),
             _ => None,
         }
     }
 
     /// The extensions of the files that can be opened (what `from_extension` knows), for the file dialog.
-    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot"];
+    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc"];
 
     /// The kind of document contained in `presentation`.
     pub fn of(presentation: &Presentation) -> Self {

@@ -102,7 +102,7 @@ const TEXT_ORIGIN_X: f32 = 0.0;
 // The markup display types are in the drawing crate (`Resources::markup_view` holds one): ibis-office-render/src/markup_view.rs.
 pub use ibis_office_render::markup_view::{MarkupDisplayMode, MarkupView};
 
-pub(crate) fn clear_layout_caches() {
+pub fn clear_layout_caches() {
     PIECES.with(|c| c.borrow_mut().clear());
     PAGINATIONS.with(|c| c.borrow_mut().clear());
 }
@@ -5732,6 +5732,7 @@ impl<'r> Layouter<'r> {
             let divisible = !row.cant_split
                 && !row.header
                 && !matches!(row.height, RowHeight::Exact(_))
+                && row.lines.is_empty()
                 && row.cells.iter().all(|c| c.merge == VerticalMerge::None && c.diagonals.iter().all(Option::is_none) && c.anchor == CellAnchor::Top);
             let mut split_cells = Vec::new();
             let mut anchored: Vec<Arc<AnchoredCell>> = Vec::new();
@@ -5894,6 +5895,26 @@ impl<'r> Layouter<'r> {
                 if let Some(b) = b {
                     items.extend(border_items(&b, horizontal, outer_first, at, from, to, extend_start, extend_end));
                 }
+            }
+            // Extra display-line fragments use normalized row coordinates.
+            // They travel with the unsplittable row and are rotated with a
+            // vertical page by the same transform as all other strokes.
+            for line in &row.lines {
+                let ((x1, y1), (x2, y2)) = line.points(total, heights[r]);
+                if x1 == x2 || y1 == y2 {
+                    let horizontal = y1 == y2;
+                    let (at, from, to) = if horizontal { (y1, x0 + x1.min(x2), x0 + x1.max(x2)) }
+                        else { (x0 + x1, y1.min(y2), y1.max(y2)) };
+                    // Partial rules have the same line-type semantics as
+                    // cell borders, including dashed and compound strokes.
+                    items.extend(border_items(&line.border, horizontal, true, at, from, to, false, false));
+                    continue;
+                }
+                items.push(Item::Stroke {
+                    x: x0 + x1, y: y1, x2: x0 + x2, y2,
+                    w: pt(line.border.width).max(0.25),
+                    color: hsla(ibis_doc_model::Color::opaque(line.border.color)),
+                });
             }
             let min_height = if let RowHeight::AtLeast(h) = row.height { pt(h) + row.cells.iter().filter_map(|c| c.borders[0]).map(|b| pt(b.width)).fold(0.0, f32::max) + spacing } else { 0.0 };
             let split = (divisible && split_cells.len() == row.cells.len()).then(|| Arc::new(RowSplit { cells: split_cells, min_height }));
