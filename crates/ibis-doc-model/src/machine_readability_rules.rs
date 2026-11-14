@@ -1059,7 +1059,10 @@ pub fn csv_fragmentation_with_tables(sheet: &Sheet, current: CellRange, tables: 
 
 /// A formula or cached #REF! reference found in the original OOXML package.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormulaArtifact { pub row: u32, pub column: u32, pub cell_ref: String }
+pub struct FormulaArtifact {
+    pub row: u32, pub column: u32, pub cell_ref: String,
+    pub formula_text: Option<String>, pub formula_type: Option<String>,
+}
 
 /// L2-06 over authoritative package-wide inspection results. `None` means the
 /// inspection failed or was incomplete and is reported as a skipped rule.
@@ -1077,6 +1080,35 @@ pub fn formula_artifacts(table: CellRange, references: Option<(&[FormulaArtifact
         if seen.insert((artifact.row, artifact.column)) { findings.push(Finding { location: artifact.cell_ref.clone(), severity: FindingSeverity::Error }); }
     }
     result("L2-06", findings.is_empty(), 1.0, Severity::Major, findings)
+}
+
+/// L2-06 diagnostics for fully inspected package formula references.
+pub fn formula_artifacts_report(table: CellRange, references: Option<(&[FormulaArtifact], &[FormulaArtifact])>) -> Option<RuleDiagnostics> {
+    let evaluation = formula_artifacts(table, references);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let (formulas, errors) = references?;
+    let within = |v: &&FormulaArtifact| v.row >= table.first_row && v.row <= table.last_row && v.column >= table.first_column && v.column <= table.last_column;
+    let mut seen = BTreeSet::new();
+    let mut descriptions = Vec::new();
+    for artifact in errors.iter().filter(within) {
+        seen.insert((artifact.row, artifact.column));
+        descriptions.push("参照切れエラーが残存しています: #REF!".into());
+    }
+    for artifact in formulas.iter().filter(within) {
+        if !seen.insert((artifact.row, artifact.column)) { continue; }
+        let description = if let Some(text) = artifact.formula_text.as_deref().filter(|text| !text.is_empty()) {
+            let display = if text.starts_with('=') { text.to_string() } else { format!("={text}") };
+            let mut chars = display.chars();
+            let first: String = chars.by_ref().take(50).collect();
+            let suffix = if chars.next().is_some() { "..." } else { "" };
+            format!("数式が残存しています: {first}{suffix}")
+        } else if let Some(kind) = artifact.formula_type.as_deref().filter(|kind| !kind.is_empty()) {
+            format!("数式セルが残存しています（{kind} formula）")
+        } else { "数式セルが残存しています".into() };
+        descriptions.push(description);
+    }
+    let message = if descriptions.is_empty() { "数式の残存なし".into() } else { format!("数式残存: {}件検出", descriptions.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
 }
 
 /// L1-03 for XLSX values and merge metadata from the reference reader window.

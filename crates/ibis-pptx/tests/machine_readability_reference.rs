@@ -951,3 +951,21 @@ fn header_start_diagnostics_match_pinned_harunobu() {
         assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
     }
 }
+
+#[test]
+fn formula_diagnostics_match_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_rules::{formula_artifacts_report, FormulaArtifact};
+    use ibis_doc_model::sheet::CellRange;
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-basic-diagnostics-reference.json")).unwrap()).unwrap();
+    let table=CellRange { first_row:1,first_column:1,last_row:5,last_column:2 };
+    let read=|v:&serde_json::Value| FormulaArtifact { row:v["row"].as_u64().unwrap() as u32,column:v["col"].as_u64().unwrap() as u32,cell_ref:v["cell_ref"].as_str().unwrap().into(),formula_text:v["formula_text"].as_str().map(str::to_string),formula_type:v["formula_type"].as_str().map(str::to_string) };
+    for (i,case) in data["formula"].as_array().unwrap().iter().enumerate() {
+        let refs:Vec<_>=case["refs"].as_array().unwrap().iter().map(&read).collect();
+        let errors:Vec<_>=case["errors"].as_array().unwrap().iter().map(&read).collect();
+        let got=formula_artifacts_report(table,Some((&refs,&errors))).unwrap();
+        assert_eq!(got.message,case["message"].as_str().unwrap(),"case {i}");
+        assert_eq!(got.descriptions,case["descriptions"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+        assert_eq!(got.evaluation.findings.iter().map(|v|v.location.as_str()).collect::<Vec<_>>(),case["locations"].as_array().unwrap().iter().map(|v|v.as_str().unwrap()).collect::<Vec<_>>(),"case {i}");
+    }
+}
