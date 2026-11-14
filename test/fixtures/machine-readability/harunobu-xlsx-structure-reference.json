@@ -48,6 +48,13 @@
                   "findings": []
                 },
                 {
+                  "id": "L1-05",
+                  "passed": true,
+                  "confidence": 0.8,
+                  "severity": "critical",
+                  "findings": []
+                },
+                {
                   "id": "L1-12",
                   "passed": false,
                   "confidence": 1.0,
@@ -140,6 +147,13 @@
                   "findings": []
                 },
                 {
+                  "id": "L1-05",
+                  "passed": true,
+                  "confidence": 0.8,
+                  "severity": "critical",
+                  "findings": []
+                },
+                {
                   "id": "L1-12",
                   "passed": true,
                   "confidence": 1.0,
@@ -215,6 +229,13 @@
                   "passed": true,
                   "confidence": 0.9,
                   "severity": "major",
+                  "findings": []
+                },
+                {
+                  "id": "L1-05",
+                  "passed": true,
+                  "confidence": 0.8,
+                  "severity": "critical",
                   "findings": []
                 },
                 {
