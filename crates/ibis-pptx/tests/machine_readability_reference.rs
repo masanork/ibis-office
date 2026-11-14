@@ -810,3 +810,46 @@ fn bulk_score_matches_pinned_harunobu() {
         assert_eq!(u64::from(score_bulk(&files,&checks)),case["total"].as_u64().unwrap(),"case {i}: {case}");
     }
 }
+
+#[test]
+fn rule_metadata_has_all_pinned_rule_names_and_descriptions() {
+    use ibis_doc_model::machine_readability_rule_metadata::{rule_metadata, RULE_METADATA};
+    assert_eq!(RULE_METADATA.len(), 30);
+    for (i, rule) in RULE_METADATA.iter().enumerate() {
+        assert_eq!(rule_metadata(rule.id), Some(rule));
+        assert!(!rule.name.is_empty() && !rule.description.is_empty());
+        assert!(!RULE_METADATA[..i].iter().any(|other| other.id == rule.id));
+    }
+    assert!(rule_metadata("L9-99").is_none());
+}
+
+#[test]
+fn check_json_matches_pinned_harunobu_including_large_groups() {
+    use ibis_doc_model::machine_readability_rules::{Finding, FindingSeverity, RuleEvaluation};
+    use ibis_doc_model::machine_readability_scoring::{RuleResult, Severity};
+    use ibis_pptx::machine_readability_report::{check_json, FindingText};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-report-reference.json")).unwrap()).unwrap();
+    assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
+    for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
+        let raw = case["findings"].as_array().unwrap();
+        let findings = raw.iter().map(|v| Finding { location:v["cell_range"].as_str().unwrap().into(), severity:match v["severity"].as_str().unwrap() { "error"=>FindingSeverity::Error, "warning"=>FindingSeverity::Warning, "info"=>FindingSeverity::Info, _=>panic!("severity") } }).collect();
+        let check = RuleEvaluation { result: RuleResult { rule_id:case["rule_id"].as_str().unwrap().into(), passed:case["passed"].as_bool().unwrap(), confidence:case["confidence"].as_f64().unwrap(), severity:case["severity"].as_str().map(|s| match s { "fatal"=>Severity::Fatal, "critical"=>Severity::Critical, "major"=>Severity::Major, "minor"=>Severity::Minor, "info"=>Severity::Info, _=>panic!("severity") }) }, findings };
+        let texts: Vec<_> = raw.iter().map(|v| FindingText { sheet:v["sheet"].as_str().unwrap(), description:v["description"].as_str().unwrap() }).collect();
+        assert_eq!(check_json(&check, case["message"].as_str().unwrap(), &texts).unwrap(), case["expected"], "case {i}");
+        if !texts.is_empty() { assert!(check_json(&check, "", &texts[1..]).is_none()); }
+    }
+}
+
+#[test]
+fn level_score_json_matches_pinned_harunobu() {
+    use ibis_doc_model::machine_readability_scoring::{score_level, Level, RuleResult, Severity};
+    use ibis_pptx::machine_readability_report::level_score_json;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-report-reference.json")).unwrap()).unwrap();
+    for (i, case) in data["scores"].as_array().unwrap().iter().enumerate() {
+        let level = match case["level"].as_u64().unwrap() { 1=>Level::One, 2=>Level::Two, 3=>Level::Three, _=>panic!("level") };
+        let rules: Vec<_> = case["inputs"].as_array().unwrap().iter().map(|index| { let v = &data["cases"][index.as_u64().unwrap() as usize]; RuleResult { rule_id:v["rule_id"].as_str().unwrap().into(), passed:v["passed"].as_bool().unwrap(), confidence:v["confidence"].as_f64().unwrap(), severity:v["severity"].as_str().map(|s|match s { "fatal"=>Severity::Fatal, "critical"=>Severity::Critical, "major"=>Severity::Major, "minor"=>Severity::Minor, "info"=>Severity::Info, _=>panic!("severity") }) } }).collect();
+        assert_eq!(level_score_json(&score_level(level, &rules)), case["expected"], "case {i}");
+    }
+}
