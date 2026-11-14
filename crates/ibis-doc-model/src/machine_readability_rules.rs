@@ -385,3 +385,36 @@ pub fn csv_column_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], 
 pub fn blank_vs_zero_ai_disabled() -> RuleEvaluation {
     result("L1-09", true, 0.0, Severity::Minor, Vec::new())
 }
+
+/// L2-03 for an unmerged CSV/TSV table with known header and body rows.
+/// Unsupported reader data returns None; no detected header is a low-confidence skip.
+pub fn csv_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let Some(&last_header) = header_rows.last() else { return Some(result("L2-03", true, 0.4, Severity::Fatal, Vec::new())); };
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new();
+    let mut body_columns = BTreeSet::new();
+    for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        if cell.row >= body_first && cell.row <= body_last && !value.is_empty() { body_columns.insert(cell.column); }
+        cells.insert((cell.row, cell.column), value);
+    }
+    let location = |col| if cells.contains_key(&(last_header, col)) { address(last_header, col) } else { format!("R{}C{}", u64::from(last_header) + 1, u64::from(col) + 1) };
+    let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
+    let mut findings = Vec::new();
+    for col in table.first_column..=table.last_column {
+        let mut parts = Vec::new();
+        for &row in header_rows {
+            if let Some(&value) = cells.get(&(row, col)) { if !value.is_empty() && !parts.contains(&value) { parts.push(value); } }
+        }
+        if parts.is_empty() {
+            if body_columns.contains(&col) { findings.push(Finding { location: location(col), severity: FindingSeverity::Error }); }
+        } else {
+            let name = parts.join("_");
+            if let Some((_, columns)) = groups.iter_mut().find(|(existing, _)| existing == &name) { columns.push(col); } else { groups.push((name, vec![col])); }
+        }
+    }
+    for (_, columns) in groups { if columns.len() > 1 { for col in columns { findings.push(Finding { location: location(col), severity: FindingSeverity::Error }); } } }
+    Some(result("L2-03", findings.is_empty(), 0.95, Severity::Fatal, findings))
+}

@@ -2,6 +2,15 @@
   "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
   "cases": [
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "clean",
       "bytes": "e59cb0e59f9f2ce5b9b4e5baa62ce4babae695b00ae69db1e4baac2c323032342c350ae5a4a7e998aa2c323032352c31300a",
       "delimiter": ",",
@@ -97,6 +106,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "bom",
       "bytes": "efbbbfe59cb0e59f9f2ce5b9b4e5baa62ce4babae695b00ae69db1e4baac2c323032342c350ae5a4a7e998aa2c323032352c31300a",
       "delimiter": ",",
@@ -192,6 +210,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "cp932",
       "bytes": "956996da2c8be695aa2c909497ca0a87402c412c31300a91e58de32c422c32300a",
       "delimiter": ",",
@@ -292,6 +319,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "enum",
       "bytes": "e59cb0e59f9f2ce58685e5aeb92ce695b0e9878f0ae69db1e4baac2c41e3808142e38081432c31300ae5a4a7e998aa2ce9809ae5b8b82c32300a",
       "delimiter": ",",
@@ -392,6 +428,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "multi",
       "bytes": "e59cb0e59f9f2ce58685e5aeb92ce695b0e9878f0ae69db1e4baac2c22e4b880e8a18c0ae4ba8ce8a18c222c31300ae5a4a7e998aa2ce9809ae5b8b82c32300a",
       "delimiter": ",",
@@ -502,6 +547,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "title",
       "bytes": "e8aabfe69fbbe381aee8a1a82c2c0ae59cb0e59f9f2ce5b9b4e5baa62ce4babae695b00ae69db1e4baac2c323032342c350ae5a4a7e998aa2c323032352c31300a",
       "delimiter": ",",
@@ -602,6 +656,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "tsv",
       "bytes": "e59cb0e59f9f09e58685e5aeb909e695b0e9878f0ae69db1e4baac0941e383bb42e383bb430931300ae5a4a7e998aa09e9809ae5b8b80932300a",
       "delimiter": "\t",
@@ -702,6 +765,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "fullwidth",
       "bytes": "e9a085e79bae2ce580a42ce695b00aefbca12ce9809ae5b8b82c310aefbca22ce9809ae5b8b82c320a",
       "delimiter": ",",
@@ -806,6 +878,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "address",
       "bytes": "e4bd8fe689802ce58685e5aeb92ce695b0e9878f0ae69db1e4baace983bde38080e58d83e4bba3e794b0e58cba2ce9809ae5b8b82c310ae5a4a7e998aae5ba9ce38080e5a4a7e998aae5b8822ce7a9bae799bde38080e38182e3828a2c320a",
       "delimiter": ",",
@@ -906,6 +987,15 @@
       ]
     },
     {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": []
+        }
+      ],
       "name": "whitespace",
       "bytes": "e59cb0e59f9f2ce58685e5aeb92ce695b0e9878f0ae69db1e4baac2c20e58588e9a0ad2c310ae5a4a7e998aa2ce9809ae5b8b82020e7a9bae799bd2c320a",
       "delimiter": ",",
@@ -971,6 +1061,119 @@
               "warning"
             ]
           ]
+        },
+        {
+          "id": "L1-07",
+          "passed": true,
+          "confidence": 0.82,
+          "severity": "critical",
+          "findings": []
+        },
+        {
+          "id": "L1-08",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "critical",
+          "findings": []
+        },
+        {
+          "id": "L1-09",
+          "passed": true,
+          "confidence": 0.0,
+          "severity": "minor",
+          "findings": []
+        },
+        {
+          "id": "L1-14",
+          "passed": true,
+          "confidence": 1.0,
+          "severity": "fatal",
+          "findings": []
+        },
+        {
+          "id": "L1-15",
+          "passed": true,
+          "confidence": 1.0,
+          "severity": "fatal",
+          "findings": []
+        }
+      ]
+    },
+    {
+      "level2_checks": [
+        {
+          "id": "L2-03",
+          "passed": false,
+          "confidence": 0.95,
+          "severity": "fatal",
+          "findings": [
+            [
+              "A1",
+              "error"
+            ],
+            [
+              "B1",
+              "error"
+            ]
+          ]
+        }
+      ],
+      "name": "duplicate-headers",
+      "bytes": "e59cb0e59f9f2ce59cb0e59f9f2ce4babae695b00ae69db1e4baac2ce5a4a7e998aa2c350ae5a4a7e998aa2ce4baace983bd2c31300a",
+      "delimiter": ",",
+      "encoding": "utf-8",
+      "range": [
+        0,
+        0,
+        2,
+        2
+      ],
+      "headers": [
+        0
+      ],
+      "confidence": 1.0,
+      "checks": [
+        {
+          "id": "L1-01",
+          "passed": true,
+          "confidence": 1.0,
+          "severity": "fatal",
+          "findings": []
+        },
+        {
+          "id": "L1-02",
+          "passed": true,
+          "confidence": 0.85,
+          "severity": "fatal",
+          "findings": []
+        },
+        {
+          "id": "L1-03",
+          "passed": true,
+          "confidence": 0.85,
+          "severity": "critical",
+          "findings": []
+        },
+        {
+          "id": "L1-04",
+          "passed": true,
+          "confidence": 0.9,
+          "severity": "major",
+          "findings": []
+        },
+        {
+          "id": "L1-05",
+          "passed": true,
+          "confidence": 0.8,
+          "severity": "critical",
+          "findings": []
+        },
+        {
+          "id": "L1-06",
+          "passed": true,
+          "confidence": 0.95,
+          "severity": "critical",
+          "findings": []
         },
         {
           "id": "L1-07",

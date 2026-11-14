@@ -24,7 +24,7 @@ fn native_csv_checks_match_reference_without_claiming_complete_coverage() {
         assert_eq!([r.first_row, r.first_column, r.last_row, r.last_column], std::array::from_fn(|i| case["range"][i].as_u64().unwrap() as u32), "{name}");
         assert_eq!(actual.table.confidence, case["confidence"].as_f64().unwrap(), "{name}");
         assert_eq!(actual.header_rows, case["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>(), "{name}");
-        for (got, expected) in actual.checks.iter().zip(case["checks"].as_array().unwrap()) {
+        for (got, expected) in actual.checks.iter().chain(actual.level2_checks.iter()).zip(case["checks"].as_array().unwrap().iter().chain(case["level2_checks"].as_array().unwrap().iter())) {
             assert_eq!(got.result.rule_id, expected["id"].as_str().unwrap(), "{name}");
             assert_eq!(got.result.passed, expected["passed"].as_bool().unwrap(), "{name}: {}", got.result.rule_id);
             assert_eq!(got.result.confidence, expected["confidence"].as_f64().unwrap(), "{name}: {}", got.result.rule_id);
@@ -35,6 +35,7 @@ fn native_csv_checks_match_reference_without_claiming_complete_coverage() {
             assert_eq!(findings, wanted, "{name}: {}", got.result.rule_id);
         }
         assert_eq!(actual.checks.len(), 11);
+        assert_eq!(actual.level2_checks.len(), 1);
     }
     assert_eq!(UNIMPLEMENTED_CSV_LEVEL1, &["L1-09"]);
     assert_eq!(analyze_csv_partial(b"", Delimiter::Comma), Err(NativeCsvError::UnsupportedTableCount(0)));

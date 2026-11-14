@@ -106,3 +106,7 @@ The native implementation currently only supports CSV/TSV single-table inputs.
 unmerged CSV table layouts, including missing and sequential numeric headers.
 L1-09 is recorded as skipped when AI is disabled; AI-assisted judgment remains
 unimplemented. Numeric header syntax that cannot be matched safely is rejected.
+
+`harunobu-unique-headers-reference.json` covers L2-03 for 160 synthetic
+unmerged CSV table layouts, including missing, duplicate and multirow names.
+The partial analyzer also compares this rule through the standard analyzer.

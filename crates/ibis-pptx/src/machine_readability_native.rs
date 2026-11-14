@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use ibis_doc_model::machine_readability_csv::{diagnose, read_sheet, single_line_records, valid_quoting, Delimiter};
 use ibis_doc_model::machine_readability_layout::{generate_column_headers, infer_column_schemas, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue};
-use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_column_headers, csv_data_fragmentation, file_format, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
+use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, csv_column_headers, csv_data_fragmentation, csv_unique_headers, file_format, irrelevant_information, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, ColumnType, DetectedTable, OutsideTableCell, RuleEvaluation, TextEncoding, WorkbookFormat};
 use ibis_doc_model::sheet::{CellKind, CellValue, Sheet, SheetCell};
 use crate::machine_readability_csv::{decode_csv_bytes, CsvInputEncoding, CsvInputError};
 
@@ -18,6 +18,8 @@ pub struct PartialCsvAnalysis {
     pub table: DetectedTable,
     pub header_rows: Vec<u32>,
     pub checks: Vec<RuleEvaluation>,
+    /// Experimental Level 2 checks; no Level 2 score is produced.
+    pub level2_checks: Vec<RuleEvaluation>,
     /// Always false until all applicable rules and report semantics are ported.
     pub complete: bool,
 }
@@ -60,5 +62,6 @@ pub fn analyze_csv_partial(bytes: &[u8], delimiter: Delimiter) -> Result<Partial
         whitespace_formatting(&sheet, range, Some(&region.headers.rows)), one_data_per_cell(&sheet, range, Some(&column_types)), platform_characters(&sheet, range, text_encoding), blank_vs_zero_ai_disabled(),
         single_line_records(Some(&diagnostics), range.first_row as usize + 1, range.last_row as usize + 1),
         valid_quoting(Some(&diagnostics), range.first_row as usize + 1, range.last_row as usize + 1)];
-    Ok(PartialCsvAnalysis { encoding, table, header_rows: region.headers.rows.clone(), checks, complete: false })
+    let level2_checks = vec![csv_unique_headers(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?];
+    Ok(PartialCsvAnalysis { encoding, table, header_rows: region.headers.rows.clone(), checks, level2_checks, complete: false })
 }
