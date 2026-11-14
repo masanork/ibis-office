@@ -494,3 +494,25 @@ fn xlsx_duration_text_matches_reference_samples() {
         assert_eq!(got.as_deref(), case["expected"].as_str(), "case {i}: {case}");
     }
 }
+
+#[test]
+fn partial_xlsx_scores_match_reference_aggregation() {
+    use ibis_pptx::machine_readability_xlsx::{analyze_xlsx_structure_partial, score_xlsx_tables_partial};
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
+    let data: serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-generated-reference.json")).unwrap()).unwrap();
+    for case in data["cases"].as_array().unwrap() {
+        let name=case["name"].as_str().unwrap();
+        let bytes: Vec<_>=case["bytes"].as_str().unwrap().as_bytes().chunks_exact(2).map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+        let tables=analyze_xlsx_structure_partial(&bytes,0).unwrap();
+        for (got,wanted) in score_xlsx_tables_partial(&tables).unwrap().iter().zip(case["scores"].as_array().unwrap()) {
+            assert_eq!(got.score.map(u64::from),wanted["score"].as_u64(),"{name}");
+            assert_eq!(got.passed as u64,wanted["passed"].as_u64().unwrap(),"{name}");
+            assert_eq!(got.total as u64,wanted["total"].as_u64().unwrap(),"{name}");
+            let mut ids: Vec<_>=got.failed_rules.iter().map(|v|v.rule_id.as_str()).collect();
+            let mut expected: Vec<_>=wanted["failed_rules"].as_array().unwrap().iter().map(|v|v["rule_id"].as_str().unwrap()).collect();
+            ids.sort(); expected.sort();
+            assert_eq!(ids,expected,"{name}");
+            assert_eq!(!got.forced_zero_rules.is_empty(),wanted["forced_zero"].as_bool().unwrap(),"{name}");
+        }
+    }
+}

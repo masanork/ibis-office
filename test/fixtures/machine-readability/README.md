@@ -161,3 +161,6 @@ The XLSX numeric, date and duration reference fixtures compare raw numeric
 lexemes and Python-compatible text rendering, including 1900 and 1904 epochs.
 `harunobu-xlsx-generated-reference.json` exercises 100 generated workbooks
 with mixed types, styles, dates, hidden rows and merged cells across all rules.
+The generated CSV and XLSX fixtures also capture per-level score aggregation.
+Failed-rule lists are compared without ordering because the reference executes
+rules concurrently and their completion order can vary.
