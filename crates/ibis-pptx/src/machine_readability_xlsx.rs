@@ -193,7 +193,7 @@ pub fn inspect_xlsx_formula_artifacts(bytes: &[u8]) -> Result<Vec<XlsxFormulaArt
     Ok(output)
 }
 
-/// Experimental Excel-only checks for detected worksheet tables. Results have
+/// Experimental structural checks for detected worksheet tables. Results have
 /// no score and do not cover the common or report rules; they are not a full
 /// machine-readability analysis.
 #[derive(Clone, Debug, PartialEq)]
@@ -206,7 +206,7 @@ pub struct PartialXlsxStructure {
 
 pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Result<Vec<PartialXlsxStructure>, XlsxInputError> {
     use ibis_doc_model::machine_readability_layout::{merge_column_adjacent_regions, merge_form_fragments, preliminary_islands};
-    use ibis_doc_model::machine_readability_rules::{file_format, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, one_table_per_sheet, xlsx_data_fragmentation, DetectedTable, OutsideTableCell, UsedExtent, WorkbookFormat};
+    use ibis_doc_model::machine_readability_rules::{file_format, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, one_table_per_sheet, xlsx_column_headers, xlsx_data_fragmentation, DetectedTable, OutsideTableCell, UsedExtent, WorkbookFormat};
     use ibis_doc_model::sheet::CellRange;
     let saved = read_xlsx_saved_sheet(bytes, sheet_index)?;
     // Reference skips only L2-06 if package-wide formula inspection fails.
@@ -221,7 +221,7 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
     regions.iter().map(|region| {
         let range = region.candidate.range;
         let header_rows: BTreeSet<_> = region.headers.rows.iter().copied().collect();
-        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
+        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), xlsx_column_headers(&saved.sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
         Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), checks, complete: false })
     }).collect()
 }
