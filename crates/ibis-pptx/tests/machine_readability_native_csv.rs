@@ -60,6 +60,8 @@ fn native_multitable_csv_checks_match_reference() {
             let r = got.table.range;
             assert_eq!([r.first_row, r.first_column, r.last_row, r.last_column], std::array::from_fn(|i| expected["range"][i].as_u64().unwrap() as u32), "{name}");
             assert_eq!(got.header_rows, expected["headers"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<_>>(), "{name}");
+            let labels:Vec<_>=got.column_headers.iter().map(|h|serde_json::json!({"column":h.column,"rows":h.rows,"label":h.label,"merged":h.merged})).collect();
+            assert_eq!(labels,*expected["column_headers"].as_array().unwrap(),"{name}: column headers");
             assert_eq!(got.table.confidence, expected["confidence"].as_f64().unwrap(), "{name}");
             let checks: Vec<_> = got.checks.iter().chain(&got.level2_checks).chain(&got.level3_checks).collect();
             let wanted = expected["checks"].as_array().unwrap();

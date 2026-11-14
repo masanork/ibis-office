@@ -17,6 +17,7 @@ pub struct PartialCsvAnalysis {
     pub encoding: CsvInputEncoding,
     pub table: DetectedTable,
     pub header_rows: Vec<u32>,
+    pub column_headers: Vec<ibis_doc_model::machine_readability_layout::InferredColumnHeader>,
     pub checks: Vec<RuleEvaluation>,
     /// Experimental Level 2 checks; no Level 2 score is produced.
     pub level2_checks: Vec<RuleEvaluation>,
@@ -103,7 +104,7 @@ pub fn analyze_csv_tables_partial(bytes: &[u8], delimiter: Delimiter) -> Result<
     level3_checks.push(csv_region_codes(&sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last).ok_or(NativeCsvError::UnknownLayout)?);
     level3_checks.extend(skipped[2..].iter().cloned());
     level3_checks.push(csv_vertical_format(&sheet, range, &region.headers.rows).ok_or(NativeCsvError::UnknownLayout)?);
-        results.push(PartialCsvAnalysis { encoding, table, header_rows: region.headers.rows.clone(), checks, level2_checks, level3_checks, complete: false });
+        results.push(PartialCsvAnalysis { encoding, table, header_rows: region.headers.rows.clone(), column_headers: region.column_headers.clone(), checks, level2_checks, level3_checks, complete: false });
     }
     Ok(results)
 }
@@ -116,4 +117,15 @@ pub fn score_csv_tables_partial(tables: &[PartialCsvAnalysis]) -> [ibis_doc_mode
     let level2: Vec<_> = tables.iter().flat_map(|t| t.level2_checks.iter().map(|c| c.result.clone())).collect();
     let level3: Vec<_> = tables.iter().flat_map(|t| t.level3_checks.iter().map(|c| c.result.clone())).collect();
     [score_level(Level::One, &level1), score_level(Level::Two, &level2), score_level(Level::Three, &level3)]
+}
+
+/// Header labels from the first CSV table with extractable headers, in the
+/// same order used by the cross-file format check.
+pub fn first_csv_headers(tables: &[PartialCsvAnalysis]) -> Vec<String> {
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    for table in tables {
+        let labels: Vec<_> = table.column_headers.iter().filter(|h| !h.label.is_empty()).map(|h| h.label.trim_matches(space).to_string()).collect();
+        if !labels.is_empty() { return labels; }
+    }
+    Vec::new()
 }
