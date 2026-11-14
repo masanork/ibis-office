@@ -142,3 +142,7 @@ though the Harunobu layout reader interprets it as a formula; callers must
 apply reference interpretation when using those values in rules.
 `harunobu-xlsx-artifacts-reference.json` compares OOXML formula and `#REF!`
 inspection, including multiple worksheets and a formula with a cached `#REF!`.
+`harunobu-xlsx-structure-reference.json` compares table detection and the
+format, table count, fragmentation, outside-cell, merge, hidden and formula
+checks in thorough mode. `harunobu-xlsx-fragmentation-reference.json` checks
+merged-cell behavior in single-pass and read-only-style contexts.
