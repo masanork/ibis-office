@@ -524,13 +524,14 @@ fn xlsx_vertical_format_excludes_falsy_numeric_headers() {
 
 #[test]
 fn xlsx_duration_text_matches_reference_samples() {
-    use ibis_pptx::machine_readability_xlsx::xlsx_duration_reference_text;
+    use ibis_pptx::machine_readability_xlsx::{xlsx_duration_reference_text,xlsx_duration_reference_json};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/machine-readability");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("harunobu-xlsx-duration-text-reference.json")).unwrap()).unwrap();
     assert_eq!(data["harunobu_commit"], "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f");
     for (i, case) in data["cases"].as_array().unwrap().iter().enumerate() {
         let got = xlsx_duration_reference_text(case["value"].as_str().unwrap().parse().unwrap());
         assert_eq!(got.as_deref(), case["expected"].as_str(), "case {i}: {case}");
+        assert_eq!(xlsx_duration_reference_json(case["value"].as_str().unwrap().parse().unwrap()).as_deref(),case["json"].as_str(),"case {i}: {case}");
     }
 }
 
