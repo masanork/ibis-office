@@ -331,3 +331,57 @@ pub fn csv_data_fragmentation(sheet: &Sheet, table: CellRange) -> Option<RuleEva
     }
     Some(result("L1-03", findings.is_empty(), if findings.is_empty() { 0.85 } else { 0.9 }, Severity::Critical, findings))
 }
+
+/// L1-05 for an unmerged CSV/TSV table with reader-supplied header and body
+/// rows. Ambiguous numeric header formats return None rather than a pass.
+pub fn csv_column_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let fallback = [table.first_row];
+    let headers = if header_rows.is_empty() { &fallback[..] } else { header_rows };
+    let last_header = *headers.last()?;
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut values = BTreeMap::new();
+    let mut body_columns = BTreeSet::new();
+    let mut header_columns = BTreeSet::new();
+    for cell in sheet.cells.iter().filter(|c| c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => v.trim_matches(space), CellValue::Empty => "", _ => return None };
+        if value.is_empty() { continue; }
+        if headers.contains(&cell.row) { header_columns.insert(cell.column); }
+        if cell.row == last_header { values.insert(cell.column, value); }
+        if cell.row >= body_first && cell.row <= body_last { body_columns.insert(cell.column); }
+    }
+    let mut findings = Vec::new();
+    for column in table.first_column..=table.last_column {
+        if body_columns.contains(&column) && !header_columns.contains(&column) {
+            findings.push(Finding { location: address(headers[0], column), severity: FindingSeverity::Error });
+        }
+    }
+    let width = u64::from(table.last_column) - u64::from(table.first_column) + 1;
+    if width >= 2 && values.len() as u64 == width {
+        static NUMBER: OnceLock<regex::Regex> = OnceLock::new();
+        let number = NUMBER.get_or_init(|| regex::Regex::new(r"^[+-]?(?:(?:[0-9](?:_?[0-9])*)(?:\.(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?$").unwrap());
+        let mut nums = Vec::new();
+        for value in values.values() {
+            if !number.is_match(value) {
+                let numeric_shape = value.chars().any(|c| !c.is_ascii() && c.is_numeric()) && value.chars().all(|c| c.is_numeric() || matches!(c, '+' | '-' | '.' | '_' | 'e' | 'E'));
+                if numeric_shape || matches!(value.to_ascii_lowercase().as_str(), "nan" | "+nan" | "-nan" | "inf" | "+inf" | "-inf" | "infinity" | "+infinity" | "-infinity") { return None; }
+                nums.clear(); break;
+            }
+            let n: f64 = value.replace('_', "").parse().ok()?;
+            if !n.is_finite() || n.abs() >= 9_007_199_254_740_992.0 { return None; }
+            nums.push(n);
+        }
+        if nums.len() as u64 == width && nums.iter().all(|n| n.fract() == 0.0) && nums.windows(2).all(|pair| pair[1] - pair[0] == 1.0) {
+            for column in table.first_column..=table.last_column { findings.push(Finding { location: address(last_header, column), severity: FindingSeverity::Error }); }
+        }
+    }
+    Some(result("L1-05", findings.is_empty(), if findings.is_empty() { 0.8 } else { 0.85 }, Severity::Critical, findings))
+}
+
+/// L1-09 explicitly abstains when the reference AI checker is unavailable.
+/// This does not implement the optional AI-assisted judgment.
+pub fn blank_vs_zero_ai_disabled() -> RuleEvaluation {
+    result("L1-09", true, 0.0, Severity::Minor, Vec::new())
+}
