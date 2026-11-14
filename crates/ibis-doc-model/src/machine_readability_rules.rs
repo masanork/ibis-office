@@ -644,3 +644,57 @@ pub fn csv_choice_standardization(sheet: &Sheet, table: CellRange, body_first: u
     }
     Some(result("L2-04", findings.is_empty(), if analyzed { 0.7 } else { 0.0 }, Severity::Critical, findings))
 }
+
+/// L3-09 for unmerged CSV/TSV header text, with AI unavailable.
+pub fn csv_vertical_format(sheet: &Sheet, table: CellRange, header_rows: &[u32]) -> Option<RuleEvaluation> {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    struct Patterns { year: regex::Regex, month: regex::Regex, period: regex::Regex, era: regex::Regex, numbered: regex::Regex }
+    static PATTERNS: OnceLock<Patterns> = OnceLock::new();
+    let p = PATTERNS.get_or_init(|| Patterns {
+        year: regex::Regex::new(r"^(19|20)\d{2}[\s\x1c-\x1f]*(年|年度)?$").unwrap(),
+        month: regex::Regex::new(r"^\d{1,2}[\s\x1c-\x1f]*月$").unwrap(),
+        period: regex::Regex::new(r"^(第?\d+[期回]|(上|下|前|後)半期?|[1-4]Q|Q[1-4]|[上下]期)$").unwrap(),
+        era: regex::Regex::new(r"^(平成|令和|昭和)(\d{1,2}|元)[\s\x1c-\x1f]*(年|年度)?$|^[RHS]\d{1,2}$").unwrap(),
+        numbered: regex::Regex::new(r"^(.+?)[\s\x1c-\x1f_\-]?(\d+)$").unwrap(),
+    });
+    if table.first_row > table.last_row || table.first_column > table.last_column || !sheet.merges.is_empty() { return None; }
+    let Some(&header) = header_rows.last() else { return Some(result("L3-09", true, 0.5, Severity::Major, Vec::new())); };
+    let width = u64::from(table.last_column) - u64::from(table.first_column) + 1;
+    if width < 4 { return Some(result("L3-09", true, 0.8, Severity::Major, Vec::new())); }
+    let space = |c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}');
+    let mut cells = BTreeMap::new();
+    for cell in sheet.cells.iter().filter(|c| c.row == header && c.column >= table.first_column && c.column <= table.last_column) {
+        let value = match &cell.value { CellValue::Text(v) => Some(v.as_str()), CellValue::Empty => None, _ => return None };
+        cells.insert(cell.column, value);
+    }
+    let location = |column| if cells.contains_key(&column) { address(header, column) } else { format!("R{}C{}", u64::from(header) + 1, u64::from(column) + 1) };
+    let range = |start, end| format!("{}:{}", location(start), location(end));
+    let mut findings = Vec::new();
+    if width > 100 { findings.push(Finding { location: range(table.first_column, table.last_column), severity: FindingSeverity::Error }); }
+    let mut groups: [Vec<u32>; 4] = std::array::from_fn(|_| Vec::new());
+    for (&col, value) in &cells {
+        if let Some(value) = value {
+            let value = value.trim_matches(space);
+            if p.year.is_match(value) { groups[0].push(col); } else if p.month.is_match(value) { groups[1].push(col); } else if p.period.is_match(value) { groups[2].push(col); } else if p.era.is_match(value) { groups[3].push(col); }
+        }
+    }
+    if let Some(wide) = groups.iter().find(|v| v.len() >= 3) {
+        findings.push(Finding { location: range(wide[0], *wide.last()?), severity: FindingSeverity::Warning });
+    } else {
+        let nonempty: Vec<_> = cells.iter().filter_map(|(&col, value)| value.filter(|v| !v.is_empty()).map(|v| (col, v.trim_matches(space)))).collect();
+        if nonempty.len() >= 5 {
+            let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
+            for (col, value) in nonempty {
+                if let Some(c) = p.numbered.captures(value) {
+                    let base = c.get(1)?.as_str().trim_matches(space);
+                    if base.chars().all(|c| c.is_ascii_digit()) { continue; }
+                    if base.chars().all(|c| c.is_numeric()) { return None; }
+                    if let Some((_, cols)) = groups.iter_mut().find(|(v, _)| v == base) { cols.push(col); } else { groups.push((base.to_string(), vec![col])); }
+                }
+            }
+            for (_, cols) in groups { if cols.len() >= 4 { findings.push(Finding { location: range(cols[0], *cols.last()?), severity: FindingSeverity::Info }); } }
+        }
+    }
+    Some(result("L3-09", findings.is_empty(), 0.7, Severity::Major, findings))
+}

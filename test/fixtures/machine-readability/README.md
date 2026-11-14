@@ -123,3 +123,5 @@ L2-05 layouts, including numeric schemas, unit and note values, category
 cardinality, sample thresholds, and violation locations.
 `harunobu-choice-reference.json` covers AI-disabled L2-04 category distributions
 and compares finding locations without assuming Python set iteration order.
+`harunobu-vertical-reference.json` covers L3-09 time-axis headers, numbered
+columns, missing header cells and the 101-column boundary with AI disabled.
