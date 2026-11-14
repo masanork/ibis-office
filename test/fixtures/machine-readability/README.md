@@ -157,3 +157,7 @@ uncertain-table behavior is also exercised against both anchors.
 `xlsx-format-variation.xlsx` exercises font color, background, bold and italic
 variation; `harunobu-xlsx-formats-values-reference.json` also compares the
 normal and large-file reader formatting on those cells.
+The XLSX numeric, date and duration reference fixtures compare raw numeric
+lexemes and Python-compatible text rendering, including 1900 and 1904 epochs.
+`harunobu-xlsx-generated-reference.json` exercises 100 generated workbooks
+with mixed types, styles, dates, hidden rows and merged cells across all rules.
