@@ -202,6 +202,22 @@ pub fn one_table_per_sheet(current: CellRange, tables: Option<&[DetectedTable]>)
     result("L1-02", false, 0.85, Severity::Fatal, findings)
 }
 
+/// L1-02 diagnostics for a complete, previously detected table set.
+pub fn one_table_per_sheet_report(sheet_name: &str, current: CellRange, tables: Option<&[DetectedTable]>) -> Option<RuleDiagnostics> {
+    let evaluation = one_table_per_sheet(current, tables);
+    if evaluation.result.confidence == 0.0 { return None; }
+    let tables = tables?;
+    let confident: Vec<_> = tables.iter().filter(|table| table.confidence >= 0.5).collect();
+    let considered: Vec<_> = if confident.is_empty() { tables.iter().collect() } else { confident };
+    let descriptions = if evaluation.result.passed { Vec::new() } else {
+        considered.iter().map(|table| format!("テーブルが{}に検出されました。", range_address(table.range))).collect()
+    };
+    let message = if considered.len() <= 1 { "1シートに1表のみです。".into() }
+        else if evaluation.result.passed { "（別テーブルで報告済み）".into() }
+        else { format!("シート '{sheet_name}' に{}個のテーブルが検出されました。1シートに1表のみにしてください。", considered.len()) };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// The input encoding as established by the reader. XLSX has no text encoding
 /// classification; UTF-8 includes UTF-8 with BOM. Unknown must not be guessed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -453,6 +469,11 @@ pub fn blank_vs_zero_ai_disabled() -> RuleEvaluation {
     result("L1-09", true, 0.0, Severity::Minor, Vec::new())
 }
 
+/// L1-09 explicitly skipped when AI is disabled.
+pub fn blank_vs_zero_ai_disabled_report() -> RuleDiagnostics {
+    RuleDiagnostics { evaluation: blank_vs_zero_ai_disabled(), message: "このルールはAIモードON時のみ判定します".into(), descriptions: Vec::new() }
+}
+
 /// L2-03 for an unmerged CSV/TSV table with known header and body rows.
 /// Unsupported reader data returns None; no detected header is a low-confidence skip.
 pub fn csv_unique_headers(sheet: &Sheet, table: CellRange, header_rows: &[u32], body_first: u32, body_last: u32) -> Option<RuleEvaluation> {
@@ -508,12 +529,49 @@ pub fn header_start_position(table: CellRange, header_rows: &[u32], body_first: 
     Some(result("L3-01", findings.is_empty(), 0.95, severity, findings))
 }
 
+/// L3-01 report text using the same zero-based table and layout coordinates.
+pub fn header_start_position_report(table: CellRange, header_rows: &[u32], body_first: u32) -> Option<RuleDiagnostics> {
+    let evaluation = header_start_position(table, header_rows, body_first)?;
+    let mut descriptions = Vec::new();
+    let mut fatal = 0usize;
+    let mut major = 0usize;
+    if table.first_row > 0 {
+        descriptions.push(format!("ファイル先頭行から表が始まっていません（先頭から{}行の空行・不要行があります）。データテーブルは{}行目から開始しています", table.first_row, u64::from(table.first_row) + 1));
+        fatal += 1;
+    }
+    if let Some(&last) = header_rows.iter().max() {
+        if u64::from(body_first) > u64::from(last) + 1 {
+            descriptions.push(format!("ヘッダー行（{}行目）とデータ開始行（{}行目）の間に空行があります", u64::from(last) + 1, u64::from(body_first) + 1));
+            fatal += 1;
+        }
+        if header_rows.len() >= 3 {
+            descriptions.push(format!("ヘッダーが{}行にまたがっています。プログラムからの自動読み込みが困難になります", header_rows.len()));
+            major += 1;
+        }
+    }
+    let message = if descriptions.is_empty() { "ヘッダーは適切な位置から開始しています".into() } else {
+        let mut parts = Vec::new();
+        if fatal > 0 { parts.push(format!("重大違反{fatal}件")); }
+        if major > 0 { parts.push(format!("多段ヘッダー{major}件")); }
+        format!("ヘッダー開始位置の問題: {}件検出（{}）", descriptions.len(), parts.join("、"))
+    };
+    Some(RuleDiagnostics { evaluation, message, descriptions })
+}
+
 /// L3 rules skipped by the pinned reference for single-file assessment.
 pub fn reference_skipped_level3() -> [RuleEvaluation; 4] {
     [result("L3-02", true, 0.0, Severity::Critical, Vec::new()),
      result("L3-03", true, 0.0, Severity::Major, Vec::new()),
      result("L3-07", true, 0.0, Severity::Critical, Vec::new()),
      result("L3-08", true, 0.0, Severity::Major, Vec::new())]
+}
+
+/// Single-file L3 rules that the pinned reference intentionally skips.
+pub fn reference_skipped_level3_reports() -> [RuleDiagnostics; 4] {
+    reference_skipped_level3().map(|evaluation| {
+        let message = if evaluation.result.rule_id == "L3-07" { "複数ファイル一括アップロード時のみ評価対象（単一ファイルでは判定しない）" } else { "このルールは現在判定対象外です" };
+        RuleDiagnostics { evaluation, message: message.into(), descriptions: Vec::new() }
+    })
 }
 
 /// L2-02 for an unmerged CSV table, with AI unavailable and inferred stub columns supplied.
