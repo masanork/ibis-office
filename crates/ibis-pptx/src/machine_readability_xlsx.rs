@@ -206,11 +206,12 @@ pub struct PartialXlsxStructure {
 
 pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Result<Vec<PartialXlsxStructure>, XlsxInputError> {
     use ibis_doc_model::machine_readability_layout::{generate_column_headers, infer_column_schemas, inherit_headers_from_above, merge_column_adjacent_regions, merge_form_fragments, preliminary_islands, HeaderCell, InferredColumnType, LayoutValue, ResolvedIsland};
-    use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, file_format, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, xlsx_column_headers, xlsx_data_fragmentation, ColumnType, DetectedTable, OutsideTableCell, TextEncoding, UsedExtent, WorkbookFormat};
+    use ibis_doc_model::machine_readability_rules::{blank_vs_zero_ai_disabled, file_format, formula_artifacts, hidden_rows_columns, irrelevant_information, merged_cells, object_artifacts, one_data_per_cell, one_table_per_sheet, platform_characters, whitespace_formatting, xlsx_column_headers, xlsx_data_fragmentation, ColumnType, DetectedTable, OutsideTableCell, TextEncoding, UsedExtent, WorkbookFormat};
     use ibis_doc_model::sheet::CellRange;
     let saved = read_xlsx_saved_sheet(bytes, sheet_index)?;
     // Reference skips only L2-06 if package-wide formula inspection fails.
     let artifacts = inspect_xlsx_formula_artifacts(bytes).ok().and_then(|v| v.get(sheet_index).cloned());
+    let objects = inspect_xlsx_object_artifacts(bytes).ok().and_then(|v| v.get(sheet_index).cloned());
     let preliminary = preliminary_islands(&saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
     let columns = merge_column_adjacent_regions(&preliminary.candidates, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
     let forms = merge_form_fragments(&columns, &saved.layout.cells, &saved.layout.merges).ok_or(XlsxInputError::InvalidWindowMetadata)?;
@@ -249,7 +250,52 @@ pub fn analyze_xlsx_structure_partial(bytes: &[u8], sheet_index: usize) -> Resul
         // guessing their L1-07 interpretation until duration formatting is ported.
         if saved.layout.cells.iter().any(|c| c.row >= range.first_row && c.row <= range.last_row && c.column >= range.first_column && c.column <= range.last_column && c.value == Some(LayoutValue::Other)) { return Err(XlsxInputError::InvalidWindowMetadata); }
         let column_types: BTreeMap<_, _> = region.column_schemas.iter().map(|c| (c.column, if c.kind == InferredColumnType::Numeric { ColumnType::Numeric } else { ColumnType::Other })).collect();
-        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), xlsx_column_headers(&saved.sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, whitespace_formatting(&reference_sheet, range, Some(&region.headers.rows)), one_data_per_cell(&reference_sheet, range, Some(&column_types)), platform_characters(&reference_sheet, range, TextEncoding::Xlsx), blank_vs_zero_ai_disabled(), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
+        let checks = vec![file_format(WorkbookFormat::Xlsx), one_table_per_sheet(range, Some(&tables)), xlsx_data_fragmentation(&saved.sheet, range, &tables, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, irrelevant_information(Some(&others)), xlsx_column_headers(&saved.sheet, range, &region.headers.rows, region.headers.body_first, region.headers.body_last, bytes.len() > 5 * 1024 * 1024).ok_or(XlsxInputError::InvalidWindowMetadata)?, whitespace_formatting(&reference_sheet, range, Some(&region.headers.rows)), one_data_per_cell(&reference_sheet, range, Some(&column_types)), platform_characters(&reference_sheet, range, TextEncoding::Xlsx), blank_vs_zero_ai_disabled(), object_artifacts(range, region.abstain, objects.as_deref()), merged_cells(&saved.sheet, range, Some(&header_rows)), hidden_rows_columns(&saved.sheet, used), formula_artifacts(range, artifacts.as_ref().map(|a| (a.formulas.as_slice(), a.errors.as_slice())))];
         Ok(PartialXlsxStructure { table: DetectedTable { range, confidence: region.candidate.confidence }, header_rows: region.headers.rows.clone(), checks, complete: false })
     }).collect()
+}
+
+/// Inspect object anchors in all worksheets; unsupported or malformed package
+/// metadata returns an error so callers can skip the corresponding rule.
+pub fn inspect_xlsx_object_artifacts(bytes: &[u8]) -> Result<Vec<Vec<ibis_doc_model::machine_readability_rules::ObjectArtifact>>, XlsxInputError> {
+    use ibis_doc_model::machine_readability_rules::ObjectArtifact;
+    use crate::zip::Archive;
+    const MAX_OBJECTS: usize = 50_000;
+    const MAX_XML: usize = 50 * 1024 * 1024;
+    const DRAWING: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing";
+    let (_, sources) = crate::reader::read_xlsx_with_sources(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let archive = Archive::new(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let package = crate::package::Package::new(bytes).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+    let mut output = Vec::with_capacity(sources.sheet_parts.len());
+    let mut total = 0usize;
+    for part in &sources.sheet_parts {
+        let part = part.as_deref().ok_or(XlsxInputError::SheetUnavailable)?;
+        let relationships = package.relationships(part).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+        let drawings: Vec<_> = relationships.values().filter(|r| r.kind == DRAWING).collect();
+        // A HashMap does not retain XML relationship order. Avoid claiming
+        // equivalent finding order when a sheet has multiple drawings.
+        if drawings.len() > 1 || drawings.iter().any(|r| r.external) { return Err(XlsxInputError::InvalidWindowMetadata); }
+        let mut sheet = Vec::new();
+        for drawing in drawings {
+            if !archive.contains(&drawing.target) { continue; }
+            let xml = package.read_xml(&drawing.target).map_err(|e| XlsxInputError::Workbook(e.to_string()))?;
+            if xml.len() > MAX_XML { return Err(XlsxInputError::FormulaInspectionLimit); }
+            let doc = roxmltree::Document::parse(&xml).map_err(|_| XlsxInputError::InvalidWindowMetadata)?;
+            for anchor in doc.descendants().filter(|n| n.is_element() && matches!(n.tag_name().name(), "oneCellAnchor" | "twoCellAnchor")) {
+                let kind = [("pic", "image", "nvPicPr"), ("graphicFrame", "chart", "nvGraphicFramePr"), ("sp", "shape", "nvSpPr"), ("cxnSp", "connector", "nvCxnSpPr")].into_iter().find_map(|(tag, kind, nv)| anchor.children().find(|n| n.is_element() && n.tag_name().name() == tag).map(|child| (kind, nv, child)));
+                let Some((kind, nv, child)) = kind else { continue; };
+                let Some(from) = anchor.children().find(|n| n.is_element() && n.tag_name().name() == "from") else { continue; };
+                let row = from.children().find(|n| n.is_element() && n.tag_name().name() == "row").and_then(|n| n.text()).unwrap_or("0").parse::<u32>();
+                let column = from.children().find(|n| n.is_element() && n.tag_name().name() == "col").and_then(|n| n.text()).unwrap_or("0").parse::<u32>();
+                let (Ok(row), Ok(column)) = (row, column) else { continue; };
+                if !from.children().any(|n| n.is_element() && n.tag_name().name() == "row") || !from.children().any(|n| n.is_element() && n.tag_name().name() == "col") { continue; }
+                let name = child.children().find(|n| n.is_element() && n.tag_name().name() == nv).and_then(|n| n.children().find(|c| c.is_element() && c.tag_name().name() == "cNvPr")).and_then(|n| n.attribute("name")).filter(|s| !s.is_empty()).map(str::to_string);
+                sheet.push(ObjectArtifact { row, column, kind: kind.to_string(), name, drawing_part: drawing.target.clone() });
+                total += 1;
+                if total > MAX_OBJECTS { return Err(XlsxInputError::FormulaInspectionLimit); }
+            }
+        }
+        output.push(sheet);
+    }
+    Ok(output)
 }
