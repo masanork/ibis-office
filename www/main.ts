@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { configure_fonts, enable_dynamic_fonts, enable_face_fonts, add_dynamic_font, add_face_font, run, set_embed_options } from './pkg/ibis_office_app.js';
+import init, { configure_fonts, enable_dynamic_fonts, enable_face_fonts, add_dynamic_font, add_face_font, run, set_embed_options, set_phone_viewer } from './pkg/ibis_office_app.js';
 import { loadWebFonts } from './font-loader.js';
 import { loadWasm } from './wasm-loader.js';
 import { DynamicFonts, FaceSubsetProvider } from './dynamic-fonts.js';
@@ -82,13 +82,17 @@ function flag(params: URLSearchParams, name: string): boolean | undefined {
 function embedOptions(): Required<Omit<EmbedOptions, 'eventTarget'>> & Pick<EmbedOptions, 'eventTarget'> {
   const params = new URLSearchParams(location.search);
   const js = window.ibisOfficeOptions ?? {};
-  const view = js.view ?? flag(params, 'view') ?? false;
+  // The standalone phone experience starts as a viewer. Embedded pages and
+  // explicit URL or JavaScript options retain their existing behavior.
+  const phoneViewer = window.self === window.top && matchMedia('(max-width: 600px)').matches
+    && js.view === undefined && !params.has('view');
+  const view = js.view ?? flag(params, 'view') ?? phoneViewer;
   return {
     close: js.close ?? flag(params, 'close') ?? false,
     download: js.download ?? flag(params, 'download') ?? false,
     view,
-    menuBar: js.menuBar ?? flag(params, 'menuBar') ?? flag(params, 'menubar') ?? true,
-    toolBar: js.toolBar ?? flag(params, 'toolBar') ?? flag(params, 'toolbar') ?? true,
+    menuBar: js.menuBar ?? flag(params, 'menuBar') ?? flag(params, 'menubar') ?? !phoneViewer,
+    toolBar: js.toolBar ?? flag(params, 'toolBar') ?? flag(params, 'toolbar') ?? !phoneViewer,
     targetOrigin: js.targetOrigin ?? params.get('origin') ?? '',
     eventTarget: js.eventTarget,
   };
@@ -467,6 +471,7 @@ if (!('gpu' in navigator)) {
     const base = new URL('.', location.href).href.replace(/\/$/, '');
     const embed = embedOptions();
     set_embed_options(embed.close, embed.download, embed.view, embed.menuBar, embed.toolBar);
+    set_phone_viewer(window.self === window.top && embed.view && !embed.menuBar && !embed.toolBar);
     await run(base, file?.name, file?.bytes);
     status?.remove();
   } catch (error) {

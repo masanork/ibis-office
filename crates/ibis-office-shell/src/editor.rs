@@ -3838,6 +3838,10 @@ impl SlideEditor {
             }
             return d.child(self.render_title_row(window, cx)).child(self.render_start_view(cx));
         }
+        #[cfg(target_family = "wasm")]
+        let mobile_viewer = crate::embed::phone_viewer() && self.is_read_only() && !self.show_menu_bar && window.viewport_size().width < px(600.);
+        #[cfg(not(target_family = "wasm"))]
+        let mobile_viewer = false;
         let compact = self.chrome_compact;
         let focus = with_format!(self, chrome_hidden(self));
         let show_menu_bar = self.show_menu_bar;
@@ -3862,7 +3866,8 @@ impl SlideEditor {
         if self.grid_only {
             return d.child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)));
         }
-        d.when(!compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
+        d.when(mobile_viewer && !focus, |d| d.child(self.render_mobile_viewer_bar(cx)))
+            .when(!compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
             .when(!compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
             .when(!focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
             .child(
@@ -3876,6 +3881,20 @@ impl SlideEditor {
                     .children(sidebar),
             )
             .when(!focus, |d| d.child(self.render_status_bar(window, cx)))
+    }
+
+    /// Compact document controls when the browser is used as a phone viewer.
+    fn render_mobile_viewer_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let name = self.file_name.clone().unwrap_or_else(|| "Sorane Docs".into());
+        h_flex().h(px(48.)).flex_shrink_0().px_3().gap_3().items_center()
+            .bg(theme.title_bar).border_b_1().border_color(theme.title_bar_border)
+            .child(div().flex_1().min_w_0().overflow_hidden().text_sm().child(name))
+            .child(div().id("mobile-open-file").flex().items_center().justify_center()
+                .min_w(px(72.)).h(px(40.)).px_3().rounded_md().cursor_pointer()
+                .text_sm().text_color(theme.foreground)
+                .child(crate::i18n::text("start.open"))
+                .on_click(cx.listener(|this, _, window, cx| this.open_file(&OpenFile, window, cx))))
     }
 
     /// Apply a font size (in points) chosen or typed in the toolbar font size pulldown (#120).

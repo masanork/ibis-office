@@ -140,7 +140,9 @@ try {
     localStorage.setItem('ibisOffice.app.last-started-version', version);
     localStorage.setItem('ibisOffice.font-setup.checked-version', version);
   }, wasmVersion);
-  await phone.goto(url);
+  const phoneEditorUrl = new URL(url);
+  phoneEditorUrl.searchParams.set('view', '0');
+  await phone.goto(phoneEditorUrl.href);
   await phone.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
   await waitForEditorFrame(phone);
   await phone.waitForTimeout(1000);
@@ -233,6 +235,27 @@ try {
   assert.deepEqual(failures, [], 'phone interactions must not panic');
   await phone.context().close();
 
+  // A standalone phone now starts in a compact read-only viewer. Its open
+  // button must still invoke the browser file picker.
+  const viewer = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  viewer.on('pageerror', error => failures.push(error.message));
+  await viewer.addInitScript(version => {
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
+  }, wasmVersion);
+  await viewer.goto(url);
+  await viewer.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
+  await waitForEditorFrame(viewer);
+  await viewer.waitForTimeout(1000);
+  const viewerCdp = await viewer.context().newCDPSession(viewer);
+  const viewerTouch = (type, touchPoints) => viewerCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+  const viewerChooser = viewer.waitForEvent('filechooser', { timeout: 15_000 });
+  await tap(viewerTouch, 100, 350, 24);
+  await (await viewerChooser).setFiles('www/samples/sorane-welcome.docx');
+  await viewer.waitForTimeout(1000);
+  assert.deepEqual(failures, [], 'phone viewer must open another file without a panic');
+  await viewer.context().close();
+
   // Open from the file picker, whose source is retained for the download action.
   const editing = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   editing.on('pageerror', error => failures.push(error.message));
@@ -246,6 +269,7 @@ try {
   }, wasmVersion);
   const editingUrl = new URL(url);
   editingUrl.searchParams.set('download', '1');
+  editingUrl.searchParams.set('view', '0');
   await editing.goto(editingUrl.href);
   await editing.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
   await waitForEditorFrame(editing);
