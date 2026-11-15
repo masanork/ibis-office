@@ -563,6 +563,15 @@ impl SlideEditor {
                                 }
                                 cx.notify();
                             })),
+                    )
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-open-assistant")
+                            .small()
+                            .label("Assistant で相談...")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.wb_mut().panels.sd_jwt = None;
+                                this.open_ai_assistant_panel(window, cx);
+                            })),
                     ),
             );
 

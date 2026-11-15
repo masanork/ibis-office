@@ -1469,4 +1469,43 @@ mod tests {
         assert_eq!(find_args.query, "SUM");
         assert!(find_args.search_formulas);
     }
+
+    #[test]
+    fn parses_vc_tool_args_and_templates() {
+        assert_eq!(parse_vc_template_kind("pid").unwrap(), SdJwtTemplateKind::Pid);
+        assert_eq!(
+            parse_vc_template_kind("mdl").unwrap(),
+            SdJwtTemplateKind::Iso18013Mdl
+        );
+        assert!(parse_vc_template_kind("unknown").is_err());
+
+        let bind_default: BindVcClaimArgs =
+            serde_json::from_str(r#"{"range":"B2","claim_path":"family_name"}"#).unwrap();
+        assert!(bind_default.selective);
+        assert_eq!(bind_default.claim_path, "family_name");
+
+        let bind_mandatory: BindVcClaimArgs = serde_json::from_str(
+            r#"{"range":"B1","claim_path":"vct","selective":false}"#,
+        )
+        .unwrap();
+        assert!(!bind_mandatory.selective);
+
+        let infer_args: InferVcSchemaArgs =
+            serde_json::from_str(r#"{"vct":"https://example.com/cred"}"#).unwrap();
+        assert!(!infer_args.apply);
+        assert_eq!(infer_args.vct.as_deref(), Some("https://example.com/cred"));
+
+        let issue_args: IssueVcPreviewArgs = serde_json::from_str(
+            r#"{"disclose_paths":["family_name","birthdate"],"iss":"https://issuer.example"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            issue_args.disclose_paths.as_deref(),
+            Some(&["family_name".to_string(), "birthdate".to_string()][..])
+        );
+
+        let parse_args: ParseVcTokenArgs =
+            serde_json::from_str(r#"{"token":"eyJ...~disc~","import_to_sheet":true}"#).unwrap();
+        assert!(parse_args.import_to_sheet);
+    }
 }
