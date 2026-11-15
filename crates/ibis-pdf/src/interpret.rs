@@ -78,6 +78,62 @@ impl SceneDevice {
             text_index: self.text_index,
         }
     }
+
+    fn push_bezpath(
+        &mut self,
+        path: &BezPath,
+        transform: Affine,
+        paint: &Paint<'_>,
+        draw_mode: &PathDrawMode,
+    ) {
+        let transformed = transform * path;
+        let bounds = rect_to_pdf_rect(transformed.bounding_box());
+        let commands: Vec<PathCmd> = transformed
+            .elements()
+            .iter()
+            .map(|el| match el {
+                PathEl::MoveTo(p) => PathCmd::MoveTo(p.x as f32, p.y as f32),
+                PathEl::LineTo(p) => PathCmd::LineTo(p.x as f32, p.y as f32),
+                PathEl::QuadTo(c, p) => {
+                    PathCmd::QuadTo(c.x as f32, c.y as f32, p.x as f32, p.y as f32)
+                }
+                PathEl::CurveTo(c1, c2, p) => PathCmd::CubicTo(
+                    c1.x as f32,
+                    c1.y as f32,
+                    c2.x as f32,
+                    c2.y as f32,
+                    p.x as f32,
+                    p.y as f32,
+                ),
+                PathEl::ClosePath => PathCmd::Close,
+            })
+            .collect();
+
+        if commands.is_empty() {
+            return;
+        }
+        let rgba = paint_rgba(paint);
+        let (fill_rule, fill_rgba, stroke_rgba, stroke_width) = match draw_mode {
+            PathDrawMode::Fill(rule) => (
+                match rule {
+                    HayroFillRule::NonZero => FillRule::NonZero,
+                    HayroFillRule::EvenOdd => FillRule::EvenOdd,
+                },
+                Some(rgba),
+                None,
+                0.0,
+            ),
+            PathDrawMode::Stroke(props) => (FillRule::NonZero, None, Some(rgba), props.line_width),
+        };
+        self.display_list.push(DisplayCmd::DrawPath {
+            bounds,
+            commands,
+            fill_rule,
+            fill_rgba,
+            stroke_rgba,
+            stroke_width,
+        });
+    }
 }
 
 fn rect_to_pdf_rect(r: Rect) -> PdfRect {
@@ -109,50 +165,7 @@ impl<'a> Device<'a> for SceneDevice {
         draw_mode: &PathDrawMode,
     ) {
         self.op_counter += 1;
-        let transformed = transform * path;
-        let bounds = rect_to_pdf_rect(transformed.bounding_box());
-        let commands: Vec<PathCmd> = transformed
-            .elements()
-            .iter()
-            .map(|el| match el {
-                PathEl::MoveTo(p) => PathCmd::MoveTo(p.x as f32, p.y as f32),
-                PathEl::LineTo(p) => PathCmd::LineTo(p.x as f32, p.y as f32),
-                PathEl::QuadTo(c, p) => {
-                    PathCmd::QuadTo(c.x as f32, c.y as f32, p.x as f32, p.y as f32)
-                }
-                PathEl::CurveTo(c1, c2, p) => PathCmd::CubicTo(
-                    c1.x as f32,
-                    c1.y as f32,
-                    c2.x as f32,
-                    c2.y as f32,
-                    p.x as f32,
-                    p.y as f32,
-                ),
-                PathEl::ClosePath => PathCmd::Close,
-            })
-            .collect();
-
-        let rgba = paint_rgba(paint);
-        let (fill_rule, fill_rgba, stroke_rgba, stroke_width) = match draw_mode {
-            PathDrawMode::Fill(rule) => (
-                match rule {
-                    HayroFillRule::NonZero => FillRule::NonZero,
-                    HayroFillRule::EvenOdd => FillRule::EvenOdd,
-                },
-                Some(rgba),
-                None,
-                0.0,
-            ),
-            PathDrawMode::Stroke(props) => (FillRule::NonZero, None, Some(rgba), props.line_width),
-        };
-        self.display_list.push(DisplayCmd::DrawPath {
-            bounds,
-            commands,
-            fill_rule,
-            fill_rgba,
-            stroke_rgba,
-            stroke_width,
-        });
+        self.push_bezpath(path, transform, paint, draw_mode);
     }
 
     fn push_clip_path(&mut self, clip_path: &ClipPath) {
@@ -182,12 +195,9 @@ impl<'a> Device<'a> for SceneDevice {
         let combined = transform * glyph_transform;
         let coeffs = combined.as_coeffs();
         let origin = (coeffs[4] as f32, coeffs[5] as f32);
-        let font_size = coeffs[0].hypot(coeffs[1]).max(1.0) as f32;
-        let rgba = match draw_mode {
-            GlyphDrawMode::Invisible => [0, 0, 0, 0],
-            _ => paint_rgba(paint),
-        };
+        let font_size = (coeffs[0].hypot(coeffs[1]) * 1000.0).max(1.0) as f32;
 
+        // Always index text (including invisible OCR text layers) for search and selection.
         if let Some(unicode) = glyph.as_unicode() {
             let text = match unicode {
                 BfString::Char(c) => c.to_string(),
@@ -207,12 +217,24 @@ impl<'a> Device<'a> for SceneDevice {
                     stream_op_index: self.op_counter,
                 });
             }
-            self.display_list.push(DisplayCmd::DrawGlyphRun {
-                text,
-                origin,
-                font_size,
-                rgba,
-            });
+        }
+
+        // Emit vector outlines / Type3 instructions for GPUI rendering unless invisible.
+        let path_mode = match draw_mode {
+            GlyphDrawMode::Fill => Some(PathDrawMode::Fill(HayroFillRule::NonZero)),
+            GlyphDrawMode::Stroke(props) => Some(PathDrawMode::Stroke(props.clone())),
+            GlyphDrawMode::Invisible => None,
+        };
+        if let Some(mode) = path_mode {
+            match glyph {
+                Glyph::Outline(outline_glyph) => {
+                    let outline = outline_glyph.outline();
+                    self.push_bezpath(&outline, combined, paint, &mode);
+                }
+                Glyph::Type3(t3) => {
+                    t3.interpret(self, transform, glyph_transform, paint);
+                }
+            }
         }
     }
 

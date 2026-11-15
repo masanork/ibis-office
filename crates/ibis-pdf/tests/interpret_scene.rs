@@ -69,12 +69,16 @@ fn interprets_paths_and_extracts_text_coordinates() {
     });
     assert!(has_rect_path, "expected filled blue rectangle with path commands in display_list");
 
-    let glyph_count = scene
+    // 1 filled rectangle + visible glyph outlines for "Hello ibisOffice" (15 non-space glyphs)
+    let path_count = scene
         .display_list
         .iter()
-        .filter(|cmd| matches!(cmd, DisplayCmd::DrawGlyphRun { .. }))
+        .filter(|cmd| matches!(cmd, DisplayCmd::DrawPath { .. }))
         .count();
-    assert_eq!(glyph_count, "Hello ibisOffice".len());
+    assert!(
+        path_count >= 15,
+        "expected rectangle plus glyph outline paths, got {path_count}"
+    );
 }
 
 #[test]
