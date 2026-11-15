@@ -43,6 +43,7 @@ pub mod shape_merge;
 pub mod sheet;
 pub mod machine_readability;
 pub mod machine_readability_one_data;
+pub mod machine_readability_layout;
 pub mod sheet_calc;
 pub mod sheet_command;
 pub mod sheet_ops;

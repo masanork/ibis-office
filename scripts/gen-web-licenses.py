@@ -218,7 +218,7 @@ def write(build):
     # Material Symbols: the chrome's icons (crates/ibis-office-shell/icons/material/),
     # embedded in the binary on both builds.
     bundled.append(("Material Symbols（Google）", "タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み）", "Apache-2.0"))
-    bundled.append(("Harunobu L1-07 and L1-08 rule logic", "機械可読性の確認候補", "MIT"))
+    bundled.append(("Harunobu rule and layout logic", "機械可読性の確認候補と表領域の処理", "MIT"))
     bundled.append(("gjs character classification", "私用文字の確認候補", "MIT"))
     material_readme = open(os.path.join(ROOT, "crates", "ibis-office-shell", "icons", "material", "README.md"), encoding="utf-8").read()
     material_source = next((l[2:] for l in material_readme.splitlines() if l.startswith("- 出典")), "")
