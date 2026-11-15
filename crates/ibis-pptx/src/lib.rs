@@ -254,6 +254,7 @@ pub enum Kind {
     Presentation,
     Workbook,
     Document,
+    Pdf,
 }
 
 impl Kind {
@@ -265,16 +266,19 @@ impl Kind {
             "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" => Some(Kind::Presentation),
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" => Some(Kind::Workbook),
             "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "jtd" | "jtt" | "jttc" | "md" | "markdown" => Some(Kind::Document),
+            "pdf" => Some(Kind::Pdf),
             _ => None,
         }
     }
 
     /// The extensions of the files that can be opened (what `from_extension` knows), for the file dialog.
-    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc", "md", "markdown"];
+    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc", "md", "markdown", "pdf"];
 
     /// The kind of document contained in `presentation`.
     pub fn of(presentation: &Presentation) -> Self {
-        if presentation.workbook.is_some() {
+        if presentation.pdf_bytes.is_some() {
+            Kind::Pdf
+        } else if presentation.workbook.is_some() {
             Kind::Workbook
         } else if presentation.flow.is_some() {
             Kind::Document
@@ -367,6 +371,7 @@ pub fn blank(kind: Kind) -> Presentation {
             presentation.flow = Some(document);
             presentation
         }
+        Kind::Pdf => Presentation::empty(EmuSize::new(595 * ibis_doc_model::EMU_PER_POINT, 842 * ibis_doc_model::EMU_PER_POINT)),
     }
 }
 

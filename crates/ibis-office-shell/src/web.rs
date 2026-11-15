@@ -173,6 +173,7 @@ pub fn new_query(kind: ibis_pptx::Kind) -> &'static str {
         ibis_pptx::Kind::Presentation => "?new=pptx",
         ibis_pptx::Kind::Workbook => "?new=xlsx",
         ibis_pptx::Kind::Document => "?new=docx",
+        ibis_pptx::Kind::Pdf => "?new=pdf",
     }
 }
 

@@ -1726,6 +1726,8 @@ pub struct Presentation {
     pub object_defaults: ObjectDefaults,
     /// フォトアルバムの設定 (`p:photoAlbum`)。
     pub photo_album: Option<PhotoAlbum>,
+    /// Raw PDF bytes when opened as a PDF document (`Kind::Pdf`).
+    pub pdf_bytes: Option<std::sync::Arc<[u8]>>,
     next_id: u64,
 }
 
@@ -1818,6 +1820,7 @@ impl Presentation {
             masters: _,
             flow: _,
             workbook: _,
+            pdf_bytes: _,
             // Not written: what the file says about its typefaces; where the file was read from; the media are the slides' (compared through them); the notes master's size and frames; a counter.
             media: _,
             typeface_traits: _,
@@ -2232,7 +2235,7 @@ impl Presentation {
     /// A presentation with no slides yet, for a reader to fill. It must end up
     /// with at least one slide.
     pub fn empty(slide_size: EmuSize) -> Self {
-        Self { slide_size, slides: Vec::new(), sections: Vec::new(), media: Vec::new(), fonts: Vec::new(), font_substitutions: std::collections::BTreeMap::new(), typeface_traits: std::collections::BTreeMap::new(), flow: None, workbook: None, notes_size: EmuSize::new(6_858_000, 9_144_000), notes_marks: NotesMarks::default(), notes_frames: Vec::new(), masters: Vec::new(), layouts: Vec::new(), theme_fonts: None, theme_colors: Vec::new(), theme_effects: None, first_slide_number: 1, header_footer: HeaderFooterMarks::default(), layout_scale: LayoutScale::default(), guides: Vec::new(), notes_pane: NotesPaneOpening::default(), notes_pane_save: None, show_properties: ShowProperties::default(), custom_shows: Vec::new(), mark_as_final: false, read_only_recommended: false, opened_from_legacy: false, ibis_extensions: false, cmyk: Default::default(), modify_verifier: None, properties: crate::flow::DocProperties::default(), object_defaults: ObjectDefaults::default(), photo_album: None, next_id: 1 }
+        Self { slide_size, slides: Vec::new(), sections: Vec::new(), media: Vec::new(), fonts: Vec::new(), font_substitutions: std::collections::BTreeMap::new(), typeface_traits: std::collections::BTreeMap::new(), flow: None, workbook: None, notes_size: EmuSize::new(6_858_000, 9_144_000), notes_marks: NotesMarks::default(), notes_frames: Vec::new(), masters: Vec::new(), layouts: Vec::new(), theme_fonts: None, theme_colors: Vec::new(), theme_effects: None, first_slide_number: 1, header_footer: HeaderFooterMarks::default(), layout_scale: LayoutScale::default(), guides: Vec::new(), notes_pane: NotesPaneOpening::default(), notes_pane_save: None, show_properties: ShowProperties::default(), custom_shows: Vec::new(), mark_as_final: false, read_only_recommended: false, opened_from_legacy: false, ibis_extensions: false, cmyk: Default::default(), modify_verifier: None, properties: crate::flow::DocProperties::default(), object_defaults: ObjectDefaults::default(), photo_album: None, pdf_bytes: None, next_id: 1 }
     }
 
     /// Look up a custom show by its numeric identifier.

@@ -8,5 +8,9 @@ publish.workspace = true
 
 [dependencies]
 ibis-pdf = { path = "../ibis-pdf", features = ["interpret"] }
+ibis-office-base.workspace = true
+ibis-office-shell.workspace = true
+ibis-doc-model.workspace = true
+ibis-pptx.workspace = true
 gpui-kit.workspace = true
 image = { version = "0.25", default-features = false }

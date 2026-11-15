@@ -102,7 +102,9 @@ pub use crate::impl_format_state;
 
 /// The state for `presentation`, just read: its kind is told by its content (worksheets, a flowing document, or slides).
 pub(crate) fn state_for_model(presentation: &Presentation, window: &mut Window, cx: &mut Context<SlideEditor>) -> Box<dyn FormatState> {
-    let kind = if presentation.flow.is_some() {
+    let kind = if presentation.pdf_bytes.is_some() {
+        Kind::Pdf
+    } else if presentation.flow.is_some() {
         Kind::Document
     } else if presentation.slides.iter().any(|slide| crate::editor::sheet_of(slide).is_some()) {
         Kind::Workbook

@@ -26,6 +26,7 @@ impl KindMask {
     pub const DOCX: KindMask = KindMask(1);
     pub const XLSX: KindMask = KindMask(2);
     pub const PPTX: KindMask = KindMask(4);
+    pub const PDF: KindMask = KindMask(8);
 
     pub(crate) const fn union(a: KindMask, b: KindMask) -> KindMask {
         KindMask(a.0 | b.0)

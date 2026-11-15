@@ -12,7 +12,9 @@ use ibis_pdf::scene::{PageInfo, PageScene, collect_pages};
 use ibis_pdf::signature::{SignatureRecord, inspect_signatures};
 use ibis_pdf::{PdfContainer, Result};
 
+pub mod editor;
 pub mod render;
+pub use editor::PdfDocument;
 
 /// Viewer state for an open PDF document (lazy page scene & GPU image cache).
 pub struct PdfViewerState {

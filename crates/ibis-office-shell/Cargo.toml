@@ -12,6 +12,7 @@ ibis-office-base.workspace = true
 ibis-office-render.workspace = true
 ibis-doc-model.workspace = true
 ibis-pptx.workspace = true
+ibis-pdf = { path = "../ibis-pdf" }
 ibis-emf.workspace = true
 gpui-kit.workspace = true
 log = "0.4"

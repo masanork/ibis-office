@@ -18,6 +18,7 @@ pub fn blank_file(kind: Kind) -> Result<Vec<u8>, Error> {
         Kind::Document => zip(&blank_docx_parts()),
         Kind::Workbook => crate::csv::workbook_from("", "Sheet1"),
         Kind::Presentation => crate::new_file::new_presentation(),
+        Kind::Pdf => Ok(b"%PDF-1.4\n%%EOF\n".to_vec()),
     }
 }
 

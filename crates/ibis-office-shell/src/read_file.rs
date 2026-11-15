@@ -54,6 +54,28 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
+    if path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")) || data.starts_with(b"%PDF-") {
+        let raw: std::sync::Arc<[u8]> = data.into();
+        let mut container = ibis_pdf::PdfContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
+        let pages = ibis_pdf::scene::collect_pages(&mut container).map_err(|e| e.to_string())?;
+        let first_size = pages
+            .first()
+            .map(|p| ibis_doc_model::EmuSize::new((p.crop_box.width() as i64) * ibis_doc_model::EMU_PER_POINT, (p.crop_box.height() as i64) * ibis_doc_model::EMU_PER_POINT))
+            .unwrap_or_else(|| ibis_doc_model::EmuSize::new(595 * ibis_doc_model::EMU_PER_POINT, 842 * ibis_doc_model::EMU_PER_POINT));
+        let mut presentation = ibis_doc_model::Presentation::empty(first_size);
+        for page in &pages {
+            let mut slide = ibis_doc_model::Slide::new(presentation.new_slide_id());
+            slide.size = Some(ibis_doc_model::EmuSize::new(
+                (page.crop_box.width() as i64) * ibis_doc_model::EMU_PER_POINT,
+                (page.crop_box.height() as i64) * ibis_doc_model::EMU_PER_POINT,
+            ));
+            presentation.slides.push(slide);
+        }
+        presentation.pdf_bytes = Some(raw);
+        let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
+        let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false });
+    }
     if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::jtd::is_extension) || ibis_pptx::jtd::is_jtd(&data) {
         let (presentation, jtd_gallery) = crate::jtd_preview::read(&data)?;
         let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;

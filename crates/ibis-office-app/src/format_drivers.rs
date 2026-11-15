@@ -13,5 +13,11 @@ use crate::{docx, pptx, xlsx};
 static PRESENTATION: Driver<pptx::Presentation> = Driver::new();
 static WORKBOOK: Driver<xlsx::Workbook> = Driver::new();
 static DOCUMENT: Driver<docx::Document> = Driver::new();
+static PDF: Driver<ibis_office_pdf::PdfDocument> = Driver::new();
 
-pub(crate) static DRIVERS: &[(Kind, &dyn FormatDriver)] = &[(Kind::Presentation, &PRESENTATION), (Kind::Workbook, &WORKBOOK), (Kind::Document, &DOCUMENT)];
+pub(crate) static DRIVERS: &[(Kind, &dyn FormatDriver)] = &[
+    (Kind::Presentation, &PRESENTATION),
+    (Kind::Workbook, &WORKBOOK),
+    (Kind::Document, &DOCUMENT),
+    (Kind::Pdf, &PDF),
+];

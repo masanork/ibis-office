@@ -3623,6 +3623,7 @@ dependencies = [
  "ibis-office-base",
  "ibis-office-docx",
  "ibis-office-macros",
+ "ibis-office-pdf",
  "ibis-office-pptx",
  "ibis-office-render",
  "ibis-office-shell",
@@ -3697,6 +3698,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ibis-office-pdf"
+version = "0.8.0"
+dependencies = [
+ "gpui-kit",
+ "ibis-doc-model",
+ "ibis-office-base",
+ "ibis-office-shell",
+ "ibis-pdf",
+ "ibis-pptx",
+ "image",
+]
+
+[[package]]
 name = "ibis-office-pptx"
 version = "0.8.0"
 dependencies = [
@@ -3763,6 +3777,7 @@ dependencies = [
  "ibis-office-base",
  "ibis-office-render",
  "ibis-office-updater",
+ "ibis-pdf",
  "ibis-pptx",
  "image",
  "js-sys",
