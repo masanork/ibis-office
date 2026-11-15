@@ -10,6 +10,10 @@ It accepts a DOCX, XLSX, or PPTX package up to 128 MiB. It reports the
 signature-value comparison against an embedded **untrusted** certificate, the
 package-object digest, and the manifest reference digest and content-type
 comparisons. Unknown algorithms and transformations are reported as unsupported.
+Additional SignedInfo references are listed by the CLI and counted in the
+desktop dialog; their targets and digests are not checked or fetched. The
+inspector rejects more than 256 additional references or an additional URI
+longer than 4096 bytes.
 
 **This is not signature validation.** Certificate path and trust, revocation,
 timestamps, additional SignedInfo references, complete document coverage, and
@@ -66,7 +70,9 @@ package-object digests, and all 8, 9, 31, and 16 manifest references,
 respectively, matched in those samples using SHA-1 and 1024-bit RSA. These weak
 legacy algorithms are reported separately as diagnostics and do not establish
 security, identity, certificate trust, complete coverage, or legal validity.
-These samples do not establish general Office interoperability. A temporary copy
+Each signature also declares an additional `#idOfficeObject` SignedInfo
+reference, whose digest is not checked. These samples do not establish general
+Office interoperability. A temporary copy
 of the DOCX with two independently computed SHA-256 relationship digests was
 used to check the 2006 Relationship Transform URI; that modified copy no longer
 has its original signature and is not evidence of Office interoperability.

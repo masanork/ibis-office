@@ -49,6 +49,8 @@ pub struct SignatureInspection {
     pub signature_part: String,
     pub signature_value: SignatureValueCheck,
     pub package_object: ObjectDigest,
+    /// Additional SignedInfo references are listed but never dereferenced or checked.
+    pub additional_signed_info_references: Vec<Option<String>>,
     pub manifest: Vec<ManifestReference>,
     /// Certificate path, revocation, timestamps, and complete reference coverage
     /// are not evaluated by this inspection.
@@ -317,16 +319,40 @@ pub fn inspect_signatures(package: &Package) -> Result<Vec<SignatureInspection>,
     let mut reports = Vec::new();
     for part in signature_parts(package)? {
         let binding = inspect_package_object_binding(package, &part)?;
-        if binding == PackageObjectBinding::Unsupported { return Err(Error::new("Unsupported package object binding")); }
+        let object_id = match binding {
+            PackageObjectBinding::Declared { object_id } => object_id,
+            PackageObjectBinding::Unsupported => return Err(Error::new("Unsupported package object binding")),
+        };
         reports.push(SignatureInspection {
             signature_value: inspect_signature_value(package, &part)?,
             package_object: inspect_package_object_digest(package, &part)?,
+            additional_signed_info_references: additional_signed_info_references(package, &part, &object_id)?,
             manifest: inspect_manifest_digests(package, &part)?,
             trust: TrustCheck::NotEvaluated,
             signature_part: part,
         });
     }
     Ok(reports)
+}
+
+/// List SignedInfo references other than the package object without resolving them.
+/// The package-object binding must already have been structurally checked.
+fn additional_signed_info_references(package: &Package, signature_part: &str, object_id: &str) -> Result<Vec<Option<String>>, Error> {
+    let doc = package.xml(signature_part)?;
+    let root = doc.root_element().ok_or_else(|| Error::new("Empty signature"))?;
+    let infos: Vec<_> = doc.elements(root).filter(|&n| doc.namespace(n) == Some(DS) && doc.local_name(n) == "SignedInfo").collect();
+    if infos.len() != 1 { return Err(Error::new("Expected one SignedInfo")); }
+    let package_uri = format!("#{object_id}");
+    let mut additional = Vec::new();
+    for node in doc.elements(infos[0]).filter(|&n| doc.namespace(n) == Some(DS) && doc.local_name(n) == "Reference") {
+        let uri = doc.attr(node, "URI");
+        if uri == Some(package_uri.as_str()) { continue; }
+        if additional.len() == 256 || uri.is_some_and(|u| u.len() > 4096) {
+            return Err(Error::new("Too many or oversized SignedInfo references"));
+        }
+        additional.push(uri.map(str::to_owned));
+    }
+    Ok(additional)
 }
 
 /// A structurally declared binding, not an authenticated signature.
@@ -803,6 +829,20 @@ mod tests {
         let xml = format!(r#"<Signature xmlns="{DS}" xmlns:p="{OPC_DS}"><Object><Manifest><Reference URI="/r.rels?ContentType=application/xml"><Transforms><Transform Algorithm="{REL_TRANSFORM}"><p:RelationshipReference SourceId="a"/></Transform><Transform Algorithm="{C14N}"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>YQ==</DigestValue></Reference></Manifest></Object></Signature>"#);
         pkg.set_bytes("sig.xml", xml.into_bytes());
         assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].digest, ManifestDigest::Unsupported);
+    }
+
+    #[test]
+    fn additional_signed_info_references_are_bounded_and_not_resolved() {
+        let mut pkg = package(&rels(""), None);
+        let xml = format!(r##"<Signature xmlns="{DS}"><SignedInfo><Reference URI="#package"/><Reference URI="#properties"/><Reference URI="https://example.invalid/external"/><Reference/><Reference URI=""/><x:Reference xmlns:x="urn:other" URI="#ignored"/></SignedInfo></Signature>"##);
+        pkg.set_bytes("sig.xml", xml.into_bytes());
+        assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap(), vec![Some("#properties".into()), Some("https://example.invalid/external".into()), None, Some("".into())]);
+        let many = format!(r#"<Signature xmlns="{DS}"><SignedInfo>{}</SignedInfo></Signature>"#, "<Reference/>".repeat(257));
+        pkg.set_bytes("sig.xml", many.into_bytes());
+        assert!(additional_signed_info_references(&pkg, "sig.xml", "package").is_err());
+        let oversized = format!(r#"<Signature xmlns="{DS}"><SignedInfo><Reference URI="{}"/></SignedInfo></Signature>"#, "a".repeat(4097));
+        pkg.set_bytes("sig.xml", oversized.into_bytes());
+        assert!(additional_signed_info_references(&pkg, "sig.xml", "package").is_err());
     }
 
     #[test]

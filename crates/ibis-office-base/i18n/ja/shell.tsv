@@ -1238,3 +1238,4 @@ file.signature-inspect.legacy-match	一致（弱い SHA-1）
 file.signature-inspect.legacy-differs	不一致（弱い SHA-1）
 file.signature-inspect.legacy-signature-match	一致（弱い RSA-SHA1、{bits} bit）
 file.signature-inspect.legacy-signature-differs	不一致（弱い RSA-SHA1、{bits} bit）
+file.signature-inspect.additional-refs	SignedInfo 内の追加参照は {count} 件あり、検査していません。

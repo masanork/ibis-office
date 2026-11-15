@@ -110,3 +110,25 @@ fn legacy_diagnostics_are_explicit_and_detect_altered_content() {
     assert!(text.contains("digest differs (weak legacy SHA-1); content type matches"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn reports_additional_signed_info_references_as_unchecked() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/synthetic-signed.docx");
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    let path = "_xmlsignatures/sig1.xml";
+    let xml = String::from_utf8(package.read(path).unwrap()).unwrap();
+    let modified = xml.replace("</ds:SignedInfo>", "<ds:Reference URI=\"#properties\"/><ds:Reference URI=\"https://example.invalid/external\"/><ds:Reference/></ds:SignedInfo>");
+    assert_ne!(xml, modified);
+    package.set_bytes(path, modified.into_bytes());
+    let temporary = std::env::temp_dir().join(format!("ibis-additional-references-{}.docx", std::process::id()));
+    std::fs::write(&temporary, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&temporary);
+    std::fs::remove_file(temporary).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Additional SignedInfo reference \"#properties\": NOT CHECKED"));
+    assert!(text.contains("Additional SignedInfo reference \"https://example.invalid/external\": NOT CHECKED"));
+    assert!(text.contains("Additional SignedInfo reference without URI: NOT CHECKED"));
+    assert!(text.contains("Signature value: does not match"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}
