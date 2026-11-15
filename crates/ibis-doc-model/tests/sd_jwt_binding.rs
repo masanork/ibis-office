@@ -307,3 +307,100 @@ fn issues_rfc9901_sd_jwt_with_nested_digests_and_selective_presentation() {
     assert!(updated_out.sd_jwt_presentation.contains(&gn_disclosure.encoded));
 }
 
+#[test]
+fn oid4vp_request_synchronizes_sheet_checkboxes_and_issues_kb_jwt() {
+    use ibis_doc_model::{
+        Es256KeyPair, Oid4vpRequest, SdJwtOptions, base64url_decode, base64url_encode,
+        issue_sheet_sd_jwt, sha256, verify_es256,
+    };
+
+    // 1. Parse OID4VP URI with URL-encoded DCQL query
+    let dcql_uri = "openid4vp://?client_id=https%3A%2F%2Fverifier.example.org%2Fcb&nonce=nonce-xyz-987&dcql_query=%7B%22credentials%22%3A%5B%7B%22id%22%3A%22pid%22%2C%22claims%22%3A%5B%7B%22path%22%3A%5B%22given_name%22%5D%7D%2C%7B%22path%22%3A%5B%22address%22%2C%22region%22%5D%7D%5D%7D%5D%7D";
+    let req = Oid4vpRequest::parse(dcql_uri).expect("parse OID4VP DCQL URI");
+    assert_eq!(req.client_id, "https://verifier.example.org/cb");
+    assert_eq!(req.nonce, "nonce-xyz-987");
+    assert_eq!(
+        req.requested_claims,
+        vec!["given_name".to_string(), "address.region".to_string()]
+    );
+
+    // 2. Also verify DIF Presentation Exchange JSON parsing
+    let pe_json = r#"{
+        "client_id": "https://pe-verifier.example.com",
+        "nonce": "pe-nonce-111",
+        "presentation_definition": {
+            "id": "vp_req",
+            "input_descriptors": [{
+                "id": "id_card",
+                "constraints": {
+                    "fields": [
+                        { "path": ["$.family_name", "$.address.country"] }
+                    ]
+                }
+            }]
+        }
+    }"#;
+    let pe_req = Oid4vpRequest::parse(pe_json).expect("parse OID4VP PE JSON");
+    assert_eq!(pe_req.client_id, "https://pe-verifier.example.com");
+    assert_eq!(pe_req.nonce, "pe-nonce-111");
+    assert_eq!(
+        pe_req.requested_claims,
+        vec!["family_name".to_string(), "address.country".to_string()]
+    );
+
+    // 3. Synchronize worksheet checkboxes from `req` and issue SD-JWT + Key Binding JWT (`kb+jwt`)
+    let (pres, slide_id, chk_id) = sample_presentation();
+    let initial_bindings = extract_sheet_claims(&pres, slide_id).unwrap();
+    let req_refs: Vec<&str> = req.requested_claims.iter().map(String::as_str).collect();
+    let cmds = initial_bindings.set_disclose_commands(&pres, &req_refs, true);
+    let mut doc = Document::new(pres);
+    doc.execute(cmds).unwrap();
+
+    // `disclose.given_name` checkbox on the sheet was turned ON automatically
+    let ShapeKind::Control(c) = &doc.presentation().slide(slide_id).unwrap().shape(chk_id).unwrap().kind else {
+        panic!("expected CheckBox control");
+    };
+    assert_eq!(c.checked, 1);
+
+    let issuer_key = Es256KeyPair::demo_issuer_key();
+    let holder_key = Es256KeyPair::demo_holder_key();
+    let mut opts = SdJwtOptions::default();
+    opts.holder_public_jwk = Some(holder_key.to_public_jwk());
+
+    let (_bindings, sd_jwt_out) =
+        issue_sheet_sd_jwt(doc.presentation(), slide_id, &opts, &issuer_key).unwrap();
+    let kb_out = sd_jwt_out.attach_key_binding(
+        &req.client_id,
+        &req.nonce,
+        1_700_000_123,
+        &holder_key,
+    );
+
+    // Verify `sd_hash` matches SHA-256 of `sd_jwt_presentation`
+    let expected_sd_hash = base64url_encode(&sha256(sd_jwt_out.sd_jwt_presentation.as_bytes()));
+    assert_eq!(kb_out.sd_hash, expected_sd_hash);
+    assert_eq!(
+        kb_out.vp_token,
+        format!("{}{}", sd_jwt_out.sd_jwt_presentation, kb_out.kb_jwt)
+    );
+
+    // Verify Holder ES256 signature on `kb_jwt` and its header/payload contents
+    let kb_parts: Vec<&str> = kb_out.kb_jwt.split('.').collect();
+    assert_eq!(kb_parts.len(), 3);
+    let kb_header = String::from_utf8(base64url_decode(kb_parts[0]).unwrap()).unwrap();
+    assert!(kb_header.contains("\"typ\":\"kb+jwt\""));
+    let kb_payload = String::from_utf8(base64url_decode(kb_parts[1]).unwrap()).unwrap();
+    assert!(kb_payload.contains("\"aud\":\"https://verifier.example.org/cb\""));
+    assert!(kb_payload.contains("\"nonce\":\"nonce-xyz-987\""));
+    assert!(kb_payload.contains(&format!("\"sd_hash\":\"{}\"", expected_sd_hash)));
+
+    let kb_signing_input = format!("{}.{}", kb_parts[0], kb_parts[1]);
+    let kb_sig: [u8; 64] = base64url_decode(kb_parts[2]).unwrap().try_into().unwrap();
+    assert!(verify_es256(
+        &holder_key.x,
+        &holder_key.y,
+        kb_signing_input.as_bytes(),
+        &kb_sig
+    ));
+}
+

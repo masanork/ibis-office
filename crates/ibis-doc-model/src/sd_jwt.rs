@@ -1054,3 +1054,320 @@ pub fn issue_sheet_sd_jwt(
     let output = issue_sd_jwt(&bindings, options, issuer_key);
     Some((bindings, output))
 }
+
+// ---------------------------------------------------------------------------
+// Step 4: OID4VP Authorization Request Parser & Key Binding JWT (kb+jwt)
+// ---------------------------------------------------------------------------
+
+/// Parsed OpenID for Verifiable Presentations (OID4VP) Authorization Request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Oid4vpRequest {
+    /// Verifier identifier (`client_id`), used as `aud` in the Key Binding JWT.
+    pub client_id: String,
+    /// Verifier challenge (`nonce`), used as `nonce` in the Key Binding JWT.
+    pub nonce: String,
+    /// Optional `response_uri` or `redirect_uri`.
+    pub response_uri: Option<String>,
+    /// Canonical dot-separated claim paths requested via DCQL (`dcql_query`) or Presentation Exchange (`presentation_definition`).
+    pub requested_claims: Vec<String>,
+}
+
+/// Output of RFC 9901 §4.3 Key Binding JWT (`kb+jwt`) generation for OID4VP presentation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyBindingJwtOutput {
+    /// Base64url(SHA-256(ASCII(`<Issuer-JWT>~<D_1>~...~<D_m>~`))).
+    pub sd_hash: String,
+    /// Compact JWS with `typ: "kb+jwt"`.
+    pub kb_jwt: String,
+    /// Complete SD-JWT+KB token (`<Issuer-JWT>~<D_1>~...~<D_m>~<KB-JWT>`) suitable as OID4VP `vp_token`.
+    pub vp_token: String,
+}
+
+impl SdJwtOutput {
+    /// Signs and attaches a Key Binding JWT (`kb+jwt`) to `self.sd_jwt_presentation`.
+    pub fn attach_key_binding(
+        &self,
+        aud: &str,
+        nonce: &str,
+        iat: i64,
+        holder_key: &Es256KeyPair,
+    ) -> KeyBindingJwtOutput {
+        issue_kb_jwt(&self.sd_jwt_presentation, aud, nonce, iat, holder_key)
+    }
+}
+
+/// Issues an RFC 9901 §4.3 Key Binding JWT (`kb+jwt`) over `sd_jwt_presentation`
+/// (`<Issuer-JWT>~<D_1>~...~<D_m>~`) and returns the combined `vp_token`.
+pub fn issue_kb_jwt(
+    sd_jwt_presentation: &str,
+    aud: &str,
+    nonce: &str,
+    iat: i64,
+    holder_key: &Es256KeyPair,
+) -> KeyBindingJwtOutput {
+    let normalized = if sd_jwt_presentation.ends_with('~') {
+        sd_jwt_presentation.to_string()
+    } else {
+        format!("{sd_jwt_presentation}~")
+    };
+    let sd_hash = base64url_encode(&sha256(normalized.as_bytes()));
+
+    let mut header_map = BTreeMap::new();
+    header_map.insert("alg".into(), ClaimValue::String("ES256".into()));
+    header_map.insert("typ".into(), ClaimValue::String("kb+jwt".into()));
+    let header_json = ClaimValue::Object(header_map).to_json();
+
+    let mut payload_map = BTreeMap::new();
+    payload_map.insert("aud".into(), ClaimValue::String(aud.to_string()));
+    payload_map.insert("iat".into(), ClaimValue::Int(iat));
+    payload_map.insert("nonce".into(), ClaimValue::String(nonce.to_string()));
+    payload_map.insert("sd_hash".into(), ClaimValue::String(sd_hash.clone()));
+    let payload_json = ClaimValue::Object(payload_map).to_json();
+
+    let kb_jwt = holder_key.sign_jws(&header_json, &payload_json);
+    let vp_token = format!("{normalized}{kb_jwt}");
+
+    KeyBindingJwtOutput {
+        sd_hash,
+        kb_jwt,
+        vp_token,
+    }
+}
+
+impl Oid4vpRequest {
+    /// Parses an OID4VP Authorization Request from either:
+    /// - an `openid4vp://?...` or `https://...?...` URL query string, or
+    /// - a JSON object string containing `client_id`, `nonce`, and `dcql_query` / `presentation_definition`.
+    pub fn parse(input: &str) -> Option<Self> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.starts_with('{') {
+            return Self::parse_json(trimmed);
+        }
+        let query = if let Some((_, q)) = trimmed.split_once('?') {
+            q
+        } else if trimmed.contains('=') {
+            trimmed
+        } else {
+            return None;
+        };
+
+        let mut client_id = None;
+        let mut nonce = None;
+        let mut response_uri = None;
+        let mut requested_claims = Vec::new();
+
+        for pair in query.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let (raw_k, raw_v) = pair.split_once('=').unwrap_or((pair, ""));
+            let k = percent_decode(raw_k);
+            let v = percent_decode(raw_v);
+            match k.as_str() {
+                "client_id" => client_id = Some(v),
+                "nonce" => nonce = Some(v),
+                "response_uri" | "redirect_uri" => {
+                    if !v.is_empty() {
+                        response_uri = Some(v);
+                    }
+                }
+                "dcql_query" | "presentation_definition" => {
+                    for path in extract_requested_claim_paths_from_json(&v) {
+                        if !requested_claims.contains(&path) {
+                            requested_claims.push(path);
+                        }
+                    }
+                }
+                "claims" | "scope" => {
+                    for item in v.split(|c: char| c == ',' || c.is_ascii_whitespace()) {
+                        let norm = normalize_claim_path(item);
+                        if !norm.is_empty()
+                            && norm != "openid"
+                            && !requested_claims.contains(&norm)
+                        {
+                            requested_claims.push(norm);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if client_id.is_none() && nonce.is_none() && requested_claims.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            client_id: client_id.unwrap_or_else(|| "https://verifier.example.com".to_string()),
+            nonce: nonce.unwrap_or_else(|| "n-0S6_WzA2Mj".to_string()),
+            response_uri,
+            requested_claims,
+        })
+    }
+
+    fn parse_json(json: &str) -> Option<Self> {
+        let client_id = extract_json_string_field(json, "client_id")
+            .unwrap_or_else(|| "https://verifier.example.com".to_string());
+        let nonce = extract_json_string_field(json, "nonce")
+            .unwrap_or_else(|| "n-0S6_WzA2Mj".to_string());
+        let response_uri = extract_json_string_field(json, "response_uri")
+            .or_else(|| extract_json_string_field(json, "redirect_uri"));
+        let requested_claims = extract_requested_claim_paths_from_json(json);
+
+        if extract_json_string_field(json, "client_id").is_none()
+            && extract_json_string_field(json, "nonce").is_none()
+            && requested_claims.is_empty()
+        {
+            return None;
+        }
+
+        Some(Self {
+            client_id,
+            nonce,
+            response_uri,
+            requested_claims,
+        })
+    }
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+            out.push(bytes[i]);
+            i += 1;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Extracts canonical dot-separated claim paths from DCQL (`"path": ["address", "region"]`)
+/// and DIF Presentation Exchange (`"path": ["$.address.region"]`) JSON structures.
+fn extract_requested_claim_paths_from_json(json: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let pattern = "\"path\"";
+    let mut search_from = 0;
+    while let Some(pos) = json[search_from..].find(pattern) {
+        let after_key = search_from + pos + pattern.len();
+        let rest = json[after_key..].trim_start();
+        if let Some(after_colon) = rest.strip_prefix(':') {
+            let val_rest = after_colon.trim_start();
+            if let Some(inside_arr) = val_rest.strip_prefix('[')
+                && let Some((strings, consumed)) = parse_json_string_array_prefix(inside_arr)
+            {
+                if strings.iter().any(|s| s.starts_with('$')) {
+                    // DIF Presentation Exchange JSONPath array: e.g. ["$.address.region", "$.given_name"]
+                    for jp in strings {
+                        let norm = normalize_claim_path(&jp);
+                        if !norm.is_empty() && !results.contains(&norm) {
+                            results.push(norm);
+                        }
+                    }
+                } else if !strings.is_empty() {
+                    // DCQL claim path array: e.g. ["address", "region"] -> "address.region"
+                    let joined: Vec<String> = strings
+                        .into_iter()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !joined.is_empty() {
+                        let path_str = joined.join(".");
+                        if !results.contains(&path_str) {
+                            results.push(path_str);
+                        }
+                    }
+                }
+                search_from = after_key + (json[after_key..].len() - inside_arr.len()) + consumed;
+                continue;
+            }
+        }
+        search_from = after_key;
+    }
+    results
+}
+
+fn parse_json_string_array_prefix(s: &str) -> Option<(Vec<String>, usize)> {
+    let mut items = Vec::new();
+    let mut chars = s.char_indices().peekable();
+    while let Some(&(idx, ch)) = chars.peek() {
+        if ch.is_ascii_whitespace() || ch == ',' {
+            chars.next();
+            continue;
+        }
+        if ch == ']' {
+            chars.next();
+            return Some((items, idx + 1));
+        }
+        if ch == '"' {
+            chars.next();
+            let mut val = String::new();
+            let mut closed = false;
+            while let Some((_, c)) = chars.next() {
+                if c == '"' {
+                    closed = true;
+                    break;
+                } else if c == '\\' {
+                    if let Some((_, esc)) = chars.next() {
+                        val.push(esc);
+                    }
+                } else {
+                    val.push(c);
+                }
+            }
+            if !closed {
+                return None;
+            }
+            items.push(val);
+            continue;
+        }
+        // Non-string element (e.g. null/int index in array path); skip token until ',' or ']'
+        while let Some(&(_, c)) = chars.peek() {
+            if c == ',' || c == ']' {
+                break;
+            }
+            chars.next();
+        }
+    }
+    None
+}
+
+fn normalize_claim_path(raw: &str) -> String {
+    let mut s = raw.trim().to_string();
+    if let Some(rest) = s.strip_prefix("$.") {
+        s = rest.to_string();
+    } else if let Some(rest) = s.strip_prefix('$') {
+        s = rest.to_string();
+    }
+    // Convert bracket notation `$['address']['region']` -> `address.region`
+    s = s.replace("']['", ".").replace("[\"", ".").replace("\"]", "").replace("['", ".").replace("']", "");
+    s.split('.')
+        .map(str::trim)
+        .filter(|seg| !seg.is_empty())
+        .collect::<Vec<_>>()
+        .join(".")
+}

@@ -2919,3 +2919,8 @@ xlsx.sd-jwt.copy-all	全開示 SD-JWT をコピー
 xlsx.sd-jwt.copy-payload	ペイロード JSON をコピー
 xlsx.sd-jwt.copied	クリップボードにコピーしました
 xlsx.sd-jwt.invalid-jwk	有効な P-256 JWK JSON を入力してください（省略可）。
+xlsx.sd-jwt.oid4vp-request	OID4VP 認可リクエスト（openid4vp:// URI または JSON）
+xlsx.sd-jwt.apply-oid4vp	OID4VP リクエストをシートに反映
+xlsx.sd-jwt.copy-vp-token	OID4VP vp_token (KB-JWT 付) をコピー
+xlsx.sd-jwt.oid4vp-applied	OID4VP リクエストを反映しました（aud: {aud}, 開示指定: {count} 件）
+xlsx.sd-jwt.invalid-oid4vp	有効な OID4VP リクエスト（openid4vp://?... または JSON）を入力してください。

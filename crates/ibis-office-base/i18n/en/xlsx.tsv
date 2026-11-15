@@ -2922,3 +2922,8 @@ xlsx.sd-jwt.copy-all	Copy Full SD-JWT
 xlsx.sd-jwt.copy-payload	Copy Payload JSON
 xlsx.sd-jwt.copied	Copied to clipboard
 xlsx.sd-jwt.invalid-jwk	Enter a valid P-256 JWK JSON (or leave blank).
+xlsx.sd-jwt.oid4vp-request	OID4VP Authorization Request (openid4vp:// URI or JSON)
+xlsx.sd-jwt.apply-oid4vp	Apply OID4VP Request to Sheet
+xlsx.sd-jwt.copy-vp-token	Copy OID4VP vp_token (with KB-JWT)
+xlsx.sd-jwt.oid4vp-applied	Applied OID4VP request (aud: {aud}, requested claims: {count})
+xlsx.sd-jwt.invalid-oid4vp	Enter a valid OID4VP request (openid4vp://?... or JSON).

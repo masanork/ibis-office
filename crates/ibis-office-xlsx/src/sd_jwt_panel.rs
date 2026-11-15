@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! 開発 / データ > SD-JWT の生成とプレビュー パネル.
+//! 開発 / データ > SD-JWT の生成とプレビュー・OID4VP 提示パネル.
 //! シート上のフォーム コントロールおよび定義された名前 (`claim.*`, `sd.*`, `disclose.*`) から
-//! RFC 9901 SD-JWT を生成し、選択的開示状態の確認とクリップボードへのコピーを行う。
+//! RFC 9901 SD-JWT および OID4VP `vp_token` (Key Binding JWT `kb+jwt` 付) を生成し、
+//! OID4VP Authorization Request によるシート上 `disclose.*` チェックボックスの自動同期を行う。
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -14,23 +15,25 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use ibis_doc_model::{
-    BoundClaim, Es256KeyPair, SdJwtOptions, SdJwtOutput, SheetClaimBindings, extract_sheet_claims,
-    issue_sd_jwt,
+    BoundClaim, Es256KeyPair, KeyBindingJwtOutput, Oid4vpRequest, SdJwtOptions, SdJwtOutput,
+    SheetClaimBindings, extract_sheet_claims, issue_sd_jwt,
 };
 
 use crate::ext::*;
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
-use crate::shell::i18n::text;
+use crate::shell::i18n::{format as tr_format, text};
 use crate::shell::palette::rgb;
 
 pub(crate) struct SdJwtPanel {
     pub(crate) iss: Entity<InputState>,
     pub(crate) vct: Entity<InputState>,
     pub(crate) issuer_jwk: Entity<InputState>,
+    pub(crate) oid4vp_request: Entity<InputState>,
     pub(crate) include_cnf: bool,
     pub(crate) bindings: SheetClaimBindings,
     pub(crate) output: Option<SdJwtOutput>,
+    pub(crate) kb_output: Option<KeyBindingJwtOutput>,
     pub(crate) message: String,
     pub(crate) is_error: bool,
     pub(crate) ui: Rc<RefCell<BTreeMap<String, Bounds<Pixels>>>>,
@@ -68,6 +71,7 @@ impl SlideEditor {
             s
         });
         let issuer_jwk = cx.new(|cx| InputState::new(window, cx));
+        let oid4vp_request = cx.new(|cx| InputState::new(window, cx));
         let slide = self.current_slide;
         let bindings = extract_sheet_claims(self.presentation(), slide).unwrap_or(
             SheetClaimBindings {
@@ -76,21 +80,26 @@ impl SlideEditor {
                 disclosures: BTreeMap::new(),
             },
         );
+        let holder_key = Es256KeyPair::demo_holder_key();
         let mut options = SdJwtOptions::default();
-        options.holder_public_jwk = Some(Es256KeyPair::demo_holder_key().to_public_jwk());
-        let output = Some(issue_sd_jwt(
-            &bindings,
-            &options,
-            &Es256KeyPair::demo_issuer_key(),
-        ));
+        options.holder_public_jwk = Some(holder_key.to_public_jwk());
+        let sd_out = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
+        let kb_out = sd_out.attach_key_binding(
+            "https://verifier.example.com",
+            "n-0S6_WzA2Mj",
+            1_700_000_000,
+            &holder_key,
+        );
 
         let panel = SdJwtPanel {
             iss,
             vct,
             issuer_jwk,
+            oid4vp_request,
             include_cnf: true,
             bindings,
-            output,
+            output: Some(sd_out),
+            kb_output: Some(kb_out),
             message: String::new(),
             is_error: false,
             ui: Default::default(),
@@ -109,6 +118,7 @@ impl SlideEditor {
         let iss_val = p.iss.read(cx).value().trim().to_string();
         let vct_val = p.vct.read(cx).value().trim().to_string();
         let jwk_val = p.issuer_jwk.read(cx).value().trim().to_string();
+        let oid4vp_val = p.oid4vp_request.read(cx).value().trim().to_string();
         let include_cnf = p.include_cnf;
 
         let key = if jwk_val.is_empty() {
@@ -127,6 +137,15 @@ impl SlideEditor {
             }
         };
 
+        let parsed_req = Oid4vpRequest::parse(&oid4vp_val);
+        let (aud, nonce) = match &parsed_req {
+            Some(r) => (r.client_id.clone(), r.nonce.clone()),
+            None => (
+                "https://verifier.example.com".to_string(),
+                "n-0S6_WzA2Mj".to_string(),
+            ),
+        };
+
         let slide = self.current_slide;
         let bindings = extract_sheet_claims(self.presentation(), slide).unwrap_or(
             SheetClaimBindings {
@@ -135,6 +154,7 @@ impl SlideEditor {
                 disclosures: BTreeMap::new(),
             },
         );
+        let holder_key = Es256KeyPair::demo_holder_key();
         let mut options = SdJwtOptions::default();
         options.default_iss = if iss_val.is_empty() {
             None
@@ -147,15 +167,55 @@ impl SlideEditor {
             Some(vct_val)
         };
         options.holder_public_jwk = if include_cnf {
-            Some(Es256KeyPair::demo_holder_key().to_public_jwk())
+            Some(holder_key.to_public_jwk())
         } else {
             None
         };
         let output = issue_sd_jwt(&bindings, &options, &key);
+        let kb_output = output.attach_key_binding(&aud, &nonce, 1_700_000_000, &holder_key);
         if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
             panel.bindings = bindings;
             panel.output = Some(output);
+            panel.kb_output = Some(kb_output);
             panel.message.clear();
+            panel.is_error = false;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn apply_oid4vp_request(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.sheet_state().and_then(|s| s.panels.sd_jwt.as_ref()) else {
+            return;
+        };
+        let raw_req = p.oid4vp_request.read(cx).value().trim().to_string();
+        let Some(req) = Oid4vpRequest::parse(&raw_req) else {
+            if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                panel.message = text("xlsx.sd-jwt.invalid-oid4vp").to_string();
+                panel.is_error = true;
+            }
+            cx.notify();
+            return;
+        };
+
+        let slide = self.current_slide;
+        if let Some(bindings) = extract_sheet_claims(self.presentation(), slide)
+            && !req.requested_claims.is_empty()
+        {
+            let req_refs: Vec<&str> = req.requested_claims.iter().map(String::as_str).collect();
+            let cmds = bindings.set_disclose_commands(self.presentation(), &req_refs, true);
+            if !cmds.is_empty() {
+                self.run_sheet(cmds, cx);
+            }
+        }
+
+        self.regenerate_sd_jwt(cx);
+        let count_str = req.requested_claims.len().to_string();
+        let applied_msg = tr_format(
+            "xlsx.sd-jwt.oid4vp-applied",
+            &[("aud", &req.client_id), ("count", &count_str)],
+        );
+        if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+            panel.message = applied_msg;
             panel.is_error = false;
         }
         cx.notify();
@@ -184,6 +244,11 @@ impl SlideEditor {
             .output
             .as_ref()
             .map(|o| o.payload_json.clone())
+            .unwrap_or_default();
+        let vp_token = p
+            .kb_output
+            .as_ref()
+            .map(|k| k.vp_token.clone())
             .unwrap_or_default();
         let message = p.message.clone();
         let is_error = p.is_error;
@@ -250,6 +315,19 @@ impl SlideEditor {
                     if include_cnf { btn.primary() } else { btn }.into_any_element()
                 },
             ))
+            .child(div().text_sm().child(text("xlsx.sd-jwt.oid4vp-request")))
+            .child(mark(
+                "oid4vp_request",
+                crate::shell::chrome::text_field(&p.oid4vp_request)
+                    .full_width()
+                    .into_any_element(),
+            ))
+            .child(
+                crate::shell::chrome::action_button("sd-jwt-apply-oid4vp")
+                    .small()
+                    .label(text("xlsx.sd-jwt.apply-oid4vp"))
+                    .on_click(cx.listener(|this, _, _, cx| this.apply_oid4vp_request(cx))),
+            )
             .child(div().text_sm().child(text("xlsx.sd-jwt.claims-summary")));
 
         if claims.is_empty() {
@@ -284,6 +362,7 @@ impl SlideEditor {
         let pres_copy = presentation_token.clone();
         let full_copy = full_token.clone();
         let payload_copy = payload_json.clone();
+        let vp_copy = vp_token.clone();
         body = body.child(
             h_flex()
                 .gap_2()
@@ -300,6 +379,26 @@ impl SlideEditor {
                                 .and_then(|p| p.output.as_ref())
                                 .map(|o| o.sd_jwt_presentation.clone())
                                 .unwrap_or_else(|| pres_copy.clone());
+                            cx.write_to_clipboard(ClipboardItem::new_string(token));
+                            if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                panel.message = text("xlsx.sd-jwt.copied").to_string();
+                                panel.is_error = false;
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    crate::shell::chrome::action_button("sd-jwt-copy-vp-token")
+                        .small()
+                        .label(text("xlsx.sd-jwt.copy-vp-token"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.regenerate_sd_jwt(cx);
+                            let token = this
+                                .sheet_state()
+                                .and_then(|s| s.panels.sd_jwt.as_ref())
+                                .and_then(|p| p.kb_output.as_ref())
+                                .map(|k| k.vp_token.clone())
+                                .unwrap_or_else(|| vp_copy.clone());
                             cx.write_to_clipboard(ClipboardItem::new_string(token));
                             if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
                                 panel.message = text("xlsx.sd-jwt.copied").to_string();
@@ -407,6 +506,11 @@ mod tests {
                 "xlsx.sd-jwt.copy-payload",
                 "xlsx.sd-jwt.copied",
                 "xlsx.sd-jwt.invalid-jwk",
+                "xlsx.sd-jwt.oid4vp-request",
+                "xlsx.sd-jwt.apply-oid4vp",
+                "xlsx.sd-jwt.copy-vp-token",
+                "xlsx.sd-jwt.oid4vp-applied",
+                "xlsx.sd-jwt.invalid-oid4vp",
             ] {
                 assert!(
                     table.lines().any(|l| l.split('\t').next() == Some(id)),
