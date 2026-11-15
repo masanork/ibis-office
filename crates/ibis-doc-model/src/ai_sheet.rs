@@ -10,8 +10,11 @@
 use crate::command::Command;
 use crate::drawing::Rgb;
 use crate::model::SlideId;
-use crate::sheet::{CellRange, CellValue, Sheet, Workbook, cell_name};
-use crate::sheet_command::{CellEdit, CellInput, SheetCommand, StyleChange};
+use crate::sheet::{
+    Border, BorderLine, CellAlign, CellRange, CellValue, CellVerticalAlign, Sheet, Workbook,
+    cell_name,
+};
+use crate::sheet_command::{Axis, CellEdit, CellInput, Edge, SheetCommand, StyleChange};
 
 /// Summary of one sheet in a workbook.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,8 +61,17 @@ pub struct AiCellEdit {
     pub value: AiCellValue,
 }
 
+/// Border preset requested by `set_format`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiBorderStyle {
+    All,
+    Outline,
+    Bottom,
+    None,
+}
+
 /// Formatting options requested by `set_format`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AiCellFormat {
     pub bold: Option<bool>,
     pub italic: Option<bool>,
@@ -67,6 +79,11 @@ pub struct AiCellFormat {
     pub text_color: Option<String>,
     pub fill_color: Option<Option<String>>,
     pub number_format: Option<String>,
+    pub align: Option<CellAlign>,
+    pub vertical_align: Option<CellVerticalAlign>,
+    pub wrap_text: Option<bool>,
+    pub font_size_pt: Option<f32>,
+    pub border: Option<AiBorderStyle>,
 }
 
 /// Parse an A1-style cell reference (e.g., `"A1"`, `"$B$12"`) into `(row, column)` (0-based).
@@ -286,8 +303,20 @@ pub fn build_set_format_command(
     if let Some(fmt) = format.number_format {
         changes.push(StyleChange::NumberFormat(fmt));
     }
-    if changes.is_empty() {
-        return Err("at least one format property must be specified".to_string());
+    if let Some(align) = format.align {
+        changes.push(StyleChange::Align(align));
+    }
+    if let Some(vertical) = format.vertical_align {
+        changes.push(StyleChange::Vertical(vertical));
+    }
+    if let Some(wrap) = format.wrap_text {
+        changes.push(StyleChange::Wrap(wrap));
+    }
+    if let Some(pt) = format.font_size_pt {
+        if !pt.is_finite() || pt <= 0.0 || pt > 409.0 {
+            return Err(format!("invalid font_size '{pt}' (expected 1..=409 pt)"));
+        }
+        changes.push(StyleChange::FontSize((pt * 100.0).round() as u32));
     }
     let mut cmds: Vec<Command> = changes
         .into_iter()
@@ -299,6 +328,101 @@ pub fn build_set_format_command(
             })
         })
         .collect();
+    if let Some(border_style) = format.border {
+        let thin = Some(Border {
+            line: BorderLine::Thin,
+            color: Rgb(0),
+        });
+        match border_style {
+            AiBorderStyle::All => {
+                for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+                    cmds.push(Command::Sheet(SheetCommand::SetFormat {
+                        slide,
+                        ranges: ranges.clone(),
+                        change: StyleChange::Border(edge, thin),
+                    }));
+                }
+            }
+            AiBorderStyle::None => {
+                for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+                    cmds.push(Command::Sheet(SheetCommand::SetFormat {
+                        slide,
+                        ranges: ranges.clone(),
+                        change: StyleChange::Border(edge, None),
+                    }));
+                }
+            }
+            AiBorderStyle::Bottom => {
+                let bottom_ranges: Vec<CellRange> = ranges
+                    .iter()
+                    .map(|r| CellRange {
+                        first_row: r.last_row,
+                        first_column: r.first_column,
+                        last_row: r.last_row,
+                        last_column: r.last_column,
+                    })
+                    .collect();
+                cmds.push(Command::Sheet(SheetCommand::SetFormat {
+                    slide,
+                    ranges: bottom_ranges,
+                    change: StyleChange::Border(Edge::Bottom, thin),
+                }));
+            }
+            AiBorderStyle::Outline => {
+                let top_ranges: Vec<CellRange> = ranges
+                    .iter()
+                    .map(|r| CellRange {
+                        first_row: r.first_row,
+                        first_column: r.first_column,
+                        last_row: r.first_row,
+                        last_column: r.last_column,
+                    })
+                    .collect();
+                let bottom_ranges: Vec<CellRange> = ranges
+                    .iter()
+                    .map(|r| CellRange {
+                        first_row: r.last_row,
+                        first_column: r.first_column,
+                        last_row: r.last_row,
+                        last_column: r.last_column,
+                    })
+                    .collect();
+                let left_ranges: Vec<CellRange> = ranges
+                    .iter()
+                    .map(|r| CellRange {
+                        first_row: r.first_row,
+                        first_column: r.first_column,
+                        last_row: r.last_row,
+                        last_column: r.first_column,
+                    })
+                    .collect();
+                let right_ranges: Vec<CellRange> = ranges
+                    .iter()
+                    .map(|r| CellRange {
+                        first_row: r.first_row,
+                        first_column: r.last_column,
+                        last_row: r.last_row,
+                        last_column: r.last_column,
+                    })
+                    .collect();
+                for (edge, edge_ranges) in [
+                    (Edge::Top, top_ranges),
+                    (Edge::Bottom, bottom_ranges),
+                    (Edge::Left, left_ranges),
+                    (Edge::Right, right_ranges),
+                ] {
+                    cmds.push(Command::Sheet(SheetCommand::SetFormat {
+                        slide,
+                        ranges: edge_ranges,
+                        change: StyleChange::Border(edge, thin),
+                    }));
+                }
+            }
+        }
+    }
+    if cmds.is_empty() {
+        return Err("at least one format property must be specified".to_string());
+    }
     if cmds.len() == 1 {
         Ok(cmds.pop().expect("single command"))
     } else {
@@ -353,6 +477,77 @@ pub fn build_clear_cells_command(
         Ok(cmds.pop().expect("single command"))
     } else {
         Ok(Command::Group(cmds))
+    }
+}
+
+/// Resolve an optional sheet name to its [`SlideId`], defaulting to `active_slide`.
+pub fn resolve_sheet_slide(
+    workbook: &Workbook,
+    name: Option<&str>,
+    active_slide: SlideId,
+) -> Result<SlideId, String> {
+    let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(active_slide);
+    };
+    workbook
+        .sheets
+        .iter()
+        .find(|s| s.name == name)
+        .and_then(|s| s.slide)
+        .ok_or_else(|| format!("sheet '{name}' not found"))
+}
+
+/// Build a [`Command`] to insert `count` rows or columns at 0-based index `at`.
+pub fn build_insert_axis_command(
+    slide: SlideId,
+    axis: Axis,
+    at: u32,
+    count: u32,
+) -> Result<Command, String> {
+    if count == 0 || count > 1000 {
+        return Err(format!("count must be between 1 and 1000 (got {count})"));
+    }
+    Ok(Command::Sheet(SheetCommand::Insert {
+        slide,
+        axis,
+        at,
+        count,
+    }))
+}
+
+/// Build a [`Command`] to delete `count` rows or columns starting at 0-based index `at`.
+pub fn build_delete_axis_command(
+    slide: SlideId,
+    axis: Axis,
+    at: u32,
+    count: u32,
+) -> Result<Command, String> {
+    if count == 0 || count > 1000 {
+        return Err(format!("count must be between 1 and 1000 (got {count})"));
+    }
+    Ok(Command::Sheet(SheetCommand::Delete {
+        slide,
+        axis,
+        at,
+        count,
+    }))
+}
+
+/// Build a [`Command`] to merge or unmerge `range`.
+pub fn build_merge_command(
+    slide: SlideId,
+    range: CellRange,
+    merge: bool,
+    center: bool,
+) -> Command {
+    if merge {
+        Command::Sheet(SheetCommand::Merge {
+            slide,
+            range,
+            center,
+        })
+    } else {
+        Command::Sheet(SheetCommand::Unmerge { slide, range })
     }
 }
 

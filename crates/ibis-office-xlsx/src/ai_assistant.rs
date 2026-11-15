@@ -8,17 +8,24 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use ibis_doc_model::ai_sheet::{format_range, read_sheet_range, workbook_overview};
+use ibis_doc_model::ai_sheet::{
+    format_range, read_sheet_range, resolve_sheet_slide, workbook_overview,
+};
 use ibis_doc_model::command::Command;
-use ibis_doc_model::model::ShapeKind;
+use ibis_doc_model::machine_readability::{CandidateKind, candidates as mr_candidates};
+use ibis_doc_model::model::{ShapeKind, SlideId};
 use ibis_doc_model::sheet::Sheet;
+use ibis_doc_model::sheet_calc::sheet_of_slide;
+use ibis_doc_model::sheet_command::SheetCommand;
 use serde_json::json;
 
 use crate::ext::*;
 use crate::shell::ai_client::{AiConfig, ChatMessage, ToolCall, stream_chat_completion};
 use crate::shell::ai_tools::{
-    MAX_READ_CELLS, parse_clear_cells_command, parse_range_arg, parse_set_cells_command,
-    parse_set_format_command, spreadsheet_tool_definitions,
+    MAX_READ_CELLS, parse_clear_cells_command, parse_create_sheet_arg, parse_delete_axis_command,
+    parse_insert_axis_command, parse_merge_cells_command, parse_range_arg,
+    parse_set_cells_command, parse_set_format_command, parse_sheet_arg, parse_switch_sheet_arg,
+    spreadsheet_tool_definitions,
 };
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
@@ -402,6 +409,14 @@ impl SlideEditor {
         .to_string()
     }
 
+    fn resolve_ai_target_slide(&self, args: &str) -> Result<SlideId, String> {
+        let sheet_name = parse_sheet_arg(args)?;
+        let Some(wb) = self.presentation().workbook.as_ref() else {
+            return Err("no active workbook".to_string());
+        };
+        resolve_sheet_slide(wb, sheet_name.as_deref(), self.current_slide)
+    }
+
     fn execute_ai_tool(
         &mut self,
         call: &ToolCall,
@@ -414,44 +429,70 @@ impl SlideEditor {
                 let json = self.ai_workbook_overview_json();
                 (json, None, "✓ get_workbook_overview".to_string())
             }
-            "read_range" => match parse_range_arg(args) {
-                Err(e) => (json!({ "error": e }).to_string(), None, format!("✗ read_range: {e}")),
-                Ok(range) => {
-                    let Some((_, sheet)) = self.current_sheet() else {
+            "read_range" => {
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
                         return (
-                            json!({ "error": "no active sheet" }).to_string(),
-                            None,
-                            "✗ read_range: no active sheet".to_string(),
-                        );
-                    };
-                    match read_sheet_range(sheet, range, MAX_READ_CELLS) {
-                        Err(e) => (
                             json!({ "error": e }).to_string(),
                             None,
                             format!("✗ read_range: {e}"),
-                        ),
-                        Ok(cells) => {
-                            let label = format_range(&range);
-                            let payload = json!({
-                                "range": label,
-                                "cells": cells.iter().map(|c| json!({
-                                    "cell": c.cell,
-                                    "text": c.text,
-                                    "formula": c.formula,
-                                })).collect::<Vec<_>>()
-                            })
-                            .to_string();
-                            (
-                                payload,
+                        );
+                    }
+                };
+                match parse_range_arg(args) {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ read_range: {e}"),
+                    ),
+                    Ok(range) => {
+                        let Some(sheet) = self.presentation().slide(slide).and_then(sheet_of_slide)
+                        else {
+                            return (
+                                json!({ "error": "target sheet not found" }).to_string(),
                                 None,
-                                format!("✓ read_range ({label}, {} cells)", cells.len()),
-                            )
+                                "✗ read_range: target sheet not found".to_string(),
+                            );
+                        };
+                        match read_sheet_range(sheet, range, MAX_READ_CELLS) {
+                            Err(e) => (
+                                json!({ "error": e }).to_string(),
+                                None,
+                                format!("✗ read_range: {e}"),
+                            ),
+                            Ok(cells) => {
+                                let label = format_range(&range);
+                                let payload = json!({
+                                    "range": label,
+                                    "cells": cells.iter().map(|c| json!({
+                                        "cell": c.cell,
+                                        "text": c.text,
+                                        "formula": c.formula,
+                                    })).collect::<Vec<_>>()
+                                })
+                                .to_string();
+                                (
+                                    payload,
+                                    None,
+                                    format!("✓ read_range ({label}, {} cells)", cells.len()),
+                                )
+                            }
                         }
                     }
                 }
-            },
+            }
             "set_cells" => {
-                let slide = self.current_slide;
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ set_cells: {e}"),
+                        );
+                    }
+                };
                 match parse_set_cells_command(slide, args) {
                     Err(e) => (
                         json!({ "error": e }).to_string(),
@@ -466,7 +507,16 @@ impl SlideEditor {
                 }
             }
             "set_format" => {
-                let slide = self.current_slide;
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ set_format: {e}"),
+                        );
+                    }
+                };
                 match parse_set_format_command(slide, args) {
                     Err(e) => (
                         json!({ "error": e }).to_string(),
@@ -481,7 +531,16 @@ impl SlideEditor {
                 }
             }
             "clear_cells" => {
-                let slide = self.current_slide;
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ clear_cells: {e}"),
+                        );
+                    }
+                };
                 match parse_clear_cells_command(slide, args) {
                     Err(e) => (
                         json!({ "error": e }).to_string(),
@@ -495,32 +554,257 @@ impl SlideEditor {
                     ),
                 }
             }
-            "select_range" => match parse_range_arg(args) {
+            "select_range" => {
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ select_range: {e}"),
+                        );
+                    }
+                };
+                match parse_range_arg(args) {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ select_range: {e}"),
+                    ),
+                    Ok(range) => {
+                        self.current_slide = slide;
+                        self.selection = None;
+                        let wb = self.wb_mut();
+                        wb.cells.insert(slide, (range.first_column, range.first_row));
+                        if range.first_column != range.last_column
+                            || range.first_row != range.last_row
+                        {
+                            wb.cell_ends
+                                .insert(slide, (range.last_column, range.last_row));
+                        } else {
+                            wb.cell_ends.remove(&slide);
+                        }
+                        cx.notify();
+                        let label = format_range(&range);
+                        (
+                            json!({ "ok": true, "selection": label }).to_string(),
+                            None,
+                            format!("✓ select_range ({label})"),
+                        )
+                    }
+                }
+            }
+            "switch_sheet" => match parse_switch_sheet_arg(args) {
                 Err(e) => (
                     json!({ "error": e }).to_string(),
                     None,
-                    format!("✗ select_range: {e}"),
+                    format!("✗ switch_sheet: {e}"),
                 ),
-                Ok(range) => {
-                    let slide = self.current_slide;
-                    let wb = self.wb_mut();
-                    wb.cells.insert(slide, (range.first_column, range.first_row));
-                    if range.first_column != range.last_column || range.first_row != range.last_row
-                    {
-                        wb.cell_ends
-                            .insert(slide, (range.last_column, range.last_row));
-                    } else {
-                        wb.cell_ends.remove(&slide);
-                    }
+                Ok(sheet_name) => {
+                    let target = self
+                        .presentation()
+                        .workbook
+                        .as_ref()
+                        .and_then(|wb| resolve_sheet_slide(wb, Some(&sheet_name), self.current_slide).ok());
+                    let Some(slide) = target else {
+                        return (
+                            json!({ "error": format!("sheet '{sheet_name}' not found") }).to_string(),
+                            None,
+                            format!("✗ switch_sheet: '{sheet_name}' not found"),
+                        );
+                    };
+                    self.current_slide = slide;
+                    self.selection = None;
                     cx.notify();
-                    let label = format_range(&range);
                     (
-                        json!({ "ok": true, "selection": label }).to_string(),
+                        json!({ "ok": true, "active_sheet": sheet_name }).to_string(),
                         None,
-                        format!("✓ select_range ({label})"),
+                        format!("✓ switch_sheet ({sheet_name})"),
                     )
                 }
             },
+            "create_sheet" => match parse_create_sheet_arg(args) {
+                Err(e) => (
+                    json!({ "error": e }).to_string(),
+                    None,
+                    format!("✗ create_sheet: {e}"),
+                ),
+                Ok(name_opt) => {
+                    let index = self
+                        .presentation()
+                        .workbook
+                        .as_ref()
+                        .map_or(0, |w| w.sheets.len());
+                    let (slide, shape) = (
+                        self.document.ids().new_slide_id(),
+                        self.document.ids().new_shape_id(),
+                    );
+                    let sheet_name =
+                        name_opt.unwrap_or_else(|| format!("Sheet{}", index + 1));
+                    let cmd = Command::Sheet(SheetCommand::AddSheet {
+                        index,
+                        name: sheet_name,
+                        slide,
+                        shape,
+                    });
+                    self.run(vec![cmd], cx);
+                    if self.presentation().slide(slide).is_some() {
+                        self.current_slide = slide;
+                        self.selection = None;
+                        cx.notify();
+                    }
+                    let actual_name = self
+                        .presentation()
+                        .workbook
+                        .as_ref()
+                        .and_then(|wb| {
+                            wb.sheets
+                                .iter()
+                                .find(|s| s.slide == Some(slide))
+                                .map(|s| s.name.clone())
+                        })
+                        .unwrap_or_default();
+                    (
+                        json!({ "ok": true, "sheet": actual_name }).to_string(),
+                        None,
+                        format!("✓ create_sheet ({actual_name})"),
+                    )
+                }
+            },
+            "insert_rows_or_cols" => {
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ insert_rows_or_cols: {e}"),
+                        );
+                    }
+                };
+                match parse_insert_axis_command(slide, args) {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ insert_rows_or_cols: {e}"),
+                    ),
+                    Ok(cmd) => (
+                        json!({ "ok": true }).to_string(),
+                        Some(cmd),
+                        "✓ insert_rows_or_cols".to_string(),
+                    ),
+                }
+            }
+            "delete_rows_or_cols" => {
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ delete_rows_or_cols: {e}"),
+                        );
+                    }
+                };
+                match parse_delete_axis_command(slide, args) {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ delete_rows_or_cols: {e}"),
+                    ),
+                    Ok(cmd) => (
+                        json!({ "ok": true }).to_string(),
+                        Some(cmd),
+                        "✓ delete_rows_or_cols".to_string(),
+                    ),
+                }
+            }
+            "merge_cells" => {
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ merge_cells: {e}"),
+                        );
+                    }
+                };
+                match parse_merge_cells_command(slide, args) {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ merge_cells: {e}"),
+                    ),
+                    Ok(cmd) => (
+                        json!({ "ok": true }).to_string(),
+                        Some(cmd),
+                        "✓ merge_cells".to_string(),
+                    ),
+                }
+            }
+            "check_machine_readability" => {
+                let filter_sheet = match parse_sheet_arg(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ check_machine_readability: {e}"),
+                        );
+                    }
+                };
+                let mut findings = Vec::new();
+                for (index, slide) in self.presentation().slides.iter().enumerate() {
+                    let Some(sheet) = sheet_of_slide(slide) else {
+                        continue;
+                    };
+                    let sheet_name = slide
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("Sheet{}", index + 1));
+                    if let Some(ref target) = filter_sheet
+                        && &sheet_name != target
+                    {
+                        continue;
+                    }
+                    for c in mr_candidates(sheet) {
+                        let r = c.range;
+                        let a = format!(
+                            "{}{}",
+                            super::sheet_ui::column_letters(r.first_column),
+                            r.first_row + 1
+                        );
+                        let b = format!(
+                            "{}{}",
+                            super::sheet_ui::column_letters(r.last_column),
+                            r.last_row + 1
+                        );
+                        let address = if a == b { a } else { format!("{a}:{b}") };
+                        let kind = match c.kind {
+                            CandidateKind::MergedCells => "merged_cells",
+                            CandidateKind::HiddenRow => "hidden_row",
+                            CandidateKind::HiddenColumn => "hidden_column",
+                            CandidateKind::Formula => "formula",
+                            CandidateKind::PlatformDependentCharacters => {
+                                "platform_dependent_characters"
+                            }
+                            CandidateKind::PrivateUseCharacters => "private_use_characters",
+                        };
+                        findings.push(json!({
+                            "sheet": sheet_name,
+                            "kind": kind,
+                            "location": address,
+                        }));
+                    }
+                }
+                let count = findings.len();
+                (
+                    json!({ "count": count, "findings": findings }).to_string(),
+                    None,
+                    format!("✓ check_machine_readability ({count} findings)"),
+                )
+            }
             other => (
                 json!({ "error": format!("unknown tool: {other}") }).to_string(),
                 None,
