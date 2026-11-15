@@ -228,3 +228,196 @@ fn row_strength_for_cells(row: u32, first_column: u32, last_column: u32, nonempt
     }
     0
 }
+
+/// Whether a band is a header-only region suitable for possible merging with
+/// a following body band. This does not merge bands or select header rows.
+/// All sheet cells and merge metadata must be provided by the reader.
+pub fn band_is_header_like(band: CellRange, cells: &[LayoutCell], merges: &[CellRange]) -> Option<bool> {
+    if band.first_row > band.last_row || band.first_column > band.last_column || merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let mut positions = BTreeSet::new();
+    let mut rows: BTreeMap<u32, Vec<&LayoutCell>> = BTreeMap::new();
+    for cell in cells {
+        if !positions.insert((cell.row, cell.column)) { return None; }
+        if cell.row >= band.first_row && cell.row <= band.last_row && cell.column >= band.first_column && cell.column <= band.last_column && cell.value.is_some() {
+            rows.entry(cell.row).or_default().push(cell);
+        }
+    }
+    Some(header_like_from_rows(band, &rows, merges))
+}
+
+fn header_like_from_rows(band: CellRange, rows: &BTreeMap<u32, Vec<&LayoutCell>>, merges: &[CellRange]) -> bool {
+    let width = u64::from(band.last_column) - u64::from(band.first_column) + 1;
+    let mut strong = false;
+    let mut data = false;
+    for (&row, row_cells) in rows.range(band.first_row..=band.last_row) {
+        let selected: Vec<_> = row_cells.iter().copied().filter(|c| c.column >= band.first_column && c.column <= band.last_column).collect();
+        let row_cells = &selected;
+        let strength = row_strength_for_cells(row, band.first_column, band.last_column, row_cells, merges);
+        if strength >= 2 { strong = true; continue; }
+        if strength == 1 || (row_cells.len() <= 2 && width >= 3) { continue; }
+        let numeric = row_cells.iter().any(|cell| match &cell.value {
+            Some(LayoutValue::Numeric) => true,
+            Some(LayoutValue::Text(value)) => is_data_like_numeric(value.trim_matches(python_space)),
+            _ => false,
+        });
+        if numeric && row_cells.len() as f64 / width as f64 > 0.3 { data = true; }
+    }
+    strong && !data
+}
+
+/// Combine adjacent row bands when the preceding band is header-like. The
+/// row/column bands must be sorted, non-overlapping, inclusive zero-based
+/// intervals, and cell and merge metadata must be complete. This is the
+/// reference detector's header/body merge pass, not full table inference.
+pub fn merge_header_body_bands(row_bands: &[(u32, u32)], column_bands: &[(u32, u32)], gap_tolerance: u32, cells: &[LayoutCell], merges: &[CellRange]) -> Option<Vec<(u32, u32)>> {
+    let valid_bands = |bands: &[(u32, u32)]| bands.iter().all(|&(a, b)| a <= b) && bands.windows(2).all(|w| w[0].1 < w[1].0);
+    if !valid_bands(row_bands) || !valid_bands(column_bands) || merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let mut positions = BTreeSet::new();
+    let mut rows: BTreeMap<u32, Vec<&LayoutCell>> = BTreeMap::new();
+    for cell in cells {
+        if !positions.insert((cell.row, cell.column)) { return None; }
+        if cell.value.is_some() { rows.entry(cell.row).or_default().push(cell); }
+    }
+    let Some(&(first_col, last_col)) = column_bands.iter().max_by_key(|&&(a, b)| (u64::from(b) - u64::from(a), std::cmp::Reverse(a))) else { return Some(row_bands.to_vec()); };
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < row_bands.len() {
+        let mut current = row_bands[i];
+        i += 1;
+        while i < row_bands.len() {
+            let next = row_bands[i];
+            let gap = u64::from(next.0) - u64::from(current.1) - 1;
+            if gap > u64::from(gap_tolerance) { break; }
+            let height = u64::from(current.1) - u64::from(current.0) + 1;
+            let extending_merge = merges.iter().any(|m| m.first_row >= current.0 && m.first_row <= current.1 && m.first_column >= first_col && m.last_column <= last_col && m.last_row > m.first_row);
+            let eligible_size = height <= 10 || extending_merge;
+            let band = CellRange { first_row: current.0, last_row: current.1, first_column: first_col, last_column: last_col };
+            if !eligible_size || !header_like_from_rows(band, &rows, merges) { break; }
+            current.1 = next.1;
+            i += 1;
+        }
+        result.push(current);
+    }
+    Some(result)
+}
+
+/// Header and body positions inferred inside one trimmed candidate region.
+/// Column labels, column types, and stub columns are separate stages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderRows { pub rows: Vec<u32>, pub body_first: u32, pub body_last: u32 }
+
+/// Infer header rows with the reference island detector's default maximum.
+/// Cell/merge metadata must be complete; invalid or duplicated input is unknown.
+pub fn infer_header_rows(region: CellRange, cells: &[LayoutCell], merges: &[CellRange]) -> Option<HeaderRows> {
+    if region.first_row > region.last_row || region.first_column > region.last_column || merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let mut positions = BTreeSet::new();
+    let mut rows: BTreeMap<u32, Vec<&LayoutCell>> = BTreeMap::new();
+    for cell in cells {
+        if !positions.insert((cell.row, cell.column)) { return None; }
+        if cell.row >= region.first_row && cell.row <= region.last_row && cell.column >= region.first_column && cell.column <= region.last_column && cell.value.is_some() {
+            rows.entry(cell.row).or_default().push(cell);
+        }
+    }
+    for row in rows.values_mut() { row.sort_by_key(|c| c.column); }
+    if region.first_row == region.last_row { return Some(HeaderRows { rows: Vec::new(), body_first: region.first_row, body_last: region.last_row }); }
+    let first = u64::from(region.first_row);
+    let last = u64::from(region.last_row);
+    const MAX: u64 = 5;
+    let mut effective = MAX;
+    for m in merges {
+        if u64::from(m.first_row) >= first && u64::from(m.first_row) < first + MAX && u64::from(m.last_row) > first + MAX - 1 && m.first_column >= region.first_column && m.last_column <= region.last_column {
+            effective = effective.max(u64::from(m.last_row) - first + 1);
+        }
+    }
+    effective = effective.min(((last - first + 1) / 2).max(MAX));
+    let max_check = (first + effective).min(last + 1);
+    let strength = |row: u32| row_strength_for_cells(row, region.first_column, region.last_column, rows.get(&row).map(Vec::as_slice).unwrap_or(&[]), merges);
+    let mut headers = Vec::<u32>::new();
+    let mut strengths = Vec::new();
+    let mut r = first;
+    while r < max_check {
+        let value = strength(r as u32);
+        if value > 0 { headers.push(r as u32); strengths.push(value); }
+        else if !rows.contains_key(&(r as u32)) && r + 1 < max_check && strength((r + 1) as u32) > 0 { r += 1; continue; }
+        else { break; }
+        r += 1;
+    }
+    // Sparse signatures are equivalent to the reference's full-width tuple:
+    // omitted columns are `none`, and typed occupied columns are sorted.
+    let signature = |row: u32| -> Vec<(u32, u8)> {
+        rows.get(&row).into_iter().flatten().map(|c| (c.column, match &c.value { Some(LayoutValue::Numeric) => 1, Some(LayoutValue::Text(_)) => 2, _ => 3 })).collect()
+    };
+    if headers.is_empty() {
+        let a = signature(region.first_row);
+        if a.iter().any(|(_, t)| *t == 1) && a == signature(region.first_row + 1) {
+            return Some(HeaderRows { rows: Vec::new(), body_first: region.first_row, body_last: region.last_row });
+        }
+        headers.push(region.first_row); strengths.push(0);
+        for row in (first + 1)..max_check {
+            let value = strength(row as u32);
+            if value == 0 { break; }
+            headers.push(row as u32); strengths.push(value);
+        }
+    }
+    let strong = strengths.iter().any(|&v| v >= 2);
+    if strong && headers.len() > 1 {
+        let mut defining_end = headers[0];
+        let mut defining = false;
+        for m in merges {
+            if m.first_column >= region.first_column && m.last_column <= region.last_column && m.last_row > m.first_row && headers.contains(&m.first_row) {
+                defining = true; defining_end = defining_end.max(m.last_row);
+            }
+        }
+        if defining {
+            headers.retain(|&r| r <= defining_end);
+        }
+    }
+    if !strong && headers.len() > 1 {
+        let body = u64::from(*headers.last().unwrap()) + 1;
+        let numeric = body <= last && rows.get(&(body as u32)).is_some_and(|cells| cells.iter().any(|cell| match &cell.value {
+            Some(LayoutValue::Numeric) => true,
+            Some(LayoutValue::Text(t)) => is_data_like_numeric(t.trim_matches(python_space)),
+            _ => false,
+        }));
+        if !numeric || (body <= last && signature(headers[0]) == signature(body as u32)) { headers.truncate(1); }
+    }
+    if headers.len() > 1 {
+        let mut fills = Vec::new();
+        for &row in &headers {
+            let mut intervals: Vec<(u32, u32)> = rows.get(&row).into_iter().flatten().map(|c| (c.column, c.column)).collect();
+            for m in merges.iter().filter(|m| m.first_row <= row && m.last_row >= row && m.first_column <= region.last_column && m.last_column >= region.first_column) {
+                intervals.push((m.first_column.max(region.first_column), m.last_column.min(region.last_column)));
+            }
+            intervals.sort_unstable();
+            let mut covered = 0u64;
+            let mut end = None::<u32>;
+            for (a, b) in intervals {
+                let start = end.map_or(u64::from(a), |e| u64::from(a).max(u64::from(e) + 1));
+                if start <= u64::from(b) { covered += u64::from(b) - start + 1; end = Some(b); }
+            }
+            fills.push(covered);
+        }
+        let max_fill = *fills.iter().max().unwrap();
+        let width = u64::from(region.last_column) - u64::from(region.first_column) + 1;
+        if max_fill > 0 {
+            let retained: Vec<_> = headers.iter().copied().zip(fills).filter_map(|(r, f)| ((f as f64 >= max_fill as f64 * 0.2) || (f as f64 >= width as f64 * 0.3)).then_some(r)).collect();
+            if !retained.is_empty() { headers = retained; }
+        }
+    }
+    let mut last_header = *headers.last().unwrap();
+    for m in merges {
+        if m.first_row >= region.first_row && m.first_row <= last_header && m.last_row > last_header && u64::from(m.last_row) <= (first + MAX - 1).min(last - 1) && m.first_column >= region.first_column && m.last_column <= region.last_column {
+            for extra in (u64::from(last_header) + 1)..=u64::from(m.last_row) {
+                let extra = extra as u32;
+                if !headers.contains(&extra) { headers.push(extra); last_header = last_header.max(extra); }
+            }
+        }
+    }
+    let body_start = u64::from(*headers.last().unwrap()) + 1;
+    headers.sort_unstable();
+    let mut body_first = if body_start <= last { body_start as u32 } else { region.last_row };
+    let body_count = u64::from(region.last_row) - u64::from(body_first) + 1;
+    if headers.len() >= 5 && body_count <= 2 { headers.truncate(1); body_first = headers[0] + 1; }
+    else if headers.len() > MAX as usize { headers.truncate(MAX as usize); body_first = headers[headers.len()-1] + 1; }
+    Some(HeaderRows { rows: headers, body_first, body_last: region.last_row })
+}
