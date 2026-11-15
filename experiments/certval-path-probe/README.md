@@ -50,7 +50,12 @@ The command reads at most 128 MiB for the document, 1 MiB per certificate and
 intermediates. ZIP metadata is limited to 4096 entries, 16 MiB expanded per
 entry and 128 MiB expanded in total. These limits do not constitute a full
 resource-exhaustion audit. Candidate search and output are bounded separately; only 16
-manifest-reference examples are printed. Exit status 0 means that inspection
+manifest-reference and 16 additional SignedInfo-reference examples are printed.
+The package inventory prints up to eight examples of entries not literally
+listed in the manifest. It includes metadata and entries potentially protected
+elsewhere, so it is not a coverage or unsigned-content verdict. Additional
+references and XAdES-related comparisons are unauthenticated observations;
+unsupported references are not fetched. Exit status 0 means that inspection
 completed, even if XML signature, reference or path checks fail. Status 2 means
 input or inspection failed. No final document, revocation or trust decision is
 made. Cargo may download dependencies at build time; the command itself makes
@@ -131,6 +136,7 @@ The document bridge starts from a relationship-discovered OPC signature and
 its single embedded certificate, and supplies only caller-provided intermediate
 and anchor certificates to ibis-ooxml's candidate search. It keeps the XML
 signature value, package-object digest, individual manifest-reference digests,
+additional SignedInfo-reference observations, the literal manifest inventory,
 and every candidate's path and edge observations separate. A candidate whose
 anchor is byte-identical to the signer is reported as not evaluated. Candidate
 certificates are resolved by SHA-256 against the original inputs; distinct
@@ -146,7 +152,8 @@ discarded. One test gets matching XML signature, object digest, manifest digest
 and a passing candidate path; another changes the document part and finds the
 manifest digest differs while the other observations remain unchanged. Neither
 result establishes complete coverage, a valid timestamp, revocation status,
-anchor provenance, or document-signature validity. Other SignedInfo references,
+anchor provenance, or document-signature validity. Additional SignedInfo
+references may be unsupported or only partially inspected; their semantics,
 coverage and application-specific rules still need separate evaluation.
 
 The pinned crate uses Apache-2.0 OR MIT licensing. Its own

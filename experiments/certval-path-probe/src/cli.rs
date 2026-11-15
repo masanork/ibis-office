@@ -218,6 +218,45 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
     if report.manifest_references.len() > 16 {
         println!("  Additional references omitted.");
     }
+    println!(
+        "Additional SignedInfo references: {}; examples at most 16; UNAUTHENTICATED observations",
+        report.additional_signed_info_references.len()
+    );
+    for (index, item) in report
+        .additional_signed_info_references
+        .iter()
+        .take(16)
+        .enumerate()
+    {
+        println!(
+            "  Additional reference {}: {:?}; digest {:?}; XAdES certificate {:?}; XAdES issuer {:?}",
+            index + 1,
+            item.uri.as_deref().map(shortened),
+            item.digest,
+            item.xades_certificate_digest,
+            item.xades_issuer_serial
+        );
+    }
+    if report.additional_signed_info_references.len() > 16 {
+        println!("  Additional SignedInfo references omitted.");
+    }
+    let inventory = &report.manifest_inventory;
+    println!(
+        "Manifest inventory (UNAUTHENTICATED; NOT coverage): {} entries; {} not literally listed; {} ambiguous; {} unresolved references.",
+        inventory.entries,
+        inventory.unlisted,
+        inventory.ambiguous_entries,
+        inventory.unresolved_references
+    );
+    println!(
+        "  Unlisted entries may be metadata, protected elsewhere, or irrelevant; examples are NOT a coverage verdict."
+    );
+    for name in inventory.unlisted_examples.iter().take(8) {
+        println!("  Not literally listed: {:?}", name);
+    }
+    if inventory.examples_truncated || inventory.unlisted_examples.len() > 8 {
+        println!("  Some inventory examples omitted or shortened.");
+    }
     let fingerprint: String = report
         .signer_fingerprint
         .iter()

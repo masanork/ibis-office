@@ -212,3 +212,44 @@ fn cli_rejects_oversized_declared_zip_entries() {
         String::from_utf8_lossy(&output.stderr).contains("ZIP entry exceeds 16 MiB expanded size")
     );
 }
+
+#[test]
+fn cli_reports_extra_signed_info_and_unlisted_parts_without_fetching() {
+    use std::{io::ErrorKind, net::TcpListener};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let uri = format!("http://{}/not-fetched", listener.local_addr().unwrap());
+    let mut package =
+        ibis_ooxml::Package::open(std::fs::read(root().join("document-path-signed.docx")).unwrap())
+            .unwrap();
+    let part = "_xmlsignatures/sig1.xml";
+    let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+    let added = format!(r#"<ds:Reference URI="{uri}"/>"#);
+    let changed = xml.replace("</ds:SignedInfo>", &format!("{added}</ds:SignedInfo>"));
+    assert_ne!(xml, changed);
+    package.set_bytes(part, changed.into_bytes());
+    package.set_bytes("word/media/unlisted.bin", b"unlisted".to_vec());
+    let path =
+        std::env::temp_dir().join(format!("ibis-path-probe-extra-{}.docx", std::process::id()));
+    std::fs::write(
+        &path,
+        package.save(ibis_ooxml::SaveOptions::default()).unwrap(),
+    )
+    .unwrap();
+    let output = command(&path).arg("--policy-any").output().unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = text(&output);
+    assert!(result.contains("Additional SignedInfo references: 1"));
+    assert!(result.contains(&uri));
+    assert!(result.contains("digest Unsupported"));
+    assert!(result.contains("Manifest inventory (UNAUTHENTICATED; NOT coverage)"));
+    assert!(result.contains("word/media/unlisted.bin"));
+    assert!(result.contains("NOT a coverage verdict"));
+    assert!(result.contains("XML signature against untrusted embedded certificate: Differs"));
+    assert_eq!(listener.accept().unwrap_err().kind(), ErrorKind::WouldBlock);
+}

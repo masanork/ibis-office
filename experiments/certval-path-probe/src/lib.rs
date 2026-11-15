@@ -123,6 +123,8 @@ struct DocumentPathProbe {
     xml_signature: ibis_ooxml::signatures::SignatureValueCheck,
     package_object_digest: ibis_ooxml::signatures::ObjectDigest,
     manifest_references: Vec<ibis_ooxml::signatures::ManifestReference>,
+    additional_signed_info_references: Vec<ibis_ooxml::signatures::AdditionalReference>,
+    manifest_inventory: ibis_ooxml::signatures::ManifestInventory,
     signer_fingerprint: [u8; 32],
     candidate_search_truncated: bool,
     candidates: Vec<DocumentPathCandidate>,
@@ -193,11 +195,7 @@ fn inspect_document_candidate_paths(
     }
     let leaf = signatures::extract_single_embedded_certificate(package, signature_part)
         .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
-    let xml_signature = signatures::inspect_signature_value(package, signature_part)
-        .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
-    let package_object_digest = signatures::inspect_package_object_digest(package, signature_part)
-        .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
-    let manifest_references = signatures::inspect_manifest_digests(package, signature_part)
+    let inspection = signatures::inspect_signature(package, signature_part)
         .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
     let found = signatures::find_candidate_certificate_paths(&leaf, intermediates, anchors)
         .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
@@ -241,9 +239,11 @@ fn inspect_document_candidate_paths(
         });
     }
     Ok(DocumentPathProbe {
-        xml_signature,
-        package_object_digest,
-        manifest_references,
+        xml_signature: inspection.signature_value,
+        package_object_digest: inspection.package_object,
+        manifest_references: inspection.manifest,
+        additional_signed_info_references: inspection.additional_signed_info_references,
+        manifest_inventory: inspection.manifest_inventory,
         signer_fingerprint,
         candidate_search_truncated: found.truncated,
         candidates,

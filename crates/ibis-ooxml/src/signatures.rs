@@ -660,31 +660,40 @@ pub fn inspect_certificate_location_hints(certificate_der: &[u8]) -> Result<Cert
     Ok(hints)
 }
 
+/// Inspect one signature linked from the package. Unregistered parts are never
+/// treated as package signatures. Observations are not a trust decision.
+pub fn inspect_signature(package: &Package, signature_part: &str) -> Result<SignatureInspection, Error> {
+    if !signature_parts(package)?.iter().any(|part| part == signature_part) {
+        return Err(Error::new("Signature part is not registered"));
+    }
+    inspect_discovered_signature(package, signature_part)
+}
+
 /// Inspect the signatures linked from the package. The resulting observations
 /// do not constitute signature verification or a trust decision.
 pub fn inspect_signatures(package: &Package) -> Result<Vec<SignatureInspection>, Error> {
-    let mut reports = Vec::new();
-    for part in signature_parts(package)? {
-        let binding = inspect_package_object_binding(package, &part)?;
-        let object_id = match binding {
-            PackageObjectBinding::Declared { object_id } => object_id,
-            PackageObjectBinding::Unsupported => return Err(Error::new("Unsupported package object binding")),
-        };
-        let manifest = inspect_manifest_digests(package, &part)?;
-        let manifest_inventory = inspect_manifest_inventory(package, &manifest);
-        reports.push(SignatureInspection {
-            signature_value: inspect_signature_value(package, &part)?,
-            certificate_locations: extract_single_embedded_certificate(package, &part).ok().and_then(|der| inspect_certificate_location_hints(&der).ok()),
-            certificate_policies: extract_single_embedded_certificate(package, &part).ok().and_then(|der| inspect_certificate_policies(&der).ok()),
-            package_object: inspect_package_object_digest(package, &part)?,
-            additional_signed_info_references: additional_signed_info_references(package, &part, &object_id)?,
-            manifest,
-            manifest_inventory,
-            trust: TrustCheck::NotEvaluated,
-            signature_part: part,
-        });
-    }
-    Ok(reports)
+    signature_parts(package)?.iter().map(|part| inspect_discovered_signature(package, part)).collect()
+}
+
+fn inspect_discovered_signature(package: &Package, part: &str) -> Result<SignatureInspection, Error> {
+    let binding = inspect_package_object_binding(package, part)?;
+    let object_id = match binding {
+        PackageObjectBinding::Declared { object_id } => object_id,
+        PackageObjectBinding::Unsupported => return Err(Error::new("Unsupported package object binding")),
+    };
+    let manifest = inspect_manifest_digests(package, part)?;
+    let manifest_inventory = inspect_manifest_inventory(package, &manifest);
+    Ok(SignatureInspection {
+        signature_value: inspect_signature_value(package, part)?,
+        certificate_locations: extract_single_embedded_certificate(package, part).ok().and_then(|der| inspect_certificate_location_hints(&der).ok()),
+        certificate_policies: extract_single_embedded_certificate(package, part).ok().and_then(|der| inspect_certificate_policies(&der).ok()),
+        package_object: inspect_package_object_digest(package, part)?,
+        additional_signed_info_references: additional_signed_info_references(package, part, &object_id)?,
+        manifest,
+        manifest_inventory,
+        trust: TrustCheck::NotEvaluated,
+        signature_part: part.to_string(),
+    })
 }
 
 /// Inventory current package entry names against recognizable manifest URIs. An
@@ -1535,6 +1544,26 @@ mod tests {
         let xml = format!(r#"<Signature xmlns="{DS}" xmlns:p="{OPC_DS}"><Object><Manifest><Reference URI="/r.rels?ContentType=application/xml"><Transforms><Transform Algorithm="{REL_TRANSFORM}"><p:RelationshipReference SourceId="a"/></Transform><Transform Algorithm="{C14N}"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>YQ==</DigestValue></Reference></Manifest></Object></Signature>"#);
         pkg.set_bytes("sig.xml", xml.into_bytes());
         assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].digest, ManifestDigest::Unsupported);
+    }
+
+    #[test]
+    fn single_signature_inspection_requires_registration_and_is_independent() {
+        let data = include_bytes!("../tests/fixtures/signatures/synthetic-signed.docx");
+        let mut pkg = Package::open(data.as_slice()).unwrap();
+        let part = "_xmlsignatures/sig1.xml";
+        let report = inspect_signature(&pkg, part).unwrap();
+        assert_eq!(inspect_signatures(&pkg).unwrap(), vec![report]);
+        pkg.set_bytes("_xmlsignatures/sig2.xml", b"not a signature".to_vec());
+        assert!(inspect_signature(&pkg, "_xmlsignatures/sig2.xml").is_err());
+        let rels = "_xmlsignatures/_rels/origin.sigs.rels";
+        let text = String::from_utf8(pkg.read(rels).unwrap()).unwrap();
+        let extra = format!(r#"<Relationship Id="r2" Type="{SIGNATURE}" Target="sig2.xml"/>"#);
+        let changed = text.replace("</Relationships>", &format!("{extra}</Relationships>"));
+        assert_ne!(text, changed);
+        pkg.set_bytes(rels, changed.into_bytes());
+        assert!(inspect_signature(&pkg, part).is_ok());
+        assert!(inspect_signature(&pkg, "_xmlsignatures/sig2.xml").is_err());
+        assert!(inspect_signatures(&pkg).is_err());
     }
 
     #[test]
