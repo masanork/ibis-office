@@ -274,19 +274,29 @@ pub fn import_markdown_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
         .save(&opened.presentation, SaveOptions::default())
 }
 
+/// Convert Markdown bytes directly into a `.pptx` presentation's bytes.
+pub fn import_markdown_to_pptx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
+    let opened = open_markdown_presentation(data.to_vec())?;
+    opened
+        .source
+        .save(&opened.presentation, SaveOptions::default())
+}
+
 /// Export a `.docx` file's bytes to deterministic Rich Markdown.
 pub fn export_docx_to_markdown(docx_bytes: &[u8]) -> Result<String, Error> {
     let pres = crate::read_docx(docx_bytes)?;
     export_presentation_to_markdown(&pres)
 }
 
-/// Export a [`Presentation`] (with `flow`) to deterministic Rich Markdown.
+/// Export a [`Presentation`] (Word `flow` or PowerPoint `slides`) to deterministic Rich Markdown.
 pub fn export_presentation_to_markdown(presentation: &Presentation) -> Result<String, Error> {
-    let flow = presentation
-        .flow
-        .as_ref()
-        .ok_or_else(|| Error::new("ワード文書ではありません"))?;
-    Ok(export_markdown(flow, &presentation.media))
+    if let Some(flow) = presentation.flow.as_ref() {
+        return Ok(export_markdown(flow, &presentation.media));
+    }
+    if !presentation.slides.is_empty() {
+        return Ok(export_presentation_markdown(presentation));
+    }
+    Err(Error::new("ワード文書またはプレゼンテーションではありません"))
 }
 
 // ============================================================================

@@ -447,7 +447,7 @@ fn parse_args() -> Result<Args, String> {
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
     if matches!(format, "md" | "markdown") {
-        let path = args.path.as_deref().ok_or("name the .docx or .md file to export")?;
+        let path = args.path.as_deref().ok_or("name the .docx, .pptx, or .md file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
         std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
