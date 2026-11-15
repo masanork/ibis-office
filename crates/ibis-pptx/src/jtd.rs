@@ -762,6 +762,10 @@ fn view_style_lines(data: &[u8]) -> Option<u16> {
 
 /// Align two adjacent observed display-line grids using spans. This retains
 /// every original cell boundary; it does not infer logical JTD merges.
+///
+/// The new spans are planned before any cell changes. A long comparison
+/// table adds one ruled line at a time, so cloning the rows already
+/// accumulated would copy the whole table on every line.
 fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
     fn edges(columns: &[i64]) -> Option<Vec<i64>> {
         let mut out = vec![0i64];
@@ -769,6 +773,31 @@ fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
             out.push(out.last()?.checked_add(width)?);
         }
         Some(out)
+    }
+    fn planned_spans(rows: &[FlowRow], old: &[i64], grid: &[i64]) -> Option<Vec<Vec<u32>>> {
+        let mut planned = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut spans = Vec::with_capacity(row.cells.len());
+            let mut at = 0usize;
+            for cell in &row.cells {
+                let end = at + cell.span.max(1) as usize;
+                if end >= old.len() {
+                    return None;
+                }
+                let (Ok(start), Ok(stop)) =
+                    (grid.binary_search(&old[at]), grid.binary_search(&old[end]))
+                else {
+                    return None;
+                };
+                spans.push((stop - start) as u32);
+                at = end;
+            }
+            if at != old.len() - 1 {
+                return None;
+            }
+            planned.push(spans);
+        }
+        Some(planned)
     }
     let Some(a) = edges(&previous.columns) else {
         return false;
@@ -786,37 +815,26 @@ fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
     if grid.len() > 1025 {
         return false;
     }
-    fn remap(rows: &mut [FlowRow], old: &[i64], grid: &[i64]) -> bool {
-        for row in rows {
-            let mut at = 0usize;
-            for cell in &mut row.cells {
-                let end = at + cell.span.max(1) as usize;
-                if end >= old.len() {
-                    return false;
-                }
-                let (Ok(start), Ok(stop)) =
-                    (grid.binary_search(&old[at]), grid.binary_search(&old[end]))
-                else {
-                    return false;
-                };
-                cell.span = (stop - start) as u32;
-                at = end;
-            }
-            if at != old.len() - 1 {
-                return false;
-            }
-        }
-        true
-    }
-    let mut merged = previous.clone();
-    let mut incoming = next.rows.clone();
-    if !remap(&mut merged.rows, &a, &grid) || !remap(&mut incoming, &b, &grid) {
+    let (Some(previous_spans), Some(incoming_spans)) = (
+        planned_spans(&previous.rows, &a, &grid),
+        planned_spans(&next.rows, &b, &grid),
+    ) else {
         return false;
+    };
+    for (row, spans) in previous.rows.iter_mut().zip(previous_spans) {
+        for (cell, span) in row.cells.iter_mut().zip(spans) {
+            cell.span = span;
+        }
     }
-    merged.columns = grid.windows(2).map(|pair| pair[1] - pair[0]).collect();
-    merged.rows.extend(incoming);
-    merged.resolve_borders();
-    *previous = merged;
+    let mut incoming = next.rows.clone();
+    for (row, spans) in incoming.iter_mut().zip(incoming_spans) {
+        for (cell, span) in row.cells.iter_mut().zip(spans) {
+            cell.span = span;
+        }
+    }
+    previous.columns = grid.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    previous.rows.extend(incoming);
+    previous.resolve_borders();
     true
 }
 
@@ -2831,6 +2849,56 @@ mod tests {
         let before = first.clone();
         assert!(!merge_table_grids(&mut first, &table(&[40, 40])));
         assert_eq!(first, before);
+    }
+
+    #[test]
+    fn successive_merges_keep_cell_text_on_the_union_grid() {
+        fn row(columns: &[i64], text: &str) -> FlowTable {
+            FlowTable {
+                columns: columns.to_vec(),
+                rows: vec![FlowRow {
+                    cells: columns
+                        .iter()
+                        .map(|_| FlowCell {
+                            span: 1,
+                            blocks: vec![Block::Paragraph(ibis_doc_model::FlowParagraph {
+                                runs: vec![FlowRun::new(
+                                    FlowRunKind::Text(text.into()),
+                                    FlowRunStyle::default(),
+                                )],
+                                ..ibis_doc_model::FlowParagraph::default()
+                            })],
+                            ..FlowCell::default()
+                        })
+                        .collect(),
+                    ..FlowRow::default()
+                }],
+                ..FlowTable::default()
+            }
+        }
+        let text_of = |table: &FlowTable, row: usize, cell: usize| match &table.rows[row].cells[cell].blocks[0] {
+            Block::Paragraph(paragraph) => match &paragraph.runs[0].kind {
+                FlowRunKind::Text(text) => text.clone(),
+                _ => panic!("cell text"),
+            },
+            _ => panic!("cell paragraph"),
+        };
+        let mut merged = row(&[50, 50], "left");
+        assert!(merge_table_grids(&mut merged, &row(&[25, 25, 50], "right")));
+        assert!(merge_table_grids(&mut merged, &row(&[25, 75], "third")));
+        assert_eq!(merged.columns, [25, 25, 50]);
+        assert_eq!(merged.rows.len(), 3);
+        assert_eq!(text_of(&merged, 0, 0), "left");
+        assert_eq!(text_of(&merged, 0, 1), "left");
+        assert_eq!(text_of(&merged, 1, 2), "right");
+        assert_eq!(text_of(&merged, 2, 0), "third");
+        assert_eq!(text_of(&merged, 2, 1), "third");
+        assert_eq!(merged.rows[0].cells.iter().map(|cell| cell.span).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(merged.rows[1].cells.iter().map(|cell| cell.span).collect::<Vec<_>>(), [1, 1, 1]);
+        assert_eq!(merged.rows[2].cells.iter().map(|cell| cell.span).collect::<Vec<_>>(), [1, 2]);
+        let before = merged.clone();
+        assert!(!merge_table_grids(&mut merged, &row(&[40, 40], "rejected")));
+        assert_eq!(merged, before);
     }
 
     #[test]
