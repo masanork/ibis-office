@@ -25,7 +25,7 @@ UI Automation や画面操作ではなく、既存の `ibis-doc-model` のコマ
 既存の `settings.rs`（`key=value` 形式）を利用する。
 
 * `ai.base_url`: OpenAI 互換エンドポイント（例: `https://api.openai.com/v1`, `http://localhost:11434/v1`）
-* `ai.model`: モデル名（例: `gpt-4o-mini`）
+* `ai.model`: モデル名（例: `gpt-6.1-terra`）
 * `ai.api_key`: API キー（ローカル LLM 等で空の場合は Bearer ヘッダーを省略。環境変数 `IBIS_AI_API_KEY` / `OPENAI_API_KEY` をフォールバックとして参照可能）
 
 ### 3. `crates/ibis-office-shell`（LLM クライアント & サイドバー UI）

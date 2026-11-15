@@ -70,7 +70,7 @@ impl SlideEditor {
             let model_input = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(cfg.model)
-                    .placeholder("gpt-4o-mini")
+                    .placeholder("gpt-6.1-terra")
             });
             let api_key_input = cx.new(|cx| {
                 InputState::new(window, cx)

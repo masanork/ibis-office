@@ -13,7 +13,7 @@ pub const SETTING_MODEL: &str = "ai.model";
 pub const SETTING_API_KEY: &str = "ai.api_key";
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
+pub const DEFAULT_MODEL: &str = "gpt-6.1-terra";
 
 /// Local configuration for the OpenAI-compatible endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
