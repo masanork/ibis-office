@@ -93,3 +93,10 @@ signature was verified with OpenSSL. The key was discarded.
 `location-hints-signed.docx` are synthetic certificates and a signed package
 with placeholder OCSP, CA-issuer, and CRL addresses under `.invalid`. The
 package signature was independently checked with LibreSSL; the key was discarded.
+
+`ocsp-*.der` are synthetic certificates and OCSP responses generated with
+Python cryptography. LibreSSL independently verified the response signatures;
+the private keys were discarded. The response signer is deliberately
+untrusted and unauthorized, so a matching signature does not establish
+responder authorization. The two issuer certificates have the same subject
+and different keys.

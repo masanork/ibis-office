@@ -122,6 +122,30 @@ observations. It does not establish issuer trust or CRL applicability. A serial
 being absent does not establish that a certificate is not revoked. Scoped,
 indirect, delta and unrecognized CRL extensions remain unsupported.
 
+To inspect a caller-supplied OCSP response, provide an explicit time, the
+certificate issuer and the response signer certificate. `--ocsp` can be repeated:
+
+```sh
+cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx \
+  --at 1794614400 --ocsp response.der --ocsp-issuer issuer.der \
+  --ocsp-responder responder.der
+```
+
+The offline observations separate the response signature and responder ID from
+CertID name, key and serial comparisons, claimed status, and response times.
+The SHA-1 used in some identifiers is a protocol identifier, not a signature
+or trust decision. The signer certificate is supplied by the caller; embedded
+response certificates are counted but not selected automatically. At most 64
+individual responses are reported, with truncation indicated. Unsupported
+response types, hash algorithms and signature algorithms are not evaluated.
+See [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960).
+
+All status claims remain unauthenticated observations, including `Good`.
+Responder authorization and EKU, certificate paths and validity, nonce,
+extension semantics, clock skew and freshness policy are not validated. The
+output does not establish revocation status, trust, or legal validity and no
+network access is performed.
+
 An external interoperability probe used the Apache POI test documents at
 [commit 47dcff769bb395034dddfd59c4609659b6dbc6a4](https://github.com/apache/poi/tree/47dcff769bb395034dddfd59c4609659b6dbc6a4/test-data/xmldsign).
 DOCX, XLSX, PPTX, and a two-signature DOCX were detected. The signature values,

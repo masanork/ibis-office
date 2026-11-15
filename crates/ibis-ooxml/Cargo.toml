@@ -30,6 +30,7 @@ rsa = { version = "0.9.8", default-features = false, features = ["std", "sha2", 
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
 p384 = { version = "0.13.1", default-features = false, features = ["ecdsa"] }
 x509-cert = { version = "0.2.5", default-features = false, features = ["std"] }
+x509-ocsp = { version = "0.2.1", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # RSA's dependency graph includes getrandom even for verification-only builds.

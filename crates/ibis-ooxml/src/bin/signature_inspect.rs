@@ -15,12 +15,15 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let path = args.next().ok_or("usage: ibis-signature-inspect <docx|xlsx|pptx> [--at <unix-seconds>] [--anchor <der>] [--intermediate <der>]")?;
+    let path = args.next().ok_or("usage: ibis-signature-inspect <docx|xlsx|pptx> [--at <unix-seconds>] [--anchor <der>] [--intermediate <der>] [--crl <der> --crl-issuer <der>] [--ocsp <der> --ocsp-issuer <der> --ocsp-responder <der>]")?;
     let mut reference_time: Option<u64> = None;
     let mut anchors = Vec::new();
     let mut intermediates = Vec::new();
     let mut crls = Vec::new();
     let mut crl_issuer = None;
+    let mut ocsps = Vec::new();
+    let mut ocsp_issuer = None;
+    let mut ocsp_responder = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--at") if reference_time.is_none() => {
@@ -42,6 +45,19 @@ fn run() -> Result<(), String> {
                 let issuer_path = args.next().ok_or("--crl-issuer requires a DER file")?;
                 crl_issuer = Some(read_limited(&issuer_path, 1024 * 1024)?);
             }
+            Some("--ocsp") => {
+                let response_path = args.next().ok_or("--ocsp requires a DER file")?;
+                ocsps.push(read_limited(&response_path, 8 * 1024 * 1024)?);
+                if ocsps.len() > 8 { return Err("too many OCSP files".into()); }
+            }
+            Some("--ocsp-issuer") if ocsp_issuer.is_none() => {
+                let issuer_path = args.next().ok_or("--ocsp-issuer requires a DER file")?;
+                ocsp_issuer = Some(read_limited(&issuer_path, 1024 * 1024)?);
+            }
+            Some("--ocsp-responder") if ocsp_responder.is_none() => {
+                let responder_path = args.next().ok_or("--ocsp-responder requires a DER file")?;
+                ocsp_responder = Some(read_limited(&responder_path, 1024 * 1024)?);
+            }
             _ => return Err("unknown or repeated option".into()),
         }
     }
@@ -49,6 +65,10 @@ fn run() -> Result<(), String> {
     if (!crls.is_empty() || crl_issuer.is_some()) && (crls.is_empty() || crl_issuer.is_none() || reference_time.is_none()) {
         return Err("CRL inspection requires --crl, --crl-issuer, and --at".into());
     }
+    if (!ocsps.is_empty() || ocsp_issuer.is_some() || ocsp_responder.is_some()) && (ocsps.is_empty() || ocsp_issuer.is_none() || ocsp_responder.is_none() || reference_time.is_none()) {
+        return Err("OCSP inspection requires --ocsp, --ocsp-issuer, --ocsp-responder, and --at".into());
+    }
+    if ocsps.iter().map(Vec::len).sum::<usize>() > 16 * 1024 * 1024 { return Err("OCSP inputs exceed 16 MiB".into()); }
     if crls.iter().map(Vec::len).sum::<usize>() > 16 * 1024 * 1024 { return Err("CRL inputs exceed 16 MiB".into()); }
     if anchors.iter().chain(intermediates.iter()).map(Vec::len).sum::<usize>() > 4 * 1024 * 1024 { return Err("certificate inputs exceed 4 MiB".into()); }
     let bytes = read_limited(&path, 128 * 1024 * 1024)?;
@@ -99,6 +119,21 @@ fn run() -> Result<(), String> {
                 println!("    Time {:?}; thisUpdate {}; nextUpdate {:?}", facts.time_status, facts.this_update, facts.next_update);
                 println!("    Scope {:?}; listed revocation time {:?}", facts.scope, facts.listed_revocation_time);
                 println!("    CRL applicability and issuer trust: NOT EVALUATED");
+            }
+        }
+        if let (Some(time), Some(issuer), Some(responder)) = (reference_time, ocsp_issuer.as_deref(), ocsp_responder.as_deref()) {
+            let cert = signatures::extract_single_embedded_certificate(&package, &report.signature_part).map_err(|e| e.to_string())?;
+            for (index, response) in ocsps.iter().enumerate() {
+                let observation = ibis_ooxml::ocsp::inspect_ocsp(response, &cert, issuer, responder, time).map_err(|e| e.to_string())?;
+                println!("  OCSP {} observations (NOT a revocation verdict): protocol {:?}; response type {:?}", index + 1, observation.response_status, observation.response_type);
+                if let Some(basic) = observation.basic {
+                    println!("    Signature {:?}; responder ID {:?}; target issuer name exact {}", basic.signature, basic.responder_id, basic.issuer_name_exact);
+                    println!("    Produced at {}; after reference time {}; response extensions present {}; embedded certificates {}; responses {} (truncated: {})", basic.produced_at, basic.produced_after_reference_time, basic.response_extensions_present, basic.embedded_certificates, basic.total_responses, basic.responses_truncated);
+                    for (position, single) in basic.responses.iter().enumerate() {
+                        println!("    Response {}: CertID {:?}; UNAUTHENTICATED claim {:?}; thisUpdate {}; nextUpdate {:?}; window {:?}; extensions present {}", position + 1, single.cert_id, single.claimed_status, single.this_update, single.next_update, single.time_window, single.extensions_present);
+                    }
+                } else { println!("    Basic response: NOT INSPECTED."); }
+                println!("    Responder authorization, issuer trust, nonce, extension semantics and revocation: NOT EVALUATED");
             }
         }
         let value = match report.signature_value {

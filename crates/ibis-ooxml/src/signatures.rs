@@ -193,7 +193,7 @@ pub struct CertificateLinkFacts {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CertificateSignature { Matches, Differs, Unsupported }
 
-fn verify_rsa_sha2(algorithm: &str, key: rsa::RsaPublicKey, message: &[u8], signature: &rsa::pkcs1v15::Signature) -> bool {
+pub(crate) fn verify_rsa_sha2(algorithm: &str, key: rsa::RsaPublicKey, message: &[u8], signature: &rsa::pkcs1v15::Signature) -> bool {
     use rsa::{pkcs1v15::VerifyingKey, signature::Verifier};
     match algorithm {
         "sha256" => VerifyingKey::<Sha256>::new(key).verify(message, signature).is_ok(),
@@ -203,7 +203,7 @@ fn verify_rsa_sha2(algorithm: &str, key: rsa::RsaPublicKey, message: &[u8], sign
     }
 }
 
-fn rsa_x509_hash(oid: &str) -> Option<&'static str> {
+pub(crate) fn rsa_x509_hash(oid: &str) -> Option<&'static str> {
     match oid {
         "1.2.840.113549.1.1.11" => Some("sha256"),
         "1.2.840.113549.1.1.12" => Some("sha384"),
@@ -214,7 +214,7 @@ fn rsa_x509_hash(oid: &str) -> Option<&'static str> {
 
 /// Compare X.509 RSA-PSS signatures only for explicit SHA-256/MGF1-SHA256,
 /// a 32-byte salt, and an ordinary rsaEncryption issuer key.
-fn inspect_rsa_pss_x509_signature(
+pub(crate) fn inspect_rsa_pss_x509_signature(
     algorithm: &x509_cert::spki::AlgorithmIdentifierOwned,
     issuer: &x509_cert::spki::SubjectPublicKeyInfoOwned,
     message: &[u8], signature: &[u8],
@@ -238,7 +238,7 @@ fn inspect_rsa_pss_x509_signature(
 }
 
 /// Compare supported X.509 ECDSA signatures, encoded as DER (unlike XMLDSig).
-fn inspect_ecdsa_x509_signature(
+pub(crate) fn inspect_ecdsa_x509_signature(
     algorithm: &x509_cert::spki::AlgorithmIdentifierOwned,
     issuer: &x509_cert::spki::SubjectPublicKeyInfoOwned,
     message: &[u8], signature: &[u8],

@@ -535,3 +535,36 @@ fn certificate_location_hints_do_not_trigger_loopback_fetches() {
     let error = listener.accept().expect_err("inspector must not connect to the supplied endpoint");
     assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
 }
+
+#[test]
+fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    let mut package = Package::open(std::fs::read(fixtures.join("synthetic-signed.docx")).unwrap()).unwrap();
+    let signature = "_xmlsignatures/sig1.xml";
+    let previous = ibis_ooxml::signatures::extract_single_embedded_certificate(&package, signature).unwrap();
+    let leaf = std::fs::read(fixtures.join("ocsp-leaf.der")).unwrap();
+    let xml = String::from_utf8(package.read(signature).unwrap()).unwrap();
+    let changed = xml.replace(&ibis_ooxml::base64::encode(&previous), &ibis_ooxml::base64::encode(&leaf));
+    assert_ne!(xml, changed);
+    package.set_bytes(signature, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-signature-cli-ocsp-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .args(["--at", "0", "--ocsp"]).arg(fixtures.join("ocsp-good.der"))
+        .arg("--ocsp").arg(fixtures.join("ocsp-revoked.der"))
+        .arg("--ocsp-issuer").arg(fixtures.join("ocsp-issuer.der"))
+        .arg("--ocsp-responder").arg(fixtures.join("ocsp-responder.der")).output().unwrap();
+    let incomplete = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .arg("--ocsp").arg(fixtures.join("ocsp-good.der")).output().unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("OCSP 1 observations (NOT a revocation verdict)"));
+    assert!(text.contains("Signature Matches; responder ID ByKeySha1(true)"));
+    assert!(text.contains("issuer_name_hash_equal: true, issuer_key_hash_equal: true, serial_equal: true"));
+    assert!(text.contains("UNAUTHENTICATED claim Good"));
+    assert!(text.contains("UNAUTHENTICATED claim Revoked"));
+    assert!(text.contains("response extensions present true"));
+    assert!(text.contains("Responder authorization, issuer trust, nonce, extension semantics and revocation: NOT EVALUATED"));
+    assert_eq!(incomplete.status.code(), Some(2));
+}

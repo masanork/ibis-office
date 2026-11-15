@@ -14,7 +14,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 
-## Rust の部品（607 件）
+## Rust の部品（608 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -583,6 +583,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | x11rb | 0.13.2 | MIT OR Apache-2.0 | https://github.com/psychon/x11rb |
 | x11rb-protocol | 0.13.2 | MIT OR Apache-2.0 | https://github.com/psychon/x11rb |
 | x509-cert | 0.2.5 | Apache-2.0 OR MIT | https://github.com/RustCrypto/formats/tree/master/x509-cert |
+| x509-ocsp | 0.2.1 | Apache-2.0 OR MIT | https://github.com/RustCrypto/formats/tree/master/x509-ocsp |
 | xcursor | 0.3.11 | MIT | https://github.com/esposm03/xcursor-rs |
 | xim | 0.5.0 | MIT | https://github.com/Riey/xim-rs |
 | xim-ctext | 0.4.1 | MIT | https://github.com/Riey/xim-rs |
@@ -1459,6 +1460,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **x11rb 0.13.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2019 x11rb Contributers
 - **x11rb-protocol 0.13.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2019 x11rb Contributers
 - **x509-cert 0.2.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2021 The RustCrypto Project Developers
+- **x509-ocsp 0.2.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2021-2024 The RustCrypto Project Developers
 - **xcursor 0.3.11**：Copyright (c) 2020 Samuele Esposito
 - **xim 0.5.0**：Copyright (c) 2020 Riey
 - **xkbcommon 0.8.0**：Copyright (c) 2016 Remi Thebault <remi.thebault@gmail.com>
