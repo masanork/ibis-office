@@ -959,6 +959,25 @@ file.standard-copy-saved	コピーを新しい暗号化方式で保存しまし�
 file.standard-copy-format	パスワードを維持するため、コピーは Office 形式で保存してください。
 start.version	ver.{version}
 shell.open-failed.title	ファイルを開けませんでした
+file.signature-warning.title	電子署名
+file.signature-warning.message	このファイルには電子署名があります。署名の有効性は確認していません。編集や保存で署名が無効になる場合があります。署名済みの元ファイルを保管してください。
+file.signature-warning.unknown	ファイルの署名情報を確認できませんでした。編集や保存で署名が無効になる場合があります。元ファイルを保管してください。
+file.signature-save.title	変更を保存しますか？
+file.signature-save.message	変更を保存すると、ファイルの電子署名が無効になる場合があります。保存を続けますか？
+file.signature-save.unknown	ファイルの署名情報を確認できませんでした。変更の保存により署名が無効になる場合があります。保存を続けますか？
+file.signature-output.message	コピーや書き出し先に署名が引き継がれないか、署名が無効になる場合があります。続けますか？
+file.signature-output.unknown	ファイルの署名情報を確認できませんでした。コピーや書き出し先に署名が引き継がれないか、署名が無効になる場合があります。続けますか？
+file.signature-inspect	電子署名を調べる…
+file.signature-inspect.title	電子署名の調査
+file.signature-inspect.checking	開いた時点のファイルを調べています…
+file.signature-inspect.boundary	以下は開いた時点のファイルについての結果で、その後の編集や保存は反映されません。証明書の信頼・失効、タイムスタンプ、文書全体が署名対象かどうかは確認していません。一致していても署名の有効性は確定しません。
+file.signature-inspect.none	パッケージ内に署名は見つかりませんでした。
+file.signature-inspect.failed	署名情報を調べられないか、未対応の形式です。信頼性や有効性は確認できていません。
+file.signature-inspect.matches	一致
+file.signature-inspect.differs	不一致または欠落
+file.signature-inspect.unknown	未確認
+file.signature-inspect.entry	署名 {number}: 署名値 {value}、パッケージ情報のダイジェスト {object}。参照先は一致 {matching} 件、不一致・欠落 {differing} 件、未確認 {unknown} 件。
+file.signature-inspect.truncated	これ以外の署名は表示していません。
 shell.file-name-menu.tooltip	ファイル名のメニュー
 shell.file-name-menu.copy-name	ファイル名をコピー
 shell.file-name-menu.copy-path	ファイルパスをコピー

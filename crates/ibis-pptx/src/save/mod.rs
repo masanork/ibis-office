@@ -309,6 +309,17 @@ pub fn open(data: impl Into<Arc<[u8]>>) -> Result<Opened, Error> {
 }
 
 impl Source {
+    /// Whether the original package declares digital signature parts. This is
+    /// discovery only and does not assert that any signature is valid.
+    pub fn has_package_signatures(&self) -> Result<bool, ibis_ooxml::Error> {
+        ibis_ooxml::signatures::signature_parts(&self.package).map(|parts| !parts.is_empty())
+    }
+
+    /// Inspect the original package, without asserting signature trust.
+    pub fn inspect_package_signatures(&self) -> Result<Vec<ibis_ooxml::signatures::SignatureInspection>, ibis_ooxml::Error> {
+        ibis_ooxml::signatures::inspect_signatures(&self.package)
+    }
+
     /// The package read (for the parts the model does not keep, such as the theme).
     pub(crate) fn package(&self) -> &Package {
         &self.package
