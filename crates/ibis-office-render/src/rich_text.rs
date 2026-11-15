@@ -1536,7 +1536,7 @@ impl Element for RichParagraphElement {
                         for run in &shaped.runs {
                             for glyph in &run.glyphs {
                                 let before = text[..glyph.index.min(text.len())].chars().count();
-                                let dx: f32 = (i..(i + before).min(j)).map(|k| layout.chars[k].advance + char_extra(k) - layout.chars[k].raw).sum();
+                                let dx = spaced_glyph_dx(&layout.chars[i..j], before, i, &char_extra, piece.kana_widths.is_some(), piece.spacing_px());
                                 let _ = window.paint_glyph(at + glyph.position + point(px(dx), px(0.0)), run.font_id, glyph.id, px(piece.size), color);
                             }
                         }
@@ -2003,11 +2003,38 @@ fn paint_inner_shadow(
 
 /// Paint `shaped` (the line of `text`) glyph by glyph from `baseline`,
 /// placing each character at its laid-out advance (`c.advance + extra`).
+/// Center a kana glyph within its narrowed `kana_widths` cell so fallback fonts with centered 1em glyphs
+/// (e.g. Noto Sans CJK JP / Hiragino Sans) do not clip into the following character.
+fn kana_center_dx(c: &Char, has_kana_widths: bool, spacing_px: f32) -> f32 {
+    if has_kana_widths
+        && matches!(c.c as u32, 0x3041..=0x30fa | 0x30fc..=0x30fe)
+    {
+        let target = c.advance - spacing_px;
+        if target < c.raw {
+            return -0.5 * (c.raw - target);
+        }
+    }
+    0.0
+}
+
+fn spaced_glyph_dx(chars: &[Char], before: usize, start_index: usize, char_extra: &dyn Fn(usize) -> f32, has_kana_widths: bool, spacing_px: f32) -> f32 {
+    let n = before.min(chars.len());
+    let cum: f32 = chars[..n]
+        .iter()
+        .enumerate()
+        .map(|(k, c)| c.advance + char_extra(start_index + k) - c.raw)
+        .sum();
+    let center = chars.get(before).map_or(0.0, |c| kana_center_dx(c, has_kana_widths, spacing_px));
+    cum + center
+}
+
 fn paint_spaced(shaped: &ShapedLine, text: &str, chars: &[Char], start_index: usize, char_extra: &dyn Fn(usize) -> f32, piece: &Piece, baseline: Point<Pixels>, window: &mut Window) {
+    let has_kana_widths = piece.kana_widths.is_some();
+    let spacing_px = piece.spacing_px();
     for run in &shaped.runs {
         for glyph in &run.glyphs {
             let before = text[..glyph.index.min(text.len())].chars().count();
-            let dx: f32 = chars[..before.min(chars.len())].iter().enumerate().map(|(k, c)| c.advance + char_extra(start_index + k) - c.raw).sum();
+            let dx = spaced_glyph_dx(chars, before, start_index, char_extra, has_kana_widths, spacing_px);
             let at = point(baseline.x + glyph.position.x + px(dx), baseline.y + glyph.position.y);
             let _ = if glyph.is_emoji {
                 window.paint_emoji(at, run.font_id, glyph.id, px(piece.size))
@@ -2910,6 +2937,17 @@ mod tests {
         assert_eq!(kana_width_advance(w, 'ヽ', None, 20.0, 0.0), Some(expected_iter));
         assert_eq!(kana_width_advance(w, 'ヾ', None, 20.0, 0.0), Some(expected_iter));
         assert_eq!(kana_width_advance(w, 'ー', Some('（'), 20.0, 0.0), None);
+    }
+
+    #[test]
+    fn spaced_glyph_dx_centers_narrowed_kana_without_shifting_fullwidth_chars() {
+        use super::spaced_glyph_dx;
+        let mut c_chars = chars("ア亜", 20.0);
+        c_chars[0].advance = 14.0;
+        // 'ア' (narrowed from 20 to 14) shifts left by -0.5 * (20 - 14) = -3.0.
+        assert!((spaced_glyph_dx(&c_chars, 0, 0, &|_| 0.0, true, 0.0) - (-3.0)).abs() < 1e-4);
+        // '亜' (not kana) only picks up 'ア''s cumulative advance delta (-6.0), with no centering.
+        assert!((spaced_glyph_dx(&c_chars, 1, 0, &|_| 0.0, true, 0.0) - (-6.0)).abs() < 1e-4);
     }
 }
 
