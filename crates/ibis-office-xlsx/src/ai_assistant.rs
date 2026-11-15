@@ -4,7 +4,7 @@
 //! Assistant sidebar for spreadsheets (OpenAI-compatible SSE + Tool Calling).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -57,6 +57,7 @@ pub struct AiAssistantPanel {
     pub streaming: bool,
     pub streaming_text: String,
     pub run_id: u64,
+    pub _prompt_subscription: Subscription,
 }
 
 #[ibis_office_macros::editor_ext(AiAssistantPanelExt)]
@@ -67,8 +68,17 @@ impl SlideEditor {
             let cfg = AiConfig::load();
             let prompt_input = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("指示を入力 (例: B2:B10の合計をB11に入れて太字に)")
+                    .placeholder("指示を入力 (Enterで送信)")
             });
+            let _prompt_subscription = cx.subscribe_in(
+                &prompt_input,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
+                        this.send_ai_assistant_prompt(window, cx);
+                    }
+                },
+            );
             let base_url_input = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(cfg.base_url)
@@ -97,6 +107,7 @@ impl SlideEditor {
                 streaming: false,
                 streaming_text: String::new(),
                 run_id: 0,
+                _prompt_subscription,
             });
             prompt_input.update(cx, |input, cx| input.focus(window, cx));
         }
@@ -164,8 +175,8 @@ impl SlideEditor {
     }
 
     fn send_ai_assistant_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (prompt, run_id, mut messages_to_send) = {
-            let Some(p) = self.wb_mut().panels.ai_assistant.as_mut() else {
+        let prompt = {
+            let Some(p) = self.wb().panels.ai_assistant.as_ref() else {
                 return;
             };
             if p.streaming {
@@ -175,7 +186,21 @@ impl SlideEditor {
             if prompt.is_empty() {
                 return;
             }
-            p.prompt_input.update(cx, |input, cx| input.set_value("", window, cx));
+            p.prompt_input
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            prompt
+        };
+        self.submit_ai_assistant_text(prompt, cx);
+    }
+
+    fn submit_ai_assistant_text(&mut self, prompt: String, cx: &mut Context<Self>) {
+        let (run_id, mut messages_to_send) = {
+            let Some(p) = self.wb_mut().panels.ai_assistant.as_mut() else {
+                return;
+            };
+            if p.streaming {
+                return;
+            }
             p.run_id = p.run_id.wrapping_add(1);
             p.streaming = true;
             p.streaming_text.clear();
@@ -191,10 +216,9 @@ impl SlideEditor {
                      Respond concisely in the user's language.",
                 ));
             }
-            p.history.push(ChatMessage::user(prompt.clone()));
-            (prompt, p.run_id, p.history.clone())
+            p.history.push(ChatMessage::user(prompt));
+            (p.run_id, p.history.clone())
         };
-        let _ = prompt;
         let overview_context = self.ai_workbook_overview_json();
         if let Some(last) = messages_to_send.last_mut() {
             if last.role == "user" {
@@ -884,12 +908,53 @@ impl SlideEditor {
 
         let mut msg_list = v_flex().gap_2();
         if messages.is_empty() && streaming_text.is_empty() {
-            msg_list = msg_list.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("セル範囲の集計、数式の作成、書式設定などを指示できます。"),
-            );
+            msg_list = msg_list
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("セル範囲の集計、数式の作成、書式設定などを指示できます。"),
+                )
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("ai-quick-summarize")
+                                .outline()
+                                .xsmall()
+                                .label("選択範囲を要約")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.submit_ai_assistant_text(
+                                        "現在の選択範囲（なければ使用範囲）を読み取って内容を要約してください。".to_string(),
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .child(
+                            Button::new("ai-quick-format")
+                                .outline()
+                                .xsmall()
+                                .label("表を見やすく整形")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.submit_ai_assistant_text(
+                                        "アクティブシートの表を確認し、見出しを太字・背景色付きにし、罫線と数値書式を整えてください。".to_string(),
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .child(
+                            Button::new("ai-quick-readability")
+                                .outline()
+                                .xsmall()
+                                .label("機械可読性チェック")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.submit_ai_assistant_text(
+                                        "このブックの機械可読性をチェックし、改善点があれば報告してください。".to_string(),
+                                        cx,
+                                    );
+                                })),
+                        ),
+                );
         }
         for (idx, msg) in messages.iter().enumerate() {
             let (bg, fg) = match msg.kind {

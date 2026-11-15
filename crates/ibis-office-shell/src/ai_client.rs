@@ -341,6 +341,9 @@ fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str
 }
 
 /// Send a streaming Chat Completions request and invoke `on_delta` for each text chunk.
+///
+/// Automatically retries once if the endpoint returns HTTP 400 complaining about
+/// `reasoning_effort` (switching between `Some("none")` and `None`).
 #[cfg(not(target_family = "wasm"))]
 pub async fn stream_chat_completion(
     config: &AiConfig,
@@ -348,12 +351,35 @@ pub async fn stream_chat_completion(
     tools: Vec<ToolDefinition>,
     mut on_delta: impl FnMut(&str),
 ) -> Result<CompletionOutcome, String> {
+    let initial = default_reasoning_effort(&config.model, !tools.is_empty());
+    match stream_chat_completion_once(config, messages, tools.clone(), initial, &mut on_delta)
+        .await
+    {
+        Ok(outcome) => Ok(outcome),
+        Err(err)
+            if err.starts_with("HTTP 400:")
+                && err.to_ascii_lowercase().contains("reasoning_effort") =>
+        {
+            let fallback = if initial.is_some() { None } else { Some("none") };
+            stream_chat_completion_once(config, messages, tools, fallback, &mut on_delta).await
+        }
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn stream_chat_completion_once(
+    config: &AiConfig,
+    messages: &[ChatMessage],
+    tools: Vec<ToolDefinition>,
+    reasoning_effort: Option<&'static str>,
+    on_delta: &mut impl FnMut(&str),
+) -> Result<CompletionOutcome, String> {
     use futures::StreamExt as _;
     use std::io::{BufRead as _, BufReader as StdBufReader, Write as _};
     use std::process::{Command, Stdio};
 
     let url = config.completions_url();
-    let reasoning_effort = default_reasoning_effort(&config.model, !tools.is_empty());
     let payload = serde_json::to_vec(&ChatCompletionRequest {
         model: &config.model,
         messages,
