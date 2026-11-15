@@ -9,14 +9,16 @@ use hayro_interpret::font::Glyph;
 use hayro_interpret::hayro_cmap::BfString;
 use hayro_interpret::hayro_syntax::Pdf;
 use hayro_interpret::{
-    BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache,
-    InterpreterSettings, Paint, PathDrawMode, SoftMask, interpret_page,
+    BlendMode, ClipPath, Context, Device, FillRule as HayroFillRule, GlyphDrawMode, Image,
+    ImageData, InterpreterCache, InterpreterSettings, LumaData, Paint, PathDrawMode, SoftMask,
+    interpret_page,
 };
-use kurbo::{Affine, BezPath, Rect, Shape};
+use kurbo::{Affine, BezPath, PathEl, Rect, Shape};
 
 use crate::container::PdfContainer;
 use crate::scene::{
-    CharBox, DisplayCmd, PageInfo, PageScene, PageTextIndex, PdfRect, collect_pages,
+    CharBox, DisplayCmd, FillRule, PageInfo, PageScene, PageTextIndex, PathCmd, PdfRect,
+    collect_pages,
 };
 use crate::{Error, Result};
 
@@ -109,17 +111,47 @@ impl<'a> Device<'a> for SceneDevice {
         self.op_counter += 1;
         let transformed = transform * path;
         let bounds = rect_to_pdf_rect(transformed.bounding_box());
+        let commands: Vec<PathCmd> = transformed
+            .elements()
+            .iter()
+            .map(|el| match el {
+                PathEl::MoveTo(p) => PathCmd::MoveTo(p.x as f32, p.y as f32),
+                PathEl::LineTo(p) => PathCmd::LineTo(p.x as f32, p.y as f32),
+                PathEl::QuadTo(c, p) => {
+                    PathCmd::QuadTo(c.x as f32, c.y as f32, p.x as f32, p.y as f32)
+                }
+                PathEl::CurveTo(c1, c2, p) => PathCmd::CubicTo(
+                    c1.x as f32,
+                    c1.y as f32,
+                    c2.x as f32,
+                    c2.y as f32,
+                    p.x as f32,
+                    p.y as f32,
+                ),
+                PathEl::ClosePath => PathCmd::Close,
+            })
+            .collect();
+
         let rgba = paint_rgba(paint);
-        let (fill_rgba, stroke_rgba, stroke_width) = match draw_mode {
-            PathDrawMode::Fill(_) => (Some(rgba), None, 0.0),
-            PathDrawMode::Stroke(props) => (None, Some(rgba), props.line_width),
+        let (fill_rule, fill_rgba, stroke_rgba, stroke_width) = match draw_mode {
+            PathDrawMode::Fill(rule) => (
+                match rule {
+                    HayroFillRule::NonZero => FillRule::NonZero,
+                    HayroFillRule::EvenOdd => FillRule::EvenOdd,
+                },
+                Some(rgba),
+                None,
+                0.0,
+            ),
+            PathDrawMode::Stroke(props) => (FillRule::NonZero, None, Some(rgba), props.line_width),
         };
         self.display_list.push(DisplayCmd::DrawPath {
             bounds,
+            commands,
+            fill_rule,
             fill_rgba,
             stroke_rgba,
             stroke_width,
-            segment_count: path.elements().len(),
         });
     }
 
@@ -186,17 +218,37 @@ impl<'a> Device<'a> for SceneDevice {
 
     fn draw_image(&mut self, image: Image<'a, '_>, transform: Affine) {
         self.op_counter += 1;
-        let (width, height) = match &image {
-            Image::Stencil(s) => (s.width(), s.height()),
-            Image::Raster(r) => (r.width(), r.height()),
-        };
-        let unit = Rect::new(0.0, 0.0, width as f64, height as f64);
-        let bounds = rect_to_pdf_rect(transform.transform_rect_bbox(unit));
-        self.display_list.push(DisplayCmd::DrawImage {
-            bounds,
-            width,
-            height,
-        });
+        match image {
+            Image::Stencil(s) => {
+                let unit = Rect::new(0.0, 0.0, s.width() as f64, s.height() as f64);
+                let bounds = rect_to_pdf_rect(transform.transform_rect_bbox(unit));
+                self.display_list.push(DisplayCmd::DrawImage {
+                    bounds,
+                    width: s.width(),
+                    height: s.height(),
+                    rgba: Vec::new(),
+                });
+            }
+            Image::Raster(r) => {
+                let mut decoded_out = None;
+                r.with_rgba(
+                    |img, alpha| {
+                        decoded_out = Some(image_to_rgba(img, alpha));
+                    },
+                    None,
+                );
+                if let Some((width, height, rgba)) = decoded_out {
+                    let unit = Rect::new(0.0, 0.0, width as f64, height as f64);
+                    let bounds = rect_to_pdf_rect(transform.transform_rect_bbox(unit));
+                    self.display_list.push(DisplayCmd::DrawImage {
+                        bounds,
+                        width,
+                        height,
+                        rgba,
+                    });
+                }
+            }
+        }
     }
 
     fn pop_clip_path(&mut self) {
@@ -205,5 +257,41 @@ impl<'a> Device<'a> for SceneDevice {
 
     fn pop_transparency_group(&mut self) {
         self.display_list.push(DisplayCmd::PopTransparencyGroup);
+    }
+}
+
+fn image_to_rgba(img: ImageData, alpha: Option<LumaData>) -> (u32, u32, Vec<u8>) {
+    match img {
+        ImageData::Rgb(rgb) => {
+            let count = (rgb.width as usize) * (rgb.height as usize);
+            let mut rgba = Vec::with_capacity(count * 4);
+            for i in 0..count {
+                let base = i * 3;
+                let a = alpha
+                    .as_ref()
+                    .and_then(|al| al.data.get(i).copied())
+                    .unwrap_or(255);
+                rgba.extend_from_slice(&[
+                    rgb.data[base],
+                    rgb.data[base + 1],
+                    rgb.data[base + 2],
+                    a,
+                ]);
+            }
+            (rgb.width, rgb.height, rgba)
+        }
+        ImageData::Luma(luma) => {
+            let count = (luma.width as usize) * (luma.height as usize);
+            let mut rgba = Vec::with_capacity(count * 4);
+            for i in 0..count {
+                let v = luma.data[i];
+                let a = alpha
+                    .as_ref()
+                    .and_then(|al| al.data.get(i).copied())
+                    .unwrap_or(255);
+                rgba.extend_from_slice(&[v, v, v, a]);
+            }
+            (luma.width, luma.height, rgba)
+        }
     }
 }

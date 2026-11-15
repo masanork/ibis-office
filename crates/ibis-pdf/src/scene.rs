@@ -37,6 +37,22 @@ pub struct PageInfo {
     pub rotate: u16,
 }
 
+/// Path segment in PDF user/device space points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PathCmd {
+    MoveTo(f32, f32),
+    LineTo(f32, f32),
+    QuadTo(f32, f32, f32, f32),
+    CubicTo(f32, f32, f32, f32, f32, f32),
+    Close,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillRule {
+    NonZero,
+    EvenOdd,
+}
+
 /// Drawing commands emitted by a page interpreter for GPUI rendering.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DisplayCmd {
@@ -52,10 +68,11 @@ pub enum DisplayCmd {
     },
     DrawPath {
         bounds: PdfRect,
+        commands: Vec<PathCmd>,
+        fill_rule: FillRule,
         fill_rgba: Option<[u8; 4]>,
         stroke_rgba: Option<[u8; 4]>,
         stroke_width: f32,
-        segment_count: usize,
     },
     DrawGlyphRun {
         text: String,
@@ -67,6 +84,7 @@ pub enum DisplayCmd {
         bounds: PdfRect,
         width: u32,
         height: u32,
+        rgba: Vec<u8>,
     },
 }
 
