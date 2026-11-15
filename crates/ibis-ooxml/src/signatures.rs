@@ -398,6 +398,8 @@ pub struct CrlFacts {
     pub next_update: Option<u64>,
     pub time_status: CrlTime,
     pub scope: CrlScope,
+    /// Structural observation only; does not establish CRL applicability or trust.
+    pub crl_number: CrlNumberObservation,
     /// A serial number match only. Meaning depends on scope, issuer and time.
     pub listed_revocation_time: Option<u64>,
 }
@@ -408,12 +410,17 @@ pub enum CrlTime { NotYetIssued, WithinWindow, Expired, NoNextUpdate }
 #[derive(Debug, PartialEq, Eq)]
 pub enum CrlScope { NoScopeExtensionsObserved, UnsupportedExtensions }
 
+/// Presence, criticality, and DER decoding of the CRL number extension.
+/// No comparison with another CRL or issuer policy is performed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CrlNumberObservation { Missing, NonCritical, Critical, MalformedNonCritical, MalformedCritical }
+
 /// Inspect a supplied CRL at an explicit time without network or trust lookup.
 /// Delta, indirect, and scoped CRLs are not interpreted; an absent serial is
 /// never presented as a positive certificate-status decision.
 pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference_unix_seconds: u64) -> Result<CrlFacts, Error> {
     use rsa::{pkcs1::DecodeRsaPublicKey, pkcs1v15, traits::PublicKeyParts, RsaPublicKey};
-    use x509_cert::{crl::CertificateList, der::{Decode, Encode}, ext::pkix::KeyUsage, Certificate};
+    use x509_cert::{crl::CertificateList, der::{Decode, Encode}, ext::pkix::{CrlNumber, KeyUsage}, Certificate};
     if crl_der.len() > 8 * 1024 * 1024 || cert_der.len() > 1024 * 1024 || issuer_der.len() > 1024 * 1024 { return Err(Error::new("CRL inputs are too large")); }
     let crl = CertificateList::from_der(crl_der).map_err(|_| Error::new("Invalid CRL"))?;
     let cert = Certificate::from_der(cert_der).map_err(|_| Error::new("Invalid target certificate"))?;
@@ -424,10 +431,19 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
     if end.is_some_and(|t| t < start) { return Err(Error::new("Invalid CRL validity interval")); }
     let time_status = if reference_unix_seconds < start { CrlTime::NotYetIssued } else { match end { Some(end) if reference_unix_seconds >= end => CrlTime::Expired, Some(_) => CrlTime::WithinWindow, None => CrlTime::NoNextUpdate } };
     let mut scope = CrlScope::NoScopeExtensionsObserved;
+    let mut crl_number = CrlNumberObservation::Missing;
     let mut extension_ids = std::collections::HashSet::new();
     for ext in crl.tbs_cert_list.crl_extensions.as_deref().unwrap_or(&[]) {
         let oid = ext.extn_id.to_string();
         if !extension_ids.insert(oid.clone()) { return Err(Error::new("Duplicate CRL extension")); }
+        if oid == "2.5.29.20" {
+            crl_number = match (ext.critical, CrlNumber::from_der(ext.extn_value.as_bytes()).is_ok()) {
+                (false, true) => CrlNumberObservation::NonCritical,
+                (true, true) => CrlNumberObservation::Critical,
+                (false, false) => CrlNumberObservation::MalformedNonCritical,
+                (true, false) => CrlNumberObservation::MalformedCritical,
+            };
+        }
         if ext.critical || !matches!(oid.as_str(), "2.5.29.20" | "2.5.29.35") { scope = CrlScope::UnsupportedExtensions; }
     }
     let mut listed = None;
@@ -464,7 +480,7 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
     };
     Ok(CrlFacts { issuer_name_exact: crl.tbs_cert_list.issuer == issuer.tbs_certificate.subject,
         certificate_issuer_name_exact: cert.tbs_certificate.issuer == crl.tbs_cert_list.issuer,
-        issuer_crl_sign: issuer_usage, signature, this_update: start, next_update: end, time_status, scope, listed_revocation_time: listed })
+        issuer_crl_sign: issuer_usage, signature, this_update: start, next_update: end, time_status, scope, crl_number, listed_revocation_time: listed })
 }
 
 /// A proposed chain from the signer to a supplied anchor. Edges can have
@@ -2341,5 +2357,39 @@ mod tests {
         let mut scoped = CertificateList::from_der(empty.as_slice()).unwrap();
         scoped.tbs_cert_list.crl_extensions.get_or_insert_with(Vec::new).push(Extension { extn_id: ObjectIdentifier::new_unwrap("2.5.29.28"), critical: true, extn_value: OctetString::new(vec![0x30, 0]).unwrap() });
         assert_eq!(inspect_crl(&scoped.to_der().unwrap(), leaf, issuer, initial.this_update).unwrap().scope, CrlScope::UnsupportedExtensions);
+    }
+
+    #[test]
+    fn crl_number_observations_do_not_decide_revocation() {
+        use x509_cert::{crl::CertificateList, der::{Decode, Encode, asn1::OctetString}};
+        let root = include_bytes!("../../../experiments/certval-crl-probe/data/root.der");
+        let leaf = include_bytes!("../../../experiments/certval-crl-probe/data/leaf.der");
+        let time = 1796083200;
+        for (bytes, expected) in [
+            (include_bytes!("../../../experiments/certval-crl-probe/data/empty.der").as_slice(), CrlNumberObservation::NonCritical),
+            (include_bytes!("../../../experiments/certval-crl-probe/data/missing-number.der").as_slice(), CrlNumberObservation::Missing),
+            (include_bytes!("../../../experiments/certval-crl-probe/data/critical-number.der").as_slice(), CrlNumberObservation::Critical),
+        ] {
+            let facts = inspect_crl(bytes, leaf, root, time).unwrap();
+            assert_eq!(facts.crl_number, expected);
+            assert_eq!(facts.signature, CertificateSignature::Matches);
+            assert_eq!(facts.listed_revocation_time, None);
+        }
+        let critical = inspect_crl(include_bytes!("../../../experiments/certval-crl-probe/data/critical-number.der"), leaf, root, time).unwrap();
+        assert_eq!(critical.scope, CrlScope::UnsupportedExtensions);
+        assert!(inspect_crl(include_bytes!("../../../experiments/certval-crl-probe/data/duplicate-unrelated.der"), leaf, root, time).is_err());
+
+        let mut crl = CertificateList::from_der(include_bytes!("../../../experiments/certval-crl-probe/data/empty.der").as_slice()).unwrap();
+        let number = &mut crl.tbs_cert_list.crl_extensions.as_mut().unwrap()[0];
+        number.extn_value = OctetString::new([0x02, 0x01, 0xff]).unwrap(); // negative INTEGER
+        let changed = crl.to_der().unwrap();
+        let facts = inspect_crl(&changed, leaf, root, time).unwrap();
+        assert_eq!(facts.crl_number, CrlNumberObservation::MalformedNonCritical);
+        assert_eq!(facts.signature, CertificateSignature::Differs);
+        crl.tbs_cert_list.crl_extensions.as_mut().unwrap()[0].critical = true;
+        assert_eq!(inspect_crl(&crl.to_der().unwrap(), leaf, root, time).unwrap().crl_number, CrlNumberObservation::MalformedCritical);
+        let duplicate = crl.tbs_cert_list.crl_extensions.as_ref().unwrap()[0].clone();
+        crl.tbs_cert_list.crl_extensions.as_mut().unwrap().push(duplicate);
+        assert!(inspect_crl(&crl.to_der().unwrap(), leaf, root, time).is_err());
     }
 }

@@ -143,10 +143,13 @@ cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx \
   --at 1794614400 --crl revocations.der --crl-issuer issuer.der
 ```
 
-The CRL output includes signature, issuer-name, update-window and serial-list
+The CRL output includes signature, issuer-name, update-window, CRL number
+extension presence/criticality/DER decoding, and serial-list
 observations. It does not establish issuer trust or CRL applicability. A serial
 being absent does not establish that a certificate is not revoked. Scoped,
-indirect, delta and unrecognized CRL extensions remain unsupported.
+indirect, delta and unrecognized CRL extensions remain unsupported. The CRL
+number observation does not compare CRLs or determine issuer policy; even a
+non-critical, decodable number does not establish CRL applicability or status.
 
 To inspect a caller-supplied OCSP response, provide an explicit time, the
 certificate issuer and the response signer certificate. `--ocsp` can be repeated:
