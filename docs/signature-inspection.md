@@ -163,6 +163,15 @@ signature and identity, request provenance, extension semantics, and request
 or response acceptance are not verified. A request file does not establish
 that the nonce was freshly generated or that the request was sent.
 
+For request-wide, individual-request, response-wide, and individual-response
+extensions, the inspector also reports a bounded inventory of critical flags
+and repeated OIDs, with up to four OID examples in each critical/noncritical
+category. Each inventory examines at most the first 64 extensions and reports
+the total and truncation. Counts and examples do not cover omitted entries;
+unknown critical extensions may be among them. The inventory does not classify
+OIDs as supported or validate their values or semantics, and does not establish
+that the request or response is acceptable. Values are not printed.
+
 All status claims remain unauthenticated observations, including `Good`.
 The supplied responder certificate is also inspected for byte equality with
 the supplied issuer, a proposed issuer link, validity dates at both the explicit

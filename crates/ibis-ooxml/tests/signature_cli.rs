@@ -588,6 +588,8 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
     assert!(text.contains("Responder certificate observations (NOT authorization)"));
     assert!(text.contains("ocsp_signing_eku: Absent"));
     assert!(text.contains("Nonce observation (UNAUTHENTICATED; NOT freshness proof): Absent"));
+    assert!(text.contains("Response extension inventory (UNTRUSTED; NOT interpreted)"));
+    assert!(text.contains("Single-response extension inventory (UNTRUSTED; NOT interpreted)"));
     assert!(text.contains("comparison: Matches"));
     assert!(text.contains("UNAUTHENTICATED claim Good"));
     assert!(text.contains("UNAUTHENTICATED claim Revoked"));
@@ -599,6 +601,8 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
     assert!(request_text.contains("Request/response observations (UNTRUSTED; NOT acceptance)"));
     assert!(request_text.contains("comparison: Matches"));
     assert!(request_text.contains("exact_response_cert_id_counts: [1]"));
+    assert!(request_text.contains("request_extension_inventory"));
+    assert!(request_text.contains("single_request_extension_inventories"));
     assert_eq!(conflicting.status.code(), Some(2));
     assert_eq!(nonce_alone.status.code(), Some(2));
     assert_eq!(empty.status.code(), Some(2));

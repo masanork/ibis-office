@@ -39,6 +39,7 @@ pub struct OcspBasicFacts {
     pub produced_at: u64,
     pub produced_after_reference_time: bool,
     pub response_extensions_present: bool,
+    pub response_extension_inventory: OcspExtensionInventory,
     /// Response nonce observation; not proof of freshness or authenticity.
     pub nonce: OcspNonce,
     pub embedded_certificates: usize,
@@ -201,6 +202,7 @@ pub struct OcspSingleFacts {
     pub next_update: Option<u64>,
     pub time_window: OcspTimeWindow,
     pub extensions_present: bool,
+    pub extension_inventory: OcspExtensionInventory,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -229,6 +231,52 @@ pub enum OcspTimeWindow {
     InvalidWindow,
 }
 
+/// Bounded inventory of extension metadata, not extension interpretation.
+/// Counts cover only `inspected` entries; omitted entries may contain critical
+/// or repeated OIDs. Examples prioritize critical entries, without values.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OcspExtensionInventory {
+    pub present: bool,
+    pub total: usize,
+    pub inspected: usize,
+    pub truncated: bool,
+    pub critical_inspected: usize,
+    pub repeated_oid_entries_inspected: usize,
+    pub critical_examples: Vec<String>,
+    pub other_examples: Vec<String>,
+}
+
+fn extension_inventory(extensions: Option<&x509_cert::ext::Extensions>) -> OcspExtensionInventory {
+    let total = extensions.map_or(0, Vec::len);
+    let mut result = OcspExtensionInventory {
+        present: extensions.is_some(),
+        total,
+        inspected: total.min(64),
+        truncated: total > 64,
+        critical_inspected: 0,
+        repeated_oid_entries_inspected: 0,
+        critical_examples: Vec::new(),
+        other_examples: Vec::new(),
+    };
+    let mut seen = Vec::with_capacity(64);
+    for ext in extensions.into_iter().flatten().take(64) {
+        if seen.contains(&ext.extn_id) {
+            result.repeated_oid_entries_inspected += 1;
+        } else {
+            seen.push(ext.extn_id);
+        }
+        if ext.critical {
+            result.critical_inspected += 1;
+            if result.critical_examples.len() < 4 {
+                result.critical_examples.push(ext.extn_id.to_string());
+            }
+        } else if result.other_examples.len() < 4 {
+            result.other_examples.push(ext.extn_id.to_string());
+        }
+    }
+    result
+}
+
 /// Bounded comparisons of untrusted request and response data, not request
 /// authentication, response acceptance, or a revocation decision.
 #[derive(Debug, PartialEq, Eq)]
@@ -236,6 +284,9 @@ pub struct OcspRequestObservations {
     pub signature_present: bool,
     pub requestor_name_present: bool,
     pub request_extensions_present: bool,
+    pub request_extension_inventory: OcspExtensionInventory,
+    /// Inventories for up to the first 64 request entries.
+    pub single_request_extension_inventories: Vec<OcspExtensionInventory>,
     pub nonce: OcspNonce,
     pub total_requests: usize,
     pub requests_truncated: bool,
@@ -290,6 +341,16 @@ pub fn inspect_ocsp_request(
         signature_present: request.optional_signature.is_some(),
         requestor_name_present: request.tbs_request.requestor_name.is_some(),
         request_extensions_present: request.tbs_request.request_extensions.is_some(),
+        request_extension_inventory: extension_inventory(
+            request.tbs_request.request_extensions.as_ref(),
+        ),
+        single_request_extension_inventories: request
+            .tbs_request
+            .request_list
+            .iter()
+            .take(64)
+            .map(|entry| extension_inventory(entry.single_request_extensions.as_ref()))
+            .collect(),
         nonce: request_nonce,
         total_requests: request.tbs_request.request_list.len(),
         requests_truncated: request.tbs_request.request_list.len() > 64,
@@ -332,6 +393,7 @@ pub fn inspect_ocsp_request(
         responses_truncated: basic.tbs_response_data.responses.len() > 64,
         exact_response_cert_id_counts: counts,
         single_request_extensions_present: requests
+            .clone()
             .map(|entry| entry.single_request_extensions.is_some())
             .collect(),
     });
@@ -507,6 +569,9 @@ pub fn inspect_ocsp_with_nonce(
         produced_at,
         produced_after_reference_time: produced_at > reference_time,
         response_extensions_present: basic.tbs_response_data.response_extensions.is_some(),
+        response_extension_inventory: extension_inventory(
+            basic.tbs_response_data.response_extensions.as_ref(),
+        ),
         nonce: observe_nonce(
             basic.tbs_response_data.response_extensions.as_ref(),
             expected_nonce,
@@ -573,6 +638,7 @@ pub fn inspect_ocsp_with_nonce(
             next_update,
             time_window,
             extensions_present: entry.single_extensions.is_some(),
+            extension_inventory: extension_inventory(entry.single_extensions.as_ref()),
         });
     }
     result.basic = Some(facts);
@@ -706,6 +772,76 @@ mod tests {
         );
         assert!(unsuccessful.basic.is_none());
         assert!(inspect_ocsp(b"bad", LEAF, ISSUER, RESPONDER, 0).is_err());
+    }
+
+    #[test]
+    fn extension_inventories_report_scope_critical_duplicates_and_bounds() {
+        let request_der = include_bytes!("../tests/fixtures/signatures/ocsp-request.der");
+        let mut request = OcspRequest::from_der(request_der).unwrap();
+        let mut ext = request.tbs_request.request_extensions.as_ref().unwrap()[0].clone();
+        ext.extn_id = ObjectIdentifier::new_unwrap("1.2.3.4");
+        ext.critical = true;
+        let mut entries = vec![ext.clone(); 66];
+        entries[1].critical = false;
+        request.tbs_request.request_extensions = Some(entries.clone());
+        request.tbs_request.request_list[0].single_request_extensions = Some(vec![ext.clone()]);
+        let response = modify(REVOKED, |basic| {
+            basic.tbs_response_data.response_extensions = Some(entries.clone());
+            basic.tbs_response_data.responses[0].single_extensions =
+                Some(vec![ext.clone(), ext.clone()]);
+        });
+        let request_facts = inspect_ocsp_request(&request.to_der().unwrap(), &response).unwrap();
+        let inventory = &request_facts.request_extension_inventory;
+        assert_eq!(inventory.total, 66);
+        assert_eq!(inventory.inspected, 64);
+        assert!(inventory.truncated);
+        assert_eq!(inventory.critical_inspected, 63);
+        assert_eq!(inventory.repeated_oid_entries_inspected, 63);
+        assert_eq!(inventory.critical_examples.len(), 4);
+        assert_eq!(inventory.other_examples, vec!["1.2.3.4"]);
+        assert_eq!(
+            request_facts.single_request_extension_inventories[0].critical_inspected,
+            1
+        );
+        let response_facts = inspect_ocsp(&response, LEAF, ISSUER, RESPONDER, 0)
+            .unwrap()
+            .basic
+            .unwrap();
+        assert_eq!(response_facts.signature, CertificateSignature::Differs);
+        assert!(response_facts.response_extension_inventory.truncated);
+        assert_eq!(
+            response_facts
+                .response_extension_inventory
+                .repeated_oid_entries_inspected,
+            63
+        );
+        assert_eq!(
+            response_facts.responses[0]
+                .extension_inventory
+                .critical_inspected,
+            2
+        );
+        assert_eq!(
+            response_facts.responses[0]
+                .extension_inventory
+                .repeated_oid_entries_inspected,
+            1
+        );
+        let empty = extension_inventory(None);
+        assert!(!empty.present);
+        assert_eq!(empty.total, 0);
+        assert!(!empty.truncated);
+        assert!(extension_inventory(Some(&Vec::new())).present);
+        let unsuccessful = inspect_ocsp_request(
+            &request.to_der().unwrap(),
+            include_bytes!("../tests/fixtures/signatures/ocsp-unauthorized.der"),
+        )
+        .unwrap();
+        assert!(unsuccessful.response.is_none());
+        assert_eq!(
+            unsuccessful.single_request_extension_inventories[0].critical_inspected,
+            1
+        );
     }
 
     #[test]
