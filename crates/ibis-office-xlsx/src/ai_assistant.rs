@@ -198,7 +198,6 @@ impl SlideEditor {
             }
         }
         let config = AiConfig::load();
-        let http = cx.http_client();
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -207,7 +206,6 @@ impl SlideEditor {
                 let mut delta_cx = cx.clone();
                 let weak_for_delta = this.clone();
                 let outcome = stream_chat_completion(
-                    http.clone(),
                     &config,
                     &messages_to_send,
                     spreadsheet_tool_definitions(),

@@ -4,10 +4,7 @@
 //! OpenAI-compatible Chat Completions client with SSE streaming and tool calling.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use futures::io::{AsyncBufReadExt, BufReader};
-use gpui_kit::http_client::{AsyncBody, HttpClient, Method, Request};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -330,13 +327,17 @@ struct ChatCompletionRequest<'a> {
 }
 
 /// Send a streaming Chat Completions request and invoke `on_delta` for each text chunk.
+#[cfg(not(target_family = "wasm"))]
 pub async fn stream_chat_completion(
-    http: Arc<dyn HttpClient>,
     config: &AiConfig,
     messages: &[ChatMessage],
     tools: Vec<ToolDefinition>,
     mut on_delta: impl FnMut(&str),
 ) -> Result<CompletionOutcome, String> {
+    use futures::StreamExt as _;
+    use std::io::{BufRead as _, BufReader as StdBufReader, Write as _};
+    use std::process::{Command, Stdio};
+
     let url = config.completions_url();
     let payload = serde_json::to_vec(&ChatCompletionRequest {
         model: &config.model,
@@ -346,50 +347,126 @@ pub async fn stream_chat_completion(
     })
     .map_err(|e| format!("failed to serialize request: {e}"))?;
 
-    let mut builder = Request::builder()
-        .method(Method::POST)
-        .uri(&url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream");
-    if !config.api_key.is_empty() {
-        builder = builder.header("Authorization", format!("Bearer {}", config.api_key));
-    }
-    let request = builder
-        .body(AsyncBody::from(payload))
-        .map_err(|e| format!("failed to build HTTP request: {e}"))?;
+    let api_key = config.api_key.clone();
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<Result<Option<String>, String>>();
 
-    let response = http
-        .send(request)
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let mut err_bytes = Vec::new();
-        let _ = futures::AsyncReadExt::read_to_end(&mut response.into_body(), &mut err_bytes).await;
-        let body_text = String::from_utf8_lossy(&err_bytes);
-        return Err(format!("HTTP {status}: {}", body_text.trim()));
-    }
-
-    let mut reader = BufReader::new(response.into_body());
-    let mut parser = SseStreamParser::default();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let bytes = reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| format!("stream read error: {e}"))?;
-        if bytes == 0 {
-            break;
+    std::thread::spawn(move || {
+        const STATUS_MARKER: &str = "__IBIS_HTTP_STATUS__:";
+        let mut cmd = Command::new("curl");
+        cmd.arg("--disable")
+            .arg("-sS")
+            .arg("-N")
+            .args(["--proto", "=https,http"])
+            .args(["--connect-timeout", "15"])
+            .args(["--max-time", "180"])
+            .args(["-X", "POST"])
+            .args(["-H", "Content-Type: application/json"])
+            .args(["-H", "Accept: text/event-stream"]);
+        if !api_key.is_empty() {
+            cmd.args(["-H", &format!("Authorization: Bearer {api_key}")]);
         }
-        match parser.feed_line(&line)? {
-            Some(SseEvent::TextDelta(delta)) => on_delta(&delta),
-            Some(SseEvent::Done) => break,
-            None => {}
+        cmd.args(["--data-binary", "@-"])
+            .args(["-w", &format!("\n{STATUS_MARKER}%{{http_code}}\n")])
+            .arg(&url)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.unbounded_send(Err(format!("failed to launch curl: {e}")));
+                return;
+            }
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(&payload) {
+                let _ = tx.unbounded_send(Err(format!("failed to write request body: {e}")));
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+        }
+
+        let Some(stdout) = child.stdout.take() else {
+            let _ = tx.unbounded_send(Err("missing curl stdout".to_string()));
+            let _ = child.wait();
+            return;
+        };
+
+        let mut reader = StdBufReader::new(stdout);
+        let mut line = String::new();
+        let mut http_status: Option<u16> = None;
+        let mut raw_body = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Some(code_str) = line.trim().strip_prefix(STATUS_MARKER) {
+                        http_status = code_str.trim().parse::<u16>().ok();
+                        continue;
+                    }
+                    if raw_body.len() < 4096 {
+                        raw_body.push_str(&line);
+                    }
+                    if tx.unbounded_send(Ok(Some(line.clone()))).is_err() {
+                        let _ = child.kill();
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.unbounded_send(Err(format!("stream read error: {e}")));
+                    break;
+                }
+            }
+        }
+
+        let output = child.wait_with_output();
+        if let Ok(out) = output {
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                let msg = if stderr.is_empty() {
+                    format!("curl exited with {}", out.status)
+                } else {
+                    stderr
+                };
+                let _ = tx.unbounded_send(Err(msg));
+                return;
+            }
+        }
+        if let Some(code) = http_status {
+            if code >= 400 {
+                let _ = tx.unbounded_send(Err(format!("HTTP {code}: {}", raw_body.trim())));
+                return;
+            }
+        }
+        let _ = tx.unbounded_send(Ok(None));
+    });
+
+    let mut parser = SseStreamParser::default();
+    while let Some(item) = rx.next().await {
+        match item? {
+            None => break,
+            Some(line) => match parser.feed_line(&line)? {
+                Some(SseEvent::TextDelta(delta)) => on_delta(&delta),
+                Some(SseEvent::Done) => break,
+                None => {}
+            },
         }
     }
     Ok(parser.into_outcome())
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn stream_chat_completion(
+    _config: &AiConfig,
+    _messages: &[ChatMessage],
+    _tools: Vec<ToolDefinition>,
+    _on_delta: impl FnMut(&str),
+) -> Result<CompletionOutcome, String> {
+    Err("Assistant is not supported in browser builds yet".to_string())
 }
 
 #[cfg(test)]
