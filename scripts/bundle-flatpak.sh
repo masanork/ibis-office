@@ -11,7 +11,7 @@
 #
 # Like scripts/bundle-linux.sh, only the ibisOffice binary, icons, desktop/metainfo
 # files, ECMA-376 art borders data, and third-party license notices are placed in
-# /app. No external shared libraries (.so) are bundled inside the Flatpak.
+# /app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # The distribution keeps the release defaults (no incremental, default LTO); Cargo.toml's release profile is for development.
@@ -29,7 +29,7 @@ case "$ARCH" in
 esac
 
 REMAP="--remap-path-prefix=$HOME/.cargo/registry/src=crates.io --remap-path-prefix=$HOME/.cargo/git/checkouts=git --remap-path-prefix=$HOME/.rustup=rustup --remap-path-prefix=$(pwd)=."
-RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo build ${FLAGS[@]+"${FLAGS[@]}"} --locked -p ibis-office-app
+RUSTFLAGS="$REMAP -C link-arg=-Wl,-rpath,\$ORIGIN/../lib" CARGO_TARGET_DIR=target/dist cargo build ${FLAGS[@]+"${FLAGS[@]}"} --locked -p ibis-office-app
 
 VERSION=$(awk -F'\t' '$1 == "Linux" { sub(/\r$/, "", $2); print $2 }' version.txt)
 [[ -n $VERSION ]] || { echo "version.txt has no Linux line" >&2; exit 1; }
@@ -39,6 +39,7 @@ STAGE="$WORK/staged"
 rm -rf "$WORK"
 mkdir -p \
   "$STAGE/bin" \
+  "$STAGE/lib" \
   "$STAGE/share/applications" \
   "$STAGE/share/metainfo" \
   "$STAGE/share/ibisOffice/artborders" \
@@ -80,8 +81,8 @@ cp crates/ibis-office-app/linux/dev.sorane.Docs.yml "$WORK/dev.sorane.Docs.yml"
   flatpak-builder --force-clean --repo=repo build-dir dev.sorane.Docs.yml
 )
 
-# Verify that no shared libraries (.so) were bundled into /app.
-so_files=$(find "$WORK/build-dir/files" -name '*.so' -o -name '*.so.*' || true)
+# No bundled shared libraries are expected.
+so_files=$(find "$WORK/build-dir/files" \( -name '*.so' -o -name '*.so.*' \) || true)
 if [[ -n "$so_files" ]]; then
   echo "STOP: unexpected shared libraries found in Flatpak /app:" >&2
   echo "$so_files" >&2

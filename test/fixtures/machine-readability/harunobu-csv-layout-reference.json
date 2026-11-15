@@ -1,0 +1,77 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "cases": [
+    {
+      "bytes": "e59cb0e59f9f2ce5b9b4e5baa62ce4babae695b00ae69db1e4baac2c323032342c350ae5a4a7e998aa2c323032352c31300a",
+      "delimiter": ",",
+      "encoding": "utf-8",
+      "tables": [
+        [
+          0,
+          0,
+          2,
+          2,
+          1.0,
+          [
+            0
+          ]
+        ]
+      ],
+      "others": []
+    },
+    {
+      "bytes": "956996da0989bf8a690a82e882f182b2093130300a82dd82a982f1093230300a",
+      "delimiter": "\t",
+      "encoding": "cp932",
+      "tables": [
+        [
+          0,
+          0,
+          2,
+          1,
+          1.0,
+          [
+            0
+          ]
+        ]
+      ],
+      "others": []
+    },
+    {
+      "bytes": "efbbbfe5908de5898d2ce580a40ae5a4aae9838e2c3030310ae88ab1e5ad902c3030320a",
+      "delimiter": ",",
+      "encoding": "utf-8-sig",
+      "tables": [
+        [
+          0,
+          0,
+          2,
+          1,
+          1.0,
+          [
+            0
+          ]
+        ]
+      ],
+      "others": []
+    },
+    {
+      "bytes": "8d8096da2c926c0a8e849770a02c3132330a95578f802c3435360a",
+      "delimiter": ",",
+      "encoding": "cp932",
+      "tables": [
+        [
+          0,
+          0,
+          2,
+          1,
+          1.0,
+          [
+            0
+          ]
+        ]
+      ],
+      "others": []
+    }
+  ]
+}

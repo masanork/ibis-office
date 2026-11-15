@@ -63,12 +63,17 @@ impl<'a> Package<'a> {
 
     /// Relationships of `part` ("" for the package itself), by id.
     pub(crate) fn relationships(&self, part: &str) -> Result<HashMap<String, Relationship>, Error> {
+        Ok(self.ordered_relationships(part)?.into_iter().collect())
+    }
+
+    /// Relationships in their original XML order, including repeated IDs.
+    pub(crate) fn ordered_relationships(&self, part: &str) -> Result<Vec<(String, Relationship)>, Error> {
         let (dir, file) = split_part(part);
         let rels_part = if dir.is_empty() { format!("_rels/{file}.rels") } else { format!("{dir}/_rels/{file}.rels") };
-        let Some(bytes) = self.archive.read(&rels_part)? else { return Ok(HashMap::new()) };
+        let Some(bytes) = self.archive.read(&rels_part)? else { return Ok(Vec::new()) };
         let xml = String::from_utf8_lossy(&bytes).into_owned();
         let doc = roxmltree::Document::parse(&xml).map_err(|e| Error::xml(&rels_part, e))?;
-        let mut rels = HashMap::new();
+        let mut rels = Vec::new();
         for node in doc.root_element().children().filter(|n| n.has_tag_name("Relationship")) {
             let (Some(id), Some(kind), Some(target)) =
                 (node.attribute("Id"), node.attribute("Type"), node.attribute("Target"))
@@ -77,7 +82,7 @@ impl<'a> Package<'a> {
             };
             let external = node.attribute("TargetMode") == Some("External");
             let target = if external { target.to_string() } else { resolve(dir, target) };
-            rels.insert(id.to_string(), Relationship { kind: kind.to_string(), target, external });
+            rels.push((id.to_string(), Relationship { kind: kind.to_string(), target, external }));
         }
         Ok(rels)
     }

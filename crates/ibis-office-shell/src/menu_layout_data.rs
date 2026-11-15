@@ -939,6 +939,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
         LayoutItem::Cmd("xlsx.autocorrect"),
         LayoutItem::Sep,
         LayoutItem::Cmd("xlsx.accessibility-check"),
+        LayoutItem::Cmd("xlsx.machine-readability.menu"),
         LayoutItem::Cmd("xlsx.compatibility-check"),
         LayoutItem::Sep,
         LayoutItem::CmdOrPlanned { id: "xlsx.note-new", key: "menu.planned.sheet.review.3" },

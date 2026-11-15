@@ -1,0 +1,35 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "cases": [
+    {
+      "file": "xlsx-cache-missing.xlsx",
+      "value": null,
+      "kind": "none"
+    },
+    {
+      "file": "xlsx-cache-numeric.xlsx",
+      "value": 999,
+      "kind": "number"
+    },
+    {
+      "file": "xlsx-cache-boolean.xlsx",
+      "value": true,
+      "kind": "bool"
+    },
+    {
+      "file": "xlsx-cache-text.xlsx",
+      "value": "cached text",
+      "kind": "text"
+    },
+    {
+      "file": "xlsx-cache-formula_text.xlsx",
+      "value": null,
+      "kind": "none"
+    },
+    {
+      "file": "xlsx-cache-error.xlsx",
+      "value": "#DIV/0!",
+      "kind": "text"
+    }
+  ]
+}

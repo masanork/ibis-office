@@ -1,0 +1,295 @@
+{
+  "harunobu_commit": "88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f",
+  "cases": [
+    {
+      "file": "structure.xlsx",
+      "last_row": 4,
+      "last_column": 2,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "地域",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 0,
+          "column": 1,
+          "kind": "text",
+          "text": "区分",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 0,
+          "column": 2,
+          "kind": "text",
+          "text": "人数",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "kind": "text",
+          "text": "北",
+          "bold": false,
+          "merged": true,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "kind": "text",
+          "text": "A",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 2,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "kind": null,
+          "text": null,
+          "bold": false,
+          "merged": true,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "kind": "text",
+          "text": "B",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "kind": "text",
+          "text": "西",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 3,
+          "column": 1,
+          "kind": "text",
+          "text": "C",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 3,
+          "column": 2,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "kind": "text",
+          "text": "東",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 4,
+          "column": 1,
+          "kind": "text",
+          "text": "D",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ],
+      "merges": [
+        [
+          1,
+          0,
+          2,
+          0
+        ]
+      ],
+      "tables": [
+        [
+          0,
+          0,
+          4,
+          2,
+          1.0,
+          [
+            0
+          ]
+        ]
+      ],
+      "others": []
+    },
+    {
+      "file": "header-merge.xlsx",
+      "last_row": 3,
+      "last_column": 2,
+      "cells": [
+        {
+          "row": 0,
+          "column": 0,
+          "kind": "text",
+          "text": "地域",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 0,
+          "column": 1,
+          "kind": "text",
+          "text": "人口",
+          "bold": false,
+          "merged": true,
+          "formula": null
+        },
+        {
+          "row": 0,
+          "column": 2,
+          "kind": null,
+          "text": null,
+          "bold": false,
+          "merged": true,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "kind": "text",
+          "text": "北",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 1,
+          "column": 2,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "kind": "text",
+          "text": "南",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "kind": "text",
+          "text": "西",
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 3,
+          "column": 1,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        },
+        {
+          "row": 3,
+          "column": 2,
+          "kind": "numeric",
+          "text": null,
+          "bold": false,
+          "merged": false,
+          "formula": null
+        }
+      ],
+      "merges": [
+        [
+          0,
+          1,
+          0,
+          2
+        ]
+      ],
+      "tables": [
+        [
+          0,
+          0,
+          3,
+          2,
+          1.0,
+          [
+            0
+          ]
+        ]
+      ],
+      "others": []
+    }
+  ]
+}

@@ -91,6 +91,7 @@ jobs:
           set -e
           test "$result" -eq 1
           test -s "$app/Contents/Resources/Licenses/license.md"
+          test -z "$(find "$app" -iname '*onnx*' -print -quit)"
           test -s "$app/Contents/Resources/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip"
           ditto -c -k --keepParent "$app" ci-artifact/desktop-macos-arm64-ci.zip
           mkdir -p "$RUNNER_TEMP/verify-app"
@@ -110,6 +111,7 @@ jobs:
           Copy-Item target/release/ibisOffice.exe,target/release/ibisOfficeUpdater.exe $dir
           Copy-Item crates/ibis-pptx/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip,crates/ibis-pptx/data/artborders/ECMA-NOTICE.txt "$dir/Resources/artborders"
           Copy-Item LICENSE,NOTICE,COMMERCIAL-LICENSE.md,crates/ibis-office-app/windows/license.md,crates/ibis-office-render/fonts/carlito/OFL.txt "$dir/Resources/Licenses"
+          if (Get-ChildItem $dir -Recurse -Filter "*onnx*") { throw 'unexpected ONNX package content' }
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path "$dir/ibisOffice.exe"))
           $offset = [BitConverter]::ToInt32($bytes, 0x3c)
           if ([BitConverter]::ToUInt32($bytes, $offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, $offset + 4) -ne 0x8664) { throw 'expected x64 PE executable' }
@@ -144,7 +146,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y ca-certificates curl git python3 build-essential pkg-config \
+          apt-get install -y ca-certificates curl git python3 build-essential pkg-config libssl-dev \
             libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
             libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
       - uses: actions/checkout@v4
@@ -186,6 +188,7 @@ jobs:
           (cd "$RUNNER_TEMP/verify-linux" && "$image" --appimage-extract)
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOfficeUpdater"
+          test -z "$(find "$RUNNER_TEMP/verify-linux/squashfs-root" -iname '*onnx*' -print -quit)"
           python3 scripts/test-appimage-recovery.py "$image"
           test -s "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/third-party-licenses.md"
           set +e

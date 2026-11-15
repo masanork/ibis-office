@@ -887,7 +887,9 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     if std::env::var_os("IBIS_HARUNOBU_INTEGRATION").is_some() {
         all.push(("xlsx::harunobu_reference_integration", harunobu_reference_integration));
         all.push(("xlsx::harunobu_unsaved_csv", harunobu_unsaved_csv));
-        all.push(("xlsx::harunobu_matches_reference_cli", harunobu_matches_reference_cli));
+        if std::env::var_os("IBIS_HARUNOBU_REFERENCE_PYTHON").is_some() {
+            all.push(("xlsx::harunobu_matches_reference_cli", harunobu_matches_reference_cli));
+        }
         all.push(("xlsx::harunobu_bulk_reference", harunobu_bulk_reference));
     }
     all.extend(dropdown_position_20261106::all());
@@ -30162,11 +30164,11 @@ fn harunobu_matches_reference_cli() {
         value
     }
     let root = crate::shell::scenario::repo_root().join("test/fixtures/machine-readability");
-    let bin = super::harunobu::runtime().unwrap();
+    let bin = std::env::var_os("IBIS_HARUNOBU_REFERENCE_PYTHON").expect("reference Python for development comparison");
     for fixture in ["structure.xlsx", "header-merge.xlsx", "data.csv"] {
         let path = root.join(fixture);
         for mode in ["lite", "standard", "thorough"] {
-            let report = super::harunobu::analyze(&bin, &path, mode).unwrap();
+            let report = super::harunobu::analyze(&path, mode).unwrap();
             let result = std::process::Command::new(&bin).args(["-I", "-X", "utf8", "-m", "harunobu", "analyze"]).arg(&path)
                 .args(["--mode", mode, "--output", "json"]).env("HARUNOBU_AI_DISABLED", "1").output().unwrap();
             assert!(result.status.success(), "reference CLI failed");
@@ -30192,8 +30194,8 @@ fn harunobu_bulk_reference() {
     }
     let root = crate::shell::scenario::repo_root().join("test/fixtures/machine-readability");
     let paths = vec![root.join("structure.xlsx"), root.join("data.csv")];
-    let bin = super::harunobu::runtime().unwrap();
-    assert!(super::harunobu::analyze_bulk(&bin, &paths[..1], "thorough").is_err());
+    let bin = std::env::var_os("IBIS_HARUNOBU_REFERENCE_PYTHON");
+    assert!(super::harunobu::analyze_bulk(&paths[..1], "thorough").is_err());
     let script = r#"from io import BytesIO
 from pathlib import Path
 from harunobu.core.analyzer import Analyzer
@@ -30204,18 +30206,20 @@ mode, *paths = sys.argv[1:]
 books = [read_workbook(Path(p).name, BytesIO(Path(p).read_bytes())) for p in paths]
 print(json.dumps(to_bulk_dict(Analyzer(mode=mode).analyze_bulk(books)), ensure_ascii=False))"#;
     for mode in ["lite", "standard", "thorough"] {
-        let report = super::harunobu::analyze_bulk(&bin, &paths, mode).unwrap();
+        let report = super::harunobu::analyze_bulk(&paths, mode).unwrap();
         assert!(report.bulk);
         assert_eq!(report.sources, paths);
         assert!(!report.csv.is_empty());
-        let reference = std::process::Command::new(&bin).args(["-I", "-X", "utf8", "-c", script, mode])
-            .args(&paths).env("HARUNOBU_AI_DISABLED", "1").output().unwrap();
-        assert!(reference.status.success());
-        let mut expected: serde_json::Value = serde_json::from_slice(&reference.stdout).unwrap();
-        let mut actual = report.json;
-        normalize(&mut expected);
-        normalize(&mut actual);
-        assert_eq!(actual, expected, "bulk {mode}");
+        if let Some(bin) = &bin {
+            let reference = std::process::Command::new(bin).args(["-I", "-X", "utf8", "-c", script, mode])
+                .args(&paths).env("HARUNOBU_AI_DISABLED", "1").output().unwrap();
+            assert!(reference.status.success());
+            let mut expected: serde_json::Value = serde_json::from_slice(&reference.stdout).unwrap();
+            let mut actual = report.json;
+            normalize(&mut expected);
+            normalize(&mut actual);
+            assert_eq!(actual, expected, "bulk {mode}");
+        }
     }
     let mut s = Scenario::open("test/fixtures/machine-readability/structure.xlsx");
     s.menu("xlsx.machine-readability.menu");

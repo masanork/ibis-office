@@ -2865,7 +2865,7 @@ xlsx.machine-readability.hidden-column	L1-13 非表示の列
 xlsx.machine-readability.formula	L2-06 数式：公開データとして値が必要か確認してください。
 xlsx.machine-readability.omitted	表示していない候補の件数
 
-xlsx.harunobu.scope	Harunobu でファイルを検査します。開いた XLSX・XLSM の未保存の編集は一時コピーで検査し、CSV・TSV は保存後に検査します。入力中のセルは確定してください。AI 補完はオフです。表の範囲は推定で、未判定を除いた得点は参考値です。
+xlsx.harunobu.scope	Harunobu 互換の検査を実行します。開いた XLSX・XLSM の未保存の編集は一時コピーで検査し、CSV・TSV は保存後に検査します。入力中のセルは確定してください。AI 補完はオフです。表の範囲は推定で、未判定を除いた得点は参考値です。
 xlsx.harunobu.save-first	保存するか、保存済みファイルを開いてください
 xlsx.harunobu.running	検査中…
 xlsx.harunobu.failed	検査できませんでした
@@ -2883,10 +2883,8 @@ xlsx.harunobu.hidden-sheet	非表示シート
 xlsx.harunobu.table	推定範囲
 xlsx.harunobu.header	見出し
 xlsx.harunobu.stale	編集中の変更は、この検査結果に含まれていません。
-xlsx.harunobu.runtime-missing	固定版 Harunobu のローカル実行環境がありません。セットアップ手順を確認してください。
-xlsx.harunobu.runtime-invalid	Harunobu のバージョンまたは内容を確認できません。実行環境を確認してください。
 xlsx.harunobu.unsupported	この形式は Harunobu の検査対象外です。
-xlsx.harunobu.timeout	検査が時間内に完了しませんでした。
+xlsx.harunobu.analysis-unavailable	このファイルの内容を検査できませんでした。
 xlsx.harunobu.bulk-scope	複数の保存済みファイルを選んで比較
 xlsx.harunobu.bulk-score	複数ファイル総合スコア
 xlsx.harunobu.pick-bulk	比較するファイルを選択
