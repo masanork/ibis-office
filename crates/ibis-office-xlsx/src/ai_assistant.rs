@@ -197,7 +197,25 @@ impl SlideEditor {
                 ));
             }
         }
-        let config = AiConfig::load();
+        let config = {
+            let mut cfg = AiConfig::load();
+            if let Some(p) = self.wb().panels.ai_assistant.as_ref() {
+                let base_url = p.base_url_input.read(cx).value().trim().to_string();
+                let model = p.model_input.read(cx).value().trim().to_string();
+                let api_key = p.api_key_input.read(cx).value().trim().to_string();
+                if !base_url.is_empty() {
+                    cfg.base_url = base_url;
+                }
+                if !model.is_empty() {
+                    cfg.model = model;
+                }
+                if !api_key.is_empty() {
+                    cfg.api_key = api_key;
+                }
+            }
+            cfg.save();
+            cfg
+        };
         cx.notify();
 
         cx.spawn(async move |this, cx| {
