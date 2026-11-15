@@ -2339,6 +2339,32 @@ mod tests {
     }
 
     #[test]
+    fn newly_exported_table_preserves_vertical_merges() {
+        use ibis_doc_model::{FlowParagraph, VerticalMerge};
+        use VerticalMerge::{Continue, Start};
+        let cell = |id, span, merge| FlowCell { id, span, merge, blocks: vec![Block::Paragraph(FlowParagraph { id: id + 10, ..FlowParagraph::default() })], ..FlowCell::default() };
+        let table = FlowTable {
+            id: 2,
+            columns: vec![635_000, 635_000, 635_000],
+            rows: vec![
+                FlowRow { id: 3, cells: vec![cell(4, 2, Start), cell(5, 1, VerticalMerge::None)], ..FlowRow::default() },
+                FlowRow { id: 6, cells: vec![cell(7, 2, Continue), cell(8, 1, VerticalMerge::None)], ..FlowRow::default() },
+            ],
+            ..FlowTable::default()
+        };
+        let mut doc = read(&fixture("end")).unwrap();
+        let flow = std::sync::Arc::make_mut(doc.flow.as_mut().unwrap());
+        flow.body.insert(0, Block::Table(table));
+        let saved = crate::read(&export_docx(&doc).unwrap()).unwrap();
+        let flow = saved.flow.unwrap();
+        let table = flow.body.iter().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+        assert_eq!((table.rows[0].cells[0].span, table.rows[0].cells[0].merge), (2, Start));
+        assert_eq!((table.rows[1].cells[0].span, table.rows[1].cells[0].merge), (2, Continue));
+        assert_eq!(table.rows[0].cells[1].merge, VerticalMerge::None);
+        assert_eq!(table.rows[1].cells[1].merge, VerticalMerge::None);
+    }
+
+    #[test]
     fn html_escapes_ruby_and_keeps_its_style_and_link() {
         let mut model = read(&fixture("ruby")).unwrap();
         let flow = std::sync::Arc::make_mut(model.flow.as_mut().unwrap());
