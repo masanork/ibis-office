@@ -88,6 +88,22 @@ fn format_report(reports: &[SignatureInspection]) -> String {
             let legacy_differing = legacy_differing.to_string(); let unknown = unknown.to_string();
             message.push_str("\n");
             message.push_str(&crate::i18n::format("file.signature-inspect.additional-refs", &[("matching", &matching), ("legacy", &legacy), ("differing", &differing), ("legacy_differing", &legacy_differing), ("unknown", &unknown)]));
+            let mut cert_matching = 0usize; let mut cert_differing = 0usize; let mut cert_weak = 0usize; let mut cert_weak_differing = 0usize; let mut cert_unknown = 0usize;
+            for reference in &report.additional_signed_info_references {
+                match reference.xades_certificate_digest {
+                    Some(ObjectDigest::Matches) => cert_matching += 1,
+                    Some(ObjectDigest::Differs) => cert_differing += 1,
+                    Some(ObjectDigest::LegacySha1 { matches: true }) => cert_weak += 1,
+                    Some(ObjectDigest::LegacySha1 { matches: false }) => cert_weak_differing += 1,
+                    Some(ObjectDigest::Unsupported) => cert_unknown += 1,
+                    None => (),
+                }
+            }
+            if cert_matching + cert_differing + cert_weak + cert_weak_differing + cert_unknown > 0 {
+                let matching = cert_matching.to_string(); let differing = cert_differing.to_string(); let weak = cert_weak.to_string(); let weak_differing = cert_weak_differing.to_string(); let unknown = cert_unknown.to_string();
+                message.push_str("\n");
+                message.push_str(&crate::i18n::format("file.signature-inspect.xades-cert", &[("matching", &matching), ("differing", &differing), ("weak", &weak), ("weak_differing", &weak_differing), ("unknown", &unknown)]));
+            }
         }
     }
     if reports.len() > 8 { message.push_str("\n\n"); message.push_str(&crate::i18n::text("file.signature-inspect.truncated")); }

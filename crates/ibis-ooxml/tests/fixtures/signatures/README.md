@@ -36,3 +36,7 @@ signature. The certificates and CRLs are synthetic and short-lived.
 with XAdES v1.3.2 `SignedProperties`, generated with lxml and OpenSSL and
 verified with OpenSSL. Its private key was discarded. It is deliberately
 minimal and does not establish XAdES conformance or any trusted identity.
+
+`xades-cert-synthetic.docx` adds a SHA-256 SigningCertificateV2 digest to a
+synthetic package. Its SignedInfo was signed and independently checked using
+OpenSSL; the private key was discarded. It is not an XAdES conformance fixture.

@@ -14,8 +14,13 @@ Additional SignedInfo references to direct `ds:Object` children, and to
 XAdES v1.3.2 `SignedProperties` inside `QualifyingProperties` associated with
 the signature, can be compared by a simple ASCII ID using SHA-256/384/512 or
 legacy SHA-1 and inclusive canonicalization. This is a digest observation; it
-does not check the XAdES properties, signing-certificate binding, XAdES
-conformance or eIDAS qualification. See [ETSI TS 101 903](https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf). For same-document shortname fragments, comments are omitted
+does not validate the XAdES properties, signing-certificate binding, XAdES
+conformance or eIDAS qualification. For a supported `SignedProperties`, the
+first `SigningCertificateV2` certificate digest is also compared with the
+single embedded certificate, using SHA-256/384/512 or legacy SHA-1. This is an
+unauthenticated comparison: the property reference, signature value and
+certificate must be considered separately. Issuer/serial, remaining certificate
+references and certificate trust are not checked. See [ETSI EN 319 132-1](https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf). See [ETSI TS 101 903](https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf). For same-document shortname fragments, comments are omitted
 as specified by [XML Signature 1.1](https://www.w3.org/TR/xmldsig-core1/#sec-Same-Document).
 Other references, including external or other nested targets and
 unsupported transformations, are reported as not checked and are never fetched.

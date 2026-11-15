@@ -44,6 +44,8 @@ pub struct ManifestReference {
 pub struct AdditionalReference {
     pub uri: Option<String>,
     pub digest: ObjectDigest,
+    /// Unauthenticated SigningCertificateV2 digest comparison; issuer and serial are not checked.
+    pub xades_certificate_digest: Option<ObjectDigest>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -364,11 +366,14 @@ fn additional_signed_info_references(package: &Package, signature_part: &str, ob
     let package_uri = format!("#{object_id}");
     let mut additional = Vec::new();
     let mut processed_bytes = 0usize;
+    let mut signer_certificate: Option<Option<Vec<u8>>> = None;
     for reference in ds_children(infos[0], "Reference") {
         let uri = reference.attribute("URI");
         if uri == Some(package_uri.as_str()) { continue; }
         if additional.len() == 256 || uri.is_some_and(|u| u.len() > 4096) { return Err(Error::new("Too many or oversized SignedInfo references")); }
         let mut digest = ObjectDigest::Unsupported;
+        let is_xades = reference.attribute("Type") == Some("http://uri.etsi.org/01903#SignedProperties");
+        let mut xades_certificate_digest = is_xades.then_some(ObjectDigest::Unsupported);
         let id = uri.and_then(|u| u.strip_prefix('#')).filter(|id| id.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_') && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')));
         if let Some(id) = id {
             const XADES: &str = "http://uri.etsi.org/01903/v1.3.2#";
@@ -396,6 +401,10 @@ fn additional_signed_info_references(package: &Package, signature_part: &str, ob
             if let ([target], Some((method, value))) = (targets.as_slice(), parts) {
                 processed_bytes = processed_bytes.saturating_add(target.range().len());
                 if processed_bytes <= 16 * 1024 * 1024 && !method.children().any(|n| n.is_element()) && !value.children().any(|n| n.is_element()) {
+                    if is_xades {
+                        let cert = signer_certificate.get_or_insert_with(|| extract_single_embedded_certificate(package, signature_part).ok());
+                        xades_certificate_digest = Some(cert.as_deref().map_or(ObjectDigest::Unsupported, |cert| inspect_xades_certificate_digest(*target, cert)));
+                    }
                     let encoded: String = value.children().filter(|n| n.is_text()).filter_map(|n| n.text()).flat_map(str::chars).filter(|c| !matches!(c, '\t' | '\n' | '\r' | ' ')).collect();
                     if let Some(expected) = crate::base64::decode(&encoded).filter(|v| !v.is_empty() && crate::base64::encode(v) == encoded) {
                         let canonical = canonicalize(*target, Algorithm::Inclusive, &[], None);
@@ -410,9 +419,37 @@ fn additional_signed_info_references(package: &Package, signature_part: &str, ob
                 }
             }
         }
-        additional.push(AdditionalReference { uri: uri.map(str::to_owned), digest });
+        additional.push(AdditionalReference { uri: uri.map(str::to_owned), digest, xades_certificate_digest });
     }
     Ok(additional)
+}
+
+/// Compare the first XAdES SigningCertificateV2 CertDigest to the embedded
+/// certificate bytes. Neither the property nor the certificate is trusted.
+fn inspect_xades_certificate_digest(properties: ua_cryptography_xml_c14n::roxmltree::Node<'_, '_>, certificate: &[u8]) -> ObjectDigest {
+    const XADES: &str = "http://uri.etsi.org/01903/v1.3.2#";
+    fn children<'a, 'input>(node: ua_cryptography_xml_c14n::roxmltree::Node<'a, 'input>, name: &str) -> Vec<ua_cryptography_xml_c14n::roxmltree::Node<'a, 'input>> {
+        node.children().filter(|n| n.is_element() && n.tag_name().namespace() == Some(XADES) && n.tag_name().name() == name).collect()
+    }
+    let signed = children(properties, "SignedSignatureProperties");
+    if signed.len() != 1 { return ObjectDigest::Unsupported; }
+    let signing = children(signed[0], "SigningCertificateV2");
+    if signing.len() != 1 { return ObjectDigest::Unsupported; }
+    let certs: Vec<_> = signing[0].children().filter(|n| n.is_element()).collect();
+    if certs.is_empty() || certs.iter().any(|n| n.tag_name().namespace() != Some(XADES) || n.tag_name().name() != "Cert") { return ObjectDigest::Unsupported; }
+    let digests = children(certs[0], "CertDigest");
+    if digests.len() != 1 { return ObjectDigest::Unsupported; }
+    let fields: Vec<_> = digests[0].children().filter(|n| n.is_element()).collect();
+    if fields.len() != 2 || fields[0].tag_name().namespace() != Some(DS) || fields[0].tag_name().name() != "DigestMethod" || fields[1].tag_name().namespace() != Some(DS) || fields[1].tag_name().name() != "DigestValue" || fields.iter().any(|n| n.children().any(|c| c.is_element())) { return ObjectDigest::Unsupported; }
+    let encoded: String = fields[1].children().filter(|n| n.is_text()).filter_map(|n| n.text()).flat_map(str::chars).filter(|c| !matches!(c, '\t' | '\n' | '\r' | ' ')).collect();
+    let Some(expected) = crate::base64::decode(&encoded).filter(|v| !v.is_empty() && crate::base64::encode(v) == encoded) else { return ObjectDigest::Unsupported };
+    match fields[0].attribute("Algorithm") {
+        Some("http://www.w3.org/2000/09/xmldsig#sha1") => ObjectDigest::LegacySha1 { matches: sha1::Sha1::digest(certificate).as_slice() == expected },
+        Some("http://www.w3.org/2001/04/xmlenc#sha256") => if Sha256::digest(certificate).as_slice() == expected { ObjectDigest::Matches } else { ObjectDigest::Differs },
+        Some("http://www.w3.org/2001/04/xmldsig-more#sha384") => if Sha384::digest(certificate).as_slice() == expected { ObjectDigest::Matches } else { ObjectDigest::Differs },
+        Some("http://www.w3.org/2001/04/xmlenc#sha512") => if Sha512::digest(certificate).as_slice() == expected { ObjectDigest::Matches } else { ObjectDigest::Differs },
+        _ => ObjectDigest::Unsupported,
+    }
 }
 
 /// A structurally declared binding, not an authenticated signature.
@@ -960,6 +997,29 @@ mod tests {
         let duplicate = xml.replace("</ds:Object>", "<ds:Object Id=\"props\"/></ds:Object>");
         pkg.set_bytes("sig.xml", duplicate.into_bytes());
         assert!(additional_signed_info_references(&pkg, "sig.xml", "package").is_err());
+    }
+
+    #[test]
+    fn xades_certificate_digest_uses_first_v2_certificate_and_fails_closed() {
+        use ua_cryptography_xml_c14n::DocumentText;
+        let source = r#"<x:SignedProperties xmlns:x="http://uri.etsi.org/01903/v1.3.2#" xmlns:d="http://www.w3.org/2000/09/xmldsig#"><x:SignedSignatureProperties><x:SigningCertificateV2><x:Cert><x:CertDigest><d:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><d:DigestValue>A9Zt0Ig1wco/EozOrNHzGslBYwlrIPRFroQoW8CDLXI=</d:DigestValue></x:CertDigest></x:Cert><x:Cert><x:CertDigest/></x:Cert></x:SigningCertificateV2></x:SignedSignatureProperties></x:SignedProperties>"#;
+        let inspect = |xml: &str, cert: &[u8]| {
+            let text = DocumentText::decode(xml.as_bytes()).unwrap();
+            let doc = text.parse().unwrap();
+            inspect_xades_certificate_digest(doc.root_element(), cert)
+        };
+        assert_eq!(inspect(source, b"certificate"), ObjectDigest::Matches);
+        assert_eq!(inspect(source, b"different"), ObjectDigest::Differs);
+        let weak = source.replace("http://www.w3.org/2001/04/xmlenc#sha256", "http://www.w3.org/2000/09/xmldsig#sha1").replace("A9Zt0Ig1wco/EozOrNHzGslBYwlrIPRFroQoW8CDLXI=", "c1rVccGJ17qERkv0qfHSKAF1sSg=");
+        assert_eq!(inspect(&weak, b"certificate"), ObjectDigest::LegacySha1 { matches: true });
+        assert_eq!(inspect(&weak, b"different"), ObjectDigest::LegacySha1 { matches: false });
+        for bad in [source.replace("SigningCertificateV2", "SigningCertificate"), source.replace("http://www.w3.org/2001/04/xmlenc#sha256", "urn:unknown"), source.replace("A9Zt0Ig1wco/EozOrNHzGslBYwlrIPRFroQoW8CDLXI=", "not-base64!"), source.replace("<x:CertDigest/>", "<d:CertDigest/>")] {
+            // The last replacement changes a later certificate only, which is deliberately not checked.
+            if bad.contains("<d:CertDigest/>") { assert_eq!(inspect(&bad, b"certificate"), ObjectDigest::Matches); }
+            else { assert_eq!(inspect(&bad, b"certificate"), ObjectDigest::Unsupported); }
+        }
+        let duplicate = source.replace("<x:SigningCertificateV2>", "<x:SigningCertificateV2/><x:SigningCertificateV2>");
+        assert_eq!(inspect(&duplicate, b"certificate"), ObjectDigest::Unsupported);
     }
 
     #[test]

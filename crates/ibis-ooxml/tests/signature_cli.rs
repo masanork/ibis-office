@@ -180,3 +180,33 @@ fn signed_xades_properties_digest_detects_tampering_without_changing_signed_info
     assert!(text.contains("Additional SignedInfo reference \"#props\": digest differs"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn xades_certificate_digest_is_reported_as_unauthenticated() {
+    use sha2::{Digest, Sha256};
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/xades-cert-synthetic.docx");
+    let output = run(&fixture);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+    assert!(text.contains("Additional SignedInfo reference \"#props\": digest matches"));
+    assert!(text.contains("XAdES SigningCertificateV2 digest: matches embedded certificate; NOT AUTHENTICATED; issuer and serial NOT CHECKED"));
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    let part = "_xmlsignatures/sig1.xml";
+    let cert = ibis_ooxml::signatures::extract_single_embedded_certificate(&package, part).unwrap();
+    let expected = ibis_ooxml::base64::encode(&Sha256::digest(&cert));
+    let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+    let changed = xml.replace(&expected, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+    assert_ne!(xml, changed);
+    package.set_bytes(part, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-xades-cert-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+    assert!(text.contains("Additional SignedInfo reference \"#props\": digest differs"));
+    assert!(text.contains("XAdES SigningCertificateV2 digest: differs from embedded certificate; NOT AUTHENTICATED"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}

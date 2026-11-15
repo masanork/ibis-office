@@ -115,6 +115,16 @@ fn run() -> Result<(), String> {
                 Some(uri) => println!("  Additional SignedInfo reference {uri:?}: {status}"),
                 None => println!("  Additional SignedInfo reference without URI: {status}"),
             }
+            if let Some(cert) = &item.xades_certificate_digest {
+                let status = match cert {
+                    ObjectDigest::Matches => "matches embedded certificate",
+                    ObjectDigest::Differs => "differs from embedded certificate",
+                    ObjectDigest::LegacySha1 { matches: true } => "matches embedded certificate (weak legacy SHA-1)",
+                    ObjectDigest::LegacySha1 { matches: false } => "differs from embedded certificate (weak legacy SHA-1)",
+                    ObjectDigest::Unsupported => "NOT CHECKED",
+                };
+                println!("    XAdES SigningCertificateV2 digest: {status}; NOT AUTHENTICATED; issuer and serial NOT CHECKED");
+            }
         }
         if report.manifest.is_empty() { println!("  No manifest references found; coverage is not established."); }
         for item in report.manifest {
