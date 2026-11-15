@@ -4679,7 +4679,7 @@ struct SplitCell {
 
 /// A vertical cell's text laid out across (`items`, lines `across` thick
 /// in all) turned into the cell's box (`x`, `y`, `w`, `h`): down with the
-/// lines right to left (`TbRl`; Japanese upright, the rest turned
+/// lines right to left (`TbRlV`: Japanese upright; `TbRl`: turned
 /// clockwise), down with the lines left to right (`TbLrV`), or up with
 /// them left to right (`BtLr`, all turned anticlockwise); its vertical
 /// alignment is across the lines (Word's PDF of DCTD: 上 is right for
@@ -4714,7 +4714,7 @@ fn turn_cell_text(items: &[Item], direction: ibis_doc_model::CellDirection, anch
                         CellDirection::TbRl | CellDirection::TbRlV => bx + bw - shift - v,
                         _ => bx + shift + (across - v),
                     };
-                    if crate::render::vertical_text::upright(c) {
+                    if direction != CellDirection::TbRl && crate::render::vertical_text::upright(c) {
                         // OpenType vert/vrt2 selects the font’s vertical glyph.
                         let font=if crate::render::vertical_text::vertical_glyph(c){crate::render::vertical_text::font(font)}else{font.clone()};
                         // Upright, centred on the line.
@@ -8503,7 +8503,7 @@ fn weight(b: Option<FlowBorder>) -> i64 {
 /// paper's height, its margins moved round with it), then each page's items
 /// are turned back into the paper `(w, h)` (points): the characters of
 /// `tbRl` upright when Japanese and turned clockwise otherwise (as a
-/// vertical cell's text, `turn_cell_text`), those of `btLr` all turned
+/// `tbRlV` cell's text, `turn_cell_text`), those of `btLr` all turned
 /// anticlockwise.
 fn turn_page_items(items: Vec<Item>, direction: ibis_doc_model::CellDirection, w: f32, h: f32, advance: &dyn Fn(char, &Font, f32) -> f32) -> Vec<Item> {
     use ibis_doc_model::CellDirection;
@@ -8521,7 +8521,12 @@ fn turn_page_items(items: Vec<Item>, direction: ibis_doc_model::CellDirection, w
         match it {
             // A squeezed character (a glyph wider than its cell, as a bold ＭＳ 明朝's, or `w:w`) is turned as the others are, upright at its
             // cell's size: left as it was, it stayed across at the page's top left (GitHub issue #54, the bold ＭＳ headings of a `tbRl` page).
-            Item::Text { .. } | Item::Scaled { .. } => out.extend(turn_cell_text(&[it], direction, CellAnchor::Top, (0.0, 0.0, w, h), w, advance)),
+            Item::Text { .. } | Item::Scaled { .. } => {
+                // A section's tbRl keeps East Asian text upright, unlike a
+                // cell's tbRl. Reuse the cell transform with tbRlV semantics.
+                let cell_direction = if tb { CellDirection::TbRlV } else { direction };
+                out.extend(turn_cell_text(&[it], cell_direction, CellAnchor::Top, (0.0, 0.0, w, h), w, advance));
+            }
             Item::Rect { x, y, w: rw, h: rh, color } => {
                 let (x, y, w, h) = rect(x, y, rw, rh);
                 out.push(Item::Rect { x, y, w, h, color });
@@ -8571,6 +8576,23 @@ fn turn_page_items(items: Vec<Item>, direction: ibis_doc_model::CellDirection, w
 mod turn_japanese_tests {
     use super::{Item, turn_japanese};
     use std::sync::Arc;
+
+    #[test]
+    fn cell_direction_distinguishes_rotated_and_upright_japanese() {
+        use ibis_doc_model::CellDirection;
+        let input = Item::Text {
+            x: 0.0, y: 10.0, text: "漢A".into(), offsets: Arc::from([0.0f32, 10.0]),
+            font: gpui_kit::font("Test"), size: 10.0, color: gpui_kit::black(),
+        };
+        let turn = |direction| super::turn_cell_text(&[input.clone()], direction, ibis_doc_model::CellAnchor::Top,
+            (0.0, 0.0, 30.0, 60.0), 10.0, &|_, _, size| size);
+        let rotated = turn(CellDirection::TbRl);
+        let upright = turn(CellDirection::TbRlV);
+        assert!(matches!(&rotated[0], Item::Turned { text, turns: 1, .. } if text.as_ref() == "漢"));
+        assert!(matches!(&rotated[1], Item::Turned { text, turns: 1, .. } if text.as_ref() == "A"));
+        assert!(matches!(&upright[0], Item::Text { text, .. } if text.as_ref() == "漢"));
+        assert!(matches!(&upright[1], Item::Turned { text, turns: 1, .. } if text.as_ref() == "A"));
+    }
 
     #[test]
     fn vertical_underline_stays_between_tightly_spaced_columns() {
