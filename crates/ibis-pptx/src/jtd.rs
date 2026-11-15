@@ -2403,6 +2403,12 @@ mod tests {
             .expect("table");
         assert_eq!(table.rows[0].cells.len(), 3);
         assert!(table.borders.iter().all(|b| *b == Some(None)));
+        // Exercise the new-table writer used by JTD export: upright East
+        // Asian cell direction must be serialized as tbRlV, not tbRl.
+        let mut doc = doc;
+        let flow = std::sync::Arc::make_mut(doc.flow.as_mut().unwrap());
+        let table = flow.body.iter_mut().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+        table.rows[0].cells[0].direction = CellDirection::TbRlV;
         let reopened = crate::read(&export_docx(&doc).unwrap()).unwrap();
         let saved = reopened.flow.unwrap();
         let table = saved
@@ -2414,6 +2420,7 @@ mod tests {
             })
             .expect("saved table");
         assert_eq!(table.rows[0].cells.len(), 3);
+        assert_eq!(table.rows[0].cells[0].direction, CellDirection::TbRlV);
         assert!(
             matches!(&table.rows[0].cells[0].blocks[0], Block::Paragraph(p) if p.text() == "甲")
         );
