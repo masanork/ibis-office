@@ -4,6 +4,7 @@
 //! 開発 / データ > SD-JWT の生成とプレビュー・OID4VP 提示パネル.
 //! シート上のフォーム コントロールおよび定義された名前 (`claim.*`, `sd.*`, `disclose.*`) から
 //! RFC 9901 SD-JWT および OID4VP `vp_token` (Key Binding JWT `kb+jwt` 付) を生成し、
+//! テンプレートからのフォーム自動生成、選択範囲のワンクリック `sd.*` バインド、
 //! OID4VP Authorization Request によるシート上 `disclose.*` チェックボックスの自動同期を行う。
 
 use std::cell::RefCell;
@@ -15,8 +16,9 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use ibis_doc_model::{
-    BoundClaim, Es256KeyPair, KeyBindingJwtOutput, Oid4vpRequest, SdJwtOptions, SdJwtOutput,
-    SheetClaimBindings, extract_sheet_claims, issue_sd_jwt,
+    BoundClaim, CellRange, Es256KeyPair, KeyBindingJwtOutput, Oid4vpRequest, SdJwtOptions,
+    SdJwtOutput, SdJwtTemplateKind, SheetClaimBindings, bind_range_as_sd_claim_commands,
+    build_sd_jwt_template_commands, extract_sheet_claims, issue_sd_jwt,
 };
 
 use crate::ext::*;
@@ -29,6 +31,7 @@ pub(crate) struct SdJwtPanel {
     pub(crate) iss: Entity<InputState>,
     pub(crate) vct: Entity<InputState>,
     pub(crate) issuer_jwk: Entity<InputState>,
+    pub(crate) bind_path: Entity<InputState>,
     pub(crate) oid4vp_request: Entity<InputState>,
     pub(crate) include_cnf: bool,
     pub(crate) bindings: SheetClaimBindings,
@@ -71,6 +74,7 @@ impl SlideEditor {
             s
         });
         let issuer_jwk = cx.new(|cx| InputState::new(window, cx));
+        let bind_path = cx.new(|cx| InputState::new(window, cx));
         let oid4vp_request = cx.new(|cx| InputState::new(window, cx));
         let slide = self.current_slide;
         let bindings = extract_sheet_claims(self.presentation(), slide).unwrap_or(
@@ -95,6 +99,7 @@ impl SlideEditor {
             iss,
             vct,
             issuer_jwk,
+            bind_path,
             oid4vp_request,
             include_cnf: true,
             bindings,
@@ -183,6 +188,98 @@ impl SlideEditor {
         cx.notify();
     }
 
+    pub(crate) fn apply_sd_jwt_template(
+        &mut self,
+        kind: SdJwtTemplateKind,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_cell_edit(cx);
+        let slide = self.current_slide;
+        let cmds = build_sd_jwt_template_commands(self.presentation(), slide, kind);
+        if !cmds.is_empty() {
+            self.run_sheet(cmds, cx);
+        }
+        self.regenerate_sd_jwt(cx);
+        if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+            panel.message = text("xlsx.sd-jwt.template-applied").to_string();
+            panel.is_error = false;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn bind_selection_to_sd_jwt(&mut self, selective: bool, cx: &mut Context<Self>) {
+        self.commit_cell_edit(cx);
+        let Some(p) = self.sheet_state().and_then(|s| s.panels.sd_jwt.as_ref()) else {
+            return;
+        };
+        let mut raw_path = p.bind_path.read(cx).value().trim().to_string();
+        let range = self.selected_range().or_else(|| {
+            let (col, row) = self.current_cell()?;
+            Some(CellRange {
+                first_row: row,
+                first_column: col,
+                last_row: row,
+                last_column: col,
+            })
+        });
+        let Some(range) = range else {
+            if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                panel.message = text("xlsx.sd-jwt.bind-error").to_string();
+                panel.is_error = true;
+            }
+            cx.notify();
+            return;
+        };
+
+        // If `bind_path` is left empty and there is a label in the cell to the left, infer from it!
+        if raw_path.is_empty() && range.first_column > 0 {
+            if let Some((_, sheet)) = self.current_sheet()
+                && let Some(left_cell) = sheet.cell(range.first_row, range.first_column - 1)
+            {
+                let t = left_cell.text.trim();
+                if let (Some(open), Some(close)) = (t.rfind('('), t.rfind(')'))
+                    && open + 1 < close
+                {
+                    raw_path = t[open + 1..close].trim().to_string();
+                } else if !t.is_empty() {
+                    raw_path = t.to_string();
+                }
+            }
+        }
+
+        let slide = self.current_slide;
+        let Some((full_name, cmds)) =
+            bind_range_as_sd_claim_commands(self.presentation(), slide, range, &raw_path, selective)
+        else {
+            if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                panel.message = text("xlsx.sd-jwt.bind-error").to_string();
+                panel.is_error = true;
+            }
+            cx.notify();
+            return;
+        };
+
+        self.run_sheet(cmds, cx);
+        self.regenerate_sd_jwt(cx);
+        let msg = tr_format("xlsx.sd-jwt.bound-status", &[("name", &full_name)]);
+        if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+            panel.message = msg;
+            panel.is_error = false;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_sd_jwt_claim_disclose(&mut self, path_str: &str, cx: &mut Context<Self>) {
+        let slide = self.current_slide;
+        if let Some(bindings) = extract_sheet_claims(self.presentation(), slide) {
+            let cmds = bindings.toggle_claim_disclose_commands(self.presentation(), path_str);
+            if !cmds.is_empty() {
+                self.run_sheet(cmds, cx);
+            }
+        }
+        self.regenerate_sd_jwt(cx);
+    }
+
     pub(crate) fn apply_oid4vp_request(&mut self, cx: &mut Context<Self>) {
         let Some(p) = self.sheet_state().and_then(|s| s.panels.sd_jwt.as_ref()) else {
             return;
@@ -224,11 +321,11 @@ impl SlideEditor {
     pub fn sd_jwt_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.sheet_state()?.panels.sd_jwt.as_ref()?;
         let include_cnf = p.include_cnf;
-        let claims: Vec<String> = p
+        let claims: Vec<(String, bool, String)> = p
             .bindings
             .claims
             .iter()
-            .map(format_bound_claim_line)
+            .map(|c| (c.path_str.clone(), c.selective, format_bound_claim_line(c)))
             .collect();
         let presentation_token = p
             .output
@@ -279,6 +376,56 @@ impl SlideEditor {
             .px(px(16.))
             .py(px(8.))
             .p_0()
+            .child(div().text_sm().child(text("xlsx.sd-jwt.templates")))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-template-pid")
+                            .small()
+                            .label(text("xlsx.sd-jwt.template-pid"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.apply_sd_jwt_template(SdJwtTemplateKind::Pid, cx)
+                            })),
+                    )
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-template-mdl")
+                            .small()
+                            .label(text("xlsx.sd-jwt.template-mdl"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.apply_sd_jwt_template(SdJwtTemplateKind::Iso18013Mdl, cx)
+                            })),
+                    ),
+            )
+            .child(div().text_sm().child(text("xlsx.sd-jwt.bind-selection")))
+            .child(mark(
+                "bind_path",
+                crate::shell::chrome::text_field(&p.bind_path)
+                    .full_width()
+                    .into_any_element(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-bind-sd")
+                            .small()
+                            .label(text("xlsx.sd-jwt.bind-sd"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.bind_selection_to_sd_jwt(true, cx)
+                            })),
+                    )
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-bind-claim")
+                            .small()
+                            .label(text("xlsx.sd-jwt.bind-claim"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.bind_selection_to_sd_jwt(false, cx)
+                            })),
+                    ),
+            )
             .child(div().text_sm().child(text("xlsx.sd-jwt.iss")))
             .child(mark(
                 "iss",
@@ -339,8 +486,20 @@ impl SlideEditor {
             );
         } else {
             let mut list = v_flex().gap_1();
-            for line in claims {
-                list = list.child(div().text_xs().child(SharedString::from(line)));
+            for (idx, (path_str, selective, line)) in claims.into_iter().enumerate() {
+                if selective {
+                    let btn_id = SharedString::from(format!("sd-jwt-claim-toggle-{idx}"));
+                    list = list.child(
+                        crate::shell::chrome::action_button(btn_id)
+                            .small()
+                            .label(SharedString::from(line))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_sd_jwt_claim_disclose(&path_str, cx);
+                            })),
+                    );
+                } else {
+                    list = list.child(div().text_xs().child(SharedString::from(line)));
+                }
             }
             body = body.child(list);
         }
@@ -511,6 +670,15 @@ mod tests {
                 "xlsx.sd-jwt.copy-vp-token",
                 "xlsx.sd-jwt.oid4vp-applied",
                 "xlsx.sd-jwt.invalid-oid4vp",
+                "xlsx.sd-jwt.templates",
+                "xlsx.sd-jwt.template-pid",
+                "xlsx.sd-jwt.template-mdl",
+                "xlsx.sd-jwt.template-applied",
+                "xlsx.sd-jwt.bind-selection",
+                "xlsx.sd-jwt.bind-sd",
+                "xlsx.sd-jwt.bind-claim",
+                "xlsx.sd-jwt.bound-status",
+                "xlsx.sd-jwt.bind-error",
             ] {
                 assert!(
                     table.lines().any(|l| l.split('\t').next() == Some(id)),

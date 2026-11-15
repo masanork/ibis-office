@@ -442,14 +442,10 @@ fn resolve_cell_value(
     let Some(cell) = sheet.cell(row, column) else {
         return None;
     };
-    let is_checkbox_style = sheet
-        .styles
-        .get(cell.style as usize)
-        .is_some_and(|st| st.checkbox);
-    let is_date_style = sheet
-        .styles
-        .get(cell.style as usize)
-        .is_some_and(|st| ibis_calc::numfmt::is_date_format(&st.number_format));
+    let style = sheet.styles.get(cell.style as usize);
+    let is_checkbox_style = style.is_some_and(|st| st.checkbox);
+    let is_text_style = style.is_some_and(|st| st.number_format.trim() == "@");
+    let is_date_style = style.is_some_and(|st| ibis_calc::numfmt::is_date_format(&st.number_format));
 
     match &cell.value {
         CellValue::Empty => {
@@ -459,10 +455,24 @@ fn resolve_cell_value(
                 None
             }
         }
-        CellValue::Bool(b) => Some(ClaimValue::Bool(*b)),
+        CellValue::Bool(b) => {
+            if is_text_style && !cell.text.is_empty() {
+                Some(ClaimValue::String(cell.text.clone()))
+            } else {
+                Some(ClaimValue::Bool(*b))
+            }
+        }
         CellValue::Number(n) => {
             if is_checkbox_style {
                 return Some(ClaimValue::Bool(*n != 0.0));
+            }
+            if is_text_style {
+                let s = if !cell.text.is_empty() {
+                    cell.text.clone()
+                } else {
+                    ibis_calc::number_to_xml(*n)
+                };
+                return Some(ClaimValue::String(s));
             }
             if matches!(leaf_name, "iat" | "exp" | "nbf") {
                 return Some(ClaimValue::Int(n.round() as i64));
@@ -486,6 +496,72 @@ fn resolve_cell_value(
         }
         CellValue::Error(_) => None,
     }
+}
+
+/// Resolves a `CellRange` into a `ClaimValue`:
+/// - Single cell -> scalar `ClaimValue` (`String`, `Int`, `Float`, `Bool`)
+/// - 1D range (single column or single row with >1 cell) -> `ClaimValue::Array` of non-empty values
+/// - 2D range (multiple rows and columns) -> `ClaimValue::Array` of `ClaimValue::Object`s using the first row as field headers (e.g. ISO 18013-5 `driving_privileges`).
+fn resolve_range_value(
+    presentation: &Presentation,
+    slide: & crate::model::Slide,
+    sheet: &Sheet,
+    range: CellRange,
+    leaf_name: &str,
+    date1904: bool,
+) -> Option<ClaimValue> {
+    let r0 = range.first_row.min(range.last_row);
+    let r1 = range.first_row.max(range.last_row).min(r0 + 255);
+    let c0 = range.first_column.min(range.last_column);
+    let c1 = range.first_column.max(range.last_column).min(c0 + 63);
+
+    if r0 == r1 && c0 == c1 {
+        return resolve_cell_value(presentation, slide, sheet, r0, c0, leaf_name, date1904);
+    }
+
+    if r0 == r1 || c0 == c1 {
+        // 1D range -> primitive array
+        let mut items = Vec::new();
+        for r in r0..=r1 {
+            for c in c0..=c1 {
+                if let Some(val) = resolve_cell_value(presentation, slide, sheet, r, c, leaf_name, date1904) {
+                    items.push(val);
+                }
+            }
+        }
+        return (!items.is_empty()).then_some(ClaimValue::Array(items));
+    }
+
+    // 2D table range -> first row is header keys, subsequent rows are objects
+    let mut headers: Vec<(u32, String)> = Vec::new();
+    for c in c0..=c1 {
+        if let Some(cell) = sheet.cell(r0, c) {
+            let key = match &cell.value {
+                CellValue::Text(s) => s.trim().to_string(),
+                _ => cell.text.trim().to_string(),
+            };
+            if !key.is_empty() {
+                headers.push((c, key));
+            }
+        }
+    }
+    if headers.is_empty() {
+        return None;
+    }
+
+    let mut rows = Vec::new();
+    for r in (r0 + 1)..=r1 {
+        let mut obj = BTreeMap::new();
+        for (c, key) in &headers {
+            if let Some(val) = resolve_cell_value(presentation, slide, sheet, r, *c, key, date1904) {
+                obj.insert(key.clone(), val);
+            }
+        }
+        if !obj.is_empty() {
+            rows.push(ClaimValue::Object(obj));
+        }
+    }
+    (!rows.is_empty()).then_some(ClaimValue::Array(rows))
 }
 
 /// Extracts all `claim.*`, `sd.*`, and `disclose.*` bindings from worksheet `slide_id`.
@@ -525,7 +601,7 @@ pub fn extract_sheet_claims(presentation: &Presentation, slide_id: SlideId) -> O
                 let leaf = path.last().map(String::as_str).unwrap_or("");
                 match prefix_kind {
                     PrefixKind::Claim | PrefixKind::Selective => {
-                        if let Some(value) = resolve_cell_value(presentation, slide, sheet, row, column, leaf, date1904) {
+                        if let Some(value) = resolve_range_value(presentation, slide, sheet, range, leaf, date1904) {
                             claim_map.insert(
                                 path_str.clone(),
                                 BoundClaim {
@@ -764,6 +840,672 @@ impl SheetClaimBindings {
         }
         commands
     }
+
+    /// Toggles the disclosure state (`disclose.<path>`) of a single `sd.<path>` claim on the sheet.
+    /// If `disclose.<path>` is not yet bound on the sheet and the claim comes from a cell `(row, col)`,
+    /// creates an in-cell checkbox at `(row, col + 1)` and binds `disclose.<path>` to it.
+    pub fn toggle_claim_disclose_commands(
+        &self,
+        presentation: &Presentation,
+        path_str: &str,
+    ) -> Vec<Command> {
+        let Some(claim) = self.claim(path_str) else {
+            return Vec::new();
+        };
+        if !claim.selective {
+            return Vec::new();
+        }
+        let target_enabled = !claim.disclose;
+        let Some(slide) = presentation.slide(self.slide) else {
+            return Vec::new();
+        };
+
+        if let Some(d) = self.disclosures.get(path_str) {
+            let mut commands = Vec::new();
+            match d.source {
+                BindingSource::Control { shape } => {
+                    if let Some(sh) = slide.shape(shape)
+                        && let ShapeKind::Control(ctrl) = &sh.kind
+                    {
+                        let mut next = (**ctrl).clone();
+                        next.checked = u8::from(target_enabled);
+                        commands.push(Command::Sheet(SheetCommand::EditControl {
+                            slide: self.slide,
+                            shape,
+                            control: next,
+                        }));
+                    }
+                    if let Some((link_slide, row, column)) = d.linked_cell {
+                        commands.push(Command::Sheet(SheetCommand::SetCells {
+                            slide: link_slide,
+                            edits: vec![CellEdit {
+                                row,
+                                column,
+                                input: CellInput::Value(CellValue::Bool(target_enabled)),
+                            }],
+                        }));
+                    }
+                }
+                BindingSource::Cell { row, column } => {
+                    commands.push(Command::Sheet(SheetCommand::SetCells {
+                        slide: self.slide,
+                        edits: vec![CellEdit {
+                            row,
+                            column,
+                            input: CellInput::Value(CellValue::Bool(target_enabled)),
+                        }],
+                    }));
+                }
+            }
+            return commands;
+        }
+
+        // If no `disclose.<path>` exists yet and the claim is on a cell, create an in-cell checkbox at `(row, column + 1)`.
+        if let BindingSource::Cell { row, column } = claim.source {
+            let chk_col = column + 1;
+            let sheet_name = slide_sheet_formula_prefix(presentation, self.slide);
+            let col_letters = crate::sheet::cell_name(chk_col, 0)
+                .trim_end_matches('1')
+                .to_string();
+            let formula = format!("{sheet_name}${col_letters}${}", row + 1);
+            let mut chk_style = crate::sheet::CellStyle::default();
+            chk_style.checkbox = true;
+            return vec![
+                Command::Sheet(SheetCommand::PutCells {
+                    slide: self.slide,
+                    cells: vec![crate::sheet_command::PutCell {
+                        row,
+                        column: chk_col,
+                        input: CellInput::Value(CellValue::Bool(target_enabled)),
+                        style: Some(chk_style),
+                    }],
+                }),
+                Command::Sheet(SheetCommand::SetName {
+                    name: format!("disclose.{path_str}"),
+                    sheet: None,
+                    formula: Some(formula),
+                }),
+            ];
+        }
+
+        Vec::new()
+    }
+}
+
+/// Built-in credential profile templates for one-click worksheet scaffolding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SdJwtTemplateKind {
+    /// EUDI PID / JPKI-style Person Identification Data (flat claims + `address.*` 1-level group + `nationalities` 1D array).
+    Pid,
+    /// ISO/IEC 18013-5 mDL Driving Licence (flat elements + `driving_privileges` 2D object table).
+    Iso18013Mdl,
+}
+
+fn slide_sheet_formula_prefix(presentation: &Presentation, slide_id: SlideId) -> String {
+    let raw_name = presentation
+        .workbook
+        .as_ref()
+        .and_then(|wb| wb.sheets.iter().find(|ws| ws.slide == Some(slide_id)))
+        .map(|ws| ws.name.clone())
+        .or_else(|| presentation.slide(slide_id).and_then(|s| s.name.clone()))
+        .unwrap_or_else(|| "Sheet1".to_string());
+    format!("{}!", ibis_calc::formula::quote_sheet(&raw_name))
+}
+
+fn abs_cell_ref(col: u32, row: u32) -> String {
+    let col_letters = crate::sheet::cell_name(col, 0)
+        .trim_end_matches('1')
+        .to_string();
+    format!("${col_letters}${}", row + 1)
+}
+
+/// Generates undoable worksheet commands that bind `range` on `slide_id` to `claim.<path>` or `sd.<path>`
+/// (and when `selective` is `true`, places an in-cell checkbox at `(range.first_row, range.last_column + 1)` bound to `disclose.<path>`).
+pub fn bind_range_as_sd_claim_commands(
+    presentation: &Presentation,
+    slide_id: SlideId,
+    range: CellRange,
+    raw_path: &str,
+    selective: bool,
+) -> Option<(String, Vec<Command>)> {
+    let cleaned = raw_path
+        .trim()
+        .trim_start_matches("sd.")
+        .trim_start_matches("claim.")
+        .trim_start_matches("disclose.")
+        .trim();
+    let segments: Vec<String> = cleaned
+        .split('.')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map( sanitize_claim_segment )
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+    let path_str = segments.join(".");
+    let prefix = if selective { "sd" } else { "claim" };
+    let full_name = format!("{prefix}.{path_str}");
+
+    let sheet_prefix = slide_sheet_formula_prefix(presentation, slide_id);
+    let r0 = range.first_row.min(range.last_row);
+    let r1 = range.first_row.max(range.last_row);
+    let c0 = range.first_column.min(range.last_column);
+    let c1 = range.first_column.max(range.last_column);
+    let area = if r0 == r1 && c0 == c1 {
+        abs_cell_ref(c0, r0)
+    } else {
+        format!("{}:{}", abs_cell_ref(c0, r0), abs_cell_ref(c1, r1))
+    };
+    let formula = format!("{sheet_prefix}{area}");
+
+    let mut commands = vec![Command::Sheet(SheetCommand::SetName {
+        name: full_name.clone(),
+        sheet: None,
+        formula: Some(formula),
+    })];
+
+    if selective {
+        let chk_col = c1 + 1;
+        let chk_formula = format!("{sheet_prefix}{}", abs_cell_ref(chk_col, r0));
+        let mut chk_style = crate::sheet::CellStyle::default();
+        chk_style.checkbox = true;
+        commands.push(Command::Sheet(SheetCommand::PutCells {
+            slide: slide_id,
+            cells: vec![crate::sheet_command::PutCell {
+                row: r0,
+                column: chk_col,
+                input: CellInput::Value(CellValue::Bool(true)),
+                style: Some(chk_style),
+            }],
+        }));
+        commands.push(Command::Sheet(SheetCommand::SetName {
+            name: format!("disclose.{path_str}"),
+            sheet: None,
+            formula: Some(chk_formula),
+        }));
+    }
+
+    Some((full_name, commands))
+}
+
+fn sanitize_claim_segment(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else if ch.is_whitespace() || ch == '-' {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let first = trimmed.chars().next().unwrap();
+    if first.is_ascii_digit() {
+        format!("_{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Generates undoable worksheet commands to populate `slide_id` with a complete SD-JWT credential form template
+/// (labels in Column A, typed values in Column B, in-cell `disclose.*` checkboxes in Column C, and `DefinedName`s).
+pub fn build_sd_jwt_template_commands(
+    presentation: &Presentation,
+    slide_id: SlideId,
+    kind: SdJwtTemplateKind,
+) -> Vec<Command> {
+    use crate::sheet::CellStyle;
+    use crate::sheet_command::PutCell;
+
+    let date1904 = presentation.workbook.as_ref().is_some_and(|w| w.date1904);
+    let sheet_prefix = slide_sheet_formula_prefix(presentation, slide_id);
+
+    let mut header_style = CellStyle::default();
+    header_style.bold = true;
+
+    let mut date_style = CellStyle::default();
+    date_style.number_format = "yyyy-mm-dd".to_string();
+
+    let mut text_style = CellStyle::default();
+    text_style.number_format = "@".to_string();
+
+    let mut checkbox_style = CellStyle::default();
+    checkbox_style.checkbox = true;
+
+    let mut cells: Vec<PutCell> = Vec::new();
+    let mut name_cmds: Vec<Command> = Vec::new();
+
+    // Remove previous `claim.*`, `sd.*`, `disclose.*` names and form controls on this sheet so switching templates is clean
+    if let Some(slide) = presentation.slide(slide_id) {
+        for sh in &slide.shapes {
+            if let ShapeKind::Control(c) = &sh.kind
+                && parse_binding_name(&c.name).is_some()
+            {
+                name_cmds.push(Command::RemoveShape {
+                    slide: slide_id,
+                    shape: sh.id,
+                });
+            }
+        }
+    }
+    if let Some(wb) = presentation.workbook.as_ref() {
+        for dn in &wb.names {
+            if parse_binding_name(&dn.name).is_some() {
+                name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                    name: dn.name.clone(),
+                    sheet: dn.sheet,
+                    formula: None,
+                }));
+            }
+        }
+    }
+
+    fn put_text(cells: &mut Vec<crate::sheet_command::PutCell>, r: u32, c: u32, s: &str, style: Option<crate::sheet::CellStyle>) {
+        cells.push(crate::sheet_command::PutCell {
+            row: r,
+            column: c,
+            input: CellInput::Value(CellValue::Text(s.to_string())),
+            style,
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_sd_row(
+        cells: &mut Vec<crate::sheet_command::PutCell>,
+        name_cmds: &mut Vec<Command>,
+        sheet_prefix: &str,
+        checkbox_style: &crate::sheet::CellStyle,
+        r: u32,
+        label: &str,
+        path: &str,
+        val_input: CellInput,
+        val_style: Option<crate::sheet::CellStyle>,
+        disclose_default: bool,
+    ) {
+        cells.push(crate::sheet_command::PutCell {
+            row: r,
+            column: 0,
+            input: CellInput::Value(CellValue::Text(label.to_string())),
+            style: None,
+        });
+        cells.push(crate::sheet_command::PutCell {
+            row: r,
+            column: 1,
+            input: val_input,
+            style: val_style,
+        });
+        cells.push(crate::sheet_command::PutCell {
+            row: r,
+            column: 2,
+            input: CellInput::Value(CellValue::Bool(disclose_default)),
+            style: Some(checkbox_style.clone()),
+        });
+        name_cmds.push(Command::Sheet(SheetCommand::SetName {
+            name: format!("sd.{path}"),
+            sheet: None,
+            formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, r))),
+        }));
+        name_cmds.push(Command::Sheet(SheetCommand::SetName {
+            name: format!("disclose.{path}"),
+            sheet: None,
+            formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(2, r))),
+        }));
+    }
+
+    match kind {
+        SdJwtTemplateKind::Pid => {
+            put_text(&mut cells, 0, 0, "属性 (PID Claim)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 1, "値 (Value)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 2, "開示 (Disclose)", Some(header_style.clone()));
+
+            // Row 1: claim.vct
+            put_text(&mut cells, 1, 0, "クレデンシャル種別 (vct)", None);
+            put_text(&mut cells, 1, 1, "urn:eudi:pid:jp:1", None);
+            put_text(&mut cells, 1, 2, "常時 (claim.vct)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.vct".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 1))),
+            }));
+
+            // Row 2: claim.iss
+            put_text(&mut cells, 2, 0, "発行者 (iss)", None);
+            put_text(&mut cells, 2, 1, "https://issuer.example.go.jp", None);
+            put_text(&mut cells, 2, 2, "常時 (claim.iss)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.iss".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 2))),
+            }));
+
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                3,
+                "姓 (family_name)",
+                "family_name",
+                CellInput::Value(CellValue::Text("山田".into())),
+                None,
+                true,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                4,
+                "名 (given_name)",
+                "given_name",
+                CellInput::Value(CellValue::Text("太郎".into())),
+                None,
+                true,
+            );
+            let bday_serial =
+                ibis_calc::eval::convert::serial_from_date(1990, 5, 15, date1904) as f64;
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                5,
+                "生年月日 (birthdate)",
+                "birthdate",
+                CellInput::Value(CellValue::Number(bday_serial)),
+                Some(date_style.clone()),
+                false,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                6,
+                "国コード (address.country)",
+                "address.country",
+                CellInput::Value(CellValue::Text("JP".into())),
+                None,
+                true,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                7,
+                "都道府県 (address.region)",
+                "address.region",
+                CellInput::Value(CellValue::Text("東京都".into())),
+                None,
+                true,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                8,
+                "市区町村 (address.locality)",
+                "address.locality",
+                CellInput::Value(CellValue::Text("千代田区".into())),
+                None,
+                false,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                9,
+                "郵便番号 (address.postal_code)",
+                "address.postal_code",
+                CellInput::Value(CellValue::Text("100-0001".into())),
+                Some(text_style.clone()),
+                false,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                10,
+                "20歳以上 (age_over_20)",
+                "age_over_20",
+                CellInput::Value(CellValue::Bool(true)),
+                Some(checkbox_style.clone()),
+                true,
+            );
+
+            // Rows 11..=12: 1D array `sd.nationalities` = B12:B13
+            put_text(&mut cells, 11, 0, "国籍リスト (nationalities)", None);
+            put_text(&mut cells, 11, 1, "JP", None);
+            cells.push(PutCell {
+                row: 11,
+                column: 2,
+                input: CellInput::Value(CellValue::Bool(true)),
+                style: Some(checkbox_style.clone()),
+            });
+            put_text(&mut cells, 12, 1, "US", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "sd.nationalities".into(),
+                sheet: None,
+                formula: Some(format!(
+                    "{sheet_prefix}{}:{}",
+                    abs_cell_ref(1, 11),
+                    abs_cell_ref(1, 12)
+                )),
+            }));
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "disclose.nationalities".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(2, 11))),
+            }));
+        }
+        SdJwtTemplateKind::Iso18013Mdl => {
+            put_text(&mut cells, 0, 0, "項目 (ISO 18013-5 Element)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 1, "値 (Value)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 2, "開示 (Disclose)", Some(header_style.clone()));
+
+            put_text(&mut cells, 1, 0, "クレデンシャル種別 (vct)", None);
+            put_text(&mut cells, 1, 1, "org.iso.18013.5.1.mDL", None);
+            put_text(&mut cells, 1, 2, "常時 (claim.vct)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.vct".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 1))),
+            }));
+
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                2,
+                "発行国 (issuing_country)",
+                "issuing_country",
+                CellInput::Value(CellValue::Text("JP".into())),
+                None,
+                true,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                3,
+                "公安委員会 (issuing_authority)",
+                "issuing_authority",
+                CellInput::Value(CellValue::Text("東京都公安委員会".into())),
+                None,
+                true,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                4,
+                "免許証番号 (document_number)",
+                "document_number",
+                CellInput::Value(CellValue::Text("001234567890".into())),
+                Some(text_style.clone()),
+                false,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                5,
+                "姓 (family_name)",
+                "family_name",
+                CellInput::Value(CellValue::Text("山田".into())),
+                None,
+                true,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                6,
+                "名 (given_name)",
+                "given_name",
+                CellInput::Value(CellValue::Text("太郎".into())),
+                None,
+                true,
+            );
+            let bday = ibis_calc::eval::convert::serial_from_date(1990, 5, 15, date1904) as f64;
+            let issue = ibis_calc::eval::convert::serial_from_date(2024, 4, 1, date1904) as f64;
+            let expiry = ibis_calc::eval::convert::serial_from_date(2029, 5, 15, date1904) as f64;
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                7,
+                "生年月日 (birth_date)",
+                "birth_date",
+                CellInput::Value(CellValue::Number(bday)),
+                Some(date_style.clone()),
+                false,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                8,
+                "交付日 (issue_date)",
+                "issue_date",
+                CellInput::Value(CellValue::Number(issue)),
+                Some(date_style.clone()),
+                true,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                9,
+                "有効期限 (expiry_date)",
+                "expiry_date",
+                CellInput::Value(CellValue::Number(expiry)),
+                Some(date_style.clone()),
+                true,
+            );
+            add_sd_row(
+                &mut cells,
+                &mut name_cmds,
+                &sheet_prefix,
+                &checkbox_style,
+                10,
+                "18歳以上 (age_over_18)",
+                "age_over_18",
+                CellInput::Value(CellValue::Bool(true)),
+                Some(checkbox_style.clone()),
+                true,
+            );
+
+            // Row 12: 2D Table section header + disclose.driving_privileges checkbox
+            put_text(
+                &mut cells,
+                12,
+                0,
+                "免許種別テーブル (driving_privileges)",
+                Some(header_style.clone()),
+            );
+            cells.push(PutCell {
+                row: 12,
+                column: 2,
+                input: CellInput::Value(CellValue::Bool(true)),
+                style: Some(checkbox_style.clone()),
+            });
+
+            // Rows 13..=15, Cols 0..=2: 2D table `sd.driving_privileges` = $A$14:$C$16
+            put_text(&mut cells, 13, 0, "vehicle_category_code", Some(header_style.clone()));
+            put_text(&mut cells, 13, 1, "issue_date", Some(header_style.clone()));
+            put_text(&mut cells, 13, 2, "expiry_date", Some(header_style.clone()));
+
+            let issue_b = ibis_calc::eval::convert::serial_from_date(2018, 4, 1, date1904) as f64;
+            let issue_a = ibis_calc::eval::convert::serial_from_date(2020, 10, 15, date1904) as f64;
+            put_text(&mut cells, 14, 0, "普通", None);
+            cells.push(PutCell {
+                row: 14,
+                column: 1,
+                input: CellInput::Value(CellValue::Number(issue_b)),
+                style: Some(date_style.clone()),
+            });
+            cells.push(PutCell {
+                row: 14,
+                column: 2,
+                input: CellInput::Value(CellValue::Number(expiry)),
+                style: Some(date_style.clone()),
+            });
+
+            put_text(&mut cells, 15, 0, "普通二輪", None);
+            cells.push(PutCell {
+                row: 15,
+                column: 1,
+                input: CellInput::Value(CellValue::Number(issue_a)),
+                style: Some(date_style.clone()),
+            });
+            cells.push(PutCell {
+                row: 15,
+                column: 2,
+                input: CellInput::Value(CellValue::Number(expiry)),
+                style: Some(date_style.clone()),
+            });
+
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "sd.driving_privileges".into(),
+                sheet: None,
+                formula: Some(format!(
+                    "{sheet_prefix}{}:{}",
+                    abs_cell_ref(0, 13),
+                    abs_cell_ref(2, 15)
+                )),
+            }));
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "disclose.driving_privileges".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(2, 12))),
+            }));
+        }
+    }
+
+    let mut commands = Vec::with_capacity(1 + name_cmds.len());
+    commands.push(Command::Sheet(SheetCommand::PutCells {
+        slide: slide_id,
+        cells,
+    }));
+    commands.extend(name_cmds);
+    commands
 }
 
 #[cfg(test)]

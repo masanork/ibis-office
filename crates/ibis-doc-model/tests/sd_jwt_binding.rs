@@ -404,3 +404,132 @@ fn oid4vp_request_synchronizes_sheet_checkboxes_and_issues_kb_jwt() {
     ));
 }
 
+#[test]
+fn pid_and_iso18013_mdl_templates_and_range_bindings_roundtrip() {
+    use ibis_doc_model::{
+        CellRange, Es256KeyPair, SdJwtOptions, SdJwtTemplateKind, bind_range_as_sd_claim_commands,
+        build_sd_jwt_template_commands, issue_sheet_sd_jwt,
+    };
+
+    let (pres, slide_id, _) = sample_presentation();
+    let mut doc = Document::new(pres);
+
+    // 1. Apply EUDI PID template onto worksheet
+    let pid_cmds = build_sd_jwt_template_commands(
+        doc.presentation(),
+        slide_id,
+        SdJwtTemplateKind::Pid,
+    );
+    doc.execute(pid_cmds).unwrap();
+
+    let pid_bindings = extract_sheet_claims(doc.presentation(), slide_id).unwrap();
+    assert_eq!(
+        pid_bindings.claim("vct").and_then(|c| c.value.as_str()),
+        Some("urn:eudi:pid:jp:1")
+    );
+    // 1D range B12:B13 -> `["JP", "US"]`
+    assert_eq!(
+        pid_bindings.claim("nationalities").map(|c| &c.value),
+        Some(&ClaimValue::Array(vec![
+            ClaimValue::String("JP".into()),
+            ClaimValue::String("US".into()),
+        ]))
+    );
+    // 1-level nested `address.region`
+    assert_eq!(
+        pid_bindings
+            .claim("address.region")
+            .and_then(|c| c.value.as_str()),
+        Some("東京都")
+    );
+
+    // Interactive toggle of `family_name` disclosure (`true` -> `false`)
+    let toggle_cmds = pid_bindings.toggle_claim_disclose_commands(doc.presentation(), "family_name");
+    doc.execute(toggle_cmds).unwrap();
+    let after_toggle = extract_sheet_claims(doc.presentation(), slide_id).unwrap();
+    assert!(!after_toggle.claim("family_name").unwrap().disclose);
+
+    // 2. Apply ISO/IEC 18013-5 mDL template onto worksheet
+    let mdl_cmds = build_sd_jwt_template_commands(
+        doc.presentation(),
+        slide_id,
+        SdJwtTemplateKind::Iso18013Mdl,
+    );
+    doc.execute(mdl_cmds).unwrap();
+
+    let mdl_bindings = extract_sheet_claims(doc.presentation(), slide_id).unwrap();
+    assert_eq!(
+        mdl_bindings.claim("vct").and_then(|c| c.value.as_str()),
+        Some("org.iso.18013.5.1.mDL")
+    );
+    // `@`-formatted `document_number` preserves leading zeros as string `"001234567890"`
+    assert_eq!(
+        mdl_bindings
+            .claim("document_number")
+            .and_then(|c| c.value.as_str()),
+        Some("001234567890")
+    );
+    // 2D table range `$A$14:$C$16` -> `driving_privileges` array of 2 objects
+    let dp = mdl_bindings
+        .claim("driving_privileges")
+        .expect("driving_privileges 2D table claim");
+    let ClaimValue::Array(dp_rows) = &dp.value else {
+        panic!("expected Array for driving_privileges");
+    };
+    assert_eq!(dp_rows.len(), 2);
+    let first_priv = dp_rows[0].as_object().unwrap();
+    assert_eq!(
+        first_priv
+            .get("vehicle_category_code")
+            .and_then(ClaimValue::as_str),
+        Some("普通")
+    );
+    assert_eq!(
+        first_priv.get("issue_date").and_then(ClaimValue::as_str),
+        Some("2018-04-01")
+    );
+    assert_eq!(
+        first_priv.get("expiry_date").and_then(ClaimValue::as_str),
+        Some("2029-05-15")
+    );
+
+    // Issue SD-JWT from the ISO 18013-5 mDL sheet
+    let (_b, sd_out) = issue_sheet_sd_jwt(
+        doc.presentation(),
+        slide_id,
+        &SdJwtOptions::default(),
+        &Es256KeyPair::demo_issuer_key(),
+    )
+    .unwrap();
+    assert!(
+        sd_out
+            .disclosures
+            .iter()
+            .any(|d| d.path_str == "driving_privileges" && d.disclose)
+    );
+
+    // 3. One-click bind of an arbitrary cell range
+    let (bound_name, bind_cmds) = bind_range_as_sd_claim_commands(
+        doc.presentation(),
+        slide_id,
+        CellRange {
+            first_row: 3,
+            first_column: 1,
+            last_row: 3,
+            last_column: 1,
+        },
+        "custom_authority",
+        true,
+    )
+    .unwrap();
+    assert_eq!(bound_name, "sd.custom_authority");
+    doc.execute(bind_cmds).unwrap();
+    let final_bindings = extract_sheet_claims(doc.presentation(), slide_id).unwrap();
+    assert_eq!(
+        final_bindings
+            .claim("custom_authority")
+            .and_then(|c| c.value.as_str()),
+        Some("東京都公安委員会")
+    );
+}
+

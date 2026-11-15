@@ -115,7 +115,8 @@ pub use sd_jwt::{
     issue_sheet_sd_jwt, sha256, verify_es256,
 };
 pub use sd_jwt_binding::{
-    BindingSource, BoundClaim, ClaimValue, DiscloseBinding, SheetClaimBindings, extract_sheet_claims,
+    BindingSource, BoundClaim, ClaimValue, DiscloseBinding, SdJwtTemplateKind, SheetClaimBindings,
+    bind_range_as_sd_claim_commands, build_sd_jwt_template_commands, extract_sheet_claims,
 };
 pub use shape_geometry::{FormulaGeometry, GeometryDef, GeometryPath, Guide, Outline, PathFill, PathOp, Subpath};
 pub use sheet::{

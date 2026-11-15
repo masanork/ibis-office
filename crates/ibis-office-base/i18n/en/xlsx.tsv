@@ -2927,3 +2927,12 @@ xlsx.sd-jwt.apply-oid4vp	Apply OID4VP Request to Sheet
 xlsx.sd-jwt.copy-vp-token	Copy OID4VP vp_token (with KB-JWT)
 xlsx.sd-jwt.oid4vp-applied	Applied OID4VP request (aud: {aud}, requested claims: {count})
 xlsx.sd-jwt.invalid-oid4vp	Enter a valid OID4VP request (openid4vp://?... or JSON).
+xlsx.sd-jwt.templates	Scaffold Form from Template
+xlsx.sd-jwt.template-pid	Insert PID (Identity) Template
+xlsx.sd-jwt.template-mdl	Insert ISO 18013-5 mDL Template
+xlsx.sd-jwt.template-applied	Applied credential template to worksheet
+xlsx.sd-jwt.bind-selection	Bind Selected Cell / Table Range to Claim
+xlsx.sd-jwt.bind-sd	Bind as sd.* (with Disclose Check)
+xlsx.sd-jwt.bind-claim	Bind as claim.* (Always Disclosed)
+xlsx.sd-jwt.bound-status	Bound selection as {name}
+xlsx.sd-jwt.bind-error	Select a cell or range and enter a valid claim path.
