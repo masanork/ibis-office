@@ -34,6 +34,12 @@
       "bucket_name": "sorane-docs-files"
     }
   ],
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "docs"
+    }
+  ],
   "ratelimits": [
     {
       "name": "AUTH_LIMITER",

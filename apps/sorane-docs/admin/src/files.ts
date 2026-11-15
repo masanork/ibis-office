@@ -83,9 +83,17 @@ export function filesPage(env: FileEnv, content: string, status = 200, browser?:
 
 export const NEXT = '__Host-sorane-next';
 
-export function nextDestination(request: Request): '/files' | '/admin' {
+export function nextDestination(request: Request): string {
   const value = cookie(request, NEXT);
-  return value === '/files' || value === '/admin' ? value : '/admin';
+  if (
+    value === '/files' ||
+    value === '/admin' ||
+    value === '/repos' ||
+    /^\/repos\/[0-9a-f-]{36}$/i.test(value ?? '')
+  ) {
+    return value!;
+  }
+  return '/admin';
 }
 
 async function requireUser(request: Request, env: FileEnv, forceCheck = false): Promise<Session> {
