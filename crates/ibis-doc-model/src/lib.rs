@@ -53,6 +53,7 @@ pub mod sheet_calc;
 pub mod sheet_command;
 pub mod sheet_ops;
 pub mod form_control;
+pub mod sd_jwt_binding;
 pub mod timeline;
 pub mod slicer;
 pub mod solver;
@@ -107,6 +108,9 @@ pub use model::{ZoomObject, ZoomTarget,
     PhotoAlbum, PhotoAlbumFrame, PhotoAlbumLayout,
 };
 pub use form_control::{ControlHit, ControlKind, FormControl};
+pub use sd_jwt_binding::{
+    BindingSource, BoundClaim, ClaimValue, DiscloseBinding, SheetClaimBindings, extract_sheet_claims,
+};
 pub use shape_geometry::{FormulaGeometry, GeometryDef, GeometryPath, Guide, Outline, PathFill, PathOp, Subpath};
 pub use sheet::{
     cell_name, CellImage, ExternalBook, ExternalSheet, CalculationCompatibilityVersion, CalcMode, Border, BorderLine, CellUnderline, CellAlign, CellError, CellGradient, sorted_stops, CellKind, CellRange, CellStyle, CellValue, CellVerticalAlign, CustomCellStyle, DefinedName, Sheet,

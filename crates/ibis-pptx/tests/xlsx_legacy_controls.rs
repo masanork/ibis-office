@@ -187,3 +187,87 @@ fn custom_control_name_roundtrips_for_modern_and_legacy_controls() {
     assert_eq!(vml_controls[0].1.name, "sd.size_option");
     assert_eq!(vml_controls[0].1.vml_id, "_x0000_s1043");
 }
+
+#[test]
+fn synthetic_xlsx_sd_jwt_bindings_roundtrip() {
+    use ibis_doc_model::{
+        CellEdit, CellInput, CellRange, CellValue, ClaimValue, Command, Document,
+        EmuRect, SheetCommand, StyleChange, extract_sheet_claims,
+    };
+
+    let opened = ibis_pptx::open(ibis_pptx::blank_file(ibis_pptx::Kind::Workbook).unwrap()).unwrap();
+    let slide = opened.presentation.slides[0].id;
+    let mut doc = Document::new(opened.presentation.clone());
+
+    let b4_range = CellRange { first_row: 3, first_column: 1, last_row: 3, last_column: 1 };
+    let b5_range = CellRange { first_row: 4, first_column: 1, last_row: 4, last_column: 1 };
+    let serial_1995_12_01 = ibis_calc::eval::convert::serial_from_date(1995, 12, 1, false) as f64;
+
+    doc.execute(vec![
+        Command::Sheet(SheetCommand::SetCells {
+            slide,
+            edits: vec![
+                CellEdit { row: 0, column: 1, input: CellInput::Value(CellValue::Text("urn:eu.europa.ec.eudi:pid:1".into())) },
+                CellEdit { row: 1, column: 1, input: CellInput::Value(CellValue::Text("山田".into())) },
+                CellEdit { row: 2, column: 1, input: CellInput::Value(CellValue::Text("花子".into())) },
+                CellEdit { row: 3, column: 1, input: CellInput::Value(CellValue::Number(serial_1995_12_01)) },
+                CellEdit { row: 4, column: 1, input: CellInput::Value(CellValue::Bool(true)) },
+                CellEdit { row: 5, column: 1, input: CellInput::Value(CellValue::Number(2.0)) },
+                CellEdit { row: 0, column: 4, input: CellInput::Value(CellValue::Text("東京都".into())) },
+                CellEdit { row: 1, column: 4, input: CellInput::Value(CellValue::Text("京都府".into())) },
+                CellEdit { row: 2, column: 4, input: CellInput::Value(CellValue::Text("福岡県".into())) },
+            ],
+        }),
+        Command::Sheet(SheetCommand::SetFormat {
+            slide,
+            ranges: vec![b4_range],
+            change: StyleChange::NumberFormat("yyyy-mm-dd".into()),
+        }),
+        Command::Sheet(SheetCommand::SetFormat {
+            slide,
+            ranges: vec![b5_range],
+            change: StyleChange::Checkbox(true),
+        }),
+        Command::Sheet(SheetCommand::SetName { name: "claim.vct".into(), sheet: None, formula: Some("Sheet1!$B$1".into()) }),
+        Command::Sheet(SheetCommand::SetName { name: "sd.family_name".into(), sheet: None, formula: Some("Sheet1!$B$2".into()) }),
+        Command::Sheet(SheetCommand::SetName { name: "sd.given_name".into(), sheet: None, formula: Some("Sheet1!$B$3".into()) }),
+        Command::Sheet(SheetCommand::SetName { name: "sd.birthdate".into(), sheet: None, formula: Some("Sheet1!$B$4".into()) }),
+        Command::Sheet(SheetCommand::SetName { name: "sd.age_over_18".into(), sheet: None, formula: Some("Sheet1!$B$5".into()) }),
+    ])
+    .unwrap();
+
+    // Add a Drop control (`sd.address.region`) and a CheckBox control (`disclose.given_name`)
+    let mut drop = FormControl::new(ControlKind::Drop, "sd.address.region");
+    drop.link = Some("$B$6".into());
+    drop.range = Some("$E$1:$E$3".into());
+    drop.value = 2;
+    let mut chk = FormControl::new(ControlKind::CheckBox, "disclose.given_name");
+    chk.text = "名を開示".into();
+    chk.checked = 0;
+
+    let mut pres = doc.presentation().clone();
+    pres.slide_mut(slide).unwrap().shapes.push(Shape::new(
+        ibis_doc_model::ShapeId(701),
+        EmuRect::new(914_400, 457_200, 1_828_800, 274_320),
+        ShapeKind::Control(Arc::new(drop)),
+    ));
+    pres.slide_mut(slide).unwrap().shapes.push(Shape::new(
+        ibis_doc_model::ShapeId(702),
+        EmuRect::new(914_400, 914_400, 1_828_800, 274_320),
+        ShapeKind::Control(Arc::new(chk)),
+    ));
+
+    let saved = opened.source.save(&pres, SaveOptions::default()).unwrap();
+    let reopened = ibis_pptx::open(saved).unwrap();
+    let bindings = extract_sheet_claims(&reopened.presentation, slide).expect("extract_sheet_claims");
+
+    assert_eq!(bindings.claim("vct").unwrap().value.as_str(), Some("urn:eu.europa.ec.eudi:pid:1"));
+    assert!(!bindings.claim("vct").unwrap().selective);
+    assert_eq!(bindings.claim("family_name").unwrap().value.as_str(), Some("山田"));
+    assert!(bindings.claim("family_name").unwrap().disclose);
+    assert_eq!(bindings.claim("given_name").unwrap().value.as_str(), Some("花子"));
+    assert!(!bindings.claim("given_name").unwrap().disclose);
+    assert_eq!(bindings.claim("birthdate").unwrap().value.as_str(), Some("1995-12-01"));
+    assert_eq!(bindings.claim("age_over_18").unwrap().value, ClaimValue::Bool(true));
+    assert_eq!(bindings.claim("address.region").unwrap().value.as_str(), Some("京都府"));
+}
