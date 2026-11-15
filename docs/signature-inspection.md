@@ -110,6 +110,15 @@ cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx \
 
 `--at` reports the embedded certificate's time window and key usage. `--anchor`
 and `--intermediate` can be repeated and enumerate bounded candidate chains.
+For each supplied intermediate and anchor candidate, the CLI also prints the
+SHA-256 fingerprint and bounded policy-extension observations. Fingerprints
+can be compared with candidate path entries, but this inventory includes
+supplied certificates that may not be in any candidate path. Anchor-certificate
+policy extensions are certificate metadata and are not automatically applied
+as trust-anchor constraints. No policy mappings, constraints, qualifiers or
+policy tree are evaluated; neither matching OIDs nor their absence establish
+path-policy acceptance.
+
 These candidates use exact ASN.1 name matching and are **not validated**;
 signature mismatches may appear among them. Individual certificate and CRL
 signature comparisons support RSA PKCS#1 v1.5 with SHA-256/384/512,

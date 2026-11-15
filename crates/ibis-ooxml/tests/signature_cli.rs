@@ -636,3 +636,36 @@ fn certificate_policy_claims_are_not_policy_validation() {
     assert!(text.contains("Signature value: does not match"));
     assert!(!text.contains("cps.example.invalid"));
 }
+
+#[test]
+fn supplied_certificate_policies_are_labeled_by_role_and_fingerprint() {
+    use sha2::{Digest, Sha256};
+    use x509_cert::{Certificate, der::{Decode, Encode, asn1::OctetString}};
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    let document = fixtures.join("synthetic-signed.docx");
+    let policy = fixtures.join("certificate-policies.der");
+    let intermediate = fixtures.join("ocsp-leaf.der");
+    let mut malformed = Certificate::from_der(&std::fs::read(&policy).unwrap()).unwrap();
+    malformed.tbs_certificate.extensions.as_mut().unwrap()[0].extn_value = OctetString::new(vec![0xff]).unwrap();
+    let malformed_path = std::env::temp_dir().join(format!("ibis-policy-malformed-{}.der", std::process::id()));
+    std::fs::write(&malformed_path, malformed.to_der().unwrap()).unwrap();
+    let malformed_hash = Sha256::digest(std::fs::read(&malformed_path).unwrap()).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let fingerprint = |path: &std::path::Path| Sha256::digest(std::fs::read(path).unwrap()).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let output = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&document)
+        .arg("--anchor").arg(&policy).arg("--anchor").arg(&policy)
+        .arg("--anchor").arg(&malformed_path)
+        .arg("--intermediate").arg(&intermediate).output().unwrap();
+    std::fs::remove_file(malformed_path).unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Supplied certificate policy observations (UNTRUSTED; NOT path or jurisdiction validation)"));
+    assert!(text.contains(&format!("Intermediate 1 SHA-256: {}; policies: Absent", fingerprint(&intermediate))));
+    assert!(text.contains(&format!("Anchor candidate 1 SHA-256: {}; policies: Present", fingerprint(&policy))));
+    assert!(text.contains(&format!("Anchor candidate 2 SHA-256: {}; policies: Present", fingerprint(&policy))));
+    assert!(text.contains(&format!("Anchor candidate 3 SHA-256: {malformed_hash}; policies: InvalidOrDuplicateExtension")));
+    assert!(text.contains("1.2.3.4.5"));
+    assert!(text.contains("Candidate paths: 0"));
+    assert!(text.contains("they do not establish path membership or anchor trust"));
+    assert!(text.contains("policy tree: NOT EVALUATED"));
+    assert!(!text.contains("cps.example.invalid"));
+}

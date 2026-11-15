@@ -4,6 +4,7 @@
 //! Inspect signature-related observations, without making a trust decision.
 
 use std::process::ExitCode;
+use sha2::{Digest, Sha256};
 use ibis_ooxml::{Package, signatures::{self, ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureValueCheck, XadesIssuerSerial, RelationshipReference}};
 
 fn main() -> ExitCode {
@@ -91,6 +92,20 @@ fn run() -> Result<(), String> {
     let reports = signatures::inspect_signatures(&package).map_err(|e| e.to_string())?;
     println!("Inspection only: signature trust, certificate paths, revocation, timestamps, and complete coverage are NOT evaluated.");
     println!("Exit status 0 means inspection completed, not that a signature is valid.");
+    if !anchors.is_empty() || !intermediates.is_empty() {
+        println!("Supplied certificate policy observations (UNTRUSTED; NOT path or jurisdiction validation):");
+        for (role, certificates) in [("Intermediate", &intermediates), ("Anchor candidate", &anchors)] {
+            for (index, cert) in certificates.iter().enumerate() {
+                let fingerprint = Sha256::digest(cert);
+                let hex: String = fingerprint.iter().map(|byte| format!("{byte:02x}")).collect();
+                match signatures::inspect_certificate_policies(cert) {
+                    Ok(policies) => println!("  {role} {} SHA-256: {hex}; policies: {:?}", index + 1, policies),
+                    Err(_) => println!("  {role} {} SHA-256: {hex}; policies: NOT INSPECTED", index + 1),
+                }
+            }
+        }
+        println!("  Fingerprints identify supplied bytes; they do not establish path membership or anchor trust. Policy mappings, constraints, qualifiers, and policy tree: NOT EVALUATED.");
+    }
     if reports.is_empty() { println!("No package signature relationships found."); }
     for report in reports {
         println!("\nSignature part: {:?}", report.signature_part);
