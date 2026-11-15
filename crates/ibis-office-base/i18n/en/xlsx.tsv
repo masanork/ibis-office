@@ -2908,3 +2908,17 @@ xlsx.design-mode.close	Close Design Mode
 xlsx.sheet.delete-ask	Do you want to delete the sheet?
 
 xlsx.machine-readability.private-use	Private-use character: appearance or meaning may differ between environments. Check the recipient’s font and character mapping.
+xlsx.sd-jwt	Generate SD-JWT…
+xlsx.sd-jwt.title	SD-JWT Generation & Preview
+xlsx.sd-jwt.iss	Issuer (iss)
+xlsx.sd-jwt.vct	Verifiable Credential Type (vct)
+xlsx.sd-jwt.include-cnf	Include Holder Key (cnf.jwk)
+xlsx.sd-jwt.issuer-jwk	Issuer Private JWK (optional; uses sample ES256 key if blank)
+xlsx.sd-jwt.claims-summary	Extracted Claims
+xlsx.sd-jwt.no-claims	No form controls or defined names with claim.* / sd.* / disclose.* prefixes were found on this sheet.
+xlsx.sd-jwt.generate	Regenerate
+xlsx.sd-jwt.copy-presentation	Copy Presentation SD-JWT
+xlsx.sd-jwt.copy-all	Copy Full SD-JWT
+xlsx.sd-jwt.copy-payload	Copy Payload JSON
+xlsx.sd-jwt.copied	Copied to clipboard
+xlsx.sd-jwt.invalid-jwk	Enter a valid P-256 JWK JSON (or leave blank).

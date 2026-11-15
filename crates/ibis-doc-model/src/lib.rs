@@ -53,6 +53,7 @@ pub mod sheet_calc;
 pub mod sheet_command;
 pub mod sheet_ops;
 pub mod form_control;
+pub mod sd_jwt;
 pub mod sd_jwt_binding;
 pub mod timeline;
 pub mod slicer;
@@ -108,6 +109,10 @@ pub use model::{ZoomObject, ZoomTarget,
     PhotoAlbum, PhotoAlbumFrame, PhotoAlbumLayout,
 };
 pub use form_control::{ControlHit, ControlKind, FormControl};
+pub use sd_jwt::{
+    Es256KeyPair, SdJwtDisclosure, SdJwtOptions, SdJwtOutput, base64url_decode, base64url_encode,
+    hmac_sha256, issue_sd_jwt, issue_sheet_sd_jwt, sha256, verify_es256,
+};
 pub use sd_jwt_binding::{
     BindingSource, BoundClaim, ClaimValue, DiscloseBinding, SheetClaimBindings, extract_sheet_claims,
 };

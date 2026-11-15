@@ -2905,3 +2905,17 @@ xlsx.design-mode.close	デザイン モードを閉じる
 xlsx.sheet.delete-ask	シートを削除してよろしいですか？
 
 xlsx.machine-readability.private-use	私用文字：環境によって表示や文字の意味が異なる場合があります。利用先のフォントや対応表を確認してください。
+xlsx.sd-jwt	SD-JWT の生成…
+xlsx.sd-jwt.title	SD-JWT の生成とプレビュー
+xlsx.sd-jwt.iss	発行者 (iss)
+xlsx.sd-jwt.vct	クレデンシャル種別 (vct)
+xlsx.sd-jwt.include-cnf	保有者鍵 (cnf.jwk) を含める
+xlsx.sd-jwt.issuer-jwk	発行者秘密鍵 JWK（省略時はサンプル ES256 鍵）
+xlsx.sd-jwt.claims-summary	抽出されたクレーム
+xlsx.sd-jwt.no-claims	claim.* / sd.* / disclose.* の名前が付いたフォーム コントロールまたは定義された名前がありません。
+xlsx.sd-jwt.generate	再生成
+xlsx.sd-jwt.copy-presentation	提示用 SD-JWT をコピー
+xlsx.sd-jwt.copy-all	全開示 SD-JWT をコピー
+xlsx.sd-jwt.copy-payload	ペイロード JSON をコピー
+xlsx.sd-jwt.copied	クリップボードにコピーしました
+xlsx.sd-jwt.invalid-jwk	有効な P-256 JWK JSON を入力してください（省略可）。

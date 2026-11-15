@@ -4628,6 +4628,17 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
             })
             .into(),
     );
+    menus.items_mut(crate::shell::chrome::MenuId::Format).push(
+        MenuItem::tr("xlsx.sd-jwt")
+            .icon("verified_user")
+            .on(|this, window, cx| {
+                this.open_sd_jwt_panel(window, cx);
+            })
+            .into(),
+    );
+    menus.connect("xlsx.sd-jwt", |this, window, cx| {
+        this.open_sd_jwt_panel(window, cx);
+    });
     let sel_pane_open = editor.sheet_state().is_some_and(|s| s.panels.selection_pane.is_some());
     menus.items_mut(crate::shell::chrome::MenuId::Format).push(
         MenuItem::tr("xlsx.selection-pane")

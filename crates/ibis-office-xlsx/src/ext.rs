@@ -165,6 +165,8 @@ pub use super::row_col_size::RowColSize as _;
 pub(crate) use super::row_col_size::RowColSizeCrate as _;
 pub use super::scenario_manager::ScenarioManager as _;
 pub(crate) use super::scenario_manager::ScenarioManagerCrate as _;
+pub use super::sd_jwt_panel::SdJwtPanelExt as _;
+pub(crate) use super::sd_jwt_panel::SdJwtPanelExtCrate as _;
 pub use super::selection_pane::SelectionPane as _;
 pub(crate) use super::selection_pane::SelectionPaneCrate as _;
 pub use super::series::SeriesExt as _;

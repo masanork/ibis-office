@@ -93,6 +93,7 @@ pub mod pivot;
 pub(crate) mod pivot_fields;
 pub(crate) mod pivot_pane;
 pub(crate) mod pivot_protect;
+pub(crate) mod sd_jwt_panel;
 pub mod row_fit;
 pub(crate) mod table_design;
 pub(crate) mod table_style_preview;

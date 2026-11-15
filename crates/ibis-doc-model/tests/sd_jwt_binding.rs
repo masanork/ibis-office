@@ -211,3 +211,99 @@ fn set_disclose_commands_updates_checkbox_control_and_linked_cell() {
     let updated = extract_sheet_claims(doc.presentation(), slide_id).unwrap();
     assert!(updated.claim("given_name").unwrap().disclose);
 }
+
+#[test]
+fn rfc7515_es256_jwk_and_signature_verification() {
+    use ibis_doc_model::{Es256KeyPair, base64url_decode, verify_es256};
+
+    // RFC 7515 Appendix A.3.1 private JWK
+    let rfc7515_jwk = r#"{
+        "kty":"EC",
+        "crv":"P-256",
+        "x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+        "y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
+        "d":"jpsQnnGQmL-YBIffH1136cspYG6-0iY7X1fCE9-E9LI"
+    }"#;
+    let kp = Es256KeyPair::from_jwk_json(rfc7515_jwk).expect("RFC 7515 A.3 JWK should parse and match (x, y) = d * G");
+
+    // Verify RFC 7515 Appendix A.3.2 signature with our verifier
+    let signing_input = b"eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ";
+    let rfc_sig_b64 = "DtEhU3ljbEg8L38VWAfUAqOyKAM6-Xx-F4GawxaepmXFCgfTjDxw5djxLa8ISlSApmWQxfKTUJqPP3-Kg6NU1Q";
+    let rfc_sig: [u8; 64] = base64url_decode(rfc_sig_b64).unwrap().try_into().unwrap();
+    assert!(verify_es256(&kp.x, &kp.y, signing_input, &rfc_sig));
+
+    // Also sign with RFC 6979 deterministic ES256 and verify
+    let our_sig = kp.sign_es256(signing_input);
+    assert!(verify_es256(&kp.x, &kp.y, signing_input, &our_sig));
+}
+
+#[test]
+fn issues_rfc9901_sd_jwt_with_nested_digests_and_selective_presentation() {
+    use ibis_doc_model::{
+        Es256KeyPair, SdJwtOptions, base64url_decode, issue_sd_jwt, issue_sheet_sd_jwt,
+        verify_es256,
+    };
+
+    let (pres, slide_id, _chk_id) = sample_presentation();
+    let issuer_key = Es256KeyPair::demo_issuer_key();
+    let holder_key = Es256KeyPair::demo_holder_key();
+
+    let mut opts = SdJwtOptions::default();
+    opts.holder_public_jwk = Some(holder_key.to_public_jwk());
+    opts.salt_overrides
+        .insert("family_name".into(), "salt_family_1234".into());
+    opts.salt_overrides
+        .insert("given_name".into(), "salt_given_5678".into());
+
+    let (bindings, out) = issue_sheet_sd_jwt(&pres, slide_id, &opts, &issuer_key).expect("issue SD-JWT");
+
+    // 1. Verify ES256 signature on issuer_jwt
+    let jwt_parts: Vec<&str> = out.issuer_jwt.split('.').collect();
+    assert_eq!(jwt_parts.len(), 3);
+    let signing_input = format!("{}.{}", jwt_parts[0], jwt_parts[1]);
+    let sig_bytes: [u8; 64] = base64url_decode(jwt_parts[2]).unwrap().try_into().unwrap();
+    assert!(verify_es256(
+        &issuer_key.x,
+        &issuer_key.y,
+        signing_input.as_bytes(),
+        &sig_bytes
+    ));
+
+    // 2. Payload contains `_sd_alg: "sha-256"`, top-level `_sd`, nested `address._sd`, and `cnf.jwk`
+    let payload_obj = out.payload.as_object().unwrap();
+    assert_eq!(payload_obj.get("_sd_alg").and_then(ClaimValue::as_str), Some("sha-256"));
+    assert!(payload_obj.contains_key("cnf"));
+    let top_sd = match payload_obj.get("_sd").unwrap() {
+        ClaimValue::Array(a) => a,
+        _ => panic!("expected top-level _sd array"),
+    };
+    // Top-level selective claims: family_name, given_name, birthdate, prefecture_from_cell, age_over_18, gender (6 items)
+    assert_eq!(top_sd.len(), 6);
+
+    let addr_obj = payload_obj.get("address").unwrap().as_object().unwrap();
+    let addr_sd = match addr_obj.get("_sd").unwrap() {
+        ClaimValue::Array(a) => a,
+        _ => panic!("expected nested address._sd array"),
+    };
+    // Nested selective claims under `address`: country, region (2 items)
+    assert_eq!(addr_sd.len(), 2);
+
+    // 3. Presentation SD-JWT excludes `given_name` disclosure while `disclose.given_name` is false
+    let gn_disclosure = out
+        .disclosures
+        .iter()
+        .find(|d| d.path_str == "given_name")
+        .unwrap();
+    assert!(!gn_disclosure.disclose);
+    assert!(out.sd_jwt_all.contains(&gn_disclosure.encoded));
+    assert!(!out.sd_jwt_presentation.contains(&gn_disclosure.encoded));
+
+    // 4. After enabling `given_name` via `set_disclose_commands`, `sd_jwt_presentation` includes it
+    let mut doc = Document::new(pres);
+    let cmds = bindings.set_disclose_commands(doc.presentation(), &["given_name"], false);
+    doc.execute(cmds).unwrap();
+    let updated_bindings = extract_sheet_claims(doc.presentation(), slide_id).unwrap();
+    let updated_out = issue_sd_jwt(&updated_bindings, &opts, &issuer_key);
+    assert!(updated_out.sd_jwt_presentation.contains(&gn_disclosure.encoded));
+}
+

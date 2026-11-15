@@ -76,6 +76,8 @@ pub struct EditPanels {
     pub timeline_insert: Option<super::timeline_insert::TimelineInsertPanel>,
     /// 開発 > コントロールの書式設定/プロパティ…
     pub(crate) control_properties: Option<super::control_insert::ControlPropertiesPanel>,
+    /// 開発 > SD-JWT の生成とプレビュー…
+    pub(crate) sd_jwt: Option<super::sd_jwt_panel::SdJwtPanel>,
     /// 挿入 > 描画（インク）
     pub ink: Option<super::ink::InkPanel>,
     /// データ > ソルバー…
@@ -196,6 +198,7 @@ impl EditPanels {
         self.slicer_insert = None;
         self.timeline_insert = None;
         self.control_properties = None;
+        self.sd_jwt = None;
         self.slicer_settings = None;
         self.error_options = None;
         self.autocorrect = None;
@@ -278,6 +281,7 @@ impl crate::shell::editor::SlideEditor {
             .or_else(|| self.slicer_insert_panel(cx).map(|panel| panel.modal_named("slicer_insert_panel")))
             .or_else(|| self.timeline_insert_panel(cx).map(|panel| panel.modal_named("timeline_insert_panel")))
             .or_else(|| self.control_properties_panel(cx).map(|panel| panel.modal_named("control_properties_panel")))
+            .or_else(|| self.sd_jwt_panel(cx).map(|panel| panel.modal_named("sd_jwt_panel")))
             .or_else(|| self.slicer_settings_panel(cx).map(|panel| panel.modal_named("slicer_settings_panel")))
             .or_else(|| self.error_options_panel(cx).map(|panel| panel.modal_named("error_options_panel")))
             .or_else(|| self.autocorrect_panel(cx).map(|panel| panel.modal_named("autocorrect_panel")))

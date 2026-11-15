@@ -84,6 +84,7 @@ impl SlideEditor {
             "timeline_insert_panel" => { state.panels.timeline_insert = None; }
             "watch_window_panel" => { state.panels.watch_window=None; }
             "control_properties_panel" => { state.panels.control_properties = None; }
+            "sd_jwt_panel" => { state.panels.sd_jwt = None; }
             "slicer_settings_panel" => { state.panels.slicer_settings = None; }
             "error_options_panel" => { state.panels.error_options = None; }
             "autocorrect_panel" => { state.panels.autocorrect = None; }
