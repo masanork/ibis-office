@@ -111,6 +111,22 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
             height_px,
         });
     }
+    if first_line == "mindmap" || first_line.starts_with("mindmap ") {
+        let (bytes, width_px, height_px) = render_mindmap_svg(trimmed)?;
+        return Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        });
+    }
+    if first_line == "gitGraph" || first_line.starts_with("gitGraph ") {
+        let (bytes, width_px, height_px) = render_git_graph_svg(trimmed)?;
+        return Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        });
+    }
     None
 }
 
@@ -2686,6 +2702,600 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 // ============================================================================
+// Chart SVG Fallback (`pie`, `xychart-beta` when native chart isn't available, e.g. clipboard paste)
+// ============================================================================
+
+/// Render a parsed `MermaidChartSpec` (`pie` or `xychart-beta`) to a standalone SVG.
+///
+/// Used as a fallback when a native Office chart cannot be instantiated (e.g., clipboard fragment paste).
+pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u32)> {
+    const PALETTE: &[&str] = &[
+        "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16",
+    ];
+    if spec.series.is_empty() || spec.categories.is_empty() {
+        return None;
+    }
+
+    if spec.kind == NewChartKind::Pie {
+        let vals: Vec<f64> = spec.series[0]
+            .1
+            .iter()
+            .map(|v| v.map(|n| n.0.max(0.0)).unwrap_or(0.0))
+            .collect();
+        let total: f64 = vals.iter().sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let width_px = 460u32;
+        let legend_rows = spec.categories.len().max(1) as u32;
+        let height_px = (legend_rows * 24 + 80).max(250);
+        let cx = 130.0f64;
+        let cy = (height_px as f64) / 2.0 + if spec.title.is_some() { 12.0 } else { 0.0 };
+        let r = 86.0f64;
+
+        let mut svg = String::new();
+        svg.push_str(&format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" viewBox="0 0 {width_px} {height_px}" font-family="sans-serif">"##
+        ));
+        svg.push_str(&format!(
+            r##"<rect width="{width_px}" height="{height_px}" fill="#ffffff"/>"##
+        ));
+        if let Some(t) = &spec.title {
+            svg.push_str(&format!(
+                r##"<text x="{:.1}" y="26" text-anchor="middle" font-size="14" font-weight="bold" fill="#0f172a">{}</text>"##,
+                width_px as f32 / 2.0,
+                escape_xml(t)
+            ));
+        }
+
+        let mut angle = -std::f64::consts::FRAC_PI_2;
+        for (i, &val) in vals.iter().enumerate() {
+            let frac = val / total;
+            if frac <= 0.0 {
+                continue;
+            }
+            let color = PALETTE[i % PALETTE.len()];
+            if frac >= 0.9999 {
+                svg.push_str(&format!(
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{r:.1}" fill="{color}" stroke="#ffffff" stroke-width="1.5"/>"##
+                ));
+            } else {
+                let next_angle = angle + frac * 2.0 * std::f64::consts::PI;
+                let x1 = cx + r * angle.cos();
+                let y1 = cy + r * angle.sin();
+                let x2 = cx + r * next_angle.cos();
+                let y2 = cy + r * next_angle.sin();
+                let large_arc = if frac > 0.5 { 1 } else { 0 };
+                svg.push_str(&format!(
+                    r##"<path d="M {cx:.1} {cy:.1} L {x1:.1} {y1:.1} A {r:.1} {r:.1} 0 {large_arc} 1 {x2:.1} {y2:.1} Z" fill="{color}" stroke="#ffffff" stroke-width="1.5"/>"##
+                ));
+                angle = next_angle;
+            }
+        }
+
+        // Legend
+        let lx = 248.0f32;
+        let ly_start = (cy as f32) - (spec.categories.len() as f32 * 22.0) / 2.0;
+        for (i, cat) in spec.categories.iter().enumerate() {
+            let color = PALETTE[i % PALETTE.len()];
+            let ly = ly_start + i as f32 * 22.0;
+            let pct = (vals.get(i).copied().unwrap_or(0.0) / total) * 100.0;
+            svg.push_str(&format!(
+                r##"<rect x="{lx:.1}" y="{:.1}" width="12" height="12" rx="2" fill="{color}"/>"##,
+                ly
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{} ({pct:.1}%)</text>"##,
+                lx + 18.0,
+                ly + 10.5,
+                escape_xml(cat)
+            ));
+        }
+
+        svg.push_str("</svg>");
+        return Some((svg.into_bytes(), width_px, height_px));
+    }
+
+    // XY chart (bar / line)
+    let mut max_val = 1.0f64;
+    for (_, vals) in &spec.series {
+        for v in vals.iter().flatten() {
+            max_val = max_val.max(v.0);
+        }
+    }
+    let width_px = 520u32;
+    let height_px = 280u32;
+    let pad_l = 52.0f32;
+    let pad_r = 24.0f32;
+    let pad_t = if spec.title.is_some() { 44.0f32 } else { 24.0f32 };
+    let pad_b = 42.0f32;
+    let plot_w = width_px as f32 - pad_l - pad_r;
+    let plot_h = height_px as f32 - pad_t - pad_b;
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" viewBox="0 0 {width_px} {height_px}" font-family="sans-serif">"##
+    ));
+    svg.push_str(&format!(
+        r##"<rect width="{width_px}" height="{height_px}" fill="#ffffff"/>"##
+    ));
+    if let Some(t) = &spec.title {
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="24" text-anchor="middle" font-size="14" font-weight="bold" fill="#0f172a">{}</text>"##,
+            width_px as f32 / 2.0,
+            escape_xml(t)
+        ));
+    }
+    // Grid & axes
+    for i in 0..=4 {
+        let frac = i as f32 / 4.0;
+        let gy = pad_t + plot_h * (1.0 - frac);
+        svg.push_str(&format!(
+            r##"<line x1="{pad_l:.1}" y1="{gy:.1}" x2="{:.1}" y2="{gy:.1}" stroke="#e2e8f0" stroke-width="1"/>"##,
+            pad_l + plot_w
+        ));
+        let tick_val = max_val * frac as f64;
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="end" font-size="10" fill="#64748b">{tick_val:.0}</text>"##,
+            pad_l - 6.0,
+            gy + 3.5
+        ));
+    }
+    svg.push_str(&format!(
+        r##"<line x1="{pad_l:.1}" y1="{pad_t:.1}" x2="{pad_l:.1}" y2="{:.1}" stroke="#64748b" stroke-width="1.2"/>"##,
+        pad_t + plot_h
+    ));
+    svg.push_str(&format!(
+        r##"<line x1="{pad_l:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#64748b" stroke-width="1.2"/>"##,
+        pad_t + plot_h,
+        pad_l + plot_w,
+        pad_t + plot_h
+    ));
+
+    let cat_count = spec.categories.len().max(1);
+    let slot_w = plot_w / cat_count as f32;
+    for (ci, cat) in spec.categories.iter().enumerate() {
+        let cx = pad_l + (ci as f32 + 0.5) * slot_w;
+        svg.push_str(&format!(
+            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155">{}</text>"##,
+            pad_t + plot_h + 18.0,
+            escape_xml(cat)
+        ));
+    }
+
+    for (si, (sname, vals)) in spec.series.iter().enumerate() {
+        let color = PALETTE[si % PALETTE.len()];
+        let is_line = spec.kind == NewChartKind::Line || sname.starts_with("Line");
+        if is_line {
+            let mut pts = Vec::new();
+            for (ci, v_opt) in vals.iter().enumerate() {
+                if let Some(v) = v_opt {
+                    let px = pad_l + (ci as f32 + 0.5) * slot_w;
+                    let py = pad_t + plot_h * (1.0 - (v.0 / max_val) as f32);
+                    pts.push((px, py));
+                }
+            }
+            if pts.len() >= 2 {
+                let poly: String = pts
+                    .iter()
+                    .map(|(x, y)| format!("{x:.1},{y:.1}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                svg.push_str(&format!(
+                    r##"<polyline points="{poly}" fill="none" stroke="{color}" stroke-width="2.2"/>"##
+                ));
+            }
+            for (px, py) in pts {
+                svg.push_str(&format!(
+                    r##"<circle cx="{px:.1}" cy="{py:.1}" r="3.5" fill="{color}" stroke="#ffffff" stroke-width="1"/>"##
+                ));
+            }
+        } else {
+            let bar_w = (slot_w * 0.54).min(40.0);
+            for (ci, v_opt) in vals.iter().enumerate() {
+                if let Some(v) = v_opt {
+                    let bh = (plot_h * (v.0 / max_val) as f32).max(2.0);
+                    let bx = pad_l + (ci as f32 + 0.5) * slot_w - bar_w / 2.0;
+                    let by = pad_t + plot_h - bh;
+                    svg.push_str(&format!(
+                        r##"<rect x="{bx:.1}" y="{by:.1}" width="{bar_w:.1}" height="{bh:.1}" rx="2" fill="{color}" fill-opacity="0.88"/>"##
+                    ));
+                }
+            }
+        }
+    }
+
+    svg.push_str("</svg>");
+    Some((svg.into_bytes(), width_px, height_px))
+}
+
+// ============================================================================
+// Mindmap (mindmap)
+// ============================================================================
+
+struct MindNode {
+    label: String,
+    depth: usize,
+    children: Vec<usize>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+fn render_mindmap_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let mut nodes: Vec<MindNode> = Vec::new();
+    let mut stack: Vec<(usize, usize)> = Vec::new(); // (indent, node_idx)
+
+    for raw in source.lines().skip(1) {
+        if raw.trim().is_empty() || raw.trim_start().starts_with("%%") {
+            continue;
+        }
+        let indent = raw.chars().take_while(|c| c.is_whitespace()).count();
+        let label = clean_mindmap_label(raw.trim());
+        if label.is_empty() {
+            continue;
+        }
+        while let Some(&(top_indent, _)) = stack.last() {
+            if top_indent >= indent {
+                stack.pop();
+            } else {
+                break;
+            }
+        }
+        let depth = stack.len();
+        let w = (estimate_text_width(&label, 12.5) + 26.0).max(68.0);
+        let h = if depth == 0 { 38.0 } else { 30.0 };
+        let idx = nodes.len();
+        nodes.push(MindNode {
+            label,
+            depth,
+            children: Vec::new(),
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+        });
+        if let Some(&(_, parent_idx)) = stack.last() {
+            nodes[parent_idx].children.push(idx);
+        }
+        stack.push((indent, idx));
+    }
+
+    if nodes.is_empty() {
+        return None;
+    }
+
+    // Assign Y by leaf slots, X by depth.
+    fn subtree_leaves(idx: usize, nodes: &[MindNode]) -> usize {
+        if nodes[idx].children.is_empty() {
+            1
+        } else {
+            nodes[idx]
+                .children
+                .iter()
+                .map(|&c| subtree_leaves(c, nodes))
+                .sum()
+        }
+    }
+
+    let mut max_depth = 0usize;
+    for n in &nodes {
+        max_depth = max_depth.max(n.depth);
+    }
+    let mut depth_widths = vec![80.0f32; max_depth + 1];
+    for n in &nodes {
+        depth_widths[n.depth] = depth_widths[n.depth].max(n.w);
+    }
+    let mut depth_x = vec![28.0f32; max_depth + 1];
+    for d in 1..=max_depth {
+        depth_x[d] = depth_x[d - 1] + depth_widths[d - 1] + 44.0;
+    }
+
+    let leaf_h = 44.0f32;
+    let margin_y = 24.0f32;
+    fn layout_node(
+        idx: usize,
+        y_start: f32,
+        leaf_h: f32,
+        depth_x: &[f32],
+        nodes: &mut [MindNode],
+    ) -> f32 {
+        let children = nodes[idx].children.clone();
+        nodes[idx].x = depth_x[nodes[idx].depth];
+        if children.is_empty() {
+            nodes[idx].y = y_start + leaf_h / 2.0;
+            return y_start + leaf_h;
+        }
+        let mut cursor = y_start;
+        let mut first_cy = 0.0f32;
+        let mut last_cy = 0.0f32;
+        for (i, &c) in children.iter().enumerate() {
+            cursor = layout_node(c, cursor, leaf_h, depth_x, nodes);
+            let cy = nodes[c].y;
+            if i == 0 {
+                first_cy = cy;
+            }
+            last_cy = cy;
+        }
+        nodes[idx].y = (first_cy + last_cy) / 2.0;
+        cursor
+    }
+
+    let mut total_y = margin_y;
+    for i in 0..nodes.len() {
+        if nodes[i].depth == 0 {
+            let _ = subtree_leaves(i, &nodes);
+            total_y = layout_node(i, total_y, leaf_h, &depth_x, &mut nodes);
+        }
+    }
+
+    let total_w = (depth_x[max_depth] + depth_widths[max_depth] + 28.0).ceil() as u32;
+    let total_h = (total_y + margin_y).ceil() as u32;
+
+    const BRANCH_COLORS: &[&str] = &["#2563eb", "#059669", "#d97706", "#7c3aed", "#db2777", "#0891b2"];
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
+    ));
+    svg.push_str(&format!(
+        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
+    ));
+
+    // Curved edges
+    for (p_idx, p) in nodes.iter().enumerate() {
+        for (ci, &c_idx) in p.children.iter().enumerate() {
+            let c = &nodes[c_idx];
+            let sx = p.x + p.w;
+            let sy = p.y;
+            let ex = c.x;
+            let ey = c.y;
+            let mx = (sx + ex) / 2.0;
+            let color = BRANCH_COLORS[(p_idx + ci) % BRANCH_COLORS.len()];
+            svg.push_str(&format!(
+                r##"<path d="M {sx:.1} {sy:.1} C {mx:.1} {sy:.1}, {mx:.1} {ey:.1}, {ex:.1} {ey:.1}" fill="none" stroke="{color}" stroke-width="1.8"/>"##
+            ));
+        }
+    }
+
+    // Nodes
+    for (idx, n) in nodes.iter().enumerate() {
+        let ny = n.y - n.h / 2.0;
+        let (fill, stroke, text_fill, rx) = if n.depth == 0 {
+            ("#1e293b", "#0f172a", "#ffffff", 18.0)
+        } else {
+            let c = BRANCH_COLORS[idx % BRANCH_COLORS.len()];
+            ("#f8fafc", c, "#0f172a", 8.0)
+        };
+        svg.push_str(&format!(
+            r##"<rect x="{:.1}" y="{ny:.1}" width="{:.1}" height="{:.1}" rx="{rx:.1}" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>"##,
+            n.x, n.w, n.h
+        ));
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="12.5" font-weight="{}" fill="{text_fill}">{}</text>"##,
+            n.x + n.w / 2.0,
+            n.y + 4.5,
+            if n.depth == 0 { "bold" } else { "normal" },
+            escape_xml(&n.label)
+        ));
+    }
+
+    svg.push_str("</svg>");
+    Some((svg.into_bytes(), total_w, total_h))
+}
+
+fn clean_mindmap_label(s: &str) -> String {
+    let mut t = s.trim();
+    for (open, close) in [
+        ("((", "))"),
+        ("{{", "}}"),
+        ("(", ")"),
+        ("[", "]"),
+    ] {
+        if let Some(pos) = t.find(open) {
+            if let Some(end) = t.rfind(close) {
+                if end > pos + open.len() {
+                    t = t[pos + open.len()..end].trim();
+                    break;
+                }
+            }
+        }
+    }
+    unquote(t)
+}
+
+// ============================================================================
+// Git Graph (gitGraph)
+// ============================================================================
+
+struct GitCommit {
+    branch: usize,
+    id: String,
+    tag: Option<String>,
+    parent: Option<usize>,
+    merge_parent: Option<usize>,
+}
+
+fn render_git_graph_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let mut branches: Vec<String> = vec!["main".to_string()];
+    let mut branch_head: Vec<Option<usize>> = vec![None];
+    let mut current_branch = 0usize;
+    let mut commits: Vec<GitCommit> = Vec::new();
+    let mut auto_idx = 1usize;
+
+    let ensure_branch = |name: &str, branches: &mut Vec<String>, branch_head: &mut Vec<Option<usize>>, head: Option<usize>| -> usize {
+        if let Some(pos) = branches.iter().position(|b| b == name) {
+            return pos;
+        }
+        let idx = branches.len();
+        branches.push(name.to_string());
+        branch_head.push(head);
+        idx
+    };
+
+    for raw in source.lines().skip(1) {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") {
+            continue;
+        }
+        if l.starts_with("commit") {
+            let id = extract_git_attr(l, "id:").unwrap_or_else(|| {
+                let s = format!("c{auto_idx}");
+                auto_idx += 1;
+                s
+            });
+            let tag = extract_git_attr(l, "tag:");
+            let parent = branch_head[current_branch];
+            let idx = commits.len();
+            commits.push(GitCommit {
+                branch: current_branch,
+                id,
+                tag,
+                parent,
+                merge_parent: None,
+            });
+            branch_head[current_branch] = Some(idx);
+        } else if let Some(rest) = l.strip_prefix("branch ") {
+            let bname = unquote(rest.split_whitespace().next().unwrap_or(""));
+            if !bname.is_empty() {
+                let head = branch_head[current_branch];
+                current_branch = ensure_branch(&bname, &mut branches, &mut branch_head, head);
+            }
+        } else if let Some(rest) = l.strip_prefix("checkout ").or_else(|| l.strip_prefix("switch ")) {
+            let bname = unquote(rest.split_whitespace().next().unwrap_or(""));
+            if let Some(pos) = branches.iter().position(|b| b == &bname) {
+                current_branch = pos;
+            }
+        } else if let Some(rest) = l.strip_prefix("merge ") {
+            let bname = unquote(rest.split_whitespace().next().unwrap_or(""));
+            if let Some(src_branch) = branches.iter().position(|b| b == &bname) {
+                let parent = branch_head[current_branch];
+                let merge_parent = branch_head[src_branch];
+                let id = extract_git_attr(l, "id:").unwrap_or_else(|| format!("merge {bname}"));
+                let tag = extract_git_attr(l, "tag:");
+                let idx = commits.len();
+                commits.push(GitCommit {
+                    branch: current_branch,
+                    id,
+                    tag,
+                    parent,
+                    merge_parent,
+                });
+                branch_head[current_branch] = Some(idx);
+            }
+        }
+    }
+
+    if commits.is_empty() {
+        return None;
+    }
+
+    const COLORS: &[&str] = &["#2563eb", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444", "#06b6d4"];
+    let label_col = branches
+        .iter()
+        .map(|b| estimate_text_width(b, 12.0))
+        .fold(64.0f32, f32::max)
+        + 28.0;
+    let step_x = 64.0f32;
+    let lane_h = 46.0f32;
+    let top_pad = 28.0f32;
+    let bottom_pad = 36.0f32;
+    let total_w = (label_col + commits.len() as f32 * step_x + 36.0).ceil() as u32;
+    let total_h = (top_pad + branches.len() as f32 * lane_h + bottom_pad).ceil() as u32;
+
+    let commit_pos = |idx: usize| -> (f32, f32) {
+        let x = label_col + (idx as f32 + 0.5) * step_x;
+        let y = top_pad + (commits[idx].branch as f32 + 0.5) * lane_h;
+        (x, y)
+    };
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
+    ));
+    svg.push_str(&format!(
+        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
+    ));
+
+    // Branch guide lines & labels
+    for (bi, bname) in branches.iter().enumerate() {
+        let ly = top_pad + (bi as f32 + 0.5) * lane_h;
+        let color = COLORS[bi % COLORS.len()];
+        svg.push_str(&format!(
+            r##"<line x1="{label_col:.1}" y1="{ly:.1}" x2="{:.1}" y2="{ly:.1}" stroke="#e2e8f0" stroke-width="1.5" stroke-dasharray="4,4"/>"##,
+            total_w as f32 - 18.0
+        ));
+        svg.push_str(&format!(
+            r##"<text x="14" y="{:.1}" font-size="12" font-weight="bold" fill="{color}">{}</text>"##,
+            ly + 4.0,
+            escape_xml(bname)
+        ));
+    }
+
+    // Commit links
+    for (idx, c) in commits.iter().enumerate() {
+        let (x2, y2) = commit_pos(idx);
+        if let Some(p) = c.parent {
+            let (x1, y1) = commit_pos(p);
+            let color = COLORS[c.branch % COLORS.len()];
+            let mx = (x1 + x2) / 2.0;
+            svg.push_str(&format!(
+                r##"<path d="M {x1:.1} {y1:.1} C {mx:.1} {y1:.1}, {mx:.1} {y2:.1}, {x2:.1} {y2:.1}" fill="none" stroke="{color}" stroke-width="2.2"/>"##
+            ));
+        }
+        if let Some(mp) = c.merge_parent {
+            let (x1, y1) = commit_pos(mp);
+            let color = COLORS[commits[mp].branch % COLORS.len()];
+            let mx = (x1 + x2) / 2.0;
+            svg.push_str(&format!(
+                r##"<path d="M {x1:.1} {y1:.1} C {mx:.1} {y1:.1}, {mx:.1} {y2:.1}, {x2:.1} {y2:.1}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="4,3"/>"##
+            ));
+        }
+    }
+
+    // Commits & tags
+    for (idx, c) in commits.iter().enumerate() {
+        let (cx, cy) = commit_pos(idx);
+        let color = COLORS[c.branch % COLORS.len()];
+        svg.push_str(&format!(
+            r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="7.5" fill="{color}" stroke="#ffffff" stroke-width="2"/>"##
+        ));
+        svg.push_str(&format!(
+            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#334155">{}</text>"##,
+            cy + 20.0,
+            escape_xml(&c.id)
+        ));
+        if let Some(tag) = &c.tag {
+            let tw = estimate_text_width(tag, 10.0) + 12.0;
+            svg.push_str(&format!(
+                r##"<rect x="{:.1}" y="{:.1}" width="{tw:.1}" height="16" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-width="1"/>"##,
+                cx - tw / 2.0,
+                cy - 27.0
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="10" font-weight="bold" fill="#854d0e">{}</text>"##,
+                cy - 15.5,
+                escape_xml(tag)
+            ));
+        }
+    }
+
+    svg.push_str("</svg>");
+    Some((svg.into_bytes(), total_w, total_h))
+}
+
+fn extract_git_attr(line: &str, key: &str) -> Option<String> {
+    let pos = line.find(key)?;
+    let rest = line[pos + key.len()..].trim_start();
+    if let Some(after_q) = rest.strip_prefix('"') {
+        let end = after_q.find('"')?;
+        Some(after_q[..end].to_string())
+    } else {
+        rest.split_whitespace().next().map(ToString::to_string)
+    }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -2926,5 +3536,54 @@ gantt
         assert!(svg.contains("要件定義"));
         assert!(svg.contains("基本設計"));
         assert!(svg.contains("2026-01-01"));
+    }
+
+    #[test]
+    fn renders_mindmap_and_gitgraph_and_chart_svg_fallback() {
+        let mm = "\
+mindmap
+  root((ibis-office))
+    Markdown
+      Mermaid
+      Math
+    Formats
+      DOCX
+      PPTX
+";
+        let Some(MermaidOutput::Svg { bytes, width_px, height_px }) = render_mermaid(mm) else {
+            panic!("expected svg for mindmap");
+        };
+        assert!(width_px > 200 && height_px > 120);
+        let mm_svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(mm_svg.contains("ibis-office"));
+        assert!(mm_svg.contains("Mermaid"));
+
+        let git = "\
+gitGraph
+  commit id: \"init\"
+  branch feat
+  checkout feat
+  commit id: \"wip\"
+  checkout main
+  merge feat tag: \"v1.0\"
+";
+        let Some(MermaidOutput::Svg { bytes: gbytes, width_px: gw, height_px: gh }) = render_mermaid(git) else {
+            panic!("expected svg for gitGraph");
+        };
+        assert!(gw > 250 && gh > 80);
+        let git_svg = std::str::from_utf8(&gbytes).unwrap();
+        assert!(git_svg.contains("main"));
+        assert!(git_svg.contains("feat"));
+        assert!(git_svg.contains("v1.0"));
+
+        let pie = "pie\n  title Share\n  \"A\" : 60\n  \"B\" : 40\n";
+        let Some(MermaidOutput::Chart(spec)) = render_mermaid(pie) else {
+            panic!("expected chart spec");
+        };
+        let (svg_bytes, pw, ph) = render_chart_spec_svg(&spec).expect("svg fallback");
+        assert!(pw > 300 && ph > 200);
+        let pie_svg = std::str::from_utf8(&svg_bytes).unwrap();
+        assert!(pie_svg.contains("Share"));
+        assert!(pie_svg.contains("60.0%"));
     }
 }

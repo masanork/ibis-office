@@ -260,6 +260,7 @@ fn shape_html(out: &mut String, p: &Presentation, shape: &Shape, width: i64, hei
                     MediaFormat::Jpeg => Some("image/jpeg"),
                     MediaFormat::Gif => Some("image/gif"),
                     MediaFormat::Webp => Some("image/webp"),
+                    MediaFormat::Svg => Some("image/svg+xml"),
                     _ => None,
                 };
                 if let Some(mime) = mime {

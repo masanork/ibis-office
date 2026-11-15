@@ -2145,63 +2145,87 @@ fn build_chart_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block,
 
 fn build_mermaid_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block, Error> {
     match crate::mermaid::render_mermaid(content) {
-        Some(crate::mermaid::MermaidOutput::Chart(spec)) => build_chart_block_from_spec(
-            spec.kind,
-            spec.title,
-            DEFAULT_CHART_SIZE,
-            spec.categories,
-            spec.series,
-            content,
-            ctx,
-        ),
+        Some(crate::mermaid::MermaidOutput::Chart(spec)) => {
+            if ctx.source.is_some() && ctx.baseline_pres.is_some() {
+                build_chart_block_from_spec(
+                    spec.kind,
+                    spec.title,
+                    DEFAULT_CHART_SIZE,
+                    spec.categories,
+                    spec.series,
+                    content,
+                    ctx,
+                )
+            } else if let Some((bytes, width_px, height_px)) =
+                crate::mermaid::render_chart_spec_svg(&spec)
+            {
+                Ok(build_mermaid_svg_paragraph(bytes, width_px, height_px, content, ctx))
+            } else {
+                Ok(build_code_block(content, ctx))
+            }
+        }
         Some(crate::mermaid::MermaidOutput::Svg {
             bytes,
             width_px,
             height_px,
-        }) => {
-            const EMU_PER_PX: i64 = 9_525;
-            let raw_w = (width_px.max(1) as i64) * EMU_PER_PX;
-            let raw_h = (height_px.max(1) as i64) * EMU_PER_PX;
-            let max_w = 6 * EMU_PER_INCH;
-            let (width, height) = if raw_w > max_w {
-                let scaled_h = (raw_h * max_w / raw_w).max(EMU_PER_PT * 10);
-                (max_w, scaled_h)
-            } else {
-                (raw_w, raw_h)
-            };
-            let media_id = ctx.fresh_media_id();
-            ctx.media.push(Media {
-                id: media_id,
-                format: MediaFormat::Svg,
-                data: bytes.into(),
-            });
-            let mut look = PictureLook::default();
-            look.alt_text.title = "__mermaid__".to_string();
-            look.alt_text.description = content.to_string();
-            let mut p = FlowParagraph {
-                id: ctx.fresh_id(),
-                style: ctx.styles.default_paragraph.clone(),
-                direct: ParaFormat {
-                    align: Some(FlowAlign::Center),
-                    before: Some(6 * EMU_PER_PT),
-                    after: Some(6 * EMU_PER_PT),
-                    ..ParaFormat::default()
-                },
-                runs: vec![FlowRun::new(
-                    FlowRunKind::Picture {
-                        media: media_id,
-                        size: EmuSize::new(width, height),
-                        look,
-                    },
-                    FlowRunStyle::default(),
-                )],
-                ..FlowParagraph::default()
-            };
-            p.resolve(&ctx.styles);
-            Ok(Block::Paragraph(p))
-        }
+        }) => Ok(build_mermaid_svg_paragraph(
+            bytes,
+            width_px,
+            height_px,
+            content,
+            ctx,
+        )),
         None => Ok(build_code_block(content, ctx)),
     }
+}
+
+fn build_mermaid_svg_paragraph(
+    bytes: Vec<u8>,
+    width_px: u32,
+    height_px: u32,
+    content: &str,
+    ctx: &mut ParseContext<'_>,
+) -> Block {
+    const EMU_PER_PX: i64 = 9_525;
+    let raw_w = (width_px.max(1) as i64) * EMU_PER_PX;
+    let raw_h = (height_px.max(1) as i64) * EMU_PER_PX;
+    let max_w = 6 * EMU_PER_INCH;
+    let (width, height) = if raw_w > max_w {
+        let scaled_h = (raw_h * max_w / raw_w).max(EMU_PER_PT * 10);
+        (max_w, scaled_h)
+    } else {
+        (raw_w, raw_h)
+    };
+    let media_id = ctx.fresh_media_id();
+    ctx.media.push(Media {
+        id: media_id,
+        format: MediaFormat::Svg,
+        data: bytes.into(),
+    });
+    let mut look = PictureLook::default();
+    look.alt_text.title = "__mermaid__".to_string();
+    look.alt_text.description = content.to_string();
+    let mut p = FlowParagraph {
+        id: ctx.fresh_id(),
+        style: ctx.styles.default_paragraph.clone(),
+        direct: ParaFormat {
+            align: Some(FlowAlign::Center),
+            before: Some(6 * EMU_PER_PT),
+            after: Some(6 * EMU_PER_PT),
+            ..ParaFormat::default()
+        },
+        runs: vec![FlowRun::new(
+            FlowRunKind::Picture {
+                media: media_id,
+                size: EmuSize::new(width, height),
+                look,
+            },
+            FlowRunStyle::default(),
+        )],
+        ..FlowParagraph::default()
+    };
+    p.resolve(&ctx.styles);
+    Block::Paragraph(p)
 }
 
 fn build_chart_block_from_spec(
@@ -4151,9 +4175,10 @@ series:
         let mut doc = (**opened.presentation.flow.as_ref().unwrap()).clone();
         let mut media = opened.presentation.media.clone();
 
-        let fragment = "## Subheading\n\nText with **bold**, ~~strike~~, and `code`.\n\n- item A\n- item B\n\n| K | V |\n| :--- | ---: |\n| x | 42 |\n";
+        let fragment = "## Subheading\n\nText with **bold**, ~~strike~~, and `code`.\n\n- item A\n- item B\n\n| K | V |\n| :--- | ---: |\n| x | 42 |\n\n```mermaid\npie\n  \"A\" : 70\n  \"B\" : 30\n```\n";
         let blocks = parse_markdown_fragment_blocks(fragment, &mut doc, &mut media).expect("parse fragment");
-        assert!(blocks.len() >= 4);
+        assert!(blocks.len() >= 5);
+        assert!(media.iter().any(|m| m.format == MediaFormat::Svg), "pie fragment should fall back to SVG");
 
         let exported = export_blocks_to_markdown(&blocks, &doc, &media);
         assert!(exported.contains("## Subheading"));
@@ -4162,6 +4187,7 @@ series:
         assert!(exported.contains("`code`"));
         assert!(exported.contains("- item A"));
         assert!(exported.contains("| x | 42 |"));
+        assert!(exported.contains("```mermaid\npie"));
     }
 
     #[test]
