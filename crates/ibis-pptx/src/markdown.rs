@@ -111,6 +111,8 @@ pub fn is_markdown(data: &[u8]) -> bool {
             || l == "\\columnbreak"
             || l == "[[toc]]"
             || l.starts_with("$$")
+            || is_horizontal_rule(l)
+            || is_ordered_list_line(l)
         {
             return true;
         }
@@ -119,17 +121,34 @@ pub fn is_markdown(data: &[u8]) -> bool {
         }
         if l.contains("**")
             || l.contains("](")
+            || l.contains("~~")
+            || l.contains("==")
             || l.contains("{++")
             || l.contains("{--")
             || l.contains("{~~")
             || l.contains("{>>")
             || l.contains("[^")
+            || has_inline_code_pair(l)
         {
             return true;
         }
     }
 
     false
+}
+
+fn is_ordered_list_line(l: &str) -> bool {
+    let digits = l.bytes().take_while(|b| b.is_ascii_digit()).count();
+    (1..=4).contains(&digits) && l.as_bytes().get(digits) == Some(&b'.') && l.as_bytes().get(digits + 1) == Some(&b' ')
+}
+
+fn has_inline_code_pair(l: &str) -> bool {
+    if let Some(first) = l.find('`') {
+        let rest = &l[first + 1..];
+        rest.contains('`')
+    } else {
+        false
+    }
 }
 
 fn split_frontmatter_body(after_open: &str) -> Option<(&str, &str)> {
@@ -154,6 +173,11 @@ pub fn read_markdown(data: &[u8]) -> Result<Presentation, Error> {
 /// Open a Markdown document with a `.docx`-backed [`crate::Source`] so it can be edited and saved
 /// either back to `.md` or directly to `.docx` (preserving native charts, math, tables, footnotes, comments, and page setup).
 pub fn open_markdown(data: Vec<u8>) -> Result<Opened, Error> {
+    open_markdown_with_base_dir(data, None)
+}
+
+/// Open a Markdown document resolving relative image paths against `base_dir` (when provided).
+pub fn open_markdown_with_base_dir(data: Vec<u8>, base_dir: Option<&std::path::Path>) -> Result<Opened, Error> {
     let text = std::str::from_utf8(&data).map_err(|_| Error::new("Markdown ファイルが UTF-8 ではありません"))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
 
@@ -171,8 +195,9 @@ pub fn open_markdown(data: Vec<u8>) -> Result<Opened, Error> {
         text,
         &mut doc,
         &mut media_list,
-        &opened.source,
-        &baseline_pres,
+        Some(&opened.source),
+        Some(&baseline_pres),
+        base_dir,
     )?;
 
     let page_size = doc.page.size;
@@ -190,6 +215,55 @@ pub fn open_markdown(data: Vec<u8>) -> Result<Opened, Error> {
     }
     opened.presentation.flow = Some(document);
     Ok(opened)
+}
+
+/// Parse a Markdown text fragment into [`Block`]s using `doc`'s styles/numbering (e.g. for clipboard paste).
+pub fn parse_markdown_fragment_blocks(
+    text: &str,
+    doc: &mut FlowDocument,
+    media: &mut Vec<Media>,
+) -> Result<Vec<Block>, Error> {
+    let mut ctx = ParseContext {
+        next_id: doc.new_id().max(10),
+        next_shape_id: doc.new_shape_id().max(10),
+        next_media_id: media.iter().map(|m| m.id.0).max().unwrap_or(0) + 1,
+        next_comment_id: doc.comments.iter().map(|c| c.id).max().unwrap_or(0) + 1,
+        styles: (*doc.styles).clone(),
+        bullet_num_id: None,
+        ordered_num_id: None,
+        footnote_ids: HashMap::new(),
+        footnote_order: Vec::new(),
+        comments: Vec::new(),
+        media,
+        source: None,
+        baseline_pres: None,
+        base_dir: None,
+    };
+    let mut footnote_defs: HashMap<String, String> = HashMap::new();
+    let mut blocks = parse_blocks(text, &mut ctx, &mut footnote_defs)?;
+    doc.styles = Arc::new(ctx.styles);
+    resolve_all_blocks(&mut blocks, &doc.styles);
+    Ok(blocks)
+}
+
+/// Export a slice of [`Block`]s (such as a selection) to Markdown without YAML frontmatter.
+pub fn export_blocks_to_markdown(
+    blocks: &[Block],
+    doc: &FlowDocument,
+    media: &[Media],
+) -> String {
+    let mut out = String::new();
+    let comments_by_id: HashMap<u32, &Comment> = doc.comments.iter().map(|c| (c.id, c)).collect();
+    let mut prev_was_list = false;
+    for block in blocks {
+        let is_list = matches!(block, Block::Paragraph(p) if p.list.is_some() || p.runs.first().is_some_and(|r| matches!(r.kind, FlowRunKind::CheckBox { .. })));
+        if prev_was_list && !is_list && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        serialize_block(block, doc, media, &comments_by_id, &mut out);
+        prev_was_list = is_list;
+    }
+    out.trim_end().to_string()
 }
 
 /// Convert Markdown bytes directly into a `.docx` file's bytes.
@@ -231,8 +305,9 @@ struct ParseContext<'a> {
     footnote_order: Vec<(String, u32)>,
     comments: Vec<Comment>,
     media: &'a mut Vec<Media>,
-    source: &'a crate::Source,
-    baseline_pres: &'a Presentation,
+    source: Option<&'a crate::Source>,
+    baseline_pres: Option<&'a Presentation>,
+    base_dir: Option<&'a std::path::Path>,
 }
 
 impl<'a> ParseContext<'a> {
@@ -321,7 +396,7 @@ impl<'a> ParseContext<'a> {
         if let Some(id) = self.bullet_num_id {
             return id;
         }
-        let (numbering, num_id) = self.styles.numbering.with_new_list(false);
+        let (numbering, num_id) = self.styles.numbering.with_new_list(true);
         self.styles.numbering = numbering;
         self.bullet_num_id = Some(num_id);
         num_id
@@ -331,7 +406,7 @@ impl<'a> ParseContext<'a> {
         if let Some(id) = self.ordered_num_id {
             return id;
         }
-        let (numbering, num_id) = self.styles.numbering.with_new_list(true);
+        let (numbering, num_id) = self.styles.numbering.with_new_list(false);
         self.styles.numbering = numbering;
         self.ordered_num_id = Some(num_id);
         num_id
@@ -352,8 +427,9 @@ fn parse_markdown_into(
     text: &str,
     doc: &mut FlowDocument,
     media: &mut Vec<Media>,
-    source: &crate::Source,
-    baseline_pres: &Presentation,
+    source: Option<&crate::Source>,
+    baseline_pres: Option<&Presentation>,
+    base_dir: Option<&std::path::Path>,
 ) -> Result<(), Error> {
     let mut body_text = text;
     let mut frontmatter_text = None;
@@ -383,6 +459,7 @@ fn parse_markdown_into(
         media,
         source,
         baseline_pres,
+        base_dir,
     };
 
     if let Some(fm) = frontmatter_text {
@@ -1318,6 +1395,8 @@ fn parse_blocks(
                 style: ctx.styles.default_paragraph.clone(),
                 direct: ParaFormat {
                     align: attrs.align,
+                    num_id: if item.task_checked.is_some() { None } else { Some(num_id) },
+                    level: if item.task_checked.is_some() { None } else { Some(item.level as u32) },
                     ..ParaFormat::default()
                 },
                 bookmarks: attrs.id.into_iter().collect(),
@@ -2059,8 +2138,11 @@ fn build_chart_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block,
     }
 
     let shape_id = ctx.fresh_shape_id();
-    let base_para_id = ctx
-        .baseline_pres
+    let (Some(source), Some(baseline_pres)) = (ctx.source, ctx.baseline_pres) else {
+        // Without a DOCX source (e.g. clipboard fragment paste), render as a fenced code fallback.
+        return Ok(build_code_block(content, ctx));
+    };
+    let base_para_id = baseline_pres
         .flow
         .as_ref()
         .and_then(|f| {
@@ -2071,8 +2153,8 @@ fn build_chart_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block,
         })
         .unwrap_or(1);
 
-    let mut shape = ctx.source.new_doc_chart(
-        ctx.baseline_pres,
+    let mut shape = source.new_doc_chart(
+        baseline_pres,
         FlowPos::new(base_para_id, 0),
         shape_id,
         size,
@@ -2134,8 +2216,7 @@ fn build_chart_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block,
                     at: None,
                 });
             }
-            ctx.source
-                .set_chart_data(shape_id, chart.clone(), chart_data);
+            source.set_chart_data(shape_id, chart.clone(), chart_data);
         } else if let Some(t) = &title {
             chart.title = Some(ChartTitle {
                 text: t.clone(),
@@ -2494,24 +2575,27 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                 let alt = &after_bang[..alt_end];
                 let after_open_paren = &after_bang[alt_end + 2..];
                 if let Some(url_end) = after_open_paren.find(')') {
-                    let url = after_open_paren[..url_end].trim();
+                    let raw_target = after_open_paren[..url_end].trim();
+                    let url = strip_markdown_link_title(raw_target);
                     let mut total_consumed = 2 + alt_end + 2 + url_end + 1;
-                    let mut img_size = EmuSize::new(3 * EMU_PER_INCH, 2 * EMU_PER_INCH);
+                    let mut explicit_w: Option<Emu> = None;
+                    let mut explicit_h: Option<Emu> = None;
                     let after_paren = &after_open_paren[url_end + 1..];
                     if let Some(attr_open) = after_paren.strip_prefix('{') {
                         if let Some(attr_close) = attr_open.find('}') {
                             let attr_str = &attr_open[..attr_close];
                             for part in attr_str.split_whitespace() {
                                 if let Some(w) = part.strip_prefix("width=").and_then(parse_length_emu) {
-                                    img_size.width = w.max(EMU_PER_PT * 10);
+                                    explicit_w = Some(w.max(EMU_PER_PT * 10));
                                 } else if let Some(h) = part.strip_prefix("height=").and_then(parse_length_emu) {
-                                    img_size.height = h.max(EMU_PER_PT * 10);
+                                    explicit_h = Some(h.max(EMU_PER_PT * 10));
                                 }
                             }
                             total_consumed += 1 + attr_close + 1;
                         }
                     }
-                    if let Some((format, data)) = decode_data_uri_image(url) {
+                    if let Some((format, data)) = decode_data_uri_image(url).or_else(|| load_local_image(url, ctx.base_dir)) {
+                        let img_size = resolve_image_size(&data, format, explicit_w, explicit_h);
                         flush_plain(&mut plain, &mut out, base_fmt);
                         let media_id = ctx.fresh_media_id();
                         ctx.media.push(Media {
@@ -2840,6 +2924,18 @@ fn split_critic_author(s: &str) -> (String, &str) {
     ("Author".to_string(), s)
 }
 
+fn strip_markdown_link_title(target: &str) -> &str {
+    let trimmed = target.trim();
+    let trimmed = trimmed.strip_prefix('<').and_then(|s| s.strip_suffix('>')).unwrap_or(trimmed);
+    if let Some((path, _)) = trimmed.split_once(" \"") {
+        path.trim()
+    } else if let Some((path, _)) = trimmed.split_once(" '") {
+        path.trim()
+    } else {
+        trimmed
+    }
+}
+
 fn decode_data_uri_image(uri: &str) -> Option<(MediaFormat, Vec<u8>)> {
     let after_data = uri.strip_prefix("data:image/")?;
     let (mime_sub, b64) = after_data.split_once(";base64,")?;
@@ -2853,6 +2949,117 @@ fn decode_data_uri_image(uri: &str) -> Option<(MediaFormat, Vec<u8>)> {
     };
     let bytes = decode_base64(b64.trim())?;
     Some((format, bytes))
+}
+
+/// Load a relative local image path against `base_dir` (non-WASM only, confined within `base_dir`).
+#[cfg(not(target_family = "wasm"))]
+fn load_local_image(url: &str, base_dir: Option<&std::path::Path>) -> Option<(MediaFormat, Vec<u8>)> {
+    let base_dir = base_dir?;
+    let clean = url.split(['?', '#']).next().unwrap_or(url).trim();
+    if clean.is_empty()
+        || clean.starts_with("http://")
+        || clean.starts_with("https://")
+        || clean.starts_with("data:")
+        || clean.starts_with("file:")
+    {
+        return None;
+    }
+    let rel = std::path::Path::new(clean);
+    if rel.is_absolute() {
+        return None;
+    }
+    let candidate = base_dir.join(rel);
+    let canon_base = std::fs::canonicalize(base_dir).ok()?;
+    let canon_file = std::fs::canonicalize(&candidate).ok()?;
+    if !canon_file.starts_with(&canon_base) {
+        return None;
+    }
+    let bytes = std::fs::read(&canon_file).ok()?;
+    let format = detect_image_format(&bytes, &canon_file)?;
+    Some((format, bytes))
+}
+
+#[cfg(target_family = "wasm")]
+fn load_local_image(_url: &str, _base_dir: Option<&std::path::Path>) -> Option<(MediaFormat, Vec<u8>)> {
+    None
+}
+
+fn detect_image_format(bytes: &[u8], path: &std::path::Path) -> Option<MediaFormat> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some(MediaFormat::Png);
+    }
+    if bytes.starts_with(b"\xFF\xD8\xFF") {
+        return Some(MediaFormat::Jpeg);
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some(MediaFormat::Gif);
+    }
+    if bytes.starts_with(b"BM") {
+        return Some(MediaFormat::Bmp);
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png") => Some(MediaFormat::Png),
+        Some("jpg" | "jpeg") => Some(MediaFormat::Jpeg),
+        Some("gif") => Some(MediaFormat::Gif),
+        Some("bmp") => Some(MediaFormat::Bmp),
+        Some("svg") => Some(MediaFormat::Svg),
+        _ => None,
+    }
+}
+
+fn infer_image_dimensions_px(data: &[u8], format: MediaFormat) -> Option<(u32, u32)> {
+    match format {
+        MediaFormat::Png if data.len() >= 24 && data.starts_with(b"\x89PNG\r\n\x1a\n") => {
+            let w = u32::from_be_bytes(data[16..20].try_into().ok()?);
+            let h = u32::from_be_bytes(data[20..24].try_into().ok()?);
+            (w > 0 && h > 0).then_some((w, h))
+        }
+        MediaFormat::Gif if data.len() >= 10 && (data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a")) => {
+            let w = u16::from_le_bytes(data[6..8].try_into().ok()?) as u32;
+            let h = u16::from_le_bytes(data[8..10].try_into().ok()?) as u32;
+            (w > 0 && h > 0).then_some((w, h))
+        }
+        MediaFormat::Bmp if data.len() >= 26 && data.starts_with(b"BM") => {
+            let w = i32::from_le_bytes(data[18..22].try_into().ok()?).unsigned_abs();
+            let h = i32::from_le_bytes(data[22..26].try_into().ok()?).unsigned_abs();
+            (w > 0 && h > 0).then_some((w, h))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_image_size(data: &[u8], format: MediaFormat, explicit_w: Option<Emu>, explicit_h: Option<Emu>) -> EmuSize {
+    match (explicit_w, explicit_h) {
+        (Some(w), Some(h)) => EmuSize::new(w, h),
+        (Some(w), None) => {
+            let h = infer_image_dimensions_px(data, format)
+                .map(|(pw, ph)| ((w as f64) * (ph as f64) / (pw as f64)).round() as Emu)
+                .unwrap_or(w * 2 / 3);
+            EmuSize::new(w, h.max(EMU_PER_PT * 10))
+        }
+        (None, Some(h)) => {
+            let w = infer_image_dimensions_px(data, format)
+                .map(|(pw, ph)| ((h as f64) * (pw as f64) / (ph as f64)).round() as Emu)
+                .unwrap_or(h * 3 / 2);
+            EmuSize::new(w.max(EMU_PER_PT * 10), h)
+        }
+        (None, None) => {
+            if let Some((pw, ph)) = infer_image_dimensions_px(data, format) {
+                // Assume 96 DPI (9525 EMU per px), capped to 5 inches wide.
+                let max_w = 5 * EMU_PER_INCH;
+                let mut w = pw as Emu * 9_525;
+                let mut h = ph as Emu * 9_525;
+                if w > max_w {
+                    h = ((h as f64) * (max_w as f64) / (w as f64)).round() as Emu;
+                    w = max_w;
+                }
+                EmuSize::new(w.max(EMU_PER_PT * 10), h.max(EMU_PER_PT * 10))
+            } else {
+                EmuSize::new(3 * EMU_PER_INCH, 2 * EMU_PER_INCH)
+            }
+        }
+    }
 }
 
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
@@ -3330,10 +3537,7 @@ fn serialize_paragraph(
         let is_ordered = doc
             .styles
             .numbering
-            .nums
-            .get(&num_id)
-            .and_then(|inst| doc.styles.numbering.abstracts.get(&inst.abstract_id))
-            .and_then(|abs| abs.levels.get(level as usize))
+            .level(num_id, level)
             .is_some_and(|lvl| lvl.format != "bullet");
         let marker = if is_ordered { "1." } else { "-" };
         let text = serialize_runs(&p.runs, media, comments);
@@ -3793,5 +3997,115 @@ series:
         assert!(exported_md.contains("- [x] 完了済みタスク"));
         assert!(exported_md.contains("```chart"));
         assert!(exported_md.contains("[^1]: 脚注の本文です。**書式**も使えます。"));
+    }
+
+    #[test]
+    fn detects_markdown_edge_cases() {
+        assert!(is_markdown(b"1. First item\n2. Second item\n"));
+        assert!(is_markdown(b"Hello\n\n---\n\nWorld\n"));
+        assert!(is_markdown(b"Use `cargo test` to verify.\n"));
+        assert!(is_markdown(b"This is ~~deprecated~~ and ==important==.\n"));
+        assert!(!is_markdown(b""));
+        assert!(!is_markdown(b"   \n\t\n"));
+        assert!(!is_markdown(b"col1,col2,col3\n1,2,3\n4,5,6\n"));
+        assert!(!is_markdown(b"plain text without any markdown markers\njust two lines\n"));
+        assert!(!is_markdown(b"hello\x00world"));
+    }
+
+    #[test]
+    fn loads_local_relative_images_and_rejects_traversal() {
+        let dir = std::env::temp_dir().join(format!("ibis_md_img_test_{}", std::process::id()));
+        let img_dir = dir.join("images");
+        std::fs::create_dir_all(&img_dir).unwrap();
+
+        // Minimal PNG header + IHDR (400x200) so detect_image_format & infer_image_dimensions_px succeed.
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&400u32.to_be_bytes());
+        png.extend_from_slice(&200u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0]);
+        png.extend_from_slice(&[0; 4]);
+        let img_path = img_dir.join("chart.png");
+        std::fs::write(&img_path, &png).unwrap();
+
+        let outside = dir.parent().unwrap().join("ibis_md_outside_test.png");
+        std::fs::write(&outside, &png).unwrap();
+
+        let md = format!(
+            "# Image Test\n\n![sample](images/chart.png)\n\n![escape](../ibis_md_outside_test.png)\n\n![abs]({})\n",
+            outside.display()
+        );
+        let opened = open_markdown_with_base_dir(md.into_bytes(), Some(&dir)).expect("open_markdown_with_base_dir");
+        let flow = opened.presentation.flow.as_ref().unwrap();
+
+        let mut pictures = Vec::new();
+        for b in &flow.body {
+            if let Block::Paragraph(p) = b {
+                for r in &p.runs {
+                    if let FlowRunKind::Picture { media, size, look } = &r.kind {
+                        pictures.push((*media, *size, look.alt_text.description.clone()));
+                    }
+                }
+            }
+        }
+        assert_eq!(pictures.len(), 1, "only relative image inside base_dir should be loaded");
+        assert_eq!(pictures[0].2, "sample");
+        // 400x200 => 2:1 aspect ratio at 96 DPI (9525 EMU/px)
+        assert_eq!(pictures[0].1.width, 400 * 9_525);
+        assert_eq!(pictures[0].1.height, 200 * 9_525);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn fragment_blocks_roundtrip_for_clipboard() {
+        let opened = crate::save::open(crate::blank::blank_file(crate::Kind::Document).unwrap()).unwrap();
+        let mut doc = (**opened.presentation.flow.as_ref().unwrap()).clone();
+        let mut media = opened.presentation.media.clone();
+
+        let fragment = "## Subheading\n\nText with **bold**, ~~strike~~, and `code`.\n\n- item A\n- item B\n\n| K | V |\n| :--- | ---: |\n| x | 42 |\n";
+        let blocks = parse_markdown_fragment_blocks(fragment, &mut doc, &mut media).expect("parse fragment");
+        assert!(blocks.len() >= 4);
+
+        let exported = export_blocks_to_markdown(&blocks, &doc, &media);
+        assert!(exported.contains("## Subheading"));
+        assert!(exported.contains("**bold**"));
+        assert!(exported.contains("~~strike~~"));
+        assert!(exported.contains("`code`"));
+        assert!(exported.contains("- item A"));
+        assert!(exported.contains("| x | 42 |"));
+    }
+
+    #[test]
+    fn parses_and_exports_alerts_nested_lists_and_tables() {
+        let md = "\
+> [!NOTE]
+> Note body
+
+> [!WARNING]
+> Warning body
+
+- level 0
+  - level 1
+    - level 2
+
+| Left | Center | Right |
+| :--- | :---: | ---: |
+| a | b | c |
+";
+        let pres = read_markdown(md.as_bytes()).expect("read_markdown");
+        let flow = pres.flow.as_ref().unwrap();
+        let out = export_markdown(flow, &pres.media);
+        assert!(out.contains("> [!NOTE]"));
+        assert!(out.contains("> [!WARNING]"));
+        assert!(out.contains("- level 0"));
+        assert!(out.contains("  - level 1"));
+        assert!(out.contains("    - level 2"));
+        assert!(out.contains("| **Left** | **Center** | **Right** |"));
+        assert!(out.contains("| :--- | :---: | ---: |"));
+        assert!(out.contains("| a | b | c |"));
     }
 }

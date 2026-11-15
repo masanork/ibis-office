@@ -1303,7 +1303,7 @@ impl SlideEditor {
     /// A broad paragraph deletion would also remove invisible source scopes,
     /// or move them into a different paragraph without their source XML.
     /// Keep the document and redo history intact until that writeback exists.
-    fn reject_hidden_history_range(&mut self, start: FlowPos, end: FlowPos, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn reject_hidden_history_range(&mut self, start: FlowPos, end: FlowPos, cx: &mut Context<Self>) -> bool {
         if start.para == end.para || self.resources.markup_view.showing_markup() { return false; }
         let Some(doc) = self.flow() else { return false; };
         if doc.track_changes { return false; }
@@ -1678,7 +1678,125 @@ impl SlideEditor {
                 }
                 return;
             }
+            // Markdown heading / blockquote autoformat on space at start of paragraph (`# `..`###### `, `> `).
+            if let Some(ref m) = marker {
+                let heading_level = if (1..=6).contains(&m.len()) && m.bytes().all(|b| b == b'#') {
+                    Some(m.len() as u8)
+                } else {
+                    None
+                };
+                if let Some(level) = heading_level {
+                    let style_name = format!("heading {level}");
+                    let mut commands = vec![FlowCommand::Delete { from: FlowPos::new(start.para, 0), to: start }];
+                    let style_id = if let Some(existing) = doc.styles.paragraph_style_named(&style_name) {
+                        existing.to_string()
+                    } else {
+                        let id = format!("Heading{level}");
+                        if !doc.styles.styles.contains_key(&id) {
+                            let size_pt = match level { 1 => 20.0, 2 => 16.0, 3 => 13.5, 4 => 12.0, 5 => 11.0, _ => 10.5 };
+                            let size_hp = (size_pt * 100.0) as u32;
+                            commands.push(FlowCommand::SetStyle {
+                                id: id.clone(),
+                                style: Some(ibis_doc_model::FlowStyle {
+                                    name: style_name,
+                                    kind: ibis_doc_model::StyleKind::Paragraph,
+                                    based_on: doc.styles.default_paragraph.clone(),
+                                    next: doc.styles.default_paragraph.clone(),
+                                    quick: true,
+                                    ui_priority: Some(9),
+                                    auto_update: false,
+                                    conditional: Vec::new(),
+                                    num_id: None,
+                                    para: ibis_doc_model::ParaFormat {
+                                        before: Some(12 * 12_700),
+                                        after: Some(4 * 12_700),
+                                        keep_next: Some(true),
+                                        keep_lines: Some(true),
+                                        ..ibis_doc_model::ParaFormat::default()
+                                    },
+                                    run: ibis_doc_model::RunFormat {
+                                        bold: Some(true),
+                                        size: Some(size_hp),
+                                        cs_size: Some(size_hp),
+                                        ..ibis_doc_model::RunFormat::default()
+                                    },
+                                }),
+                            });
+                        }
+                        id
+                    };
+                    commands.push(FlowCommand::SetParagraphFormat { first: start.para, last: start.para, change: ParaChange::Style(Some(style_id)) });
+                    if self.run_flow(commands, cx) {
+                        self.set_caret(FlowPos::new(start.para, 0), false, cx);
+                    }
+                    return;
+                } else if m == ">" {
+                    let mut commands = vec![FlowCommand::Delete { from: FlowPos::new(start.para, 0), to: start }];
+                    let quote_id = if let Some(existing) = doc.styles.paragraph_style_named("quote") {
+                        existing.to_string()
+                    } else {
+                        let id = "Quote".to_string();
+                        if !doc.styles.styles.contains_key(&id) {
+                            commands.push(FlowCommand::SetStyle {
+                                id: id.clone(),
+                                style: Some(ibis_doc_model::FlowStyle {
+                                    name: "Quote".to_string(),
+                                    kind: ibis_doc_model::StyleKind::Paragraph,
+                                    based_on: doc.styles.default_paragraph.clone(),
+                                    next: doc.styles.default_paragraph.clone(),
+                                    quick: true,
+                                    ui_priority: Some(29),
+                                    auto_update: false,
+                                    conditional: Vec::new(),
+                                    num_id: None,
+                                    para: ibis_doc_model::ParaFormat {
+                                        left: Some(228_600),
+                                        before: Some(6 * 12_700),
+                                        after: Some(6 * 12_700),
+                                        borders: [
+                                            None,
+                                            None,
+                                            None,
+                                            Some(Some(ibis_doc_model::FlowBorder {
+                                                style: ibis_doc_model::BorderStyle::Single,
+                                                width: 18,
+                                                color: ibis_doc_model::Rgb::from_rgb(0x4f, 0x81, 0xbd),
+                                                space: 8,
+                                                art: None,
+                                            })),
+                                        ],
+                                        ..ibis_doc_model::ParaFormat::default()
+                                    },
+                                    run: ibis_doc_model::RunFormat {
+                                        italic: Some(true),
+                                        color: Some(ibis_doc_model::Rgb::from_rgb(0x40, 0x40, 0x40)),
+                                        ..ibis_doc_model::RunFormat::default()
+                                    },
+                                }),
+                            });
+                        }
+                        id
+                    };
+                    commands.push(FlowCommand::SetParagraphFormat { first: start.para, last: start.para, change: ParaChange::Style(Some(quote_id)) });
+                    if self.run_flow(commands, cx) {
+                        self.set_caret(FlowPos::new(start.para, 0), false, cx);
+                    }
+                    return;
+                }
+            }
         }
+        // Inline Markdown autoformat (`**bold**`, `~~strike~~`, `` `code` ``) when typing the closing delimiter.
+        let inline_autoformat = (!replacing && !track && breaks == 0 && typed == 1 && prompt_start.is_none() && !self.doc_state().is_some_and(|s| s.autocorrect_off) && crate::shell::autocorrect::settings().auto_lists)
+            .then(|| {
+                let ch = text.chars().next()?;
+                if !matches!(ch, '*' | '~' | '`') {
+                    return None;
+                }
+                let p = flow_command::paragraph(doc, start.para)?;
+                let before_chars: Vec<char> = p.text().chars().take(start.offset).collect();
+                match_inline_markdown_close(&before_chars, ch)
+            })
+            .flatten();
         // オートコレクト (DOCX-OPTIONS-007): a typed character that ends one of the replaced
         // strings ((c) → ©, --> → →…) replaces it, in the same step.
         let replacement = (!replacing && !track && breaks == 0 && typed == 1 && prompt_start.is_none() && !self.doc_state().is_some_and(|s| s.autocorrect_off)).then(|| {
@@ -1686,6 +1804,35 @@ impl SlideEditor {
             let before: String = p.text().chars().take(start.offset).collect();
             crate::shell::autocorrect::settings().correct_typing(&before, text.chars().next()?)
         }).flatten();
+        if let Some((delim_len, inner_start_char, inner_end_char, change)) = inline_autoformat {
+            let open_start = inner_start_char - delim_len;
+            let close_prefix_start = inner_end_char;
+            let content_len = inner_end_char - inner_start_char;
+            let mut inline_cmds = Vec::new();
+            if close_prefix_start < start.offset {
+                inline_cmds.push(FlowCommand::Delete {
+                    from: FlowPos::new(start.para, close_prefix_start),
+                    to: start,
+                });
+            }
+            inline_cmds.push(FlowCommand::Delete {
+                from: FlowPos::new(start.para, open_start),
+                to: FlowPos::new(start.para, inner_start_char),
+            });
+            inline_cmds.push(FlowCommand::SetRunFormat {
+                from: FlowPos::new(start.para, open_start),
+                to: FlowPos::new(start.para, open_start + content_len),
+                change,
+            });
+            if self.run_flow(inline_cmds, cx) {
+                self.set_caret(FlowPos::new(start.para, open_start + content_len), false, cx);
+                if let Some(state) = self.doc_state_mut() {
+                    state.pending = format;
+                }
+                self.scroll_to_caret(cx);
+                return;
+            }
+        }
         if let Some((length, ref to)) = replacement {
             commands.push(FlowCommand::InsertText { at: start, text: text.clone(), format: format.clone() });
             commands.push(FlowCommand::Delete { from: FlowPos::new(start.para, start.offset + 1 - length), to: FlowPos::new(start.para, start.offset + 1) });
@@ -8423,4 +8570,90 @@ fn find_bookmark(doc: &FlowDocument, name: &str) -> Option<u32> {
         })
     }
     walk(&doc.body, name)
+}
+
+/// Match closing inline Markdown delimiters (`**bold**`, `~~strike~~`, `` `code` ``) at the end of `before` when `ch` is typed.
+/// Returns `(delim_len, inner_start_char, inner_end_char, RunChange)`.
+fn match_inline_markdown_close(before: &[char], ch: char) -> Option<(usize, usize, usize, RunChange)> {
+    let n = before.len();
+    match ch {
+        '*' => {
+            if n >= 4 && before[n - 1] == '*' {
+                let inner_end = n - 1;
+                // Search backwards for `**`
+                let mut pos = inner_end;
+                while pos >= 2 {
+                    if before[pos - 1] == '*' && before[pos - 2] == '*' {
+                        let inner_start = pos;
+                        if inner_start < inner_end && !before[inner_start].is_whitespace() && !before[inner_end - 1].is_whitespace() {
+                            return Some((2, inner_start, inner_end, RunChange::Bold(true)));
+                        }
+                        break;
+                    }
+                    pos -= 1;
+                }
+            }
+            None
+        }
+        '~' => {
+            if n >= 4 && before[n - 1] == '~' {
+                let inner_end = n - 1;
+                let mut pos = inner_end;
+                while pos >= 2 {
+                    if before[pos - 1] == '~' && before[pos - 2] == '~' {
+                        let inner_start = pos;
+                        if inner_start < inner_end && !before[inner_start].is_whitespace() && !before[inner_end - 1].is_whitespace() {
+                            return Some((2, inner_start, inner_end, RunChange::Strike(true)));
+                        }
+                        break;
+                    }
+                    pos -= 1;
+                }
+            }
+            None
+        }
+        '`' => {
+            if n >= 2 {
+                let inner_end = n;
+                let mut pos = inner_end;
+                while pos >= 1 {
+                    if before[pos - 1] == '`' {
+                        let inner_start = pos;
+                        if inner_start < inner_end {
+                            return Some((1, inner_start, inner_end, RunChange::Font("Consolas".to_string())));
+                        }
+                        break;
+                    }
+                    pos -= 1;
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod markdown_inline_tests {
+    #[test]
+    fn matches_bold_strike_and_code_delimiters() {
+        let bold_before: Vec<char> = "hello **world*".chars().collect();
+        let (d, s, e, ch) = super::match_inline_markdown_close(&bold_before, '*').expect("bold match");
+        assert_eq!((d, s, e), (2, 8, 13));
+        assert!(matches!(ch, super::RunChange::Bold(true)));
+
+        let strike_before: Vec<char> = "old ~~text~".chars().collect();
+        let (d, s, e, ch) = super::match_inline_markdown_close(&strike_before, '~').expect("strike match");
+        assert_eq!((d, s, e), (2, 6, 10));
+        assert!(matches!(ch, super::RunChange::Strike(true)));
+
+        let code_before: Vec<char> = "run `cargo test".chars().collect();
+        let (d, s, e, ch) = super::match_inline_markdown_close(&code_before, '`').expect("code match");
+        assert_eq!((d, s, e), (1, 5, 15));
+        assert!(matches!(ch, super::RunChange::Font(ref f) if f == "Consolas"));
+
+        // Reject whitespace-bounded bold/strike
+        let space_bold: Vec<char> = "** spaced *".chars().collect();
+        assert!(super::match_inline_markdown_close(&space_bold, '*').is_none());
+    }
 }

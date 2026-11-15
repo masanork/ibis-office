@@ -273,6 +273,216 @@ impl SlideEditor {
         }
         true
     }
+
+    /// Copy the current selection (or current paragraph when nothing is selected) to the system clipboard as Markdown.
+    pub(crate) fn copy_as_markdown(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(doc) = self.flow() else { return false };
+        let blocks: Vec<Block> = if let Some((start, end)) = self.ordered_selection() {
+            if start.para == end.para && start != end {
+                if let Some(p) = self.paragraph_of(start.para) {
+                    let mut sliced = p.clone();
+                    let mut offset = 0usize;
+                    let mut runs = Vec::new();
+                    for r in &p.runs {
+                        let len = r.len();
+                        let a = start.offset.saturating_sub(offset).min(len);
+                        let b = end.offset.saturating_sub(offset).min(len);
+                        offset += len;
+                        if a == b {
+                            continue;
+                        }
+                        let mut run = r.clone();
+                        if let FlowRunKind::Text(value) = &r.kind {
+                            run.kind = FlowRunKind::Text(value.chars().skip(a).take(b - a).collect());
+                        }
+                        runs.push(run);
+                    }
+                    sliced.runs = runs;
+                    vec![Block::Paragraph(sliced)]
+                } else {
+                    Vec::new()
+                }
+            } else if start != end {
+                let mut collected = Vec::new();
+                let mut in_range = false;
+                for block in &doc.body {
+                    let contains_start = block_contains_para(block, start.para);
+                    let contains_end = block_contains_para(block, end.para);
+                    if contains_start {
+                        in_range = true;
+                    }
+                    if in_range {
+                        collected.push(block.clone());
+                    }
+                    if contains_end {
+                        break;
+                    }
+                }
+                collected
+            } else if let Some(p) = self.paragraph_of(start.para) {
+                vec![Block::Paragraph(p.clone())]
+            } else {
+                doc.body.clone()
+            }
+        } else {
+            doc.body.clone()
+        };
+        if blocks.is_empty() {
+            return false;
+        }
+        let md = ibis_pptx::markdown::export_blocks_to_markdown(&blocks, doc, &self.presentation().media);
+        if md.is_empty() {
+            return false;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(md));
+        true
+    }
+
+    /// Paste Markdown text from the system clipboard as rich formatted blocks (headings, lists, tables, inline formatting).
+    pub(crate) fn paste_markdown(&mut self, cx: &mut Context<Self>) -> bool {
+        if let Some((start, end)) = self.ordered_selection()
+            && self.reject_hidden_history_range(start, end, cx)
+        {
+            return false;
+        }
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return false;
+        };
+        if text.trim().is_empty() {
+            return false;
+        }
+        let Some((start, end)) = self.ordered_selection() else { return false };
+        let Some(doc) = self.flow() else { return false };
+        let Some((Container::Body, index)) = flow_command::locate(doc, start.para) else {
+            // Inside a table cell or header/footer: fall back to plain text insertion.
+            self.type_text(&text, cx);
+            return true;
+        };
+
+        let mut temp_doc = (**doc).clone();
+        let mut media = self.presentation().media.clone();
+        let prev_media_len = media.len();
+        let Ok(mut blocks) = ibis_pptx::markdown::parse_markdown_fragment_blocks(&text, &mut temp_doc, &mut media) else {
+            return false;
+        };
+        if blocks.is_empty() {
+            return false;
+        }
+
+        let mut commands = Vec::new();
+        if temp_doc.styles.numbering != doc.styles.numbering {
+            commands.push(FlowCommand::SetNumbering {
+                numbering: temp_doc.styles.numbering.clone(),
+            });
+        }
+        for (id, style) in &temp_doc.styles.styles {
+            if doc.styles.styles.get(id) != Some(style) {
+                commands.push(FlowCommand::SetStyle {
+                    id: id.clone(),
+                    style: Some(style.clone()),
+                });
+            }
+        }
+
+        // Register any newly decoded inline images in document media & resource cache.
+        let mut media_remap = BTreeMap::new();
+        for new_m in media.iter().skip(prev_media_len) {
+            let new_id = self.document.ids().add_media(new_m.format, new_m.data.clone());
+            let format = match new_m.format {
+                ibis_doc_model::MediaFormat::Png => Some(ImageFormat::Png),
+                ibis_doc_model::MediaFormat::Jpeg => Some(ImageFormat::Jpeg),
+                ibis_doc_model::MediaFormat::Gif => Some(ImageFormat::Gif),
+                ibis_doc_model::MediaFormat::Bmp => Some(ImageFormat::Bmp),
+                ibis_doc_model::MediaFormat::Tiff => Some(ImageFormat::Tiff),
+                ibis_doc_model::MediaFormat::Svg => Some(ImageFormat::Svg),
+                _ => None,
+            };
+            if let Some(format) = format {
+                self.resources.images.insert(new_id, Arc::new(Image::from_bytes(format, new_m.data.to_vec())));
+            }
+            media_remap.insert(new_m.id, new_id);
+        }
+        if !media_remap.is_empty() {
+            for block in &mut blocks {
+                remap_block_media(block, &media_remap);
+            }
+        }
+
+        let caret = last_caret_in_blocks(&blocks).unwrap_or(start);
+        let replace_empty_para = start == end
+            && self.paragraph_of(start.para).is_some_and(|p| p.text().is_empty());
+        let (insert_at, remove_count) = if replace_empty_para {
+            (index, 1)
+        } else {
+            (index + 1, 0)
+        };
+        commands.push(FlowCommand::ReplaceBlocks {
+            container: Container::Body,
+            index: insert_at,
+            remove: remove_count,
+            blocks,
+        });
+        if self.run_flow(commands, cx) {
+            self.set_caret(caret, false, cx);
+            self.scroll_to_caret(cx);
+            return true;
+        }
+        false
+    }
+}
+
+fn block_contains_para(block: &Block, target: u32) -> bool {
+    match block {
+        Block::Paragraph(p) => p.id == target,
+        Block::Table(t) => t.rows.iter().any(|r| {
+            r.cells
+                .iter()
+                .any(|c| c.blocks.iter().any(|b| block_contains_para(b, target)))
+        }),
+    }
+}
+
+fn remap_block_media(block: &mut Block, remap: &BTreeMap<ibis_doc_model::MediaId, ibis_doc_model::MediaId>) {
+    match block {
+        Block::Paragraph(p) => {
+            for r in &mut p.runs {
+                if let FlowRunKind::Picture { media, .. } | FlowRunKind::PictureControl { media, .. } = &mut r.kind
+                    && let Some(&new_id) = remap.get(media)
+                {
+                    *media = new_id;
+                }
+            }
+        }
+        Block::Table(t) => {
+            for row in &mut t.rows {
+                for cell in &mut row.cells {
+                    for b in &mut cell.blocks {
+                        remap_block_media(b, remap);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn last_caret_in_blocks(blocks: &[Block]) -> Option<FlowPos> {
+    for block in blocks.iter().rev() {
+        match block {
+            Block::Paragraph(p) => return Some(FlowPos::new(p.id, p.len())),
+            Block::Table(t) => {
+                if let Some(pos) = t
+                    .rows
+                    .iter()
+                    .rev()
+                    .flat_map(|r| r.cells.iter().rev())
+                    .find_map(|c| last_caret_in_blocks(&c.blocks))
+                {
+                    return Some(pos);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Materialize all supported run properties so destination defaults cannot leak.

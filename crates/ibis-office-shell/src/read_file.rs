@@ -73,9 +73,11 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
     let open_t0 = crate::clock::Instant::now();
     // An old binary file (.xls, .ppt, .doc): read by its content, not by its extension.
     let is_legacy_binary = ibis_pptx::is_legacy_binary(&data);
-    let external_document_format=ibis_pptx::docx_convert::DocxConvertFormat::from_path(path);
-    let open_result=if let Some(format)=external_document_format {
-        ibis_pptx::docx_convert::import_docx_format(&data,format).map(|opened|(opened,None))
+    let external_document_format = ibis_pptx::docx_convert::DocxConvertFormat::from_path(path);
+    let open_result = if external_document_format == Some(ibis_pptx::docx_convert::DocxConvertFormat::Markdown) {
+        ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
+    } else if let Some(format) = external_document_format {
+        ibis_pptx::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
     } else {
         // The volatile cells calculated again on open (CELL("filename") among them) need the file's path.
         ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || ibis_pptx::open_progressive(data,100_000))

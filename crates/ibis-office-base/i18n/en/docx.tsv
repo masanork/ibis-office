@@ -713,6 +713,8 @@ docx.paste-special.keep-source	Keep Source Formatting
 docx.paste-special.match-format	Match Destination Formatting
 docx.paste-special.text-only	Keep Text Only
 docx.paste-special.format-only	Paste Formatting Only
+docx.paste-special.markdown	Paste as Markdown
+docx.edit.copy-markdown	Copy as Markdown
 docx.options.paste-default	Default Paste Behavior
 docx.options.paste-default.keep-source	Keep Source Formatting (Default)
 docx.options.paste-default.merge-format	Merge Formatting

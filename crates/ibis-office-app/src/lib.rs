@@ -446,6 +446,18 @@ fn parse_args() -> Result<Args, String> {
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
+    if matches!(format, "md" | "markdown") {
+        let path = args.path.as_deref().ok_or("name the .docx or .md file to export")?;
+        let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
+        std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let presentation = ibis_pptx::read(&data).map_err(|e| format!("{}: {e}", path.display()))?;
+        let md = ibis_pptx::markdown::export_presentation_to_markdown(&presentation).map_err(|e| format!("{}: {e}", path.display()))?;
+        let out_path = out_dir.join(format!("{stem}.md"));
+        std::fs::write(&out_path, md.as_bytes()).map_err(|e| format!("{}: {e}", out_path.display()))?;
+        return Ok(());
+    }
     #[cfg(headless_export)]
     {
         let format = match format {
@@ -475,7 +487,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             "png" => export::Format::Png,
             "pdf" => export::Format::Pdf,
             "pdf-image" => export::Format::PdfImage,
-            other => return Err(format!("--export takes png, pdf, pdf-image, row-heights or ui: {other}")),
+            other => return Err(format!("--export takes png, pdf, pdf-image, md, row-heights or ui: {other}")),
         };
         let path = args.path.as_deref().ok_or("name the .pptx, .xlsx or .docx file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
@@ -753,7 +765,7 @@ mod web {
             data, families, aliases: mapping, default_family, ui_family, browser_fallback,
             face_mode: false, face_fonts: Vec::new(),
         }));
-        ibis_office_render::shape_view::set_web_font_hooks(default_font_family, font_alias, font_fallbacks);
+        ibis_office_render::shape_view::set_web_font_hooks(default_font_family, font_alias, font_face_fallback, font_fallbacks);
         Ok(())
     }
 
@@ -770,7 +782,19 @@ mod web {
         SUPPLIED_FONTS.with(|fonts| {
             let fonts = fonts.borrow();
             let fonts = fonts.as_ref()?;
-            resolved_web_font_alias(fonts, name).cloned().map(Into::into)
+            fonts.aliases.get(name).cloned().map(Into::into)
+        })
+    }
+
+    pub(crate) fn font_face_fallback(name: &str) -> Option<SharedString> {
+        SUPPLIED_FONTS.with(|fonts| {
+            let fonts = fonts.borrow();
+            let fonts = fonts.as_ref()?;
+            if !fonts.face_mode { return None; }
+            match crate::web_font_fallback::face_hint(name)? {
+                crate::web_font_fallback::Face::Mincho => Some(fonts.default_family.clone().into()),
+                crate::web_font_fallback::Face::Gothic => fonts.aliases.get("Noto Sans CJK JP").cloned().map(Into::into),
+            }
         })
     }
 

@@ -463,6 +463,8 @@ docx.paste-special.keep-source	元の書式を保持
 docx.paste-special.match-format	貼り付け先の書式に合わせる
 docx.paste-special.text-only	テキストのみ
 docx.paste-special.format-only	書式のみ貼り付け
+docx.paste-special.markdown	Markdown として貼り付け
+docx.edit.copy-markdown	Markdown としてコピー
 docx.options.paste-default	貼り付けの既定動作
 docx.options.paste-default.keep-source	元の書式を保持 (既定)
 docx.options.paste-default.merge-format	書式を統合

@@ -1182,6 +1182,10 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
             .shortcut("⌥⌘V")
             .on(|this, _, cx| this.paste_format(cx))
             .into(),
+        MenuItem::tr("docx.paste-special.markdown")
+            .icon("description")
+            .on(|this, _, cx| { this.paste_markdown(cx); })
+            .into(),
         Submenu::tr("docx.options.paste-default", "settings", paste_default_submenu).into(),
     ];
     menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.autocorrect-options").icon("spellcheck").on(|this, window, cx| this.open_doc_autocorrect_panel(window, cx)).into());
@@ -1190,6 +1194,8 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
     let drawing_table = _editor.doc_state().is_some_and(|s| s.draw_table_mode);
     menus.items_mut(MenuId::Insert).push(MenuItem::tr("docx.insert.draw-table").icon("border_style").checked(drawing_table).on(|this, _, cx| this.toggle_draw_table(cx)).into());
     let edit = menus.items_mut(MenuId::Edit);
+    let copy_at = edit.iter().position(|e| matches!(e, MenuEntry::Item(i) if i.id == "edit.copy")).map_or(edit.len(), |i| i + 1);
+    edit.insert(copy_at, MenuItem::tr("docx.edit.copy-markdown").icon("content_copy").on(|this, _, cx| { this.copy_as_markdown(cx); }).into());
     let at = edit.iter().position(|e| matches!(e, MenuEntry::Item(i) if i.id == "edit.paste-format")).map_or(edit.len(), |i| i + 1);
     edit.insert(at, Submenu::tr("docx.paste-special", "content_paste", paste_special_submenu).into());
     let autocorrect_on = !_editor.doc_state().is_some_and(|s| s.autocorrect_off);
@@ -1258,6 +1264,8 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("docx.paste-special.match-format", |this, _, cx| this.paste_match_format(cx));
     menus.connect("docx.paste-special.text-only", |this, _, cx| this.paste_plain_text(cx));
     menus.connect("docx.paste-special.format-only", |this, _, cx| this.paste_format(cx));
+    menus.connect("docx.paste-special.markdown", |this, _, cx| { this.paste_markdown(cx); });
+    menus.connect("docx.edit.copy-markdown", |this, _, cx| { this.copy_as_markdown(cx); });
     menus.connect("docx.options.paste-default.keep-source", |this, _, cx| this.set_default_paste_mode(crate::prefs::DefaultPasteMode::KeepSourceFormatting, cx));
     menus.connect("docx.options.paste-default.merge-format", |this, _, cx| this.set_default_paste_mode(crate::prefs::DefaultPasteMode::MergeFormatting, cx));
     menus.connect("docx.options.paste-default.text-only", |this, _, cx| this.set_default_paste_mode(crate::prefs::DefaultPasteMode::KeepTextOnly, cx));
