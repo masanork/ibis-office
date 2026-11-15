@@ -3957,6 +3957,620 @@ fn format_text_run(text: &str, fmt: &RunFormat, is_link: bool) -> String {
     s
 }
 
+// ============================================================================
+// Presentation (PPTX) Markdown Import & Export
+// ============================================================================
+
+/// Open a Markdown document as a PowerPoint presentation (`.pptx` model).
+///
+/// Slides are split on thematic breaks (`---` / `***` / `___`) outside fenced code blocks,
+/// or on top-level `# Heading` sections when no thematic break is present.
+pub fn open_markdown_presentation(data: Vec<u8>) -> Result<Opened, Error> {
+    open_markdown_presentation_with_base_dir(data, None)
+}
+
+/// Open a Markdown document as a PowerPoint presentation, resolving relative image paths against `base_dir`.
+pub fn open_markdown_presentation_with_base_dir(
+    data: Vec<u8>,
+    base_dir: Option<&std::path::Path>,
+) -> Result<Opened, Error> {
+    let raw_text = String::from_utf8(data)
+        .map_err(|_| Error::new("Markdown ファイルが有効な UTF-8 ではありません"))?;
+    let slide_chunks = split_markdown_slides(&raw_text);
+    let blank = crate::blank::blank_file(crate::Kind::Presentation)?;
+    let mut opened = crate::save::open(blank)?;
+
+    let mut next_shape_id: u64 = 100;
+    let mut fresh_shape_id = || {
+        next_shape_id += 1;
+        ShapeId(next_shape_id)
+    };
+    let mut next_slide_id: u64 = 256;
+    let mut fresh_slide_id = || {
+        next_slide_id += 1;
+        ibis_doc_model::SlideId(next_slide_id)
+    };
+
+    let title_layout = opened
+        .presentation
+        .layouts
+        .first()
+        .map(|l| l.id)
+        .ok_or_else(|| Error::new("プレゼンテーションレイアウトが見つかりません"))?;
+    let content_layout = opened
+        .presentation
+        .layouts
+        .get(1)
+        .map(|l| l.id)
+        .unwrap_or(title_layout);
+
+    for (idx, chunk) in slide_chunks.iter().enumerate() {
+        let (clean_chunk, notes) = extract_slide_notes(chunk);
+        let parsed = open_markdown_with_base_dir(clean_chunk.into_bytes(), base_dir)?;
+        let Some(flow) = parsed.presentation.flow.as_ref() else {
+            continue;
+        };
+
+        // Ensure slide `idx` exists as a writable `NewSlide` in `opened.presentation`.
+        let layout_for_slide = if idx == 0 { title_layout } else { content_layout };
+        let sid = fresh_slide_id();
+        let new_slide = opened.source.new_slide(
+            &opened.presentation,
+            idx,
+            sid,
+            layout_for_slide,
+            &mut fresh_shape_id,
+        )?;
+        if idx < opened.presentation.slides.len() {
+            opened.presentation.slides[idx] = new_slide;
+        } else {
+            opened.presentation.slides.push(new_slide);
+        }
+
+        // Copy media from the parsed chunk into the presentation, remapping MediaId.
+        let mut media_remap: HashMap<MediaId, MediaId> = HashMap::new();
+        for m in &parsed.presentation.media {
+            let new_mid = opened.presentation.add_media(m.format, m.data.to_vec());
+            media_remap.insert(m.id, new_mid);
+        }
+
+        let mut slide_title: Option<String> = None;
+        let mut body_blocks: Vec<&Block> = Vec::new();
+        for b in &flow.body {
+            if slide_title.is_none() {
+                if let Block::Paragraph(p) = b {
+                    let is_heading = p
+                        .style
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with("Heading"));
+                    if is_heading {
+                        let t = flow_paragraph_plain_text(p);
+                        if !t.trim().is_empty() {
+                            slide_title = Some(t.trim().to_string());
+                            continue;
+                        }
+                    }
+                }
+            }
+            body_blocks.push(b);
+        }
+
+        let mut text_paras: Vec<ibis_doc_model::Paragraph> = Vec::new();
+        let mut tables: Vec<&FlowTable> = Vec::new();
+        let mut pictures: Vec<(MediaId, EmuSize, PictureLook)> = Vec::new();
+        let mut charts: Vec<&Chart> = Vec::new();
+
+        for b in body_blocks {
+            match b {
+                Block::Paragraph(p) => {
+                    let mut has_visual = false;
+                    for r in &p.runs {
+                        match &r.kind {
+                            FlowRunKind::Picture { media, size, look } => {
+                                if let Some(&new_mid) = media_remap.get(media) {
+                                    pictures.push((new_mid, *size, look.clone()));
+                                    has_visual = true;
+                                }
+                            }
+                            FlowRunKind::Shape(shape) => {
+                                if let ShapeKind::Chart(chart) = &shape.kind {
+                                    charts.push(chart);
+                                    has_visual = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !has_visual {
+                        if let Some(sp) = flow_paragraph_to_slide_paragraph(p) {
+                            text_paras.push(sp);
+                        }
+                    }
+                }
+                Block::Table(tbl) => tables.push(tbl),
+            }
+        }
+
+        let slide_id = opened.presentation.slides[idx].id;
+        let has_visuals = !tables.is_empty() || !pictures.is_empty() || !charts.is_empty();
+
+        // Populate title placeholder (shape 0).
+        if let Some(title_text) = slide_title {
+            if let Some(sh) = opened.presentation.slides[idx].shapes.get_mut(0) {
+                if let Some(body) = shape_text_body_mut(&mut sh.kind) {
+                    body.paragraphs = vec![ibis_doc_model::Paragraph {
+                        runs: vec![ibis_doc_model::Run {
+                            text: title_text,
+                            style: ibis_doc_model::RunStyle {
+                                font_size: Some(if idx == 0 { 4000 } else { 2800 }),
+                                bold: Some(true),
+                                ..ibis_doc_model::RunStyle::default()
+                            },
+                        }],
+                        ..ibis_doc_model::Paragraph::default()
+                    }];
+                }
+            }
+        }
+
+        // Populate body/subtitle placeholder (shape 1) or resize if visuals are present.
+        let visual_frame = if text_paras.is_empty() {
+            // Remove empty body placeholder so visuals get full canvas.
+            if opened.presentation.slides[idx].shapes.len() > 1 {
+                opened.presentation.slides[idx].shapes.remove(1);
+            }
+            EmuRect::new(762_000, 1_550_000, 10_668_000, 4_750_000)
+        } else {
+            if let Some(sh) = opened.presentation.slides[idx].shapes.get_mut(1) {
+                sh.frame = if has_visuals {
+                    EmuRect::new(762_000, 1_550_000, 5_100_000, 4_750_000)
+                } else {
+                    EmuRect::new(762_000, 1_550_000, 10_668_000, 4_750_000)
+                };
+                if let Some(body) = shape_text_body_mut(&mut sh.kind) {
+                    body.paragraphs = text_paras;
+                }
+            }
+            EmuRect::new(6_160_000, 1_550_000, 5_270_000, 4_750_000)
+        };
+
+        // Add tables
+        for tbl in tables {
+            let sid = fresh_shape_id();
+            let slide_tbl = flow_table_to_slide_table(tbl, visual_frame.width);
+            opened.presentation.slides[idx].shapes.push(ibis_doc_model::Shape {
+                id: sid,
+                frame: visual_frame,
+                rotation: 0,
+                flip_h: false,
+                flip_v: false,
+                kind: ShapeKind::Table(Box::new(slide_tbl)),
+                floating: None,
+            });
+        }
+
+        // Add pictures (including Mermaid SVGs)
+        for (mid, size, look) in pictures {
+            let sid = fresh_shape_id();
+            let frame = fit_size_in_rect(size, visual_frame);
+            if !look.alt_text.title.is_empty() || !look.alt_text.description.is_empty() {
+                opened.presentation.slides[idx]
+                    .shape_alt_texts
+                    .insert(sid, look.alt_text.clone());
+            }
+            opened.presentation.slides[idx].shapes.push(ibis_doc_model::Shape {
+                id: sid,
+                frame,
+                rotation: 0,
+                flip_h: false,
+                flip_v: false,
+                kind: ShapeKind::Picture(ibis_doc_model::Picture {
+                    media: mid,
+                    crop: ibis_doc_model::Crop::default(),
+                    stroke: None,
+                    corner: 0,
+                    duotone: None,
+                    clear: None,
+                    luminance: None,
+                    clip: None,
+                    shadow: None,
+                    reflection: None,
+                    soft_edge: None,
+                    alt_text: look.alt_text,
+                    decorative: false,
+                    name: format!("Picture {}", sid.0),
+                    geometry: None,
+                    effects: ibis_doc_model::BlipEffects::default(),
+                    tile: None,
+                    fill_rect: None,
+                    artistic_effect: None,
+                }),
+                floating: None,
+            });
+        }
+
+        // Add native charts
+        for src_chart in charts {
+            let sid = fresh_shape_id();
+            let is_pie = src_chart
+                .groups
+                .first()
+                .is_some_and(|g| matches!(g.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }));
+            let kind = if is_pie {
+                NewChartKind::Pie
+            } else {
+                NewChartKind::ClusteredColumn
+            };
+            let mut chart_shape = opened.source.new_chart_kind(
+                &opened.presentation,
+                slide_id,
+                sid,
+                visual_frame,
+                kind,
+            )?;
+            if let ShapeKind::Chart(cbox) = &mut chart_shape.kind {
+                let mut chart = (**cbox).clone();
+                if let Ok(chart_data) = crate::save::pptx_chart_data::workbook_from_chart(src_chart) {
+                    if let Ok(wb_pres) = crate::read(&chart_data.workbook) {
+                        chart = crate::save::pptx_chart_data::chart_from_data(
+                            &chart,
+                            &wb_pres,
+                            &chart_data.series,
+                        );
+                        chart.title = src_chart.title.clone();
+                        opened.source.set_chart_data(sid, chart.clone(), chart_data);
+                    }
+                }
+                *cbox = Box::new(chart);
+            }
+            opened.presentation.slides[idx].shapes.push(chart_shape);
+        }
+
+        let _ = notes;
+    }
+
+    Ok(opened)
+}
+
+/// Export a PowerPoint `Presentation` to Markdown (`---`-separated slides).
+pub fn export_presentation_markdown(p: &Presentation) -> String {
+    let mut out = String::new();
+    for (idx, slide) in p.slides.iter().enumerate() {
+        if idx > 0 {
+            out.push_str("\n---\n\n");
+        }
+        let mut emitted_title = false;
+        for shape in &slide.shapes {
+            match &shape.kind {
+                ShapeKind::TextBox(body) | ShapeKind::Auto(ibis_doc_model::AutoShape { text: Some(body), .. }) => {
+                    if !emitted_title {
+                        let first_line: String = body
+                            .paragraphs
+                            .first()
+                            .map(|para| para.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                            .unwrap_or_default();
+                        if !first_line.trim().is_empty() {
+                            out.push_str("# ");
+                            out.push_str(first_line.trim());
+                            out.push_str("\n\n");
+                            emitted_title = true;
+                            for para in body.paragraphs.iter().skip(1) {
+                                serialize_slide_paragraph(para, &mut out);
+                            }
+                            continue;
+                        }
+                    }
+                    for para in &body.paragraphs {
+                        serialize_slide_paragraph(para, &mut out);
+                    }
+                }
+                ShapeKind::Table(tbl) => {
+                    if !tbl.rows.is_empty() {
+                        for (ri, row) in tbl.rows.iter().enumerate() {
+                            out.push('|');
+                            for cell in &row.cells {
+                                if cell.merged {
+                                    continue;
+                                }
+                                let cell_txt: String = cell
+                                    .text
+                                    .paragraphs
+                                    .iter()
+                                    .map(|para| para.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                out.push(' ');
+                                out.push_str(cell_txt.trim());
+                                out.push_str(" |");
+                            }
+                            out.push('\n');
+                            if ri == 0 {
+                                out.push('|');
+                                for cell in &row.cells {
+                                    if !cell.merged {
+                                        out.push_str(" --- |");
+                                    }
+                                }
+                                out.push('\n');
+                            }
+                        }
+                        out.push('\n');
+                    }
+                }
+                ShapeKind::Picture(pic) => {
+                    let alt = slide
+                        .shape_alt_texts
+                        .get(&shape.id)
+                        .unwrap_or(&pic.alt_text);
+                    if alt.title == "__mermaid__" {
+                        out.push_str("```mermaid\n");
+                        out.push_str(&alt.description);
+                        if !alt.description.ends_with('\n') {
+                            out.push('\n');
+                        }
+                        out.push_str("```\n\n");
+                    } else if let Some(media) = p.media(pic.media) {
+                        use base64::Engine as _;
+                        let mime = match media.format {
+                            MediaFormat::Png => "image/png",
+                            MediaFormat::Jpeg => "image/jpeg",
+                            MediaFormat::Gif => "image/gif",
+                            MediaFormat::Webp => "image/webp",
+                            MediaFormat::Svg => "image/svg+xml",
+                            _ => "application/octet-stream",
+                        };
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&media.data);
+                        out.push_str(&format!("![{}](data:{mime};base64,{b64})\n\n", alt.description));
+                    }
+                }
+                ShapeKind::Chart(chart) => {
+                    serialize_chart(chart, &mut out);
+                }
+                _ => {}
+            }
+        }
+        if !slide.notes.trim().is_empty() {
+            out.push_str("<!-- notes: ");
+            out.push_str(slide.notes.trim());
+            out.push_str(" -->\n\n");
+        }
+    }
+    out
+}
+
+fn serialize_slide_paragraph(para: &ibis_doc_model::Paragraph, out: &mut String) {
+    let text: String = para.runs.iter().map(|r| r.text.as_str()).collect();
+    if text.trim().is_empty() {
+        return;
+    }
+    if let Some(b) = &para.bullet {
+        if b.auto.is_some() {
+            out.push_str("1. ");
+        } else {
+            out.push_str("- ");
+        }
+    }
+    out.push_str(text.trim());
+    out.push('\n');
+    if para.bullet.is_none() {
+        out.push('\n');
+    }
+}
+
+fn split_markdown_slides(text: &str) -> Vec<String> {
+    let mut body = text.trim();
+    if let Some(after) = body.strip_prefix("---") {
+        if after.starts_with('\n') || after.starts_with("\r\n") {
+            let mut off = 3;
+            for line in after.split_inclusive('\n') {
+                off += line.len();
+                if line.trim() == "---" {
+                    body = body[off..].trim();
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut chunks: Vec<String> = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    let mut in_fence = false;
+    for line in body.lines() {
+        let t = line.trim();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && (t == "---" || t == "***" || t == "___") {
+            let joined = cur.join("\n").trim().to_string();
+            if !joined.is_empty() {
+                chunks.push(joined);
+            }
+            cur.clear();
+        } else {
+            cur.push(line);
+        }
+    }
+    let last = cur.join("\n").trim().to_string();
+    if !last.is_empty() {
+        chunks.push(last);
+    }
+
+    if chunks.len() <= 1 {
+        // Fallback: split on top-level `# ` headings if multiple exist.
+        let mut h_chunks: Vec<String> = Vec::new();
+        let mut h_cur: Vec<&str> = Vec::new();
+        let mut in_f = false;
+        for line in body.lines() {
+            let t = line.trim();
+            if t.starts_with("```") || t.starts_with("~~~") {
+                in_f = !in_f;
+            }
+            if !in_f && line.starts_with("# ") && !h_cur.is_empty() {
+                let s = h_cur.join("\n").trim().to_string();
+                if !s.is_empty() {
+                    h_chunks.push(s);
+                }
+                h_cur.clear();
+            }
+            h_cur.push(line);
+        }
+        let s = h_cur.join("\n").trim().to_string();
+        if !s.is_empty() {
+            h_chunks.push(s);
+        }
+        if h_chunks.len() > 1 {
+            return h_chunks;
+        }
+    }
+
+    if chunks.is_empty() {
+        vec![String::new()]
+    } else {
+        chunks
+    }
+}
+
+fn extract_slide_notes(chunk: &str) -> (String, Option<String>) {
+    let mut body_lines: Vec<&str> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    for line in chunk.lines() {
+        let t = line.trim();
+        if let Some(inner) = t.strip_prefix("<!-- notes:").and_then(|s| s.strip_suffix("-->")) {
+            let note = inner.trim();
+            if !note.is_empty() {
+                notes.push(note.to_string());
+            }
+        } else {
+            body_lines.push(line);
+        }
+    }
+    let notes_opt = if notes.is_empty() {
+        None
+    } else {
+        Some(notes.join("\n"))
+    };
+    (body_lines.join("\n"), notes_opt)
+}
+
+fn shape_text_body_mut(kind: &mut ShapeKind) -> Option<&mut ibis_doc_model::TextBody> {
+    match kind {
+        ShapeKind::TextBox(body) => Some(body),
+        ShapeKind::Auto(auto) => {
+            if auto.text.is_none() {
+                auto.text = Some(ibis_doc_model::TextBody::default());
+            }
+            auto.text.as_mut()
+        }
+        _ => None,
+    }
+}
+
+fn flow_paragraph_plain_text(p: &FlowParagraph) -> String {
+    let mut out = String::new();
+    for r in &p.runs {
+        if let FlowRunKind::Text(t) = &r.kind {
+            out.push_str(t);
+        }
+    }
+    out
+}
+
+fn flow_paragraph_to_slide_paragraph(p: &FlowParagraph) -> Option<ibis_doc_model::Paragraph> {
+    let mut runs: Vec<ibis_doc_model::Run> = Vec::new();
+    for r in &p.runs {
+        if let FlowRunKind::Text(t) = &r.kind {
+            runs.push(ibis_doc_model::Run {
+                text: t.clone(),
+                style: ibis_doc_model::RunStyle {
+                    bold: r.format.bold,
+                    italic: r.format.italic,
+                    font_size: Some(1800),
+                    ..ibis_doc_model::RunStyle::default()
+                },
+            });
+        }
+    }
+    if runs.is_empty() {
+        return None;
+    }
+    let bullet = p.list.map(|ListRef { num_id, .. }| ibis_doc_model::Bullet {
+        text: if num_id == 2 { "1.".to_string() } else { "•".to_string() },
+        picture: None,
+        size: 100_000,
+        color: None,
+        auto: None,
+        symbol: None,
+    });
+    Some(ibis_doc_model::Paragraph {
+        runs,
+        bullet,
+        space_after: 600,
+        ..ibis_doc_model::Paragraph::default()
+    })
+}
+
+fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_model::Table {
+    let cols = tbl.columns.len().max(1);
+    let col_w = total_width / cols as i64;
+    let columns = vec![col_w; cols];
+    let rows = tbl
+        .rows
+        .iter()
+        .map(|row| ibis_doc_model::TableRow {
+            height: 370_840,
+            cells: row
+                .cells
+                .iter()
+                .map(|cell| {
+                    let paras: Vec<ibis_doc_model::Paragraph> = cell
+                        .blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            Block::Paragraph(p) => flow_paragraph_to_slide_paragraph(p),
+                            _ => None,
+                        })
+                        .collect();
+                    ibis_doc_model::TableCell {
+                        text: ibis_doc_model::TextBody {
+                            paragraphs: paras,
+                            ..ibis_doc_model::TextBody::default()
+                        },
+                        fill: Fill::None,
+                        borders: ibis_doc_model::CellBorders::default(),
+                        column_span: 1,
+                        row_span: 1,
+                        merged: false,
+                    }
+                })
+                .collect(),
+            source: None,
+        })
+        .collect();
+    ibis_doc_model::Table {
+        columns,
+        rows,
+        column_sources: Vec::new(),
+        style_options: ibis_doc_model::TableStyleOptions::default(),
+        style_id: None,
+    }
+}
+
+fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
+    let w = size.width.max(1);
+    let h = size.height.max(1);
+    let rw = rect.width.max(1);
+    let rh = rect.height.max(1);
+    let scale = (rw as f64 / w as f64).min(rh as f64 / h as f64).min(1.0);
+    let fw = (w as f64 * scale) as i64;
+    let fh = (h as f64 * scale) as i64;
+    EmuRect::new(
+        rect.x + (rw - fw) / 2,
+        rect.y + (rh - fh) / 2,
+        fw,
+        fh,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4273,6 +4887,57 @@ pie showData
         let exported = export_markdown(flow, &pres.media);
         assert!(exported.contains("```mermaid\nsequenceDiagram"));
         assert!(exported.contains("```mermaid\nflowchart LR"));
+        assert!(exported.contains("```chart\ntype: pie"));
+    }
+
+    #[test]
+    fn markdown_presentation_roundtrips_slides_mermaid_charts_and_tables() {
+        let md = "\
+# AI 連携ロードマップ
+- Markdown ネイティブ対応
+- pure-Rust Mermaid
+
+<!-- notes: 表紙の補足メモ -->
+
+---
+
+# アーキテクチャ
+
+```mermaid
+flowchart LR
+  MD[Markdown] --> Model[DocModel]
+  Model --> PPTX[PPTX]
+```
+
+---
+
+# 比較表とグラフ
+
+| 項目 | 状況 |
+| :--- | :--- |
+| DOCX | 対応済み |
+| PPTX | 対応済み |
+
+```mermaid
+pie
+  title 構成比
+  \"Rust\" : 100
+```
+";
+        let opened = open_markdown_presentation(md.as_bytes().to_vec()).expect("open_markdown_presentation");
+        let pres = &opened.presentation;
+        assert_eq!(pres.slides.len(), 3, "expected 3 slides");
+        assert!(pres.media.iter().any(|m| m.format == MediaFormat::Svg), "expected SVG from flowchart");
+
+        let saved = opened.source.save(pres, Default::default()).expect("save pptx");
+        let reread = crate::read(&saved).expect("reread pptx");
+        assert_eq!(reread.slides.len(), 3);
+
+        let exported = export_presentation_markdown(&reread);
+        assert!(exported.contains("# AI 連携ロードマップ"), "exported:\n{exported}");
+        assert!(exported.contains("---"));
+        assert!(exported.contains("```mermaid\nflowchart LR"));
+        assert!(exported.contains("| DOCX | 対応済み |"));
         assert!(exported.contains("```chart\ntype: pie"));
     }
 }
