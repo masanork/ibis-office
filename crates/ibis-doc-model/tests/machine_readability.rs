@@ -35,3 +35,42 @@ fn no_data_does_not_report_unrelated_hidden_rows() {
     sheet.hidden_columns.insert(0, 0);
     assert!(candidates(&sheet).is_empty());
 }
+
+#[test]
+fn character_candidates_match_pinned_harunobu_examples() {
+    let fixture = include_str!("../../../test/fixtures/machine-readability/harunobu-character-reference.tsv");
+    let mut count = 0;
+    for line in fixture.lines().skip(1) {
+        count += 1;
+        let (value, expected) = line.split_once('\t').unwrap();
+        let mut sheet = Sheet::default();
+        sheet.cells = vec![cell(0, 0, CellValue::Text(value.into()), None)].into();
+        let found = candidates(&sheet).iter().any(|candidate| candidate.kind == CandidateKind::PlatformDependentCharacters);
+        assert_eq!(found, expected == "true", "{value}");
+    }
+    assert_eq!(count, 22);
+}
+
+#[test]
+fn private_use_advisories_cover_all_planes_without_noncharacters() {
+    for (codepoint, expected) in [(0xd7ff, false), (0xe000, true), (0xf8ff, true), (0xf900, false),
+        (0xeffff, false), (0xf0000, true), (0xffffd, true), (0xffffe, false),
+        (0x100000, true), (0x10fffd, true), (0x10fffe, false), (0x10ffff, false)] {
+        let character = char::from_u32(codepoint).unwrap();
+        let mut sheet = Sheet::default();
+        sheet.cells = vec![cell(2, 3, CellValue::Text(character.to_string()), None)].into();
+        let findings = candidates(&sheet);
+        assert_eq!(findings.iter().any(|candidate| candidate.kind == CandidateKind::PrivateUseCharacters), expected, "U+{codepoint:04X}");
+        assert!(!findings.iter().any(|candidate| candidate.kind == CandidateKind::PlatformDependentCharacters), "U+{codepoint:04X}");
+    }
+}
+
+#[test]
+fn one_cell_can_have_both_character_advisories() {
+    let mut sheet = Sheet::default();
+    sheet.cells = vec![cell(4, 2, CellValue::Text("①\u{e000}".into()), None)].into();
+    let findings = candidates(&sheet);
+    assert_eq!(findings.iter().map(|f| f.kind).collect::<Vec<_>>(),
+        [CandidateKind::PlatformDependentCharacters, CandidateKind::PrivateUseCharacters]);
+    assert_eq!(findings[0].range, findings[1].range);
+}

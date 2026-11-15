@@ -74,6 +74,8 @@ impl SlideEditor {
                 CandidateKind::HiddenRow => "xlsx.machine-readability.hidden-row",
                 CandidateKind::HiddenColumn => "xlsx.machine-readability.hidden-column",
                 CandidateKind::Formula => "xlsx.machine-readability.formula",
+                CandidateKind::PlatformDependentCharacters => "xlsx.machine-readability.platform-characters",
+                CandidateKind::PrivateUseCharacters => "xlsx.machine-readability.private-use",
             };
             let title = format!("{} · {}", finding.name, finding.address);
             content = content.child(v_flex().gap_1().p_2().border_1().border_color(cx.theme().border).rounded_md()

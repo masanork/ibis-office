@@ -30039,4 +30039,20 @@ fn machine_readability_candidates_and_live_edits() {
         assert_eq!(panel.findings.len(), 3);
         assert!(!panel.findings.iter().any(|f| f.kind == CandidateKind::Formula));
     });
+    s.click_cell("C5");
+    s.type_text("①");
+    s.key("enter");
+    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    let index = s.with(|e, _| e.wb().panels.machine_readability.as_ref().unwrap().findings.iter()
+        .position(|f| f.kind == CandidateKind::PlatformDependentCharacters).expect("platform character candidate"));
+    s.update(|e, _, cx| e.jump_machine_readability(index, cx));
+    assert_eq!(s.selected(), "C5");
+    s.click_cell("C5");
+    s.type_text("\u{e000}");
+    s.key("enter");
+    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    let index = s.with(|e, _| e.wb().panels.machine_readability.as_ref().unwrap().findings.iter()
+        .position(|f| f.kind == CandidateKind::PrivateUseCharacters).expect("private-use candidate"));
+    s.update(|e, _, cx| e.jump_machine_readability(index, cx));
+    assert_eq!(s.selected(), "C5");
 }

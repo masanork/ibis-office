@@ -2866,7 +2866,7 @@ xlsx.design-mode.close	Close Design Mode
 xlsx.sheet.delete-ask	Do you want to delete the sheet?
 xlsx.machine-readability.menu	Machine Readability Check…
 xlsx.machine-readability.title	Machine Readability Check
-xlsx.machine-readability.scope	Review merged cells, hidden rows and columns, and formulas. These are candidates, not a compliance result or score. Table regions, hidden sheets and other rules are not checked. Recheck after editing.
+xlsx.machine-readability.scope	Review merged cells, hidden rows and columns, formulas, and characters. These are candidates, not a compliance result or score. Table regions, hidden sheets and other rules are not checked. Recheck after editing.
 xlsx.machine-readability.loading	CSV is still loading. Recheck when loading finishes.
 xlsx.machine-readability.none	No candidates found. Other rules have not been checked.
 xlsx.machine-readability.merge	L1-12 Merged cells: check whether this is a header or data.
@@ -2874,3 +2874,5 @@ xlsx.machine-readability.hidden-row	L1-13 Hidden row
 xlsx.machine-readability.hidden-column	L1-13 Hidden column
 xlsx.machine-readability.formula	L2-06 Formula: check whether published data needs a value.
 xlsx.machine-readability.omitted	Additional candidates not shown
+xlsx.machine-readability.platform-characters	L1-08 Platform-dependent characters or full-width alphanumerics: check the published format.
+xlsx.machine-readability.private-use	Private-use character: appearance or meaning may differ between environments. Check the recipient’s font and character mapping.

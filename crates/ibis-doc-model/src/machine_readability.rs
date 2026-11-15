@@ -3,17 +3,40 @@
 //! Structural review candidates for machine-readable spreadsheets.
 //!
 //! These are deliberately not Harunobu rule results: no table or header is
-//! inferred, so every merge and formula is a candidate for human review.
+//! inferred, so each finding is a candidate for human review.
 use crate::sheet::{CellRange, CellValue, Sheet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CandidateKind { MergedCells, HiddenRow, HiddenColumn, Formula }
+pub enum CandidateKind { MergedCells, HiddenRow, HiddenColumn, Formula, PlatformDependentCharacters, PrivateUseCharacters }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     pub kind: CandidateKind,
     /// Inclusive, zero-based cell coordinates.
     pub range: CellRange,
+}
+
+/// Character-level candidates based on Harunobu 0.2.2 L1-08. These do not
+/// implement its file-encoding policy, table detection, severity or scoring.
+/// Copyright (c) 2026 Digital Agency of Japan; see ../HARUNOBU-MIT.txt.
+fn platform_character_candidate(value: &str) -> bool {
+    const UNITS: &str = "㎡㎥㎢㎠㎝㎞㎜㎏㎎㎍㎅㎄㎃㎖㎗㎘㏄㏊";
+    value.chars().any(|c| {
+        if matches!(c, '㋿' | '〜' | '～') { return true; }
+        if UNITS.contains(c) { return false; }
+        matches!(c as u32, 0xff10..=0xff19 | 0xff21..=0xff3a | 0xff41..=0xff5a
+            | 0x2460..=0x2473 | 0x3251..=0x325f | 0x32b1..=0x32bf
+            | 0x2160..=0x217f | 0x3220..=0x3243 | 0x3280..=0x32fe
+            | 0x3300..=0x33ff | 0xfe30..=0xfe4f)
+    })
+}
+
+/// Advisory for Unicode private-use scalars, independent of L1-08 scoring.
+/// Adapted from gjs (commit 9173a4d); see ../GJS-MIT.txt. Unlike gjs, exclude
+/// the supplementary planes' ending noncharacters (U+FFFFE, U+FFFFF,
+/// U+10FFFE and U+10FFFF).
+fn private_use_candidate(value: &str) -> bool {
+    value.chars().any(|c| matches!(c as u32, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd))
 }
 
 /// Inspect the current sheet in memory. Formatting-only cells do not define
@@ -29,6 +52,15 @@ pub fn candidates(sheet: &Sheet) -> Vec<Candidate> {
     for cell in data {
         max_row = Some(max_row.map_or(cell.row, |n| n.max(cell.row)));
         max_col = Some(max_col.map_or(cell.column, |n| n.max(cell.column)));
+        if let CellValue::Text(value) = &cell.value {
+            let range = CellRange { first_row: cell.row, last_row: cell.row, first_column: cell.column, last_column: cell.column };
+            if platform_character_candidate(value) {
+                out.push(Candidate { kind: CandidateKind::PlatformDependentCharacters, range });
+            }
+            if private_use_candidate(value) {
+                out.push(Candidate { kind: CandidateKind::PrivateUseCharacters, range });
+            }
+        }
         if cell.formula.as_ref().is_some_and(|f| !f.is_empty()) {
             out.push(Candidate { kind: CandidateKind::Formula, range: CellRange { first_row: cell.row, last_row: cell.row, first_column: cell.column, last_column: cell.column } });
         }

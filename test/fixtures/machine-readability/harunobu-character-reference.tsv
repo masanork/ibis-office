@@ -1,0 +1,23 @@
+# Harunobu 0.2.2, commit 88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f
+abc日本語123	false
+①	true
+⑳	true
+⓪	false
+㉑	true
+㊿	true
+Ⅰ-0	true
+ⅿ	true
+Ａ	true
+ｚ	true
+９	true
+㈱	true
+㋿	true
+〜	true
+～	true
+㍻	true
+︰	true
+㎡	false
+㎏㎥	false
+面積㎡／Ａ	true
+Ⓐ	false
+😀	false

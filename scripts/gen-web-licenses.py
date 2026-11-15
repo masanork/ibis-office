@@ -196,6 +196,8 @@ def write(build):
     # The art page borders' pictures: the desktop app reads them from the zip
     # in its Resources; the web version serves its PNG files one by one.
     ecma_art = open(os.path.join(ROOT, "crates", "ibis-pptx", "data", "artborders", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
+    harunobu = open(os.path.join(ROOT, "crates", "ibis-doc-model", "HARUNOBU-MIT.txt"), encoding="utf-8").read().strip()
+    gjs = open(os.path.join(ROOT, "crates", "ibis-doc-model", "GJS-MIT.txt"), encoding="utf-8").read().strip()
     plex = open(os.path.join(ROOT, "crates", "ibis-office-app", "fonts", "OFL.txt"), encoding="utf-8").read().strip()
     carlito = open(os.path.join(ROOT, "crates", "ibis-office-render", "fonts", "carlito", "OFL.txt"), encoding="utf-8").read().strip()
     assets = json.loads(run("cargo", "metadata", "--locked", "--format-version", "1"))
@@ -216,6 +218,8 @@ def write(build):
     # Material Symbols: the chrome's icons (crates/ibis-office-shell/icons/material/),
     # embedded in the binary on both builds.
     bundled.append(("Material Symbols（Google）", "タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み）", "Apache-2.0"))
+    bundled.append(("Harunobu L1-08 character classification", "機械可読性の文字候補", "MIT"))
+    bundled.append(("gjs character classification", "私用文字の確認候補", "MIT"))
     material_readme = open(os.path.join(ROOT, "crates", "ibis-office-shell", "icons", "material", "README.md"), encoding="utf-8").read()
     material_source = next((l[2:] for l in material_readme.splitlines() if l.startswith("- 出典")), "")
     where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）"}[build]
@@ -248,6 +252,8 @@ def write(build):
           "",
           *(["### IBM Plex Sans", "", "```text", plex, "```", ""] if build == "web" else
             ["### Carlito", "", "```text", carlito, "```", ""]),
+          "### Harunobu character classification", "", "```text", harunobu, "```", "",
+          "### gjs character classification", "", "```text", gjs, "```", "",
           "### Lucide",
           "",
           "```text", lucide, "```",
