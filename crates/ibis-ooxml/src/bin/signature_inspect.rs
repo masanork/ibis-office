@@ -153,6 +153,7 @@ fn run() -> Result<(), String> {
                 println!("    Signature {:?}; issuer name exact {}; certificate issuer name exact {}; cRLSign {:?}", facts.signature, facts.issuer_name_exact, facts.certificate_issuer_name_exact, facts.issuer_crl_sign);
                 println!("    Time {:?}; thisUpdate {}; nextUpdate {:?}", facts.time_status, facts.this_update, facts.next_update);
                 println!("    Scope {:?}; CRL number {:?}; listed revocation time {:?}", facts.scope, facts.crl_number, facts.listed_revocation_time);
+                println!("    CRL authority key observations (NOT issuer authorization): {:?}", facts.authority_key);
                 println!("    CRL applicability and issuer trust: NOT EVALUATED");
             }
         }

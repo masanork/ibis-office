@@ -398,6 +398,7 @@ pub struct CrlFacts {
     pub next_update: Option<u64>,
     pub time_status: CrlTime,
     pub scope: CrlScope,
+    pub authority_key: CrlAuthorityKeyFacts,
     /// Structural observation only; does not establish CRL applicability or trust.
     pub crl_number: CrlNumberObservation,
     /// A serial number match only. Meaning depends on scope, issuer and time.
@@ -415,12 +416,29 @@ pub enum CrlScope { NoScopeExtensionsObserved, UnsupportedExtensions }
 #[derive(Debug, PartialEq, Eq)]
 pub enum CrlNumberObservation { Missing, NonCritical, Critical, MalformedNonCritical, MalformedCritical }
 
+/// Literal, unauthenticated extension observations; no path or issuer selection is performed.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CrlAuthorityKeyFacts {
+    pub crl_extension: IdentifierExtensionObservation,
+    pub issuer_subject_key_extension: IdentifierExtensionObservation,
+    pub key_identifiers: KeyIdentifierComparison,
+    /// Presence only. These fields are not compared to the supplied certificate.
+    pub authority_certificate_issuer_present: Option<bool>,
+    pub authority_certificate_serial_present: Option<bool>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum IdentifierExtensionObservation { Missing, NonCritical, Critical, MalformedNonCritical, MalformedCritical }
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyIdentifierComparison { NotComparable, EmptyIdentifier, Matches, Differs }
+
 /// Inspect a supplied CRL at an explicit time without network or trust lookup.
 /// Delta, indirect, and scoped CRLs are not interpreted; an absent serial is
 /// never presented as a positive certificate-status decision.
 pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference_unix_seconds: u64) -> Result<CrlFacts, Error> {
     use rsa::{pkcs1::DecodeRsaPublicKey, pkcs1v15, traits::PublicKeyParts, RsaPublicKey};
-    use x509_cert::{crl::CertificateList, der::{Decode, Encode}, ext::pkix::{CrlNumber, KeyUsage}, Certificate};
+    use x509_cert::{crl::CertificateList, der::{Decode, Encode}, ext::pkix::{AuthorityKeyIdentifier, CrlNumber, KeyUsage, SubjectKeyIdentifier}, Certificate};
     if crl_der.len() > 8 * 1024 * 1024 || cert_der.len() > 1024 * 1024 || issuer_der.len() > 1024 * 1024 { return Err(Error::new("CRL inputs are too large")); }
     let crl = CertificateList::from_der(crl_der).map_err(|_| Error::new("Invalid CRL"))?;
     let cert = Certificate::from_der(cert_der).map_err(|_| Error::new("Invalid target certificate"))?;
@@ -432,6 +450,8 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
     let time_status = if reference_unix_seconds < start { CrlTime::NotYetIssued } else { match end { Some(end) if reference_unix_seconds >= end => CrlTime::Expired, Some(_) => CrlTime::WithinWindow, None => CrlTime::NoNextUpdate } };
     let mut scope = CrlScope::NoScopeExtensionsObserved;
     let mut crl_number = CrlNumberObservation::Missing;
+    let mut crl_authority_key = None;
+    let mut crl_authority_key_state = IdentifierExtensionObservation::Missing;
     let mut extension_ids = std::collections::HashSet::new();
     for ext in crl.tbs_cert_list.crl_extensions.as_deref().unwrap_or(&[]) {
         let oid = ext.extn_id.to_string();
@@ -444,8 +464,45 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
                 (true, false) => CrlNumberObservation::MalformedCritical,
             };
         }
+        if oid == "2.5.29.35" {
+            crl_authority_key = AuthorityKeyIdentifier::from_der(ext.extn_value.as_bytes()).ok();
+            crl_authority_key_state = match (ext.critical, crl_authority_key.is_some()) {
+                (false, true) => IdentifierExtensionObservation::NonCritical,
+                (true, true) => IdentifierExtensionObservation::Critical,
+                (false, false) => IdentifierExtensionObservation::MalformedNonCritical,
+                (true, false) => IdentifierExtensionObservation::MalformedCritical,
+            };
+        }
         if ext.critical || !matches!(oid.as_str(), "2.5.29.20" | "2.5.29.35") { scope = CrlScope::UnsupportedExtensions; }
     }
+    let mut ski = None;
+    let mut ski_state = IdentifierExtensionObservation::Missing;
+    let mut ski_seen = false;
+    for ext in issuer.tbs_certificate.extensions.as_deref().unwrap_or(&[]) {
+        if ext.extn_id.to_string() != "2.5.29.14" { continue; }
+        if ski_seen { return Err(Error::new("Duplicate issuer SubjectKeyIdentifier extension")); }
+        ski_seen = true;
+        ski = SubjectKeyIdentifier::from_der(ext.extn_value.as_bytes()).ok();
+        ski_state = match (ext.critical, ski.is_some()) {
+            (false, true) => IdentifierExtensionObservation::NonCritical,
+            (true, true) => IdentifierExtensionObservation::Critical,
+            (false, false) => IdentifierExtensionObservation::MalformedNonCritical,
+            (true, false) => IdentifierExtensionObservation::MalformedCritical,
+        };
+    }
+    let key_identifiers = match (crl_authority_key.as_ref().and_then(|a| a.key_identifier.as_ref()), ski.as_ref()) {
+        (Some(a), Some(b)) if a.as_bytes().is_empty() || b.0.as_bytes().is_empty() => KeyIdentifierComparison::EmptyIdentifier,
+        (Some(a), Some(b)) if a.as_bytes() == b.0.as_bytes() => KeyIdentifierComparison::Matches,
+        (Some(_), Some(_)) => KeyIdentifierComparison::Differs,
+        _ => KeyIdentifierComparison::NotComparable,
+    };
+    let authority_key = CrlAuthorityKeyFacts {
+        crl_extension: crl_authority_key_state,
+        issuer_subject_key_extension: ski_state,
+        key_identifiers,
+        authority_certificate_issuer_present: crl_authority_key.as_ref().map(|a| a.authority_cert_issuer.is_some()),
+        authority_certificate_serial_present: crl_authority_key.as_ref().map(|a| a.authority_cert_serial_number.is_some()),
+    };
     let mut listed = None;
     let mut serials = std::collections::HashSet::new();
     for entry in crl.tbs_cert_list.revoked_certificates.as_deref().unwrap_or(&[]) {
@@ -480,7 +537,7 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
     };
     Ok(CrlFacts { issuer_name_exact: crl.tbs_cert_list.issuer == issuer.tbs_certificate.subject,
         certificate_issuer_name_exact: cert.tbs_certificate.issuer == crl.tbs_cert_list.issuer,
-        issuer_crl_sign: issuer_usage, signature, this_update: start, next_update: end, time_status, scope, crl_number, listed_revocation_time: listed })
+        issuer_crl_sign: issuer_usage, signature, this_update: start, next_update: end, time_status, scope, authority_key, crl_number, listed_revocation_time: listed })
 }
 
 /// A proposed chain from the signer to a supplied anchor. Edges can have
@@ -2391,5 +2448,61 @@ mod tests {
         let duplicate = crl.tbs_cert_list.crl_extensions.as_ref().unwrap()[0].clone();
         crl.tbs_cert_list.crl_extensions.as_mut().unwrap().push(duplicate);
         assert!(inspect_crl(&crl.to_der().unwrap(), leaf, root, time).is_err());
+    }
+
+    #[test]
+    fn crl_authority_key_identifiers_are_only_literal_observations() {
+        use x509_cert::{Certificate, crl::CertificateList, der::{Decode, Encode, asn1::OctetString}};
+        let issuer = include_bytes!("../tests/fixtures/signatures/aki-issuer.der");
+        let leaf = include_bytes!("../tests/fixtures/signatures/crl-leaf.der");
+        let matching = include_bytes!("../tests/fixtures/signatures/aki-match.crl.der");
+        let different = include_bytes!("../tests/fixtures/signatures/aki-mismatch.crl.der");
+        for (crl, comparison) in [(matching.as_slice(), KeyIdentifierComparison::Matches), (different.as_slice(), KeyIdentifierComparison::Differs)] {
+            let facts = inspect_crl(crl, leaf, issuer, 1796083200).unwrap();
+            assert_eq!(facts.signature, CertificateSignature::Matches);
+            assert_eq!(facts.authority_key.crl_extension, IdentifierExtensionObservation::NonCritical);
+            assert_eq!(facts.authority_key.issuer_subject_key_extension, IdentifierExtensionObservation::NonCritical);
+            assert_eq!(facts.authority_key.key_identifiers, comparison);
+            assert_eq!(facts.authority_key.authority_certificate_issuer_present, Some(false));
+            assert_eq!(facts.authority_key.authority_certificate_serial_present, Some(false));
+        }
+        let mut crl = CertificateList::from_der(matching.as_slice()).unwrap();
+        let extensions = crl.tbs_cert_list.crl_extensions.as_mut().unwrap();
+        let index = extensions.iter().position(|e| e.extn_id.to_string() == "2.5.29.35").unwrap();
+        extensions[index].critical = true;
+        let facts = inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).unwrap();
+        assert_eq!(facts.authority_key.crl_extension, IdentifierExtensionObservation::Critical);
+        assert_eq!(facts.authority_key.key_identifiers, KeyIdentifierComparison::Matches);
+        assert_eq!(facts.scope, CrlScope::UnsupportedExtensions);
+        crl.tbs_cert_list.crl_extensions.as_mut().unwrap()[index].critical = false;
+        crl.tbs_cert_list.crl_extensions.as_mut().unwrap()[index].extn_value = OctetString::new([0x30, 0x00]).unwrap();
+        assert_eq!(inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).unwrap().authority_key.key_identifiers, KeyIdentifierComparison::NotComparable);
+        let extensions = crl.tbs_cert_list.crl_extensions.as_mut().unwrap();
+        extensions[index].extn_value = OctetString::new([0x30, 0x02, 0x80, 0x00]).unwrap();
+        assert_eq!(inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).unwrap().authority_key.key_identifiers, KeyIdentifierComparison::EmptyIdentifier);
+        crl.tbs_cert_list.crl_extensions.as_mut().unwrap()[index].extn_value = OctetString::new([0xff]).unwrap();
+        let facts = inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).unwrap();
+        assert_eq!(facts.authority_key.crl_extension, IdentifierExtensionObservation::MalformedNonCritical);
+        assert_eq!(facts.authority_key.key_identifiers, KeyIdentifierComparison::NotComparable);
+        crl.tbs_cert_list.crl_extensions.as_mut().unwrap()[index].critical = true;
+        assert_eq!(inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).unwrap().authority_key.crl_extension, IdentifierExtensionObservation::MalformedCritical);
+        crl.tbs_cert_list.crl_extensions.as_mut().unwrap().remove(index);
+        assert_eq!(inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).unwrap().authority_key.crl_extension, IdentifierExtensionObservation::Missing);
+
+        let mut cert = Certificate::from_der(issuer.as_slice()).unwrap();
+        let exts = cert.tbs_certificate.extensions.as_mut().unwrap();
+        let index = exts.iter().position(|e| e.extn_id.to_string() == "2.5.29.14").unwrap();
+        exts[index].extn_value = OctetString::new([0xff]).unwrap();
+        let facts = inspect_crl(matching, leaf, &cert.to_der().unwrap(), 1796083200).unwrap();
+        assert_eq!(facts.authority_key.issuer_subject_key_extension, IdentifierExtensionObservation::MalformedNonCritical);
+        assert_eq!(facts.authority_key.key_identifiers, KeyIdentifierComparison::NotComparable);
+        cert.tbs_certificate.extensions.as_mut().unwrap()[index].critical = true;
+        assert_eq!(inspect_crl(matching, leaf, &cert.to_der().unwrap(), 1796083200).unwrap().authority_key.issuer_subject_key_extension, IdentifierExtensionObservation::MalformedCritical);
+        let duplicate = cert.tbs_certificate.extensions.as_ref().unwrap()[index].clone();
+        cert.tbs_certificate.extensions.as_mut().unwrap().push(duplicate);
+        assert!(inspect_crl(matching, leaf, &cert.to_der().unwrap(), 1796083200).is_err());
+        cert.tbs_certificate.extensions.as_mut().unwrap().pop();
+        cert.tbs_certificate.extensions.as_mut().unwrap().remove(index);
+        assert_eq!(inspect_crl(matching, leaf, &cert.to_der().unwrap(), 1796083200).unwrap().authority_key.issuer_subject_key_extension, IdentifierExtensionObservation::Missing);
     }
 }

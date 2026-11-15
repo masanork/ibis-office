@@ -84,6 +84,7 @@ fn supplied_crl_is_reported_without_a_revocation_verdict() {
     assert!(text.contains("Signature Matches; issuer name exact true; certificate issuer name exact true; cRLSign Some(true)"));
     assert!(text.contains("Time NotYetIssued"));
     assert!(text.contains("CRL number NonCritical"));
+    assert!(text.contains("CRL authority key observations (NOT issuer authorization)"));
     assert!(text.contains("listed revocation time Some("));
     assert!(text.contains("CRL applicability and issuer trust: NOT EVALUATED"));
     assert!(text.contains("Signature value: does not match"));

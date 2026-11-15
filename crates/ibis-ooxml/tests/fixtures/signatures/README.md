@@ -114,3 +114,9 @@ the private key was discarded. These OIDs do not establish policy compliance.
 certificate containing a private test mapping, policy constraints and
 inhibitAnyPolicy. Python cryptography generated it, LibreSSL inspected the
 extensions, and the private key was discarded. It conveys no trust.
+
+`aki-issuer.der` and `aki-{match,mismatch}.crl.der` were generated using
+Python cryptography with a synthetic RSA-2048 key, which was discarded. Both
+CRLs have valid signatures independently checked with LibreSSL, but only the
+first CRL's authority key identifier matches the issuer's subject key
+identifier. These identifiers and signatures do not establish trust.
