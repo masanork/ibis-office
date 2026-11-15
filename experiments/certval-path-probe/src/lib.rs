@@ -17,6 +17,16 @@ fn validate_with_intermediates(
     intermediates: &[&[u8]],
     time: u64,
 ) -> Result<(), String> {
+    let settings = CertificationPathSettings::new();
+    validate_with_settings(leaf, anchor, intermediates, time, settings)
+}
+fn validate_with_settings(
+    leaf: &[u8],
+    anchor: &[u8],
+    intermediates: &[&[u8]],
+    time: u64,
+    mut settings: CertificationPathSettings,
+) -> Result<(), String> {
     let ta = PDVTrustAnchorChoice::try_from(anchor).map_err(|e| format!("anchor: {e:?}"))?;
     let target = PDVCertificate::try_from(leaf).map_err(|e| format!("target: {e:?}"))?;
     let chain = intermediates
@@ -26,7 +36,6 @@ fn validate_with_intermediates(
     let path = CertificationPath::new(ta, chain, target);
     let mut env = PkiEnvironment::default();
     env.populate_5280_pki_environment();
-    let mut settings = CertificationPathSettings::new();
     settings.set_require_ta_store(false);
     settings.set_time_of_interest(
         TimeOfInterest::from_unix_secs(time).map_err(|e| format!("time: {e:?}"))?,
@@ -118,6 +127,82 @@ mod tests {
             match expected {
                 None => assert!(result.is_ok(), "{label}: {result:?}"),
                 Some(reason) => assert!(result.unwrap_err().contains(reason), "{label}"),
+            }
+        }
+    }
+    #[test]
+    fn policy_inputs_change_path_results() {
+        let root = include_bytes!("../data/policy-root.der");
+        let ca = include_bytes!("../data/policy-intermediate-a.der");
+        let mapped_ca = include_bytes!("../data/policy-intermediate-mapped.der");
+        let policy_a = include_bytes!("../data/policy-leaf-a.der");
+        let policy_b = include_bytes!("../data/policy-leaf-b.der");
+        let policy_any = include_bytes!("../data/policy-leaf-any.der");
+        let no_policy = include_bytes!("../data/policy-leaf-absent.der");
+        let evaluate = |leaf: &[u8],
+                        issuer: &[u8],
+                        explicit: bool,
+                        inhibit_any: bool,
+                        inhibit_mapping: bool| {
+            let mut settings = CertificationPathSettings::new();
+            settings.set_initial_policy_set(vec!["1.2.3.4".to_string()]);
+            settings.set_initial_explicit_policy_indicator(explicit);
+            settings.set_initial_inhibit_any_policy_indicator(inhibit_any);
+            settings.set_initial_policy_mapping_inhibit_indicator(inhibit_mapping);
+            validate_with_settings(leaf, root, &[issuer], 1796083200, settings)
+        };
+        for (label, result, rejected) in [
+            (
+                "matching-explicit",
+                evaluate(policy_a, ca, true, false, false),
+                false,
+            ),
+            (
+                "mismatch-explicit",
+                evaluate(policy_b, ca, true, false, false),
+                true,
+            ),
+            (
+                "mismatch-not-explicit",
+                evaluate(policy_b, ca, false, false, false),
+                false,
+            ),
+            (
+                "absent-explicit",
+                evaluate(no_policy, ca, true, false, false),
+                true,
+            ),
+            (
+                "absent-not-explicit",
+                evaluate(no_policy, ca, false, false, false),
+                false,
+            ),
+            (
+                "any-allowed",
+                evaluate(policy_any, ca, true, false, false),
+                false,
+            ),
+            (
+                "any-inhibited",
+                evaluate(policy_any, ca, true, true, false),
+                true,
+            ),
+            (
+                "mapping-allowed",
+                evaluate(policy_b, mapped_ca, true, false, false),
+                false,
+            ),
+            (
+                "mapping-inhibited",
+                evaluate(policy_b, mapped_ca, true, false, true),
+                true,
+            ),
+        ] {
+            println!("{label}: {result:?}");
+            if rejected {
+                assert!(result.unwrap_err().contains("NullPolicySet"), "{label}");
+            } else {
+                assert!(result.is_ok(), "{label}: {result:?}");
             }
         }
     }
