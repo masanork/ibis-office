@@ -128,7 +128,7 @@ certificate issuer and the response signer certificate. `--ocsp` can be repeated
 ```sh
 cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx \
   --at 1794614400 --ocsp response.der --ocsp-issuer issuer.der \
-  --ocsp-responder responder.der
+  --ocsp-responder responder.der --ocsp-nonce request-nonce.bin
 ```
 
 The offline observations separate the response signature and responder ID from
@@ -138,7 +138,17 @@ or trust decision. The signer certificate is supplied by the caller; embedded
 response certificates are counted but not selected automatically. At most 64
 individual responses are reported, with truncation indicated. Unsupported
 response types, hash algorithms and signature algorithms are not evaluated.
-See [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960).
+Optionally, `--ocsp-nonce` supplies the expected raw nonce bytes from the
+caller (1 to 32 bytes, not DER or hex). RFC 8954 specifies 32 bytes for new
+clients; the inspector accepts shorter values for observation and does not
+generate nonces. The same bytes are compared with each
+supplied response. The report distinguishes absent, duplicate, malformed,
+out-of-range, matching, differing, and not-compared values; it does not print
+the nonce bytes. It does not create a request or prove the supplied nonce was
+used in one, and cannot establish its randomness or freshness. A match in an
+unauthenticated or otherwise unacceptable response is not replay protection.
+See [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960) and
+[RFC 8954](https://www.rfc-editor.org/rfc/rfc8954.html).
 
 All status claims remain unauthenticated observations, including `Good`.
 The supplied responder certificate is also inspected for byte equality with
@@ -146,7 +156,7 @@ the supplied issuer, a proposed issuer link, validity dates at both the explicit
 reference time and `producedAt`, digital-signature key usage, and the specific
 OCSP-signing EKU. Malformed or duplicate usage extensions are reported as
 invalid; these individual observations do not establish delegation. Responder
-authorization, certificate paths and validity, nonce, extension semantics,
+authorization, certificate paths and validity, nonce policy, other extension semantics,
 clock skew and freshness policy are not validated. The
 output does not establish revocation status, trust, or legal validity and no
 network access is performed.

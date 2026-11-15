@@ -37,6 +37,8 @@ pub struct OcspBasicFacts {
     pub produced_at: u64,
     pub produced_after_reference_time: bool,
     pub response_extensions_present: bool,
+    /// Response nonce observation; not proof of freshness or authenticity.
+    pub nonce: OcspNonce,
     pub embedded_certificates: usize,
     pub total_responses: usize,
     pub responses_truncated: bool,
@@ -120,6 +122,65 @@ fn responder_certificate_facts(
         at_produced_at: at(produced_at),
         key_usage,
         ocsp_signing_eku,
+    }
+}
+
+/// Unauthenticated response nonce observation, separate from any policy decision.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OcspNonce {
+    Absent,
+    Duplicate,
+    InvalidEncoding,
+    InvalidLength {
+        length: usize,
+    },
+    Present {
+        length: usize,
+        critical: bool,
+        comparison: OcspNonceComparison,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum OcspNonceComparison {
+    NotProvided,
+    Matches,
+    Differs,
+}
+
+fn observe_nonce(
+    extensions: Option<&x509_cert::ext::Extensions>,
+    expected: Option<&[u8]>,
+) -> OcspNonce {
+    use x509_cert::der::asn1::OctetString;
+    let mut found = extensions
+        .into_iter()
+        .flatten()
+        .filter(|ext| ext.extn_id.to_string() == "1.3.6.1.5.5.7.48.1.2");
+    let Some(ext) = found.next() else {
+        return OcspNonce::Absent;
+    };
+    if found.next().is_some() {
+        return OcspNonce::Duplicate;
+    }
+    let Ok(nonce) = OctetString::from_der(ext.extn_value.as_bytes()) else {
+        return OcspNonce::InvalidEncoding;
+    };
+    let bytes = nonce.as_bytes();
+    if !(1..=32).contains(&bytes.len()) {
+        return OcspNonce::InvalidLength {
+            length: bytes.len(),
+        };
+    }
+    let comparison = match expected {
+        None => OcspNonceComparison::NotProvided,
+        Some(value) if value == bytes => OcspNonceComparison::Matches,
+        Some(_) => OcspNonceComparison::Differs,
+    };
+    OcspNonce::Present {
+        length: bytes.len(),
+        critical: ext.critical,
+        comparison,
     }
 }
 
@@ -219,6 +280,29 @@ pub fn inspect_ocsp(
     responder_der: &[u8],
     reference_time: u64,
 ) -> Result<OcspInspection, Error> {
+    inspect_ocsp_with_nonce(
+        response_der,
+        certificate_der,
+        issuer_der,
+        responder_der,
+        reference_time,
+        None,
+    )
+}
+
+/// Inspect with optional expected raw nonce bytes, without enforcing a nonce
+/// policy or proving that the expected bytes came from a particular request.
+pub fn inspect_ocsp_with_nonce(
+    response_der: &[u8],
+    certificate_der: &[u8],
+    issuer_der: &[u8],
+    responder_der: &[u8],
+    reference_time: u64,
+    expected_nonce: Option<&[u8]>,
+) -> Result<OcspInspection, Error> {
+    if expected_nonce.is_some_and(|nonce| !(1..=32).contains(&nonce.len())) {
+        return Err(Error::new("Expected OCSP nonce must contain 1 to 32 bytes"));
+    }
     if response_der.len() > 8 * 1024 * 1024
         || [certificate_der, issuer_der, responder_der]
             .iter()
@@ -312,6 +396,10 @@ pub fn inspect_ocsp(
         produced_at,
         produced_after_reference_time: produced_at > reference_time,
         response_extensions_present: basic.tbs_response_data.response_extensions.is_some(),
+        nonce: observe_nonce(
+            basic.tbs_response_data.response_extensions.as_ref(),
+            expected_nonce,
+        ),
         embedded_certificates: basic.certs.as_ref().map_or(0, Vec::len),
         total_responses,
         responses_truncated: total_responses > 64,
@@ -507,6 +595,105 @@ mod tests {
         );
         assert!(unsuccessful.basic.is_none());
         assert!(inspect_ocsp(b"bad", LEAF, ISSUER, RESPONDER, 0).is_err());
+    }
+
+    #[test]
+    fn nonce_comparison_reports_absence_mismatch_and_malformed_values() {
+        let inspect = |bytes: &[u8], expected: Option<&[u8]>| {
+            inspect_ocsp_with_nonce(bytes, LEAF, ISSUER, RESPONDER, 0, expected)
+                .unwrap()
+                .basic
+                .unwrap()
+        };
+        let good = inspect(GOOD, Some(b"synthetic-nonce"));
+        assert_eq!(good.nonce, OcspNonce::Absent);
+        let expected = b"synthetic-nonce";
+        let matching = inspect(REVOKED, Some(expected));
+        assert_eq!(matching.signature, CertificateSignature::Matches);
+        assert_eq!(
+            matching.nonce,
+            OcspNonce::Present {
+                length: expected.len(),
+                critical: false,
+                comparison: OcspNonceComparison::Matches
+            }
+        );
+        assert_eq!(
+            inspect(REVOKED, None).nonce,
+            OcspNonce::Present {
+                length: expected.len(),
+                critical: false,
+                comparison: OcspNonceComparison::NotProvided
+            }
+        );
+        assert_eq!(
+            inspect(REVOKED, Some(b"other")).nonce,
+            OcspNonce::Present {
+                length: expected.len(),
+                critical: false,
+                comparison: OcspNonceComparison::Differs
+            }
+        );
+        assert!(inspect_ocsp_with_nonce(GOOD, LEAF, ISSUER, RESPONDER, 0, Some(&[])).is_err());
+        assert!(inspect_ocsp_with_nonce(GOOD, LEAF, ISSUER, RESPONDER, 0, Some(&[1; 33])).is_err());
+        let duplicate = modify(REVOKED, |basic| {
+            let extensions = basic
+                .tbs_response_data
+                .response_extensions
+                .as_mut()
+                .unwrap();
+            extensions.push(extensions[0].clone());
+        });
+        assert_eq!(
+            inspect(&duplicate, Some(expected)).nonce,
+            OcspNonce::Duplicate
+        );
+        let malformed = modify(REVOKED, |basic| {
+            basic
+                .tbs_response_data
+                .response_extensions
+                .as_mut()
+                .unwrap()[0]
+                .extn_value = OctetString::new(vec![0xff]).unwrap()
+        });
+        let observation = inspect(&malformed, Some(expected));
+        assert_eq!(observation.nonce, OcspNonce::InvalidEncoding);
+        assert_eq!(observation.signature, CertificateSignature::Differs);
+        for len in [0, 33] {
+            let invalid = modify(REVOKED, |basic| {
+                let encoded = OctetString::new(vec![0u8; len]).unwrap().to_der().unwrap();
+                basic
+                    .tbs_response_data
+                    .response_extensions
+                    .as_mut()
+                    .unwrap()[0]
+                    .extn_value = OctetString::new(encoded).unwrap();
+            });
+            assert_eq!(
+                inspect(&invalid, Some(expected)).nonce,
+                OcspNonce::InvalidLength { length: len }
+            );
+        }
+        let critical = modify(REVOKED, |basic| {
+            basic
+                .tbs_response_data
+                .response_extensions
+                .as_mut()
+                .unwrap()[0]
+                .critical = true
+        });
+        assert_eq!(
+            inspect(&critical, Some(expected)).nonce,
+            OcspNonce::Present {
+                length: expected.len(),
+                critical: true,
+                comparison: OcspNonceComparison::Matches
+            }
+        );
+        assert_eq!(
+            inspect(&critical, Some(expected)).signature,
+            CertificateSignature::Differs
+        );
     }
 
     #[test]

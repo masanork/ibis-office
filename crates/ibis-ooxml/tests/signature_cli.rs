@@ -549,14 +549,26 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
     package.set_bytes(signature, changed.into_bytes());
     let path = std::env::temp_dir().join(format!("ibis-signature-cli-ocsp-{}.docx", std::process::id()));
     std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let nonce_path = std::env::temp_dir().join(format!("ibis-signature-cli-nonce-{}.bin", std::process::id()));
+    std::fs::write(&nonce_path, b"synthetic-nonce").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
         .args(["--at", "0", "--ocsp"]).arg(fixtures.join("ocsp-good.der"))
         .arg("--ocsp").arg(fixtures.join("ocsp-revoked.der"))
         .arg("--ocsp-issuer").arg(fixtures.join("ocsp-issuer.der"))
-        .arg("--ocsp-responder").arg(fixtures.join("ocsp-responder.der")).output().unwrap();
+        .arg("--ocsp-responder").arg(fixtures.join("ocsp-responder.der"))
+        .arg("--ocsp-nonce").arg(&nonce_path).output().unwrap();
     let incomplete = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
         .arg("--ocsp").arg(fixtures.join("ocsp-good.der")).output().unwrap();
+    let nonce_alone = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .arg("--ocsp-nonce").arg(&nonce_path).output().unwrap();
+    std::fs::write(&nonce_path, []).unwrap();
+    let empty = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .arg("--ocsp-nonce").arg(&nonce_path).output().unwrap();
+    std::fs::write(&nonce_path, [0u8; 33]).unwrap();
+    let oversized = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .arg("--ocsp-nonce").arg(&nonce_path).output().unwrap();
     std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(nonce_path).unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("OCSP 1 observations (NOT a revocation verdict)"));
@@ -564,9 +576,14 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
     assert!(text.contains("issuer_name_hash_equal: true, issuer_key_hash_equal: true, serial_equal: true"));
     assert!(text.contains("Responder certificate observations (NOT authorization)"));
     assert!(text.contains("ocsp_signing_eku: Absent"));
+    assert!(text.contains("Nonce observation (UNAUTHENTICATED; NOT freshness proof): Absent"));
+    assert!(text.contains("comparison: Matches"));
     assert!(text.contains("UNAUTHENTICATED claim Good"));
     assert!(text.contains("UNAUTHENTICATED claim Revoked"));
     assert!(text.contains("response extensions present true"));
-    assert!(text.contains("Responder authorization, issuer trust, nonce, extension semantics and revocation: NOT EVALUATED"));
+    assert!(text.contains("Responder authorization, issuer trust, nonce policy, other extension semantics and revocation: NOT EVALUATED"));
     assert_eq!(incomplete.status.code(), Some(2));
+    assert_eq!(nonce_alone.status.code(), Some(2));
+    assert_eq!(empty.status.code(), Some(2));
+    assert_eq!(oversized.status.code(), Some(2));
 }
