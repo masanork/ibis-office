@@ -10,12 +10,13 @@
     // Existing editor links such as /?open=... and /?local=1 keep working.
     if (location.search) location.replace('./editor.html' + location.search + location.hash);
   </script>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./sorane-home.css">
 </head>
 <body>
   <a class="skip" href="#main">本文へ移動</a>
   <header class="topbar"><div class="wrap nav">
-    <a class="brand" href="./" aria-label="Sorane Docs ホーム"><span class="brand-mark" aria-hidden="true">S</span><span>Sorane <b>Docs</b></span></a>
+    <a class="brand" href="./" aria-label="Sorane Docs ホーム"><img class="brand-mark" src="./favicon.svg" alt=""><span>Sorane <b>Docs</b></span></a>
     <nav aria-label="メインナビゲーション"><a href="#samples">サンプル</a><a href="/files">保存したファイル</a><a href="#about">Sorane Docs について</a></nav>
     <a class="nav-cta" href="./editor.html">エディターを開く <span aria-hidden="true">↗</span></a>
   </div></header>
@@ -26,7 +27,7 @@
       <p class="lead">読みたい文書も、書きかけのアイデアも。<br class="desktop">Sorane Docs なら、ブラウザから気軽にひらけます。</p>
       <div class="actions"><a class="button primary" href="./editor.html">エディターを開く <span aria-hidden="true">↗</span></a><a class="button secondary" href="#samples">サンプルを試す <span aria-hidden="true">↓</span></a></div>
       <p class="note"><span aria-hidden="true">✳</span> アカウントを作らずにお試しいただけます。</p>
-    </div><div class="hero-art" aria-hidden="true"><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div><div class="art-spark">✦</div><div class="paper shadow-paper"></div><div class="paper main-paper"><div class="paper-top"><span class="paper-icon">S</span><span class="paper-dots">•••</span></div><div class="paper-label">YOUR NEXT IDEA</div><div class="paper-title">はじめよう、<br>あたらしい文書。</div><div class="paper-line long"></div><div class="paper-line medium"></div><div class="paper-line short"></div><div class="paper-block"><span>✳</span><div><div class="paper-line medium"></div><div class="paper-line short"></div></div></div><div class="paper-footer">SORANE DOCS <span>01 / 01</span></div></div><div class="float-tag"><span>✧</span> ひらめきを、かたちに。</div></div></section>
+    </div><div class="hero-art" aria-hidden="true"><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div><div class="art-spark">✦</div><div class="paper shadow-paper"></div><div class="paper main-paper"><div class="paper-top"><img class="paper-icon" src="./favicon.svg" alt=""><span class="paper-dots">•••</span></div><div class="paper-label">YOUR NEXT IDEA</div><div class="paper-title">はじめよう、<br>あたらしい文書。</div><div class="paper-line long"></div><div class="paper-line medium"></div><div class="paper-line short"></div><div class="paper-block"><span>✳</span><div><div class="paper-line medium"></div><div class="paper-line short"></div></div></div><div class="paper-footer">SORANE DOCS <span>01 / 01</span></div></div><div class="float-tag"><span>✧</span> ひらめきを、かたちに。</div></div></section>
     <section class="samples-section" id="samples"><div class="wrap">
       <p class="eyebrow"><span></span> DOCUMENT GALLERY</p>
       <h2>実際の文書で、確かめる。</h2>
@@ -40,7 +41,7 @@
     </div></section>
     <section class="about wrap" id="about"><div><p class="eyebrow"><span></span> ABOUT SORANE DOCS</p><h2>いつもの文書に、<br>新しい選択肢を。</h2></div><div class="about-copy"><p>Sorane Docs は、ibisOffice をもとに開発している文書アプリです。ブラウザですぐに文書を開き、日本語を含むさまざまな文書に触れられます。</p><p>ファイル形式や機能によっては、表示・編集に制限があります。大切な文書は元のファイルを残してお使いください。</p><a href="https://github.com/masanork/ibis-office">ソースコードとライセンスを見る <span aria-hidden="true">↗</span></a></div></section>
   </main>
-  <footer><div class="wrap footer-inner"><a class="brand footer-brand" href="./"><span class="brand-mark">S</span><span>Sorane <b>Docs</b></span></a><span>© Sorane Docs · Built on ibisOffice</span><a href="./font-notices.html">フォントとライセンス</a></div></footer>
+  <footer><div class="wrap footer-inner"><a class="brand footer-brand" href="./"><img class="brand-mark" src="./favicon.svg" alt=""><span>Sorane <b>Docs</b></span></a><span>© Sorane Docs · Built on ibisOffice</span><a href="./font-notices.html">フォントとライセンス</a></div></footer>
   <script type="module" src="./sorane-samples.js"></script>
 </body>
 </html>

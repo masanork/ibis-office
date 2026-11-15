@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Digital Blue. Only the bottom-right corner is the large radius; the other three use the tight one. -->
+  <path fill="#1E50B5" d="M139 64H885A75 75 0 0 1 960 139V760A200 200 0 0 1 760 960H139A75 75 0 0 1 64 885V139A75 75 0 0 1 139 64Z"/>
+  <path fill="#fff" fill-rule="evenodd" d="M168 176H608L856 424V648A200 200 0 0 1 656 848H168ZM336 344H520A168 168 0 0 1 520 680H336Z"/>
+  <path fill="#D9E4F8" d="M676 176H856V356Z"/>
+</svg>

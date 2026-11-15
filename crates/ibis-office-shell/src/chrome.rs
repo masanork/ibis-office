@@ -1333,9 +1333,7 @@ pub(crate) fn hover_row_actions(index: usize, entries: Vec<MenuEntry>, editor: &
 pub(crate) fn brand_logo(id: &'static str, height: f32, full_width: bool) -> Stateful<Div> {
     let root = div().id(id).flex().items_center().gap(px(height * 0.22)).flex_none();
     let root = if full_width { root.w_full().h(px(height)) } else { root.w(px(height * LOGO_ASPECT)).h(px(height)) };
-    let mark = div().flex().items_center().justify_center().size(px(height * 0.9))
-        .rounded(px(height * 0.2)).bg(gpui_kit::rgb(0x2563a6))
-        .text_color(gpui_kit::rgb(0xffffff)).text_size(px(height * 0.62)).font_weight(FontWeight::BOLD).child("S");
+    let mark = img(docs_mark()).size(px(height * 0.9)).flex_none();
     let root = root.child(mark).child(div().text_size(px(height * 0.72)).font_weight(FontWeight::BOLD).child("Sorane Docs"));
     #[cfg(all(feature="scenarios",any(target_os="macos",target_os="linux")))]
     let root = super::scenario::button_probe::observe_control(root,id.into());
@@ -1343,6 +1341,17 @@ pub(crate) fn brand_logo(id: &'static str, height: f32, full_width: bool) -> Sta
 }
 
 pub const LOGO_ASPECT: f32 = 5.4;
+
+fn docs_mark() -> std::sync::Arc<Image> {
+    static MARK: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| {
+        std::sync::Arc::new(Image::from_bytes(
+            ImageFormat::Svg,
+            include_bytes!("../../ibis-office-app/branding/sorane-docs.svg").to_vec(),
+        ))
+    })
+    .clone()
+}
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn office_app_logo(kind: ibis_pptx::Kind) -> std::sync::Arc<Image> {

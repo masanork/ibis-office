@@ -1,4 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect x="64" y="64" width="896" height="896" rx="200" fill="#2563a6"/>
-  <path fill="#fff" d="M739 303l-67 85c-47-38-101-57-163-57-57 0-89 18-89 51 0 36 36 45 112 62 119 26 191 64 191 162 0 106-87 168-213 168-90 0-172-29-232-82l72-86c48 40 101 65 164 65 64 0 99-20 99-57 0-34-31-46-111-64-121-27-192-61-192-163 0-99 82-160 200-160 90 0 165 27 229 76z"/>
+  <!-- Digital Blue. Only the bottom-right corner is the large radius; the other three use the tight one. -->
+  <path fill="#1E50B5" d="M139 64H885A75 75 0 0 1 960 139V760A200 200 0 0 1 760 960H139A75 75 0 0 1 64 885V139A75 75 0 0 1 139 64Z"/>
+  <path fill="#fff" fill-rule="evenodd" d="M168 176H608L856 424V648A200 200 0 0 1 656 848H168ZM336 344H520A168 168 0 0 1 520 680H336Z"/>
+  <path fill="#D9E4F8" d="M676 176H856V356Z"/>
 </svg>
