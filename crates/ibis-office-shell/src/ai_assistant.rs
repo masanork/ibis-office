@@ -10,7 +10,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_doc_model::EmuRect;
 use ibis_doc_model::ai_sheet::{
-    format_range, parse_hex_rgb, read_sheet_range, resolve_sheet_slide, workbook_overview,
+    audit_sheet_errors, find_sheet_cells, format_range, parse_hex_rgb, read_sheet_range,
+    resolve_sheet_slide, workbook_overview,
 };
 use ibis_doc_model::command::Command;
 use ibis_doc_model::drawing::{Color, Fill, Geometry};
@@ -27,13 +28,14 @@ use crate::with_format;
 
 use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_chat_completion};
 use crate::ai_tools::{
-    AddSlideArgs, FindTextArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, MAX_READ_CELLS,
-    MoveSlideArgs, ReadParagraphsArgs, ReplaceParagraphArgs, SetParagraphStyleArgs,
+    AddSlideArgs, FindCellsArgs, FindTextArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs,
+    MAX_READ_CELLS, MoveSlideArgs, ReadParagraphsArgs, ReplaceParagraphArgs, SetParagraphStyleArgs,
     SetRunFormatArgs, SetShapeStyleArgs, SetShapeTextArgs, SetSlideNotesArgs,
     SlideIndexOptionalArg, SlideIndexRequiredArg, build_replace_paragraph_command,
     build_set_run_format_command, docx_tool_definitions, parse_clear_cells_command,
     parse_create_sheet_arg, parse_delete_axis_command, parse_insert_axis_command,
-    parse_merge_cells_command, parse_range_arg, parse_set_cells_command, parse_set_format_command,
+    parse_merge_cells_command, parse_range_arg, parse_set_axis_size_command,
+    parse_set_cell_comment_command, parse_set_cells_command, parse_set_format_command,
     parse_set_paragraph_align_command, parse_sheet_arg, parse_switch_sheet_arg,
     pptx_tool_definitions, spreadsheet_tool_definitions,
 };
@@ -1001,6 +1003,146 @@ impl SlideEditor {
                     None,
                     format!("✓ check_machine_readability ({count} findings)"),
                 )
+            }
+            "find_cells" => {
+                let parsed: Result<FindCellsArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ find_cells: {e}"),
+                    ),
+                    Ok(a) => {
+                        let slide = match self.resolve_ai_target_slide(args) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                return (
+                                    json!({ "error": e }).to_string(),
+                                    None,
+                                    format!("✗ find_cells: {e}"),
+                                );
+                            }
+                        };
+                        let Some(sheet) = self.presentation().slide(slide).and_then(sheet_of_slide)
+                        else {
+                            return (
+                                json!({ "error": "target sheet not found" }).to_string(),
+                                None,
+                                "✗ find_cells: target sheet not found".to_string(),
+                            );
+                        };
+                        let matches: Vec<_> = find_sheet_cells(
+                            sheet,
+                            &a.query,
+                            a.search_formulas,
+                            MAX_READ_CELLS,
+                        )
+                        .into_iter()
+                        .map(|c| {
+                            json!({
+                                "address": c.cell,
+                                "value": c.text,
+                                "formula": c.formula,
+                            })
+                        })
+                        .collect();
+                        let count = matches.len();
+                        (
+                            json!({ "count": count, "matches": matches }).to_string(),
+                            None,
+                            format!("✓ find_cells ({count} matches)"),
+                        )
+                    }
+                }
+            }
+            "audit_formulas" => {
+                let filter_sheet = match parse_sheet_arg(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ audit_formulas: {e}"),
+                        );
+                    }
+                };
+                let mut errors = Vec::new();
+                for (index, slide) in self.presentation().slides.iter().enumerate() {
+                    let Some(sheet) = sheet_of_slide(slide) else {
+                        continue;
+                    };
+                    let sheet_name = slide
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("Sheet{}", index + 1));
+                    if let Some(ref target) = filter_sheet
+                        && &sheet_name != target
+                    {
+                        continue;
+                    }
+                    for c in audit_sheet_errors(sheet, MAX_READ_CELLS) {
+                        errors.push(json!({
+                            "sheet": sheet_name,
+                            "address": c.cell,
+                            "value": c.text,
+                            "formula": c.formula,
+                        }));
+                    }
+                }
+                let count = errors.len();
+                (
+                    json!({ "count": count, "errors": errors }).to_string(),
+                    None,
+                    format!("✓ audit_formulas ({count} errors)"),
+                )
+            }
+            "set_axis_size" => {
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ set_axis_size: {e}"),
+                        );
+                    }
+                };
+                match parse_set_axis_size_command(slide, args) {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ set_axis_size: {e}"),
+                    ),
+                    Ok(cmd) => (
+                        json!({ "ok": true }).to_string(),
+                        Some(cmd),
+                        "✓ set_axis_size".to_string(),
+                    ),
+                }
+            }
+            "set_cell_comment" => {
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ set_cell_comment: {e}"),
+                        );
+                    }
+                };
+                match parse_set_cell_comment_command(slide, args) {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ set_cell_comment: {e}"),
+                    ),
+                    Ok(cmd) => (
+                        json!({ "ok": true }).to_string(),
+                        Some(cmd),
+                        "✓ set_cell_comment".to_string(),
+                    ),
+                }
             }
             other => (
                 json!({ "error": format!("unknown tool: {other}") }).to_string(),

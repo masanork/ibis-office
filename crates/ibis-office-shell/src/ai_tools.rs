@@ -6,7 +6,8 @@
 use ibis_doc_model::ai_sheet::{
     AiBorderStyle, AiCellEdit, AiCellFormat, AiCellValue, build_clear_cells_command,
     build_delete_axis_command, build_insert_axis_command, build_merge_command,
-    build_set_cells_command, build_set_format_command, parse_cell_range, parse_hex_rgb,
+    build_set_axis_size_command, build_set_cells_command, build_set_comment_command,
+    build_set_format_command, parse_cell_range, parse_hex_rgb,
 };
 use ibis_doc_model::command::Command;
 use ibis_doc_model::flow::FlowAlign;
@@ -243,6 +244,73 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                     "properties": {
                         "sheet": { "type": "string", "description": "Optional sheet name (omit to scan all sheets)." }
                     },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "find_cells",
+                description: "Search cells on a sheet (or active sheet) by display text or formula substring.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "query": { "type": "string", "description": "Case-insensitive search text." },
+                        "search_formulas": { "type": "boolean", "default": true }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "audit_formulas",
+                description: "Scan all sheets (or a specific sheet) for formula or value errors (#REF!, #DIV/0!, #VALUE!, #NAME?, #N/A, etc.).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string", "description": "Optional sheet name (omit to scan all sheets)." }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "set_axis_size",
+                description: "Set row height or column width in points for a 1-based range of rows or columns.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "axis": { "type": "string", "enum": ["row", "col"] },
+                        "from": { "type": "integer", "minimum": 1, "description": "1-based start row or column index." },
+                        "to": { "type": "integer", "minimum": 1, "description": "1-based end row or column index (defaults to 'from')." },
+                        "size_pt": { "type": "number", "minimum": 4, "maximum": 1000, "description": "Size in points (e.g. 24 for row height, 90 for column width)." }
+                    },
+                    "required": ["axis", "from", "size_pt"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "set_cell_comment",
+                description: "Add, update, or clear a note/comment on a cell.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "cell": { "type": "string", "description": "A1 cell reference, e.g. 'B2'." },
+                        "text": { "type": ["string", "null"], "description": "Comment text, or null/empty to remove." }
+                    },
+                    "required": ["cell", "text"],
                     "additionalProperties": false
                 }),
             },
@@ -1048,6 +1116,54 @@ pub fn build_set_run_format_command(
     } else {
         Ok(Command::Group(cmds))
     }
+}
+
+#[derive(Deserialize)]
+pub struct FindCellsArgs {
+    pub query: String,
+    #[serde(default = "default_true")]
+    pub search_formulas: bool,
+}
+
+#[derive(Deserialize)]
+struct SetAxisSizeArgs {
+    axis: String,
+    from: u32,
+    to: Option<u32>,
+    size_pt: f32,
+}
+
+#[derive(Deserialize)]
+struct SetCellCommentArgs {
+    cell: String,
+    text: Option<String>,
+}
+
+pub fn parse_set_axis_size_command(slide: SlideId, arguments_json: &str) -> Result<Command, String> {
+    let args: SetAxisSizeArgs =
+        serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
+    let axis = match args.axis.trim().to_ascii_lowercase().as_str() {
+        "row" | "rows" => Axis::Rows,
+        "col" | "cols" | "column" | "columns" => Axis::Columns,
+        other => return Err(format!("invalid axis '{other}'")),
+    };
+    if args.from == 0 {
+        return Err("from must be >= 1".to_string());
+    }
+    let to = args.to.unwrap_or(args.from);
+    if to == 0 {
+        return Err("to must be >= 1".to_string());
+    }
+    build_set_axis_size_command(slide, axis, args.from - 1, to - 1, args.size_pt)
+}
+
+pub fn parse_set_cell_comment_command(
+    slide: SlideId,
+    arguments_json: &str,
+) -> Result<Command, String> {
+    let args: SetCellCommentArgs =
+        serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
+    build_set_comment_command(slide, &args.cell, args.text)
 }
 
 pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command, String> {

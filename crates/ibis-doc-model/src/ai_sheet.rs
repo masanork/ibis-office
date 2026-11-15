@@ -11,9 +11,10 @@ use crate::command::Command;
 use crate::drawing::Rgb;
 use crate::model::SlideId;
 use crate::sheet::{
-    Border, BorderLine, CellAlign, CellRange, CellValue, CellVerticalAlign, Sheet, Workbook,
-    cell_name,
+    Border, BorderLine, CellAlign, CellRange, CellValue, CellVerticalAlign, Sheet, SheetComment,
+    Workbook, cell_name,
 };
+use crate::EMU_PER_POINT;
 use crate::sheet_command::{Axis, CellEdit, CellInput, Edge, SheetCommand, StyleChange};
 
 /// Summary of one sheet in a workbook.
@@ -549,6 +550,118 @@ pub fn build_merge_command(
     } else {
         Command::Sheet(SheetCommand::Unmerge { slide, range })
     }
+}
+
+/// Find non-empty cells whose display text (or formula) matches `query` (case-insensitive).
+pub fn find_sheet_cells(
+    sheet: &Sheet,
+    query: &str,
+    search_formulas: bool,
+    max_results: usize,
+) -> Vec<CellSnapshot> {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for cell in sheet.cells.iter() {
+        let text_match = cell.text.to_ascii_lowercase().contains(&q);
+        let formula_match = search_formulas
+            && cell
+                .formula
+                .as_deref()
+                .is_some_and(|f| f.to_ascii_lowercase().contains(&q));
+        if text_match || formula_match {
+            out.push(CellSnapshot {
+                cell: cell_name(cell.row, cell.column),
+                row: cell.row,
+                column: cell.column,
+                text: cell.text.clone(),
+                formula: cell.formula.clone(),
+            });
+            if out.len() >= max_results {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Find cells with formula or value errors (`#REF!`, `#DIV/0!`, etc.) on `sheet`.
+pub fn audit_sheet_errors(sheet: &Sheet, max_results: usize) -> Vec<CellSnapshot> {
+    let mut out = Vec::new();
+    for cell in sheet.cells.iter() {
+        let is_err = matches!(cell.value, CellValue::Error(_))
+            || (cell.formula.is_some() && cell.text.starts_with('#'));
+        if is_err {
+            out.push(CellSnapshot {
+                cell: cell_name(cell.row, cell.column),
+                row: cell.row,
+                column: cell.column,
+                text: cell.text.clone(),
+                formula: cell.formula.clone(),
+            });
+            if out.len() >= max_results {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Build a [`Command`] to set row height or column width in points for 0-based `first..=last`.
+pub fn build_set_axis_size_command(
+    slide: SlideId,
+    axis: Axis,
+    first: u32,
+    last: u32,
+    points: f32,
+) -> Result<Command, String> {
+    if first > last {
+        return Err("start index must be <= end index".to_string());
+    }
+    if !points.is_finite() || points < 4.0 || points > 1000.0 {
+        return Err(format!("size_pt must be between 4 and 1000 (got {points})"));
+    }
+    let size = (points * EMU_PER_POINT as f32).round() as i64;
+    Ok(Command::Sheet(SheetCommand::SetSize {
+        slide,
+        axis,
+        first,
+        last,
+        size,
+    }))
+}
+
+/// Build a [`Command`] to set or clear a note/comment on a cell.
+pub fn build_set_comment_command(
+    slide: SlideId,
+    cell: &str,
+    text: Option<String>,
+) -> Result<Command, String> {
+    let (row, column) =
+        parse_cell_ref(cell).ok_or_else(|| format!("invalid cell reference '{cell}'"))?;
+    let comment = text.and_then(|t| {
+        let trimmed = t.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(SheetComment {
+                row,
+                column,
+                author: "Assistant".to_string(),
+                text: trimmed,
+                runs: Vec::new(),
+                rect: None,
+            })
+        }
+    });
+    Ok(Command::Sheet(SheetCommand::SetComment {
+        slide,
+        row,
+        column,
+        comment,
+    }))
 }
 
 #[cfg(test)]
