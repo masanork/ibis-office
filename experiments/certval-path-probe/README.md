@@ -79,6 +79,19 @@ purpose, or validate any other path edge. The adapter remains experimental and
 is not exposed to the application. It must not turn `Matches` into a trust
 or path success result.
 
+A bounded path-report experiment records both the unchanged engine result and
+an ordered list of independent signature observations, from the supplied anchor
+toward the target. It accepts at most seven supplied intermediates, each
+certificate at most 1 MiB, and at most 4 MiB total. These limits apply to this
+probe and are not a general resource audit. Tests retain the engine failure
+when all edge signatures match but an intermediate is not a CA or the target
+has an unprocessed critical extension. They also show that the same engine
+signature-failure result can accompany either an unsupported edge or a backend
+signature failure. No edge observation overrides the path result, and the path
+result is not a revocation or document-signature verdict. The experiment takes
+the caller's path, time and settings; it does not choose anchors, construct
+paths, or establish the provenance of any input.
+
 The pinned crate uses Apache-2.0 OR MIT licensing. Its own
 [security warning](https://docs.rs/crate/certval/0.2.0-rc.3/source/README.md)
 says it has not been independently audited and documents remaining corpus

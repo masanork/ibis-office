@@ -57,6 +57,61 @@ fn inspect_edge_signature(child_der: &[u8], proposed_issuer_der: &[u8]) -> EdgeD
     }
 }
 
+/// Independent results for one caller-supplied path; neither result is a
+/// document signature or revocation verdict.
+#[derive(Debug, PartialEq, Eq)]
+struct PathProbeReport {
+    /// Raw engine outcome; Err can include unsupported or indeterminate cases.
+    engine_result: Result<(), String>,
+    /// Anchor-to-target order, one signature observation per proposed edge.
+    edge_observations: Vec<EdgeDiagnostic>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PathProbeInputError {
+    TooManyIntermediates,
+    InputTooLarge,
+}
+
+/// Examine a caller-selected anchor, target and anchor-to-target intermediates.
+/// This does not build paths, authenticate inputs or infer a trust decision.
+fn inspect_explicit_path(
+    leaf: &[u8],
+    anchor: &[u8],
+    intermediates: &[&[u8]],
+    time: u64,
+    settings: CertificationPathSettings,
+) -> Result<PathProbeReport, PathProbeInputError> {
+    if intermediates.len() > 7 {
+        return Err(PathProbeInputError::TooManyIntermediates);
+    }
+    let inputs = std::iter::once(anchor)
+        .chain(intermediates.iter().copied())
+        .chain(std::iter::once(leaf));
+    let mut size = 0usize;
+    for input in inputs {
+        if input.len() > 1024 * 1024 {
+            return Err(PathProbeInputError::InputTooLarge);
+        }
+        size = size
+            .checked_add(input.len())
+            .ok_or(PathProbeInputError::InputTooLarge)?;
+    }
+    if size > 4 * 1024 * 1024 {
+        return Err(PathProbeInputError::InputTooLarge);
+    }
+    let mut edges = Vec::with_capacity(intermediates.len() + 1);
+    let mut issuer = anchor;
+    for child in intermediates.iter().copied().chain(std::iter::once(leaf)) {
+        edges.push(inspect_edge_signature(child, issuer));
+        issuer = child;
+    }
+    Ok(PathProbeReport {
+        engine_result: validate_with_settings(leaf, anchor, intermediates, time, settings),
+        edge_observations: edges,
+    })
+}
+
 fn validate(leaf: &[u8], anchor: &[u8], time: u64) -> Result<(), String> {
     validate_with_intermediates(leaf, anchor, &[], time)
 }
@@ -238,6 +293,100 @@ mod tests {
             validate_with_intermediates(leaf, root, &[nonca], 1796083200)
                 .unwrap_err()
                 .contains("InvalidBasicConstraints")
+        );
+    }
+
+    #[test]
+    fn path_report_keeps_engine_and_edge_observations_separate() {
+        let settings = CertificationPathSettings::new;
+        let root = include_bytes!("../data/root.der");
+        let intermediate = include_bytes!("../data/intermediate.der");
+        let nonca = include_bytes!("../data/bad-intermediate-nonca.der");
+        let leaf = include_bytes!("../data/intermediate-leaf.der");
+        let good =
+            inspect_explicit_path(leaf, root, &[intermediate], 1796083200, settings()).unwrap();
+        assert!(good.engine_result.is_ok());
+        assert_eq!(
+            good.edge_observations,
+            vec![EdgeDiagnostic::Matches, EdgeDiagnostic::Matches]
+        );
+        let invalid_ca =
+            inspect_explicit_path(leaf, root, &[nonca], 1796083200, settings()).unwrap();
+        assert!(
+            invalid_ca
+                .engine_result
+                .unwrap_err()
+                .contains("InvalidBasicConstraints")
+        );
+        assert_eq!(
+            invalid_ca.edge_observations,
+            vec![EdgeDiagnostic::Matches, EdgeDiagnostic::Matches]
+        );
+        let critical = include_bytes!("../data/unknown-critical.der");
+        let critical_report =
+            inspect_explicit_path(critical, root, &[], 1796083200, settings()).unwrap();
+        assert!(
+            critical_report
+                .engine_result
+                .unwrap_err()
+                .contains("UnprocessedCriticalExtension")
+        );
+        assert_eq!(
+            critical_report.edge_observations,
+            vec![EdgeDiagnostic::Matches]
+        );
+        let pss_ca =
+            include_bytes!("../../../crates/ibis-ooxml/tests/fixtures/signatures/pss-ca.der");
+        let pss = include_bytes!(
+            "../../../crates/ibis-ooxml/tests/fixtures/signatures/pss-normal-leaf.der"
+        );
+        let mixed = include_bytes!(
+            "../../../crates/ibis-ooxml/tests/fixtures/signatures/pss-mgf384-leaf.der"
+        );
+        let unsupported =
+            inspect_explicit_path(mixed, pss_ca, &[], 1796083200, settings()).unwrap();
+        let mut damaged = pss.to_vec();
+        let n = damaged.len();
+        damaged[n - 1] ^= 1;
+        let bad_signature =
+            inspect_explicit_path(&damaged, pss_ca, &[], 1796083200, settings()).unwrap();
+        assert_eq!(unsupported.engine_result, bad_signature.engine_result);
+        assert_eq!(
+            unsupported.edge_observations,
+            vec![EdgeDiagnostic::UnsupportedOrUnrecognized]
+        );
+        assert_eq!(
+            bad_signature.edge_observations,
+            vec![EdgeDiagnostic::BackendReportedSignatureFailure]
+        );
+        let input = inspect_explicit_path(b"bad", root, &[], 1796083200, settings()).unwrap();
+        assert!(input.engine_result.is_err());
+        assert_eq!(input.edge_observations, vec![EdgeDiagnostic::InvalidInput]);
+        assert_eq!(
+            inspect_explicit_path(
+                leaf,
+                root,
+                &[intermediate.as_slice(); 8],
+                1796083200,
+                settings()
+            ),
+            Err(PathProbeInputError::TooManyIntermediates)
+        );
+        let oversize = vec![0; 1024 * 1024 + 1];
+        assert_eq!(
+            inspect_explicit_path(&oversize, root, &[], 1796083200, settings()),
+            Err(PathProbeInputError::InputTooLarge)
+        );
+        let chunk = vec![0; 1024 * 1024];
+        assert_eq!(
+            inspect_explicit_path(
+                &chunk,
+                &chunk,
+                &[&chunk, &chunk, &chunk],
+                1796083200,
+                settings()
+            ),
+            Err(PathProbeInputError::InputTooLarge)
         );
     }
 
