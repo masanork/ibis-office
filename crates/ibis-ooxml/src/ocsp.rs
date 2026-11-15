@@ -40,6 +40,7 @@ pub struct OcspBasicFacts {
     pub produced_after_reference_time: bool,
     pub response_extensions_present: bool,
     pub response_extension_inventory: OcspExtensionInventory,
+    pub extended_revoke: OcspExtendedRevoke,
     /// Response nonce observation; not proof of freshness or authenticity.
     pub nonce: OcspNonce,
     pub embedded_certificates: usize,
@@ -203,6 +204,8 @@ pub struct OcspSingleFacts {
     pub time_window: OcspTimeWindow,
     pub extensions_present: bool,
     pub extension_inventory: OcspExtensionInventory,
+    /// Presence here is a location observation, not a valid extension placement.
+    pub extended_revoke: OcspExtendedRevoke,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -218,7 +221,10 @@ pub enum OcspCertId {
 #[derive(Debug, PartialEq, Eq)]
 pub enum OcspClaim {
     Good,
-    Revoked { revocation_time: u64 },
+    Revoked {
+        revocation_time: u64,
+        reason: Option<x509_cert::ext::pkix::CrlReason>,
+    },
     Unknown,
 }
 
@@ -229,6 +235,35 @@ pub enum OcspTimeWindow {
     Expired,
     NoNextUpdate,
     InvalidWindow,
+}
+
+/// Unauthenticated metadata about the extended-revoke extension. A valid
+/// encoding or presence does not establish issuance or revocation status.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OcspExtendedRevoke {
+    Absent,
+    Duplicate,
+    Present {
+        critical: bool,
+        value_is_der_null: bool,
+    },
+}
+
+fn observe_extended_revoke(extensions: Option<&x509_cert::ext::Extensions>) -> OcspExtendedRevoke {
+    let mut matching = extensions
+        .into_iter()
+        .flatten()
+        .filter(|ext| ext.extn_id.to_string() == "1.3.6.1.5.5.7.48.1.9");
+    let Some(ext) = matching.next() else {
+        return OcspExtendedRevoke::Absent;
+    };
+    if matching.next().is_some() {
+        return OcspExtendedRevoke::Duplicate;
+    }
+    OcspExtendedRevoke::Present {
+        critical: ext.critical,
+        value_is_der_null: x509_cert::der::asn1::Null::from_der(ext.extn_value.as_bytes()).is_ok(),
+    }
 }
 
 /// Bounded inventory of extension metadata, not extension interpretation.
@@ -572,6 +607,9 @@ pub fn inspect_ocsp_with_nonce(
         response_extension_inventory: extension_inventory(
             basic.tbs_response_data.response_extensions.as_ref(),
         ),
+        extended_revoke: observe_extended_revoke(
+            basic.tbs_response_data.response_extensions.as_ref(),
+        ),
         nonce: observe_nonce(
             basic.tbs_response_data.response_extensions.as_ref(),
             expected_nonce,
@@ -616,6 +654,7 @@ pub fn inspect_ocsp_with_nonce(
             CertStatus::Unknown(_) => OcspClaim::Unknown,
             CertStatus::Revoked(revoked) => OcspClaim::Revoked {
                 revocation_time: revoked.revocation_time.0.to_unix_duration().as_secs(),
+                reason: revoked.revocation_reason,
             },
         };
         let this_update = entry.this_update.0.to_unix_duration().as_secs();
@@ -639,6 +678,7 @@ pub fn inspect_ocsp_with_nonce(
             time_window,
             extensions_present: entry.single_extensions.is_some(),
             extension_inventory: extension_inventory(entry.single_extensions.as_ref()),
+            extended_revoke: observe_extended_revoke(entry.single_extensions.as_ref()),
         });
     }
     result.basic = Some(facts);
@@ -772,6 +812,120 @@ mod tests {
         );
         assert!(unsuccessful.basic.is_none());
         assert!(inspect_ocsp(b"bad", LEAF, ISSUER, RESPONDER, 0).is_err());
+    }
+
+    #[test]
+    fn revoked_reason_and_extended_revoke_are_untrusted_observations() {
+        use x509_cert::ext::{Extension, pkix::CrlReason};
+        let original = inspect_ocsp(REVOKED, LEAF, ISSUER, RESPONDER, 0)
+            .unwrap()
+            .basic
+            .unwrap();
+        assert_eq!(original.signature, CertificateSignature::Matches);
+        assert!(matches!(
+            original.responses[0].claimed_status,
+            OcspClaim::Revoked {
+                reason: Some(CrlReason::KeyCompromise),
+                ..
+            }
+        ));
+        assert_eq!(original.extended_revoke, OcspExtendedRevoke::Absent);
+        let ext = Extension {
+            extn_id: ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.48.1.9"),
+            critical: false,
+            extn_value: OctetString::new(vec![0x05, 0x00]).unwrap(),
+        };
+        let changed = modify(REVOKED, |basic| {
+            basic
+                .tbs_response_data
+                .response_extensions
+                .as_mut()
+                .unwrap()
+                .push(ext.clone());
+            basic.tbs_response_data.responses[0].single_extensions = Some(vec![ext.clone()]);
+            if let CertStatus::Revoked(ref mut info) =
+                basic.tbs_response_data.responses[0].cert_status
+            {
+                info.revocation_reason = Some(CrlReason::CertificateHold);
+                info.revocation_time = OcspGeneralizedTime(
+                    GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(0)).unwrap(),
+                );
+            }
+        });
+        let facts = inspect_ocsp(&changed, LEAF, ISSUER, RESPONDER, 0)
+            .unwrap()
+            .basic
+            .unwrap();
+        assert_eq!(facts.signature, CertificateSignature::Differs);
+        assert_eq!(
+            facts.extended_revoke,
+            OcspExtendedRevoke::Present {
+                critical: false,
+                value_is_der_null: true
+            }
+        );
+        assert_eq!(
+            facts.responses[0].extended_revoke,
+            OcspExtendedRevoke::Present {
+                critical: false,
+                value_is_der_null: true
+            }
+        );
+        assert_eq!(
+            facts.responses[0].claimed_status,
+            OcspClaim::Revoked {
+                revocation_time: 0,
+                reason: Some(CrlReason::CertificateHold)
+            }
+        );
+        let modified = modify(REVOKED, |basic| {
+            let mut invalid = ext.clone();
+            invalid.critical = true;
+            invalid.extn_value = OctetString::new(vec![0x05, 0x01, 0]).unwrap();
+            basic
+                .tbs_response_data
+                .response_extensions
+                .as_mut()
+                .unwrap()
+                .push(invalid);
+            if let CertStatus::Revoked(ref mut info) =
+                basic.tbs_response_data.responses[0].cert_status
+            {
+                info.revocation_reason = None;
+            }
+        });
+        let facts = inspect_ocsp(&modified, LEAF, ISSUER, RESPONDER, 0)
+            .unwrap()
+            .basic
+            .unwrap();
+        assert_eq!(
+            facts.extended_revoke,
+            OcspExtendedRevoke::Present {
+                critical: true,
+                value_is_der_null: false
+            }
+        );
+        assert!(matches!(
+            facts.responses[0].claimed_status,
+            OcspClaim::Revoked { reason: None, .. }
+        ));
+        let duplicate = modify(REVOKED, |basic| {
+            let extensions = basic
+                .tbs_response_data
+                .response_extensions
+                .as_mut()
+                .unwrap();
+            extensions.push(ext.clone());
+            extensions.push(ext.clone());
+        });
+        assert_eq!(
+            inspect_ocsp(&duplicate, LEAF, ISSUER, RESPONDER, 0)
+                .unwrap()
+                .basic
+                .unwrap()
+                .extended_revoke,
+            OcspExtendedRevoke::Duplicate
+        );
     }
 
     #[test]

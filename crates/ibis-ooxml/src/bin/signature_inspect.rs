@@ -144,9 +144,10 @@ fn run() -> Result<(), String> {
                     println!("    Responder certificate observations (NOT authorization): {:?}", basic.responder_certificate);
                     println!("    Nonce observation (UNAUTHENTICATED; NOT freshness proof): {:?}", basic.nonce);
                     println!("    Response extension inventory (UNTRUSTED; NOT interpreted): {:?}", basic.response_extension_inventory);
+                    println!("    Extended-revoke response extension (UNAUTHENTICATED): {:?}", basic.extended_revoke);
                     println!("    Produced at {}; after reference time {}; response extensions present {}; embedded certificates {}; responses {} (truncated: {})", basic.produced_at, basic.produced_after_reference_time, basic.response_extensions_present, basic.embedded_certificates, basic.total_responses, basic.responses_truncated);
                     for (position, single) in basic.responses.iter().enumerate() {
-                        println!("    Single-response extension inventory (UNTRUSTED; NOT interpreted): {:?}", single.extension_inventory);
+                        println!("    Single-response extension inventory (UNTRUSTED; NOT interpreted): {:?}; extended-revoke at single-response scope {:?}", single.extension_inventory, single.extended_revoke);
                         println!("    Response {}: CertID {:?}; UNAUTHENTICATED claim {:?}; thisUpdate {}; nextUpdate {:?}; window {:?}; extensions present {}", position + 1, single.cert_id, single.claimed_status, single.this_update, single.next_update, single.time_window, single.extensions_present);
                     }
                 } else { println!("    Basic response: NOT INSPECTED."); }

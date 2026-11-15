@@ -593,6 +593,9 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
     assert!(text.contains("comparison: Matches"));
     assert!(text.contains("UNAUTHENTICATED claim Good"));
     assert!(text.contains("UNAUTHENTICATED claim Revoked"));
+    assert!(text.contains("reason: Some(KeyCompromise)"));
+    assert!(text.contains("Extended-revoke response extension (UNAUTHENTICATED): Absent"));
+    assert!(text.contains("extended-revoke at single-response scope Absent"));
     assert!(text.contains("response extensions present true"));
     assert!(text.contains("Responder authorization, issuer trust, nonce policy, other extension semantics and revocation: NOT EVALUATED"));
     assert_eq!(incomplete.status.code(), Some(2));

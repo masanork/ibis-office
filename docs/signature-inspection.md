@@ -172,6 +172,17 @@ unknown critical extensions may be among them. The inventory does not classify
 OIDs as supported or validate their values or semantics, and does not establish
 that the request or response is acceptable. Values are not printed.
 
+For a `Revoked` claim, the output includes the stated revocation time and
+optional reason. It also observes the extended-revoke extension at response
+and individual-response scope, including duplicate occurrences, the critical
+flag and whether the value is DER NULL. RFC 6960 places this noncritical
+extension at response scope; its presence also does not mean every `Revoked`
+entry refers to an unissued certificate. An OCSP responder can use `Revoked`
+for an unissued serial number, so neither the claimed reason, time nor extension
+establishes issuance or actual revocation. These remain unauthenticated data;
+unknown reason encodings that cannot be parsed cause inspection to fail.
+See [RFC 6960 sections 2.2 and 4.4.8](https://www.rfc-editor.org/rfc/rfc6960.html).
+
 All status claims remain unauthenticated observations, including `Good`.
 The supplied responder certificate is also inspected for byte equality with
 the supplied issuer, a proposed issuer link, validity dates at both the explicit
