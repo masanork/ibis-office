@@ -4,10 +4,20 @@
 //! A workbook's sidebars: the screen's rows of the sidebar table (`FormatInfo::sidebars`; what a row says is in `shell/sidebars.rs`,
 //! the list the rows are made from is `tasks/doc/menu-redesign/sidebars.md`). The Window menu's 「サイドバー ▸」 lists them in
 //! this order. `panels` are the panel functions of this screen's pane chain (`fn sidebar` in `mod.rs`).
+use crate::ext::*;
 use crate::shell::sidebars::SidebarGroup as G;
 use crate::shell::sidebars::SidebarKind::{Pane, Task};
 use crate::shell::sidebars::SidebarSlot::Right;
 use crate::shell::sidebars::{SidebarDef, always, by_format, chart, frame, open_comments, pivot, sheet_table, sidebar_def};
+
+fn open_ai_assistant(
+    this: &mut crate::shell::editor::SlideEditor,
+    _: &'static str,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::Context<crate::shell::editor::SlideEditor>,
+) {
+    this.open_ai_assistant_panel(window, cx);
+}
 
 pub(crate) const SIDEBARS: &[SidebarDef] = &[
     // Right pane: format and objects.
@@ -29,7 +39,7 @@ pub(crate) const SIDEBARS: &[SidebarDef] = &[
     sidebar_def!("sidebar.accessibility", "sidebar.accessibility", Right, G::Review, Pane, panels: &[], cmd: Some("xlsx.accessibility-check"), open: None, start: true, available: always, key: None, toolbar: None),
     // Right pane: drawing and settings.
     sidebar_def!("sidebar.ink", "sidebar.ink", Right, G::Tools, Pane, panels: &[], cmd: Some("xlsx.ink"), open: Some(by_format), start: false, available: always, key: None, toolbar: None),
-    sidebar_def!("sidebar.ai-assistant", "sidebar.ai-assistant", Right, G::Tools, Pane, panels: &["ai_assistant_panel"], cmd: Some("xlsx.ai-assistant"), open: None, start: true, available: always, key: None, toolbar: None),
+    sidebar_def!("sidebar.ai-assistant", "sidebar.ai-assistant", Right, G::Tools, Pane, panels: &["ai_assistant_panel"], cmd: Some("xlsx.ai-assistant"), open: Some(open_ai_assistant), start: true, available: always, key: None, toolbar: None),
     // Settings dialogs the pane chain shows without a dialog wrapper (their own commands open them; the menu leaves them out).
     sidebar_def!("sidebar.sort", "sidebar.sort", Right, G::Tools, Task, panels: &["sort_panel"], cmd: None, open: None, start: false, available: always, key: None, toolbar: None),
     sidebar_def!("sidebar.edit-basics", "sidebar.edit-basics", Right, G::Tools, Task, panels: &["edit_panel"], cmd: None, open: None, start: false, available: always, key: None, toolbar: None),
