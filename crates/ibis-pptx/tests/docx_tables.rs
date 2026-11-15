@@ -20,6 +20,16 @@ fn with_table(table: &str) -> Vec<u8> {
     package.save(ibis_ooxml::SaveOptions::default()).unwrap()
 }
 
+/// Insert a synthetic table into a blank document without external fixtures.
+fn with_blank_table(table: &str) -> Vec<u8> {
+    let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).unwrap();
+    let mut package = ibis_ooxml::Package::open(blank).unwrap();
+    let xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+    let at = xml.rfind("<w:sectPr").unwrap();
+    package.set_bytes("word/document.xml", format!("{}{}<w:p/>{}", &xml[..at], table, &xml[at..]).into_bytes());
+    package.save(ibis_ooxml::SaveOptions::default()).unwrap()
+}
+
 fn last_table(data: &[u8]) -> FlowTable {
     let p = ibis_pptx::read(data).unwrap();
     p.flow.as_deref().unwrap().body.iter().rev().find_map(|b| if let Block::Table(t) = b { Some(t.clone()) } else { None }).unwrap()
@@ -162,12 +172,46 @@ fn last_table_from_pres(presentation: &ibis_doc_model::Presentation) -> &ibis_do
 fn cell_text_direction_read() {
     use ibis_doc_model::CellDirection;
     let cells: String = ["tbRl", "btLr", "lrTbV", "tbLrV", "tbRlV"].iter().map(|d| format!(r#"<w:tc><w:tcPr><w:tcW w:w="1000" w:type="dxa"/><w:textDirection w:val="{d}"/></w:tcPr><w:p><w:r><w:t>縦</w:t></w:r></w:p></w:tc>"#)).collect();
-    let data = with_table(&format!(r#"<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="dxa"/></w:tblPr><w:tblGrid>{}</w:tblGrid><w:tr>{cells}</w:tr></w:tbl>"#, r#"<w:gridCol w:w="1000"/>"#.repeat(5)));
+    let data = with_blank_table(&format!(r#"<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="dxa"/></w:tblPr><w:tblGrid>{}</w:tblGrid><w:tr>{cells}</w:tr></w:tbl>"#, r#"<w:gridCol w:w="1000"/>"#.repeat(5)));
     let t = last_table(&data);
     let d: Vec<CellDirection> = t.rows[0].cells.iter().map(|c| c.direction).collect();
-    assert_eq!(d, vec![CellDirection::TbRl, CellDirection::BtLr, CellDirection::LrTbV, CellDirection::TbLrV, CellDirection::TbRl]);
+    assert_eq!(d, vec![CellDirection::TbRl, CellDirection::BtLr, CellDirection::LrTbV, CellDirection::TbLrV, CellDirection::TbRlV]);
     let opened = ibis_pptx::open(data.clone()).unwrap();
     assert_eq!(opened.source.save(&opened.presentation, ibis_pptx::SaveOptions::default()).unwrap(), data);
+}
+
+
+/// Editing one cell must retain the other cell's distinct text direction.
+#[test]
+fn vertical_cell_directions_survive_edit_and_save() {
+    use ibis_doc_model::CellDirection;
+    let cells: String = ["tbRl", "tbRlV"].iter().map(|d| format!(r#"<w:tc><w:tcPr><w:tcW w:w="1000" w:type="dxa"/><w:textDirection w:val="{d}"/></w:tcPr><w:p><w:r><w:t>縦書き</w:t></w:r></w:p></w:tc>"#)).collect();
+    let table = format!(r#"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid><w:tr>{cells}</w:tr></w:tbl>"#);
+    let opened = ibis_pptx::open(with_blank_table(&table)).unwrap();
+    let mut modified = opened.presentation.clone();
+    let flow = std::sync::Arc::make_mut(modified.flow.as_mut().unwrap());
+    let t = flow.body.iter_mut().rev().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+    // Change only the first cell. The second must not be rewritten as tbRl.
+    t.rows[0].cells[0].direction = CellDirection::LrTb;
+    let saved = opened.source.save(&modified, ibis_pptx::SaveOptions::default()).unwrap();
+    let reopened = last_table(&saved);
+    assert_eq!(reopened.rows[0].cells[0].direction, CellDirection::LrTb);
+    assert_eq!(reopened.rows[0].cells[1].direction, CellDirection::TbRlV);
+    let package = ibis_ooxml::Package::open(saved).unwrap();
+    let xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+    assert!(xml.contains(r#"w:val="tbRlV""#));
+
+    // Exercise the writer when the direction itself changes in both directions.
+    let reopened = ibis_pptx::open(package.save(ibis_ooxml::SaveOptions::default()).unwrap()).unwrap();
+    let mut changed = reopened.presentation.clone();
+    let flow = std::sync::Arc::make_mut(changed.flow.as_mut().unwrap());
+    let table = flow.body.iter_mut().rev().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+    table.rows[0].cells[0].direction = CellDirection::TbRlV;
+    table.rows[0].cells[1].direction = CellDirection::TbRl;
+    let result = reopened.source.save(&changed, ibis_pptx::SaveOptions::default()).unwrap();
+    let cells = last_table(&result).rows.remove(0).cells;
+    assert_eq!(cells[0].direction, CellDirection::TbRlV);
+    assert_eq!(cells[1].direction, CellDirection::TbRl);
 }
 
 /// A table's cell spacing (w:tblCellSpacing) read and saved.

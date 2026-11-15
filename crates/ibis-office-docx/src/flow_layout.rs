@@ -4707,11 +4707,11 @@ fn turn_cell_text(items: &[Item], direction: ibis_doc_model::CellDirection, anch
             let (u, v) = (x + dx, *y);
             let s: SharedString = c.to_string().into();
             match direction {
-                CellDirection::TbRl | CellDirection::TbLrV => {
+                CellDirection::TbRl | CellDirection::TbRlV | CellDirection::TbLrV => {
                     // Down: along the cell from its top; across from its
                     // right (lines right to left) or left.
                     let line_x = match direction {
-                        CellDirection::TbRl => bx + bw - shift - v,
+                        CellDirection::TbRl | CellDirection::TbRlV => bx + bw - shift - v,
                         _ => bx + shift + (across - v),
                     };
                     if crate::render::vertical_text::upright(c) {
@@ -5977,7 +5977,7 @@ impl<'r> Layouter<'r> {
             let page = &mut setup.page;
             let (t, r, b, l) = (page.top, page.right, page.bottom, page.left);
             match page.direction {
-                CellDirection::TbRl => (page.top, page.right, page.bottom, page.left) = (r, b, l, t),
+                CellDirection::TbRl | CellDirection::TbRlV => (page.top, page.right, page.bottom, page.left) = (r, b, l, t),
                 CellDirection::BtLr => (page.top, page.right, page.bottom, page.left) = (l, t, r, b),
                 _ => continue,
             }
@@ -7259,7 +7259,7 @@ impl<'r> Layouter<'r> {
             pg.items = expanded;
         }
         for pg in &mut pages {
-            if matches!(directions[pg.section], ibis_doc_model::CellDirection::TbRl | ibis_doc_model::CellDirection::BtLr) {
+            if matches!(directions[pg.section], ibis_doc_model::CellDirection::TbRl | ibis_doc_model::CellDirection::TbRlV | ibis_doc_model::CellDirection::BtLr) {
                 let direction = directions[pg.section];
                 // The paper: the across page's height is its width.
                 let (w, h) = (pg.height, pg.width);
@@ -8507,7 +8507,7 @@ fn weight(b: Option<FlowBorder>) -> i64 {
 /// anticlockwise.
 fn turn_page_items(items: Vec<Item>, direction: ibis_doc_model::CellDirection, w: f32, h: f32, advance: &dyn Fn(char, &Font, f32) -> f32) -> Vec<Item> {
     use ibis_doc_model::CellDirection;
-    let tb = direction == CellDirection::TbRl;
+    let tb = matches!(direction, CellDirection::TbRl | CellDirection::TbRlV);
     // A point of the across page in the paper.
     let at = |x: f32, y: f32| if tb { (w - y, x) } else { (y, h - x) };
     // A rectangle's corner nearest the paper's top-left, and its size.

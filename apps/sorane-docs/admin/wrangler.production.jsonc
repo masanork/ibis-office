@@ -28,6 +28,10 @@
     {
       "binding": "SAMPLES",
       "bucket_name": "sorane-docs-samples"
+    },
+    {
+      "binding": "FILES",
+      "bucket_name": "sorane-docs-files"
     }
   ],
   "ratelimits": [

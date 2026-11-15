@@ -22,6 +22,10 @@
     {
       "binding": "SAMPLES",
       "bucket_name": "sorane-samples-local"
+    },
+    {
+      "binding": "FILES",
+      "bucket_name": "sorane-files-local"
     }
   ],
   "ratelimits": [

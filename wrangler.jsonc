@@ -9,7 +9,7 @@
     { "pattern": "ibis.sorane.dev", "custom_domain": true, "zone_name": "sorane.dev" },
     { "pattern": "docs.sorane.dev", "custom_domain": true, "zone_name": "sorane.dev" }
   ],
-  "assets": { "directory": "./www", "binding": "ASSETS", "run_worker_first": ["/pkg/br/*", "/api/font/*", "/admin", "/admin/*", "/login", "/callback", "/logout", "/backchannel", "/api/samples", "/api/samples/*"] },
+  "assets": { "directory": "./www", "binding": "ASSETS", "run_worker_first": ["/pkg/br/*", "/api/font/*", "/admin", "/admin/*", "/login", "/callback", "/logout", "/backchannel", "/api/samples", "/api/samples/*", "/files", "/api/files", "/api/files/*"] },
   "services": [{ "binding": "SORANE_ADMIN", "service": "sorane-docs-admin" }],
   "r2_buckets": [{ "binding": "FONT_SOURCES", "bucket_name": "ibis-office-fonts" }],
   "ratelimits": [{ "name": "FONT_LIMITER", "namespace_id": "81511211", "simple": { "limit": 600, "period": 60 } }],

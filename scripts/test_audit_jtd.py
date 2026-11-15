@@ -138,6 +138,18 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(info["piece_list_trailing_word"], 1)
         self.assertEqual(audit.tokenize(recovered)[0], "甲乙")
 
+    def test_printable_toc_page_number_is_body_text(self):
+        units = [0x1c, 1, 7, 0, 1, 0x0101, 0x1d, ord("3"), ord("0"), 0x1e, 5, 0, 1, 0x1f]
+        text, _, _ = audit.tokenize(units)
+        self.assertEqual(text, "30")
+        hidden = [0x1c, 1, 7, 0, 1, 0x0101, 0x1d, 5, 0x1e, 5, 0, 1, 0x1f, ord("甲")]
+        text, _, info = audit.tokenize(hidden)
+        self.assertEqual(text, "甲")
+        self.assertEqual(info["inline_control_units"].get("0005"), 1)
+        tabbed = [0x1c, 1, 7, 0, 1, 0x0101, 0x1d, 9, 0x1e, 5, 0, 1, 0x1f, ord("乙")]
+        text, _, _ = audit.tokenize(tabbed)
+        self.assertEqual(text, "乙")
+
     def test_inline_footer_does_not_swallow_following_text(self):
         units = [0x1c, 1, 7, 0, 0, 3, 0x1d, ord("甲"), 0x1e, 5, 0, 1, 0x1f, ord("乙"), ord("丙")]
         text, _, info = audit.tokenize(units)

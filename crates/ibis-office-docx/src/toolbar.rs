@@ -772,9 +772,9 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
                 })
                 .into(),
             MenuItem::tr("docx.cell.direction.tbrl")
-                .checked(direction == ibis_doc_model::CellDirection::TbRl)
+                .checked(matches!(direction, ibis_doc_model::CellDirection::TbRl | ibis_doc_model::CellDirection::TbRlV))
                 .on(|this, _, cx| {
-                    if this.caret_cell_direction() == Some(ibis_doc_model::CellDirection::TbRl) { return; }
+                    if matches!(this.caret_cell_direction(), Some(ibis_doc_model::CellDirection::TbRl | ibis_doc_model::CellDirection::TbRlV)) { return; }
                     this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Direction { cells: vec![(r, c)], direction: ibis_doc_model::CellDirection::TbRl }, cx);
                 })
                 .into(),
@@ -3906,10 +3906,13 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
     table_menu.push(anchor_item("docx.table.valign-bottom", "vertical_align_bottom", "docx.toolbar.cell-vertical-alignment-bottom", ibis_doc_model::CellAnchor::Bottom));
     let direction = _editor.caret_cell_direction().unwrap_or(ibis_doc_model::CellDirection::LrTb);
     let direction_item = |id: &'static str, d: ibis_doc_model::CellDirection| -> MenuEntry {
-        let i = MenuItem::tr(id).checked(in_table && direction == d);
+        let same_direction = move |actual: ibis_doc_model::CellDirection| {
+            actual == d || matches!((actual, d), (ibis_doc_model::CellDirection::TbRlV, ibis_doc_model::CellDirection::TbRl))
+        };
+        let i = MenuItem::tr(id).checked(in_table && same_direction(direction));
         (if in_table {
             i.on(move |this, _, cx| {
-                if this.caret_cell_direction() == Some(d) { return; }
+                if this.caret_cell_direction().is_some_and(same_direction) { return; }
                 this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Direction { cells: vec![(r, c)], direction: d }, cx);
             })
         } else {
