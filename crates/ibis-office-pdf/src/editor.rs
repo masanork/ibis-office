@@ -5,9 +5,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarAxis};
 use gpui_kit::{
-    AnyElement, Bounds, Context, IntoElement, Pixels, SharedString, Size, Styled, Window,
-    canvas, div, point, px, size,
+    AnyElement, Bounds, Context, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    SharedString, Size, StatefulInteractiveElement as _, Styled, Window, canvas, div, fill, hsla,
+    point, px, rgb, size,
 };
 use ibis_doc_model::Presentation;
 use ibis_office_shell::chrome::MenuId;
@@ -104,7 +106,7 @@ impl FormatEditor for PdfDocument {
         save_formats: &[("file.save-format.pdf", "pdf")],
     };
 
-    const PAGE_NOUN: &'static str = "status.page-noun.document";
+    const PAGE_NOUN: &'static str = "docx.mod.page";
     const FIT_TOOLTIP: &'static str = "status.fit-page";
     const SHAPES: bool = false;
 
@@ -169,7 +171,7 @@ impl FormatEditor for PdfDocument {
     fn render_body(
         editor: &mut SlideEditor,
         _window: &mut Window,
-        _cx: &mut Context<SlideEditor>,
+        cx: &mut Context<SlideEditor>,
     ) -> AnyElement {
         let Some(state) = editor.format_state::<State>() else {
             return div().size_full().into_any_element();
@@ -177,33 +179,78 @@ impl FormatEditor for PdfDocument {
         let viewer = state.viewer.clone();
         let zoom = editor.zoom.unwrap_or(1.0).max(0.1);
         let scale = zoom * (96.0 / 72.0);
-        let scroll_offset = editor.workspace_scroll.offset();
+        let workspace = editor
+            .workspace_bounds
+            .map(|b| b.size)
+            .unwrap_or(size(px(1200.0), px(800.0)));
+        let content = Self::workspace_content(editor, workspace);
 
-        canvas(
-            |_bounds, _window, _cx| {},
-            move |bounds: Bounds<Pixels>, _, window: &mut Window, _cx| {
-                let mut guard = viewer.lock().expect("pdf viewer lock");
-                let page_count = guard.pages.len();
-                let mut y = f32::from(bounds.origin.y) + f32::from(scroll_offset.y) + PAGE_PAD_PX;
-                let view_top = f32::from(bounds.origin.y);
-                let view_bottom = view_top + f32::from(bounds.size.height);
+        div()
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .bg(rgb(0xf2f3f5))
+            .child(
+                div()
+                    .id("pdf-workspace-scroll")
+                    .size_full()
+                    .overflow_scroll()
+                    .track_scroll(&editor.workspace_scroll)
+                    .on_scroll_wheel(cx.listener(SlideEditor::on_workspace_scroll))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .w(content.size.width)
+                            .h(content.size.height)
+                            .child(
+                                canvas(
+                                    |_bounds, _window, _cx| {},
+                                    move |bounds: Bounds<Pixels>, _, window: &mut Window, _cx| {
+                                        let mut guard = viewer.lock().expect("pdf viewer lock");
+                                        let page_count = guard.pages.len();
+                                        let mut y = f32::from(bounds.origin.y) + PAGE_PAD_PX;
+                                        let view_h = f32::from(window.viewport_size().height);
 
-                for idx in 0..page_count {
-                    let (pw, ph) = {
-                        let p = &guard.pages[idx];
-                        (p.crop_box.width() * scale, p.crop_box.height() * scale)
-                    };
-                    let page_bottom = y + ph;
-                    if page_bottom >= view_top && y <= view_bottom {
-                        let x = f32::from(bounds.origin.x)
-                            + ((f32::from(bounds.size.width) - pw) * 0.5).max(PAGE_PAD_PX);
-                        let _ = guard.paint_page(idx, point(px(x), px(y)), scale, window);
-                    }
-                    y += ph + PAGE_GAP_PX;
-                }
-            },
-        )
-        .size_full()
-        .into_any_element()
+                                        for idx in 0..page_count {
+                                            let (pw, ph) = {
+                                                let p = &guard.pages[idx];
+                                                (
+                                                    p.crop_box.width() * scale,
+                                                    p.crop_box.height() * scale,
+                                                )
+                                            };
+                                            let page_bottom = y + ph;
+                                            if page_bottom >= -100.0 && y <= view_h + 100.0 {
+                                                let x = f32::from(bounds.origin.x)
+                                                    + ((f32::from(bounds.size.width) - pw) * 0.5)
+                                                        .max(PAGE_PAD_PX);
+                                                let page_bounds = Bounds {
+                                                    origin: point(px(x), px(y)),
+                                                    size: size(px(pw), px(ph)),
+                                                };
+                                                window.paint_quad(
+                                                    fill(page_bounds, rgb(0xffffff))
+                                                        .border_widths(px(1.0))
+                                                        .border_color(hsla(0.0, 0.0, 0.0, 0.14)),
+                                                );
+                                                let _ = guard.paint_page(
+                                                    idx,
+                                                    point(px(x), px(y)),
+                                                    scale,
+                                                    window,
+                                                );
+                                            }
+                                            y += ph + PAGE_GAP_PX;
+                                        }
+                                    },
+                                )
+                                .size_full(),
+                            ),
+                    ),
+            )
+            .scrollbar(&editor.workspace_scroll, ScrollbarAxis::Both)
+            .into_any_element()
     }
 }
