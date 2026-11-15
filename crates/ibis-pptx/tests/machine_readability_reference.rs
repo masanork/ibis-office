@@ -31,6 +31,15 @@ fn structure_candidates_include_the_reference_locations() {
     // A subsequent edit is checked from the live model, not the saved bytes.
     let mut changed = (**sheet).clone();
     changed.merges.clear();
+    // Unhiding restores both the recorded size and the visible dimension.
+    for (&row, &height) in &changed.hidden_rows {
+        assert!(height > 0);
+        changed.rows[row as usize] = height;
+    }
+    for (&col, &width) in &changed.hidden_columns {
+        assert!(width > 0);
+        changed.columns[col as usize] = width;
+    }
     changed.hidden_rows.clear();
     changed.hidden_columns.clear();
     for c in &mut changed.cells { c.formula = None; }
