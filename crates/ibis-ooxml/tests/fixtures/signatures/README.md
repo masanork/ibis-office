@@ -4,6 +4,10 @@ These fixtures contain self-signed RSA test certificates and synthetic data.
 The private keys were discarded. They do not represent trusted identities.
 
 `rsa-sha256-synthetic.xml` tests signature-value verification in isolation.
+`rsa-sha1-synthetic.xml` is an independently generated OpenSSL RSA-1024/SHA-1
+fixture for weak legacy diagnostics only; its private key was discarded.
+`legacy-signed.docx` is an independently signed synthetic package using the
+same weak algorithms, for end-to-end diagnostic and tampering tests.
 `synthetic-signed.docx` is a minimal OPC package for tests, not a Microsoft
 Office interoperability fixture. Its SignedInfo was canonicalized with lxml,
 signed with OpenSSL, and verified with OpenSSL. The included certificate has

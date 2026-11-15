@@ -61,8 +61,12 @@ indirect, delta and unrecognized CRL extensions remain unsupported.
 
 An external interoperability probe used the Apache POI test documents at
 [commit 47dcff769bb395034dddfd59c4609659b6dbc6a4](https://github.com/apache/poi/tree/47dcff769bb395034dddfd59c4609659b6dbc6a4/test-data/xmldsign).
-DOCX, XLSX, PPTX, and a two-signature DOCX were detected, but their SHA-1 and
-1024-bit RSA signatures are not supported by this inspector. A temporary copy
+DOCX, XLSX, PPTX, and a two-signature DOCX were detected. The signature values,
+package-object digests, and all 8, 9, 31, and 16 manifest references,
+respectively, matched in those samples using SHA-1 and 1024-bit RSA. These weak
+legacy algorithms are reported separately as diagnostics and do not establish
+security, identity, certificate trust, complete coverage, or legal validity.
+These samples do not establish general Office interoperability. A temporary copy
 of the DOCX with two independently computed SHA-256 relationship digests was
 used to check the 2006 Relationship Transform URI; that modified copy no longer
 has its original signature and is not evidence of Office interoperability.

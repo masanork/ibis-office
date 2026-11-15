@@ -36,31 +36,39 @@ fn format_report(reports: &[SignatureInspection]) -> String {
     }
     for (index, report) in reports.iter().take(8).enumerate() {
         let value = match report.signature_value {
-            SignatureValueCheck::MatchesUntrustedCertificate => "file.signature-inspect.matches",
-            SignatureValueCheck::Differs => "file.signature-inspect.differs",
-            SignatureValueCheck::Unsupported => "file.signature-inspect.unknown",
+            SignatureValueCheck::LegacySha1 { key_bits, matches } => crate::i18n::format(
+                if matches { "file.signature-inspect.legacy-signature-match" } else { "file.signature-inspect.legacy-signature-differs" },
+                &[("bits", &key_bits.to_string())]),
+            SignatureValueCheck::MatchesUntrustedCertificate => crate::i18n::text("file.signature-inspect.matches").to_string(),
+            SignatureValueCheck::Differs => crate::i18n::text("file.signature-inspect.differs").to_string(),
+            SignatureValueCheck::Unsupported => crate::i18n::text("file.signature-inspect.unknown").to_string(),
         };
         let object = match report.package_object {
+            ObjectDigest::LegacySha1 { matches: true } => "file.signature-inspect.legacy-match",
+            ObjectDigest::LegacySha1 { matches: false } => "file.signature-inspect.legacy-differs",
             ObjectDigest::Matches => "file.signature-inspect.matches",
             ObjectDigest::Differs => "file.signature-inspect.differs",
             ObjectDigest::Unsupported => "file.signature-inspect.unknown",
         };
         let mut matching = 0usize;
+        let mut legacy = 0usize;
+        let mut legacy_differing = 0usize;
         let mut differing = 0usize;
         let mut unknown = 0usize;
         for reference in &report.manifest {
             match (&reference.digest, &reference.content_type) {
                 (ManifestDigest::Matches, ContentTypeCheck::Matches) => matching += 1,
+                (ManifestDigest::LegacySha1 { matches: true }, ContentTypeCheck::Matches) => legacy += 1,
+                (ManifestDigest::LegacySha1 { matches: false }, _) => legacy_differing += 1,
                 (ManifestDigest::Differs | ManifestDigest::MissingPart, _) | (_, ContentTypeCheck::Differs | ContentTypeCheck::Missing) => differing += 1,
                 _ => unknown += 1,
             }
         }
         let number = (index + 1).to_string();
-        let value = crate::i18n::text(value);
         let object = crate::i18n::text(object);
-        let matching = matching.to_string(); let differing = differing.to_string(); let unknown = unknown.to_string();
+        let matching = matching.to_string(); let legacy = legacy.to_string(); let legacy_differing = legacy_differing.to_string(); let differing = differing.to_string(); let unknown = unknown.to_string();
         message.push_str("\n\n");
-        message.push_str(&crate::i18n::format("file.signature-inspect.entry", &[("number", &number), ("value", &value), ("object", &object), ("matching", &matching), ("differing", &differing), ("unknown", &unknown)]));
+        message.push_str(&crate::i18n::format("file.signature-inspect.entry", &[("number", &number), ("value", &value), ("object", &object), ("matching", &matching), ("legacy", &legacy), ("legacy_differing", &legacy_differing), ("differing", &differing), ("unknown", &unknown)]));
     }
     if reports.len() > 8 { message.push_str("\n\n"); message.push_str(&crate::i18n::text("file.signature-inspect.truncated")); }
     message

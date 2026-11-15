@@ -978,7 +978,7 @@ file.signature-inspect.failed	Signature information could not be inspected or us
 file.signature-inspect.matches	matches
 file.signature-inspect.differs	differs or is missing
 file.signature-inspect.unknown	not checked
-file.signature-inspect.entry	Signature {number}: signature value {value}; package-object digest {object}. Referenced parts: {matching} match, {differing} differ or are missing, {unknown} not checked.
+file.signature-inspect.entry	Signature {number}: signature value {value}; package-object digest {object}. Referenced parts: {matching} match, {legacy} match and {legacy_differing} differ using weak SHA-1, {differing} differ or are missing, {unknown} not checked.
 file.signature-inspect.truncated	Additional signatures are not shown.
 shell.file-name-menu.tooltip	File name menu
 shell.file-name-menu.copy-name	Copy File Name
@@ -1235,3 +1235,8 @@ shell.font-setup.progress	Downloading {name} ({index}/{count}, {received} / {tot
 shell.font-setup.failed	{name} could not be installed ({count} failed). {error}
 shell.font-setup.cancelled	Cancelled.
 shell.font-setup.done	Installed. The fonts are in the font lists now.
+
+file.signature-inspect.legacy-match	matches (weak SHA-1)
+file.signature-inspect.legacy-differs	differs (weak SHA-1)
+file.signature-inspect.legacy-signature-match	matches using weak RSA-SHA1 ({bits} bits)
+file.signature-inspect.legacy-signature-differs	differs using weak RSA-SHA1 ({bits} bits)

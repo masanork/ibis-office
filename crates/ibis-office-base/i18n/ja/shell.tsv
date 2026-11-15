@@ -976,7 +976,7 @@ file.signature-inspect.failed	署名情報を調べられないか、未対応�
 file.signature-inspect.matches	一致
 file.signature-inspect.differs	不一致または欠落
 file.signature-inspect.unknown	未確認
-file.signature-inspect.entry	署名 {number}: 署名値 {value}、パッケージ情報のダイジェスト {object}。参照先は一致 {matching} 件、不一致・欠落 {differing} 件、未確認 {unknown} 件。
+file.signature-inspect.entry	署名 {number}: 署名値 {value}、パッケージ情報のダイジェスト {object}。参照先は一致 {matching} 件、弱い SHA-1 で一致 {legacy} 件・不一致 {legacy_differing} 件、不一致・欠落 {differing} 件、未確認 {unknown} 件。
 file.signature-inspect.truncated	これ以外の署名は表示していません。
 shell.file-name-menu.tooltip	ファイル名のメニュー
 shell.file-name-menu.copy-name	ファイル名をコピー
@@ -1233,3 +1233,8 @@ shell.font-setup.progress	{name} をダウンロードしています（{index}/
 shell.font-setup.failed	{name} をインストールできませんでした（全{count}件）。{error}
 shell.font-setup.cancelled	取り消しました。
 shell.font-setup.done	インストールしました。書体の一覧から選べます。
+
+file.signature-inspect.legacy-match	一致（弱い SHA-1）
+file.signature-inspect.legacy-differs	不一致（弱い SHA-1）
+file.signature-inspect.legacy-signature-match	一致（弱い RSA-SHA1、{bits} bit）
+file.signature-inspect.legacy-signature-differs	不一致（弱い RSA-SHA1、{bits} bit）

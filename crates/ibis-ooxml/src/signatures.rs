@@ -23,6 +23,8 @@ const C14N: &str = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
 /// themselves been verified; matching digests do not establish integrity.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ManifestDigest {
+    /// Weak SHA-1 diagnostic only; not evidence of security.
+    LegacySha1 { matches: bool },
     Matches,
     Differs,
     Unsupported,
@@ -341,6 +343,8 @@ pub enum PackageObjectBinding {
 /// authenticated result until SignedInfo's signature and signer are checked.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ObjectDigest {
+    /// Weak SHA-1 diagnostic only; not evidence of security.
+    LegacySha1 { matches: bool },
     Matches,
     Differs,
     Unsupported,
@@ -350,6 +354,8 @@ pub enum ObjectDigest {
 /// This alone does not validate referenced data, identity, or certificate trust.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignatureValueCheck {
+    /// Weak legacy signature checked against an untrusted certificate.
+    LegacySha1 { key_bits: usize, matches: bool },
     MatchesUntrustedCertificate,
     Differs,
     Unsupported,
@@ -359,7 +365,7 @@ fn ds_children<'a, 'input>(parent: ua_cryptography_xml_c14n::roxmltree::Node<'a,
     parent.children().filter(|n| n.is_element() && n.tag_name().namespace() == Some(DS) && n.tag_name().name() == name).collect()
 }
 
-/// Verify RSA-SHA256 over canonicalized SignedInfo against exactly one
+/// Compare RSA-SHA256 or legacy RSA-SHA1 over canonicalized SignedInfo against exactly one
 /// embedded certificate. The certificate is not chain- or revocation-checked.
 pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Result<SignatureValueCheck, Error> {
     use rsa::{pkcs1::DecodeRsaPublicKey, pkcs1v15, signature::Verifier, traits::PublicKeyParts, RsaPublicKey};
@@ -379,10 +385,14 @@ pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Resul
     let c14n = ds_children(infos[0], "CanonicalizationMethod");
     let method = ds_children(infos[0], "SignatureMethod");
     if c14n.len() != 1 || method.len() != 1 || c14n[0].attribute("Algorithm") != Some(C14N)
-        || method[0].attribute("Algorithm") != Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256")
         || c14n[0].children().any(|n| n.is_element()) || method[0].children().any(|n| n.is_element()) {
         return Ok(SignatureValueCheck::Unsupported);
     }
+    let legacy = match method[0].attribute("Algorithm") {
+        Some("http://www.w3.org/2000/09/xmldsig#rsa-sha1") => true,
+        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256") => false,
+        _ => return Ok(SignatureValueCheck::Unsupported),
+    };
     let x509data = ds_children(keyinfos[0], "X509Data");
     if x509data.len() != 1 { return Ok(SignatureValueCheck::Unsupported); }
     let certs = ds_children(x509data[0], "X509Certificate");
@@ -396,12 +406,18 @@ pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Resul
     if spki.algorithm.oid.to_string() != "1.2.840.113549.1.1.1" { return Ok(SignatureValueCheck::Unsupported); }
     let Some(public_key) = spki.subject_public_key.as_bytes() else { return Err(Error::new("Invalid public key")) };
     let key = RsaPublicKey::from_pkcs1_der(public_key).map_err(|_| Error::new("Invalid RSA public key"))?;
-    if !(2048..=8192).contains(&key.n().bits()) { return Ok(SignatureValueCheck::Unsupported); }
+    let key_bits = key.n().bits();
+    if !((if legacy { 1024 } else { 2048 })..=8192).contains(&key_bits) { return Ok(SignatureValueCheck::Unsupported); }
     let raw_signature = decode(values[0])?;
-    let signature = match pkcs1v15::Signature::try_from(raw_signature.as_slice()) { Ok(s) => s, Err(_) => return Ok(SignatureValueCheck::Differs) };
     let canonical = canonicalize(infos[0], Algorithm::Inclusive, &[], None);
-    let verifier = pkcs1v15::VerifyingKey::<Sha256>::new(key);
-    Ok(if verifier.verify(&canonical, &signature).is_ok() { SignatureValueCheck::MatchesUntrustedCertificate } else { SignatureValueCheck::Differs })
+    let signature = pkcs1v15::Signature::try_from(raw_signature.as_slice());
+    if legacy {
+        let matches = signature.is_ok_and(|signature| pkcs1v15::VerifyingKey::<sha1::Sha1>::new(key).verify(&canonical, &signature).is_ok());
+        Ok(SignatureValueCheck::LegacySha1 { key_bits, matches })
+    } else {
+        let matches = signature.is_ok_and(|signature| pkcs1v15::VerifyingKey::<Sha256>::new(key).verify(&canonical, &signature).is_ok());
+        Ok(if matches { SignatureValueCheck::MatchesUntrustedCertificate } else { SignatureValueCheck::Differs })
+    }
 }
 
 /// Canonicalize the uniquely referenced package object and compare its digest.
@@ -451,7 +467,11 @@ pub fn inspect_package_object_digest(package: &Package, signature_part: &str) ->
     let encoded: String = value.children().filter_map(|n| n.text()).flat_map(str::chars).filter(|c| !matches!(c, '\t' | '\n' | '\r' | ' ')).collect();
     let expected = crate::base64::decode(&encoded).filter(|v| crate::base64::encode(v) == encoded).ok_or_else(|| Error::new("Invalid digest encoding"))?;
     let canonical = canonicalize(object, Algorithm::Inclusive, &[], None);
-    let actual = match method.attribute("Algorithm") {
+    let algorithm = method.attribute("Algorithm");
+    if algorithm == Some("http://www.w3.org/2000/09/xmldsig#sha1") {
+        return Ok(ObjectDigest::LegacySha1 { matches: sha1::Sha1::digest(&canonical).as_slice() == expected });
+    }
+    let actual = match algorithm {
         Some("http://www.w3.org/2001/04/xmlenc#sha256") => Sha256::digest(&canonical).to_vec(),
         Some("http://www.w3.org/2001/04/xmldsig-more#sha384") => Sha384::digest(&canonical).to_vec(),
         Some("http://www.w3.org/2001/04/xmlenc#sha512") => Sha512::digest(&canonical).to_vec(),
@@ -550,12 +570,18 @@ pub fn inspect_manifest_digests(package: &Package, signature_part: &str) -> Resu
                         let bytes = if transforms.is_empty() { Some(package.read(path)?) }
                             else { relationship_transform(package, path, &doc, transforms[0])? };
                         let actual = bytes.and_then(|bytes| match algorithm {
+                            "http://www.w3.org/2000/09/xmldsig#sha1" => Some(sha1::Sha1::digest(&bytes).to_vec()),
                             "http://www.w3.org/2001/04/xmlenc#sha256" => Some(Sha256::digest(&bytes).to_vec()),
                             "http://www.w3.org/2001/04/xmldsig-more#sha384" => Some(Sha384::digest(&bytes).to_vec()),
                             "http://www.w3.org/2001/04/xmlenc#sha512" => Some(Sha512::digest(&bytes).to_vec()),
                             _ => None,
                         });
-                        match actual { Some(actual) if actual == expected => ManifestDigest::Matches, Some(_) => ManifestDigest::Differs, None => ManifestDigest::Unsupported }
+                        match actual {
+                            Some(actual) if algorithm == "http://www.w3.org/2000/09/xmldsig#sha1" => ManifestDigest::LegacySha1 { matches: actual == expected },
+                            Some(actual) if actual == expected => ManifestDigest::Matches,
+                            Some(_) => ManifestDigest::Differs,
+                            None => ManifestDigest::Unsupported,
+                        }
                     }
                 };
                 result.push(ManifestReference { uri, digest, content_type });
@@ -777,6 +803,31 @@ mod tests {
         let xml = format!(r#"<Signature xmlns="{DS}" xmlns:p="{OPC_DS}"><Object><Manifest><Reference URI="/r.rels?ContentType=application/xml"><Transforms><Transform Algorithm="{REL_TRANSFORM}"><p:RelationshipReference SourceId="a"/></Transform><Transform Algorithm="{C14N}"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>YQ==</DigestValue></Reference></Manifest></Object></Signature>"#);
         pkg.set_bytes("sig.xml", xml.into_bytes());
         assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].digest, ManifestDigest::Unsupported);
+    }
+
+    #[test]
+    fn legacy_sha1_observations_are_distinct_and_detect_changes() {
+        let mut pkg = package(&rels(""), None);
+        let signature = include_str!("../tests/fixtures/signatures/rsa-sha1-synthetic.xml");
+        pkg.set_bytes("sig.xml", signature.as_bytes().to_vec());
+        assert_eq!(inspect_signature_value(&pkg, "sig.xml").unwrap(), SignatureValueCheck::LegacySha1 { key_bits: 1024, matches: true });
+        pkg.set_bytes("sig.xml", signature.replace("#test", "#changed").into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, "sig.xml").unwrap(), SignatureValueCheck::LegacySha1 { key_bits: 1024, matches: false });
+
+        let part = b"synthetic part";
+        pkg.set_bytes("document.xml", part.to_vec());
+        let part_digest = crate::base64::encode(&sha1::Sha1::digest(part));
+        let object = format!(r#"<Object xmlns="{DS}" Id="package"><Manifest><Reference URI="/document.xml?ContentType=application/xml"><DigestMethod Algorithm="{DS}sha1"></DigestMethod><DigestValue>{part_digest}</DigestValue></Reference></Manifest></Object>"#);
+        let object_digest = crate::base64::encode(&sha1::Sha1::digest(object.as_bytes()));
+        let xml = format!(r##"<Signature xmlns="{DS}"><SignedInfo><Reference URI="#package" Type="{DS}Object"><DigestMethod Algorithm="{DS}sha1"/><DigestValue>{object_digest}</DigestValue></Reference></SignedInfo>{object}</Signature>"##);
+        pkg.set_bytes("sig.xml", xml.into_bytes());
+        assert_eq!(inspect_package_object_digest(&pkg, "sig.xml").unwrap(), ObjectDigest::LegacySha1 { matches: true });
+        assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].digest, ManifestDigest::LegacySha1 { matches: true });
+        pkg.set_bytes("document.xml", b"changed".to_vec());
+        assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].digest, ManifestDigest::LegacySha1 { matches: false });
+        let changed = String::from_utf8(pkg.read("sig.xml").unwrap()).unwrap().replace(&part_digest, "AAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        pkg.set_bytes("sig.xml", changed.into_bytes());
+        assert_eq!(inspect_package_object_digest(&pkg, "sig.xml").unwrap(), ObjectDigest::LegacySha1 { matches: false });
     }
 
     #[test]

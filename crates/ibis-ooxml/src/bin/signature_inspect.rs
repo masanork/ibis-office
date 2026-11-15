@@ -93,16 +93,19 @@ fn run() -> Result<(), String> {
                 println!("    CRL applicability and issuer trust: NOT EVALUATED");
             }
         }
-        println!("  Signature value: {}", match report.signature_value {
-            SignatureValueCheck::MatchesUntrustedCertificate => "matches embedded untrusted certificate",
-            SignatureValueCheck::Differs => "does not match", SignatureValueCheck::Unsupported => "not checked (unsupported)",
-        });
+        let value = match report.signature_value {
+            SignatureValueCheck::LegacySha1 { key_bits, matches } => format!("legacy weak RSA-SHA1 ({key_bits} bits): {}; certificate is untrusted", if matches { "matches" } else { "differs" }),
+            SignatureValueCheck::MatchesUntrustedCertificate => "matches embedded untrusted certificate".to_string(),
+            SignatureValueCheck::Differs => "does not match".to_string(), SignatureValueCheck::Unsupported => "not checked (unsupported)".to_string(),
+        };
+        println!("  Signature value: {value}");
         println!("  Package object digest: {}", match report.package_object {
+            ObjectDigest::LegacySha1 { matches: true } => "matches (weak legacy SHA-1)", ObjectDigest::LegacySha1 { matches: false } => "differs (weak legacy SHA-1)",
             ObjectDigest::Matches => "matches", ObjectDigest::Differs => "differs", ObjectDigest::Unsupported => "not checked (unsupported)",
         });
         if report.manifest.is_empty() { println!("  No manifest references found; coverage is not established."); }
         for item in report.manifest {
-            let digest = match item.digest { ManifestDigest::Matches => "matches", ManifestDigest::Differs => "differs", ManifestDigest::Unsupported => "not checked (unsupported)", ManifestDigest::MissingPart => "part missing" };
+            let digest = match item.digest { ManifestDigest::LegacySha1 { matches: true } => "matches (weak legacy SHA-1)", ManifestDigest::LegacySha1 { matches: false } => "differs (weak legacy SHA-1)", ManifestDigest::Matches => "matches", ManifestDigest::Differs => "differs", ManifestDigest::Unsupported => "not checked (unsupported)", ManifestDigest::MissingPart => "part missing" };
             let content = match item.content_type { ContentTypeCheck::Matches => "matches", ContentTypeCheck::Differs => "differs", ContentTypeCheck::Missing => "missing", ContentTypeCheck::Unsupported => "not checked (unsupported)" };
             println!("  Reference {:?}: digest {digest}; content type {content}", item.uri);
         }

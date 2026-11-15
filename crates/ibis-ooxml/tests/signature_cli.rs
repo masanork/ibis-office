@@ -88,3 +88,25 @@ fn supplied_crl_is_reported_without_a_revocation_verdict() {
     assert!(text.contains("Signature value: does not match"));
     assert_eq!(incomplete.status.code(), Some(2));
 }
+
+#[test]
+fn legacy_diagnostics_are_explicit_and_detect_altered_content() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/legacy-signed.docx");
+    let output = run(&fixture);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("legacy weak RSA-SHA1 (1024 bits): matches; certificate is untrusted"));
+    assert!(text.contains("Package object digest: matches (weak legacy SHA-1)"));
+    assert!(text.contains("digest matches (weak legacy SHA-1); content type matches"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+    let mut package = Package::open(std::fs::read(&fixture).unwrap()).unwrap();
+    package.set_bytes("word/document.xml", b"altered".to_vec());
+    let path = std::env::temp_dir().join(format!("ibis-legacy-signature-cli-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("digest differs (weak legacy SHA-1); content type matches"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}
