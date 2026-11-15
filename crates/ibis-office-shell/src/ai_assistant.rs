@@ -10,12 +10,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_doc_model::EmuRect;
 use ibis_doc_model::ai_sheet::{
-    format_range, read_sheet_range, resolve_sheet_slide, workbook_overview,
+    format_range, parse_hex_rgb, read_sheet_range, resolve_sheet_slide, workbook_overview,
 };
 use ibis_doc_model::command::Command;
-use ibis_doc_model::drawing::{Fill, Geometry};
+use ibis_doc_model::drawing::{Color, Fill, Geometry};
 use ibis_doc_model::flow::{Block, FlowParagraph, FlowRunKind};
-use ibis_doc_model::flow_command::{FlowCommand, FlowPos};
+use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange};
 use ibis_doc_model::machine_readability::{CandidateKind, candidates as mr_candidates};
 use ibis_doc_model::model::{AutoShape, Shape, ShapeId, ShapeKind, Slide, SlideId};
 use ibis_doc_model::sheet_calc::sheet_of_slide;
@@ -27,9 +27,11 @@ use crate::with_format;
 
 use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_chat_completion};
 use crate::ai_tools::{
-    AddSlideArgs, InsertTextArgs, MAX_READ_CELLS, ReadParagraphsArgs, ReplaceParagraphArgs,
-    SetShapeTextArgs, SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
-    build_replace_paragraph_command, docx_tool_definitions, parse_clear_cells_command,
+    AddSlideArgs, FindTextArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, MAX_READ_CELLS,
+    MoveSlideArgs, ReadParagraphsArgs, ReplaceParagraphArgs, SetParagraphStyleArgs,
+    SetRunFormatArgs, SetShapeStyleArgs, SetShapeTextArgs, SetSlideNotesArgs,
+    SlideIndexOptionalArg, SlideIndexRequiredArg, build_replace_paragraph_command,
+    build_set_run_format_command, docx_tool_definitions, parse_clear_cells_command,
     parse_create_sheet_arg, parse_delete_axis_command, parse_insert_axis_command,
     parse_merge_cells_command, parse_range_arg, parse_set_cells_command, parse_set_format_command,
     parse_set_paragraph_align_command, parse_sheet_arg, parse_switch_sheet_arg,
@@ -1226,6 +1228,291 @@ impl SlideEditor {
                     }
                 }
             }
+            "duplicate_slide" => {
+                let parsed: Result<SlideIndexOptionalArg, _> = if args.trim().is_empty() {
+                    Ok(SlideIndexOptionalArg { slide_index: None })
+                } else {
+                    serde_json::from_str(args)
+                };
+                match parsed
+                    .map_err(|e| format!("invalid arguments: {e}"))
+                    .and_then(|a| self.resolve_pptx_slide_id(a.slide_index))
+                {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ duplicate_slide: {e}"),
+                    ),
+                    Ok(src_id) => {
+                        let copy_id = self.document.ids().new_slide_id();
+                        let Some(copy) = self.presentation().duplicate_slide(src_id, copy_id)
+                        else {
+                            return (
+                                json!({ "error": "failed to duplicate slide" }).to_string(),
+                                None,
+                                "✗ duplicate_slide: failed".to_string(),
+                            );
+                        };
+                        let index = self
+                            .presentation()
+                            .slide_index(src_id)
+                            .map_or(self.presentation().slides.len(), |i| i + 1);
+                        self.run(vec![Command::InsertSlide { index, slide: copy }], cx);
+                        self.current_slide = copy_id;
+                        self.selection = None;
+                        cx.notify();
+                        (
+                            json!({ "ok": true, "slide_index": index + 1 }).to_string(),
+                            None,
+                            format!("✓ duplicate_slide (slide {})", index + 1),
+                        )
+                    }
+                }
+            }
+            "remove_slide" => {
+                let parsed: Result<SlideIndexRequiredArg, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ remove_slide: {e}"),
+                    ),
+                    Ok(a) => {
+                        if self.presentation().slides.len() <= 1 {
+                            return (
+                                json!({ "error": "cannot remove the last remaining slide" })
+                                    .to_string(),
+                                None,
+                                "✗ remove_slide: last slide".to_string(),
+                            );
+                        }
+                        match self.resolve_pptx_slide_id(Some(a.slide_index)) {
+                            Err(e) => (
+                                json!({ "error": e }).to_string(),
+                                None,
+                                format!("✗ remove_slide: {e}"),
+                            ),
+                            Ok(slide_id) => (
+                                json!({ "ok": true }).to_string(),
+                                Some(Command::RemoveSlide { slide: slide_id }),
+                                format!("✓ remove_slide (slide {})", a.slide_index),
+                            ),
+                        }
+                    }
+                }
+            }
+            "move_slide" => {
+                let parsed: Result<MoveSlideArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ move_slide: {e}"),
+                    ),
+                    Ok(a) => {
+                        let count = self.presentation().slides.len();
+                        if a.to_index == 0 || a.to_index > count {
+                            return (
+                                json!({ "error": format!("to_index must be 1..={count}") })
+                                    .to_string(),
+                                None,
+                                "✗ move_slide: invalid to_index".to_string(),
+                            );
+                        }
+                        match self.resolve_pptx_slide_id(Some(a.slide_index)) {
+                            Err(e) => (
+                                json!({ "error": e }).to_string(),
+                                None,
+                                format!("✗ move_slide: {e}"),
+                            ),
+                            Ok(slide_id) => (
+                                json!({ "ok": true }).to_string(),
+                                Some(Command::MoveSlide {
+                                    slide: slide_id,
+                                    index: a.to_index - 1,
+                                }),
+                                format!("✓ move_slide ({} -> {})", a.slide_index, a.to_index),
+                            ),
+                        }
+                    }
+                }
+            }
+            "insert_text_box" => {
+                let parsed: Result<InsertTextBoxArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ insert_text_box: {e}"),
+                    ),
+                    Ok(a) => match self.resolve_pptx_slide_id(a.slide_index) {
+                        Err(e) => (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ insert_text_box: {e}"),
+                        ),
+                        Ok(slide_id) => {
+                            let size = self.presentation().slide_size;
+                            let x = ((a.x_pct.clamp(0.0, 100.0) / 100.0) * size.width as f32) as i64;
+                            let y =
+                                ((a.y_pct.clamp(0.0, 100.0) / 100.0) * size.height as f32) as i64;
+                            let w =
+                                ((a.w_pct.clamp(1.0, 100.0) / 100.0) * size.width as f32) as i64;
+                            let h =
+                                ((a.h_pct.clamp(1.0, 100.0) / 100.0) * size.height as f32) as i64;
+                            let shape_id = self.document.ids().new_shape_id();
+                            let index = self
+                                .presentation()
+                                .slide(slide_id)
+                                .map_or(0, |s| s.shapes.len());
+                            let mut auto = AutoShape::new(Geometry::Rect, Fill::None, None);
+                            let mut style = TextStyle::default();
+                            if let Some(pt) = a.font_size
+                                && pt.is_finite()
+                                && pt > 0.0
+                            {
+                                style.font_size = (pt * 100.0).round() as u32;
+                            }
+                            if let Some(b) = a.bold {
+                                style.bold = b;
+                            }
+                            auto.text = Some(TextBody::plain(&a.text, style));
+                            let shape = Shape::new(
+                                shape_id,
+                                EmuRect::new(x, y, w, h),
+                                ShapeKind::Auto(auto),
+                            );
+                            (
+                                json!({ "ok": true, "shape_id": shape_id.0 }).to_string(),
+                                Some(Command::InsertShape {
+                                    slide: slide_id,
+                                    index,
+                                    shape,
+                                }),
+                                format!("✓ insert_text_box (shape {})", shape_id.0),
+                            )
+                        }
+                    },
+                }
+            }
+            "set_shape_style" => {
+                let parsed: Result<SetShapeStyleArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ set_shape_style: {e}"),
+                    ),
+                    Ok(a) => match self.resolve_pptx_slide_id(a.slide_index) {
+                        Err(e) => (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ set_shape_style: {e}"),
+                        ),
+                        Ok(slide_id) => {
+                            let shape_id = ShapeId(a.shape_id);
+                            let Some(shape) = self
+                                .presentation()
+                                .slide(slide_id)
+                                .and_then(|s| s.shape(shape_id))
+                            else {
+                                return (
+                                    json!({ "error": format!("shape {} not found", a.shape_id) })
+                                        .to_string(),
+                                    None,
+                                    format!("✗ set_shape_style: shape {} not found", a.shape_id),
+                                );
+                            };
+                            let mut cmds = Vec::new();
+                            if a.font_size.is_some()
+                                || a.bold.is_some()
+                                || a.italic.is_some()
+                                || a.text_color.is_some()
+                            {
+                                let mut style = match &shape.kind {
+                                    ShapeKind::Auto(auto) => auto
+                                        .text
+                                        .as_ref()
+                                        .map(|tb| tb.style.clone())
+                                        .unwrap_or_default(),
+                                    _ => TextStyle::default(),
+                                };
+                                if let Some(pt) = a.font_size {
+                                    if !pt.is_finite() || pt <= 0.0 || pt > 409.0 {
+                                        return (
+                                            json!({ "error": format!("invalid font_size '{pt}'") })
+                                                .to_string(),
+                                            None,
+                                            "✗ set_shape_style: invalid font_size".to_string(),
+                                        );
+                                    }
+                                    style.font_size = (pt * 100.0).round() as u32;
+                                }
+                                if let Some(b) = a.bold {
+                                    style.bold = b;
+                                }
+                                if let Some(i) = a.italic {
+                                    style.italic = i;
+                                }
+                                if let Some(hex) = a.text_color {
+                                    match parse_hex_rgb(&hex) {
+                                        Ok(rgb) => style.color = rgb,
+                                        Err(e) => {
+                                            return (
+                                                json!({ "error": e }).to_string(),
+                                                None,
+                                                format!("✗ set_shape_style: {e}"),
+                                            );
+                                        }
+                                    }
+                                }
+                                cmds.push(Command::SetTextStyle {
+                                    slide: slide_id,
+                                    shape: shape_id,
+                                    style,
+                                });
+                            }
+                            if let Some(fill_opt) = a.fill_color {
+                                let fill = match fill_opt {
+                                    None => Fill::None,
+                                    Some(hex) => match parse_hex_rgb(&hex) {
+                                        Ok(rgb) => Fill::Solid(Color::opaque(rgb)),
+                                        Err(e) => {
+                                            return (
+                                                json!({ "error": e }).to_string(),
+                                                None,
+                                                format!("✗ set_shape_style: {e}"),
+                                            );
+                                        }
+                                    },
+                                };
+                                cmds.push(Command::SetFill {
+                                    slide: slide_id,
+                                    shape: shape_id,
+                                    fill,
+                                });
+                            }
+                            if cmds.is_empty() {
+                                return (
+                                    json!({ "error": "no style properties specified" }).to_string(),
+                                    None,
+                                    "✗ set_shape_style: empty".to_string(),
+                                );
+                            }
+                            let cmd = if cmds.len() == 1 {
+                                cmds.pop().expect("single")
+                            } else {
+                                Command::Group(cmds)
+                            };
+                            (
+                                json!({ "ok": true }).to_string(),
+                                Some(cmd),
+                                format!("✓ set_shape_style (shape {})", a.shape_id),
+                            )
+                        }
+                    },
+                }
+            }
             other => (
                 json!({ "error": format!("unknown tool: {other}") }).to_string(),
                 None,
@@ -1373,6 +1660,136 @@ impl SlideEditor {
                     "✓ set_paragraph_align".to_string(),
                 ),
             },
+            "set_run_format" => {
+                let parsed: Result<SetRunFormatArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ set_run_format: {e}"),
+                    ),
+                    Ok(a) => {
+                        let Some(flow) = self.presentation().flow.as_ref() else {
+                            return (
+                                json!({ "error": "no active document" }).to_string(),
+                                None,
+                                "✗ set_run_format: no active document".to_string(),
+                            );
+                        };
+                        let para = a.paragraph;
+                        let Some(Block::Paragraph(p)) = flow.body.get(para as usize) else {
+                            return (
+                                json!({ "error": format!("paragraph {para} not found") })
+                                    .to_string(),
+                                None,
+                                format!("✗ set_run_format: paragraph {para} not found"),
+                            );
+                        };
+                        let para_len = p.len();
+                        match build_set_run_format_command(a, para_len) {
+                            Err(e) => (
+                                json!({ "error": e }).to_string(),
+                                None,
+                                format!("✗ set_run_format: {e}"),
+                            ),
+                            Ok(cmd) => (
+                                json!({ "ok": true }).to_string(),
+                                Some(cmd),
+                                format!("✓ set_run_format (p{para})"),
+                            ),
+                        }
+                    }
+                }
+            }
+            "set_paragraph_style" => {
+                let parsed: Result<SetParagraphStyleArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ set_paragraph_style: {e}"),
+                    ),
+                    Ok(a) => (
+                        json!({ "ok": true }).to_string(),
+                        Some(Command::Flow(FlowCommand::SetParagraphFormat {
+                            first: a.paragraph,
+                            last: a.paragraph,
+                            change: ParaChange::Style(a.style),
+                        })),
+                        format!("✓ set_paragraph_style (p{})", a.paragraph),
+                    ),
+                }
+            }
+            "insert_table" => {
+                let parsed: Result<InsertTableArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ insert_table: {e}"),
+                    ),
+                    Ok(a) => {
+                        let rows = a.rows.clamp(1, 20);
+                        let cols = a.columns.clamp(1, 12);
+                        (
+                            json!({ "ok": true }).to_string(),
+                            Some(Command::Flow(FlowCommand::InsertTable {
+                                at: FlowPos::new(a.paragraph, 0),
+                                rows,
+                                columns: cols,
+                                width: 5_486_400,
+                            })),
+                            format!("✓ insert_table ({rows}x{cols} at p{})", a.paragraph),
+                        )
+                    }
+                }
+            }
+            "find_text_in_document" => {
+                let parsed: Result<FindTextArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ find_text_in_document: {e}"),
+                    ),
+                    Ok(a) => {
+                        let Some(flow) = self.presentation().flow.as_ref() else {
+                            return (
+                                json!({ "error": "no active document" }).to_string(),
+                                None,
+                                "✗ find_text_in_document: no active document".to_string(),
+                            );
+                        };
+                        let q = a.query.to_ascii_lowercase();
+                        let matches: Vec<_> = flow
+                            .body
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, block)| match block {
+                                Block::Paragraph(p) => {
+                                    let t = paragraph_plain_text(p);
+                                    if t.to_ascii_lowercase().contains(&q) {
+                                        Some(json!({
+                                            "paragraph": idx,
+                                            "text": t.chars().take(120).collect::<String>(),
+                                        }))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                Block::Table(_) => None,
+                            })
+                            .take(50)
+                            .collect();
+                        let count = matches.len();
+                        (
+                            json!({ "count": count, "matches": matches }).to_string(),
+                            None,
+                            format!("✓ find_text_in_document ({count} matches)"),
+                        )
+                    }
+                }
+            }
             other => (
                 json!({ "error": format!("unknown tool: {other}") }).to_string(),
                 None,

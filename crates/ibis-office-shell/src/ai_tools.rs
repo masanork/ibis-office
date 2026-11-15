@@ -6,11 +6,11 @@
 use ibis_doc_model::ai_sheet::{
     AiBorderStyle, AiCellEdit, AiCellFormat, AiCellValue, build_clear_cells_command,
     build_delete_axis_command, build_insert_axis_command, build_merge_command,
-    build_set_cells_command, build_set_format_command, parse_cell_range,
+    build_set_cells_command, build_set_format_command, parse_cell_range, parse_hex_rgb,
 };
 use ibis_doc_model::command::Command;
 use ibis_doc_model::flow::FlowAlign;
-use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange};
+use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange, RunChange};
 use ibis_doc_model::model::SlideId;
 use ibis_doc_model::sheet::{CellAlign, CellRange, CellVerticalAlign};
 use ibis_doc_model::sheet_command::Axis;
@@ -612,6 +612,94 @@ pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "duplicate_slide",
+                description: "Duplicate a slide and insert the copy right after it.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number (defaults to active slide)." }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "remove_slide",
+                description: "Remove a slide from the presentation (cannot remove the last remaining slide).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number to remove." }
+                    },
+                    "required": ["slide_index"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "move_slide",
+                description: "Move a slide to a new 1-based position.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based source slide number." },
+                        "to_index": { "type": "integer", "minimum": 1, "description": "1-based destination position." }
+                    },
+                    "required": ["slide_index", "to_index"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "insert_text_box",
+                description: "Insert a new text box shape on a slide using percentage coordinates (0-100).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number (defaults to active slide)." },
+                        "text": { "type": "string", "description": "Text content for the box." },
+                        "x_pct": { "type": "number", "default": 10.0 },
+                        "y_pct": { "type": "number", "default": 20.0 },
+                        "w_pct": { "type": "number", "default": 80.0 },
+                        "h_pct": { "type": "number", "default": 20.0 },
+                        "font_size": { "type": "number", "description": "Optional font size in points (e.g. 20)." },
+                        "bold": { "type": "boolean" }
+                    },
+                    "required": ["text"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "set_shape_style",
+                description: "Update text style (font_size, bold, italic, text_color) and/or fill color of a shape.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": { "type": "integer", "minimum": 1 },
+                        "shape_id": { "type": "integer", "minimum": 1 },
+                        "font_size": { "type": "number", "description": "Font size in points." },
+                        "bold": { "type": "boolean" },
+                        "italic": { "type": "boolean" },
+                        "text_color": { "type": "string", "description": "Hex color '#RRGGBB'." },
+                        "fill_color": { "type": ["string", "null"], "description": "Hex color '#RRGGBB' or null for transparent." }
+                    },
+                    "required": ["shape_id"],
+                    "additionalProperties": false
+                }),
+            },
+        },
     ]
 }
 
@@ -695,6 +783,76 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "set_run_format",
+                description: "Apply character formatting (bold, italic, underline, font_size, color) to a paragraph or character span.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "paragraph": { "type": "integer", "minimum": 0, "description": "0-based paragraph index." },
+                        "start": { "type": "integer", "minimum": 0, "description": "Optional 0-based start char offset (defaults to 0)." },
+                        "end": { "type": "integer", "minimum": 0, "description": "Optional 0-based end char offset (defaults to paragraph length)." },
+                        "bold": { "type": "boolean" },
+                        "italic": { "type": "boolean" },
+                        "underline": { "type": "boolean" },
+                        "font_size": { "type": "number", "description": "Font size in points (e.g. 12)." },
+                        "color": { "type": "string", "description": "Hex color '#RRGGBB'." }
+                    },
+                    "required": ["paragraph"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "set_paragraph_style",
+                description: "Apply a named paragraph style (e.g. 'Heading1', 'Heading2', 'Normal', or null to reset).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "paragraph": { "type": "integer", "minimum": 0 },
+                        "style": { "type": ["string", "null"] }
+                    },
+                    "required": ["paragraph", "style"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "insert_table",
+                description: "Insert an empty table at the start of a 0-based paragraph.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "paragraph": { "type": "integer", "minimum": 0 },
+                        "rows": { "type": "integer", "minimum": 1, "maximum": 20 },
+                        "columns": { "type": "integer", "minimum": 1, "maximum": 12 }
+                    },
+                    "required": ["paragraph", "rows", "columns"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "find_text_in_document",
+                description: "Search all paragraphs in the document for a substring and return matching 0-based paragraph indices and previews.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Case-insensitive search query." }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+            },
+        },
     ]
 }
 
@@ -755,6 +913,141 @@ pub struct ReplaceParagraphArgs {
 pub struct SetParagraphAlignArgs {
     pub paragraph: u32,
     pub align: String,
+}
+
+#[derive(Deserialize)]
+pub struct MoveSlideArgs {
+    pub slide_index: usize,
+    pub to_index: usize,
+}
+
+#[derive(Deserialize)]
+pub struct InsertTextBoxArgs {
+    pub slide_index: Option<usize>,
+    pub text: String,
+    #[serde(default = "default_ten")]
+    pub x_pct: f32,
+    #[serde(default = "default_twenty_f32")]
+    pub y_pct: f32,
+    #[serde(default = "default_eighty")]
+    pub w_pct: f32,
+    #[serde(default = "default_twenty_f32")]
+    pub h_pct: f32,
+    pub font_size: Option<f32>,
+    pub bold: Option<bool>,
+}
+
+fn default_ten() -> f32 {
+    10.0
+}
+fn default_twenty_f32() -> f32 {
+    20.0
+}
+fn default_eighty() -> f32 {
+    80.0
+}
+
+#[derive(Deserialize)]
+pub struct SetShapeStyleArgs {
+    pub slide_index: Option<usize>,
+    pub shape_id: u64,
+    pub font_size: Option<f32>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub text_color: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
+    pub fill_color: Option<Option<String>>,
+}
+
+#[derive(Deserialize)]
+pub struct SetRunFormatArgs {
+    pub paragraph: u32,
+    pub start: Option<usize>,
+    pub end: Option<usize>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+    pub font_size: Option<f32>,
+    pub color: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SetParagraphStyleArgs {
+    pub paragraph: u32,
+    pub style: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct InsertTableArgs {
+    pub paragraph: u32,
+    pub rows: usize,
+    pub columns: usize,
+}
+
+#[derive(Deserialize)]
+pub struct FindTextArgs {
+    pub query: String,
+}
+
+pub fn build_set_run_format_command(
+    args: SetRunFormatArgs,
+    para_len: usize,
+) -> Result<Command, String> {
+    let start = args.start.unwrap_or(0).min(para_len);
+    let end = args.end.unwrap_or(para_len).min(para_len);
+    if start >= end {
+        return Err("empty character span (start >= end)".to_string());
+    }
+    let from = FlowPos::new(args.paragraph, start);
+    let to = FlowPos::new(args.paragraph, end);
+    let mut cmds = Vec::new();
+    if let Some(b) = args.bold {
+        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
+            from,
+            to,
+            change: RunChange::Bold(b),
+        }));
+    }
+    if let Some(i) = args.italic {
+        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
+            from,
+            to,
+            change: RunChange::Italic(i),
+        }));
+    }
+    if let Some(u) = args.underline {
+        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
+            from,
+            to,
+            change: RunChange::Underline(u),
+        }));
+    }
+    if let Some(pt) = args.font_size {
+        if !pt.is_finite() || pt <= 0.0 || pt > 409.0 {
+            return Err(format!("invalid font_size '{pt}'"));
+        }
+        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
+            from,
+            to,
+            change: RunChange::Size((pt * 100.0).round() as u32),
+        }));
+    }
+    if let Some(hex) = args.color {
+        let rgb = parse_hex_rgb(&hex)?;
+        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
+            from,
+            to,
+            change: RunChange::Color(rgb),
+        }));
+    }
+    if cmds.is_empty() {
+        return Err("at least one formatting property must be specified".to_string());
+    }
+    if cmds.len() == 1 {
+        Ok(cmds.pop().expect("single"))
+    } else {
+        Ok(Command::Group(cmds))
+    }
 }
 
 pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command, String> {
