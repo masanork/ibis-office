@@ -1240,4 +1240,86 @@ mod tests {
         .unwrap();
         assert!(matches!(cmd, Command::Group(v) if v.len() == 3));
     }
+
+    #[test]
+    fn parses_set_axis_size_json() {
+        let cmd = parse_set_axis_size_command(
+            SlideId(1),
+            r#"{"axis":"column","first":1,"last":3,"size_pt":120.0}"#,
+        )
+        .unwrap();
+        assert!(matches!(cmd, Command::Sheet(SheetCommand::SetSize { .. })));
+        assert!(parse_set_axis_size_command(
+            SlideId(1),
+            r#"{"axis":"row","first":0,"last":1,"size_pt":24.0}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parses_set_cell_comment_json() {
+        let set_cmd = parse_set_cell_comment_command(
+            SlideId(1),
+            r#"{"cell":"B2","text":"Check formula"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            set_cmd,
+            Command::Sheet(SheetCommand::SetComment { .. })
+        ));
+
+        let clear_cmd = parse_set_cell_comment_command(SlideId(1), r#"{"cell":"B2"}"#).unwrap();
+        assert!(matches!(
+            clear_cmd,
+            Command::Sheet(SheetCommand::SetComment { comment: None, .. })
+        ));
+    }
+
+    #[test]
+    fn builds_set_run_format_commands() {
+        let args = SetRunFormatArgs {
+            paragraph: 0,
+            start: 0,
+            end: 5,
+            bold: Some(true),
+            italic: Some(false),
+            underline: None,
+            font_size_pt: Some(14.0),
+            text_color: Some("#1A73E8".to_string()),
+        };
+        let cmd = build_set_run_format_command(&args).unwrap();
+        assert!(matches!(cmd, Command::Group(v) if v.len() == 4));
+    }
+
+    #[test]
+    fn parses_set_paragraph_align_json() {
+        let cmd = parse_set_paragraph_align_command(r#"{"paragraph":2,"align":"center"}"#).unwrap();
+        assert!(matches!(
+            cmd,
+            Command::Flow(FlowCommand::SetParagraphFormat { .. })
+        ));
+        assert!(parse_set_paragraph_align_command(r#"{"paragraph":2,"align":"diagonal"}"#).is_err());
+    }
+
+    #[test]
+    fn parses_pptx_and_xlsx_tool_arg_structs() {
+        let box_args: InsertTextBoxArgs = serde_json::from_str(
+            r#"{"text":"Hello","x_pt":72.0,"y_pt":100.0,"width_pt":300.0,"height_pt":80.0,"font_size_pt":20.0,"bold":true}"#,
+        )
+        .unwrap();
+        assert_eq!(box_args.text, "Hello");
+        assert!(box_args.bold);
+
+        let style_args: SetShapeStyleArgs = serde_json::from_str(
+            r##"{"shape_id":42,"fill_color":"#FFFFFF","line_color":"#000000","line_width_pt":1.5}"##,
+        )
+        .unwrap();
+        assert_eq!(style_args.shape_id, 42);
+        assert_eq!(style_args.fill_color.as_deref(), Some("#FFFFFF"));
+
+        let find_args: FindCellsArgs =
+            serde_json::from_str(r#"{"query":"SUM","search_formulas":true}"#).unwrap();
+        assert_eq!(find_args.query, "SUM");
+        assert!(find_args.search_formulas);
+    }
 }
