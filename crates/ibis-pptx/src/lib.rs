@@ -58,6 +58,7 @@ pub mod progress;
 mod docx;
 pub mod docx_convert;
 pub mod html_export;
+pub mod lawtext;
 pub mod markdown;
 pub mod mermaid;
 pub(crate) mod drawing_table_style;

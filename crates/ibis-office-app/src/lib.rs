@@ -446,18 +446,28 @@ fn parse_args() -> Result<Args, String> {
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
-    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx") {
+    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "lawxml" | "lawtext") {
         let path = args
             .path
             .as_deref()
-            .ok_or("name the .docx, .pptx, .xlsx, .csv, or .md file to export")?;
+            .ok_or("name the .docx, .pptx, .xlsx, .csv, .md, .xml, or .lawtext file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
         std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
         let stem = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "document".into());
-        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let raw_data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let data = match ibis_pptx::lawtext::input_to_markdown(&raw_data)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+        {
+            Some(md) => md.into_bytes(),
+            None => raw_data,
+        };
+        let is_text_md = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "md" | "markdown" | "xml" | "lawtext" | "txt"));
         match format {
             "docx" => {
                 let opened = ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent())
@@ -477,7 +487,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 let out_bytes = opened
                     .source
                     .save(&opened.presentation, Default::default())
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.pptx"));
                 std::fs::write(&out_path, out_bytes)
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
@@ -489,12 +499,26 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 std::fs::write(&out_path, out_bytes)
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
             }
+            "lawxml" | "lawtext" => {
+                let presentation = if is_text_md {
+                    ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent())
+                        .map_err(|e| format!("{}: {e}", path.display()))?
+                        .presentation
+                } else {
+                    ibis_pptx::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
+                };
+                let (ext, content) = if format == "lawxml" {
+                    ("xml", ibis_pptx::lawtext::export_presentation_to_law_xml(&presentation))
+                } else {
+                    ("lawtext", ibis_pptx::lawtext::export_presentation_to_lawtext(&presentation))
+                };
+                let content = content.map_err(|e| format!("{}: {e}", path.display()))?;
+                let out_path = out_dir.join(format!("{stem}.{ext}"));
+                std::fs::write(&out_path, content.as_bytes())
+                    .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            }
             _ => {
-                let presentation = if path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
-                {
+                let presentation = if is_text_md {
                     ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent())
                         .map_err(|e| format!("{}: {e}", path.display()))?
                         .presentation

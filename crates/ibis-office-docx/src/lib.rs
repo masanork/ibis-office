@@ -528,6 +528,20 @@ impl FormatEditor for Document {
                     .map_err(|e| e.to_string()),
             );
         }
+        if extension.eq_ignore_ascii_case("xml") {
+            return Some(
+                ibis_pptx::lawtext::export_presentation_to_law_xml(editor.presentation())
+                    .map(|xml| FileBytes { bytes: xml.into_bytes(), protect: false, note: None })
+                    .map_err(|e| e.to_string()),
+            );
+        }
+        if extension.eq_ignore_ascii_case("lawtext") {
+            return Some(
+                ibis_pptx::lawtext::export_presentation_to_lawtext(editor.presentation())
+                    .map(|lt| FileBytes { bytes: lt.into_bytes(), protect: false, note: None })
+                    .map_err(|e| e.to_string()),
+            );
+        }
         if extension.eq_ignore_ascii_case("dotx") || extension.eq_ignore_ascii_case("dotm") {
             return Some(source.save_template(editor.presentation(), ibis_pptx::SaveOptions::default()).map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()));
         }
