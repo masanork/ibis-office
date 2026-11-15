@@ -12,7 +12,7 @@
 pub use super::accessibility_panel::AccessibilityPanelExt as _;
 pub use super::advanced_filter::AdvancedFilterExt as _;
 pub(crate) use super::advanced_filter::AdvancedFilterExtCrate as _;
-pub use super::ai_copilot::AiCopilotPanelExt as _;
+pub use super::ai_assistant::AiAssistantPanelExt as _;
 pub use super::alt_text_panel::AltTextPanelExt as _;
 pub use super::analysis_panel::AnalysisPanelExt as _;
 pub(crate) use super::analysis_panel::AnalysisPanelExtCrate as _;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! UI-independent helpers for AI Copilot spreadsheet tools.
+//! UI-independent helpers for AI Assistant spreadsheet tools.
 //!
 //! Converts between A1-style references / lightweight cell snapshots and
 //! [`Command`] / [`SheetCommand`] values so the AI tool adapter can be

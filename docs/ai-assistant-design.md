@@ -1,8 +1,8 @@
-# AI Copilot (OpenAI互換API連携) 設計メモ
+# Assistant (OpenAI互換API連携) 設計メモ
 
 ## 目的
 
-デスクトップ版 `ibis-office` に、OpenAI 互換 API（Chat Completions + SSE ストリーミング + Tool Calling）を用いた編集支援パネル（Copilot 風サイドバー）を追加する。
+デスクトップ版 `ibis-office` に、OpenAI 互換 API（Chat Completions + SSE ストリーミング + Tool Calling）を用いた編集支援パネル（Assistant サイドバー）を追加する。
 UI Automation や画面操作ではなく、既存の `ibis-doc-model` のコマンド層（`Command` / `SheetCommand`）へ直接接続することで、再計算・Undo/Redo と整合した高速かつ安定した自動化を実現する。
 
 ## スコープ（Phase 1: 最小構成）
@@ -42,7 +42,7 @@ UI Automation や画面操作ではなく、既存の `ibis-doc-model` のコマ
 
 ### 4. `crates/ibis-office-xlsx`（表計算エディタとの接続）
 
-* `sidebars.rs` へ右サイドバー（例: `sidebar.ai-copilot`）を登録
+* `sidebars.rs` へ右サイドバー（例: `sidebar.ai-assistant`）を登録
 * アクティブシート・選択範囲の取得と、生成された `Command` の適用
 * 1 ターンの指示で複数回 Tool が呼ばれた場合、可能な限り `Command::Group` としてまとめて Undo 1 回（`⌘Z`）で元に戻せるようにする
 

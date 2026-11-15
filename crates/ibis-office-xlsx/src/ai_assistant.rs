@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! AI Copilot sidebar for spreadsheets (OpenAI-compatible SSE + Tool Calling).
+//! Assistant sidebar for spreadsheets (OpenAI-compatible SSE + Tool Calling).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
@@ -39,7 +39,7 @@ pub struct UiMessage {
     pub text: String,
 }
 
-pub struct AiCopilotPanel {
+pub struct AiAssistantPanel {
     pub prompt_input: Entity<InputState>,
     pub base_url_input: Entity<InputState>,
     pub model_input: Entity<InputState>,
@@ -52,11 +52,11 @@ pub struct AiCopilotPanel {
     pub run_id: u64,
 }
 
-#[ibis_office_macros::editor_ext(AiCopilotPanelExt)]
+#[ibis_office_macros::editor_ext(AiAssistantPanelExt)]
 impl SlideEditor {
-    /// Open or focus the AI Copilot sidebar.
-    pub fn open_ai_copilot_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.wb().panels.ai_copilot.is_none() {
+    /// Open or focus the Assistant sidebar.
+    pub fn open_ai_assistant_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.wb().panels.ai_assistant.is_none() {
             let cfg = AiConfig::load();
             let prompt_input = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -79,7 +79,7 @@ impl SlideEditor {
                     .masked(true)
             });
             let show_settings = false;
-            self.wb_mut().panels.ai_copilot = Some(AiCopilotPanel {
+            self.wb_mut().panels.ai_assistant = Some(AiAssistantPanel {
                 prompt_input: prompt_input.clone(),
                 base_url_input,
                 model_input,
@@ -97,25 +97,25 @@ impl SlideEditor {
         cx.notify();
     }
 
-    pub fn close_ai_copilot_panel(&mut self, cx: &mut Context<Self>) {
-        if let Some(p) = self.wb_mut().panels.ai_copilot.as_mut() {
+    pub fn close_ai_assistant_panel(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.wb_mut().panels.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
         }
-        self.wb_mut().panels.ai_copilot = None;
+        self.wb_mut().panels.ai_assistant = None;
         self.sidebar_open = false;
         cx.notify();
     }
 
-    fn toggle_ai_copilot_settings(&mut self, cx: &mut Context<Self>) {
-        if let Some(p) = self.wb_mut().panels.ai_copilot.as_mut() {
+    fn toggle_ai_assistant_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.wb_mut().panels.ai_assistant.as_mut() {
             p.show_settings = !p.show_settings;
         }
         cx.notify();
     }
 
-    fn save_ai_copilot_settings(&mut self, cx: &mut Context<Self>) {
-        let Some(p) = self.wb().panels.ai_copilot.as_ref() else {
+    fn save_ai_assistant_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.wb().panels.ai_assistant.as_ref() else {
             return;
         };
         let cfg = AiConfig {
@@ -124,14 +124,14 @@ impl SlideEditor {
             api_key: p.api_key_input.read(cx).value().trim().to_string(),
         };
         cfg.save();
-        if let Some(p) = self.wb_mut().panels.ai_copilot.as_mut() {
+        if let Some(p) = self.wb_mut().panels.ai_assistant.as_mut() {
             p.show_settings = false;
         }
         cx.notify();
     }
 
-    fn stop_ai_copilot(&mut self, cx: &mut Context<Self>) {
-        if let Some(p) = self.wb_mut().panels.ai_copilot.as_mut() {
+    fn stop_ai_assistant(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.wb_mut().panels.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
             if !p.streaming_text.is_empty() {
@@ -145,8 +145,8 @@ impl SlideEditor {
         cx.notify();
     }
 
-    fn clear_ai_copilot_history(&mut self, cx: &mut Context<Self>) {
-        if let Some(p) = self.wb_mut().panels.ai_copilot.as_mut() {
+    fn clear_ai_assistant_history(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.wb_mut().panels.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
             p.streaming_text.clear();
@@ -156,9 +156,9 @@ impl SlideEditor {
         cx.notify();
     }
 
-    fn send_ai_copilot_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn send_ai_assistant_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (prompt, run_id, mut messages_to_send) = {
-            let Some(p) = self.wb_mut().panels.ai_copilot.as_mut() else {
+            let Some(p) = self.wb_mut().panels.ai_assistant.as_mut() else {
                 return;
             };
             if p.streaming {
@@ -213,7 +213,7 @@ impl SlideEditor {
                     spreadsheet_tool_definitions(),
                     move |delta| {
                         let _ = weak_for_delta.update(&mut delta_cx, |editor, cx| {
-                            if let Some(p) = editor.wb_mut().panels.ai_copilot.as_mut() {
+                            if let Some(p) = editor.wb_mut().panels.ai_assistant.as_mut() {
                                 if p.run_id == run_id && p.streaming {
                                     p.streaming_text.push_str(delta);
                                     cx.notify();
@@ -226,7 +226,7 @@ impl SlideEditor {
 
                 let mut cancelled = false;
                 let _ = this.update(cx, |editor, cx| {
-                    let Some(p) = editor.wb_mut().panels.ai_copilot.as_mut() else {
+                    let Some(p) = editor.wb_mut().panels.ai_assistant.as_mut() else {
                         cancelled = true;
                         return;
                     };
@@ -244,7 +244,7 @@ impl SlideEditor {
                 match outcome {
                     Err(err) => {
                         let _ = this.update(cx, |editor, cx| {
-                            if let Some(p) = editor.wb_mut().panels.ai_copilot.as_mut() {
+                            if let Some(p) = editor.wb_mut().panels.ai_assistant.as_mut() {
                                 if p.run_id == run_id {
                                     p.streaming = false;
                                     p.messages.push(UiMessage {
@@ -270,14 +270,14 @@ impl SlideEditor {
                         let mut should_continue = false;
                         let _ = this.update(cx, |editor, cx| {
                             if let Some(text) = assistant_text {
-                                if let Some(p) = editor.wb_mut().panels.ai_copilot.as_mut() {
+                                if let Some(p) = editor.wb_mut().panels.ai_assistant.as_mut() {
                                     p.messages.push(UiMessage {
                                         kind: UiMessageKind::Assistant,
                                         text,
                                     });
                                 }
                             }
-                            if let Some(p) = editor.wb_mut().panels.ai_copilot.as_mut() {
+                            if let Some(p) = editor.wb_mut().panels.ai_assistant.as_mut() {
                                 p.history.push(assistant_msg);
                             }
 
@@ -291,7 +291,7 @@ impl SlideEditor {
                                     };
                                     editor.run(vec![grouped], cx);
                                 }
-                                if let Some(p) = editor.wb_mut().panels.ai_copilot.as_mut() {
+                                if let Some(p) = editor.wb_mut().panels.ai_assistant.as_mut() {
                                     p.streaming = false;
                                 }
                                 cx.notify();
@@ -306,7 +306,7 @@ impl SlideEditor {
                                 }
                                 let tool_msg = ChatMessage::tool_result(&call.id, result_json);
                                 messages_to_send.push(tool_msg.clone());
-                                if let Some(p) = editor.wb_mut().panels.ai_copilot.as_mut() {
+                                if let Some(p) = editor.wb_mut().panels.ai_assistant.as_mut() {
                                     p.history.push(tool_msg);
                                     p.messages.push(UiMessage {
                                         kind: UiMessageKind::Tool,
@@ -335,7 +335,7 @@ impl SlideEditor {
                     };
                     editor.run(vec![grouped], cx);
                 }
-                if let Some(p) = editor.wb_mut().panels.ai_copilot.as_mut() {
+                if let Some(p) = editor.wb_mut().panels.ai_assistant.as_mut() {
                     if p.run_id == run_id {
                         p.streaming = false;
                         p.messages.push(UiMessage {
@@ -513,9 +513,9 @@ impl SlideEditor {
         }
     }
 
-    /// Render the AI Copilot right sidebar panel.
-    pub fn ai_copilot_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
-        let panel = self.wb().panels.ai_copilot.as_ref()?;
+    /// Render the Assistant right sidebar panel.
+    pub fn ai_assistant_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        let panel = self.wb().panels.ai_assistant.as_ref()?;
         let cfg = AiConfig::load();
         let show_settings = panel.show_settings;
         let streaming = panel.streaming;
@@ -540,21 +540,21 @@ impl SlideEditor {
                 h_flex()
                     .gap_1()
                     .child(
-                        Button::new("ai-copilot-clear")
+                        Button::new("ai-assistant-clear")
                             .ghost()
                             .xsmall()
                             .label("クリア")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.clear_ai_copilot_history(cx);
+                                this.clear_ai_assistant_history(cx);
                             })),
                     )
                     .child(
-                        Button::new("ai-copilot-settings")
+                        Button::new("ai-assistant-settings")
                             .ghost()
                             .xsmall()
                             .label(if show_settings { "閉じる" } else { "設定" })
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_ai_copilot_settings(cx);
+                                this.toggle_ai_assistant_settings(cx);
                             })),
                     ),
             );
@@ -572,12 +572,12 @@ impl SlideEditor {
                 .child(Input::new(&model_input).small())
                 .child(Input::new(&api_key_input).small())
                 .child(
-                    Button::new("ai-copilot-save-settings")
+                    Button::new("ai-assistant-save-settings")
                         .primary()
                         .small()
                         .label("設定を保存")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.save_ai_copilot_settings(cx);
+                            this.save_ai_assistant_settings(cx);
                         })),
                 )
         });
@@ -637,23 +637,23 @@ impl SlideEditor {
                     .gap_2()
                     .when(streaming, |row| {
                         row.child(
-                            Button::new("ai-copilot-stop")
+                            Button::new("ai-assistant-stop")
                                 .danger()
                                 .small()
                                 .label("停止")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.stop_ai_copilot(cx);
+                                    this.stop_ai_assistant(cx);
                                 })),
                         )
                     })
                     .when(!streaming, |row| {
                         row.child(
-                            Button::new("ai-copilot-send")
+                            Button::new("ai-assistant-send")
                                 .primary()
                                 .small()
                                 .label("送信")
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.send_ai_copilot_prompt(window, cx);
+                                    this.send_ai_assistant_prompt(window, cx);
                                 })),
                         )
                     }),
@@ -665,7 +665,7 @@ impl SlideEditor {
             .child(footer);
 
         Some(SidebarPanel {
-            title: "AI Copilot".into(),
+            title: "Assistant".into(),
             body: body.into_any_element(),
         })
     }

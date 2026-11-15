@@ -3549,7 +3549,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("xlsx.fn.isblank", |this, window, cx| this.insert_function_named("ISBLANK", window, cx));
     menus.connect("xlsx.fn.iserror", |this, window, cx| this.insert_function_named("ISERROR", window, cx));
     menus.connect("file.info", |this, window, cx| this.open_sheet_doc_properties_panel(window, cx));
-    menus.connect("xlsx.ai-copilot", |this, window, cx| this.open_ai_copilot_panel(window, cx));
+    menus.connect("xlsx.ai-assistant", |this, window, cx| this.open_ai_assistant_panel(window, cx));
     menus.connect("xlsx.properties", |this, window, cx| this.open_sheet_doc_properties_panel(window, cx));
     menus.connect("xlsx.named-ranges", |this, window, cx| {
         if let Some(s) = this.sheet_state_mut() {
