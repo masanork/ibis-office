@@ -282,6 +282,131 @@ pub fn import_markdown_to_pptx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
         .save(&opened.presentation, SaveOptions::default())
 }
 
+/// Convert Markdown bytes (GFM tables) directly into an `.xlsx` workbook's bytes.
+pub fn import_markdown_to_xlsx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
+    let opened = open_markdown_workbook(data.to_vec())?;
+    opened
+        .source
+        .save(&opened.presentation, SaveOptions::default())
+}
+
+/// Open a Markdown document's GFM tables as an Excel workbook (`.xlsx` model).
+pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
+    use ibis_doc_model::{CellKind, CellStyle, CellValue, SheetCell};
+
+    let parsed = open_markdown(data)?;
+    let flow = parsed
+        .presentation
+        .flow
+        .as_ref()
+        .ok_or_else(|| Error::new("Markdown のパースに失敗しました"))?;
+
+    let blank = crate::blank::blank_file(crate::Kind::Workbook)?;
+    let mut opened = crate::save::open(blank)?;
+
+    let mut cells: Vec<SheetCell> = Vec::new();
+    let mut cur_row: u32 = 0;
+    let mut pending_heading: Option<String> = None;
+    let mut table_count = 0usize;
+
+    for block in &flow.body {
+        match block {
+            Block::Paragraph(p) => {
+                if p.style.as_deref().is_some_and(|s| s.starts_with("Heading")) {
+                    let t = flow_paragraph_plain_text(p);
+                    if !t.trim().is_empty() {
+                        pending_heading = Some(t.trim().to_string());
+                    }
+                }
+            }
+            Block::Table(tbl) => {
+                if table_count > 0 {
+                    cur_row += 1; // blank separator row between tables
+                }
+                if let Some(h) = pending_heading.take() {
+                    if table_count > 0 || tbl.rows.len() > 1 {
+                        let val = CellValue::Text(h.clone());
+                        cells.push(SheetCell {
+                            row: cur_row,
+                            column: 0,
+                            kind: CellKind::of(&val),
+                            value: val,
+                            text: h,
+                            style: 1,
+                            formula: None,
+                            phonetic: None,
+                            runs: None,
+                        });
+                        cur_row += 1;
+                    }
+                }
+                for (ri, row) in tbl.rows.iter().enumerate() {
+                    for (ci, cell) in row.cells.iter().enumerate() {
+                        let txt: String = cell
+                            .blocks
+                            .iter()
+                            .filter_map(|b| match b {
+                                Block::Paragraph(p) => Some(flow_paragraph_plain_text(p)),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let trimmed = txt.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let value = if let Ok(n) = trimmed.replace(',', "").parse::<f64>() {
+                            CellValue::Number(n)
+                        } else if trimmed.eq_ignore_ascii_case("true") {
+                            CellValue::Bool(true)
+                        } else if trimmed.eq_ignore_ascii_case("false") {
+                            CellValue::Bool(false)
+                        } else {
+                            CellValue::Text(trimmed.to_string())
+                        };
+                        cells.push(SheetCell {
+                            row: cur_row,
+                            column: ci as u32,
+                            kind: CellKind::of(&value),
+                            value,
+                            text: trimmed.to_string(),
+                            style: if ri == 0 { 1 } else { 0 },
+                            formula: None,
+                            phonetic: None,
+                            runs: None,
+                        });
+                    }
+                    cur_row += 1;
+                }
+                table_count += 1;
+            }
+        }
+    }
+
+    if let Some(slide) = opened.presentation.slides.first_mut() {
+        for sh in &mut slide.shapes {
+            if let ShapeKind::Sheet(sheet_arc) = &mut sh.kind {
+                let mut sheet = (**sheet_arc).clone();
+                if sheet.styles.len() < 2 {
+                    let base = sheet.styles.first().cloned().unwrap_or_default();
+                    if sheet.styles.is_empty() {
+                        sheet.styles.push(base.clone());
+                    }
+                    sheet.styles.push(CellStyle {
+                        bold: true,
+                        ..base
+                    });
+                }
+                sheet.cells = cells.into();
+                *sheet_arc = Arc::new(sheet);
+                break;
+            }
+        }
+    }
+
+    Ok(opened)
+}
+
 /// Export a `.docx` file's bytes to deterministic Rich Markdown.
 pub fn export_docx_to_markdown(docx_bytes: &[u8]) -> Result<String, Error> {
     let pres = crate::read_docx(docx_bytes)?;
@@ -5059,5 +5184,25 @@ pie
         assert!(md.contains("| Name | Score | City |"));
         assert!(md.contains("| Alice | 95 | Tokyo |"));
         assert!(md.contains("| Bob | 88 | Osaka |"));
+    }
+
+    #[test]
+    fn markdown_workbook_roundtrips_tables_to_xlsx_and_back() {
+        let md = "\
+| Product | Qty | Price |
+| :--- | ---: | ---: |
+| Apple | 10 | 120 |
+| Orange | 5 | 80 |
+";
+        let opened = open_markdown_workbook(md.as_bytes().to_vec()).expect("open_markdown_workbook");
+        let saved = opened
+            .source
+            .save(&opened.presentation, Default::default())
+            .expect("save xlsx");
+        let reread = crate::read(&saved).expect("reread xlsx");
+        let exported = export_presentation_to_markdown(&reread).expect("export xlsx to markdown");
+        assert!(exported.contains("| Product | Qty | Price |"));
+        assert!(exported.contains("| Apple | 10 | 120 |"));
+        assert!(exported.contains("| Orange | 5 | 80 |"));
     }
 }

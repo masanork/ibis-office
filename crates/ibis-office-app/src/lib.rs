@@ -446,7 +446,7 @@ fn parse_args() -> Result<Args, String> {
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
-    if matches!(format, "md" | "markdown" | "docx" | "pptx") {
+    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx") {
         let path = args
             .path
             .as_deref()
@@ -479,6 +479,13 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     .save(&opened.presentation, Default::default())
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.pptx"));
+                std::fs::write(&out_path, out_bytes)
+                    .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            }
+            "xlsx" => {
+                let out_bytes = ibis_pptx::markdown::import_markdown_to_xlsx_bytes(&data)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let out_path = out_dir.join(format!("{stem}.xlsx"));
                 std::fs::write(&out_path, out_bytes)
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
             }
