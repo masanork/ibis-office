@@ -1,6 +1,7 @@
 # 一太郎対応の方針と残課題
 
-2026-11-11 時点。JTDの対応範囲は [プレビュー](jtd-preview.md)、検証の範囲は
+方針の初版は2026-11-11。2026-11-15の解析・未解決事項は
+[最新の解析状況](jtd-analysis-status.md)を参照。JTDの対応範囲は [プレビュー](jtd-preview.md)、検証の範囲は
 [構造化インポート](jtd-structured-import.md)と[表示互換性](jtd-layout-compatibility.md)を参照。
 
 ## 保存形式の判断
