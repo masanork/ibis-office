@@ -11,7 +11,7 @@ import { generateKeyPair, exportJWK } from 'jose';
 
 globalThis.crypto ??= webcrypto;
 const dir = await mkdtemp(join(tmpdir(), 'sorane-files-test-'));
-await build({entryPoints:['src/index.ts'],bundle:true,platform:'node',format:'esm',outfile:join(dir,'worker.mjs')});
+await build({entryPoints:['src/index.ts'],bundle:true,platform:'node',target:'node22',format:'esm',outfile:join(dir,'worker.mjs')});
 const {default: worker} = await import(pathToFileURL(join(dir,'worker.mjs')));
 const {privateKey} = await generateKeyPair('ES256',{extractable:true});
 const jwk = await exportJWK(privateKey); jwk.kid='test-only';
@@ -193,6 +193,26 @@ test('save requires If-Match and keeps previous versions',async()=>{
   assert.equal(leftover.status,204);
   assert.equal(objects.size,0);
   assert.equal(versions.size,0);
+});
+
+test('multiple saves in one millisecond retain distinct versions',async()=>{
+  const {env,versions}=fixture();
+  const created=await create(env);
+  const path=`/api/files/${created.id}/welcome.docx`;
+  const realNow=Date.now;
+  const timestamp=realNow();
+  Date.now=()=>timestamp;
+  try {
+    let etag=created.etag;
+    for(let i=0;i<3;i++) {
+      const response=await run(new Request(host+path,{method:'PUT',headers:{origin:host,cookie:cookieFor('owner-token'),'x-csrf-token':csrf,'If-Match':etag},body:sample}),env);
+      assert.equal(response.status,200,await response.clone().text());
+      etag=(await response.json()).etag;
+    }
+    assert.equal(versions.size,3);
+  } finally {
+    Date.now=realNow;
+  }
 });
 
 test('the files page asks a visitor to log in',async()=>{
