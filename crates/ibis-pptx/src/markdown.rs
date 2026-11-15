@@ -165,6 +165,34 @@ fn split_frontmatter_body(after_open: &str) -> Option<(&str, &str)> {
     None
 }
 
+/// Return `true` when the Markdown bytes contain presentation-mode YAML frontmatter
+/// (`marp: true`, `slides: true`, `type: presentation`, or `type: slides`).
+pub fn is_presentation_markdown(data: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return false;
+    };
+    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+    let Some(after_open) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) else {
+        return false;
+    };
+    let Some((fm, _)) = split_frontmatter_body(after_open) else {
+        return false;
+    };
+    fm.lines().any(|line| {
+        let Some((key, value)) = line.split_once(':') else {
+            return false;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase();
+        matches!(
+            (key.as_str(), value.as_str()),
+            ("marp", "true")
+                | ("slides", "true")
+                | ("type", "presentation" | "slides" | "pptx")
+        )
+    })
+}
+
 /// Read a Markdown document into a [`Presentation`] whose `flow` is the rich [`FlowDocument`].
 pub fn read_markdown(data: &[u8]) -> Result<Presentation, Error> {
     Ok(open_markdown(data.to_vec())?.presentation)
@@ -5204,5 +5232,13 @@ pie
         assert!(exported.contains("| Product | Qty | Price |"));
         assert!(exported.contains("| Apple | 10 | 120 |"));
         assert!(exported.contains("| Orange | 5 | 80 |"));
+    }
+
+    #[test]
+    fn detects_presentation_markdown_frontmatter() {
+        assert!(is_presentation_markdown(b"---\nmarp: true\ntitle: Deck\n---\n\n# Slide 1\n"));
+        assert!(is_presentation_markdown(b"---\r\ntype: slides\r\n---\r\n# Intro\n"));
+        assert!(!is_presentation_markdown(b"---\ntitle: Notes\n---\n\n# Document\n"));
+        assert!(!is_presentation_markdown(b"# Plain document\n\n---\n\nSecond section\n"));
     }
 }

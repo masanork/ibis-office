@@ -294,7 +294,7 @@ impl FormatEditor for Presentation {
         search_history_key: "menu-search.history.presentation",
         px_per_inch_at_100: crate::shell::editor::PX_PER_INCH_AT_100,
         #[cfg(not(target_family = "wasm"))]
-        save_formats: &[("file.save-format.pptx", "pptx"), ("file.save-format.ppsx", "ppsx"), ("file.save-format.potx", "potx"), ("file.save-format.odp", "odp")],
+        save_formats: &[("file.save-format.pptx", "pptx"), ("file.save-format.ppsx", "ppsx"), ("file.save-format.potx", "potx"), ("file.save-format.odp", "odp"), ("file.save-format.md", "md")],
     };
 
     /// A window's view over a reload: the shown slide and the selected shapes (`view_state.rs`).
@@ -330,6 +330,13 @@ impl FormatEditor for Presentation {
         if extension.eq_ignore_ascii_case("odp") {
             // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
             return Some(ibis_pptx::write_odp(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
+        }
+        if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
+            return Some(
+                ibis_pptx::markdown::export_presentation_to_markdown(&Self::model_for_save(editor))
+                    .map(|md| FileBytes { bytes: md.into_bytes(), protect: false, note: None })
+                    .map_err(|e| e.to_string()),
+            );
         }
         fn package<E: ToString>(bytes: Result<Vec<u8>, E>) -> Option<Result<FileBytes, String>> {
             Some(bytes.map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()))

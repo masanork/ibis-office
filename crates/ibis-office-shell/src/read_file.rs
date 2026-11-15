@@ -75,7 +75,11 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
     let is_legacy_binary = ibis_pptx::is_legacy_binary(&data);
     let external_document_format = ibis_pptx::docx_convert::DocxConvertFormat::from_path(path);
     let open_result = if external_document_format == Some(ibis_pptx::docx_convert::DocxConvertFormat::Markdown) {
-        ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
+        if ibis_pptx::markdown::is_presentation_markdown(&data) {
+            ibis_pptx::markdown::open_markdown_presentation_with_base_dir(data, path.parent()).map(|opened| (opened, None))
+        } else {
+            ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
+        }
     } else if let Some(format) = external_document_format {
         ibis_pptx::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
     } else {

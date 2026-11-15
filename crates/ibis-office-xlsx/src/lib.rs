@@ -569,7 +569,7 @@ impl FormatEditor for Workbook {
         search_history_key: "menu-search.history.spreadsheet",
         px_per_inch_at_100: crate::shell::editor::SHEET_PX_PER_INCH_AT_100,
         #[cfg(not(target_family = "wasm"))]
-        save_formats: &[("file.save-format.xlsx", "xlsx"), ("file.save-format.xltx", "xltx"), ("file.save-format.xls", "xls"), ("file.save-format.ods", "ods"), ("file.save-format.csv", "csv"), ("file.save-format.tsv", "tsv")],
+        save_formats: &[("file.save-format.xlsx", "xlsx"), ("file.save-format.xltx", "xltx"), ("file.save-format.xls", "xls"), ("file.save-format.ods", "ods"), ("file.save-format.csv", "csv"), ("file.save-format.tsv", "tsv"), ("file.save-format.md", "md")],
     };
 
     fn theme_panel(editor: &SlideEditor) -> Option<&crate::shell::theme_panel::ThemePanel> {
