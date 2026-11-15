@@ -3388,6 +3388,16 @@ impl Writer<'_> {
                     let e = self.doc.append_element(tc_pr, &w("gridSpan"));
                     self.doc.set_attr(e, "w:val", &cell.span.to_string());
                 }
+                match cell.merge {
+                    VerticalMerge::None => {}
+                    VerticalMerge::Start => {
+                        let e = self.doc.append_element(tc_pr, &w("vMerge"));
+                        self.doc.set_attr(e, "w:val", "restart");
+                    }
+                    VerticalMerge::Continue => {
+                        self.doc.append_element(tc_pr, &w("vMerge"));
+                    }
+                }
                 if cell.direction != ibis_doc_model::CellDirection::LrTb {
                     let d = match cell.direction {
                         ibis_doc_model::CellDirection::TbRl => "tbRl",
