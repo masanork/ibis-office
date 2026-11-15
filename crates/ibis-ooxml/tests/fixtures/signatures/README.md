@@ -31,3 +31,8 @@ All generated private keys were discarded.
 `crl-issuer.der`, `crl-leaf.der`, `empty.crl.der`, and `revoked.crl.der`
 were generated with OpenSSL for CRL inspection; OpenSSL verified the CRL's
 signature. The certificates and CRLs are synthetic and short-lived.
+
+`xades-signed-synthetic.docx` is an independently signed synthetic package
+with XAdES v1.3.2 `SignedProperties`, generated with lxml and OpenSSL and
+verified with OpenSSL. Its private key was discarded. It is deliberately
+minimal and does not establish XAdES conformance or any trusted identity.

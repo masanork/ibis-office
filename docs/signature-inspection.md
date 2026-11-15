@@ -10,11 +10,14 @@ It accepts a DOCX, XLSX, or PPTX package up to 128 MiB. It reports the
 signature-value comparison against an embedded **untrusted** certificate, the
 package-object digest, and the manifest reference digest and content-type
 comparisons. Unknown algorithms and transformations are reported as unsupported.
-Additional SignedInfo references to direct `ds:Object` children by a simple
-ASCII ID are compared using SHA-256/384/512 or legacy SHA-1 and inclusive
-canonicalization. For same-document shortname fragments, comments are omitted
+Additional SignedInfo references to direct `ds:Object` children, and to
+XAdES v1.3.2 `SignedProperties` inside `QualifyingProperties` associated with
+the signature, can be compared by a simple ASCII ID using SHA-256/384/512 or
+legacy SHA-1 and inclusive canonicalization. This is a digest observation; it
+does not check the XAdES properties, signing-certificate binding, XAdES
+conformance or eIDAS qualification. See [ETSI TS 101 903](https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf). For same-document shortname fragments, comments are omitted
 as specified by [XML Signature 1.1](https://www.w3.org/TR/xmldsig-core1/#sec-Same-Document).
-Other references, including external or nested targets and
+Other references, including external or other nested targets and
 unsupported transformations, are reported as not checked and are never fetched.
 The inspector rejects more than 256 additional references or an additional URI
 longer than 4096 bytes, and limits total object bytes processed to 16 MiB.

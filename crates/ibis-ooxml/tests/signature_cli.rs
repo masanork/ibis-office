@@ -154,3 +154,29 @@ fn reports_additional_object_digest_and_tampering() {
     }
     std::fs::remove_file(temporary).unwrap();
 }
+
+#[test]
+fn signed_xades_properties_digest_detects_tampering_without_changing_signed_info() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/xades-signed-synthetic.docx");
+    let output = run(&fixture);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+    assert!(text.contains("Additional SignedInfo reference \"#props\": digest matches"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    let signature = "_xmlsignatures/sig1.xml";
+    let xml = String::from_utf8(package.read(signature).unwrap()).unwrap();
+    let changed = xml.replace("2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z");
+    assert_ne!(xml, changed);
+    package.set_bytes(signature, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-xades-properties-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+    assert!(text.contains("Additional SignedInfo reference \"#props\": digest differs"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}

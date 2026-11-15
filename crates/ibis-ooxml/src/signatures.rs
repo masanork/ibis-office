@@ -341,8 +341,8 @@ pub fn inspect_signatures(package: &Package) -> Result<Vec<SignatureInspection>,
     Ok(reports)
 }
 
-/// Compare a bounded subset of additional references. Only direct ds:Object
-/// children with an unqualified Id and simple fragment URI are supported.
+/// Compare a bounded subset of additional references: direct ds:Object nodes
+/// and XAdES v1.3.2 SignedProperties under a signature-bound container.
 fn additional_signed_info_references(package: &Package, signature_part: &str, object_id: &str) -> Result<Vec<AdditionalReference>, Error> {
     use ua_cryptography_xml_c14n::{canonicalize, Algorithm, DocumentText};
     let bytes = package.read(signature_part)?;
@@ -370,8 +370,19 @@ fn additional_signed_info_references(package: &Package, signature_part: &str, ob
         if additional.len() == 256 || uri.is_some_and(|u| u.len() > 4096) { return Err(Error::new("Too many or oversized SignedInfo references")); }
         let mut digest = ObjectDigest::Unsupported;
         let id = uri.and_then(|u| u.strip_prefix('#')).filter(|id| id.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_') && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')));
-        if let Some(id) = id.filter(|_| reference.attribute("Type") == Some("http://www.w3.org/2000/09/xmldsig#Object")) {
-            let targets: Vec<_> = ds_children(root, "Object").into_iter().filter(|n| n.attribute("Id") == Some(id)).collect();
+        if let Some(id) = id {
+            const XADES: &str = "http://uri.etsi.org/01903/v1.3.2#";
+            let targets: Vec<_> = match reference.attribute("Type") {
+                Some("http://www.w3.org/2000/09/xmldsig#Object") => ds_children(root, "Object").into_iter().filter(|n| n.attribute("Id") == Some(id)).collect(),
+                Some("http://uri.etsi.org/01903#SignedProperties") => {
+                    let signature_uri = root.attribute("Id").filter(|id| !id.is_empty()).map(|id| format!("#{id}"));
+                    ds_children(root, "Object").into_iter().flat_map(|object| object.children())
+                        .filter(|n| n.is_element() && n.tag_name().namespace() == Some(XADES) && n.tag_name().name() == "QualifyingProperties" && signature_uri.as_deref().is_some_and(|uri| n.attribute("Target") == Some(uri)))
+                        .flat_map(|qualifying| qualifying.children())
+                        .filter(|n| n.is_element() && n.tag_name().namespace() == Some(XADES) && n.tag_name().name() == "SignedProperties" && n.attribute("Id") == Some(id)).collect()
+                }
+                _ => Vec::new(),
+            };
             let children: Vec<_> = reference.children().filter(|n| n.is_element()).collect();
             let is_ds = |n: ua_cryptography_xml_c14n::roxmltree::Node<'_, '_>, name: &str| n.tag_name().namespace() == Some(DS) && n.tag_name().name() == name;
             let parts = match children.as_slice() {
@@ -924,6 +935,30 @@ mod tests {
             assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::Unsupported);
         }
         pkg.set_bytes("sig.xml", xml.replace("</Signature>", "<Object xmlns:x=\"urn:other\" x:Id=\"office\"/></Signature>").into_bytes());
+        assert!(additional_signed_info_references(&pkg, "sig.xml", "package").is_err());
+    }
+
+    #[test]
+    fn xades_signed_properties_digest_is_only_an_observation() {
+        let mut pkg = package(&rels(""), None);
+        // Digest independently computed with lxml inclusive C14N and hashlib.
+        let xml = r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:xades="http://uri.etsi.org/01903/v1.3.2#" Id="sig"><ds:SignedInfo><ds:Reference URI="#props" Type="http://uri.etsi.org/01903#SignedProperties"><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>7e71dWswIJxgdZy+9MKRvCSLpkbScCerkeZcd9zSA2I=</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:Object><xades:QualifyingProperties Target="#sig"><xades:SignedProperties Id="props"><xades:SignedSignatureProperties><xades:SigningTime>2026-01-01T00:00:00Z</xades:SigningTime></xades:SignedSignatureProperties></xades:SignedProperties></xades:QualifyingProperties></ds:Object></ds:Signature>"##;
+        pkg.set_bytes("sig.xml", xml.as_bytes().to_vec());
+        assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::Matches);
+        pkg.set_bytes("sig.xml", xml.replace("2026-01-01", "2027-01-01").into_bytes());
+        assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::Differs);
+        for bad in [
+            xml.replace("Target=\"#sig\"", "Target=\"#other\""),
+            xml.replace(" Id=\"sig\"", ""),
+            xml.replace("http://uri.etsi.org/01903/v1.3.2#", "urn:spoof"),
+            xml.replace("http://uri.etsi.org/01903#SignedProperties", "urn:other"),
+            xml.replace("<xades:SignedProperties Id=\"props\">", "<xades:Wrapper><xades:SignedProperties Id=\"props\">").replace("</xades:SignedProperties>", "</xades:SignedProperties></xades:Wrapper>"),
+        ] {
+            pkg.set_bytes("sig.xml", bad.into_bytes());
+            assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::Unsupported);
+        }
+        let duplicate = xml.replace("</ds:Object>", "<ds:Object Id=\"props\"/></ds:Object>");
+        pkg.set_bytes("sig.xml", duplicate.into_bytes());
         assert!(additional_signed_info_references(&pkg, "sig.xml", "package").is_err());
     }
 
