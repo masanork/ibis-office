@@ -112,6 +112,135 @@ fn inspect_explicit_path(
     })
 }
 
+/// A single discovered signature's independent XML and candidate-path facts.
+/// No field is an overall document-validity or trust verdict.
+#[derive(Debug, PartialEq, Eq)]
+struct DocumentPathProbe {
+    xml_signature: ibis_ooxml::signatures::SignatureValueCheck,
+    package_object_digest: ibis_ooxml::signatures::ObjectDigest,
+    manifest_references: Vec<ibis_ooxml::signatures::ManifestReference>,
+    signer_fingerprint: [u8; 32],
+    candidate_search_truncated: bool,
+    candidates: Vec<DocumentPathCandidate>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DocumentPathCandidate {
+    /// Fingerprints from the signer toward the explicitly supplied anchor.
+    fingerprints: Vec<[u8; 32]>,
+    result: DocumentCandidateResult,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DocumentCandidateResult {
+    Evaluated(PathProbeReport),
+    /// The supplied anchor is byte-identical to the embedded signer. Direct
+    /// anchor-as-target treatment has not been designed or evaluated here.
+    AnchorIsSignerNotEvaluated,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DocumentProbeError {
+    UnregisteredSignature,
+    Package(String),
+    AmbiguousFingerprint,
+    InvalidCandidate,
+    PathInput(PathProbeInputError),
+}
+
+/// Look up only a uniquely identified certificate, allowing repeated copies
+/// of identical bytes but refusing any fingerprint collision across inputs.
+fn resolve_fingerprint<'a>(
+    fingerprint: &[u8; 32],
+    inputs: &[([u8; 32], &'a [u8])],
+) -> Result<&'a [u8], DocumentProbeError> {
+    let mut found: Option<&[u8]> = None;
+    for (_, bytes) in inputs.iter().filter(|(hash, _)| hash == fingerprint) {
+        if found.is_some_and(|previous| previous != *bytes) {
+            return Err(DocumentProbeError::AmbiguousFingerprint);
+        }
+        found = Some(bytes);
+    }
+    found.ok_or(DocumentProbeError::InvalidCandidate)
+}
+
+/// Experimental bridge for one relationship-discovered signature. Trust
+/// anchors and intermediates are explicitly supplied, with no network access.
+/// Candidates use the existing exact-name builder and may omit valid paths.
+fn inspect_document_candidate_paths(
+    package: &ibis_ooxml::Package,
+    signature_part: &str,
+    anchors: &[&[u8]],
+    intermediates: &[&[u8]],
+    time: u64,
+    settings: CertificationPathSettings,
+) -> Result<DocumentPathProbe, DocumentProbeError> {
+    use ibis_ooxml::signatures;
+    use sha2::{Digest, Sha256};
+    let parts = signatures::signature_parts(package)
+        .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
+    if !parts.iter().any(|part| part == signature_part) {
+        return Err(DocumentProbeError::UnregisteredSignature);
+    }
+    let leaf = signatures::extract_single_embedded_certificate(package, signature_part)
+        .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
+    let xml_signature = signatures::inspect_signature_value(package, signature_part)
+        .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
+    let package_object_digest = signatures::inspect_package_object_digest(package, signature_part)
+        .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
+    let manifest_references = signatures::inspect_manifest_digests(package, signature_part)
+        .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
+    let found = signatures::find_candidate_certificate_paths(&leaf, intermediates, anchors)
+        .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
+    let signer_fingerprint: [u8; 32] = Sha256::digest(&leaf).into();
+    let inputs: Vec<([u8; 32], &[u8])> = std::iter::once(leaf.as_slice())
+        .chain(intermediates.iter().copied())
+        .chain(anchors.iter().copied())
+        .map(|bytes| (Sha256::digest(bytes).into(), bytes))
+        .collect();
+    let mut candidates = Vec::with_capacity(found.paths.len());
+    for candidate in found.paths {
+        let certs: Vec<&[u8]> = candidate
+            .fingerprints_sha256
+            .iter()
+            .map(|fingerprint| resolve_fingerprint(fingerprint, &inputs))
+            .collect::<Result<_, _>>()?;
+        if certs.first().copied() != Some(leaf.as_slice())
+            || !certs.last().is_some_and(|cert| anchors.contains(cert))
+        {
+            return Err(DocumentProbeError::InvalidCandidate);
+        }
+        let result = if certs.len() == 1 {
+            DocumentCandidateResult::AnchorIsSignerNotEvaluated
+        } else {
+            let intermediate: Vec<&[u8]> =
+                certs[1..certs.len() - 1].iter().rev().copied().collect();
+            DocumentCandidateResult::Evaluated(
+                inspect_explicit_path(
+                    &leaf,
+                    certs[certs.len() - 1],
+                    &intermediate,
+                    time,
+                    settings.clone(),
+                )
+                .map_err(DocumentProbeError::PathInput)?,
+            )
+        };
+        candidates.push(DocumentPathCandidate {
+            fingerprints: candidate.fingerprints_sha256,
+            result,
+        });
+    }
+    Ok(DocumentPathProbe {
+        xml_signature,
+        package_object_digest,
+        manifest_references,
+        signer_fingerprint,
+        candidate_search_truncated: found.truncated,
+        candidates,
+    })
+}
+
 fn validate(leaf: &[u8], anchor: &[u8], time: u64) -> Result<(), String> {
     validate_with_intermediates(leaf, anchor, &[], time)
 }
@@ -293,6 +422,168 @@ mod tests {
             validate_with_intermediates(leaf, root, &[nonca], 1796083200)
                 .unwrap_err()
                 .contains("InvalidBasicConstraints")
+        );
+    }
+
+    fn package_with_signing_certificate(cert: &[u8]) -> ibis_ooxml::Package {
+        use ibis_ooxml::{Package, base64, signatures::extract_single_embedded_certificate};
+        let mut package = Package::open(
+            include_bytes!(
+                "../../../crates/ibis-ooxml/tests/fixtures/signatures/synthetic-signed.docx"
+            )
+            .as_slice(),
+        )
+        .unwrap();
+        let part = "_xmlsignatures/sig1.xml";
+        let previous = extract_single_embedded_certificate(&package, part).unwrap();
+        let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+        let changed = xml.replace(&base64::encode(&previous), &base64::encode(cert));
+        assert_ne!(xml, changed);
+        package.set_bytes(part, changed.into_bytes());
+        package
+    }
+
+    #[test]
+    fn document_bridge_keeps_xml_and_each_candidate_separate() {
+        use ibis_ooxml::signatures::SignatureValueCheck;
+        let root = include_bytes!("../data/root.der");
+        let wrong_root = include_bytes!("../data/same-name-wrong.der");
+        let intermediate = include_bytes!("../data/intermediate.der");
+        let nonca = include_bytes!("../data/bad-intermediate-nonca.der");
+        let leaf = include_bytes!("../data/intermediate-leaf.der");
+        let package = package_with_signing_certificate(leaf);
+        let report = inspect_document_candidate_paths(
+            &package,
+            "_xmlsignatures/sig1.xml",
+            &[root, wrong_root],
+            &[intermediate, nonca],
+            1796083200,
+            CertificationPathSettings::new(),
+        )
+        .unwrap();
+        assert_eq!(report.xml_signature, SignatureValueCheck::Differs);
+        assert!(!report.candidate_search_truncated);
+        assert!(report.candidates.len() >= 2);
+        assert!(report.candidates.iter().any(|candidate| matches!(&candidate.result, DocumentCandidateResult::Evaluated(path) if path.engine_result.is_ok())));
+        assert!(report.candidates.iter().any(|candidate| matches!(&candidate.result, DocumentCandidateResult::Evaluated(path) if path.engine_result.as_ref().is_err_and(|e| e.contains("InvalidBasicConstraints")))));
+        assert!(report.candidates.iter().any(|candidate| matches!(&candidate.result, DocumentCandidateResult::Evaluated(path) if path.engine_result.as_ref().is_err_and(|e| e.contains("SignatureVerificationFailure")))));
+        let no_intermediate = inspect_document_candidate_paths(
+            &package,
+            "_xmlsignatures/sig1.xml",
+            &[root],
+            &[],
+            1796083200,
+            CertificationPathSettings::new(),
+        )
+        .unwrap();
+        assert!(no_intermediate.candidates.is_empty());
+        assert!(!no_intermediate.candidate_search_truncated);
+        assert_eq!(
+            inspect_document_candidate_paths(
+                &package,
+                "_xmlsignatures/other.xml",
+                &[root],
+                &[intermediate],
+                1796083200,
+                CertificationPathSettings::new()
+            ),
+            Err(DocumentProbeError::UnregisteredSignature)
+        );
+        let original = ibis_ooxml::Package::open(
+            include_bytes!(
+                "../../../crates/ibis-ooxml/tests/fixtures/signatures/synthetic-signed.docx"
+            )
+            .as_slice(),
+        )
+        .unwrap();
+        let signer = ibis_ooxml::signatures::extract_single_embedded_certificate(
+            &original,
+            "_xmlsignatures/sig1.xml",
+        )
+        .unwrap();
+        let anchor_is_signer = inspect_document_candidate_paths(
+            &original,
+            "_xmlsignatures/sig1.xml",
+            &[&signer],
+            &[],
+            1796083200,
+            CertificationPathSettings::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            anchor_is_signer.xml_signature,
+            SignatureValueCheck::MatchesUntrustedCertificate
+        );
+        assert_eq!(anchor_is_signer.candidates.len(), 1);
+        assert_eq!(
+            anchor_is_signer.candidates[0].result,
+            DocumentCandidateResult::AnchorIsSignerNotEvaluated
+        );
+    }
+
+    #[test]
+    fn signed_document_path_and_manifest_remain_distinct() {
+        use ibis_ooxml::signatures::{ManifestDigest, ObjectDigest, SignatureValueCheck};
+        let data = include_bytes!("../data/document-path-signed.docx");
+        let root = include_bytes!("../data/document-path-root.der");
+        let intermediate = include_bytes!("../data/document-path-intermediate.der");
+        let part = "_xmlsignatures/sig1.xml";
+        let mut package = ibis_ooxml::Package::open(data.as_slice()).unwrap();
+        let inspect = |package: &ibis_ooxml::Package| {
+            inspect_document_candidate_paths(
+                package,
+                part,
+                &[root],
+                &[intermediate],
+                1796083200,
+                CertificationPathSettings::new(),
+            )
+            .unwrap()
+        };
+        let report = inspect(&package);
+        assert_eq!(
+            report.xml_signature,
+            SignatureValueCheck::MatchesUntrustedCertificate
+        );
+        assert_eq!(report.package_object_digest, ObjectDigest::Matches);
+        assert_eq!(report.manifest_references.len(), 1);
+        assert_eq!(
+            report.manifest_references[0].digest,
+            ManifestDigest::Matches
+        );
+        assert_eq!(report.candidates.len(), 1);
+        assert!(
+            matches!(&report.candidates[0].result, DocumentCandidateResult::Evaluated(path) if path.engine_result.is_ok())
+        );
+        package.set_bytes("word/document.xml", b"modified document".to_vec());
+        let changed = inspect(&package);
+        assert_eq!(
+            changed.xml_signature,
+            SignatureValueCheck::MatchesUntrustedCertificate
+        );
+        assert_eq!(changed.package_object_digest, ObjectDigest::Matches);
+        assert_eq!(
+            changed.manifest_references[0].digest,
+            ManifestDigest::Differs
+        );
+        assert!(
+            matches!(&changed.candidates[0].result, DocumentCandidateResult::Evaluated(path) if path.engine_result.is_ok())
+        );
+    }
+
+    #[test]
+    fn fingerprint_lookup_rejects_ambiguity() {
+        let hash = [42u8; 32];
+        let a = b"first".as_slice();
+        let b = b"second".as_slice();
+        assert_eq!(resolve_fingerprint(&hash, &[(hash, a), (hash, a)]), Ok(a));
+        assert_eq!(
+            resolve_fingerprint(&hash, &[(hash, a), (hash, b)]),
+            Err(DocumentProbeError::AmbiguousFingerprint)
+        );
+        assert_eq!(
+            resolve_fingerprint(&[0u8; 32], &[(hash, a)]),
+            Err(DocumentProbeError::InvalidCandidate)
         );
     }
 

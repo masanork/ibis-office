@@ -1,13 +1,14 @@
 # Offline certificate path experiment
 
 This separate Cargo workspace evaluates `certval` 0.2.0-rc.3 with its default
-features disabled and its `rsa` feature enabled. It is **not linked to
-ibisOffice**, is not a production trust decision, and does not use pverify.
+features disabled and its `rsa` feature enabled. The experiment depends on
+`ibis-ooxml`, but it is **not linked into the ibisOffice product**, is not a
+production trust decision, and does not use pverify.
 No system trust store, trust-list provider, network retrieval, OCSP or CRL
-checking is enabled. The experiment accepts a single explicitly supplied anchor
-as an input to a single explicitly constructed path; it does not build paths.
-The reference time is the explicit test value `1796083200` (2026-12-01 UTC). The caller must not substitute an
-untrusted document certificate as an anchor. `set_require_ta_store(false)` is
+checking is enabled. Each evaluated path ends at a caller-supplied anchor. The
+explicit-path tests supply a constructed path, while the document bridge below
+also uses ibis-ooxml's bounded candidate search. The reference time is the explicit test value `1796083200` (2026-12-01 UTC).
+The caller must not substitute an untrusted document certificate as an anchor. `set_require_ta_store(false)` is
 used only because the test itself supplies the anchor; no trust-store membership
 check is performed.
 
@@ -27,7 +28,7 @@ a same-name/different-key issuer, an expired target, a changed signature,
 an unknown critical extension, a missing intermediate, a non-CA intermediate,
 and an intermediate without keyCertSign. Rejection tests check their respective
 error categories. The DER files under `data/` were created with Python
-cryptography for this experiment; keys were discarded. Two other certificates
+cryptography for this experiment; keys were discarded. Other certificates
 are existing independently created ibis-ooxml synthetic fixtures. All OIDs and
 names are synthetic.
 
@@ -91,6 +92,28 @@ signature failure. No edge observation overrides the path result, and the path
 result is not a revocation or document-signature verdict. The experiment takes
 the caller's path, time and settings; it does not choose anchors, construct
 paths, or establish the provenance of any input.
+
+The document bridge starts from a relationship-discovered OPC signature and
+its single embedded certificate, and supplies only caller-provided intermediate
+and anchor certificates to ibis-ooxml's candidate search. It keeps the XML
+signature value, package-object digest, individual manifest-reference digests,
+and every candidate's path and edge observations separate. A candidate whose
+anchor is byte-identical to the signer is reported as not evaluated. Candidate
+certificates are resolved by SHA-256 against the original inputs; distinct
+byte strings sharing a fingerprint cause an error. The existing candidate
+search uses exact names, is bounded, and can omit valid paths; an empty or
+truncated search is not a trust or invalidity verdict. It does not use
+certificate location hints or fetch data.
+
+The synthetic `document-path-signed.docx` and its test chain were generated
+independently with Python cryptography and lxml; LibreSSL verified the XML
+signature over canonical SignedInfo and the certificate chain. Keys were
+discarded. One test gets matching XML signature, object digest, manifest digest
+and a passing candidate path; another changes the document part and finds the
+manifest digest differs while the other observations remain unchanged. Neither
+result establishes complete coverage, a valid timestamp, revocation status,
+anchor provenance, or document-signature validity. Other SignedInfo references,
+coverage and application-specific rules still need separate evaluation.
 
 The pinned crate uses Apache-2.0 OR MIT licensing. Its own
 [security warning](https://docs.rs/crate/certval/0.2.0-rc.3/source/README.md)
