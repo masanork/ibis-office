@@ -1,6 +1,6 @@
 # Synthetic signature fixtures
 
-These fixtures contain self-signed RSA test certificates and synthetic data.
+These fixtures contain self-signed RSA and EC test certificates and synthetic data.
 The private keys were discarded. They do not represent trusted identities.
 
 `rsa-sha256-synthetic.xml` tests signature-value verification in isolation.
@@ -40,3 +40,9 @@ minimal and does not establish XAdES conformance or any trusted identity.
 `xades-cert-synthetic.docx` adds a SHA-256 SigningCertificateV2 digest to a
 synthetic package. Its SignedInfo was signed and independently checked using
 OpenSSL; the private key was discarded. It is not an XAdES conformance fixture.
+
+`ecdsa-p256-signed.docx` is a synthetic package signed with OpenSSL ECDSA
+P-256/SHA-256 and independently verified with OpenSSL before conversion from
+DER to XML Signature's fixed-width `r || s` format. `ecdsa-p256-signature.der`
+and `ecdsa-p384-cert.der` test rejection of the wrong signature encoding and
+unsupported curve. Both private keys were discarded.

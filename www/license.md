@@ -16,7 +16,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | Lucide | アイコン（`assets/icons/`） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 
-## Rust の部品（461 件）
+## Rust の部品（471 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -43,6 +43,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | async-task | 4.7.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/async-task |
 | atomic | 0.5.3 | Apache-2.0/MIT | https://github.com/Amanieu/atomic-rs |
 | backtrace | 0.3.76 | MIT OR Apache-2.0 | https://github.com/rust-lang/backtrace-rs |
+| base16ct | 0.2.0 | Apache-2.0 OR MIT | https://github.com/RustCrypto/formats/tree/master/base16ct |
 | base62 | 2.2.6 | MIT | https://github.com/fbernier/base62 |
 | base64 | 0.22.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | base64 | 0.23.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
@@ -84,6 +85,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | crossbeam-epoch | 0.9.21 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam |
 | crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam |
+| crypto-bigint | 0.5.5 | Apache-2.0 OR MIT | https://github.com/RustCrypto/crypto-bigint |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
 | ctor | 1.0.13 | Apache-2.0 OR MIT | https://github.com/mmastrac/linktime |
 | data-url | 0.3.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
@@ -96,7 +98,9 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 | https://github.com/yaahc/displaydoc |
 | document-features | 0.2.12 | MIT OR Apache-2.0 | https://github.com/slint-ui/document-features |
 | dyn-clone | 1.0.20 | MIT OR Apache-2.0 | https://github.com/dtolnay/dyn-clone |
+| ecdsa | 0.16.9 | Apache-2.0 OR MIT | https://github.com/RustCrypto/signatures/tree/master/ecdsa |
 | either | 1.18.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/either |
+| elliptic-curve | 0.13.8 | Apache-2.0 OR MIT | https://github.com/RustCrypto/traits/tree/master/elliptic-curve |
 | encoding_rs | 0.8.41 | (Apache-2.0 OR MIT) AND BSD-3-Clause | https://github.com/hsivonen/encoding_rs |
 | encoding_rs_io | 0.1.8 | MIT OR Apache-2.0 | https://github.com/BurntSushi/encoding_rs_io |
 | enum-iterator | 2.3.0 | 0BSD | https://github.com/stephaneyfx/enum-iterator.git |
@@ -114,6 +118,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | fastrand | 2.5.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/fastrand |
 | fax | 0.2.7 | MIT | https://github.com/pdf-rs/fax |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | https://github.com/image-rs/fdeflate |
+| ff | 0.13.1 | MIT/Apache-2.0 | https://github.com/zkcrypto/ff |
 | filetime | 0.2.29 | MIT/Apache-2.0 | https://github.com/alexcrichton/filetime |
 | fixedbitset | 0.5.7 | MIT OR Apache-2.0 | https://github.com/petgraph/fixedbitset |
 | flagset | 0.4.7 | Apache-2.0 | https://github.com/enarx/flagset |
@@ -175,6 +180,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | gpui-pre-ztracing | 0.3.6 | Apache-2.0 | https://github.com/zed-industries/zed |
 | gpui-pre-ztracing-macro | 0.3.6 | Apache-2.0 | https://github.com/zed-industries/zed |
 | granit-parser | 1.3.0 | MIT OR Apache-2.0 | https://github.com/bourumir-wyngs/granit-parser |
+| group | 0.13.0 | MIT/Apache-2.0 | https://github.com/zkcrypto/group |
 | half | 2.7.1 | MIT OR Apache-2.0 | https://github.com/VoidStarKat/half-rs |
 | harfrust | 0.5.2 | MIT | https://github.com/harfbuzz/harfrust |
 | hash32 | 0.3.1 | MIT OR Apache-2.0 | https://github.com/japaric/hash32 |
@@ -261,6 +267,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell |
 | ouroboros | 0.18.5 | MIT OR Apache-2.0 | https://github.com/someguynamedjosh/ouroboros |
 | ouroboros_macro | 0.18.5 | MIT OR Apache-2.0 | https://github.com/someguynamedjosh/ouroboros |
+| p256 | 0.13.2 | Apache-2.0 OR MIT | https://github.com/RustCrypto/elliptic-curves/tree/master/p256 |
 | parking | 2.2.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/parking |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
@@ -285,6 +292,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | potential_utf | 0.1.6 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 | https://github.com/cryptocorrosion/cryptocorrosion |
 | precomputed-hash | 0.1.1 | MIT | https://github.com/emilio/precomputed-hash |
+| primeorder | 0.13.6 | Apache-2.0 OR MIT | https://github.com/RustCrypto/elliptic-curves/tree/master/primeorder |
 | proc-macro-crate | 3.5.0 | MIT OR Apache-2.0 | https://github.com/bkchr/proc-macro-crate |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | https://github.com/dtolnay/proc-macro2 |
 | proc-macro2-diagnostics | 0.10.1 | MIT/Apache-2.0 | https://github.com/SergioBenitez/proc-macro2-diagnostics |
@@ -317,6 +325,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex |
 | resvg | 0.46.0 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
+| rfc6979 | 0.4.0 | Apache-2.0 OR MIT | https://github.com/RustCrypto/signatures/tree/master/rfc6979 |
 | rgb | 0.8.53 | MIT | https://github.com/kornelski/rust-rgb |
 | ropey | 2.0.0-beta.1 | MIT OR Apache-2.0 | https://github.com/cessen/ropey |
 | roxmltree | 0.21.1 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/roxmltree |
@@ -335,6 +344,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | schemars_derive | 1.2.2 | MIT | https://github.com/GREsau/schemars |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 | https://github.com/bluss/scopeguard |
 | seahash | 4.1.0 | MIT | https://gitlab.redox-os.org/redox-os/seahash |
+| sec1 | 0.7.3 | Apache-2.0 OR MIT | https://github.com/RustCrypto/formats/tree/master/sec1 |
 | self_cell | 1.3.0 | Apache-2.0 OR GPL-2.0-only | https://github.com/Voultapher/self_cell |
 | serde | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde-saphyr | 1.3.0 | MIT OR Apache-2.0 | https://github.com/bourumir-wyngs/serde-saphyr |
@@ -816,6 +826,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **async-task 4.7.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **atomic 0.5.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers
 - **backtrace 0.3.76**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 Alex Crichton
+- **base16ct 0.2.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 Steve "Sc00bz" Thomas (steve at tobtu dot com) / Copyright (c) 2022 The RustCrypto Project Developers
 - **base62 2.2.6**：Copyright (c) 2015 François Bernier
 - **base64 0.22.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 Alice Maz
 - **base64 0.23.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2025 Alice Maz, Marshall Pierce
@@ -857,6 +868,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **crossbeam-epoch 0.9.21**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2019 The Crossbeam Project Developers
 - **crossbeam-queue 0.3.14**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2019 The Crossbeam Project Developers
 - **crossbeam-utils 0.8.23**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2019 The Crossbeam Project Developers
+- **crypto-bigint 0.5.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2021 The RustCrypto Project Developers
 - **crypto-common 0.1.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2021 RustCrypto Developers
 - **ctor 1.0.13**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **data-url 0.3.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2013-2025 The rust-url developers
@@ -869,7 +881,9 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **displaydoc 0.2.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **document-features 0.2.12**：Copyright (c) 2020 Olivier Goffart <ogoffart@sixtyfps.io>
 - **dyn-clone 1.0.20**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **ecdsa 0.16.9**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2018-2022 RustCrypto Developers / Copyright (c) 2018-2022 RustCrypto Developers
 - **either 1.18.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015
+- **elliptic-curve 0.13.8**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020-2022 RustCrypto Developers
 - **encoding_rs 0.8.41**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright Mozilla Foundation / Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
 - **encoding_rs_io 0.1.8**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 Andrew Gallant
 - **enum-iterator 2.3.0**：Copyright (c) 2018 Stephane Raux
@@ -887,6 +901,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **fastrand 2.5.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **fax 0.2.7**：Copyright © 2021 The pdf-rs contributers.
 - **fdeflate 0.3.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **ff 0.13.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2017 Sean Bowe
 - **filetime 0.2.29**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 Alex Crichton
 - **fixedbitset 0.5.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015-2017
 - **flagset 0.4.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
@@ -946,6 +961,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **gpui-pre-zlog 0.3.6**：Copyright 2022 - 2025 Zed Industries, Inc. / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **gpui-pre-ztracing 0.3.6**：Copyright 2022 - 2025 Zed Industries, Inc. / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **gpui-pre-ztracing-macro 0.3.6**：Copyright 2022 - 2025 Zed Industries, Inc. / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **group 0.13.0**：Copyrights in the "group" library are retained by their contributors. No / copyright assignment is required to contribute to the "group" library. / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **half 2.7.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **hash32 0.3.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Jorge Aparicio
 - **hashbrown 0.16.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 Amanieu d'Antras
@@ -1021,6 +1037,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **once_cell 1.21.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **ouroboros 0.18.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2021 Josh / Copyright (c) 2021 Josh
 - **ouroboros_macro 0.18.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2021 Josh / Copyright (c) 2021 Josh
+- **p256 0.13.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020-2023 RustCrypto Developers
 - **parking 2.2.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2014-2020 The Rust Project Developers
 - **parking_lot 0.12.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers
 - **parking_lot_core 0.9.12**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers
@@ -1043,6 +1060,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **potential_utf 0.1.6**：COPYRIGHT AND PERMISSION NOTICE / Copyright © 2020-2024 Unicode, Inc.
 - **ppv-lite86 0.2.21**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2019 The CryptoCorrosion Contributors / Copyright (c) 2019 The CryptoCorrosion Contributors
 - **precomputed-hash 0.1.1**：Copyright (c) 2017 Emilio Cobos Álvarez
+- **primeorder 0.13.6**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020-2023 RustCrypto Developers
 - **proc-macro-crate 3.5.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **proc-macro2 1.0.107**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **proc-macro2-diagnostics 0.10.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016-2020 Sergio Benitez / COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
@@ -1072,6 +1090,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **regex-automata 0.4.18**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers
 - **regex-syntax 0.8.11**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers
 - **resvg 0.46.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2017 the Resvg Authors
+- **rfc6979 0.4.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2018-2022 RustCrypto Developers / Copyright (c) 2018-2022 RustCrypto Developers
 - **rgb 0.8.53**：Copyright (c) 2019 Kornel
 - **ropey 2.0.0-beta.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2023 Nathan Vegdahl
 - **roxmltree 0.21.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Yevhenii Reizner
@@ -1087,6 +1106,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **schemars 1.2.2**：Copyright (c) 2019 Graham Esau
 - **schemars_derive 1.2.2**：Copyright (c) 2019 Graham Esau
 - **scopeguard 1.2.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers
+- **sec1 0.7.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2021-2022 The RustCrypto Project Developers
 - **self_cell 1.3.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (C) 1989, 1991 Free Software Foundation, Inc., / copyright notice and disclaimer of warranty; keep intact all the
 - **serde 1.0.229**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **serde-saphyr 1.3.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works

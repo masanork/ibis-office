@@ -27,6 +27,7 @@ md-5 = "0.10"
 # Independent XML canonicalization implementation (MIT), used as a dependency.
 ua-cryptography-xml-c14n = "=0.1.6"
 rsa = { version = "0.9.8", default-features = false, features = ["std", "sha2", "u64_digit"] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
 x509-cert = { version = "0.2.5", default-features = false, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

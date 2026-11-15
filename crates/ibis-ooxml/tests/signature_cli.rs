@@ -210,3 +210,29 @@ fn xades_certificate_digest_is_reported_as_unauthenticated() {
     assert!(text.contains("XAdES SigningCertificateV2 digest: differs from embedded certificate; NOT AUTHENTICATED"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn ecdsa_p256_is_reported_without_trust_and_detects_tampering() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/ecdsa-p256-signed.docx");
+    let output = run(&fixture);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("ECDSA P-256 SHA-256: matches; certificate is untrusted"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    let signature = "_xmlsignatures/sig1.xml";
+    let xml = String::from_utf8(package.read(signature).unwrap()).unwrap();
+    let start_tag = "<ds:SignatureValue>"; let end_tag = "</ds:SignatureValue>";
+    let start = xml.find(start_tag).unwrap() + start_tag.len(); let end = xml[start..].find(end_tag).unwrap() + start;
+    let mut value = ibis_ooxml::base64::decode(&xml[start..end]).unwrap(); value[0] ^= 1;
+    let changed = format!("{}{}{}", &xml[..start], ibis_ooxml::base64::encode(&value), &xml[end..]);
+    package.set_bytes(signature, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-ecdsa-signature-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("ECDSA P-256 SHA-256: differs; certificate is untrusted"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}

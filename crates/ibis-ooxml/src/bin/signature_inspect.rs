@@ -95,6 +95,7 @@ fn run() -> Result<(), String> {
         }
         let value = match report.signature_value {
             SignatureValueCheck::LegacySha1 { key_bits, matches } => format!("legacy weak RSA-SHA1 ({key_bits} bits): {}; certificate is untrusted", if matches { "matches" } else { "differs" }),
+            SignatureValueCheck::EcdsaP256 { matches } => format!("ECDSA P-256 SHA-256: {}; certificate is untrusted", if matches { "matches" } else { "differs" }),
             SignatureValueCheck::MatchesUntrustedCertificate => "matches embedded untrusted certificate".to_string(),
             SignatureValueCheck::Differs => "does not match".to_string(), SignatureValueCheck::Unsupported => "not checked (unsupported)".to_string(),
         };

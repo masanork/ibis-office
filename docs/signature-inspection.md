@@ -9,7 +9,11 @@ cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx
 It accepts a DOCX, XLSX, or PPTX package up to 128 MiB. It reports the
 signature-value comparison against an embedded **untrusted** certificate, the
 package-object digest, and the manifest reference digest and content-type
-comparisons. Unknown algorithms and transformations are reported as unsupported.
+comparisons. Signature-value comparisons support RSA-SHA256, ECDSA P-256 with
+SHA-256, and weak legacy RSA-SHA1. ECDSA uses the XML Signature fixed-width
+`r || s` encoding; other curves and algorithms are unsupported. These checks
+use an untrusted embedded certificate and do not validate certificate chains.
+Unknown algorithms and transformations are reported as unsupported.
 Additional SignedInfo references to direct `ds:Object` children, and to
 XAdES v1.3.2 `SignedProperties` inside `QualifyingProperties` associated with
 the signature, can be compared by a simple ASCII ID using SHA-256/384/512 or

@@ -479,6 +479,8 @@ pub enum ObjectDigest {
 pub enum SignatureValueCheck {
     /// Weak legacy signature checked against an untrusted certificate.
     LegacySha1 { key_bits: usize, matches: bool },
+    /// ECDSA comparison against an untrusted P-256 certificate.
+    EcdsaP256 { matches: bool },
     MatchesUntrustedCertificate,
     Differs,
     Unsupported,
@@ -488,7 +490,7 @@ fn ds_children<'a, 'input>(parent: ua_cryptography_xml_c14n::roxmltree::Node<'a,
     parent.children().filter(|n| n.is_element() && n.tag_name().namespace() == Some(DS) && n.tag_name().name() == name).collect()
 }
 
-/// Compare RSA-SHA256 or legacy RSA-SHA1 over canonicalized SignedInfo against exactly one
+/// Compare RSA-SHA256, legacy RSA-SHA1, or ECDSA-P256-SHA256 over SignedInfo against exactly one
 /// embedded certificate. The certificate is not chain- or revocation-checked.
 pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Result<SignatureValueCheck, Error> {
     use rsa::{pkcs1::DecodeRsaPublicKey, pkcs1v15, signature::Verifier, traits::PublicKeyParts, RsaPublicKey};
@@ -511,9 +513,10 @@ pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Resul
         || c14n[0].children().any(|n| n.is_element()) || method[0].children().any(|n| n.is_element()) {
         return Ok(SignatureValueCheck::Unsupported);
     }
-    let legacy = match method[0].attribute("Algorithm") {
-        Some("http://www.w3.org/2000/09/xmldsig#rsa-sha1") => true,
-        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256") => false,
+    let (legacy, ecdsa) = match method[0].attribute("Algorithm") {
+        Some("http://www.w3.org/2000/09/xmldsig#rsa-sha1") => (true, false),
+        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256") => (false, false),
+        Some("http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256") => (false, true),
         _ => return Ok(SignatureValueCheck::Unsupported),
     };
     let x509data = ds_children(keyinfos[0], "X509Data");
@@ -526,8 +529,20 @@ pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Resul
     };
     let cert = Certificate::from_der(&decode(certs[0])?).map_err(|_| Error::new("Invalid signing certificate"))?;
     let spki = &cert.tbs_certificate.subject_public_key_info;
-    if spki.algorithm.oid.to_string() != "1.2.840.113549.1.1.1" { return Ok(SignatureValueCheck::Unsupported); }
     let Some(public_key) = spki.subject_public_key.as_bytes() else { return Err(Error::new("Invalid public key")) };
+    if ecdsa {
+        use x509_cert::der::asn1::ObjectIdentifier;
+        let curve = spki.algorithm.parameters.as_ref().and_then(|p| p.decode_as::<ObjectIdentifier>().ok());
+        if spki.algorithm.oid.to_string() != "1.2.840.10045.2.1" || curve.is_none_or(|oid| oid.to_string() != "1.2.840.10045.3.1.7") {
+            return Ok(SignatureValueCheck::Unsupported);
+        }
+        let key = p256::ecdsa::VerifyingKey::from_sec1_bytes(public_key).map_err(|_| Error::new("Invalid P-256 public key"))?;
+        let raw_signature = decode(values[0])?;
+        let canonical = canonicalize(infos[0], Algorithm::Inclusive, &[], None);
+        let matches = p256::ecdsa::Signature::from_slice(&raw_signature).is_ok_and(|signature| key.verify(&canonical, &signature).is_ok());
+        return Ok(SignatureValueCheck::EcdsaP256 { matches });
+    }
+    if spki.algorithm.oid.to_string() != "1.2.840.113549.1.1.1" { return Ok(SignatureValueCheck::Unsupported); }
     let key = RsaPublicKey::from_pkcs1_der(public_key).map_err(|_| Error::new("Invalid RSA public key"))?;
     let key_bits = key.n().bits();
     if !((if legacy { 1024 } else { 2048 })..=8192).contains(&key_bits) { return Ok(SignatureValueCheck::Unsupported); }
@@ -1020,6 +1035,30 @@ mod tests {
         }
         let duplicate = source.replace("<x:SigningCertificateV2>", "<x:SigningCertificateV2/><x:SigningCertificateV2>");
         assert_eq!(inspect(&duplicate, b"certificate"), ObjectDigest::Unsupported);
+    }
+
+    #[test]
+    fn ecdsa_p256_checks_xml_signature_format_and_curve() {
+        let bytes = include_bytes!("../tests/fixtures/signatures/ecdsa-p256-signed.docx");
+        let mut pkg = Package::open(bytes.to_vec()).unwrap();
+        let part = "_xmlsignatures/sig1.xml";
+        let xml = String::from_utf8(pkg.read(part).unwrap()).unwrap();
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::EcdsaP256 { matches: true });
+        pkg.set_bytes(part, xml.replace("#package", "#changed").into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::EcdsaP256 { matches: false });
+        let old_cert = extract_single_embedded_certificate(&pkg, part).unwrap();
+        let p384 = include_bytes!("../tests/fixtures/signatures/ecdsa-p384-cert.der");
+        let wrong_curve = xml.replace(&crate::base64::encode(&old_cert), &crate::base64::encode(p384));
+        pkg.set_bytes(part, wrong_curve.into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::Unsupported);
+        pkg.set_bytes(part, xml.replace("ecdsa-sha256", "rsa-sha256").into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::Unsupported);
+        let doc = ua_cryptography_xml_c14n::DocumentText::decode(xml.as_bytes()).unwrap();
+        let parsed = doc.parse().unwrap();
+        let value = ds_children(parsed.root_element(), "SignatureValue")[0].text().unwrap();
+        let der = include_bytes!("../tests/fixtures/signatures/ecdsa-p256-signature.der");
+        pkg.set_bytes(part, xml.replace(value, &crate::base64::encode(der)).into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::EcdsaP256 { matches: false });
     }
 
     #[test]
