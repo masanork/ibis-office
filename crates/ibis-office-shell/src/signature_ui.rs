@@ -70,9 +70,24 @@ fn format_report(reports: &[SignatureInspection]) -> String {
         message.push_str("\n\n");
         message.push_str(&crate::i18n::format("file.signature-inspect.entry", &[("number", &number), ("value", &value), ("object", &object), ("matching", &matching), ("legacy", &legacy), ("legacy_differing", &legacy_differing), ("differing", &differing), ("unknown", &unknown)]));
         if !report.additional_signed_info_references.is_empty() {
-            let count = report.additional_signed_info_references.len().to_string();
+            let mut matching = 0usize;
+            let mut legacy = 0usize;
+            let mut differing = 0usize;
+            let mut legacy_differing = 0usize;
+            let mut unknown = 0usize;
+            for reference in &report.additional_signed_info_references {
+                match reference.digest {
+                    ObjectDigest::Matches => matching += 1,
+                    ObjectDigest::Differs => differing += 1,
+                    ObjectDigest::LegacySha1 { matches: true } => legacy += 1,
+                    ObjectDigest::LegacySha1 { matches: false } => legacy_differing += 1,
+                    ObjectDigest::Unsupported => unknown += 1,
+                }
+            }
+            let matching = matching.to_string(); let legacy = legacy.to_string(); let differing = differing.to_string();
+            let legacy_differing = legacy_differing.to_string(); let unknown = unknown.to_string();
             message.push_str("\n");
-            message.push_str(&crate::i18n::format("file.signature-inspect.additional-refs", &[("count", &count)]));
+            message.push_str(&crate::i18n::format("file.signature-inspect.additional-refs", &[("matching", &matching), ("legacy", &legacy), ("differing", &differing), ("legacy_differing", &legacy_differing), ("unknown", &unknown)]));
         }
     }
     if reports.len() > 8 { message.push_str("\n\n"); message.push_str(&crate::i18n::text("file.signature-inspect.truncated")); }

@@ -41,6 +41,12 @@ pub struct ManifestReference {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct AdditionalReference {
+    pub uri: Option<String>,
+    pub digest: ObjectDigest,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum ContentTypeCheck { Matches, Differs, Missing, Unsupported }
 
 /// Individual observations, deliberately without an overall valid verdict.
@@ -49,8 +55,8 @@ pub struct SignatureInspection {
     pub signature_part: String,
     pub signature_value: SignatureValueCheck,
     pub package_object: ObjectDigest,
-    /// Additional SignedInfo references are listed but never dereferenced or checked.
-    pub additional_signed_info_references: Vec<Option<String>>,
+    /// Additional SignedInfo reference observations, not authenticated results.
+    pub additional_signed_info_references: Vec<AdditionalReference>,
     pub manifest: Vec<ManifestReference>,
     /// Certificate path, revocation, timestamps, and complete reference coverage
     /// are not evaluated by this inspection.
@@ -335,22 +341,65 @@ pub fn inspect_signatures(package: &Package) -> Result<Vec<SignatureInspection>,
     Ok(reports)
 }
 
-/// List SignedInfo references other than the package object without resolving them.
-/// The package-object binding must already have been structurally checked.
-fn additional_signed_info_references(package: &Package, signature_part: &str, object_id: &str) -> Result<Vec<Option<String>>, Error> {
-    let doc = package.xml(signature_part)?;
-    let root = doc.root_element().ok_or_else(|| Error::new("Empty signature"))?;
-    let infos: Vec<_> = doc.elements(root).filter(|&n| doc.namespace(n) == Some(DS) && doc.local_name(n) == "SignedInfo").collect();
+/// Compare a bounded subset of additional references. Only direct ds:Object
+/// children with an unqualified Id and simple fragment URI are supported.
+fn additional_signed_info_references(package: &Package, signature_part: &str, object_id: &str) -> Result<Vec<AdditionalReference>, Error> {
+    use ua_cryptography_xml_c14n::{canonicalize, Algorithm, DocumentText};
+    let bytes = package.read(signature_part)?;
+    if bytes.len() > 8 * 1024 * 1024 { return Err(Error::new("Signature XML is too large")); }
+    let text = DocumentText::decode(&bytes).map_err(|_| Error::new("Unsupported signature XML encoding"))?;
+    let doc = text.parse().map_err(|_| Error::new("Invalid signature XML"))?;
+    let root = doc.root_element();
+    if root.tag_name().namespace() != Some(DS) || root.tag_name().name() != "Signature" { return Err(Error::new("Invalid signature root")); }
+    let infos = ds_children(root, "SignedInfo");
     if infos.len() != 1 { return Err(Error::new("Expected one SignedInfo")); }
+    let mut seen = std::collections::HashSet::new();
+    for node in root.descendants().filter(|n| n.is_element()) {
+        for attr in node.attributes() {
+            if attr.name().eq_ignore_ascii_case("id") && (attr.value().is_empty() || !seen.insert(attr.value())) {
+                return Err(Error::new("Ambiguous signature identifier"));
+            }
+        }
+    }
     let package_uri = format!("#{object_id}");
     let mut additional = Vec::new();
-    for node in doc.elements(infos[0]).filter(|&n| doc.namespace(n) == Some(DS) && doc.local_name(n) == "Reference") {
-        let uri = doc.attr(node, "URI");
+    let mut processed_bytes = 0usize;
+    for reference in ds_children(infos[0], "Reference") {
+        let uri = reference.attribute("URI");
         if uri == Some(package_uri.as_str()) { continue; }
-        if additional.len() == 256 || uri.is_some_and(|u| u.len() > 4096) {
-            return Err(Error::new("Too many or oversized SignedInfo references"));
+        if additional.len() == 256 || uri.is_some_and(|u| u.len() > 4096) { return Err(Error::new("Too many or oversized SignedInfo references")); }
+        let mut digest = ObjectDigest::Unsupported;
+        let id = uri.and_then(|u| u.strip_prefix('#')).filter(|id| id.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_') && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')));
+        if let Some(id) = id.filter(|_| reference.attribute("Type") == Some("http://www.w3.org/2000/09/xmldsig#Object")) {
+            let targets: Vec<_> = ds_children(root, "Object").into_iter().filter(|n| n.attribute("Id") == Some(id)).collect();
+            let children: Vec<_> = reference.children().filter(|n| n.is_element()).collect();
+            let is_ds = |n: ua_cryptography_xml_c14n::roxmltree::Node<'_, '_>, name: &str| n.tag_name().namespace() == Some(DS) && n.tag_name().name() == name;
+            let parts = match children.as_slice() {
+                [method, value] if is_ds(*method, "DigestMethod") && is_ds(*value, "DigestValue") => Some((*method, *value)),
+                [transforms, method, value] if is_ds(*transforms, "Transforms") && is_ds(*method, "DigestMethod") && is_ds(*value, "DigestValue") => {
+                    let steps = ds_children(*transforms, "Transform");
+                    if steps.len() == 1 && transforms.children().filter(|n| n.is_element()).count() == 1 && steps[0].attribute("Algorithm") == Some(C14N) && !steps[0].children().any(|n| n.is_element()) { Some((*method, *value)) } else { None }
+                }
+                _ => None,
+            };
+            if let ([target], Some((method, value))) = (targets.as_slice(), parts) {
+                processed_bytes = processed_bytes.saturating_add(target.range().len());
+                if processed_bytes <= 16 * 1024 * 1024 && !method.children().any(|n| n.is_element()) && !value.children().any(|n| n.is_element()) {
+                    let encoded: String = value.children().filter(|n| n.is_text()).filter_map(|n| n.text()).flat_map(str::chars).filter(|c| !matches!(c, '\t' | '\n' | '\r' | ' ')).collect();
+                    if let Some(expected) = crate::base64::decode(&encoded).filter(|v| !v.is_empty() && crate::base64::encode(v) == encoded) {
+                        let canonical = canonicalize(*target, Algorithm::Inclusive, &[], None);
+                        digest = match method.attribute("Algorithm") {
+                            Some("http://www.w3.org/2000/09/xmldsig#sha1") => ObjectDigest::LegacySha1 { matches: sha1::Sha1::digest(&canonical).as_slice() == expected },
+                            Some("http://www.w3.org/2001/04/xmlenc#sha256") => if Sha256::digest(&canonical).as_slice() == expected { ObjectDigest::Matches } else { ObjectDigest::Differs },
+                            Some("http://www.w3.org/2001/04/xmldsig-more#sha384") => if Sha384::digest(&canonical).as_slice() == expected { ObjectDigest::Matches } else { ObjectDigest::Differs },
+                            Some("http://www.w3.org/2001/04/xmlenc#sha512") => if Sha512::digest(&canonical).as_slice() == expected { ObjectDigest::Matches } else { ObjectDigest::Differs },
+                            _ => ObjectDigest::Unsupported,
+                        };
+                    }
+                }
+            }
         }
-        additional.push(uri.map(str::to_owned));
+        additional.push(AdditionalReference { uri: uri.map(str::to_owned), digest });
     }
     Ok(additional)
 }
@@ -836,12 +885,45 @@ mod tests {
         let mut pkg = package(&rels(""), None);
         let xml = format!(r##"<Signature xmlns="{DS}"><SignedInfo><Reference URI="#package"/><Reference URI="#properties"/><Reference URI="https://example.invalid/external"/><Reference/><Reference URI=""/><x:Reference xmlns:x="urn:other" URI="#ignored"/></SignedInfo></Signature>"##);
         pkg.set_bytes("sig.xml", xml.into_bytes());
-        assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap(), vec![Some("#properties".into()), Some("https://example.invalid/external".into()), None, Some("".into())]);
+        let refs = additional_signed_info_references(&pkg, "sig.xml", "package").unwrap();
+        assert_eq!(refs.iter().map(|r| r.uri.as_deref()).collect::<Vec<_>>(), [Some("#properties"), Some("https://example.invalid/external"), None, Some("")]);
+        assert!(refs.iter().all(|r| r.digest == ObjectDigest::Unsupported));
         let many = format!(r#"<Signature xmlns="{DS}"><SignedInfo>{}</SignedInfo></Signature>"#, "<Reference/>".repeat(257));
         pkg.set_bytes("sig.xml", many.into_bytes());
         assert!(additional_signed_info_references(&pkg, "sig.xml", "package").is_err());
         let oversized = format!(r#"<Signature xmlns="{DS}"><SignedInfo><Reference URI="{}"/></SignedInfo></Signature>"#, "a".repeat(4097));
         pkg.set_bytes("sig.xml", oversized.into_bytes());
+        assert!(additional_signed_info_references(&pkg, "sig.xml", "package").is_err());
+    }
+
+    #[test]
+    fn additional_object_digest_checks_are_bounded_and_reject_wrapping() {
+        let mut pkg = package(&rels(""), None);
+        // lxml C14N without comments and Python hashlib, independently computed.
+        let reference = r##"<Reference URI="#office" Type="http://www.w3.org/2000/09/xmldsig#Object"><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>9iPjWb5cX1Cux6C3nNLl7xkWHOI3aTA7MH9VZ/sTtJI=</DigestValue></Reference>"##;
+        let object = r#"<Object Id="office"><Data>original</Data><!-- ignored --></Object>"#;
+        let xml = format!(r#"<Signature xmlns="{DS}"><SignedInfo>{reference}</SignedInfo>{object}</Signature>"#);
+        pkg.set_bytes("sig.xml", xml.clone().into_bytes());
+        assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::Matches);
+        let with_transform = xml.replace("<DigestMethod", &format!("<Transforms><Transform Algorithm=\"{C14N}\"/></Transforms><DigestMethod"));
+        pkg.set_bytes("sig.xml", with_transform.into_bytes());
+        assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::Matches);
+        pkg.set_bytes("sig.xml", xml.replace("original", "changed").into_bytes());
+        assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::Differs);
+        let weak = xml.replace("http://www.w3.org/2001/04/xmlenc#sha256", "http://www.w3.org/2000/09/xmldsig#sha1").replace("9iPjWb5cX1Cux6C3nNLl7xkWHOI3aTA7MH9VZ/sTtJI=", "Ck8iwHJuGDEO/YxHq9wymKbop/4=");
+        pkg.set_bytes("sig.xml", weak.into_bytes());
+        assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::LegacySha1 { matches: true });
+        for bad in [
+            xml.replace("#office", "#xpointer(id('office'))"),
+            xml.replace("#office", "#123").replace("Id=\"office\"", "Id=\"123\""),
+            xml.replace("<DigestMethod", "<Transforms><Transform Algorithm=\"urn:unsupported\"/></Transforms><DigestMethod"),
+            xml.replace("Type=\"http://www.w3.org/2000/09/xmldsig#Object\"", "Type=\"urn:other\""),
+            xml.replace(object, &format!("<Object><Wrapper>{object}</Wrapper></Object>")),
+        ] {
+            pkg.set_bytes("sig.xml", bad.into_bytes());
+            assert_eq!(additional_signed_info_references(&pkg, "sig.xml", "package").unwrap()[0].digest, ObjectDigest::Unsupported);
+        }
+        pkg.set_bytes("sig.xml", xml.replace("</Signature>", "<Object xmlns:x=\"urn:other\" x:Id=\"office\"/></Signature>").into_bytes());
         assert!(additional_signed_info_references(&pkg, "sig.xml", "package").is_err());
     }
 

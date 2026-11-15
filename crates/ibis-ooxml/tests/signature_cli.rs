@@ -132,3 +132,25 @@ fn reports_additional_signed_info_references_as_unchecked() {
     assert!(text.contains("Signature value: does not match"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn reports_additional_object_digest_and_tampering() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/synthetic-signed.docx");
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    let signature = "_xmlsignatures/sig1.xml";
+    let xml = String::from_utf8(package.read(signature).unwrap()).unwrap();
+    let reference = r##"<ds:Reference URI="#office" Type="http://www.w3.org/2000/09/xmldsig#Object"><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>8WlCwdJlKpViT32rmxo5VNWoPWFQ7ASC2XkvZOzB2Sk=</ds:DigestValue></ds:Reference>"##;
+    let modified = xml.replace("</ds:SignedInfo>", &format!("{reference}</ds:SignedInfo>"))
+        .replace("</ds:Signature>", "<ds:Object Id=\"office\"><ds:Data>original</ds:Data></ds:Object></ds:Signature>");
+    let temporary = std::env::temp_dir().join(format!("ibis-additional-digest-{}.docx", std::process::id()));
+    for (content, result) in [(modified.clone(), "digest matches"), (modified.replace("original", "changed"), "digest differs")] {
+        package.set_bytes(signature, content.into_bytes());
+        std::fs::write(&temporary, package.save(SaveOptions::default()).unwrap()).unwrap();
+        let output = run(&temporary);
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(&format!("Additional SignedInfo reference \"#office\": {result}")));
+        assert!(text.contains("Certificate trust: NOT EVALUATED"));
+    }
+    std::fs::remove_file(temporary).unwrap();
+}

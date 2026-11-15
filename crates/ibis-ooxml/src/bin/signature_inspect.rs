@@ -103,10 +103,17 @@ fn run() -> Result<(), String> {
             ObjectDigest::LegacySha1 { matches: true } => "matches (weak legacy SHA-1)", ObjectDigest::LegacySha1 { matches: false } => "differs (weak legacy SHA-1)",
             ObjectDigest::Matches => "matches", ObjectDigest::Differs => "differs", ObjectDigest::Unsupported => "not checked (unsupported)",
         });
-        for uri in &report.additional_signed_info_references {
-            match uri {
-                Some(uri) => println!("  Additional SignedInfo reference {uri:?}: NOT CHECKED"),
-                None => println!("  Additional SignedInfo reference without URI: NOT CHECKED"),
+        for item in &report.additional_signed_info_references {
+            let status = match item.digest {
+                ObjectDigest::Matches => "digest matches",
+                ObjectDigest::Differs => "digest differs",
+                ObjectDigest::LegacySha1 { matches: true } => "digest matches (weak legacy SHA-1)",
+                ObjectDigest::LegacySha1 { matches: false } => "digest differs (weak legacy SHA-1)",
+                ObjectDigest::Unsupported => "NOT CHECKED",
+            };
+            match &item.uri {
+                Some(uri) => println!("  Additional SignedInfo reference {uri:?}: {status}"),
+                None => println!("  Additional SignedInfo reference without URI: {status}"),
             }
         }
         if report.manifest.is_empty() { println!("  No manifest references found; coverage is not established."); }

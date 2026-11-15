@@ -1240,4 +1240,4 @@ file.signature-inspect.legacy-match	matches (weak SHA-1)
 file.signature-inspect.legacy-differs	differs (weak SHA-1)
 file.signature-inspect.legacy-signature-match	matches using weak RSA-SHA1 ({bits} bits)
 file.signature-inspect.legacy-signature-differs	differs using weak RSA-SHA1 ({bits} bits)
-file.signature-inspect.additional-refs	Additional SignedInfo references not checked: {count}.
+file.signature-inspect.additional-refs	Additional SignedInfo references: {matching} match, {differing} differ, {legacy} match and {legacy_differing} differ using weak SHA-1, {unknown} not checked.

@@ -10,13 +10,17 @@ It accepts a DOCX, XLSX, or PPTX package up to 128 MiB. It reports the
 signature-value comparison against an embedded **untrusted** certificate, the
 package-object digest, and the manifest reference digest and content-type
 comparisons. Unknown algorithms and transformations are reported as unsupported.
-Additional SignedInfo references are listed by the CLI and counted in the
-desktop dialog; their targets and digests are not checked or fetched. The
-inspector rejects more than 256 additional references or an additional URI
-longer than 4096 bytes.
+Additional SignedInfo references to direct `ds:Object` children by a simple
+ASCII ID are compared using SHA-256/384/512 or legacy SHA-1 and inclusive
+canonicalization. For same-document shortname fragments, comments are omitted
+as specified by [XML Signature 1.1](https://www.w3.org/TR/xmldsig-core1/#sec-Same-Document).
+Other references, including external or nested targets and
+unsupported transformations, are reported as not checked and are never fetched.
+The inspector rejects more than 256 additional references or an additional URI
+longer than 4096 bytes, and limits total object bytes processed to 16 MiB.
 
 **This is not signature validation.** Certificate path and trust, revocation,
-timestamps, additional SignedInfo references, complete document coverage, and
+timestamps, unsupported SignedInfo references, complete document coverage, and
 the effect of later edits are not established. A matching digest or signature
 value alone does not mean that a document or signer is trustworthy. A signature
 may cover only selected parts of a document.
@@ -71,8 +75,8 @@ respectively, matched in those samples using SHA-1 and 1024-bit RSA. These weak
 legacy algorithms are reported separately as diagnostics and do not establish
 security, identity, certificate trust, complete coverage, or legal validity.
 Each signature also declares an additional `#idOfficeObject` SignedInfo
-reference, whose digest is not checked. These samples do not establish general
-Office interoperability. A temporary copy
+reference; its weak SHA-1 digest matched in each sample. These samples do not
+establish general Office interoperability. A temporary copy
 of the DOCX with two independently computed SHA-256 relationship digests was
 used to check the 2006 Relationship Transform URI; that modified copy no longer
 has its original signature and is not evidence of Office interoperability.
