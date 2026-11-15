@@ -4,7 +4,7 @@
 //! Inspect signature-related observations, without making a trust decision.
 
 use std::process::ExitCode;
-use ibis_ooxml::{Package, signatures::{self, ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureValueCheck}};
+use ibis_ooxml::{Package, signatures::{self, ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureValueCheck, XadesIssuerSerial}};
 
 fn main() -> ExitCode {
     match run() {
@@ -124,7 +124,14 @@ fn run() -> Result<(), String> {
                     ObjectDigest::LegacySha1 { matches: false } => "differs from embedded certificate (weak legacy SHA-1)",
                     ObjectDigest::Unsupported => "NOT CHECKED",
                 };
-                println!("    XAdES SigningCertificateV2 digest: {status}; NOT AUTHENTICATED; issuer and serial NOT CHECKED");
+                println!("    XAdES SigningCertificateV2 digest: {status}; NOT AUTHENTICATED");
+            }
+            if let Some(issuer) = &item.xades_issuer_serial {
+                match issuer {
+                    XadesIssuerSerial::Absent => println!("    XAdES IssuerSerialV2: absent; NOT AUTHENTICATED"),
+                    XadesIssuerSerial::Unsupported => println!("    XAdES IssuerSerialV2: NOT CHECKED; NOT AUTHENTICATED"),
+                    XadesIssuerSerial::Compared { issuer_der_equal, serial_equal } => println!("    XAdES IssuerSerialV2: issuer DER identical {issuer_der_equal}; serial equal {serial_equal}; NOT AUTHENTICATED; semantic name matching NOT CHECKED"),
+                }
             }
         }
         if report.manifest.is_empty() { println!("  No manifest references found; coverage is not established."); }

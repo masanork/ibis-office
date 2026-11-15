@@ -1241,6 +1241,7 @@ file.signature-inspect.legacy-differs	differs (weak SHA-1)
 file.signature-inspect.legacy-signature-match	matches using weak RSA-SHA1 ({bits} bits)
 file.signature-inspect.legacy-signature-differs	differs using weak RSA-SHA1 ({bits} bits)
 file.signature-inspect.additional-refs	Additional SignedInfo references: {matching} match, {differing} differ, {legacy} match and {legacy_differing} differ using weak SHA-1, {unknown} not checked.
-file.signature-inspect.xades-cert	XAdES certificate digests (unauthenticated): {matching} match, {differing} differ, {weak} match and {weak_differing} differ using weak SHA-1, {unknown} not checked. Issuer and serial are not checked.
+file.signature-inspect.xades-cert	XAdES certificate digests (unauthenticated): {matching} match, {differing} differ, {weak} match and {weak_differing} differ using weak SHA-1, {unknown} not checked.
 file.signature-inspect.ecdsa-match	matches (ECDSA P-256 SHA-256)
 file.signature-inspect.ecdsa-differs	differs (ECDSA P-256 SHA-256)
+file.signature-inspect.xades-issuer	XAdES issuer/serial (unauthenticated): {exact} exact, {name_diff} different issuer DER, {serial_diff} different serial with identical issuer DER, {absent} absent, {unsupported} not checked. Semantic name matching is not checked.

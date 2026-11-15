@@ -4,7 +4,7 @@
 //! Display bounded observations about the package that was opened.
 
 use gpui_kit::*;
-use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck};
+use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial};
 use crate::editor::SlideEditor;
 
 impl SlideEditor {
@@ -104,6 +104,22 @@ fn format_report(reports: &[SignatureInspection]) -> String {
                 let matching = cert_matching.to_string(); let differing = cert_differing.to_string(); let weak = cert_weak.to_string(); let weak_differing = cert_weak_differing.to_string(); let unknown = cert_unknown.to_string();
                 message.push_str("\n");
                 message.push_str(&crate::i18n::format("file.signature-inspect.xades-cert", &[("matching", &matching), ("differing", &differing), ("weak", &weak), ("weak_differing", &weak_differing), ("unknown", &unknown)]));
+            }
+            let mut exact = 0usize; let mut name_diff = 0usize; let mut serial_diff = 0usize; let mut absent = 0usize; let mut unsupported = 0usize;
+            for reference in &report.additional_signed_info_references {
+                match &reference.xades_issuer_serial {
+                    Some(XadesIssuerSerial::Compared { issuer_der_equal: true, serial_equal: true }) => exact += 1,
+                    Some(XadesIssuerSerial::Compared { issuer_der_equal: false, .. }) => name_diff += 1,
+                    Some(XadesIssuerSerial::Compared { issuer_der_equal: true, serial_equal: false }) => serial_diff += 1,
+                    Some(XadesIssuerSerial::Absent) => absent += 1,
+                    Some(XadesIssuerSerial::Unsupported) => unsupported += 1,
+                    None => (),
+                }
+            }
+            if exact + name_diff + serial_diff + absent + unsupported > 0 {
+                let exact = exact.to_string(); let name_diff = name_diff.to_string(); let serial_diff = serial_diff.to_string(); let absent = absent.to_string(); let unsupported = unsupported.to_string();
+                message.push_str("\n");
+                message.push_str(&crate::i18n::format("file.signature-inspect.xades-issuer", &[("exact", &exact), ("name_diff", &name_diff), ("serial_diff", &serial_diff), ("absent", &absent), ("unsupported", &unsupported)]));
             }
         }
     }

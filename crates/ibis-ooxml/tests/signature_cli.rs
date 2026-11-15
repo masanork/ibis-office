@@ -190,7 +190,7 @@ fn xades_certificate_digest_is_reported_as_unauthenticated() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Signature value: matches embedded untrusted certificate"));
     assert!(text.contains("Additional SignedInfo reference \"#props\": digest matches"));
-    assert!(text.contains("XAdES SigningCertificateV2 digest: matches embedded certificate; NOT AUTHENTICATED; issuer and serial NOT CHECKED"));
+    assert!(text.contains("XAdES SigningCertificateV2 digest: matches embedded certificate; NOT AUTHENTICATED"));
     let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
     let part = "_xmlsignatures/sig1.xml";
     let cert = ibis_ooxml::signatures::extract_single_embedded_certificate(&package, part).unwrap();
@@ -262,5 +262,33 @@ fn ec_chain_and_crl_are_reported_without_trust_verdicts() {
     assert!(text.contains("Signature Matches; issuer name exact true; certificate issuer name exact true; cRLSign Some(true)"));
     assert!(text.contains("listed revocation time Some("));
     assert!(text.contains("CRL applicability and issuer trust: NOT EVALUATED"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}
+
+#[test]
+fn xades_issuer_serial_exact_and_mismatch_are_not_trust_verdicts() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    let fixture = fixtures.join("xades-issuer-serial-synthetic.docx");
+    let output = run(&fixture);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("XAdES IssuerSerialV2: issuer DER identical true; serial equal true; NOT AUTHENTICATED; semantic name matching NOT CHECKED"));
+    assert!(text.contains("XAdES SigningCertificateV2 digest: matches embedded certificate; NOT AUTHENTICATED"));
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    let part = "_xmlsignatures/sig1.xml";
+    let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+    let start_tag = "<xades:IssuerSerialV2>"; let end_tag = "</xades:IssuerSerialV2>";
+    let start = xml.find(start_tag).unwrap() + start_tag.len(); let end = xml[start..].find(end_tag).unwrap() + start;
+    let wrong = std::fs::read(fixtures.join("xades-wrong-serial.der")).unwrap();
+    let changed = format!("{}{}{}", &xml[..start], ibis_ooxml::base64::encode(&wrong), &xml[end..]);
+    package.set_bytes(part, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-xades-issuer-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("issuer DER identical true; serial equal false; NOT AUTHENTICATED"));
+    assert!(text.contains("Additional SignedInfo reference \"#props\": digest differs"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }

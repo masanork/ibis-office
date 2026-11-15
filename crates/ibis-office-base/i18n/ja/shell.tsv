@@ -1239,6 +1239,7 @@ file.signature-inspect.legacy-differs	不一致（弱い SHA-1）
 file.signature-inspect.legacy-signature-match	一致（弱い RSA-SHA1、{bits} bit）
 file.signature-inspect.legacy-signature-differs	不一致（弱い RSA-SHA1、{bits} bit）
 file.signature-inspect.additional-refs	SignedInfo の追加参照: 一致 {matching} 件、不一致 {differing} 件、弱い SHA-1 で一致 {legacy} 件・不一致 {legacy_differing} 件、未確認 {unknown} 件。
-file.signature-inspect.xades-cert	XAdES の証明書ダイジェスト（未認証）: 一致 {matching} 件、不一致 {differing} 件、弱い SHA-1 で一致 {weak} 件・不一致 {weak_differing} 件、未確認 {unknown} 件。発行者とシリアル番号は未確認。
+file.signature-inspect.xades-cert	XAdES の証明書ダイジェスト（未認証）: 一致 {matching} 件、不一致 {differing} 件、弱い SHA-1 で一致 {weak} 件・不一致 {weak_differing} 件、未確認 {unknown} 件。
 file.signature-inspect.ecdsa-match	一致（ECDSA P-256 SHA-256）
 file.signature-inspect.ecdsa-differs	不一致（ECDSA P-256 SHA-256）
+file.signature-inspect.xades-issuer	XAdES の発行者・シリアル（未認証）: 完全一致 {exact} 件、発行者の DER が異なる {name_diff} 件、発行者 DER は同一でシリアルが異なる {serial_diff} 件、属性なし {absent} 件、未確認 {unsupported} 件。発行者名の意味上の一致は未確認。

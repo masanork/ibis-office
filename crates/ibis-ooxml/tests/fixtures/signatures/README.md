@@ -52,3 +52,8 @@ unsupported curve. Both private keys were discarded.
 OpenSSL EC certificates and CRLs. The two P-256 CAs have identical names and
 distinct keys, and the P-384 CA uses the same name. OpenSSL verified the leaf
 and both CRL signatures against `ec-ca.der`; all private keys were discarded.
+
+`xades-issuer-serial-synthetic.docx` is a synthetic OpenSSL-signed package
+with an independently encoded IssuerSerialV2. `xades-wrong-issuer.der`,
+`xades-wrong-serial.der` and `xades-multiple-names.der` exercise the diagnostic
+with nonmatching and unsupported inputs. The signing key was discarded.

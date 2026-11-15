@@ -44,8 +44,17 @@ pub struct ManifestReference {
 pub struct AdditionalReference {
     pub uri: Option<String>,
     pub digest: ObjectDigest,
-    /// Unauthenticated SigningCertificateV2 digest comparison; issuer and serial are not checked.
+    /// Unauthenticated SigningCertificateV2 digest comparison.
     pub xades_certificate_digest: Option<ObjectDigest>,
+    /// Exact DER name and serial comparisons only; not an identity verdict.
+    pub xades_issuer_serial: Option<XadesIssuerSerial>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum XadesIssuerSerial {
+    Absent,
+    Compared { issuer_der_equal: bool, serial_equal: bool },
+    Unsupported,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -401,6 +410,7 @@ fn additional_signed_info_references(package: &Package, signature_part: &str, ob
         let mut digest = ObjectDigest::Unsupported;
         let is_xades = reference.attribute("Type") == Some("http://uri.etsi.org/01903#SignedProperties");
         let mut xades_certificate_digest = is_xades.then_some(ObjectDigest::Unsupported);
+        let mut xades_issuer_serial = is_xades.then_some(XadesIssuerSerial::Unsupported);
         let id = uri.and_then(|u| u.strip_prefix('#')).filter(|id| id.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_') && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')));
         if let Some(id) = id {
             const XADES: &str = "http://uri.etsi.org/01903/v1.3.2#";
@@ -431,6 +441,7 @@ fn additional_signed_info_references(package: &Package, signature_part: &str, ob
                     if is_xades {
                         let cert = signer_certificate.get_or_insert_with(|| extract_single_embedded_certificate(package, signature_part).ok());
                         xades_certificate_digest = Some(cert.as_deref().map_or(ObjectDigest::Unsupported, |cert| inspect_xades_certificate_digest(*target, cert)));
+                        xades_issuer_serial = Some(cert.as_deref().map_or(XadesIssuerSerial::Unsupported, |cert| inspect_xades_issuer_serial(*target, cert)));
                     }
                     let encoded: String = value.children().filter(|n| n.is_text()).filter_map(|n| n.text()).flat_map(str::chars).filter(|c| !matches!(c, '\t' | '\n' | '\r' | ' ')).collect();
                     if let Some(expected) = crate::base64::decode(&encoded).filter(|v| !v.is_empty() && crate::base64::encode(v) == encoded) {
@@ -446,7 +457,7 @@ fn additional_signed_info_references(package: &Package, signature_part: &str, ob
                 }
             }
         }
-        additional.push(AdditionalReference { uri: uri.map(str::to_owned), digest, xades_certificate_digest });
+        additional.push(AdditionalReference { uri: uri.map(str::to_owned), digest, xades_certificate_digest, xades_issuer_serial });
     }
     Ok(additional)
 }
@@ -477,6 +488,38 @@ fn inspect_xades_certificate_digest(properties: ua_cryptography_xml_c14n::roxmlt
         Some("http://www.w3.org/2001/04/xmlenc#sha512") => if Sha512::digest(certificate).as_slice() == expected { ObjectDigest::Matches } else { ObjectDigest::Differs },
         _ => ObjectDigest::Unsupported,
     }
+}
+
+/// Compare the first XAdES IssuerSerialV2 against the embedded certificate.
+/// Name comparison is byte-exact DER, not RFC 5280 name matching.
+fn inspect_xades_issuer_serial(properties: ua_cryptography_xml_c14n::roxmltree::Node<'_, '_>, certificate: &[u8]) -> XadesIssuerSerial {
+    use x509_cert::{Certificate, der::{Decode, Encode, Reader, SliceReader}, ext::pkix::name::{GeneralName, GeneralNames}, serial_number::SerialNumber};
+    const XADES: &str = "http://uri.etsi.org/01903/v1.3.2#";
+    fn children<'a, 'input>(node: ua_cryptography_xml_c14n::roxmltree::Node<'a, 'input>, name: &str) -> Vec<ua_cryptography_xml_c14n::roxmltree::Node<'a, 'input>> {
+        node.children().filter(|n| n.is_element() && n.tag_name().namespace() == Some(XADES) && n.tag_name().name() == name).collect()
+    }
+    let signed = children(properties, "SignedSignatureProperties");
+    if signed.len() != 1 { return XadesIssuerSerial::Unsupported; }
+    let signing = children(signed[0], "SigningCertificateV2");
+    if signing.len() != 1 { return XadesIssuerSerial::Unsupported; }
+    let certs: Vec<_> = signing[0].children().filter(|n| n.is_element()).collect();
+    if certs.is_empty() || certs.iter().any(|n| n.tag_name().namespace() != Some(XADES) || n.tag_name().name() != "Cert") { return XadesIssuerSerial::Unsupported; }
+    let fields = children(certs[0], "IssuerSerialV2");
+    if fields.is_empty() { return XadesIssuerSerial::Absent; }
+    if fields.len() != 1 || fields[0].children().any(|n| n.is_element()) { return XadesIssuerSerial::Unsupported; }
+    let encoded: String = fields[0].children().filter(|n| n.is_text()).filter_map(|n| n.text()).flat_map(str::chars).filter(|c| !matches!(c, '\t' | '\n' | '\r' | ' ')).collect();
+    if encoded.len() > (64 * 1024_usize).div_ceil(3) * 4 { return XadesIssuerSerial::Unsupported; }
+    let Some(bytes) = crate::base64::decode(&encoded).filter(|v| !v.is_empty() && v.len() <= 64 * 1024 && crate::base64::encode(v) == encoded) else { return XadesIssuerSerial::Unsupported };
+    let parsed = (|| -> x509_cert::der::Result<_> {
+        let mut reader = SliceReader::new(&bytes)?;
+        let fields = reader.sequence(|r| Ok((GeneralNames::decode(r)?, SerialNumber::decode(r)?)))?;
+        reader.finish(fields)
+    })();
+    let Ok((names, serial)) = parsed else { return XadesIssuerSerial::Unsupported };
+    let [GeneralName::DirectoryName(name)] = names.as_slice() else { return XadesIssuerSerial::Unsupported };
+    let Ok(cert) = Certificate::from_der(certificate) else { return XadesIssuerSerial::Unsupported };
+    let (Ok(expected), Ok(actual)) = (name.to_der(), cert.tbs_certificate.issuer.to_der()) else { return XadesIssuerSerial::Unsupported };
+    XadesIssuerSerial::Compared { issuer_der_equal: expected == actual, serial_equal: serial == cert.tbs_certificate.serial_number }
 }
 
 /// A structurally declared binding, not an authenticated signature.
@@ -1086,6 +1129,41 @@ mod tests {
         let der = include_bytes!("../tests/fixtures/signatures/ecdsa-p256-signature.der");
         pkg.set_bytes(part, xml.replace(value, &crate::base64::encode(der)).into_bytes());
         assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::EcdsaP256 { matches: false });
+    }
+
+    #[test]
+    fn xades_issuer_serial_compares_only_exact_der_name_and_serial() {
+        use ua_cryptography_xml_c14n::DocumentText;
+        let pkg = Package::open(include_bytes!("../tests/fixtures/signatures/xades-issuer-serial-synthetic.docx").to_vec()).unwrap();
+        let part = "_xmlsignatures/sig1.xml";
+        let xml = String::from_utf8(pkg.read(part).unwrap()).unwrap();
+        let cert = extract_single_embedded_certificate(&pkg, part).unwrap();
+        let inspect = |source: &str| {
+            let text = DocumentText::decode(source.as_bytes()).unwrap();
+            let doc = text.parse().unwrap();
+            let props = doc.root_element().descendants().find(|n| n.is_element() && n.tag_name().namespace() == Some("http://uri.etsi.org/01903/v1.3.2#") && n.tag_name().name() == "SignedProperties").unwrap();
+            inspect_xades_issuer_serial(props, &cert)
+        };
+        assert_eq!(inspect(&xml), XadesIssuerSerial::Compared { issuer_der_equal: true, serial_equal: true });
+        let start_tag = "<xades:IssuerSerialV2>"; let end_tag = "</xades:IssuerSerialV2>";
+        let start = xml.find(start_tag).unwrap() + start_tag.len(); let end = xml[start..].find(end_tag).unwrap() + start;
+        for (bytes, expected) in [
+            (include_bytes!("../tests/fixtures/signatures/xades-wrong-issuer.der").as_slice(), XadesIssuerSerial::Compared { issuer_der_equal: false, serial_equal: true }),
+            (include_bytes!("../tests/fixtures/signatures/xades-wrong-serial.der").as_slice(), XadesIssuerSerial::Compared { issuer_der_equal: true, serial_equal: false }),
+            (include_bytes!("../tests/fixtures/signatures/xades-multiple-names.der").as_slice(), XadesIssuerSerial::Unsupported),
+            (b"bad".as_slice(), XadesIssuerSerial::Unsupported),
+        ] {
+            let changed = format!("{}{}{}", &xml[..start], crate::base64::encode(bytes), &xml[end..]);
+            assert_eq!(inspect(&changed), expected);
+        }
+        let encoded = &xml[start..end];
+        assert_eq!(inspect(&xml.replace(encoded, "not-base64!")), XadesIssuerSerial::Unsupported);
+        assert_eq!(inspect(&xml.replace(encoded, &crate::base64::encode(&vec![0; 64 * 1024 + 1]))), XadesIssuerSerial::Unsupported);
+        let mut trailing = crate::base64::decode(encoded).unwrap(); trailing.push(0);
+        assert_eq!(inspect(&xml.replace(encoded, &crate::base64::encode(&trailing))), XadesIssuerSerial::Unsupported);
+        let full = format!("{start_tag}{encoded}{end_tag}");
+        assert_eq!(inspect(&xml.replace(&full, "")), XadesIssuerSerial::Absent);
+        assert_eq!(inspect(&xml.replace(&full, &format!("{full}{full}"))), XadesIssuerSerial::Unsupported);
     }
 
     #[test]
