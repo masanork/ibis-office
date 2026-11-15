@@ -1785,11 +1785,11 @@ impl SlideEditor {
                 }
             }
         }
-        // Inline Markdown autoformat (`**bold**`, `~~strike~~`, `` `code` ``) when typing the closing delimiter.
+        // Inline Markdown autoformat (`**bold**`, `*italic*`, `~~strike~~`, `++underline++`, `==highlight==`, `` `code` ``) when typing the closing delimiter.
         let inline_autoformat = (!replacing && !track && breaks == 0 && typed == 1 && prompt_start.is_none() && !self.doc_state().is_some_and(|s| s.autocorrect_off) && crate::shell::autocorrect::settings().auto_lists)
             .then(|| {
                 let ch = text.chars().next()?;
-                if !matches!(ch, '*' | '~' | '`') {
+                if !matches!(ch, '*' | '~' | '+' | '=' | '`') {
                     return None;
                 }
                 let p = flow_command::paragraph(doc, start.para)?;
@@ -8572,21 +8572,46 @@ fn find_bookmark(doc: &FlowDocument, name: &str) -> Option<u32> {
     walk(&doc.body, name)
 }
 
-/// Match closing inline Markdown delimiters (`**bold**`, `~~strike~~`, `` `code` ``) at the end of `before` when `ch` is typed.
+fn match_double_delim(before: &[char], delim: char, change: RunChange) -> Option<(usize, usize, usize, RunChange)> {
+    let n = before.len();
+    if n < 4 || before[n - 1] != delim {
+        return None;
+    }
+    let inner_end = n - 1;
+    let mut pos = inner_end;
+    while pos >= 2 {
+        if before[pos - 1] == delim && before[pos - 2] == delim {
+            let inner_start = pos;
+            if inner_start < inner_end && !before[inner_start].is_whitespace() && !before[inner_end - 1].is_whitespace() {
+                return Some((2, inner_start, inner_end, change));
+            }
+            return None;
+        }
+        pos -= 1;
+    }
+    None
+}
+
+/// Match closing inline Markdown delimiters (`**bold**`, `*italic*`, `~~strike~~`, `++underline++`, `==highlight==`, `` `code` ``) at the end of `before` when `ch` is typed.
 /// Returns `(delim_len, inner_start_char, inner_end_char, RunChange)`.
 fn match_inline_markdown_close(before: &[char], ch: char) -> Option<(usize, usize, usize, RunChange)> {
     let n = before.len();
     match ch {
         '*' => {
-            if n >= 4 && before[n - 1] == '*' {
-                let inner_end = n - 1;
-                // Search backwards for `**`
+            if let Some(m) = match_double_delim(before, '*', RunChange::Bold(true)) {
+                return Some(m);
+            }
+            if n >= 2 && before[n - 1] != '*' {
+                let inner_end = n;
                 let mut pos = inner_end;
-                while pos >= 2 {
-                    if before[pos - 1] == '*' && before[pos - 2] == '*' {
+                while pos >= 1 {
+                    if before[pos - 1] == '*' {
+                        if pos >= 2 && before[pos - 2] == '*' {
+                            break;
+                        }
                         let inner_start = pos;
                         if inner_start < inner_end && !before[inner_start].is_whitespace() && !before[inner_end - 1].is_whitespace() {
-                            return Some((2, inner_start, inner_end, RunChange::Bold(true)));
+                            return Some((1, inner_start, inner_end, RunChange::Italic(true)));
                         }
                         break;
                     }
@@ -8595,23 +8620,9 @@ fn match_inline_markdown_close(before: &[char], ch: char) -> Option<(usize, usiz
             }
             None
         }
-        '~' => {
-            if n >= 4 && before[n - 1] == '~' {
-                let inner_end = n - 1;
-                let mut pos = inner_end;
-                while pos >= 2 {
-                    if before[pos - 1] == '~' && before[pos - 2] == '~' {
-                        let inner_start = pos;
-                        if inner_start < inner_end && !before[inner_start].is_whitespace() && !before[inner_end - 1].is_whitespace() {
-                            return Some((2, inner_start, inner_end, RunChange::Strike(true)));
-                        }
-                        break;
-                    }
-                    pos -= 1;
-                }
-            }
-            None
-        }
+        '~' => match_double_delim(before, '~', RunChange::Strike(true)),
+        '+' => match_double_delim(before, '+', RunChange::Underline(true)),
+        '=' => match_double_delim(before, '=', RunChange::Highlight(Some(ibis_doc_model::Rgb(0xffff00)))),
         '`' => {
             if n >= 2 {
                 let inner_end = n;
@@ -8642,18 +8653,39 @@ mod markdown_inline_tests {
         assert_eq!((d, s, e), (2, 8, 13));
         assert!(matches!(ch, super::RunChange::Bold(true)));
 
+        let italic_before: Vec<char> = "hello *world".chars().collect();
+        let (d, s, e, ch) = super::match_inline_markdown_close(&italic_before, '*').expect("italic match");
+        assert_eq!((d, s, e), (1, 7, 12));
+        assert!(matches!(ch, super::RunChange::Italic(true)));
+
+        // Typing the first closing `*` of `**bold**` must not prematurely match `*italic*`
+        let partial_bold: Vec<char> = "hello **world".chars().collect();
+        assert!(super::match_inline_markdown_close(&partial_bold, '*').is_none());
+
         let strike_before: Vec<char> = "old ~~text~".chars().collect();
         let (d, s, e, ch) = super::match_inline_markdown_close(&strike_before, '~').expect("strike match");
         assert_eq!((d, s, e), (2, 6, 10));
         assert!(matches!(ch, super::RunChange::Strike(true)));
+
+        let underline_before: Vec<char> = "new ++text+".chars().collect();
+        let (d, s, e, ch) = super::match_inline_markdown_close(&underline_before, '+').expect("underline match");
+        assert_eq!((d, s, e), (2, 6, 10));
+        assert!(matches!(ch, super::RunChange::Underline(true)));
+
+        let highlight_before: Vec<char> = "key ==word=".chars().collect();
+        let (d, s, e, ch) = super::match_inline_markdown_close(&highlight_before, '=').expect("highlight match");
+        assert_eq!((d, s, e), (2, 6, 10));
+        assert!(matches!(ch, super::RunChange::Highlight(Some(c)) if c == ibis_doc_model::Rgb(0xffff00)));
 
         let code_before: Vec<char> = "run `cargo test".chars().collect();
         let (d, s, e, ch) = super::match_inline_markdown_close(&code_before, '`').expect("code match");
         assert_eq!((d, s, e), (1, 5, 15));
         assert!(matches!(ch, super::RunChange::Font(ref f) if f == "Consolas"));
 
-        // Reject whitespace-bounded bold/strike
+        // Reject whitespace-bounded delimiters
         let space_bold: Vec<char> = "** spaced *".chars().collect();
         assert!(super::match_inline_markdown_close(&space_bold, '*').is_none());
+        let space_italic: Vec<char> = "* spaced".chars().collect();
+        assert!(super::match_inline_markdown_close(&space_italic, '*').is_none());
     }
 }
