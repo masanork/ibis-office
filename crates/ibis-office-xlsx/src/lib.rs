@@ -159,6 +159,7 @@ pub(crate) mod shape_edit;
 pub(crate) mod chart_insert;
 pub mod threaded_comments;
 pub(crate) mod accessibility_panel;
+pub(crate) mod machine_readability;
 pub(crate) mod compatibility_panel;
 pub(crate) mod selection_pane;
 pub(crate) mod frame_panel;

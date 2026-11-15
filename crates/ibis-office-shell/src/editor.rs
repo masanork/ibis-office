@@ -879,6 +879,9 @@ impl SlideEditor {
         self.source = Some(if marked_toc { source } else { source.rebased(self.presentation()) });
     }
 
+    /// Whether the current CSV is still being read in the background.
+    pub fn is_csv_streaming(&self) -> bool { self.is_csv_streaming }
+
     /// Whether this editor is currently in read-only / viewing mode (either via `--read-only` or during CSV streaming).
     pub fn is_read_only(&self) -> bool {
         self.read_only || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()

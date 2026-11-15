@@ -41,6 +41,7 @@ pub mod query;
 pub mod shape_geometry;
 pub mod shape_merge;
 pub mod sheet;
+pub mod machine_readability;
 pub mod sheet_calc;
 pub mod sheet_command;
 pub mod sheet_ops;

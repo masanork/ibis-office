@@ -115,6 +115,7 @@ pub use super::Xlsx2 as _;
 pub(crate) use super::Xlsx2Crate as _;
 pub use super::links::Links as _;
 pub(crate) use super::links::LinksCrate as _;
+pub(crate) use super::machine_readability::MachineReadabilityCrate as _;
 pub use super::move_chart::MoveChartExt as _;
 pub(crate) use super::move_chart::MoveChartExtCrate as _;
 pub(crate) use super::names::NamesCrate as _;
