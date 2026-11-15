@@ -9,7 +9,7 @@
 //! the table's style, the paragraph's style (and the styles it is based
 //! on), the run's character style, then direct formatting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ibis_doc_model::{
@@ -28,6 +28,50 @@ use crate::theme::Theme;
 use crate::xml::{attr, attr_bool, attr_i64, child, children, elements};
 
 type Rels = HashMap<String, Relationship>;
+
+pub(crate) const W14_NS: &str = "http://schemas.microsoft.com/office/word/2010/wordml";
+
+/// Paragraph identities share a namespace across all of a package's parts.
+#[derive(Default)]
+pub(crate) struct ParaIds {
+    used: HashSet<u32>,
+    next: u32,
+}
+
+impl ParaIds {
+    pub(crate) fn value(id: &str) -> Option<u32> {
+        if id.len() != 8 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u32::from_str_radix(id, 16).ok().filter(|v| *v > 0 && *v < 0x8000_0000)
+    }
+
+    pub(crate) fn reserve(&mut self, id: &str) {
+        if let Some(value) = Self::value(id) {
+            self.used.insert(value);
+        }
+    }
+
+    pub(crate) fn reserve_xml(&mut self, xml: &str) {
+        if let Ok(doc) = parse("paragraph identities", xml) {
+            for node in doc.descendants().filter(|n| n.is_element()) {
+                if let Some(id) = node.attribute((W14_NS, "paraId")) {
+                    self.reserve(id);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn fresh(&mut self) -> String {
+        loop {
+            self.next += 1;
+            assert!(self.next < 0x8000_0000, "paragraph identities exhausted");
+            if self.used.insert(self.next) {
+                return format!("{:08X}", self.next);
+            }
+        }
+    }
+}
 
 /// EMU per twentieth of a point (twip).
 const EMU_PER_TWIP: i64 = 635;
@@ -706,6 +750,13 @@ struct Reader<'p, 'd, 'i> {
     theme_node: Option<Node<'d, 'i>>,
     /// The last id given to a paragraph or table.
     last_id: u32,
+    para_ids: ParaIds,
+    /// Identities already read, by their source (a shared header may be read twice).
+    paragraph_ids: HashMap<(String, Vec<u32>), String>,
+    /// The first source of each authored identity, by part and XML offset,
+    /// including unmodeled parts.
+    para_id_sources: HashMap<u32, (String, usize)>,
+    reading_comments: bool,
     /// The part being read, and where things came from.
     part: String,
     sources: SourceMap,
@@ -981,6 +1032,24 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
     }
 
     fn paragraph(&mut self, p: Node, path: &[u32], rels: &Rels, table_style: Option<&str>) -> FlowParagraph {
+        let para_id = p.attribute((W14_NS, "paraId")).and_then(|authored| {
+            // Comment threads use the authored spelling in commentsExtended.xml.
+            if self.reading_comments {
+                return ParaIds::value(authored).map(|_| authored.to_string());
+            }
+            let key = (self.part.clone(), path.to_vec());
+            if let Some(id) = self.paragraph_ids.get(&key) {
+                return Some(id.clone());
+            }
+            let value = ParaIds::value(authored);
+            let id = if let Some(value) = value.filter(|v| self.para_id_sources.get(v).is_some_and(|(part, offset)| part == &self.part && *offset == p.range().start)) {
+                format!("{value:08X}")
+            } else {
+                self.para_ids.fresh()
+            };
+            self.paragraph_ids.insert(key, id.clone());
+            Some(id)
+        });
         let ppr = child(p, "pPr");
         let style = ppr.and_then(|p| wval(p, "pStyle")).map(str::to_string);
         let (_, base_run) = self.styles.paragraph_base(style.as_deref(), table_style);
@@ -1020,6 +1089,7 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         });
         let mut paragraph = FlowParagraph {
             id,
+            para_id,
             style,
             table_style: table_style.map(str::to_string),
             direct: ppr.map(|p| para_format(p, self.theme)).unwrap_or_default(),
@@ -3647,6 +3717,25 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
         let media = presentation.add_media(MediaFormat::from_path(&rel.target), data);
         styles.numbering.pic_bullets.insert(id, (media, size));
     }
+    // Reserve even identities in parts the model does not read. A replacement
+    // must not take a valid identity from a paragraph read later.
+    let archive = crate::zip::Archive::new(data)?;
+    let mut para_ids = ParaIds::default();
+    let mut para_id_sources = HashMap::new();
+    let mut parts = archive.names();
+    // Other parts keep their authored identities when the body repeats one.
+    parts.sort_by(|a, b| (a == &main, a).cmp(&(b == &main, b)));
+    for part in parts.into_iter().filter(|p| p.ends_with(".xml")) {
+        let Ok(xml) = package.read_xml(&part) else { continue };
+        para_ids.reserve_xml(&xml);
+        if let Ok(doc) = parse(&part, &xml) {
+            for p in doc.descendants().filter(|n| n.is_element()) {
+                if let Some(value) = p.attribute((W14_NS, "paraId")).and_then(ParaIds::value) {
+                    para_id_sources.entry(value).or_insert_with(|| (part.clone(), p.range().start));
+                }
+            }
+        }
+    }
     let mut reader = Reader {
         package: &package,
         theme: &theme,
@@ -3656,6 +3745,10 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
         media: HashMap::new(),
         theme_node: theme_doc.as_ref().map(|d| d.root_element()),
         last_id: 0,
+        para_ids,
+        paragraph_ids: HashMap::new(),
+        para_id_sources,
+        reading_comments: false,
         part: main.clone(),
         sources,
         fields: FieldState::default(),
@@ -3754,6 +3847,7 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
     // The comments, and from commentsExtended.xml which answers which and
     // which are resolved (by their last paragraph's w14:paraId).
     let mut comments: Vec<Comment> = Vec::new();
+    reader.reading_comments = true;
     if let Some(part) = rels.values().find(|r| !r.external && r.kind.ends_with("/comments")).map(|r| r.target.clone())
         && let Ok(xml) = package.read_xml(&part)
     {

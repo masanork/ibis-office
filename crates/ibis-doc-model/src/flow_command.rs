@@ -1085,7 +1085,7 @@ pub fn apply_to(doc: &mut FlowDocument, command: FlowCommand) -> Result<FlowComm
                 (0, vec![Block::Paragraph(p.clone()), Block::Table(table)])
             } else {
                 let mut first = FlowParagraph { runs: p.runs_before(at.offset), ..p.clone() };
-                let mut second = FlowParagraph { id: id(), runs: p.runs_after(at.offset), section_break: crate::flow::SectionBreak::None, section: None, bookmarks: Vec::new(), field_start: None, field_end: false, subdoc: None, ..p.clone() };
+                let mut second = FlowParagraph { id: id(), para_id: None, runs: p.runs_after(at.offset), section_break: crate::flow::SectionBreak::None, section: None, bookmarks: Vec::new(), field_start: None, field_end: false, subdoc: None, ..p.clone() };
                 first.resolve(&styles);
                 first.normalize();
                 second.resolve(&styles);
@@ -2699,6 +2699,7 @@ pub fn apply_to(doc: &mut FlowDocument, command: FlowCommand) -> Result<FlowComm
                         // (they stay with its element, the first part).
                         paragraphs.push(FlowParagraph {
                             id: next_id,
+                            para_id: None,
                             runs: Vec::new(),
                             section_break: crate::flow::SectionBreak::None,
                             section: None,
@@ -3441,6 +3442,7 @@ pub fn renumbered(blocks: &[Block], next: &mut u32) -> Vec<Block> {
             Block::Paragraph(p) => {
                 let mut p = p.clone();
                 p.id = *next;
+                p.para_id = None;
                 *next += 1;
                 p.bookmarks.clear();
                 Block::Paragraph(p)
@@ -4068,6 +4070,7 @@ pub fn join_marked(chain: &[&FlowParagraph], first_id: bool) -> FlowParagraph {
     let mut joined = (*last).clone();
     if first_id {
         joined.id = chain[0].id;
+        joined.para_id = chain[0].para_id.clone();
     }
     joined.runs = chain.iter().flat_map(|p| p.runs.iter().cloned()).collect();
     joined.bookmarks = Vec::new();
@@ -4107,7 +4110,7 @@ fn empty_like(cell: &FlowCell, next: &mut u32, styles: &FlowStyles) -> FlowCell 
         *next - 1
     };
     let mut para = match cell.blocks.iter().find_map(|b| if let Block::Paragraph(p) = b { Some(p.clone()) } else { None }) {
-        Some(p) => FlowParagraph { id: id(), runs: Vec::new(), list: None, ..p },
+        Some(p) => FlowParagraph { id: id(), para_id: None, runs: Vec::new(), list: None, ..p },
         None => FlowParagraph { id: id(), ..FlowParagraph::default() },
     };
     para.resolve(styles);
