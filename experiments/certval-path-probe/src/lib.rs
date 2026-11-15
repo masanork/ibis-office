@@ -71,6 +71,7 @@ struct PathProbeReport {
 enum PathProbeInputError {
     TooManyIntermediates,
     InputTooLarge,
+    InvalidTime,
 }
 
 /// Examine a caller-selected anchor, target and anchor-to-target intermediates.
@@ -84,6 +85,9 @@ fn inspect_explicit_path(
 ) -> Result<PathProbeReport, PathProbeInputError> {
     if intermediates.len() > 7 {
         return Err(PathProbeInputError::TooManyIntermediates);
+    }
+    if TimeOfInterest::from_unix_secs(time).map_or(true, |t| t.is_disabled()) {
+        return Err(PathProbeInputError::InvalidTime);
     }
     let inputs = std::iter::once(anchor)
         .chain(intermediates.iter().copied())
@@ -177,6 +181,11 @@ fn inspect_document_candidate_paths(
 ) -> Result<DocumentPathProbe, DocumentProbeError> {
     use ibis_ooxml::signatures;
     use sha2::{Digest, Sha256};
+    if TimeOfInterest::from_unix_secs(time).map_or(true, |t| t.is_disabled()) {
+        return Err(DocumentProbeError::PathInput(
+            PathProbeInputError::InvalidTime,
+        ));
+    }
     let parts = signatures::signature_parts(package)
         .map_err(|e| DocumentProbeError::Package(e.to_string()))?;
     if !parts.iter().any(|part| part == signature_part) {
@@ -489,6 +498,32 @@ mod tests {
             ),
             Err(DocumentProbeError::UnregisteredSignature)
         );
+        assert_eq!(
+            inspect_document_candidate_paths(
+                &package,
+                "_xmlsignatures/sig1.xml",
+                &[],
+                &[],
+                0,
+                CertificationPathSettings::new()
+            ),
+            Err(DocumentProbeError::PathInput(
+                PathProbeInputError::InvalidTime
+            ))
+        );
+        assert_eq!(
+            inspect_document_candidate_paths(
+                &package,
+                "_xmlsignatures/sig1.xml",
+                &[root],
+                &[intermediate],
+                u64::MAX,
+                CertificationPathSettings::new()
+            ),
+            Err(DocumentProbeError::PathInput(
+                PathProbeInputError::InvalidTime
+            ))
+        );
         let original = ibis_ooxml::Package::open(
             include_bytes!(
                 "../../../crates/ibis-ooxml/tests/fixtures/signatures/synthetic-signed.docx"
@@ -663,6 +698,14 @@ mod tests {
             ),
             Err(PathProbeInputError::TooManyIntermediates)
         );
+        assert_eq!(
+            inspect_explicit_path(leaf, root, &[], 0, settings()),
+            Err(PathProbeInputError::InvalidTime)
+        );
+        assert_eq!(
+            inspect_explicit_path(leaf, root, &[], u64::MAX, settings()),
+            Err(PathProbeInputError::InvalidTime)
+        );
         let oversize = vec![0; 1024 * 1024 + 1];
         assert_eq!(
             inspect_explicit_path(&oversize, root, &[], 1796083200, settings()),
@@ -815,4 +858,12 @@ mod tests {
             }
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod cli;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn cli_main() -> std::process::ExitCode {
+    cli::main()
 }

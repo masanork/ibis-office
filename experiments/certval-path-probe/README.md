@@ -22,6 +22,40 @@ python3 experiments/certval-path-probe/verify_policy_reference.py
 python3 experiments/certval-path-probe/verify_algorithm_reference.py
 ```
 
+The experimental native command can inspect one relationship-discovered
+signature using explicitly supplied DER files. For the synthetic fixture:
+
+```sh
+cargo run --locked --manifest-path experiments/certval-path-probe/Cargo.toml -- \
+  experiments/certval-path-probe/data/document-path-signed.docx \
+  --signature _xmlsignatures/sig1.xml --at 1796083200 \
+  --anchor experiments/certval-path-probe/data/document-path-root.der \
+  --intermediate experiments/certval-path-probe/data/document-path-intermediate.der \
+  --policy-any
+```
+
+The caller must specify at least one `--anchor`, `--signature`, a nonzero
+`--at`, and either `--policy-any` or one or more `--policy` OIDs. The underlying
+validator treats Unix time zero as disabled time checking, so this command and
+the path probe reject zero rather than silently skip validity checks.
+`--policy-any` means no particular policy is required and can accept absent
+policy; `--policy <oid>` requires an explicit matching policy. Optional
+`--inhibit-any` and `--inhibit-mapping` set the corresponding initial inputs;
+the selected settings are printed. These are caller decisions, not a built-in
+FPKI, eIDAS or Japanese PKI profile. The existing `ibis-signature-inspect`
+command can list discovered signature parts before selecting one here.
+
+The command reads at most 128 MiB for the document, 1 MiB per certificate and
+4 MiB total for supplied certificates, with at most eight anchors and sixteen
+intermediates. ZIP metadata is limited to 4096 entries, 16 MiB expanded per
+entry and 128 MiB expanded in total. These limits do not constitute a full
+resource-exhaustion audit. Candidate search and output are bounded separately; only 16
+manifest-reference examples are printed. Exit status 0 means that inspection
+completed, even if XML signature, reference or path checks fail. Status 2 means
+input or inspection failed. No final document, revocation or trust decision is
+made. Cargo may download dependencies at build time; the command itself makes
+no network requests and does not load a system trust store.
+
 Two tests exercise 11 combinations: a direct valid path, an existing
 RSA-SHA384 fixture, a path with an explicit intermediate, a different issuer,
 a same-name/different-key issuer, an expired target, a changed signature,
