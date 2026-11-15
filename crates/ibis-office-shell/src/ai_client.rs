@@ -323,7 +323,21 @@ struct ChatCompletionRequest<'a> {
     messages: &'a [ChatMessage],
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ToolDefinition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
     stream: bool,
+}
+
+fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str> {
+    if !has_tools {
+        return None;
+    }
+    let lower = model.trim().to_ascii_lowercase();
+    if lower.starts_with("gpt-5") || lower.starts_with("gpt-6") {
+        Some("none")
+    } else {
+        None
+    }
 }
 
 /// Send a streaming Chat Completions request and invoke `on_delta` for each text chunk.
@@ -339,10 +353,12 @@ pub async fn stream_chat_completion(
     use std::process::{Command, Stdio};
 
     let url = config.completions_url();
+    let reasoning_effort = default_reasoning_effort(&config.model, !tools.is_empty());
     let payload = serde_json::to_vec(&ChatCompletionRequest {
         model: &config.model,
         messages,
         tools,
+        reasoning_effort,
         stream: true,
     })
     .map_err(|e| format!("failed to serialize request: {e}"))?;

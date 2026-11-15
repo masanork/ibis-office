@@ -607,21 +607,42 @@ impl SlideEditor {
                     .child("セル範囲の集計、数式の作成、書式設定などを指示できます。"),
             );
         }
-        for msg in &messages {
+        for (idx, msg) in messages.iter().enumerate() {
             let (bg, fg) = match msg.kind {
                 UiMessageKind::User => (cx.theme().primary.opacity(0.12), cx.theme().foreground),
                 UiMessageKind::Assistant => (cx.theme().secondary.opacity(0.5), cx.theme().foreground),
                 UiMessageKind::Tool => (cx.theme().secondary.opacity(0.25), cx.theme().muted_foreground),
                 UiMessageKind::Error => (cx.theme().danger.opacity(0.15), cx.theme().danger),
             };
+            let copy_text = msg.text.clone();
+            let show_copy = matches!(msg.kind, UiMessageKind::Error | UiMessageKind::Assistant);
             msg_list = msg_list.child(
-                div()
+                v_flex()
                     .p_2()
+                    .gap_1()
                     .rounded_md()
                     .bg(bg)
-                    .text_xs()
-                    .text_color(fg)
-                    .child(msg.text.clone()),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(fg)
+                            .child(msg.text.clone()),
+                    )
+                    .when(show_copy, |box_el| {
+                        box_el.child(
+                            h_flex().w_full().justify_end().child(
+                                Button::new(("ai-assistant-copy", idx))
+                                    .ghost()
+                                    .xsmall()
+                                    .label("コピー")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_text.clone(),
+                                        ));
+                                    })),
+                            ),
+                        )
+                    }),
             );
         }
         if !streaming_text.is_empty() {
