@@ -14,7 +14,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 
-## Rust の部品（510 件）
+## Rust の部品（511 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -312,6 +312,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell |
 | option-ext | 0.2.0 | MPL-2.0 | https://github.com/soc/option-ext.git |
 | p256 | 0.13.2 | Apache-2.0 OR MIT | https://github.com/RustCrypto/elliptic-curves/tree/master/p256 |
+| p384 | 0.13.1 | Apache-2.0 OR MIT | https://github.com/RustCrypto/elliptic-curves/tree/master/p384 |
 | parking | 2.2.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/parking |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
@@ -1087,6 +1088,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **once_cell 1.21.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **option-ext 0.2.0**：(c) under Patent Claims infringed by Covered Software in the absence of
 - **p256 0.13.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020-2023 RustCrypto Developers
+- **p384 0.13.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020-2021 RustCrypto Developers
 - **parking 2.2.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2014-2020 The Rust Project Developers
 - **parking_lot 0.12.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers
 - **parking_lot_core 0.9.12**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers

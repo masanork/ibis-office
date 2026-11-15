@@ -1245,3 +1245,5 @@ file.signature-inspect.ecdsa-differs	不一致（ECDSA P-256 SHA-256）
 file.signature-inspect.xades-issuer	XAdES の発行者・シリアル（未認証）: 完全一致 {exact} 件、発行者の DER が異なる {name_diff} 件、発行者 DER は同一でシリアルが異なる {serial_diff} 件、属性なし {absent} 件、未確認 {unsupported} 件。発行者名の意味上の一致は未確認。
 file.signature-inspect.pss-match	一致（RSA-PSS SHA-256）
 file.signature-inspect.pss-differs	不一致（RSA-PSS SHA-256）
+file.signature-inspect.ecdsa384-match	一致（ECDSA P-384 SHA-384）
+file.signature-inspect.ecdsa384-differs	不一致（ECDSA P-384 SHA-384）

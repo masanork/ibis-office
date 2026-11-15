@@ -77,3 +77,9 @@ all leaf and CRL signatures independently; the keys were discarded.
 `rsa-pss-param-{default,empty,explicit}.docx` are synthetic RSA-PSS XML
 signatures with omitted, empty, and explicitly specified parameters. OpenSSL
 verified each SHA-256/MGF1-SHA256/32-byte-salt signature. The key was discarded.
+
+`p384-ca.der`, `p384-other.der`, `p384-{normal,sha256}-leaf.der`,
+`p384-{normal,sha256}.crl.der`, and `p384-signed-synthetic.docx` are
+independently generated P-384 test data. LibreSSL verified each signature,
+and `p384-signature.der` checks rejection of DER in XML SignatureValue.
+The CA private keys were discarded.

@@ -16,7 +16,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | Lucide | アイコン（`assets/icons/`） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 
-## Rust の部品（471 件）
+## Rust の部品（472 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -268,6 +268,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | ouroboros | 0.18.5 | MIT OR Apache-2.0 | https://github.com/someguynamedjosh/ouroboros |
 | ouroboros_macro | 0.18.5 | MIT OR Apache-2.0 | https://github.com/someguynamedjosh/ouroboros |
 | p256 | 0.13.2 | Apache-2.0 OR MIT | https://github.com/RustCrypto/elliptic-curves/tree/master/p256 |
+| p384 | 0.13.1 | Apache-2.0 OR MIT | https://github.com/RustCrypto/elliptic-curves/tree/master/p384 |
 | parking | 2.2.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/parking |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
@@ -1038,6 +1039,7 @@ The donation is distributed under AGPL-3.0-only. The original MIT notice is reta
 - **ouroboros 0.18.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2021 Josh / Copyright (c) 2021 Josh
 - **ouroboros_macro 0.18.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2021 Josh / Copyright (c) 2021 Josh
 - **p256 0.13.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020-2023 RustCrypto Developers
+- **p384 0.13.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020-2021 RustCrypto Developers
 - **parking 2.2.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2014-2020 The Rust Project Developers
 - **parking_lot 0.12.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers
 - **parking_lot_core 0.9.12**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 The Rust Project Developers

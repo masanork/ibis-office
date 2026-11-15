@@ -40,6 +40,7 @@ fn format_report(reports: &[SignatureInspection]) -> String {
                 if matches { "file.signature-inspect.legacy-signature-match" } else { "file.signature-inspect.legacy-signature-differs" },
                 &[("bits", &key_bits.to_string())]),
             SignatureValueCheck::RsaPssSha256 { matches } => crate::i18n::text(if matches { "file.signature-inspect.pss-match" } else { "file.signature-inspect.pss-differs" }).to_string(),
+            SignatureValueCheck::EcdsaP384 { matches } => crate::i18n::text(if matches { "file.signature-inspect.ecdsa384-match" } else { "file.signature-inspect.ecdsa384-differs" }).to_string(),
             SignatureValueCheck::EcdsaP256 { matches } => crate::i18n::text(if matches { "file.signature-inspect.ecdsa-match" } else { "file.signature-inspect.ecdsa-differs" }).to_string(),
             SignatureValueCheck::MatchesUntrustedCertificate => crate::i18n::text("file.signature-inspect.matches").to_string(),
             SignatureValueCheck::Differs => crate::i18n::text("file.signature-inspect.differs").to_string(),

@@ -1247,3 +1247,5 @@ file.signature-inspect.ecdsa-differs	differs (ECDSA P-256 SHA-256)
 file.signature-inspect.xades-issuer	XAdES issuer/serial (unauthenticated): {exact} exact, {name_diff} different issuer DER, {serial_diff} different serial with identical issuer DER, {absent} absent, {unsupported} not checked. Semantic name matching is not checked.
 file.signature-inspect.pss-match	matches (RSA-PSS SHA-256)
 file.signature-inspect.pss-differs	differs (RSA-PSS SHA-256)
+file.signature-inspect.ecdsa384-match	matches (ECDSA P-384 SHA-384)
+file.signature-inspect.ecdsa384-differs	differs (ECDSA P-384 SHA-384)
