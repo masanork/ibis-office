@@ -2647,6 +2647,7 @@ impl Writer<'_> {
         if a.direction != b.direction {
             let value = match b.direction {
                 ibis_doc_model::CellDirection::TbRl => Some("tbRl"),
+                ibis_doc_model::CellDirection::TbRlV => Some("tbRlV"),
                 ibis_doc_model::CellDirection::BtLr => Some("btLr"),
                 ibis_doc_model::CellDirection::TbLrV => Some("tbLrV"),
                 ibis_doc_model::CellDirection::LrTbV => Some("lrTbV"),
@@ -3315,6 +3316,7 @@ impl Writer<'_> {
             let v = match new.direction {
                 ibis_doc_model::CellDirection::LrTb => None,
                 ibis_doc_model::CellDirection::TbRl => Some("tbRl"),
+                ibis_doc_model::CellDirection::TbRlV => Some("tbRlV"),
                 ibis_doc_model::CellDirection::BtLr => Some("btLr"),
                 ibis_doc_model::CellDirection::LrTbV => Some("lrTbV"),
                 ibis_doc_model::CellDirection::TbLrV => Some("tbLrV"),
@@ -3459,6 +3461,16 @@ impl Writer<'_> {
                     let e = self.doc.append_element(tc_pr, &w("gridSpan"));
                     self.doc.set_attr(e, "w:val", &cell.span.to_string());
                 }
+                match cell.merge {
+                    VerticalMerge::None => {}
+                    VerticalMerge::Start => {
+                        let e = self.doc.append_element(tc_pr, &w("vMerge"));
+                        self.doc.set_attr(e, "w:val", "restart");
+                    }
+                    VerticalMerge::Continue => {
+                        self.doc.append_element(tc_pr, &w("vMerge"));
+                    }
+                }
                 // A newly constructed table may have per-cell rules even
                 // when its table-level grid is absent (for example, an
                 // imported document with different borders on each row).
@@ -3472,6 +3484,7 @@ impl Writer<'_> {
                 if cell.direction != ibis_doc_model::CellDirection::LrTb {
                     let d = match cell.direction {
                         ibis_doc_model::CellDirection::TbRl => "tbRl",
+                        ibis_doc_model::CellDirection::TbRlV => "tbRlV",
                         ibis_doc_model::CellDirection::BtLr => "btLr",
                         ibis_doc_model::CellDirection::LrTbV => "lrTbV",
                         ibis_doc_model::CellDirection::TbLrV => "tbLrV",
