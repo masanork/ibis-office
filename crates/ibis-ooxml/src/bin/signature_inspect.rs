@@ -102,6 +102,10 @@ fn run() -> Result<(), String> {
                     Ok(policies) => println!("  {role} {} SHA-256: {hex}; policies: {:?}", index + 1, policies),
                     Err(_) => println!("  {role} {} SHA-256: {hex}; policies: NOT INSPECTED", index + 1),
                 }
+                match signatures::inspect_certificate_policy_controls(cert) {
+                    Ok(controls) => println!("    Policy control observations (UNTRUSTED; NOT applied): {:?}", controls),
+                    Err(_) => println!("    Policy control observations: NOT INSPECTED"),
+                }
             }
         }
         println!("  Fingerprints identify supplied bytes; they do not establish path membership or anchor trust. Policy mappings, constraints, qualifiers, and policy tree: NOT EVALUATED.");
@@ -110,6 +114,8 @@ fn run() -> Result<(), String> {
     for report in reports {
         println!("\nSignature part: {:?}", report.signature_part);
         println!("  Certificate policies (UNTRUSTED; NOT path or jurisdiction validation): {:?}", report.certificate_policies);
+        let controls = signatures::extract_single_embedded_certificate(&package, &report.signature_part).ok().and_then(|der| signatures::inspect_certificate_policy_controls(&der).ok());
+        println!("  Certificate policy control observations (UNTRUSTED; NOT applied): {:?}", controls);
         if let Some(hints) = &report.certificate_locations {
             println!("  Certificate location hints (UNTRUSTED; NOT FETCHED): AIA {:?}; CRL distribution points {:?}", hints.aia, hints.crl_distribution_points);
             for (label, list) in [("OCSP", &hints.ocsp), ("CA issuer", &hints.ca_issuers), ("CRL", &hints.crl)] {

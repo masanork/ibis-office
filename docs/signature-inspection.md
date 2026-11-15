@@ -115,8 +115,14 @@ SHA-256 fingerprint and bounded policy-extension observations. Fingerprints
 can be compared with candidate path entries, but this inventory includes
 supplied certificates that may not be in any candidate path. Anchor-certificate
 policy extensions are certificate metadata and are not automatically applied
-as trust-anchor constraints. No policy mappings, constraints, qualifiers or
-policy tree are evaluated; neither matching OIDs nor their absence establish
+as trust-anchor constraints. For the embedded signer and supplied certificates,
+the CLI separately observes policyMappings OID pairs, policyConstraints and
+inhibitAnyPolicy values, including critical flags. It inspects at most 64
+mapping pairs and displays up to eight, reports truncation, repeated pairs and
+anyPolicy in a mapping, and reports malformed encodings, duplicate extensions or unsupported values
+as unparsed. Integer values beyond the parser's 32-bit range are unparsed.
+These values are never applied as constraints. No policy mappings, constraints,
+qualifiers or policy tree are evaluated; neither matching OIDs nor their absence establish
 path-policy acceptance.
 
 These candidates use exact ASN.1 name matching and are **not validated**;

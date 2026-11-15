@@ -109,3 +109,8 @@ LibreSSL. The fixed nonce is for tests only.
 certificate with an arbitrary test policy, anyPolicy and an `.invalid` CPS
 URI. Python cryptography created it and LibreSSL inspected the policy extension;
 the private key was discarded. These OIDs do not establish policy compliance.
+
+`policy-controls.der` is an independently generated synthetic self-signed
+certificate containing a private test mapping, policy constraints and
+inhibitAnyPolicy. Python cryptography generated it, LibreSSL inspected the
+extensions, and the private key was discarded. It conveys no trust.

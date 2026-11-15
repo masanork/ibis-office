@@ -140,6 +140,83 @@ pub fn inspect_certificate_policies(certificate_der: &[u8]) -> Result<Certificat
         qualifier_entries_inspected: qualifier_entries, empty_qualifier_sequences_inspected: empty_qualifiers, examples })
 }
 
+/// Encoded policy-related data from one untrusted certificate. No values are
+/// applied as path constraints or treated as evidence of policy compliance.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CertificatePolicyControls {
+    pub mappings: CertificateControl<CertificatePolicyMappings>,
+    pub constraints: CertificateControl<CertificatePolicyConstraints>,
+    pub inhibit_any_policy: CertificateControl<u32>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CertificateControl<T> {
+    Absent,
+    /// Includes invalid, duplicate, and values outside this parser's limits.
+    UnparsedOrDuplicate,
+    Present { critical: bool, value: T },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CertificatePolicyMappings {
+    pub total: usize,
+    pub inspected: usize,
+    pub truncated: bool,
+    pub any_policy_pairs_inspected: usize,
+    pub repeated_pairs_inspected: usize,
+    /// At most eight literal issuer/subject OID pairs; no mapping is applied.
+    pub examples: Vec<(String, String)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CertificatePolicyConstraints {
+    pub require_explicit_policy: Option<u32>,
+    pub inhibit_policy_mapping: Option<u32>,
+}
+
+/// Observe only policy control extensions on one supplied certificate.
+/// No trust, constraint applicability, validity or path policy is decided.
+pub fn inspect_certificate_policy_controls(certificate_der: &[u8]) -> Result<CertificatePolicyControls, Error> {
+    use x509_cert::{Certificate, der::Decode, ext::pkix::{InhibitAnyPolicy, PolicyConstraints, PolicyMappings}};
+    if certificate_der.len() > 1024 * 1024 { return Err(Error::new("Certificate is too large")); }
+    let cert = Certificate::from_der(certificate_der).map_err(|_| Error::new("Invalid certificate"))?;
+    let mappings = match cert.tbs_certificate.get::<PolicyMappings>() {
+        Ok(None) => CertificateControl::Absent,
+        Ok(Some((critical, mappings))) if !mappings.0.is_empty() => {
+            let total = mappings.0.len();
+            let mut seen = Vec::with_capacity(64);
+            let mut examples = Vec::new();
+            let mut repeated = 0;
+            let mut any_policy = 0;
+            for mapping in mappings.0.iter().take(64) {
+                let pair = (mapping.issuer_domain_policy, mapping.subject_domain_policy);
+                if seen.contains(&pair) { repeated += 1; } else { seen.push(pair); }
+                let issuer = pair.0.to_string(); let subject = pair.1.to_string();
+                if issuer == "2.5.29.32.0" || subject == "2.5.29.32.0" { any_policy += 1; }
+                if examples.len() < 8 { examples.push((issuer, subject)); }
+            }
+            CertificateControl::Present { critical, value: CertificatePolicyMappings {
+                total, inspected: total.min(64), truncated: total > 64,
+                any_policy_pairs_inspected: any_policy, repeated_pairs_inspected: repeated, examples,
+            } }
+        }
+        _ => CertificateControl::UnparsedOrDuplicate,
+    };
+    let constraints = match cert.tbs_certificate.get::<PolicyConstraints>() {
+        Ok(None) => CertificateControl::Absent,
+        Ok(Some((critical, value))) => CertificateControl::Present { critical, value: CertificatePolicyConstraints {
+            require_explicit_policy: value.require_explicit_policy, inhibit_policy_mapping: value.inhibit_policy_mapping,
+        } },
+        Err(_) => CertificateControl::UnparsedOrDuplicate,
+    };
+    let inhibit_any_policy = match cert.tbs_certificate.get::<InhibitAnyPolicy>() {
+        Ok(None) => CertificateControl::Absent,
+        Ok(Some((critical, value))) => CertificateControl::Present { critical, value: value.0 },
+        Err(_) => CertificateControl::UnparsedOrDuplicate,
+    };
+    Ok(CertificatePolicyControls { mappings, constraints, inhibit_any_policy })
+}
+
 /// Untrusted certificate extension hints. No URI is fetched or validated.
 #[derive(Debug, PartialEq, Eq)]
 pub struct CertificateLocationHints {
@@ -1761,6 +1838,54 @@ mod tests {
         assert_eq!(inventory.unlisted_examples.len(), 16);
         assert!(inventory.examples_truncated);
         assert!(inventory.unlisted > inventory.unlisted_examples.len());
+    }
+
+    #[test]
+    fn policy_control_observations_do_not_apply_constraints() {
+        use x509_cert::{Certificate, der::{Decode, Encode, asn1::{ObjectIdentifier, OctetString}}, ext::pkix::{PolicyMappings, PolicyMapping}};
+        let der = include_bytes!("../tests/fixtures/signatures/policy-controls.der");
+        let facts = inspect_certificate_policy_controls(der).unwrap();
+        assert_eq!(facts.mappings, CertificateControl::Present { critical: true, value: CertificatePolicyMappings {
+            total: 1, inspected: 1, truncated: false, any_policy_pairs_inspected: 0, repeated_pairs_inspected: 0,
+            examples: vec![("1.2.3.4".into(), "1.2.3.5".into())],
+        }});
+        assert_eq!(facts.constraints, CertificateControl::Present { critical: true, value: CertificatePolicyConstraints { require_explicit_policy: Some(2), inhibit_policy_mapping: Some(3) } });
+        assert_eq!(facts.inhibit_any_policy, CertificateControl::Present { critical: true, value: 4 });
+        let absent = inspect_certificate_policy_controls(include_bytes!("../tests/fixtures/signatures/ocsp-leaf.der")).unwrap();
+        assert_eq!(absent.mappings, CertificateControl::Absent);
+        assert_eq!(absent.constraints, CertificateControl::Absent);
+        assert_eq!(absent.inhibit_any_policy, CertificateControl::Absent);
+        assert!(inspect_certificate_policy_controls(b"bad").is_err());
+        assert!(inspect_certificate_policy_controls(&vec![0; 1024 * 1024 + 1]).is_err());
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        let extensions = cert.tbs_certificate.extensions.as_mut().unwrap();
+        let constraints = extensions.iter().find(|ext| ext.extn_id.to_string() == "2.5.29.36").unwrap().clone();
+        extensions.push(constraints);
+        let facts = inspect_certificate_policy_controls(&cert.to_der().unwrap()).unwrap();
+        assert_eq!(facts.constraints, CertificateControl::UnparsedOrDuplicate);
+        assert!(matches!(facts.mappings, CertificateControl::Present { .. }));
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        let extensions = cert.tbs_certificate.extensions.as_mut().unwrap();
+        extensions.iter_mut().find(|ext| ext.extn_id.to_string() == "2.5.29.54").unwrap().extn_value = OctetString::new(vec![0x02, 0x01, 0xff]).unwrap();
+        let facts = inspect_certificate_policy_controls(&cert.to_der().unwrap()).unwrap();
+        assert_eq!(facts.inhibit_any_policy, CertificateControl::UnparsedOrDuplicate);
+        assert!(matches!(facts.constraints, CertificateControl::Present { .. }));
+        let ext = cert.tbs_certificate.extensions.as_mut().unwrap().iter_mut().find(|ext| ext.extn_id.to_string() == "2.5.29.54").unwrap();
+        ext.extn_value = OctetString::new(vec![0x02, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00]).unwrap();
+        assert_eq!(inspect_certificate_policy_controls(&cert.to_der().unwrap()).unwrap().inhibit_any_policy, CertificateControl::UnparsedOrDuplicate);
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        let mut mappings = cert.tbs_certificate.get::<PolicyMappings>().unwrap().unwrap().1;
+        let pair = PolicyMapping { issuer_domain_policy: ObjectIdentifier::new_unwrap("2.5.29.32.0"), subject_domain_policy: ObjectIdentifier::new_unwrap("1.2.3.4") };
+        for _ in 0..65 { mappings.0.push(pair.clone()); }
+        let ext = cert.tbs_certificate.extensions.as_mut().unwrap().iter_mut().find(|ext| ext.extn_id.to_string() == "2.5.29.33").unwrap();
+        ext.extn_value = OctetString::new(mappings.to_der().unwrap()).unwrap();
+        let facts = inspect_certificate_policy_controls(&cert.to_der().unwrap()).unwrap();
+        assert!(matches!(facts.mappings, CertificateControl::Present { value: CertificatePolicyMappings { total: 66, inspected: 64, truncated: true, any_policy_pairs_inspected: 63, repeated_pairs_inspected: 62, .. }, .. }));
+        if let CertificateControl::Present { value, .. } = facts.mappings { assert_eq!(value.examples.len(), 8); }
+        mappings.0.clear();
+        let ext = cert.tbs_certificate.extensions.as_mut().unwrap().iter_mut().find(|ext| ext.extn_id.to_string() == "2.5.29.33").unwrap();
+        ext.extn_value = OctetString::new(mappings.to_der().unwrap()).unwrap();
+        assert_eq!(inspect_certificate_policy_controls(&cert.to_der().unwrap()).unwrap().mappings, CertificateControl::UnparsedOrDuplicate);
     }
 
     #[test]

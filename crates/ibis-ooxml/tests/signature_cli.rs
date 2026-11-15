@@ -645,6 +645,7 @@ fn supplied_certificate_policies_are_labeled_by_role_and_fingerprint() {
     let document = fixtures.join("synthetic-signed.docx");
     let policy = fixtures.join("certificate-policies.der");
     let intermediate = fixtures.join("ocsp-leaf.der");
+    let controls = fixtures.join("policy-controls.der");
     let mut malformed = Certificate::from_der(&std::fs::read(&policy).unwrap()).unwrap();
     malformed.tbs_certificate.extensions.as_mut().unwrap()[0].extn_value = OctetString::new(vec![0xff]).unwrap();
     let malformed_path = std::env::temp_dir().join(format!("ibis-policy-malformed-{}.der", std::process::id()));
@@ -654,6 +655,7 @@ fn supplied_certificate_policies_are_labeled_by_role_and_fingerprint() {
     let output = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&document)
         .arg("--anchor").arg(&policy).arg("--anchor").arg(&policy)
         .arg("--anchor").arg(&malformed_path)
+        .arg("--anchor").arg(&controls)
         .arg("--intermediate").arg(&intermediate).output().unwrap();
     std::fs::remove_file(malformed_path).unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
@@ -663,6 +665,11 @@ fn supplied_certificate_policies_are_labeled_by_role_and_fingerprint() {
     assert!(text.contains(&format!("Anchor candidate 1 SHA-256: {}; policies: Present", fingerprint(&policy))));
     assert!(text.contains(&format!("Anchor candidate 2 SHA-256: {}; policies: Present", fingerprint(&policy))));
     assert!(text.contains(&format!("Anchor candidate 3 SHA-256: {malformed_hash}; policies: InvalidOrDuplicateExtension")));
+    assert!(text.contains(&format!("Anchor candidate 4 SHA-256: {}; policies: Absent", fingerprint(&controls))));
+    assert!(text.contains("Policy control observations (UNTRUSTED; NOT applied)"));
+    assert!(text.contains("require_explicit_policy: Some(2), inhibit_policy_mapping: Some(3)"));
+    assert!(text.contains("inhibit_any_policy: Present { critical: true, value: 4 }"));
+    assert!(text.contains("(\"1.2.3.4\", \"1.2.3.5\")"));
     assert!(text.contains("1.2.3.4.5"));
     assert!(text.contains("Candidate paths: 0"));
     assert!(text.contains("they do not establish path membership or anchor trust"));
