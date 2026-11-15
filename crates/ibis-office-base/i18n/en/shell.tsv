@@ -821,6 +821,7 @@ settings.view.scrollbars-always	Always show scroll bars
 file.save-format.docx	Word Document (.docx)
 file.save-format.dotx	Word Template (.dotx)
 file.save-format.odt	OpenDocument Text (.odt)
+file.save-format.md	Markdown Document (.md)
 file.save-format.xlsx	Excel Workbook (.xlsx)
 file.save-format.xltx	Excel Template (.xltx)
 file.save-format.xls	Excel 97-2003 Workbook (.xls)

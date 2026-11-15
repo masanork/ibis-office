@@ -416,7 +416,7 @@ impl FormatEditor for Document {
         search_history_key: "menu-search.history.document",
         px_per_inch_at_100: crate::shell::editor::PX_PER_INCH_AT_100,
         #[cfg(not(target_family = "wasm"))]
-        save_formats: &[("file.save-format.docx", "docx"), ("file.save-format.dotx", "dotx"), ("file.save-format.odt", "odt")],
+        save_formats: &[("file.save-format.docx", "docx"), ("file.save-format.dotx", "dotx"), ("file.save-format.odt", "odt"), ("file.save-format.md", "md")],
     };
 
     fn box_edit_active(editor: &SlideEditor) -> bool {
@@ -520,6 +520,13 @@ impl FormatEditor for Document {
         if extension.eq_ignore_ascii_case("odt") {
             // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
             return Some(ibis_pptx::docx_convert::export_docx_to_odt(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
+        }
+        if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
+            return Some(
+                ibis_pptx::docx_convert::export_docx_format(editor.presentation(), ibis_pptx::docx_convert::DocxConvertFormat::Markdown)
+                    .map(|bytes| FileBytes { bytes, protect: false, note: None })
+                    .map_err(|e| e.to_string()),
+            );
         }
         if extension.eq_ignore_ascii_case("dotx") || extension.eq_ignore_ascii_case("dotm") {
             return Some(source.save_template(editor.presentation(), ibis_pptx::SaveOptions::default()).map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()));

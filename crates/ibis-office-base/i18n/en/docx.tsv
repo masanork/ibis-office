@@ -2103,6 +2103,7 @@ docx.convert.format.rtf	Rich Text Format (.rtf)
 docx.convert.format.txt	Plain Text (.txt)
 docx.convert.format.html	Web Page (.html)
 docx.convert.format.odt	OpenDocument Text (.odt)
+docx.convert.format.md	Markdown Document (.md)
 docx.convert.export-title	Export to Another Format
 docx.convert.export-path	Output file path
 docx.convert.export-btn	Export

@@ -32,13 +32,15 @@ pub enum DocxConvertFormat {
     Html,
     /// OpenDocument テキスト (`.odt`) — `DOCX-FILE-012`
     Odt,
+    /// リッチ Markdown (`.md`)
+    Markdown,
     /// PDF から文書への変換 (`.pdf`) — `DOCX-FILE-013`
     Pdf,
 }
 
 impl DocxConvertFormat {
-    pub const EXPORTABLE: [Self; 5] = [Self::Doc, Self::Rtf, Self::Txt, Self::Html, Self::Odt];
-    pub const IMPORTABLE: [Self; 6] = [Self::Doc, Self::Rtf, Self::Txt, Self::Html, Self::Odt, Self::Pdf];
+    pub const EXPORTABLE: [Self; 6] = [Self::Doc, Self::Rtf, Self::Txt, Self::Html, Self::Odt, Self::Markdown];
+    pub const IMPORTABLE: [Self; 7] = [Self::Doc, Self::Rtf, Self::Txt, Self::Html, Self::Odt, Self::Markdown, Self::Pdf];
 
     pub fn extension(self) -> &'static str {
         match self {
@@ -47,6 +49,7 @@ impl DocxConvertFormat {
             Self::Doc => "doc",
             Self::Html => "html",
             Self::Odt => "odt",
+            Self::Markdown => "md",
             Self::Pdf => "pdf",
         }
     }
@@ -58,6 +61,7 @@ impl DocxConvertFormat {
             "doc" => Some(Self::Doc),
             "html" | "htm" => Some(Self::Html),
             "odt" => Some(Self::Odt),
+            "md" | "markdown" => Some(Self::Markdown),
             "pdf" => Some(Self::Pdf),
             _ => None,
         }
@@ -80,6 +84,8 @@ impl DocxConvertFormat {
             let s = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_ascii_lowercase();
             if s.contains("<!doctype html") || s.contains("<html") || s.contains("<body") {
                 Some(Self::Html)
+            } else if crate::markdown::is_markdown(bytes) {
+                Some(Self::Markdown)
             } else {
                 Some(Self::Txt)
             }
@@ -2515,6 +2521,7 @@ pub fn export_docx_format(
         DocxConvertFormat::Doc => export_docx_to_doc(presentation),
         DocxConvertFormat::Html => export_docx_to_html(presentation),
         DocxConvertFormat::Odt => export_docx_to_odt(presentation),
+        DocxConvertFormat::Markdown => crate::markdown::export_presentation_to_markdown(presentation).map(String::into_bytes),
         DocxConvertFormat::Pdf => Err(Error::new("PDF の書き出しは export_pdf を使用してください")),
     }
 }
@@ -2527,6 +2534,7 @@ pub fn import_docx_format(data: &[u8], format: DocxConvertFormat) -> Result<Open
         DocxConvertFormat::Doc => import_doc(data),
         DocxConvertFormat::Html => import_html(data),
         DocxConvertFormat::Odt => import_odt(data),
+        DocxConvertFormat::Markdown => crate::markdown::open_markdown(data.to_vec()),
         DocxConvertFormat::Pdf => import_pdf(data),
     }
 }

@@ -819,6 +819,7 @@ settings.view.scrollbars-always	スクロール バーを常に表示する
 file.save-format.docx	Word 文書 (.docx)
 file.save-format.dotx	Word テンプレート (.dotx)
 file.save-format.odt	OpenDocument テキスト (.odt)
+file.save-format.md	Markdown 文書 (.md)
 file.save-format.xlsx	Excel ブック (.xlsx)
 file.save-format.xltx	Excel テンプレート (.xltx)
 file.save-format.xls	Excel 97-2003 ブック (.xls)

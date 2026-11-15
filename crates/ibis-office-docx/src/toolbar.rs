@@ -1621,6 +1621,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
         ("docx.file.export.txt", "docx.convert.format.txt", ibis_pptx::docx_convert::DocxConvertFormat::Txt),
         ("docx.file.export.html", "docx.convert.format.html", ibis_pptx::docx_convert::DocxConvertFormat::Html),
         ("docx.file.export.odt", "docx.convert.format.odt", ibis_pptx::docx_convert::DocxConvertFormat::Odt),
+        ("docx.file.export.md", "docx.convert.format.md", ibis_pptx::docx_convert::DocxConvertFormat::Markdown),
     ] {
         let entry = MenuItem::new(id, crate::shell::i18n::text(key)).icon("description")
             .on(move |editor, window, cx| editor.export_docx_format_dialog(format, window, cx)).into();

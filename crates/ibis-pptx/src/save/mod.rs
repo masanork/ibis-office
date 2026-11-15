@@ -171,6 +171,11 @@ pub fn open_progressive(
     if crate::docx_convert::is_odt(&data) {
         data = crate::docx_convert::import_odt_to_docx_bytes(&data)?.into();
     }
+    if crate::markdown::is_markdown(&data) {
+        let opened = crate::markdown::open_markdown(data.to_vec())?;
+        crate::progress::fraction(1.0);
+        return Ok((opened, None));
+    }
 
     let mut csv_records = None;
     #[allow(unused_mut)]

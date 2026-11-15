@@ -2094,6 +2094,7 @@ docx.convert.format.rtf	リッチ テキスト形式 (.rtf)
 docx.convert.format.txt	書式なし (プレーン テキスト) (.txt)
 docx.convert.format.html	Web ページ (.html)
 docx.convert.format.odt	OpenDocument テキスト (.odt)
+docx.convert.format.md	Markdown 文書 (.md)
 docx.convert.export-title	別形式で書き出し
 docx.convert.export-path	出力先ファイルパス
 docx.convert.export-btn	書き出し
