@@ -75,6 +75,42 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
             height_px,
         });
     }
+    if first_line == "stateDiagram"
+        || first_line == "stateDiagram-v2"
+        || first_line.starts_with("stateDiagram ")
+        || first_line.starts_with("stateDiagram-v2 ")
+    {
+        let (bytes, width_px, height_px) = render_state_diagram_svg(trimmed)?;
+        return Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        });
+    }
+    if first_line == "classDiagram" || first_line.starts_with("classDiagram ") {
+        let (bytes, width_px, height_px) = render_class_diagram_svg(trimmed)?;
+        return Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        });
+    }
+    if first_line == "erDiagram" || first_line.starts_with("erDiagram ") {
+        let (bytes, width_px, height_px) = render_er_diagram_svg(trimmed)?;
+        return Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        });
+    }
+    if first_line == "gantt" || first_line.starts_with("gantt ") {
+        let (bytes, width_px, height_px) = render_gantt_svg(trimmed)?;
+        return Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        });
+    }
     None
 }
 
@@ -789,98 +825,6 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         return None;
     }
 
-    // Assign layers via longest-path DFS (ignoring back-edges).
-    let n = nodes.len();
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for e in &edges {
-        if e.from != e.to {
-            adj[e.from].push(e.to);
-        }
-    }
-    let mut in_deg = vec![0usize; n];
-    for list in &adj {
-        for &v in list {
-            in_deg[v] += 1;
-        }
-    }
-    let mut layer = vec![0usize; n];
-    let mut state = vec![0u8; n]; // 0 = unvisited, 1 = visiting, 2 = done
-    let mut topo = Vec::with_capacity(n);
-    fn dfs(
-        u: usize,
-        adj: &[Vec<usize>],
-        state: &mut [u8],
-        topo: &mut Vec<usize>,
-    ) {
-        state[u] = 1;
-        for &v in &adj[u] {
-            if state[v] == 0 {
-                dfs(v, adj, state, topo);
-            }
-        }
-        state[u] = 2;
-        topo.push(u);
-    }
-    for i in 0..n {
-        if in_deg[i] == 0 && state[i] == 0 {
-            dfs(i, &adj, &mut state, &mut topo);
-        }
-    }
-    for i in 0..n {
-        if state[i] == 0 {
-            dfs(i, &adj, &mut state, &mut topo);
-        }
-    }
-    topo.reverse();
-    let mut rank_pos = vec![0usize; n];
-    for (pos, &u) in topo.iter().enumerate() {
-        rank_pos[u] = pos;
-    }
-    for &u in &topo {
-        for &v in &adj[u] {
-            if rank_pos[u] < rank_pos[v] {
-                layer[v] = layer[v].max(layer[u] + 1);
-            }
-        }
-    }
-
-    let max_layer = layer.iter().copied().max().unwrap_or(0);
-    let mut layers: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
-    for (idx, &l) in layer.iter().enumerate() {
-        layers[l].push(idx);
-    }
-
-    // Simple barycenter ordering pass to reduce edge crossings.
-    let mut rev_adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for e in &edges {
-        if e.from != e.to {
-            rev_adj[e.to].push(e.from);
-        }
-    }
-    for _ in 0..2 {
-        for l in 1..=max_layer {
-            let prev_pos: HashMap<usize, usize> = layers[l - 1]
-                .iter()
-                .enumerate()
-                .map(|(i, &u)| (u, i))
-                .collect();
-            layers[l].sort_by(|&a, &b| {
-                let bary = |u: usize| -> f32 {
-                    let mut sum = 0.0;
-                    let mut cnt = 0.0;
-                    for &p in &rev_adj[u] {
-                        if let Some(&pos) = prev_pos.get(&p) {
-                            sum += pos as f32;
-                            cnt += 1.0;
-                        }
-                    }
-                    if cnt > 0.0 { sum / cnt } else { f32::MAX }
-                };
-                bary(a).partial_cmp(&bary(b)).unwrap_or(std::cmp::Ordering::Equal)
-            });
-        }
-    }
-
     // Node dimensions
     let node_sizes: Vec<(f32, f32)> = nodes
         .iter()
@@ -903,59 +847,17 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let layer_gap = 64.0f32;
     let sibling_gap = 34.0f32;
 
-    // Calculate center coordinates for each node.
-    let mut layer_primary_sizes: Vec<f32> = Vec::with_capacity(layers.len());
-    let mut layer_cross_sizes: Vec<f32> = Vec::with_capacity(layers.len());
-    for l_nodes in &layers {
-        let mut p_max = 40.0f32;
-        let mut c_sum = 0.0f32;
-        for (i, &u) in l_nodes.iter().enumerate() {
-            let (nw, nh) = node_sizes[u];
-            let (p, c) = if horizontal { (nw, nh) } else { (nh, nw) };
-            p_max = p_max.max(p);
-            c_sum += c;
-            if i + 1 < l_nodes.len() {
-                c_sum += sibling_gap;
-            }
-        }
-        layer_primary_sizes.push(p_max);
-        layer_cross_sizes.push(c_sum);
-    }
-
-    let max_cross = layer_cross_sizes.iter().copied().fold(0.0f32, f32::max);
-    let total_primary: f32 = layer_primary_sizes.iter().sum::<f32>()
-        + layer_gap * (layers.len().saturating_sub(1) as f32);
-
-    let mut centers = vec![(0.0f32, 0.0f32); n];
-    let mut p_cursor = margin;
-    let layer_iter: Vec<usize> = if reversed {
-        (0..layers.len()).rev().collect()
-    } else {
-        (0..layers.len()).collect()
-    };
-    for l in layer_iter {
-        let p_size = layer_primary_sizes[l];
-        let c_total = layer_cross_sizes[l];
-        let mut c_cursor = margin + (max_cross - c_total) / 2.0;
-        for &u in &layers[l] {
-            let (nw, nh) = node_sizes[u];
-            let (p_mid, c_span) = (p_cursor + p_size / 2.0, if horizontal { nh } else { nw });
-            let c_mid = c_cursor + c_span / 2.0;
-            centers[u] = if horizontal {
-                (p_mid, c_mid)
-            } else {
-                (c_mid, p_mid)
-            };
-            c_cursor += c_span + sibling_gap;
-        }
-        p_cursor += p_size + layer_gap;
-    }
-
-    let (total_w, total_h) = if horizontal {
-        ((total_primary + margin * 2.0).ceil() as u32, (max_cross + margin * 2.0).ceil() as u32)
-    } else {
-        ((max_cross + margin * 2.0).ceil() as u32, (total_primary + margin * 2.0).ceil() as u32)
-    };
+    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
+    let (centers, total_w, total_h) = compute_layered_layout(
+        nodes.len(),
+        &edge_pairs,
+        &node_sizes,
+        horizontal,
+        reversed,
+        margin,
+        layer_gap,
+        sibling_gap,
+    );
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -1363,6 +1265,1427 @@ fn parse_node_token(token: &str) -> (&str, Option<String>, Option<NodeShape>) {
 }
 
 // ============================================================================
+// Shared Layered Layout (used by flowchart, stateDiagram, classDiagram, erDiagram)
+// ============================================================================
+
+#[allow(clippy::too_many_arguments)]
+fn compute_layered_layout(
+    n: usize,
+    edges: &[(usize, usize)],
+    node_sizes: &[(f32, f32)],
+    horizontal: bool,
+    reversed: bool,
+    margin: f32,
+    layer_gap: f32,
+    sibling_gap: f32,
+) -> (Vec<(f32, f32)>, u32, u32) {
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        if from != to {
+            adj[from].push(to);
+        }
+    }
+    let mut in_deg = vec![0usize; n];
+    for list in &adj {
+        for &v in list {
+            in_deg[v] += 1;
+        }
+    }
+    let mut layer = vec![0usize; n];
+    let mut state = vec![0u8; n];
+    let mut topo = Vec::with_capacity(n);
+    fn dfs(u: usize, adj: &[Vec<usize>], state: &mut [u8], topo: &mut Vec<usize>) {
+        state[u] = 1;
+        for &v in &adj[u] {
+            if state[v] == 0 {
+                dfs(v, adj, state, topo);
+            }
+        }
+        state[u] = 2;
+        topo.push(u);
+    }
+    for i in 0..n {
+        if in_deg[i] == 0 && state[i] == 0 {
+            dfs(i, &adj, &mut state, &mut topo);
+        }
+    }
+    for i in 0..n {
+        if state[i] == 0 {
+            dfs(i, &adj, &mut state, &mut topo);
+        }
+    }
+    topo.reverse();
+    let mut rank_pos = vec![0usize; n];
+    for (pos, &u) in topo.iter().enumerate() {
+        rank_pos[u] = pos;
+    }
+    for &u in &topo {
+        for &v in &adj[u] {
+            if rank_pos[u] < rank_pos[v] {
+                layer[v] = layer[v].max(layer[u] + 1);
+            }
+        }
+    }
+
+    let max_layer = layer.iter().copied().max().unwrap_or(0);
+    let mut layers: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
+    for (idx, &l) in layer.iter().enumerate() {
+        layers[l].push(idx);
+    }
+
+    let mut rev_adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        if from != to {
+            rev_adj[to].push(from);
+        }
+    }
+    for _ in 0..2 {
+        for l in 1..=max_layer {
+            let prev_pos: HashMap<usize, usize> = layers[l - 1]
+                .iter()
+                .enumerate()
+                .map(|(i, &u)| (u, i))
+                .collect();
+            layers[l].sort_by(|&a, &b| {
+                let bary = |u: usize| -> f32 {
+                    let mut sum = 0.0;
+                    let mut cnt = 0.0;
+                    for &p in &rev_adj[u] {
+                        if let Some(&pos) = prev_pos.get(&p) {
+                            sum += pos as f32;
+                            cnt += 1.0;
+                        }
+                    }
+                    if cnt > 0.0 { sum / cnt } else { f32::MAX }
+                };
+                bary(a)
+                    .partial_cmp(&bary(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    }
+
+    let mut layer_primary_sizes: Vec<f32> = Vec::with_capacity(layers.len());
+    let mut layer_cross_sizes: Vec<f32> = Vec::with_capacity(layers.len());
+    for l_nodes in &layers {
+        let mut p_max = 32.0f32;
+        let mut c_sum = 0.0f32;
+        for (i, &u) in l_nodes.iter().enumerate() {
+            let (nw, nh) = node_sizes[u];
+            let (p, c) = if horizontal { (nw, nh) } else { (nh, nw) };
+            p_max = p_max.max(p);
+            c_sum += c;
+            if i + 1 < l_nodes.len() {
+                c_sum += sibling_gap;
+            }
+        }
+        layer_primary_sizes.push(p_max);
+        layer_cross_sizes.push(c_sum);
+    }
+
+    let max_cross = layer_cross_sizes.iter().copied().fold(0.0f32, f32::max);
+    let total_primary: f32 = layer_primary_sizes.iter().sum::<f32>()
+        + layer_gap * (layers.len().saturating_sub(1) as f32);
+
+    let mut centers = vec![(0.0f32, 0.0f32); n];
+    let mut p_cursor = margin;
+    let layer_iter: Vec<usize> = if reversed {
+        (0..layers.len()).rev().collect()
+    } else {
+        (0..layers.len()).collect()
+    };
+    for l in layer_iter {
+        let p_size = layer_primary_sizes[l];
+        let c_total = layer_cross_sizes[l];
+        let mut c_cursor = margin + (max_cross - c_total) / 2.0;
+        for &u in &layers[l] {
+            let (nw, nh) = node_sizes[u];
+            let (p_mid, c_span) = (p_cursor + p_size / 2.0, if horizontal { nh } else { nw });
+            let c_mid = c_cursor + c_span / 2.0;
+            centers[u] = if horizontal {
+                (p_mid, c_mid)
+            } else {
+                (c_mid, p_mid)
+            };
+            c_cursor += c_span + sibling_gap;
+        }
+        p_cursor += p_size + layer_gap;
+    }
+
+    let (total_w, total_h) = if horizontal {
+        (
+            (total_primary + margin * 2.0).ceil() as u32,
+            (max_cross + margin * 2.0).ceil() as u32,
+        )
+    } else {
+        (
+            (max_cross + margin * 2.0).ceil() as u32,
+            (total_primary + margin * 2.0).ceil() as u32,
+        )
+    };
+    (centers, total_w.max(120), total_h.max(80))
+}
+
+// ============================================================================
+// State Diagram (stateDiagram / stateDiagram-v2)
+// ============================================================================
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StateKind {
+    Start,
+    End,
+    Normal,
+}
+
+struct StateNode {
+    label: String,
+    description: Option<String>,
+    kind: StateKind,
+    composite: Option<String>,
+}
+
+struct StateEdge {
+    from: usize,
+    to: usize,
+    label: Option<String>,
+}
+
+fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let mut horizontal = false;
+    let mut reversed = false;
+    let mut nodes: Vec<StateNode> = Vec::new();
+    let mut node_map: HashMap<String, usize> = HashMap::new();
+    let mut edges: Vec<StateEdge> = Vec::new();
+    let mut composite_stack: Vec<String> = Vec::new();
+
+    let ensure_state = |raw_id: &str, nodes: &mut Vec<StateNode>, map: &mut HashMap<String, usize>, comp: Option<&str>| -> usize {
+        let id = raw_id.trim();
+        if let Some(&idx) = map.get(id) {
+            if nodes[idx].composite.is_none() {
+                nodes[idx].composite = comp.map(ToString::to_string);
+            }
+            return idx;
+        }
+        let idx = nodes.len();
+        nodes.push(StateNode {
+            label: id.to_string(),
+            description: None,
+            kind: StateKind::Normal,
+            composite: comp.map(ToString::to_string),
+        });
+        map.insert(id.to_string(), idx);
+        idx
+    };
+
+    for raw in source.lines().skip(1) {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") {
+            continue;
+        }
+        if l == "}" {
+            composite_stack.pop();
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("direction ") {
+            match rest.trim().to_ascii_uppercase().as_str() {
+                "LR" => {
+                    horizontal = true;
+                    reversed = false;
+                }
+                "RL" => {
+                    horizontal = true;
+                    reversed = true;
+                }
+                "BT" => {
+                    horizontal = false;
+                    reversed = true;
+                }
+                _ => {
+                    horizontal = false;
+                    reversed = false;
+                }
+            }
+            continue;
+        }
+        if l.starts_with("note ") || l.starts_with("end note") {
+            continue;
+        }
+        let cur_comp = composite_stack.last().map(String::as_str);
+        if let Some(rest) = l.strip_prefix("state ") {
+            if let Some(before_brace) = rest.strip_suffix('{') {
+                let name = unquote(before_brace.trim());
+                composite_stack.push(name);
+                continue;
+            }
+            if let Some((disp, alias)) = rest.split_once(" as ") {
+                let idx = ensure_state(alias.trim(), &mut nodes, &mut node_map, cur_comp);
+                nodes[idx].label = unquote(disp.trim());
+                continue;
+            }
+        }
+        if let Some((lhs_raw, rhs_all)) = l.split_once("-->") {
+            let lhs = lhs_raw.trim();
+            let (rhs_raw, label) = if let Some((r, lbl)) = rhs_all.split_once(':') {
+                (r.trim(), Some(lbl.trim().to_string()).filter(|s| !s.is_empty()))
+            } else {
+                (rhs_all.trim(), None)
+            };
+            let from = if lhs == "[*]" {
+                if let Some(&idx) = node_map.get("__start__") {
+                    idx
+                } else {
+                    let idx = nodes.len();
+                    nodes.push(StateNode {
+                        label: String::new(),
+                        description: None,
+                        kind: StateKind::Start,
+                        composite: cur_comp.map(ToString::to_string),
+                    });
+                    node_map.insert("__start__".to_string(), idx);
+                    idx
+                }
+            } else {
+                ensure_state(lhs, &mut nodes, &mut node_map, cur_comp)
+            };
+            let to = if rhs_raw == "[*]" {
+                if let Some(&idx) = node_map.get("__end__") {
+                    idx
+                } else {
+                    let idx = nodes.len();
+                    nodes.push(StateNode {
+                        label: String::new(),
+                        description: None,
+                        kind: StateKind::End,
+                        composite: cur_comp.map(ToString::to_string),
+                    });
+                    node_map.insert("__end__".to_string(), idx);
+                    idx
+                }
+            } else {
+                ensure_state(rhs_raw, &mut nodes, &mut node_map, cur_comp)
+            };
+            edges.push(StateEdge { from, to, label });
+            continue;
+        }
+        if let Some((state_id, desc)) = l.split_once(':') {
+            let sid = state_id.trim();
+            if !sid.is_empty() && !sid.contains(' ') {
+                let idx = ensure_state(sid, &mut nodes, &mut node_map, cur_comp);
+                nodes[idx].description = Some(desc.trim().to_string());
+            }
+        }
+    }
+
+    if nodes.is_empty() {
+        return None;
+    }
+
+    let node_sizes: Vec<(f32, f32)> = nodes
+        .iter()
+        .map(|node| match node.kind {
+            StateKind::Start | StateKind::End => (26.0, 26.0),
+            StateKind::Normal => {
+                let title_w = estimate_text_width(&node.label, 13.0);
+                let desc_w = node
+                    .description
+                    .as_deref()
+                    .map(|d| estimate_text_width(d, 11.0))
+                    .unwrap_or(0.0);
+                let w = (title_w.max(desc_w) + 32.0).max(88.0);
+                let h = if node.description.is_some() { 54.0 } else { 38.0 };
+                (w, h)
+            }
+        })
+        .collect();
+
+    let has_comp = nodes.iter().any(|n| n.composite.is_some());
+    let margin = if has_comp { 44.0 } else { 32.0 };
+    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
+    let (centers, total_w, total_h) = compute_layered_layout(
+        nodes.len(),
+        &edge_pairs,
+        &node_sizes,
+        horizontal,
+        reversed,
+        margin,
+        62.0,
+        36.0,
+    );
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
+    ));
+    svg.push_str(
+        r##"<defs>
+  <marker id="st-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569"/>
+  </marker>
+</defs>"##,
+    );
+    svg.push_str(&format!(
+        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
+    ));
+
+    // Composite state containers
+    let mut comp_groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut comp_order: Vec<&str> = Vec::new();
+    for (idx, node) in nodes.iter().enumerate() {
+        if let Some(c) = node.composite.as_deref() {
+            if !comp_groups.contains_key(c) {
+                comp_order.push(c);
+            }
+            comp_groups.entry(c).or_default().push(idx);
+        }
+    }
+    for comp in comp_order {
+        let idxs = &comp_groups[comp];
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        for &i in idxs {
+            let (cx, cy) = centers[i];
+            let (nw, nh) = node_sizes[i];
+            min_x = min_x.min(cx - nw / 2.0);
+            min_y = min_y.min(cy - nh / 2.0);
+            max_x = max_x.max(cx + nw / 2.0);
+            max_y = max_y.max(cy + nh / 2.0);
+        }
+        let sx = min_x - 14.0;
+        let sy = min_y - 32.0;
+        let sw = (max_x - min_x) + 28.0;
+        let sh = (max_y - min_y) + 46.0;
+        svg.push_str(&format!(
+            r##"<rect x="{sx:.1}" y="{sy:.1}" width="{sw:.1}" height="{sh:.1}" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>"##
+        ));
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="{:.1}" font-size="11.5" font-weight="bold" fill="#334155">{}</text>"##,
+            sx + 10.0,
+            sy + 18.0,
+            escape_xml(comp)
+        ));
+    }
+
+    // Transitions
+    for e in &edges {
+        let (x1, y1) = centers[e.from];
+        let (x2, y2) = centers[e.to];
+        let (w1, h1) = node_sizes[e.from];
+        let (w2, h2) = node_sizes[e.to];
+        if e.from == e.to {
+            let lx = x1 + w1 / 2.0;
+            let ty = y1 - h1 / 4.0;
+            let by = y1 + h1 / 4.0;
+            svg.push_str(&format!(
+                r##"<path d="M {lx:.1} {ty:.1} C {:.1} {:.1}, {:.1} {:.1}, {lx:.1} {by:.1}" fill="none" stroke="#475569" stroke-width="1.4" marker-end="url(#st-arrow)"/>"##,
+                lx + 32.0,
+                ty - 14.0,
+                lx + 32.0,
+                by + 14.0
+            ));
+            if let Some(lbl) = &e.label {
+                svg.push_str(&format!(
+                    r##"<text x="{:.1}" y="{:.1}" font-size="11" fill="#334155">{}</text>"##,
+                    lx + 36.0,
+                    y1 + 4.0,
+                    escape_xml(lbl)
+                ));
+            }
+            continue;
+        }
+        let (sx, sy) = edge_anchor(x1, y1, w1, h1, x2, y2);
+        let (ex, ey) = edge_anchor(x2, y2, w2, h2, x1, y1);
+        svg.push_str(&format!(
+            r##"<line x1="{sx:.1}" y1="{sy:.1}" x2="{ex:.1}" y2="{ey:.1}" stroke="#475569" stroke-width="1.4" marker-end="url(#st-arrow)"/>"##
+        ));
+        if let Some(lbl) = &e.label {
+            let mx = (sx + ex) / 2.0;
+            let my = (sy + ey) / 2.0;
+            let lw = estimate_text_width(lbl, 11.0) + 10.0;
+            svg.push_str(&format!(
+                r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="18" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
+                mx - lw / 2.0,
+                my - 9.0
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{mx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155">{}</text>"##,
+                my + 4.0,
+                escape_xml(lbl)
+            ));
+        }
+    }
+
+    // State nodes
+    for (idx, node) in nodes.iter().enumerate() {
+        let (cx, cy) = centers[idx];
+        let (nw, nh) = node_sizes[idx];
+        match node.kind {
+            StateKind::Start => {
+                svg.push_str(&format!(
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="10" fill="#1e293b"/>"##
+                ));
+            }
+            StateKind::End => {
+                svg.push_str(&format!(
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="11" fill="#ffffff" stroke="#1e293b" stroke-width="2"/>"##
+                ));
+                svg.push_str(&format!(
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="6" fill="#1e293b"/>"##
+                ));
+            }
+            StateKind::Normal => {
+                let x = cx - nw / 2.0;
+                let y = cy - nh / 2.0;
+                svg.push_str(&format!(
+                    r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
+                ));
+                if let Some(desc) = &node.description {
+                    svg.push_str(&format!(
+                        r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#0f172a">{}</text>"##,
+                        y + 18.0,
+                        escape_xml(&node.label)
+                    ));
+                    svg.push_str(&format!(
+                        r##"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#bfdbfe" stroke-width="1"/>"##,
+                        x + 6.0,
+                        y + 25.0,
+                        x + nw - 6.0,
+                        y + 25.0
+                    ));
+                    svg.push_str(&format!(
+                        r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#475569">{}</text>"##,
+                        y + 42.0,
+                        escape_xml(desc)
+                    ));
+                } else {
+                    svg.push_str(&format!(
+                        r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" fill="#0f172a">{}</text>"##,
+                        cy + 4.5,
+                        escape_xml(&node.label)
+                    ));
+                }
+            }
+        }
+    }
+
+    svg.push_str("</svg>");
+    Some((svg.into_bytes(), total_w, total_h))
+}
+
+// ============================================================================
+// Class Diagram (classDiagram)
+// ============================================================================
+
+struct ClassNode {
+    name: String,
+    stereotype: Option<String>,
+    fields: Vec<String>,
+    methods: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClassRelKind {
+    Inheritance, // <|-- / --|>
+    Composition, // *-- / --*
+    Aggregation, // o-- / --o
+    Association, // --> / <--
+    Dependency,  // ..> / <..
+    Realization, // ..|> / <|..
+    Link,        // -- / ..
+}
+
+struct ClassEdge {
+    from: usize,
+    to: usize,
+    kind: ClassRelKind,
+    dashed: bool,
+    label: Option<String>,
+}
+
+fn render_class_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let mut horizontal = false;
+    let mut reversed = false;
+    let mut classes: Vec<ClassNode> = Vec::new();
+    let mut map: HashMap<String, usize> = HashMap::new();
+    let mut edges: Vec<ClassEdge> = Vec::new();
+    let mut current_class: Option<usize> = None;
+
+    let mut ensure_class = |name: &str, classes: &mut Vec<ClassNode>, map: &mut HashMap<String, usize>| -> usize {
+        let key = name.trim();
+        if let Some(&idx) = map.get(key) {
+            return idx;
+        }
+        let idx = classes.len();
+        classes.push(ClassNode {
+            name: key.to_string(),
+            stereotype: None,
+            fields: Vec::new(),
+            methods: Vec::new(),
+        });
+        map.insert(key.to_string(), idx);
+        idx
+    };
+
+    for raw in source.lines().skip(1) {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") {
+            continue;
+        }
+        if let Some(cidx) = current_class {
+            if l == "}" {
+                current_class = None;
+                continue;
+            }
+            if l.starts_with("<<") && l.ends_with(">>") {
+                classes[cidx].stereotype = Some(l.to_string());
+            } else if l.contains('(') && l.contains(')') {
+                classes[cidx].methods.push(l.to_string());
+            } else {
+                classes[cidx].fields.push(l.to_string());
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("direction ") {
+            match rest.trim().to_ascii_uppercase().as_str() {
+                "LR" => {
+                    horizontal = true;
+                    reversed = false;
+                }
+                "RL" => {
+                    horizontal = true;
+                    reversed = true;
+                }
+                "BT" => {
+                    horizontal = false;
+                    reversed = true;
+                }
+                _ => {
+                    horizontal = false;
+                    reversed = false;
+                }
+            }
+            continue;
+        }
+        if l.starts_with("<<") {
+            if let Some(end) = l.find(">>") {
+                let stereo = &l[..=end + 1];
+                let cname = l[end + 2..].trim();
+                if !cname.is_empty() {
+                    let idx = ensure_class(cname, &mut classes, &mut map);
+                    classes[idx].stereotype = Some(stereo.to_string());
+                    continue;
+                }
+            }
+        }
+        if let Some(rest) = l.strip_prefix("class ") {
+            if let Some(before_brace) = rest.strip_suffix('{') {
+                let cname = before_brace.trim();
+                let idx = ensure_class(cname, &mut classes, &mut map);
+                current_class = Some(idx);
+                continue;
+            }
+            let cname = rest.trim();
+            if !cname.is_empty() {
+                ensure_class(cname, &mut classes, &mut map);
+                continue;
+            }
+        }
+        if let Some((lhs_part, label_opt)) = split_class_relation(l, &mut classes, &mut map, &mut edges, &mut ensure_class) {
+            let _ = (lhs_part, label_opt);
+            continue;
+        }
+        if let Some((cname, member)) = l.split_once(':') {
+            let cn = cname.trim();
+            let mb = member.trim();
+            if !cn.is_empty() && !cn.contains(' ') && !mb.is_empty() {
+                let idx = ensure_class(cn, &mut classes, &mut map);
+                if mb.contains('(') && mb.contains(')') {
+                    classes[idx].methods.push(mb.to_string());
+                } else {
+                    classes[idx].fields.push(mb.to_string());
+                }
+            }
+        }
+    }
+
+    if classes.is_empty() {
+        return None;
+    }
+
+    let node_sizes: Vec<(f32, f32)> = classes
+        .iter()
+        .map(|c| {
+            let mut max_w = estimate_text_width(&c.name, 13.0) + 28.0;
+            if let Some(st) = &c.stereotype {
+                max_w = max_w.max(estimate_text_width(st, 10.5) + 24.0);
+            }
+            for f in &c.fields {
+                max_w = max_w.max(estimate_text_width(f, 11.5) + 24.0);
+            }
+            for m in &c.methods {
+                max_w = max_w.max(estimate_text_width(m, 11.5) + 24.0);
+            }
+            let header_h = if c.stereotype.is_some() { 40.0 } else { 28.0 };
+            let fields_h = if c.fields.is_empty() {
+                0.0
+            } else {
+                c.fields.len() as f32 * 18.0 + 10.0
+            };
+            let methods_h = if c.methods.is_empty() {
+                0.0
+            } else {
+                c.methods.len() as f32 * 18.0 + 10.0
+            };
+            (max_w.max(110.0), (header_h + fields_h + methods_h).max(36.0))
+        })
+        .collect();
+
+    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
+    let (centers, total_w, total_h) = compute_layered_layout(
+        classes.len(),
+        &edge_pairs,
+        &node_sizes,
+        horizontal,
+        reversed,
+        34.0,
+        70.0,
+        40.0,
+    );
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
+    ));
+    svg.push_str(
+        r##"<defs>
+  <marker id="cls-inherit" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+    <path d="M 1 1 L 11 6 L 1 11 z" fill="#ffffff" stroke="#334155" stroke-width="1.4"/>
+  </marker>
+  <marker id="cls-comp" viewBox="0 0 14 10" refX="13" refY="5" markerWidth="11" markerHeight="9" orient="auto">
+    <path d="M 1 5 L 7 1 L 13 5 L 7 9 z" fill="#334155"/>
+  </marker>
+  <marker id="cls-agg" viewBox="0 0 14 10" refX="13" refY="5" markerWidth="11" markerHeight="9" orient="auto">
+    <path d="M 1 5 L 7 1 L 13 5 L 7 9 z" fill="#ffffff" stroke="#334155" stroke-width="1.3"/>
+  </marker>
+  <marker id="cls-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+    <path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#334155" stroke-width="1.5"/>
+  </marker>
+</defs>"##,
+    );
+    svg.push_str(&format!(
+        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
+    ));
+
+    // Relationships
+    for e in &edges {
+        let (x1, y1) = centers[e.from];
+        let (x2, y2) = centers[e.to];
+        let (w1, h1) = node_sizes[e.from];
+        let (w2, h2) = node_sizes[e.to];
+        let (sx, sy) = edge_anchor(x1, y1, w1, h1, x2, y2);
+        let (ex, ey) = edge_anchor(x2, y2, w2, h2, x1, y1);
+        let dash = if e.dashed { r#" stroke-dasharray="5,4""# } else { "" };
+        let marker = match e.kind {
+            ClassRelKind::Inheritance | ClassRelKind::Realization => r#" marker-end="url(#cls-inherit)""#,
+            ClassRelKind::Composition => r#" marker-end="url(#cls-comp)""#,
+            ClassRelKind::Aggregation => r#" marker-end="url(#cls-agg)""#,
+            ClassRelKind::Association | ClassRelKind::Dependency => r#" marker-end="url(#cls-arrow)""#,
+            ClassRelKind::Link => "",
+        };
+        svg.push_str(&format!(
+            r##"<line x1="{sx:.1}" y1="{sy:.1}" x2="{ex:.1}" y2="{ey:.1}" stroke="#334155" stroke-width="1.4"{dash}{marker}/>"##
+        ));
+        if let Some(lbl) = &e.label {
+            let mx = (sx + ex) / 2.0;
+            let my = (sy + ey) / 2.0;
+            let lw = estimate_text_width(lbl, 11.0) + 10.0;
+            svg.push_str(&format!(
+                r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="18" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
+                mx - lw / 2.0,
+                my - 9.0
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{mx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155">{}</text>"##,
+                my + 4.0,
+                escape_xml(lbl)
+            ));
+        }
+    }
+
+    // Class boxes
+    for (idx, c) in classes.iter().enumerate() {
+        let (cx, cy) = centers[idx];
+        let (nw, nh) = node_sizes[idx];
+        let x = cx - nw / 2.0;
+        let y = cy - nh / 2.0;
+        let header_h = if c.stereotype.is_some() { 40.0 } else { 28.0 };
+        svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#ffffff" stroke="#334155" stroke-width="1.4"/>"##
+        ));
+        svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{header_h:.1}" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.4"/>"##
+        ));
+        if let Some(st) = &c.stereotype {
+            svg.push_str(&format!(
+                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#475569">{}</text>"##,
+                y + 15.0,
+                escape_xml(st)
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="#0f172a">{}</text>"##,
+                y + 32.0,
+                escape_xml(&c.name)
+            ));
+        } else {
+            svg.push_str(&format!(
+                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="#0f172a">{}</text>"##,
+                y + 19.0,
+                escape_xml(&c.name)
+            ));
+        }
+
+        let mut cur_y = y + header_h;
+        if !c.fields.is_empty() {
+            for (i, f) in c.fields.iter().enumerate() {
+                svg.push_str(&format!(
+                    r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{}</text>"##,
+                    x + 10.0,
+                    cur_y + 16.0 + i as f32 * 18.0,
+                    escape_xml(f)
+                ));
+            }
+            cur_y += c.fields.len() as f32 * 18.0 + 10.0;
+        }
+        if !c.methods.is_empty() {
+            if !c.fields.is_empty() {
+                svg.push_str(&format!(
+                    r##"<line x1="{x:.1}" y1="{cur_y:.1}" x2="{:.1}" y2="{cur_y:.1}" stroke="#cbd5e1" stroke-width="1"/>"##,
+                    x + nw
+                ));
+            }
+            for (i, m) in c.methods.iter().enumerate() {
+                svg.push_str(&format!(
+                    r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{}</text>"##,
+                    x + 10.0,
+                    cur_y + 16.0 + i as f32 * 18.0,
+                    escape_xml(m)
+                ));
+            }
+        }
+    }
+
+    svg.push_str("</svg>");
+    Some((svg.into_bytes(), total_w, total_h))
+}
+
+fn split_class_relation<'a>(
+    line: &'a str,
+    classes: &mut Vec<ClassNode>,
+    map: &mut HashMap<String, usize>,
+    edges: &mut Vec<ClassEdge>,
+    ensure_class: &mut impl FnMut(&str, &mut Vec<ClassNode>, &mut HashMap<String, usize>) -> usize,
+) -> Option<(&'a str, Option<String>)> {
+    // Operators ordered longest-first so `<|..` matches before `..`.
+    // Tuple: (token, target_is_lhs, kind, dashed)
+    const OPS: &[(&str, bool, ClassRelKind, bool)] = &[
+        ("<|--", true, ClassRelKind::Inheritance, false),
+        ("--|>", false, ClassRelKind::Inheritance, false),
+        ("<|..", true, ClassRelKind::Realization, true),
+        ("..|>", false, ClassRelKind::Realization, true),
+        ("*--", true, ClassRelKind::Composition, false),
+        ("--*", false, ClassRelKind::Composition, false),
+        ("o--", true, ClassRelKind::Aggregation, false),
+        ("--o", false, ClassRelKind::Aggregation, false),
+        ("<--", true, ClassRelKind::Association, false),
+        ("-->", false, ClassRelKind::Association, false),
+        ("<..", true, ClassRelKind::Dependency, true),
+        ("..>", false, ClassRelKind::Dependency, true),
+        ("--", false, ClassRelKind::Link, false),
+        ("..", false, ClassRelKind::Link, true),
+    ];
+
+    let (body, label) = if let Some((b, lbl)) = line.split_once(':') {
+        (b.trim(), Some(lbl.trim().to_string()).filter(|s| !s.is_empty()))
+    } else {
+        (line.trim(), None)
+    };
+
+    for &(op, target_is_lhs, kind, dashed) in OPS {
+        if let Some(pos) = body.find(op) {
+            let lhs_raw = body[..pos].trim();
+            let rhs_raw = body[pos + op.len()..].trim();
+            // Strip optional quoted cardinalities (`Foo "1" --> "*" Bar`)
+            let lhs_name = lhs_raw.split_whitespace().next().unwrap_or("");
+            let rhs_name = rhs_raw.split_whitespace().last().unwrap_or("");
+            if lhs_name.is_empty() || rhs_name.is_empty() {
+                return None;
+            }
+            let lhs_idx = ensure_class(lhs_name, classes, map);
+            let rhs_idx = ensure_class(rhs_name, classes, map);
+            let (from, to) = if target_is_lhs {
+                (rhs_idx, lhs_idx)
+            } else {
+                (lhs_idx, rhs_idx)
+            };
+            edges.push(ClassEdge {
+                from,
+                to,
+                kind,
+                dashed,
+                label: label.clone(),
+            });
+            return Some((lhs_name, label));
+        }
+    }
+    None
+}
+
+// ============================================================================
+// ER Diagram (erDiagram)
+// ============================================================================
+
+struct ErAttr {
+    ty: String,
+    name: String,
+    key: String,
+}
+
+struct ErEntity {
+    name: String,
+    attrs: Vec<ErAttr>,
+}
+
+struct ErEdge {
+    from: usize,
+    to: usize,
+    left_card: String,
+    right_card: String,
+    dashed: bool,
+    label: String,
+}
+
+fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let mut entities: Vec<ErEntity> = Vec::new();
+    let mut map: HashMap<String, usize> = HashMap::new();
+    let mut edges: Vec<ErEdge> = Vec::new();
+    let mut current_entity: Option<usize> = None;
+
+    let ensure_entity = |name: &str, entities: &mut Vec<ErEntity>, map: &mut HashMap<String, usize>| -> usize {
+        let key = unquote(name.trim());
+        if let Some(&idx) = map.get(&key) {
+            return idx;
+        }
+        let idx = entities.len();
+        entities.push(ErEntity {
+            name: key.clone(),
+            attrs: Vec::new(),
+        });
+        map.insert(key, idx);
+        idx
+    };
+
+    for raw in source.lines().skip(1) {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") {
+            continue;
+        }
+        if let Some(eidx) = current_entity {
+            if l == "}" {
+                current_entity = None;
+                continue;
+            }
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let ty = parts[0].to_string();
+                let name = parts[1].to_string();
+                let key = parts
+                    .get(2)
+                    .filter(|s| !s.starts_with('"'))
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                entities[eidx].attrs.push(ErAttr { ty, name, key });
+            }
+            continue;
+        }
+        if let Some(before_brace) = l.strip_suffix('{') {
+            let ename = before_brace.trim();
+            if !ename.is_empty() && !ename.contains("--") && !ename.contains("..") {
+                let idx = ensure_entity(ename, &mut entities, &mut map);
+                current_entity = Some(idx);
+                continue;
+            }
+        }
+        if let Some((rel_part, label_raw)) = l.split_once(':') {
+            if let Some((lhs, left_card, dashed, right_card, rhs)) = parse_er_relation(rel_part.trim()) {
+                let from = ensure_entity(lhs, &mut entities, &mut map);
+                let to = ensure_entity(rhs, &mut entities, &mut map);
+                edges.push(ErEdge {
+                    from,
+                    to,
+                    left_card: format_er_card(left_card),
+                    right_card: format_er_card(right_card),
+                    dashed,
+                    label: unquote(label_raw.trim()),
+                });
+            }
+        }
+    }
+
+    if entities.is_empty() {
+        return None;
+    }
+
+    let node_sizes: Vec<(f32, f32)> = entities
+        .iter()
+        .map(|e| {
+            let mut max_w = estimate_text_width(&e.name, 13.0) + 32.0;
+            for a in &e.attrs {
+                let row = if a.key.is_empty() {
+                    format!("{}  {}", a.ty, a.name)
+                } else {
+                    format!("{}  {}  {}", a.ty, a.name, a.key)
+                };
+                max_w = max_w.max(estimate_text_width(&row, 11.5) + 28.0);
+            }
+            let h = 30.0
+                + if e.attrs.is_empty() {
+                    8.0
+                } else {
+                    e.attrs.len() as f32 * 20.0 + 10.0
+                };
+            (max_w.max(120.0), h)
+        })
+        .collect();
+
+    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
+    let (centers, total_w, total_h) = compute_layered_layout(
+        entities.len(),
+        &edge_pairs,
+        &node_sizes,
+        true,
+        false,
+        36.0,
+        84.0,
+        40.0,
+    );
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
+    ));
+    svg.push_str(&format!(
+        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
+    ));
+
+    // Edges
+    for e in &edges {
+        let (x1, y1) = centers[e.from];
+        let (x2, y2) = centers[e.to];
+        let (w1, h1) = node_sizes[e.from];
+        let (w2, h2) = node_sizes[e.to];
+        let (sx, sy) = edge_anchor(x1, y1, w1, h1, x2, y2);
+        let (ex, ey) = edge_anchor(x2, y2, w2, h2, x1, y1);
+        let dash = if e.dashed { r#" stroke-dasharray="5,4""# } else { "" };
+        svg.push_str(&format!(
+            r##"<line x1="{sx:.1}" y1="{sy:.1}" x2="{ex:.1}" y2="{ey:.1}" stroke="#475569" stroke-width="1.5"{dash}/>"##
+        ));
+        let dx = ex - sx;
+        let dy = ey - sy;
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let ux = dx / len;
+        let uy = dy / len;
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#0f766e">{}</text>"##,
+            sx + ux * 16.0,
+            sy + uy * 16.0 - 5.0,
+            escape_xml(&e.left_card)
+        ));
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#0f766e">{}</text>"##,
+            ex - ux * 16.0,
+            ey - uy * 16.0 - 5.0,
+            escape_xml(&e.right_card)
+        ));
+        if !e.label.is_empty() {
+            let mx = (sx + ex) / 2.0;
+            let my = (sy + ey) / 2.0;
+            let lw = estimate_text_width(&e.label, 11.0) + 10.0;
+            svg.push_str(&format!(
+                r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="18" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
+                mx - lw / 2.0,
+                my - 9.0
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{mx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155">{}</text>"##,
+                my + 4.0,
+                escape_xml(&e.label)
+            ));
+        }
+    }
+
+    // Entity boxes
+    for (idx, ent) in entities.iter().enumerate() {
+        let (cx, cy) = centers[idx];
+        let (nw, nh) = node_sizes[idx];
+        let x = cx - nw / 2.0;
+        let y = cy - nh / 2.0;
+        svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#ffffff" stroke="#0f766e" stroke-width="1.4"/>"##
+        ));
+        svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="28" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.4"/>"##
+        ));
+        svg.push_str(&format!(
+            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="#134e4a">{}</text>"##,
+            y + 19.0,
+            escape_xml(&ent.name)
+        ));
+        for (i, a) in ent.attrs.iter().enumerate() {
+            let ay = y + 46.0 + i as f32 * 20.0;
+            let row = if a.key.is_empty() {
+                format!("{}  {}", a.ty, a.name)
+            } else {
+                format!("{}  {}  [{}]", a.ty, a.name, a.key)
+            };
+            svg.push_str(&format!(
+                r##"<text x="{:.1}" y="{ay:.1}" font-size="11.5" fill="#1e293b">{}</text>"##,
+                x + 10.0,
+                escape_xml(&row)
+            ));
+        }
+    }
+
+    svg.push_str("</svg>");
+    Some((svg.into_bytes(), total_w, total_h))
+}
+
+fn parse_er_relation(s: &str) -> Option<(&str, &str, bool, &str, &str)> {
+    let (sep, dashed) = if let Some(idx) = s.find("--") {
+        (idx, false)
+    } else if let Some(idx) = s.find("..") {
+        (idx, true)
+    } else {
+        return None;
+    };
+    let lhs_all = s[..sep].trim();
+    let rhs_all = s[sep + 2..].trim();
+    let lhs_split = lhs_all.rfind(' ')?;
+    let rhs_split = rhs_all.find(' ')?;
+    let lhs = lhs_all[..lhs_split].trim();
+    let left_card = lhs_all[lhs_split + 1..].trim();
+    let right_card = rhs_all[..rhs_split].trim();
+    let rhs = rhs_all[rhs_split + 1..].trim();
+    if lhs.is_empty() || rhs.is_empty() {
+        return None;
+    }
+    Some((lhs, left_card, dashed, right_card, rhs))
+}
+
+fn format_er_card(card: &str) -> String {
+    match card {
+        "||" => "1".to_string(),
+        "o|" | "|o" => "0..1".to_string(),
+        "}|" | "|{" => "1..*".to_string(),
+        "}o" | "o{" => "0..*".to_string(),
+        other => other.to_string(),
+    }
+}
+
+// ============================================================================
+// Gantt Chart (gantt)
+// ============================================================================
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GanttStatus {
+    Normal,
+    Done,
+    Active,
+    Crit,
+    Milestone,
+}
+
+struct GanttTask {
+    section: String,
+    name: String,
+    status: GanttStatus,
+    start_day: i64,
+    end_day: i64,
+}
+
+fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let mut title: Option<String> = None;
+    let mut current_section = String::from("Tasks");
+    let mut tasks: Vec<GanttTask> = Vec::new();
+    let mut id_end_day: HashMap<String, i64> = HashMap::new();
+    let mut last_end_day: Option<i64> = None;
+
+    for raw in source.lines().skip(1) {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("title ") {
+            title = Some(rest.trim().to_string());
+            continue;
+        }
+        if l.starts_with("dateFormat ") || l.starts_with("axisFormat ") || l.starts_with("excludes ") {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("section ") {
+            current_section = rest.trim().to_string();
+            continue;
+        }
+        if let Some((name_part, meta_part)) = l.split_once(':') {
+            let task_name = name_part.trim().to_string();
+            let tokens: Vec<&str> = meta_part
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if tokens.is_empty() {
+                continue;
+            }
+            let mut status = GanttStatus::Normal;
+            let mut idx = 0;
+            while idx < tokens.len() {
+                match tokens[idx] {
+                    "done" => {
+                        status = GanttStatus::Done;
+                        idx += 1;
+                    }
+                    "active" => {
+                        status = GanttStatus::Active;
+                        idx += 1;
+                    }
+                    "crit" => {
+                        status = GanttStatus::Crit;
+                        idx += 1;
+                    }
+                    "milestone" => {
+                        status = GanttStatus::Milestone;
+                        idx += 1;
+                    }
+                    _ => break,
+                }
+            }
+            let rem = &tokens[idx..];
+            if rem.is_empty() {
+                continue;
+            }
+            // Parse remaining tokens: optional `id`, `start_or_after`, `duration_or_end`
+            let (task_id, start_tok, dur_tok) = match rem.len() {
+                1 => (None, None, rem[0]),
+                2 => {
+                    if parse_gantt_date(rem[0]).is_some() || rem[0].starts_with("after ") {
+                        (None, Some(rem[0]), rem[1])
+                    } else {
+                        (Some(rem[0].to_string()), None, rem[1])
+                    }
+                }
+                _ => (Some(rem[0].to_string()), Some(rem[1]), rem[2]),
+            };
+
+            let start_day = if let Some(st) = start_tok {
+                if let Some(dep_id) = st.strip_prefix("after ") {
+                    id_end_day
+                        .get(dep_id.trim())
+                        .copied()
+                        .or(last_end_day)
+                        .unwrap_or_else(|| days_from_civil(2026, 1, 1))
+                } else {
+                    parse_gantt_date(st)
+                        .or(last_end_day)
+                        .unwrap_or_else(|| days_from_civil(2026, 1, 1))
+                }
+            } else {
+                last_end_day.unwrap_or_else(|| days_from_civil(2026, 1, 1))
+            };
+
+            let end_day = if let Some(ed) = parse_gantt_date(dur_tok) {
+                ed.max(start_day + 1)
+            } else {
+                let span = parse_gantt_duration_days(dur_tok);
+                if status == GanttStatus::Milestone {
+                    start_day + 1
+                } else {
+                    start_day + span.max(1)
+                }
+            };
+
+            if let Some(id) = task_id {
+                id_end_day.insert(id, end_day);
+            }
+            last_end_day = Some(end_day);
+            tasks.push(GanttTask {
+                section: current_section.clone(),
+                name: task_name,
+                status,
+                start_day,
+                end_day,
+            });
+        }
+    }
+
+    if tasks.is_empty() {
+        return None;
+    }
+
+    let min_day = tasks.iter().map(|t| t.start_day).min().unwrap_or(0);
+    let max_day = tasks.iter().map(|t| t.end_day).max().unwrap_or(min_day + 1).max(min_day + 1);
+    let total_days = (max_day - min_day) as f32;
+
+    let label_col_w = tasks
+        .iter()
+        .map(|t| estimate_text_width(&t.name, 12.0))
+        .fold(120.0f32, f32::max)
+        .min(240.0)
+        + 24.0;
+    let chart_w = 480.0f32;
+    let right_pad = 24.0f32;
+    let top_pad = if title.is_some() { 52.0f32 } else { 28.0f32 };
+    let row_h = 30.0f32;
+    let axis_h = 28.0f32;
+    let total_w = (label_col_w + chart_w + right_pad).ceil() as u32;
+    let total_h = (top_pad + tasks.len() as f32 * row_h + axis_h + 12.0).ceil() as u32;
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
+    ));
+    svg.push_str(&format!(
+        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
+    ));
+    if let Some(t) = &title {
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="28" text-anchor="middle" font-size="15" font-weight="bold" fill="#0f172a">{}</text>"##,
+            total_w as f32 / 2.0,
+            escape_xml(t)
+        ));
+    }
+
+    // Vertical grid lines & date ticks (up to 6 ticks)
+    let ticks = 5usize;
+    let bottom_y = top_pad + tasks.len() as f32 * row_h;
+    for i in 0..=ticks {
+        let frac = i as f32 / ticks as f32;
+        let gx = label_col_w + frac * chart_w;
+        svg.push_str(&format!(
+            r##"<line x1="{gx:.1}" y1="{top_pad:.1}" x2="{gx:.1}" y2="{bottom_y:.1}" stroke="#e2e8f0" stroke-width="1"/>"##
+        ));
+        let day = min_day + ((total_days * frac).round() as i64);
+        let (y, m, d) = civil_from_days(day);
+        svg.push_str(&format!(
+            r##"<text x="{gx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#64748b">{y:04}-{m:02}-{d:02}</text>"##,
+            bottom_y + 18.0
+        ));
+    }
+
+    // Rows & bars
+    let mut prev_section: Option<&str> = None;
+    for (idx, task) in tasks.iter().enumerate() {
+        let ry = top_pad + idx as f32 * row_h;
+        let bg = if idx % 2 == 0 { "#f8fafc" } else { "#ffffff" };
+        svg.push_str(&format!(
+            r##"<rect x="8" y="{ry:.1}" width="{:.1}" height="{row_h:.1}" fill="{bg}" fill-opacity="0.7"/>"##,
+            total_w as f32 - 16.0
+        ));
+        let label = if prev_section != Some(task.section.as_str()) {
+            prev_section = Some(task.section.as_str());
+            format!("[{}] {}", task.section, task.name)
+        } else {
+            task.name.clone()
+        };
+        svg.push_str(&format!(
+            r##"<text x="14" y="{:.1}" font-size="12" fill="#1e293b">{}</text>"##,
+            ry + 19.0,
+            escape_xml(&label)
+        ));
+
+        let x1 = label_col_w + ((task.start_day - min_day) as f32 / total_days) * chart_w;
+        let x2 = label_col_w + ((task.end_day - min_day) as f32 / total_days) * chart_w;
+        let bw = (x2 - x1).max(6.0);
+        let (fill, stroke) = match task.status {
+            GanttStatus::Done => ("#cbd5e1", "#64748b"),
+            GanttStatus::Active => ("#93c5fd", "#2563eb"),
+            GanttStatus::Crit => ("#fca5a5", "#dc2626"),
+            GanttStatus::Milestone => ("#fde047", "#ca8a04"),
+            GanttStatus::Normal => ("#a5b4fc", "#4f46e5"),
+        };
+        if task.status == GanttStatus::Milestone {
+            let cy = ry + row_h / 2.0;
+            svg.push_str(&format!(
+                r##"<polygon points="{x1:.1},{:.1} {:.1},{cy:.1} {x1:.1},{:.1} {:.1},{cy:.1}" fill="{fill}" stroke="{stroke}" stroke-width="1.3"/>"##,
+                cy - 8.0,
+                x1 + 8.0,
+                cy + 8.0,
+                x1 - 8.0
+            ));
+        } else {
+            svg.push_str(&format!(
+                r##"<rect x="{x1:.1}" y="{:.1}" width="{bw:.1}" height="18" rx="4" fill="{fill}" stroke="{stroke}" stroke-width="1.2"/>"##,
+                ry + 6.0
+            ));
+        }
+    }
+
+    svg.push_str("</svg>");
+    Some((svg.into_bytes(), total_w, total_h))
+}
+
+fn parse_gantt_date(s: &str) -> Option<i64> {
+    let t = s.trim();
+    let sep = if t.contains('-') { '-' } else if t.contains('/') { '/' } else { return None };
+    let parts: Vec<&str> = t.split(sep).collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let y: i64 = parts[0].parse().ok()?;
+    let m: u32 = parts[1].parse().ok()?;
+    let d: u32 = parts[2].parse().ok()?;
+    Some(days_from_civil(y, m, d))
+}
+
+fn parse_gantt_duration_days(s: &str) -> i64 {
+    let t = s.trim().to_ascii_lowercase();
+    if let Some(n) = t.strip_suffix('w').and_then(|v| v.parse::<i64>().ok()) {
+        return n * 7;
+    }
+    if let Some(n) = t.strip_suffix('d').and_then(|v| v.parse::<i64>().ok()) {
+        return n;
+    }
+    if let Some(n) = t.strip_suffix('h').and_then(|v| v.parse::<i64>().ok()) {
+        return ((n + 23) / 24).max(1);
+    }
+    1
+}
+
+/// Howard Hinnant's civil-from-days / days-from-civil algorithms (proleptic Gregorian).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = y - if m <= 2 { 1 } else { 0 };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let m = m as i64;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let y = y + if m <= 2 { 1 } else { 0 };
+    (y, m as u32, d as u32)
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -1486,5 +2809,122 @@ flowchart LR
         assert!(svg.contains("完了"));
         assert!(svg.contains("Input"));
         assert!(svg.contains("OK"));
+    }
+
+    #[test]
+    fn renders_state_diagram_svg() {
+        let src = "\
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Running : start
+  state Active {
+    Running --> Paused : pause
+    Paused --> Running : resume
+  }
+  Running --> [*] : finish
+";
+        let Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        }) = render_mermaid(src)
+        else {
+            panic!("expected svg for stateDiagram-v2");
+        };
+        assert!(width_px > 120 && height_px > 120);
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.contains("Idle"));
+        assert!(svg.contains("Running"));
+        assert!(svg.contains("Active"));
+        assert!(svg.contains("start"));
+    }
+
+    #[test]
+    fn renders_class_diagram_svg() {
+        let src = "\
+classDiagram
+  class Animal {
+    <<abstract>>
+    +String name
+    +speak() void
+  }
+  class Dog {
+    +fetch() void
+  }
+  Animal <|-- Dog : inherits
+";
+        let Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        }) = render_mermaid(src)
+        else {
+            panic!("expected svg for classDiagram");
+        };
+        assert!(width_px > 120 && height_px > 120);
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.contains("Animal"));
+        assert!(svg.contains("Dog"));
+        assert!(svg.contains("speak() void"));
+        assert!(svg.contains("inherits"));
+    }
+
+    #[test]
+    fn renders_er_diagram_svg() {
+        let src = "\
+erDiagram
+  CUSTOMER {
+    int id PK
+    string name
+  }
+  ORDER {
+    int id PK
+    int customer_id FK
+  }
+  CUSTOMER ||--o{ ORDER : places
+";
+        let Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        }) = render_mermaid(src)
+        else {
+            panic!("expected svg for erDiagram");
+        };
+        assert!(width_px > 200 && height_px > 100);
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.contains("CUSTOMER"));
+        assert!(svg.contains("ORDER"));
+        assert!(svg.contains("places"));
+        assert!(svg.contains("0..*"));
+    }
+
+    #[test]
+    fn renders_gantt_svg() {
+        let src = "\
+gantt
+  title 開発スケジュール
+  dateFormat YYYY-MM-DD
+  section 設計
+  要件定義 :done, req, 2026-01-01, 5d
+  基本設計 :active, des, after req, 7d
+  section 実装
+  プロトタイプ :crit, impl, after des, 10d
+  リリース :milestone, rel, after impl, 1d
+";
+        let Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        }) = render_mermaid(src)
+        else {
+            panic!("expected svg for gantt");
+        };
+        assert!(width_px > 400 && height_px > 150);
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.contains("開発スケジュール"));
+        assert!(svg.contains("要件定義"));
+        assert!(svg.contains("基本設計"));
+        assert!(svg.contains("2026-01-01"));
     }
 }
