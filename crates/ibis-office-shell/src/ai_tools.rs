@@ -380,6 +380,45 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "issue_vc_preview",
+                description: "Issue an SD-JWT Verifiable Credential preview from the worksheet bindings using the local demo issuer key. Optionally override which selective claims are disclosed.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "disclose_paths": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional list of selective claim paths (e.g. ['family_name', 'birthdate']) to disclose in the presentation; omit to use the sheet's disclose.* toggles."
+                        },
+                        "vct": { "type": "string", "description": "Optional fallback Verifiable Credential Type URI." },
+                        "iss": { "type": "string", "description": "Optional fallback issuer URI." }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "parse_vc_token",
+                description: "Parse and inspect an SD-JWT or ISO 18013-5 mdoc token string, optionally importing its claims onto the current worksheet.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "token": { "type": "string", "description": "Compact SD-JWT (~ separated) or hex/base64url mdoc string." },
+                        "issuer_jwk_json": { "type": "string", "description": "Optional issuer public JWK JSON for ES256 signature verification." },
+                        "import_to_sheet": { "type": "boolean", "description": "If true, populate the target worksheet with the parsed claims and bindings." }
+                    },
+                    "required": ["token"],
+                    "additionalProperties": false
+                }),
+            },
+        },
     ]
 }
 
@@ -1257,6 +1296,21 @@ pub struct BindVcClaimArgs {
     pub claim_path: String,
     #[serde(default = "default_true")]
     pub selective: bool,
+}
+
+#[derive(Deserialize)]
+pub struct IssueVcPreviewArgs {
+    pub disclose_paths: Option<Vec<String>>,
+    pub vct: Option<String>,
+    pub iss: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ParseVcTokenArgs {
+    pub token: String,
+    pub issuer_jwk_json: Option<String>,
+    #[serde(default)]
+    pub import_to_sheet: bool,
 }
 
 pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command, String> {

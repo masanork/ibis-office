@@ -19,10 +19,12 @@ use ibis_doc_model::flow::{Block, FlowParagraph, FlowRunKind};
 use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange};
 use ibis_doc_model::machine_readability::{CandidateKind, candidates as mr_candidates};
 use ibis_doc_model::model::{AutoShape, Shape, ShapeId, ShapeKind, Slide, SlideId};
+use ibis_doc_model::sd_jwt::{Es256KeyPair, SdJwtOptions, issue_sd_jwt};
 use ibis_doc_model::sd_jwt_binding::{
     BindingSource, ClaimValue, bind_range_as_sd_claim_commands, build_sd_jwt_template_commands,
     extract_sheet_claims,
 };
+use ibis_doc_model::sd_jwt_import::{ParsedCredentialFormat, parse_mdoc_text, parse_sd_jwt};
 use ibis_doc_model::sd_jwt_schema::SdJwtSchema;
 use ibis_doc_model::sheet_calc::sheet_of_slide;
 use ibis_doc_model::sheet_command::SheetCommand;
@@ -34,16 +36,17 @@ use crate::with_format;
 use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_chat_completion};
 use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
-    InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, MAX_READ_CELLS,
-    MoveSlideArgs, ReadParagraphsArgs, ReplaceParagraphArgs, SetParagraphStyleArgs,
-    SetRunFormatArgs, SetShapeStyleArgs, SetShapeTextArgs, SetSlideNotesArgs,
-    SlideIndexOptionalArg, SlideIndexRequiredArg, build_replace_paragraph_command,
-    build_set_run_format_command, docx_tool_definitions, parse_clear_cells_command,
-    parse_create_sheet_arg, parse_delete_axis_command, parse_insert_axis_command,
-    parse_merge_cells_command, parse_range_arg, parse_set_axis_size_command,
-    parse_set_cell_comment_command, parse_set_cells_command, parse_set_format_command,
-    parse_set_paragraph_align_command, parse_sheet_arg, parse_switch_sheet_arg,
-    parse_vc_template_kind, pptx_tool_definitions, spreadsheet_tool_definitions,
+    InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
+    MAX_READ_CELLS, MoveSlideArgs, ParseVcTokenArgs, ReadParagraphsArgs, ReplaceParagraphArgs,
+    SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs, SetShapeTextArgs,
+    SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
+    build_replace_paragraph_command, build_set_run_format_command, docx_tool_definitions,
+    parse_clear_cells_command, parse_create_sheet_arg, parse_delete_axis_command,
+    parse_insert_axis_command, parse_merge_cells_command, parse_range_arg,
+    parse_set_axis_size_command, parse_set_cell_comment_command, parse_set_cells_command,
+    parse_set_format_command, parse_set_paragraph_align_command, parse_sheet_arg,
+    parse_switch_sheet_arg, parse_vc_template_kind, pptx_tool_definitions,
+    spreadsheet_tool_definitions,
 };
 use crate::chrome::SidebarPanel;
 use crate::editor::SlideEditor;
@@ -305,6 +308,7 @@ impl SlideEditor {
                         "You are an AI spreadsheet assistant inside ibisOffice. \
                          Use the provided tools to inspect the workbook and apply edits or formatting. \
                          Always inspect relevant cells with read_range before modifying existing data. \
+                         For SD-JWT Verifiable Credentials (VC) tasks, use inspect_vc_bindings, apply_vc_template, infer_vc_schema, bind_vc_claim, issue_vc_preview, and parse_vc_token, and clearly explain mandatory claims (claim.*, e.g. vct, iss) vs selective-disclosure claims (sd.* with disclose.* toggles). \
                          Respond concisely in the user's language."
                     }
                     AiDocKind::Pptx => {
@@ -1351,6 +1355,169 @@ impl SlideEditor {
                         Some(Command::Group(cmds)),
                         format!("✓ bind_vc_claim ({full_name})"),
                     ),
+                }
+            }
+            "issue_vc_preview" => {
+                let parsed: Result<IssueVcPreviewArgs, _> = if args.trim().is_empty() {
+                    Ok(IssueVcPreviewArgs {
+                        disclose_paths: None,
+                        vct: None,
+                        iss: None,
+                    })
+                } else {
+                    serde_json::from_str(args)
+                };
+                let arg = match parsed {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return (
+                            json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                            None,
+                            format!("✗ issue_vc_preview: {e}"),
+                        );
+                    }
+                };
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ issue_vc_preview: {e}"),
+                        );
+                    }
+                };
+                let Some(mut bindings) = extract_sheet_claims(self.presentation(), slide) else {
+                    return (
+                        json!({ "error": "no SD-JWT bindings found on this worksheet" }).to_string(),
+                        None,
+                        "✗ issue_vc_preview: no bindings".to_string(),
+                    );
+                };
+                if let Some(ref paths) = arg.disclose_paths {
+                    let wanted: std::collections::BTreeSet<&str> =
+                        paths.iter().map(String::as_str).collect();
+                    for claim in &mut bindings.claims {
+                        if claim.selective {
+                            claim.disclose = wanted.contains(claim.path_str.as_str());
+                        }
+                    }
+                }
+                let mut options = SdJwtOptions::default();
+                if let Some(vct) = arg.vct.filter(|s| !s.trim().is_empty()) {
+                    options.default_vct = Some(vct);
+                }
+                if let Some(iss) = arg.iss.filter(|s| !s.trim().is_empty()) {
+                    options.default_iss = Some(iss);
+                }
+                let output = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
+                let disclosed_paths: Vec<_> = bindings
+                    .claims
+                    .iter()
+                    .filter(|c| !c.selective || c.disclose)
+                    .map(|c| c.path_str.clone())
+                    .collect();
+                let hidden_paths: Vec<_> = bindings
+                    .claims
+                    .iter()
+                    .filter(|c| c.selective && !c.disclose)
+                    .map(|c| c.path_str.clone())
+                    .collect();
+                let disc_count = output.disclosures.len();
+                (
+                    json!({
+                        "ok": true,
+                        "disclosures_total": disc_count,
+                        "disclosed_paths": disclosed_paths,
+                        "hidden_paths": hidden_paths,
+                        "disclosed_claims": claim_value_to_json(&output.disclosed_claims),
+                        "sd_jwt_presentation": output.sd_jwt_presentation,
+                        "sd_jwt_all_length": output.sd_jwt_all.len(),
+                    })
+                    .to_string(),
+                    None,
+                    format!("✓ issue_vc_preview ({disc_count} disclosures)"),
+                )
+            }
+            "parse_vc_token" => {
+                let parsed: Result<ParseVcTokenArgs, _> = serde_json::from_str(args);
+                let arg = match parsed {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return (
+                            json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                            None,
+                            format!("✗ parse_vc_token: {e}"),
+                        );
+                    }
+                };
+                let raw = arg.token.trim();
+                let cred = if raw.contains('~') || raw.contains('.') {
+                    parse_sd_jwt(raw, arg.issuer_jwk_json.as_deref())
+                } else {
+                    parse_mdoc_text(raw, arg.issuer_jwk_json.as_deref())
+                };
+                match cred {
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ parse_vc_token: {e}"),
+                    ),
+                    Ok(parsed_cred) => {
+                        let format = match parsed_cred.format {
+                            ParsedCredentialFormat::SdJwt => "SD-JWT",
+                            ParsedCredentialFormat::Mdoc => "mdoc",
+                        };
+                        let claims: Vec<_> = parsed_cred
+                            .claims
+                            .iter()
+                            .map(|c| {
+                                json!({
+                                    "path": c.path,
+                                    "value": claim_value_to_json(&c.value),
+                                    "selective": c.selective,
+                                    "disclose": c.disclose,
+                                    "digest_verified": c.digest_verified,
+                                })
+                            })
+                            .collect();
+                        let cmd = if arg.import_to_sheet {
+                            match self.resolve_ai_target_slide(args) {
+                                Ok(slide) => {
+                                    let cmds =
+                                        parsed_cred.build_sheet_commands(self.presentation(), slide);
+                                    Some(Command::Group(cmds))
+                                }
+                                Err(e) => {
+                                    return (
+                                        json!({ "error": e }).to_string(),
+                                        None,
+                                        format!("✗ parse_vc_token: {e}"),
+                                    );
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let count = claims.len();
+                        (
+                            json!({
+                                "ok": true,
+                                "format": format,
+                                "vct_or_doctype": parsed_cred.vct_or_doctype,
+                                "issuer": parsed_cred.issuer,
+                                "signature_valid": parsed_cred.signature_valid,
+                                "kb_sd_hash_valid": parsed_cred.kb_sd_hash_valid,
+                                "digests_verified": parsed_cred.digests_verified,
+                                "digests_total": parsed_cred.digests_total,
+                                "imported": arg.import_to_sheet,
+                                "claims": claims,
+                            })
+                            .to_string(),
+                            cmd,
+                            format!("✓ parse_vc_token ({format}, {count} claims)"),
+                        )
+                    }
                 }
             }
             other => (
