@@ -141,8 +141,13 @@ response types, hash algorithms and signature algorithms are not evaluated.
 See [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960).
 
 All status claims remain unauthenticated observations, including `Good`.
-Responder authorization and EKU, certificate paths and validity, nonce,
-extension semantics, clock skew and freshness policy are not validated. The
+The supplied responder certificate is also inspected for byte equality with
+the supplied issuer, a proposed issuer link, validity dates at both the explicit
+reference time and `producedAt`, digital-signature key usage, and the specific
+OCSP-signing EKU. Malformed or duplicate usage extensions are reported as
+invalid; these individual observations do not establish delegation. Responder
+authorization, certificate paths and validity, nonce, extension semantics,
+clock skew and freshness policy are not validated. The
 output does not establish revocation status, trust, or legal validity and no
 network access is performed.
 

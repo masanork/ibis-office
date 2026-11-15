@@ -128,6 +128,7 @@ fn run() -> Result<(), String> {
                 println!("  OCSP {} observations (NOT a revocation verdict): protocol {:?}; response type {:?}", index + 1, observation.response_status, observation.response_type);
                 if let Some(basic) = observation.basic {
                     println!("    Signature {:?}; responder ID {:?}; target issuer name exact {}", basic.signature, basic.responder_id, basic.issuer_name_exact);
+                    println!("    Responder certificate observations (NOT authorization): {:?}", basic.responder_certificate);
                     println!("    Produced at {}; after reference time {}; response extensions present {}; embedded certificates {}; responses {} (truncated: {})", basic.produced_at, basic.produced_after_reference_time, basic.response_extensions_present, basic.embedded_certificates, basic.total_responses, basic.responses_truncated);
                     for (position, single) in basic.responses.iter().enumerate() {
                         println!("    Response {}: CertID {:?}; UNAUTHENTICATED claim {:?}; thisUpdate {}; nextUpdate {:?}; window {:?}; extensions present {}", position + 1, single.cert_id, single.claimed_status, single.this_update, single.next_update, single.time_window, single.extensions_present);

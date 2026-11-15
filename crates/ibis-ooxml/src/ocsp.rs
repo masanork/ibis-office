@@ -6,8 +6,9 @@
 use crate::{
     Error,
     signatures::{
-        CertificateSignature, inspect_ecdsa_x509_signature, inspect_rsa_pss_x509_signature,
-        rsa_x509_hash, verify_rsa_sha2,
+        CertificateLinkFacts, CertificateSignature, inspect_certificate_link,
+        inspect_ecdsa_x509_signature, inspect_rsa_pss_x509_signature, rsa_x509_hash,
+        verify_rsa_sha2,
     },
 };
 use sha2::{Digest, Sha256};
@@ -31,6 +32,7 @@ pub struct OcspInspection {
 pub struct OcspBasicFacts {
     pub signature: CertificateSignature,
     pub responder_id: OcspResponderId,
+    pub responder_certificate: OcspResponderCertificateFacts,
     pub issuer_name_exact: bool,
     pub produced_at: u64,
     pub produced_after_reference_time: bool,
@@ -39,6 +41,86 @@ pub struct OcspBasicFacts {
     pub total_responses: usize,
     pub responses_truncated: bool,
     pub responses: Vec<OcspSingleFacts>,
+}
+
+/// Observations about the caller-supplied responder certificate. These do not
+/// establish authorization, delegation, certificate validity, or issuer trust.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OcspResponderCertificateFacts {
+    pub identical_to_issuer: bool,
+    /// None means the proposed certificate link could not be inspected.
+    pub proposed_issuer_link: Option<CertificateLinkFacts>,
+    pub not_before: u64,
+    pub not_after: u64,
+    pub at_reference_time: OcspCertificateTime,
+    pub at_produced_at: OcspCertificateTime,
+    pub key_usage: OcspUsage,
+    pub ocsp_signing_eku: OcspUsage,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum OcspCertificateTime {
+    Before,
+    Within,
+    After,
+    InvalidInterval,
+}
+
+/// Presence and relevant bit or OID; invalid includes duplicate extensions.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OcspUsage {
+    Absent,
+    Present(bool),
+    InvalidOrDuplicate,
+}
+
+fn responder_certificate_facts(
+    responder: &Certificate,
+    responder_der: &[u8],
+    issuer_der: &[u8],
+    reference_time: u64,
+    produced_at: u64,
+) -> OcspResponderCertificateFacts {
+    use x509_cert::ext::pkix::{ExtendedKeyUsage, KeyUsage};
+    let tbs = &responder.tbs_certificate;
+    let not_before = tbs.validity.not_before.to_unix_duration().as_secs();
+    let not_after = tbs.validity.not_after.to_unix_duration().as_secs();
+    let at = |time| {
+        if not_before > not_after {
+            OcspCertificateTime::InvalidInterval
+        } else if time < not_before {
+            OcspCertificateTime::Before
+        } else if time > not_after {
+            OcspCertificateTime::After
+        } else {
+            OcspCertificateTime::Within
+        }
+    };
+    let key_usage = match tbs.get::<KeyUsage>() {
+        Ok(None) => OcspUsage::Absent,
+        Ok(Some((_, usage))) => OcspUsage::Present(usage.digital_signature()),
+        Err(_) => OcspUsage::InvalidOrDuplicate,
+    };
+    let ocsp_signing_eku = match tbs.get::<ExtendedKeyUsage>() {
+        Ok(None) => OcspUsage::Absent,
+        Ok(Some((_, usage))) if !usage.0.is_empty() => OcspUsage::Present(
+            usage
+                .0
+                .iter()
+                .any(|oid| oid.to_string() == "1.3.6.1.5.5.7.3.9"),
+        ),
+        _ => OcspUsage::InvalidOrDuplicate,
+    };
+    OcspResponderCertificateFacts {
+        identical_to_issuer: responder_der == issuer_der,
+        proposed_issuer_link: inspect_certificate_link(responder_der, issuer_der).ok(),
+        not_before,
+        not_after,
+        at_reference_time: at(reference_time),
+        at_produced_at: at(produced_at),
+        key_usage,
+        ocsp_signing_eku,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -219,6 +301,13 @@ pub fn inspect_ocsp(
     let mut facts = OcspBasicFacts {
         signature,
         responder_id,
+        responder_certificate: responder_certificate_facts(
+            &responder,
+            responder_der,
+            issuer_der,
+            reference_time,
+            produced_at,
+        ),
         issuer_name_exact: certificate.tbs_certificate.issuer == issuer.tbs_certificate.subject,
         produced_at,
         produced_after_reference_time: produced_at > reference_time,
@@ -418,6 +507,112 @@ mod tests {
         );
         assert!(unsuccessful.basic.is_none());
         assert!(inspect_ocsp(b"bad", LEAF, ISSUER, RESPONDER, 0).is_err());
+    }
+
+    #[test]
+    fn responder_certificate_observations_do_not_authorize() {
+        use x509_cert::{der::asn1::OctetString, ext::Extension};
+        let basic = inspect_ocsp(GOOD, LEAF, ISSUER, RESPONDER, 0)
+            .unwrap()
+            .basic
+            .unwrap();
+        assert_eq!(basic.signature, CertificateSignature::Matches);
+        let facts = basic.responder_certificate;
+        assert!(!facts.identical_to_issuer);
+        assert_eq!(facts.ocsp_signing_eku, OcspUsage::Absent);
+        assert_eq!(facts.at_reference_time, OcspCertificateTime::Before);
+        assert!(!facts.proposed_issuer_link.unwrap().issuer_name_exact);
+
+        let issuer = Certificate::from_der(ISSUER).unwrap();
+        let same = responder_certificate_facts(&issuer, ISSUER, ISSUER, 0, 0);
+        assert!(same.identical_to_issuer);
+        let leaf = Certificate::from_der(LEAF).unwrap();
+        let proposed = responder_certificate_facts(&leaf, LEAF, ISSUER, 0, 0);
+        let link = proposed.proposed_issuer_link.unwrap();
+        assert!(link.issuer_name_exact);
+        assert_eq!(link.child_signature, CertificateSignature::Matches);
+        assert_eq!(proposed.ocsp_signing_eku, OcspUsage::Absent);
+        assert_eq!(proposed.at_reference_time, OcspCertificateTime::Before);
+        let within = responder_certificate_facts(
+            &leaf,
+            LEAF,
+            ISSUER,
+            proposed.not_before,
+            proposed.not_after,
+        );
+        assert_eq!(within.at_reference_time, OcspCertificateTime::Within);
+        assert_eq!(within.at_produced_at, OcspCertificateTime::Within);
+        let after = responder_certificate_facts(&leaf, LEAF, ISSUER, proposed.not_after + 1, 0);
+        assert_eq!(after.at_reference_time, OcspCertificateTime::After);
+
+        for (der, expected) in [
+            (
+                include_bytes!("../tests/fixtures/signatures/digital-signature.der").as_slice(),
+                true,
+            ),
+            (
+                include_bytes!("../tests/fixtures/signatures/encipherment-only.der").as_slice(),
+                false,
+            ),
+        ] {
+            let cert = Certificate::from_der(der).unwrap();
+            assert_eq!(
+                responder_certificate_facts(&cert, der, ISSUER, 0, 0).key_usage,
+                OcspUsage::Present(expected)
+            );
+        }
+        let mut modified = leaf.clone();
+        let usage = x509_cert::ext::pkix::ExtendedKeyUsage(vec![ObjectIdentifier::new_unwrap(
+            "1.3.6.1.5.5.7.3.9",
+        )]);
+        let ext = Extension {
+            extn_id: ObjectIdentifier::new_unwrap("2.5.29.37"),
+            critical: false,
+            extn_value: OctetString::new(usage.to_der().unwrap()).unwrap(),
+        };
+        modified
+            .tbs_certificate
+            .extensions
+            .get_or_insert_default()
+            .push(ext.clone());
+        let facts = responder_certificate_facts(&modified, LEAF, ISSUER, 0, 0);
+        assert_eq!(facts.ocsp_signing_eku, OcspUsage::Present(true));
+        modified
+            .tbs_certificate
+            .extensions
+            .as_mut()
+            .unwrap()
+            .push(ext);
+        assert_eq!(
+            responder_certificate_facts(&modified, LEAF, ISSUER, 0, 0).ocsp_signing_eku,
+            OcspUsage::InvalidOrDuplicate
+        );
+        let extension = modified
+            .tbs_certificate
+            .extensions
+            .as_mut()
+            .unwrap()
+            .pop()
+            .unwrap();
+        modified.tbs_certificate.extensions.as_mut().unwrap().pop();
+        let mut malformed = extension;
+        malformed.extn_value = OctetString::new(vec![0xff]).unwrap();
+        modified
+            .tbs_certificate
+            .extensions
+            .as_mut()
+            .unwrap()
+            .push(malformed);
+        assert_eq!(
+            responder_certificate_facts(&modified, LEAF, ISSUER, 0, 0).ocsp_signing_eku,
+            OcspUsage::InvalidOrDuplicate
+        );
+        modified.tbs_certificate.validity.not_after = issuer.tbs_certificate.validity.not_before;
+        modified.tbs_certificate.validity.not_before = leaf.tbs_certificate.validity.not_after;
+        assert_eq!(
+            responder_certificate_facts(&modified, LEAF, ISSUER, 0, 0).at_reference_time,
+            OcspCertificateTime::InvalidInterval
+        );
     }
 
     #[test]

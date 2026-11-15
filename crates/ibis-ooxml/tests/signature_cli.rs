@@ -562,6 +562,8 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
     assert!(text.contains("OCSP 1 observations (NOT a revocation verdict)"));
     assert!(text.contains("Signature Matches; responder ID ByKeySha1(true)"));
     assert!(text.contains("issuer_name_hash_equal: true, issuer_key_hash_equal: true, serial_equal: true"));
+    assert!(text.contains("Responder certificate observations (NOT authorization)"));
+    assert!(text.contains("ocsp_signing_eku: Absent"));
     assert!(text.contains("UNAUTHENTICATED claim Good"));
     assert!(text.contains("UNAUTHENTICATED claim Revoked"));
     assert!(text.contains("response extensions present true"));
