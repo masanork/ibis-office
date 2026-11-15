@@ -74,3 +74,20 @@ fn one_cell_can_have_both_character_advisories() {
         [CandidateKind::PlatformDependentCharacters, CandidateKind::PrivateUseCharacters]);
     assert_eq!(findings[0].range, findings[1].range);
 }
+
+#[test]
+fn zero_dimensions_are_candidates_even_without_saved_sizes() {
+    let mut sheet = Sheet::default();
+    sheet.cells = vec![cell(2, 2, CellValue::Text("x".into()), None)].into();
+    sheet.rows = vec![0, 20, 0, 0];
+    sheet.columns = vec![0, 20, 0, 0];
+    sheet.hidden_rows.insert(0, 20);
+    sheet.hidden_columns.insert(0, 20);
+    let found = candidates(&sheet);
+    let rows = found.iter().filter(|c| c.kind == CandidateKind::HiddenRow).map(|c| c.range.first_row).collect::<Vec<_>>();
+    let cols = found.iter().filter(|c| c.kind == CandidateKind::HiddenColumn).map(|c| c.range.first_column).collect::<Vec<_>>();
+    assert_eq!(rows, [0, 2]);
+    assert_eq!(cols, [0, 2]);
+    for row in rows { assert!(sheet.is_row_hidden(row)); }
+    for col in cols { assert!(sheet.is_col_hidden(col)); }
+}
