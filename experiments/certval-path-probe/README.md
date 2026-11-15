@@ -61,6 +61,24 @@ proof of a bad signature. The reference script uses the host clock and requires
 it to be in the fixtures' common validity window, 2026-11-15 01:22:06 UTC to
 2027-11-15 01:22:06 UTC. The Rust probe uses its fixed reference time.
 
+A separate single-edge diagnostic calls the crypto interface directly with the
+original signed DER bytes and an explicitly proposed issuer certificate. For
+the mixed-hash PSS fixture it preserves `Unrecognized`, whereas a damaged
+supported PSS signature produces the backend's signature-failure result.
+Damaging the unsupported signature still yields `Unrecognized`, so that result
+says nothing about whether that signature is intact. The backend can also
+report a signature failure for other unsupported inputs, so this distinction is
+not a complete algorithm-support classifier. The diagnostic reports malformed
+inputs and other errors separately and never changes the path outcome.
+
+A separate test demonstrates why the diagnostic is not path validation: an
+end-entity signature matches a proposed issuer key while the corresponding
+path fails because the proposed intermediate is not a CA. The diagnostic does
+not authenticate the issuer, check its name, trust, validity, revocation or
+purpose, or validate any other path edge. The adapter remains experimental and
+is not exposed to the application. It must not turn `Matches` into a trust
+or path success result.
+
 The pinned crate uses Apache-2.0 OR MIT licensing. Its own
 [security warning](https://docs.rs/crate/certval/0.2.0-rc.3/source/README.md)
 says it has not been independently audited and documents remaining corpus
