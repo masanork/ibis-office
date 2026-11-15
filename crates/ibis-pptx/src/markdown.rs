@@ -288,15 +288,114 @@ pub fn export_docx_to_markdown(docx_bytes: &[u8]) -> Result<String, Error> {
     export_presentation_to_markdown(&pres)
 }
 
-/// Export a [`Presentation`] (Word `flow` or PowerPoint `slides`) to deterministic Rich Markdown.
+/// Export a [`Presentation`] (Word `flow`, Excel `workbook`, or PowerPoint `slides`) to deterministic Rich Markdown.
 pub fn export_presentation_to_markdown(presentation: &Presentation) -> Result<String, Error> {
     if let Some(flow) = presentation.flow.as_ref() {
         return Ok(export_markdown(flow, &presentation.media));
     }
+    if presentation.workbook.is_some() {
+        return export_workbook_markdown(presentation);
+    }
     if !presentation.slides.is_empty() {
         return Ok(export_presentation_markdown(presentation));
     }
-    Err(Error::new("ワード文書またはプレゼンテーションではありません"))
+    Err(Error::new("ワード文書・表計算・プレゼンテーションのいずれでもありません"))
+}
+
+/// Export visible worksheets in a workbook [`Presentation`] as GFM Markdown tables.
+pub fn export_workbook_markdown(p: &Presentation) -> Result<String, Error> {
+    use ibis_doc_model::{CellAlign, SheetState};
+    let book = p
+        .workbook
+        .as_ref()
+        .ok_or_else(|| Error::new("ワークブックデータがありません"))?;
+    let mut out = String::new();
+    let mut total_cells = 0u64;
+
+    for sheet_ref in &book.sheets {
+        if sheet_ref.state != SheetState::Visible || sheet_ref.other {
+            continue;
+        }
+        let Some(sheet) = sheet_ref
+            .slide
+            .and_then(|id| p.slide(id))
+            .and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
+        else {
+            continue;
+        };
+        let row_vis = |r: u32| {
+            !sheet.hidden_rows.contains_key(&r) && sheet.rows.get(r as usize).is_none_or(|v| *v != 0)
+        };
+        let col_vis = |c: u32| {
+            !sheet.hidden_columns.contains_key(&c)
+                && sheet.columns.get(c as usize).is_none_or(|v| *v != 0)
+        };
+        let mut occupied = sheet
+            .cells
+            .iter()
+            .filter(|cell| row_vis(cell.row) && col_vis(cell.column));
+        let Some(first) = occupied.next() else {
+            continue;
+        };
+        let (mut minr, mut maxr, mut minc, mut maxc) =
+            (first.row, first.row, first.column, first.column);
+        for c in occupied {
+            minr = minr.min(c.row);
+            maxr = maxr.max(c.row);
+            minc = minc.min(c.column);
+            maxc = maxc.max(c.column);
+        }
+        let area = u64::from(maxr - minr + 1).saturating_mul(u64::from(maxc - minc + 1));
+        total_cells = total_cells.saturating_add(area);
+        if total_cells > 50_000 {
+            return Err(Error::new("ワークブックが大きすぎて Markdown に変換できません"));
+        }
+
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("## ");
+        out.push_str(&sheet_ref.name);
+        out.push_str("\n\n");
+
+        let rows: Vec<u32> = (minr..=maxr).filter(|&r| row_vis(r)).collect();
+        let cols: Vec<u32> = (minc..=maxc).filter(|&c| col_vis(c)).collect();
+        if rows.is_empty() || cols.is_empty() {
+            continue;
+        }
+
+        for (ri, &r) in rows.iter().enumerate() {
+            out.push('|');
+            for &c in &cols {
+                let raw = sheet
+                    .cell(r, c)
+                    .map(|cell| cell.text.as_str())
+                    .unwrap_or("");
+                let escaped = raw.replace('|', "\\|").replace('\n', "<br>");
+                out.push(' ');
+                out.push_str(escaped.trim());
+                out.push_str(" |");
+            }
+            out.push('\n');
+            if ri == 0 {
+                out.push('|');
+                for &c in &cols {
+                    let align = sheet
+                        .cell(r, c)
+                        .and_then(|cell| sheet.styles.get(cell.style as usize))
+                        .map(|st| match st.align {
+                            CellAlign::Center | CellAlign::CenterAcross => " :---: |",
+                            CellAlign::Right => " ---: |",
+                            _ => " :--- |",
+                        })
+                        .unwrap_or(" :--- |");
+                    out.push_str(align);
+                }
+                out.push('\n');
+            }
+        }
+    }
+    Ok(out)
 }
 
 // ============================================================================
@@ -4949,5 +5048,16 @@ pie
         assert!(exported.contains("```mermaid\nflowchart LR"));
         assert!(exported.contains("| DOCX | 対応済み |"));
         assert!(exported.contains("```chart\ntype: pie"));
+    }
+
+    #[test]
+    fn exports_workbook_sheets_to_markdown_tables() {
+        let pres = crate::save::open(b"Name,Score,City\nAlice,95,Tokyo\nBob,88,Osaka\n".to_vec())
+            .expect("open csv")
+            .presentation;
+        let md = export_presentation_to_markdown(&pres).expect("export workbook to markdown");
+        assert!(md.contains("| Name | Score | City |"));
+        assert!(md.contains("| Alice | 95 | Tokyo |"));
+        assert!(md.contains("| Bob | 88 | Osaka |"));
     }
 }

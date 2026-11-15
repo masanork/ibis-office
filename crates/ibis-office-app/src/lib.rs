@@ -446,16 +446,61 @@ fn parse_args() -> Result<Args, String> {
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
-    if matches!(format, "md" | "markdown") {
-        let path = args.path.as_deref().ok_or("name the .docx, .pptx, or .md file to export")?;
+    if matches!(format, "md" | "markdown" | "docx" | "pptx") {
+        let path = args
+            .path
+            .as_deref()
+            .ok_or("name the .docx, .pptx, .xlsx, .csv, or .md file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
         std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
-        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "document".into());
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let presentation = ibis_pptx::read(&data).map_err(|e| format!("{}: {e}", path.display()))?;
-        let md = ibis_pptx::markdown::export_presentation_to_markdown(&presentation).map_err(|e| format!("{}: {e}", path.display()))?;
-        let out_path = out_dir.join(format!("{stem}.md"));
-        std::fs::write(&out_path, md.as_bytes()).map_err(|e| format!("{}: {e}", out_path.display()))?;
+        match format {
+            "docx" => {
+                let opened = ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent())
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let out_bytes = opened
+                    .source
+                    .save(&opened.presentation, Default::default())
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let out_path = out_dir.join(format!("{stem}.docx"));
+                std::fs::write(&out_path, out_bytes)
+                    .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            }
+            "pptx" => {
+                let opened =
+                    ibis_pptx::markdown::open_markdown_presentation_with_base_dir(data, path.parent())
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                let out_bytes = opened
+                    .source
+                    .save(&opened.presentation, Default::default())
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let out_path = out_dir.join(format!("{stem}.pptx"));
+                std::fs::write(&out_path, out_bytes)
+                    .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            }
+            _ => {
+                let presentation = if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+                {
+                    ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent())
+                        .map_err(|e| format!("{}: {e}", path.display()))?
+                        .presentation
+                } else {
+                    ibis_pptx::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
+                };
+                let md = ibis_pptx::markdown::export_presentation_to_markdown(&presentation)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let out_path = out_dir.join(format!("{stem}.md"));
+                std::fs::write(&out_path, md.as_bytes())
+                    .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            }
+        }
         return Ok(());
     }
     #[cfg(headless_export)]
