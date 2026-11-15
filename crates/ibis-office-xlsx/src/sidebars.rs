@@ -4,7 +4,6 @@
 //! A workbook's sidebars: the screen's rows of the sidebar table (`FormatInfo::sidebars`; what a row says is in `shell/sidebars.rs`,
 //! the list the rows are made from is `tasks/doc/menu-redesign/sidebars.md`). The Window menu's 「サイドバー ▸」 lists them in
 //! this order. `panels` are the panel functions of this screen's pane chain (`fn sidebar` in `mod.rs`).
-use crate::ext::*;
 use crate::shell::sidebars::SidebarGroup as G;
 use crate::shell::sidebars::SidebarKind::{Pane, Task};
 use crate::shell::sidebars::SidebarSlot::Right;

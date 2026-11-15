@@ -3211,6 +3211,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("docx.track.change-user-name", |this, window, cx| this.open_user_info_panel(window, cx));
     menus.connect("docx.options.user-info", |this, window, cx| this.open_user_info_panel(window, cx));
     menus.connect("docx.accessibility-check", |this, _, cx| this.open_accessibility_panel(cx));
+    menus.connect("docx.ai-assistant", |this, window, cx| this.open_ai_assistant_panel(window, cx));
     menus.connect("docx.merge", |this, window, cx| this.open_merge(window, cx));
     menus.connect("docx.merge.print", |this, window, cx| this.print_merged_documents(window, cx));
     menus.connect("docx.merge.export-pdf", |this, window, cx| this.export_merged_pdf(window, cx));

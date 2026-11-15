@@ -44,7 +44,6 @@ pub mod paste_special_dialog;
 pub mod copy_picture;
 pub(crate) mod names;
 pub(crate) mod names_list;
-pub mod ai_assistant;
 pub(crate) mod names_panel;
 pub(crate) mod paste_names;
 pub(crate) mod paste_names_dialog;
@@ -520,6 +519,38 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
 }
 
 impl FormatEditor for Workbook {
+    fn ai_sheet_selection(
+        editor: &crate::shell::editor::SlideEditor,
+        slide: ibis_doc_model::SlideId,
+    ) -> Option<ibis_doc_model::sheet::CellRange> {
+        let wb = editor.wb();
+        let &(c0, r0) = wb.cells.get(&slide)?;
+        let (c1, r1) = wb.cell_ends.get(&slide).copied().unwrap_or((c0, r0));
+        Some(ibis_doc_model::sheet::CellRange {
+            first_row: r0.min(r1),
+            first_column: c0.min(c1),
+            last_row: r0.max(r1),
+            last_column: c0.max(c1),
+        })
+    }
+
+    fn set_ai_sheet_selection(
+        editor: &mut crate::shell::editor::SlideEditor,
+        slide: ibis_doc_model::SlideId,
+        range: ibis_doc_model::sheet::CellRange,
+    ) {
+        editor.current_slide = slide;
+        editor.selection = None;
+        let wb = editor.wb_mut();
+        wb.cells.insert(slide, (range.first_column, range.first_row));
+        if range.first_column != range.last_column || range.first_row != range.last_row {
+            wb.cell_ends
+                .insert(slide, (range.last_column, range.last_row));
+        } else {
+            wb.cell_ends.remove(&slide);
+        }
+    }
+
     fn note_open_failed(path: &std::path::Path) {
         repair::note_open_failed(path);
     }

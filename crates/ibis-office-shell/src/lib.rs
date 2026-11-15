@@ -21,6 +21,7 @@ pub const VERSION: &str = env!("IBIS_VERSION");
 
 pub use ibis_office_base::app_data;
 pub mod actions;
+pub mod ai_assistant;
 pub mod ai_client;
 pub mod ai_tools;
 pub mod external;

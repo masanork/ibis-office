@@ -9,6 +9,8 @@ use ibis_doc_model::ai_sheet::{
     build_set_cells_command, build_set_format_command, parse_cell_range,
 };
 use ibis_doc_model::command::Command;
+use ibis_doc_model::flow::FlowAlign;
+use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange};
 use ibis_doc_model::model::SlideId;
 use ibis_doc_model::sheet::{CellAlign, CellRange, CellVerticalAlign};
 use ibis_doc_model::sheet_command::Axis;
@@ -512,6 +514,291 @@ pub fn parse_clear_cells_command(slide: SlideId, arguments_json: &str) -> Result
         args.clear_formats,
         MAX_CLEAR_CELLS,
     )
+}
+
+/// Tool definitions exposed to the OpenAI-compatible API for presentations (PPTX).
+pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "get_presentation_overview",
+                description: "Get slide count, active slide index, and summary (1-based index, title, shape count, notes presence) of each slide.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "read_slide",
+                description: "Read all text shapes (shape_id, kind, text) and speaker notes on a slide.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "1-based slide number (defaults to the active slide)."
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "set_shape_text",
+                description: "Replace the text of a shape on a slide.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number (defaults to active slide)." },
+                        "shape_id": { "type": "integer", "minimum": 1, "description": "Shape ID returned by read_slide." },
+                        "text": { "type": "string", "description": "New text content (use \\n for paragraphs)." }
+                    },
+                    "required": ["shape_id", "text"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "set_slide_notes",
+                description: "Set the speaker notes text for a slide.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number (defaults to active slide)." },
+                        "notes": { "type": "string", "description": "Speaker notes text." }
+                    },
+                    "required": ["notes"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "add_slide",
+                description: "Insert a new slide after the active slide (with optional title and body text) and switch to it.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Optional slide title text." },
+                        "body": { "type": "string", "description": "Optional slide body text." }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "select_slide",
+                description: "Switch the active slide in the presentation UI.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number." }
+                    },
+                    "required": ["slide_index"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+    ]
+}
+
+/// Tool definitions exposed to the OpenAI-compatible API for word-processing documents (DOCX).
+pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "get_document_overview",
+                description: "Get total block/paragraph count and previews of the first 100 paragraphs in the document.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "read_paragraphs",
+                description: "Read full text of a range of 0-based paragraphs (up to 50 paragraphs per call).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "start": { "type": "integer", "minimum": 0, "description": "0-based starting paragraph index." },
+                        "count": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 }
+                    },
+                    "required": ["start"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "insert_text",
+                description: "Insert text at a character offset within a 0-based paragraph (defaults to end of paragraph). Use '\\n' to create new paragraphs.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "paragraph": { "type": "integer", "minimum": 0, "description": "0-based paragraph index." },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Optional 0-based character offset (defaults to paragraph length)." },
+                        "text": { "type": "string", "description": "Text to insert." }
+                    },
+                    "required": ["paragraph", "text"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "replace_paragraph_text",
+                description: "Replace the entire text of a 0-based paragraph.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "paragraph": { "type": "integer", "minimum": 0, "description": "0-based paragraph index." },
+                        "text": { "type": "string", "description": "Replacement text." }
+                    },
+                    "required": ["paragraph", "text"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "set_paragraph_align",
+                description: "Set horizontal alignment for a 0-based paragraph.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "paragraph": { "type": "integer", "minimum": 0, "description": "0-based paragraph index." },
+                        "align": { "type": "string", "enum": ["left", "center", "right", "justify"] }
+                    },
+                    "required": ["paragraph", "align"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+    ]
+}
+
+#[derive(Deserialize)]
+pub struct SlideIndexOptionalArg {
+    pub slide_index: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct SlideIndexRequiredArg {
+    pub slide_index: usize,
+}
+
+#[derive(Deserialize)]
+pub struct SetShapeTextArgs {
+    pub slide_index: Option<usize>,
+    pub shape_id: u64,
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetSlideNotesArgs {
+    pub slide_index: Option<usize>,
+    pub notes: String,
+}
+
+#[derive(Deserialize)]
+pub struct AddSlideArgs {
+    pub title: Option<String>,
+    pub body: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ReadParagraphsArgs {
+    pub start: usize,
+    #[serde(default = "default_twenty")]
+    pub count: usize,
+}
+
+fn default_twenty() -> usize {
+    20
+}
+
+#[derive(Deserialize)]
+pub struct InsertTextArgs {
+    pub paragraph: u32,
+    pub offset: Option<usize>,
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+pub struct ReplaceParagraphArgs {
+    pub paragraph: u32,
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetParagraphAlignArgs {
+    pub paragraph: u32,
+    pub align: String,
+}
+
+pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command, String> {
+    let args: SetParagraphAlignArgs =
+        serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
+    let align = match args.align.as_str() {
+        "left" => FlowAlign::Left,
+        "center" => FlowAlign::Center,
+        "right" => FlowAlign::Right,
+        "justify" => FlowAlign::Justify,
+        other => return Err(format!("invalid align '{other}'")),
+    };
+    Ok(Command::Flow(FlowCommand::SetParagraphFormat {
+        first: args.paragraph,
+        last: args.paragraph,
+        change: ParaChange::Align(align),
+    }))
+}
+
+pub fn build_replace_paragraph_command(paragraph: u32, old_len: usize, text: String) -> Command {
+    if old_len == 0 {
+        Command::Flow(FlowCommand::InsertText {
+            at: FlowPos::new(paragraph, 0),
+            text,
+            format: None,
+        })
+    } else if text.is_empty() {
+        Command::Flow(FlowCommand::Delete {
+            from: FlowPos::new(paragraph, 0),
+            to: FlowPos::new(paragraph, old_len),
+        })
+    } else {
+        Command::Group(vec![
+            Command::Flow(FlowCommand::Delete {
+                from: FlowPos::new(paragraph, 0),
+                to: FlowPos::new(paragraph, old_len),
+            }),
+            Command::Flow(FlowCommand::InsertText {
+                at: FlowPos::new(paragraph, 0),
+                text,
+                format: None,
+            }),
+        ])
+    }
 }
 
 #[cfg(test)]

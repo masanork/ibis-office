@@ -9,6 +9,15 @@ use crate::shell::sidebars::SidebarKind::Pane;
 use crate::shell::sidebars::SidebarSlot::{Left, Right};
 use crate::shell::sidebars::{SidebarDef, always, by_format, chart, open_comments, outline, picture, shape, sidebar_def};
 
+fn open_ai_assistant(
+    this: &mut crate::shell::editor::SlideEditor,
+    _: &'static str,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::Context<crate::shell::editor::SlideEditor>,
+) {
+    this.open_ai_assistant_panel(window, cx);
+}
+
 pub(crate) const SIDEBARS: &[SidebarDef] = &[
     // Left and bottom panes.
     sidebar_def!("sidebar.navigation", "sidebar.navigation", Left, G::Document, Pane, panels: &[], cmd: Some("docx.navigation-pane"), open: None, start: false, available: always, key: None, toolbar: Some("outline")),
@@ -34,5 +43,6 @@ pub(crate) const SIDEBARS: &[SidebarDef] = &[
     sidebar_def!("sidebar.read-aloud", "sidebar.read-aloud", Right, G::Review, Pane, panels: &["docx_read_aloud_panel"], cmd: None, open: Some(by_format), start: false, available: always, key: None, toolbar: None),
     // Right pane: drawing and settings.
     sidebar_def!("sidebar.ink", "sidebar.ink", Right, G::Tools, Pane, panels: &["docx_ink_panel"], cmd: None, open: Some(by_format), start: false, available: always, key: None, toolbar: None),
+    sidebar_def!("sidebar.ai-assistant", "sidebar.ai-assistant", Right, G::Tools, Pane, panels: &["ai_assistant_panel"], cmd: Some("docx.ai-assistant"), open: Some(open_ai_assistant), start: true, available: always, key: None, toolbar: None),
     sidebar_def!("sidebar.customize-toolbar", "sidebar.customize-toolbar", Right, G::Tools, Pane, panels: &["docx_customize_toolbar_panel"], cmd: None, open: Some(by_format), start: false, available: always, key: None, toolbar: None),
 ];

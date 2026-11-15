@@ -294,6 +294,22 @@ pub trait FormatEditor {
         false
     }
 
+    /// Active cell selection range for AI Assistant (xlsx only).
+    fn ai_sheet_selection(
+        _editor: &SlideEditor,
+        _slide: SlideId,
+    ) -> Option<ibis_doc_model::sheet::CellRange> {
+        None
+    }
+
+    /// Update active cell selection range from AI Assistant (xlsx only).
+    fn set_ai_sheet_selection(
+        _editor: &mut SlideEditor,
+        _slide: SlideId,
+        _range: ibis_doc_model::sheet::CellRange,
+    ) {
+    }
+
     /// Show page `slide`: whether the format handled it (else it is shown
     /// as a presentation shows a slide).
     fn show_page(_editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
@@ -1273,6 +1289,8 @@ pub trait FormatDriver: Sync {
     fn workspace_content(&self, editor: &SlideEditor, workspace: Size<Pixels>) -> WorkspaceContent;
     fn zoom_scroll_y(&self, _editor: &SlideEditor, _before: &WorkspaceContent, _after: &WorkspaceContent, _old: Pixels, _view: Pixels, _anchor: Pixels) -> Option<Pixels>;
     fn step_page(&self, _editor: &mut SlideEditor, _forward: bool, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
+    fn ai_sheet_selection(&self, _editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange>;
+    fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange);
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn page_changed(&self, _editor: &mut SlideEditor, _from: SlideId, _to: SlideId);
     fn before_render(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
@@ -1519,6 +1537,12 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn step_page(&self, _editor: &mut SlideEditor, _forward: bool, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
         F::step_page(_editor, _forward, _window, _cx)
+    }
+    fn ai_sheet_selection(&self, _editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange> {
+        F::ai_sheet_selection(_editor, _slide)
+    }
+    fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange) {
+        F::set_ai_sheet_selection(_editor, _slide, _range);
     }
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
         F::show_page(_editor, _slide, _window, _cx)

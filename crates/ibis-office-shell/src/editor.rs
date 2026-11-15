@@ -352,6 +352,7 @@ pub struct SlideEditor {
     pub bar_keys: crate::bar_keys::BarKeys,
     pub(crate) draw_button_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     pub zoom_trigger_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    pub ai_assistant: Option<crate::ai_assistant::AiAssistantState>,
     _zoom_subscription: Subscription,
     /// The status bar's list of zooms is open.
     pub zoom_menu_open: bool,
@@ -764,6 +765,7 @@ impl SlideEditor {
             logo_bounds: Default::default(),
             draw_button_bounds: Default::default(),
             bar_keys: Default::default(),
+            ai_assistant: None,
             _zoom_subscription: zoom_subscription,
             zoom_menu_open: false,
             zoom_input,

@@ -9,6 +9,15 @@ use crate::shell::sidebars::SidebarKind::Pane;
 use crate::shell::sidebars::SidebarSlot::{Bottom, Left, Right};
 use crate::shell::sidebars::{SidebarDef, always, by_format, master, open_comments, smartart, sidebar_def};
 
+fn open_ai_assistant(
+    this: &mut crate::shell::editor::SlideEditor,
+    _: &'static str,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::Context<crate::shell::editor::SlideEditor>,
+) {
+    this.open_ai_assistant_panel(window, cx);
+}
+
 pub(crate) const SIDEBARS: &[SidebarDef] = &[
     // Left and bottom panes.
     sidebar_def!("sidebar.thumbnails", "sidebar.thumbnails", Left, G::Document, Pane, panels: &[], cmd: None, open: None, start: false, available: always, key: None, toolbar: None),
@@ -33,5 +42,6 @@ pub(crate) const SIDEBARS: &[SidebarDef] = &[
     sidebar_def!("sidebar.screen-reader", "sidebar.screen-reader", Right, G::Review, Pane, panels: &["pptx_screen_reader_panel"], cmd: Some("pptx.screen-reader"), open: Some(by_format), start: false, available: always, key: None, toolbar: None),
     // Right pane: drawing and settings.
     sidebar_def!("sidebar.ink", "sidebar.ink", Right, G::Tools, Pane, panels: &["pptx_ink_panel"], cmd: Some("pptx.ink"), open: Some(by_format), start: false, available: always, key: None, toolbar: None),
+    sidebar_def!("sidebar.ai-assistant", "sidebar.ai-assistant", Right, G::Tools, Pane, panels: &["ai_assistant_panel"], cmd: Some("pptx.ai-assistant"), open: Some(open_ai_assistant), start: true, available: always, key: None, toolbar: None),
     sidebar_def!("sidebar.customize-toolbar", "sidebar.customize-toolbar", Right, G::Tools, Pane, panels: &["pptx_ribbon_qat_panel"], cmd: Some("pptx.customize-ribbon"), open: Some(by_format), start: false, available: always, key: None, toolbar: None),
 ];

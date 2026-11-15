@@ -921,6 +921,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("pptx.ink.to-text", |this, _, cx| this.pptx_ink_to_text(cx));
     menus.connect("pptx.ink.to-math", |this, _, cx| this.pptx_ink_to_math(cx));
     menus.connect("pptx.ink.replay", |this, _, cx| this.pptx_ink_replay(cx));
+    menus.connect("pptx.ai-assistant", |this, window, cx| this.open_ai_assistant_panel(window, cx));
     let notes = editor.notes_shown();
     if let Some(item) = menus.find_mut("pptx.notes") {
         item.checked = notes;
