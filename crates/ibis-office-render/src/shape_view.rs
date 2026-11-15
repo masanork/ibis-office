@@ -1298,25 +1298,39 @@ const BUNDLED_FONTS: &[&[u8]] = &[];
 const BUNDLED_FAMILY: &str = "Carlito";
 
 #[cfg(target_family = "wasm")]
-type WebFontHooks = (fn() -> Option<SharedString>, fn(&str) -> Option<SharedString>, fn(Option<&str>) -> Option<FontFallbacks>);
+type WebFontHooks = (
+    fn() -> Option<SharedString>,
+    fn(&str) -> Option<SharedString>,
+    fn(&str) -> Option<SharedString>,
+    fn(Option<&str>) -> Option<FontFallbacks>,
+);
 #[cfg(target_family = "wasm")]
 static WEB_FONT_HOOKS: std::sync::Mutex<Option<WebFontHooks>> = std::sync::Mutex::new(None);
 /// Connect the browser-supplied font selection to the shared renderer.
 #[cfg(target_family = "wasm")]
-pub fn set_web_font_hooks(default: fn() -> Option<SharedString>, alias: fn(&str) -> Option<SharedString>, fallbacks: fn(Option<&str>) -> Option<FontFallbacks>) {
-    *WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()) = Some((default, alias, fallbacks));
+pub fn set_web_font_hooks(
+    default: fn() -> Option<SharedString>,
+    alias: fn(&str) -> Option<SharedString>,
+    face_fallback: fn(&str) -> Option<SharedString>,
+    fallbacks: fn(Option<&str>) -> Option<FontFallbacks>,
+) {
+    *WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()) = Some((default, alias, face_fallback, fallbacks));
 }
 #[cfg(target_family = "wasm")]
 fn web_font_default() -> Option<SharedString> {
-    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(default, _, _)| default())
+    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(default, _, _, _)| default())
 }
 #[cfg(target_family = "wasm")]
 fn web_font_fallbacks(name: Option<&str>) -> Option<FontFallbacks> {
-    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(_, _, fallbacks)| fallbacks(name))
+    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(_, _, _, fallbacks)| fallbacks(name))
 }
 #[cfg(target_family = "wasm")]
 fn web_font_alias(name: &str) -> Option<SharedString> {
-    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(_, alias, _)| alias(name))
+    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(_, alias, _, _)| alias(name))
+}
+#[cfg(target_family = "wasm")]
+fn web_font_face_fallback(name: &str) -> Option<SharedString> {
+    WEB_FONT_HOOKS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|(_, _, face_fallback, _)| face_fallback(name))
 }
 
 fn default_font_family() -> SharedString {
@@ -2398,6 +2412,13 @@ impl Fonts {
             return found;
         }
         let weight = strip_weight_suffix(name).map_or(FontWeight::NORMAL, |(_, w)| w);
+        // On web with face-mode fonts, resolve unaliased typefaces to the matching
+        // category web font for drawing, while keeping `available(name) == None` so
+        // substitute layout metrics (e.g. `Meiryo UI` kana widths, `palt`/`pwid`) apply.
+        #[cfg(target_family = "wasm")]
+        if let Some(fallback) = web_font_face_fallback(name) {
+            return Self::named_weight(name, fallback, weight);
+        }
         // A missing East Asian face whose file records neither a charset nor an Excel family follows the
         // category in its name: a system mincho or gothic on Windows, macOS or Linux. Mincho uses IPAmj
         // Mincho when the additional administrative mincho is installed as well, and that face supplies

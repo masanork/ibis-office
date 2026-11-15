@@ -2049,6 +2049,16 @@ fn text_above(paragraph: &RichParagraph) -> f32 {
     }
 }
 
+pub(crate) fn kana_width_advance(kana_widths: &[u16; 192], c: char, next_c: Option<char>, size: f32, spacing: f32) -> Option<f32> {
+    if matches!(c as usize, 0x3041..=0x30fa | 0x30fc..=0x30fe)
+        && !next_c.is_some_and(|n| "（「『【〔〈《［｛〘〖".contains(n)) // i18n-ok（禁則の文字の並び）
+    {
+        Some((kana_widths[c as usize - 0x3040] as f32 / 256.0) * size + spacing)
+    } else {
+        None
+    }
+}
+
 fn lay_out(paragraph: &RichParagraph, width: Option<f32>, top_above: f32, window: &mut Window) -> Layout {
     lay_out_in(paragraph, width, top_above, window.text_system())
 }
@@ -2095,11 +2105,8 @@ fn lay_out_in(paragraph: &RichParagraph, width: Option<f32>, top_above: f32, tex
             let x1 = if end == piece.text.len() { f32::from(shaped.width) } else { f32::from(shaped.x_for_index(end)) };
             let raw = (x1 - x0).max(0.0);
             let next_c = bounds.get(k + 1).map(|b| b.1);
-            let adv = if let Some(w) = piece.kana_widths
-                && (0x3041..=0x30fa).contains(&(c as usize))
-                && !next_c.is_some_and(|n| "（「『【〔〈《［｛〘〖".contains(n)) // i18n-ok（禁則の文字の並び）
-            {
-                (w[c as usize - 0x3040] as f32 / 256.0) * piece.size + piece.spacing_px()
+            let adv = if let Some(w) = piece.kana_widths.and_then(|w| kana_width_advance(w, c, next_c, piece.size, piece.spacing_px())) {
+                w
             } else if let Some(em) = piece.advance_table.and_then(|t| t.advance(c)) {
                 em * piece.size + piece.spacing_px()
             } else if piece.proportional_alnum
@@ -2891,6 +2898,18 @@ mod tests {
         let (x, y) = t.apply(12.0, 7.0);
         let (bx, by) = t.invert(x, y);
         assert!((bx - 12.0).abs() < 1e-3 && (by - 7.0).abs() < 1e-3, "{bx} {by}");
+    }
+
+    #[test]
+    fn kana_widths_apply_to_prolonged_sound_mark_and_iteration_marks() {
+        use super::kana_width_advance;
+        let w = &crate::font_metrics::MEIRYO_UI_KANA_WIDTHS;
+        let expected_bar = (w[0x30fc - 0x3040] as f32 / 256.0) * 20.0;
+        let expected_iter = (w[0x30fd - 0x3040] as f32 / 256.0) * 20.0;
+        assert_eq!(kana_width_advance(w, 'ー', None, 20.0, 0.0), Some(expected_bar));
+        assert_eq!(kana_width_advance(w, 'ヽ', None, 20.0, 0.0), Some(expected_iter));
+        assert_eq!(kana_width_advance(w, 'ヾ', None, 20.0, 0.0), Some(expected_iter));
+        assert_eq!(kana_width_advance(w, 'ー', Some('（'), 20.0, 0.0), None);
     }
 }
 
