@@ -772,10 +772,10 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
                 })
                 .into(),
             MenuItem::tr("docx.cell.direction.tbrl")
-                .checked(matches!(direction, ibis_doc_model::CellDirection::TbRl | ibis_doc_model::CellDirection::TbRlV))
+                .checked(direction == ibis_doc_model::CellDirection::TbRlV)
                 .on(|this, _, cx| {
-                    if matches!(this.caret_cell_direction(), Some(ibis_doc_model::CellDirection::TbRl | ibis_doc_model::CellDirection::TbRlV)) { return; }
-                    this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Direction { cells: vec![(r, c)], direction: ibis_doc_model::CellDirection::TbRl }, cx);
+                    if this.caret_cell_direction() == Some(ibis_doc_model::CellDirection::TbRlV) { return; }
+                    this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Direction { cells: vec![(r, c)], direction: ibis_doc_model::CellDirection::TbRlV }, cx);
                 })
                 .into(),
             MenuItem::tr("docx.cell.direction.tblrv")
@@ -1648,7 +1648,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
         this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Direction { cells: vec![(r, c)], direction: ibis_doc_model::CellDirection::LrTb }, cx);
     });
     menus.connect("docx.cell.direction.tbrl", |this, _, cx| {
-        this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Direction { cells: vec![(r, c)], direction: ibis_doc_model::CellDirection::TbRl }, cx);
+        this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Direction { cells: vec![(r, c)], direction: ibis_doc_model::CellDirection::TbRlV }, cx);
     });
     menus.connect("docx.cell.direction.tblrv", |this, _, cx| {
         this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Direction { cells: vec![(r, c)], direction: ibis_doc_model::CellDirection::TbLrV }, cx);
@@ -3907,9 +3907,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
     table_menu.push(anchor_item("docx.table.valign-bottom", "vertical_align_bottom", "docx.toolbar.cell-vertical-alignment-bottom", ibis_doc_model::CellAnchor::Bottom));
     let direction = _editor.caret_cell_direction().unwrap_or(ibis_doc_model::CellDirection::LrTb);
     let direction_item = |id: &'static str, d: ibis_doc_model::CellDirection| -> MenuEntry {
-        let same_direction = move |actual: ibis_doc_model::CellDirection| {
-            actual == d || matches!((actual, d), (ibis_doc_model::CellDirection::TbRlV, ibis_doc_model::CellDirection::TbRl))
-        };
+        let same_direction = move |actual: ibis_doc_model::CellDirection| actual == d;
         let i = MenuItem::tr(id).checked(in_table && same_direction(direction));
         (if in_table {
             i.on(move |this, _, cx| {
@@ -3926,7 +3924,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
             "text_rotation_none",
             vec![
                 direction_item("docx.cell.direction.lrtb", ibis_doc_model::CellDirection::LrTb),
-                direction_item("docx.cell.direction.tbrl", ibis_doc_model::CellDirection::TbRl),
+                direction_item("docx.cell.direction.tbrl", ibis_doc_model::CellDirection::TbRlV),
                 direction_item("docx.cell.direction.tblrv", ibis_doc_model::CellDirection::TbLrV),
                 direction_item("docx.cell.direction.btlr", ibis_doc_model::CellDirection::BtLr),
             ],

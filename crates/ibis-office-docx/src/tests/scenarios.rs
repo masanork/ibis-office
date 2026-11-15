@@ -7432,10 +7432,10 @@ fn tblfmt011_cell_text_direction() {
     assert_eq!(s.menu_state("docx.cell.direction.lrtb"), Some((true, true)));
     assert_eq!(s.menu_state("docx.cell.direction.tbrl"), Some((true, false)));
 
-    // 1. Change text direction to vertical right-to-left (tbRl)
+    // 1. Change text direction to vertical right-to-left (tbRlV)
     s.menu("docx.cell.direction.tbrl");
     let t_v1 = table(&mut s);
-    assert_eq!(t_v1.rows[0].cells[0].direction, ibis_doc_model::CellDirection::TbRl);
+    assert_eq!(t_v1.rows[0].cells[0].direction, ibis_doc_model::CellDirection::TbRlV);
     assert_eq!(s.menu_state("docx.cell.direction.tbrl"), Some((true, true)));
     assert_eq!(s.menu_state("docx.cell.direction.lrtb"), Some((true, false)));
 
@@ -7449,7 +7449,7 @@ fn tblfmt011_cell_text_direction() {
     // 3. Undo / Redo
     s.key("cmd-z");
     let t_u1 = table(&mut s);
-    assert_eq!(t_u1.rows[0].cells[0].direction, ibis_doc_model::CellDirection::TbRl);
+    assert_eq!(t_u1.rows[0].cells[0].direction, ibis_doc_model::CellDirection::TbRlV);
 
     s.key("cmd-z");
     let t_u2 = table(&mut s);
@@ -7457,14 +7457,14 @@ fn tblfmt011_cell_text_direction() {
 
     s.key("cmd-shift-z");
     let t_r1 = table(&mut s);
-    assert_eq!(t_r1.rows[0].cells[0].direction, ibis_doc_model::CellDirection::TbRl);
+    assert_eq!(t_r1.rows[0].cells[0].direction, ibis_doc_model::CellDirection::TbRlV);
 
     // 4. Save and reopen
     s.save_as("tblfmt011_direction.docx");
     let saved = s.reopen();
     let d = flow(&saved);
     let t_saved = d.body.iter().rev().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
-    assert_eq!(t_saved.rows[0].cells[0].direction, ibis_doc_model::CellDirection::TbRl);
+    assert_eq!(t_saved.rows[0].cells[0].direction, ibis_doc_model::CellDirection::TbRlV);
 }
 
 fn tblfmt008_cell_margins() {
