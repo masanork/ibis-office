@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { BROWSER, random, hash, cookieHeader, HttpError, fail, cookie, baseHeaders, redirect, readForm, current, formCsrf, login, callback, backchannel, logout, cleanup } from '../vendor/mikaki-oidc';
 import { SAMPLE_MAX_FILE, boundedBody, looksLikeOffice } from './office-file';
-import { FILE_PATH, NEXT, deleteFile, filesHome, filesPage, isUserFilesApi, jsonError, listFiles, nextDestination, readFile, saveFile, uploadFile, type FileEnv } from './files';
+import { FILE_PATH, NEXT, deleteFile, filesHome, filesPage, isUserFilesApi, jsonError, listFiles, nextDestination, readFile, saveFile, uploadFile } from './files';
+import { handleReposRequest, isReposApi, isReposRoute, type RepoEnv } from './repos';
 
-type Env = FileEnv & { SAMPLES: R2Bucket; AUTH_LIMITER: RateLimit };
+type Env = RepoEnv & { SAMPLES: R2Bucket; AUTH_LIMITER: RateLimit };
 function page(env: Env, content: string, status = 200, browser?: string): Response {
   const headers = baseHeaders(env);
   headers.set('Content-Type', 'text/html; charset=utf-8');
@@ -70,9 +71,14 @@ export default {
    if (url.origin !== env.RP_ORIGIN || new URL(env.ISSUER).origin !== env.ISSUER || !env.CLIENT_ID || (env.LOCAL_ONLY !== 'true' && (url.protocol !== 'https:' || !env.ISSUER.startsWith('https://')))) fail(400, 'invalid_configuration');
    if (env.LOCAL_ONLY === 'true' && request.method === 'GET' && url.pathname === '/') return redirect(env, '/admin');
    const writingFiles = isUserFilesApi(url.pathname) && ['POST', 'PUT', 'DELETE'].includes(request.method);
-   if ((request.method === 'POST' && ['/login','/admin/samples','/admin/enroll'].includes(url.pathname)) || writingFiles) {
+   const writingRepos = isReposApi(url.pathname) && ['POST', 'PUT', 'DELETE'].includes(request.method);
+   if ((request.method === 'POST' && ['/login','/admin/samples','/admin/enroll'].includes(url.pathname)) || writingFiles || writingRepos) {
     const key = request.headers.get('cf-connecting-ip') || cookie(request,BROWSER) || 'unknown';
     if (!(await env.AUTH_LIMITER.limit({key:`${url.pathname}:${await hash(key)}`})).success) fail(429,'rate_limited');
+   }
+   if (isReposRoute(url.pathname)) {
+    const res = await handleReposRequest(request, env, url.pathname);
+    if (res) return res;
    }
    if (request.method === 'GET' && url.pathname === '/files') return await filesHome(request, env);
    if (request.method === 'GET' && url.pathname === '/api/files') return await listFiles(request, env);
@@ -110,7 +116,8 @@ export default {
     const status=error instanceof HttpError?error.status:503;
     if (!(error instanceof HttpError)) console.error(JSON.stringify({event:'admin_request_failed',error:error instanceof Error?error.name:'unknown'}));
     const message=error instanceof HttpError?error.message:'unavailable';
-    if (isUserFilesApi(path)) return jsonError(env, status, message);
+    if (isUserFilesApi(path) || isReposApi(path)) return jsonError(env, status, message);
+    if (path === '/repos' || path.startsWith('/repos/')) return filesPage(env,`<p>操作を完了できませんでした。</p><p><a href="/repos">リポジトリ一覧へ戻る</a></p>`,status);
     if (path === '/files') return filesPage(env,`<p>操作を完了できませんでした。</p><p><a href="/files">保存したファイルへ戻る</a></p>`,status);
     return page(env,`<p>操作を完了できませんでした。</p><p><a href="/admin">管理画面へ戻る</a></p>`,status);
   }

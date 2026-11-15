@@ -4,8 +4,11 @@
 // itself is not yet available in the browser version.
 const open = new URLSearchParams(location.search).get('open');
 const file = open && /^\/api\/files\/([0-9a-f-]{36})\/([A-Za-z0-9._-]{1,80}\.(?:docx|xlsx|pptx))$/i.exec(open);
-if (file) {
-  const path = `/api/files/${file[1]}/${file[2]}`;
+const repoBlob = open && /^\/api\/repos\/([0-9a-f-]{36})\/blob\/(.+)$/i.exec(open);
+if (file || repoBlob) {
+  const path = file ? `/api/files/${file[1]}/${file[2]}` : `/api/repos/${repoBlob[1]}/blob/${repoBlob[2]}`;
+  const csrfEndpoint = file ? '/api/files' : '/api/repos';
+  const backLabel = file ? '保存したファイルの画面' : 'リポジトリの画面';
   let csrf = '';
   let etag = '';
   const banner = document.createElement('div');
@@ -21,9 +24,9 @@ if (file) {
     banner.textContent = text;
   };
   const headers = { Accept: 'application/json' };
-  const session = await fetch('/api/files', { headers, credentials: 'same-origin' });
+  const session = await fetch(csrfEndpoint, { headers, credentials: 'same-origin' });
   if (session.status === 401) {
-    show('保存するにはログインしてください。保存したファイルの画面から入り直してください。', true);
+    show(`保存するにはログインしてください。${backLabel}から入り直してください。`, true);
   } else if (session.ok) {
     const body = await session.json();
     if (body && typeof body.csrf === 'string') csrf = body.csrf;

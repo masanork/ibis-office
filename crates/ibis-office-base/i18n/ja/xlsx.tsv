@@ -2933,3 +2933,15 @@ xlsx.sd-jwt.bind-sd	sd.* としてバインド（開示チェック付）
 xlsx.sd-jwt.bind-claim	claim.*（常時開示）としてバインド
 xlsx.sd-jwt.bound-status	選択範囲を {name} としてバインドしました
 xlsx.sd-jwt.bind-error	有効なクレーム名を入力し、セルまたは範囲を選択してください。
+xlsx.sd-jwt.step1	1. ひな形を作る
+xlsx.sd-jwt.step2	2. 見せる項目を選ぶ（クリックで切替）
+xlsx.sd-jwt.step3	3. 出力する
+xlsx.sd-jwt.empty-guide	上のボタンを押すと、シートに入力表と開示チェックボックスが自動作成されます。
+xlsx.sd-jwt.disclosed-count	開示中: {disclosed} / {total} 項目
+xlsx.sd-jwt.disclosed-preview	相手に渡るデータ (JSON プレビュー)
+xlsx.sd-jwt.copy-sd-jwt	SD-JWT をコピー
+xlsx.sd-jwt.advanced-show	詳細設定・OID4VP を開く ▸
+xlsx.sd-jwt.advanced-hide	詳細設定・OID4VP を閉じる ▾
+xlsx.sd-jwt.tag-disclose	[開示]
+xlsx.sd-jwt.tag-hidden	[非開示]
+xlsx.sd-jwt.tag-fixed	[固定]
