@@ -31,7 +31,8 @@ type Rels = HashMap<String, Relationship>;
 
 pub(crate) const W14_NS: &str = "http://schemas.microsoft.com/office/word/2010/wordml";
 
-/// Paragraph identities share a namespace across all of a package's parts.
+/// Reserve package identities when allocating new ones; existing identities
+/// need only be unique within their part, subject to AlternateContent rules.
 #[derive(Default)]
 pub(crate) struct ParaIds {
     used: HashSet<u32>,
@@ -753,9 +754,6 @@ struct Reader<'p, 'd, 'i> {
     para_ids: ParaIds,
     /// Identities already read, by their source (a shared header may be read twice).
     paragraph_ids: HashMap<(String, Vec<u32>), String>,
-    /// The first source of each authored identity, by part and XML offset,
-    /// including unmodeled parts.
-    para_id_sources: HashMap<u32, (String, usize)>,
     reading_comments: bool,
     /// The part being read, and where things came from.
     part: String,
@@ -1042,8 +1040,11 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                 return Some(id.clone());
             }
             let value = ParaIds::value(authored);
-            let id = if let Some(value) = value.filter(|v| self.para_id_sources.get(v).is_some_and(|(part, offset)| part == &self.part && *offset == p.range().start)) {
-                format!("{value:08X}")
+            // Preserve valid authored identities even if another paragraph has
+            // the same value. Cross-part and AlternateContent duplicates can be
+            // valid, and silently rewriting others could break references.
+            let id = if value.is_some() {
+                authored.to_string()
             } else {
                 self.para_ids.fresh()
             };
@@ -3721,20 +3722,9 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
     // must not take a valid identity from a paragraph read later.
     let archive = crate::zip::Archive::new(data)?;
     let mut para_ids = ParaIds::default();
-    let mut para_id_sources = HashMap::new();
-    let mut parts = archive.names();
-    // Other parts keep their authored identities when the body repeats one.
-    parts.sort_by(|a, b| (a == &main, a).cmp(&(b == &main, b)));
-    for part in parts.into_iter().filter(|p| p.ends_with(".xml")) {
+    for part in archive.names().into_iter().filter(|p| p.ends_with(".xml")) {
         let Ok(xml) = package.read_xml(&part) else { continue };
         para_ids.reserve_xml(&xml);
-        if let Ok(doc) = parse(&part, &xml) {
-            for p in doc.descendants().filter(|n| n.is_element()) {
-                if let Some(value) = p.attribute((W14_NS, "paraId")).and_then(ParaIds::value) {
-                    para_id_sources.entry(value).or_insert_with(|| (part.clone(), p.range().start));
-                }
-            }
-        }
     }
     let mut reader = Reader {
         package: &package,
@@ -3747,7 +3737,6 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
         last_id: 0,
         para_ids,
         paragraph_ids: HashMap::new(),
-        para_id_sources,
         reading_comments: false,
         part: main.clone(),
         sources,
