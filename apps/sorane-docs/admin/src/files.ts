@@ -206,7 +206,7 @@ export async function readFile(request: Request, env: FileEnv, id: string, name:
 async function archiveCurrent(env: FileEnv, row: FileRow): Promise<void> {
   const current = await currentObject(env, row);
   const timestamp = Date.now();
-  const versionKey = `versions/${row.id}/${timestamp}`;
+  const versionKey = `versions/${row.id}/${timestamp}-${random()}`;
   const body = await current.arrayBuffer();
   const stored = await env.FILES.put(versionKey, body, {
     httpMetadata: { contentType: 'application/octet-stream' },

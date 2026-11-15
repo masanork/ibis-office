@@ -195,6 +195,26 @@ test('save requires If-Match and keeps previous versions',async()=>{
   assert.equal(versions.size,0);
 });
 
+test('multiple saves in one millisecond retain distinct versions',async()=>{
+  const {env,versions}=fixture();
+  const created=await create(env);
+  const path=`/api/files/${created.id}/welcome.docx`;
+  const realNow=Date.now;
+  const timestamp=realNow();
+  Date.now=()=>timestamp;
+  try {
+    let etag=created.etag;
+    for(let i=0;i<3;i++) {
+      const response=await run(new Request(host+path,{method:'PUT',headers:{origin:host,cookie:cookieFor('owner-token'),'x-csrf-token':csrf,'If-Match':etag},body:sample}),env);
+      assert.equal(response.status,200,await response.clone().text());
+      etag=(await response.json()).etag;
+    }
+    assert.equal(versions.size,3);
+  } finally {
+    Date.now=realNow;
+  }
+});
+
 test('the files page asks a visitor to log in',async()=>{
   const {env}=fixture();
   const response=await run(new Request(host+'/files'),env);
