@@ -133,6 +133,31 @@ fn rsa_x509_hash(oid: &str) -> Option<&'static str> {
     }
 }
 
+/// Compare X.509 RSA-PSS signatures only for explicit SHA-256/MGF1-SHA256,
+/// a 32-byte salt, and an ordinary rsaEncryption issuer key.
+fn inspect_rsa_pss_x509_signature(
+    algorithm: &x509_cert::spki::AlgorithmIdentifierOwned,
+    issuer: &x509_cert::spki::SubjectPublicKeyInfoOwned,
+    message: &[u8], signature: &[u8],
+) -> Result<CertificateSignature, Error> {
+    use rsa::{pkcs1::{DecodeRsaPublicKey, RsaPssParams}, pss, signature::Verifier, traits::PublicKeyParts, RsaPublicKey};
+    use x509_cert::der::{Decode, Encode, asn1::AnyRef};
+    if algorithm.oid.to_string() != "1.2.840.113549.1.1.10" { return Ok(CertificateSignature::Unsupported); }
+    let Some(encoded) = algorithm.parameters.as_ref().and_then(|p| p.to_der().ok()) else { return Ok(CertificateSignature::Unsupported) };
+    let Ok(params) = RsaPssParams::from_der(&encoded) else { return Ok(CertificateSignature::Unsupported) };
+    let sha256 = |id: &x509_cert::spki::AlgorithmIdentifierRef<'_>| id.oid.to_string() == "2.16.840.1.101.3.4.2.1" && id.parameters.is_none_or(|p| p == AnyRef::NULL);
+    if !sha256(&params.hash) || params.mask_gen.oid.to_string() != "1.2.840.113549.1.1.8"
+        || params.mask_gen.parameters.as_ref().is_none_or(|hash| !sha256(hash)) || params.salt_len != 32
+        || issuer.algorithm.oid.to_string() != "1.2.840.113549.1.1.1"
+        || issuer.algorithm.parameters.as_ref().is_some_and(|p| !p.to_der().is_ok_and(|v| v == [0x05, 0x00])) {
+        return Ok(CertificateSignature::Unsupported);
+    }
+    let bytes = issuer.subject_public_key.as_bytes().ok_or_else(|| Error::new("Invalid RSA issuer public key"))?;
+    let key = RsaPublicKey::from_pkcs1_der(bytes).map_err(|_| Error::new("Invalid RSA issuer public key"))?;
+    if !(2048..=8192).contains(&key.n().bits()) { return Ok(CertificateSignature::Unsupported); }
+    Ok(if pss::Signature::try_from(signature).is_ok_and(|sig| pss::VerifyingKey::<Sha256>::new_with_salt_len(key, 32).verify(message, &sig).is_ok()) { CertificateSignature::Matches } else { CertificateSignature::Differs })
+}
+
 /// Compare an X.509 ECDSA-SHA256 signature, encoded as DER (unlike XMLDSig).
 fn inspect_p256_x509_signature(
     algorithm: &x509_cert::spki::AlgorithmIdentifierOwned,
@@ -208,7 +233,11 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
     let null_or_absent = |p: &Option<x509_cert::der::asn1::Any>| p.as_ref().is_none_or(|v| v.to_der().is_ok_and(|b| b == [0x05, 0x00]));
     let supported = algorithm == &crl.tbs_cert_list.signature && rsa_x509_hash(&algorithm.oid.to_string()).is_some() && null_or_absent(&algorithm.parameters)
         && spki.algorithm.oid.to_string() == "1.2.840.113549.1.1.1" && null_or_absent(&spki.algorithm.parameters);
-    let signature = if algorithm == &crl.tbs_cert_list.signature && algorithm.oid.to_string() == "1.2.840.10045.4.3.2" {
+    let signature = if algorithm == &crl.tbs_cert_list.signature && algorithm.oid.to_string() == "1.2.840.113549.1.1.10" {
+        let tbs = crl.tbs_cert_list.to_der().map_err(|_| Error::new("Invalid CRL body"))?;
+        let raw = crl.signature.as_bytes().ok_or_else(|| Error::new("Invalid CRL signature"))?;
+        inspect_rsa_pss_x509_signature(algorithm, spki, &tbs, raw)?
+    } else if algorithm == &crl.tbs_cert_list.signature && algorithm.oid.to_string() == "1.2.840.10045.4.3.2" {
         let tbs = crl.tbs_cert_list.to_der().map_err(|_| Error::new("Invalid CRL body"))?;
         let raw = crl.signature.as_bytes().ok_or_else(|| Error::new("Invalid CRL signature"))?;
         inspect_p256_x509_signature(algorithm, spki, &tbs, raw)?
@@ -295,7 +324,7 @@ pub fn find_candidate_certificate_paths(leaf: &[u8], intermediates: &[&[u8]], an
 }
 
 /// Inspect one child and proposed issuer certificate, supplied as DER.
-/// This checks RSA SHA-256/384/512 and ECDSA P-256/SHA-256 certificate signatures. It does not evaluate
+/// This checks RSA PKCS#1 SHA-256/384/512, a fixed RSA-PSS SHA-256 subset, and ECDSA P-256/SHA-256. It does not evaluate
 /// time, revocation, policies, name constraints, anchor trust, or a path.
 pub fn inspect_certificate_link(child_der: &[u8], issuer_der: &[u8]) -> Result<CertificateLinkFacts, Error> {
     use rsa::{pkcs1::DecodeRsaPublicKey, pkcs1v15, traits::PublicKeyParts, RsaPublicKey};
@@ -311,7 +340,11 @@ pub fn inspect_certificate_link(child_der: &[u8], issuer_der: &[u8]) -> Result<C
     let supported = algorithm == &child.tbs_certificate.signature
         && rsa_x509_hash(&algorithm.oid.to_string()).is_some() && null_or_absent(&algorithm.parameters)
         && spki.algorithm.oid.to_string() == "1.2.840.113549.1.1.1" && null_or_absent(&spki.algorithm.parameters);
-    let child_signature = if algorithm == &child.tbs_certificate.signature && algorithm.oid.to_string() == "1.2.840.10045.4.3.2" {
+    let child_signature = if algorithm == &child.tbs_certificate.signature && algorithm.oid.to_string() == "1.2.840.113549.1.1.10" {
+        let tbs = child.tbs_certificate.to_der().map_err(|_| Error::new("Invalid certificate body"))?;
+        let raw = child.signature.as_bytes().ok_or_else(|| Error::new("Invalid certificate signature"))?;
+        inspect_rsa_pss_x509_signature(algorithm, spki, &tbs, raw)?
+    } else if algorithm == &child.tbs_certificate.signature && algorithm.oid.to_string() == "1.2.840.10045.4.3.2" {
         let tbs = child.tbs_certificate.to_der().map_err(|_| Error::new("Invalid certificate body"))?;
         let raw = child.signature.as_bytes().ok_or_else(|| Error::new("Invalid certificate signature"))?;
         inspect_p256_x509_signature(algorithm, spki, &tbs, raw)?
@@ -1412,6 +1445,67 @@ mod tests {
             bad_crl.tbs_cert_list.signature.parameters = bad_crl.signature_algorithm.parameters.clone();
             assert_eq!(inspect_crl(&bad_crl.to_der().unwrap(), leaf, ca, 0).unwrap().signature, CertificateSignature::Unsupported);
         }
+    }
+
+    #[test]
+    fn rsa_pss_certificate_and_crl_require_supported_parameters() {
+        use x509_cert::{Certificate, crl::CertificateList, der::{Decode, Encode, asn1::{Any, ObjectIdentifier}}};
+        let ca = include_bytes!("../tests/fixtures/signatures/pss-ca.der");
+        let other = include_bytes!("../tests/fixtures/signatures/pss-other.der");
+        let leaf = include_bytes!("../tests/fixtures/signatures/pss-normal-leaf.der");
+        let crl = include_bytes!("../tests/fixtures/signatures/pss-normal.crl.der");
+        let facts = inspect_certificate_link(leaf, ca).unwrap();
+        assert!(facts.issuer_name_exact);
+        assert_eq!(facts.child_signature, CertificateSignature::Matches);
+        let parsed_child = Certificate::from_der(leaf.as_slice()).unwrap();
+        let parsed_ca = Certificate::from_der(ca.as_slice()).unwrap();
+        let mut alternative = parsed_child.signature_algorithm.clone();
+        let encoded = alternative.parameters.as_ref().unwrap().to_der().unwrap();
+        let mut parameters = rsa::pkcs1::RsaPssParams::from_der(&encoded).unwrap();
+        parameters.hash.parameters = None;
+        parameters.mask_gen.parameters.as_mut().unwrap().parameters = None;
+        alternative.parameters = Some(Any::encode_from(&parameters).unwrap());
+        let body = parsed_child.tbs_certificate.to_der().unwrap();
+        let signature = parsed_child.signature.as_bytes().unwrap();
+        assert_eq!(inspect_rsa_pss_x509_signature(&alternative, &parsed_ca.tbs_certificate.subject_public_key_info, &body, signature).unwrap(), CertificateSignature::Matches);
+        let mut explicit_trailer = encoded.clone();
+        assert!(explicit_trailer[1] < 0x80);
+        explicit_trailer[1] += 5;
+        explicit_trailer.extend_from_slice(&[0xa3, 0x03, 0x02, 0x01, 0x01]);
+        alternative.parameters = Some(Any::from_der(&explicit_trailer).unwrap());
+        assert_eq!(inspect_rsa_pss_x509_signature(&alternative, &parsed_ca.tbs_certificate.subject_public_key_info, &body, signature).unwrap(), CertificateSignature::Matches);
+        assert!(inspect_certificate_link(leaf, other).unwrap().issuer_name_exact);
+        assert_eq!(inspect_certificate_link(leaf, other).unwrap().child_signature, CertificateSignature::Differs);
+        for unsupported in [include_bytes!("../tests/fixtures/signatures/pss-salt20-leaf.der").as_slice(), include_bytes!("../tests/fixtures/signatures/pss-mgf384-leaf.der").as_slice()] {
+            assert_eq!(inspect_certificate_link(unsupported, ca).unwrap().child_signature, CertificateSignature::Unsupported);
+        }
+        let paths = find_candidate_certificate_paths(leaf, &[], &[ca, other]).unwrap();
+        assert_eq!(paths.paths.len(), 2);
+        assert_eq!(paths.paths[0].links[0].child_signature, CertificateSignature::Matches);
+        assert_eq!(paths.paths[1].links[0].child_signature, CertificateSignature::Differs);
+        let mut cert = Certificate::from_der(leaf.as_slice()).unwrap();
+        cert.signature_algorithm.parameters = None;
+        assert_eq!(inspect_certificate_link(&cert.to_der().unwrap(), ca).unwrap().child_signature, CertificateSignature::Unsupported);
+        cert.tbs_certificate.signature.parameters = None;
+        assert_eq!(inspect_certificate_link(&cert.to_der().unwrap(), ca).unwrap().child_signature, CertificateSignature::Unsupported);
+        let defaults = Any::encode_from(&rsa::pkcs1::RsaPssParams::default()).unwrap();
+        cert.signature_algorithm.parameters = Some(defaults.clone());
+        cert.tbs_certificate.signature.parameters = Some(defaults);
+        assert_eq!(inspect_certificate_link(&cert.to_der().unwrap(), ca).unwrap().child_signature, CertificateSignature::Unsupported);
+        let mut restricted = Certificate::from_der(ca.as_slice()).unwrap();
+        restricted.tbs_certificate.subject_public_key_info.algorithm.oid = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.10");
+        assert_eq!(inspect_certificate_link(leaf, &restricted.to_der().unwrap()).unwrap().child_signature, CertificateSignature::Unsupported);
+        assert_eq!(inspect_crl(crl, leaf, ca, 0).unwrap().signature, CertificateSignature::Matches);
+        assert_eq!(inspect_crl(crl, leaf, other, 0).unwrap().signature, CertificateSignature::Differs);
+        for unsupported in [include_bytes!("../tests/fixtures/signatures/pss-salt20.crl.der").as_slice(), include_bytes!("../tests/fixtures/signatures/pss-mgf384.crl.der").as_slice()] {
+            assert_eq!(inspect_crl(unsupported, leaf, ca, 0).unwrap().signature, CertificateSignature::Unsupported);
+        }
+        let mut damaged = crl.to_vec(); let last = damaged.len() - 1; damaged[last] ^= 1;
+        assert_eq!(inspect_crl(&damaged, leaf, ca, 0).unwrap().signature, CertificateSignature::Differs);
+        let mut changed = CertificateList::from_der(crl.as_slice()).unwrap();
+        changed.signature_algorithm.parameters = None;
+        changed.tbs_cert_list.signature.parameters = None;
+        assert_eq!(inspect_crl(&changed.to_der().unwrap(), leaf, ca, 0).unwrap().signature, CertificateSignature::Unsupported);
     }
 
     #[test]

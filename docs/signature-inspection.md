@@ -12,9 +12,8 @@ package-object digest, and the manifest reference digest and content-type
 comparisons. Signature-value comparisons support RSA PKCS#1 v1.5 with SHA-256/384/512,
 RSA-PSS SHA-256 with MGF1-SHA256 and a 32-byte salt, ECDSA P-256 with
 SHA-256, and weak legacy RSA-SHA1. For RSA-PSS only the parameterless
-`sha256-rsa-MGF1` XML Signature URI is supported; parameterized RSA-PSS,
-RSA-PSS certificate and CRL signatures, and restricted PSS public keys are
-not checked. ECDSA uses the XML Signature fixed-width
+`sha256-rsa-MGF1` XML Signature URI is supported; parameterized XML RSA-PSS
+and restricted PSS public keys are not checked. ECDSA uses the XML Signature fixed-width
 `r || s` encoding; other curves and algorithms are unsupported. These checks
 use an untrusted embedded certificate and do not validate certificate chains.
 Unknown algorithms and transformations are reported as unsupported.
@@ -70,9 +69,12 @@ cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx \
 and `--intermediate` can be repeated and enumerate bounded candidate chains.
 These candidates use exact ASN.1 name matching and are **not validated**;
 signature mismatches may appear among them. Individual certificate and CRL
-signature comparisons support RSA with SHA-256/384/512 and ECDSA P-256/SHA-256, with
-DER-encoded ECDSA signatures. Other algorithms and curves are not checked. A zero-candidate result does not
-establish that no path exists. DER inputs are supplied explicitly; the tool
+signature comparisons support RSA PKCS#1 v1.5 with SHA-256/384/512,
+RSA-PSS SHA-256 with explicitly encoded MGF1-SHA256 and 32-byte salt, and
+ECDSA P-256/SHA-256 with DER-encoded ECDSA signatures. Restricted PSS public
+keys and other PSS parameter combinations are not checked. Other algorithms
+and curves are not checked. A zero-candidate result does not establish that no
+path exists. DER inputs are supplied explicitly; the tool
 does not use the system trust store.
 
 To inspect a caller-supplied CRL against the embedded certificate, specify all

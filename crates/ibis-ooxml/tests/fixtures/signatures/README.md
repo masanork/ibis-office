@@ -68,3 +68,8 @@ RSA-PSS SHA-256, MGF1-SHA256, and a 32-byte salt. `rsa-pss-salt16.sig` and
 `rsa-pss-mgf384.sig` sign the same canonicalized SignedInfo with unsupported
 parameters. OpenSSL verified all three with their respective parameters, and
 the private key was discarded.
+
+`pss-ca.der`, `pss-other.der`, and `pss-{normal,salt20,mgf384}-leaf.der` /
+`.crl.der` are synthetic Python cryptography-generated RSA certificates and
+CRLs. The two CAs have the same subject and distinct keys. LibreSSL verified
+all leaf and CRL signatures independently; the keys were discarded.
