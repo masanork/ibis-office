@@ -233,3 +233,8 @@ establish general Office interoperability. A temporary copy
 of the DOCX with two independently computed SHA-256 relationship digests was
 used to check the 2006 Relationship Transform URI; that modified copy no longer
 has its original signature and is not evidence of Office interoperability.
+
+A separate [offline path-validation experiment](../experiments/certval-path-probe/README.md)
+exercises an independent RFC 5280 implementation with synthetic certificates.
+It is not linked to the inspector and does not change the trust or revocation
+boundaries described above.
