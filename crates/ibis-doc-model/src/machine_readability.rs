@@ -34,10 +34,16 @@ pub fn candidates(sheet: &Sheet) -> Vec<Candidate> {
         }
     }
     if let (Some(last_row), Some(last_col)) = (max_row, max_col) {
-        for &row in sheet.hidden_rows.keys().filter(|&&r| r <= last_row) {
+        // The sheet model also treats an explicit zero height/width as hidden,
+        // even if the saved-height maps have no entry. Collect each index once.
+        let mut rows: std::collections::BTreeSet<u32> = sheet.hidden_rows.keys().copied().filter(|&r| r <= last_row).collect();
+        rows.extend(sheet.rows.iter().take((last_row as usize).saturating_add(1)).enumerate().filter(|(_, height)| **height == 0).map(|(row, _)| row as u32));
+        for row in rows {
             out.push(Candidate { kind: CandidateKind::HiddenRow, range: CellRange { first_row: row, last_row: row, first_column: 0, last_column: last_col } });
         }
-        for &col in sheet.hidden_columns.keys().filter(|&&c| c <= last_col) {
+        let mut columns: std::collections::BTreeSet<u32> = sheet.hidden_columns.keys().copied().filter(|&c| c <= last_col).collect();
+        columns.extend(sheet.columns.iter().take((last_col as usize).saturating_add(1)).enumerate().filter(|(_, width)| **width == 0).map(|(col, _)| col as u32));
+        for col in columns {
             out.push(Candidate { kind: CandidateKind::HiddenColumn, range: CellRange { first_row: 0, last_row, first_column: col, last_column: col } });
         }
     }
