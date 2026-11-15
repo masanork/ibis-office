@@ -105,6 +105,25 @@ pub struct CertificateLinkFacts {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CertificateSignature { Matches, Differs, Unsupported }
 
+/// Compare an X.509 ECDSA-SHA256 signature, encoded as DER (unlike XMLDSig).
+fn inspect_p256_x509_signature(
+    algorithm: &x509_cert::spki::AlgorithmIdentifierOwned,
+    issuer: &x509_cert::spki::SubjectPublicKeyInfoOwned,
+    message: &[u8], signature: &[u8],
+) -> Result<CertificateSignature, Error> {
+    use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+    use x509_cert::der::asn1::ObjectIdentifier;
+    let curve = issuer.algorithm.parameters.as_ref().and_then(|p| p.decode_as::<ObjectIdentifier>().ok());
+    if algorithm.oid.to_string() != "1.2.840.10045.4.3.2" || algorithm.parameters.is_some()
+        || issuer.algorithm.oid.to_string() != "1.2.840.10045.2.1"
+        || curve.is_none_or(|oid| oid.to_string() != "1.2.840.10045.3.1.7") {
+        return Ok(CertificateSignature::Unsupported);
+    }
+    let bytes = issuer.subject_public_key.as_bytes().ok_or_else(|| Error::new("Invalid EC issuer public key"))?;
+    let key = VerifyingKey::from_sec1_bytes(bytes).map_err(|_| Error::new("Invalid P-256 issuer public key"))?;
+    Ok(if Signature::from_der(signature).is_ok_and(|sig| key.verify(message, &sig).is_ok()) { CertificateSignature::Matches } else { CertificateSignature::Differs })
+}
+
 /// Facts observed in a caller-supplied CRL. They are not a revocation verdict:
 /// issuer path, distribution point applicability, and trust remain unchecked.
 #[derive(Debug, PartialEq, Eq)]
@@ -161,7 +180,11 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
     let null_or_absent = |p: &Option<x509_cert::der::asn1::Any>| p.as_ref().is_none_or(|v| v.to_der().is_ok_and(|b| b == [0x05, 0x00]));
     let supported = algorithm == &crl.tbs_cert_list.signature && algorithm.oid.to_string() == "1.2.840.113549.1.1.11" && null_or_absent(&algorithm.parameters)
         && spki.algorithm.oid.to_string() == "1.2.840.113549.1.1.1" && null_or_absent(&spki.algorithm.parameters);
-    let signature = if !supported { CertificateSignature::Unsupported } else {
+    let signature = if algorithm == &crl.tbs_cert_list.signature && algorithm.oid.to_string() == "1.2.840.10045.4.3.2" {
+        let tbs = crl.tbs_cert_list.to_der().map_err(|_| Error::new("Invalid CRL body"))?;
+        let raw = crl.signature.as_bytes().ok_or_else(|| Error::new("Invalid CRL signature"))?;
+        inspect_p256_x509_signature(algorithm, spki, &tbs, raw)?
+    } else if !supported { CertificateSignature::Unsupported } else {
         let key_bytes = spki.subject_public_key.as_bytes().ok_or_else(|| Error::new("Invalid CRL issuer public key"))?;
         let key = RsaPublicKey::from_pkcs1_der(key_bytes).map_err(|_| Error::new("Invalid CRL issuer RSA key"))?;
         if !(2048..=8192).contains(&key.n().bits()) { CertificateSignature::Unsupported } else {
@@ -244,7 +267,7 @@ pub fn find_candidate_certificate_paths(leaf: &[u8], intermediates: &[&[u8]], an
 }
 
 /// Inspect one child and proposed issuer certificate, supplied as DER.
-/// This checks only RSA-SHA256 certificate signatures. It does not evaluate
+/// This checks RSA-SHA256 and ECDSA P-256/SHA-256 certificate signatures. It does not evaluate
 /// time, revocation, policies, name constraints, anchor trust, or a path.
 pub fn inspect_certificate_link(child_der: &[u8], issuer_der: &[u8]) -> Result<CertificateLinkFacts, Error> {
     use rsa::{pkcs1::DecodeRsaPublicKey, pkcs1v15, signature::Verifier, traits::PublicKeyParts, RsaPublicKey};
@@ -260,7 +283,11 @@ pub fn inspect_certificate_link(child_der: &[u8], issuer_der: &[u8]) -> Result<C
     let supported = algorithm == &child.tbs_certificate.signature
         && algorithm.oid.to_string() == "1.2.840.113549.1.1.11" && null_or_absent(&algorithm.parameters)
         && spki.algorithm.oid.to_string() == "1.2.840.113549.1.1.1" && null_or_absent(&spki.algorithm.parameters);
-    let child_signature = if !supported { CertificateSignature::Unsupported } else {
+    let child_signature = if algorithm == &child.tbs_certificate.signature && algorithm.oid.to_string() == "1.2.840.10045.4.3.2" {
+        let tbs = child.tbs_certificate.to_der().map_err(|_| Error::new("Invalid certificate body"))?;
+        let raw = child.signature.as_bytes().ok_or_else(|| Error::new("Invalid certificate signature"))?;
+        inspect_p256_x509_signature(algorithm, spki, &tbs, raw)?
+    } else if !supported { CertificateSignature::Unsupported } else {
         let key_bytes = spki.subject_public_key.as_bytes().ok_or_else(|| Error::new("Invalid issuer public key"))?;
         let key = RsaPublicKey::from_pkcs1_der(key_bytes).map_err(|_| Error::new("Invalid issuer RSA key"))?;
         if !(2048..=8192).contains(&key.n().bits()) { CertificateSignature::Unsupported } else {
@@ -1212,6 +1239,48 @@ mod tests {
         assert_eq!(facts.issuer_ca, Some(false));
         assert_eq!(facts.issuer_key_cert_sign, Some(false));
         assert!(inspect_certificate_link(b"bad", issuer).is_err());
+    }
+
+    #[test]
+    fn ecdsa_certificate_and_crl_signatures_remain_observations() {
+        use x509_cert::{Certificate, crl::CertificateList, der::{Decode, Encode, asn1::Any}};
+        let leaf = include_bytes!("../tests/fixtures/signatures/ec-leaf.der");
+        let issuer = include_bytes!("../tests/fixtures/signatures/ec-ca.der");
+        let other = include_bytes!("../tests/fixtures/signatures/ec-other.der");
+        let p384 = include_bytes!("../tests/fixtures/signatures/ec-p384.der");
+        let empty = include_bytes!("../tests/fixtures/signatures/ec-empty.crl.der");
+        let revoked = include_bytes!("../tests/fixtures/signatures/ec-revoked.crl.der");
+        let facts = inspect_certificate_link(leaf, issuer).unwrap();
+        assert!(facts.issuer_name_exact);
+        assert_eq!(facts.issuer_ca, Some(true));
+        assert_eq!(facts.issuer_key_cert_sign, Some(true));
+        assert_eq!(facts.child_signature, CertificateSignature::Matches);
+        assert_eq!(inspect_certificate_link(leaf, other).unwrap().child_signature, CertificateSignature::Differs);
+        assert_eq!(inspect_certificate_link(leaf, p384).unwrap().child_signature, CertificateSignature::Unsupported);
+        let candidates = find_candidate_certificate_paths(leaf, &[], &[issuer, other]).unwrap();
+        assert_eq!(candidates.paths.len(), 2);
+        assert_eq!(candidates.paths[0].links[0].child_signature, CertificateSignature::Matches);
+        assert_eq!(candidates.paths[1].links[0].child_signature, CertificateSignature::Differs);
+        let mut cert = Certificate::from_der(leaf.as_slice()).unwrap();
+        cert.signature_algorithm.parameters = Some(Any::null());
+        assert_eq!(inspect_certificate_link(&cert.to_der().unwrap(), issuer).unwrap().child_signature, CertificateSignature::Unsupported);
+        cert.tbs_certificate.signature.parameters = Some(Any::null());
+        assert_eq!(inspect_certificate_link(&cert.to_der().unwrap(), issuer).unwrap().child_signature, CertificateSignature::Unsupported);
+        let facts = inspect_crl(empty, leaf, issuer, 0).unwrap();
+        assert_eq!(facts.signature, CertificateSignature::Matches);
+        assert_eq!(facts.issuer_crl_sign, Some(true));
+        assert!(facts.listed_revocation_time.is_none());
+        assert!(inspect_crl(revoked, leaf, issuer, 0).unwrap().listed_revocation_time.is_some());
+        assert_eq!(inspect_crl(revoked, leaf, issuer, 0).unwrap().signature, CertificateSignature::Matches);
+        assert_eq!(inspect_crl(empty, leaf, other, 0).unwrap().signature, CertificateSignature::Differs);
+        assert_eq!(inspect_crl(empty, leaf, p384, 0).unwrap().signature, CertificateSignature::Unsupported);
+        let mut damaged = empty.to_vec(); let last = damaged.len() - 1; damaged[last] ^= 1;
+        assert_eq!(inspect_crl(&damaged, leaf, issuer, 0).unwrap().signature, CertificateSignature::Differs);
+        let mut crl = CertificateList::from_der(empty.as_slice()).unwrap();
+        crl.signature_algorithm.parameters = Some(Any::null());
+        assert_eq!(inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 0).unwrap().signature, CertificateSignature::Unsupported);
+        crl.tbs_cert_list.signature.parameters = Some(Any::null());
+        assert_eq!(inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 0).unwrap().signature, CertificateSignature::Unsupported);
     }
 
     #[test]

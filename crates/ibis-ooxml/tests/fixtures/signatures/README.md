@@ -46,3 +46,9 @@ P-256/SHA-256 and independently verified with OpenSSL before conversion from
 DER to XML Signature's fixed-width `r || s` format. `ecdsa-p256-signature.der`
 and `ecdsa-p384-cert.der` test rejection of the wrong signature encoding and
 unsupported curve. Both private keys were discarded.
+
+`ec-ca.der`, `ec-other.der`, `ec-p384.der`, `ec-leaf.der`,
+`ec-empty.crl.der`, and `ec-revoked.crl.der` are independently generated
+OpenSSL EC certificates and CRLs. The two P-256 CAs have identical names and
+distinct keys, and the P-384 CA uses the same name. OpenSSL verified the leaf
+and both CRL signatures against `ec-ca.der`; all private keys were discarded.

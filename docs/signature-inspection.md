@@ -62,7 +62,9 @@ cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx \
 `--at` reports the embedded certificate's time window and key usage. `--anchor`
 and `--intermediate` can be repeated and enumerate bounded candidate chains.
 These candidates use exact ASN.1 name matching and are **not validated**;
-signature mismatches may appear among them. A zero-candidate result does not
+signature mismatches may appear among them. Individual certificate and CRL
+signature comparisons support RSA-SHA256 and ECDSA P-256/SHA-256, with
+DER-encoded ECDSA signatures. Other algorithms and curves are not checked. A zero-candidate result does not
 establish that no path exists. DER inputs are supplied explicitly; the tool
 does not use the system trust store.
 

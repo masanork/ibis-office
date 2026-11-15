@@ -236,3 +236,31 @@ fn ecdsa_p256_is_reported_without_trust_and_detects_tampering() {
     assert!(text.contains("ECDSA P-256 SHA-256: differs; certificate is untrusted"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn ec_chain_and_crl_are_reported_without_trust_verdicts() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    let mut package = Package::open(std::fs::read(fixtures.join("ecdsa-p256-signed.docx")).unwrap()).unwrap();
+    let signature = "_xmlsignatures/sig1.xml";
+    let previous = ibis_ooxml::signatures::extract_single_embedded_certificate(&package, signature).unwrap();
+    let leaf = std::fs::read(fixtures.join("ec-leaf.der")).unwrap();
+    let xml = String::from_utf8(package.read(signature).unwrap()).unwrap();
+    let changed = xml.replace(&ibis_ooxml::base64::encode(&previous), &ibis_ooxml::base64::encode(&leaf));
+    assert_ne!(xml, changed);
+    package.set_bytes(signature, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-signature-ec-chain-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .args(["--at", "0", "--anchor"]).arg(fixtures.join("ec-ca.der"))
+        .arg("--crl").arg(fixtures.join("ec-revoked.crl.der"))
+        .arg("--crl-issuer").arg(fixtures.join("ec-ca.der")).output().unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Candidate paths: 1 (truncated: false); NOT validated"));
+    assert!(text.contains("Link 1: signature Matches, CA Some(true), keyCertSign Some(true)"));
+    assert!(text.contains("Signature Matches; issuer name exact true; certificate issuer name exact true; cRLSign Some(true)"));
+    assert!(text.contains("listed revocation time Some("));
+    assert!(text.contains("CRL applicability and issuer trust: NOT EVALUATED"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}
