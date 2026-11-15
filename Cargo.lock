@@ -3626,6 +3626,8 @@ dependencies = [
  "notify",
  "objc",
  "same-file",
+ "serde",
+ "serde_json",
  "ttf-parser",
  "usvg 0.46.0",
  "wasm-bindgen",

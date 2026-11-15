@@ -44,6 +44,7 @@ pub mod paste_special_dialog;
 pub mod copy_picture;
 pub(crate) mod names;
 pub(crate) mod names_list;
+pub mod ai_copilot;
 pub(crate) mod names_panel;
 pub(crate) mod paste_names;
 pub(crate) mod paste_names_dialog;
@@ -1056,7 +1057,7 @@ impl FormatEditor for Workbook {
 
     fn sidebar(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Option<crate::shell::chrome::SidebarPanel> {
         let chain = |editor: &mut SlideEditor, cx: &mut Context<SlideEditor>| {
-            editor.symbol_panel(cx).map(|panel| panel.modal_named("symbol_panel")).or_else(|| editor.custom_format_panel(cx)).or_else(|| editor.page_setup_panel(cx).map(|panel| panel.modal_named("page_setup_panel"))).or_else(|| editor.xlsx_print_panel(cx).map(|panel| panel.modal_named("xlsx_print_panel"))).or_else(|| editor.header_footer_edit_panel(cx)).or_else(|| editor.cell_link_panel(cx).map(|panel| panel.modal_named("cell_link_panel"))).or_else(|| editor.sheet_find_panel(cx)).or_else(|| editor.sheet_spelling_panel(cx).map(|panel| panel.modal_named("sheet_spelling_panel"))).or_else(|| editor.validation_panel(cx).map(|panel| panel.modal_named("validation_panel"))).or_else(|| editor.names_panel(cx)).or_else(|| editor.conditional_panel(cx).map(|panel|panel.modal_named(if editor.wb().conditional_edit.as_ref().is_some_and(|p|!p.manager&&p.parent.is_some()){"conditional_rule_editor"}else{"conditional_panel"}))).or_else(|| editor.sort_panel(cx).map(|panel| if editor.wb().sort_edit.as_ref().is_some_and(|p|p.editor.is_some()){panel.modal_named("sort_level_editor")}else{panel})).or_else(|| editor.edit_panel(cx)).or_else(|| editor.sheet_chart_panel(cx))
+            editor.symbol_panel(cx).map(|panel| panel.modal_named("symbol_panel")).or_else(|| editor.custom_format_panel(cx)).or_else(|| editor.page_setup_panel(cx).map(|panel| panel.modal_named("page_setup_panel"))).or_else(|| editor.xlsx_print_panel(cx).map(|panel| panel.modal_named("xlsx_print_panel"))).or_else(|| editor.header_footer_edit_panel(cx)).or_else(|| editor.cell_link_panel(cx).map(|panel| panel.modal_named("cell_link_panel"))).or_else(|| editor.sheet_find_panel(cx)).or_else(|| editor.sheet_spelling_panel(cx).map(|panel| panel.modal_named("sheet_spelling_panel"))).or_else(|| editor.validation_panel(cx).map(|panel| panel.modal_named("validation_panel"))).or_else(|| editor.names_panel(cx)).or_else(|| editor.conditional_panel(cx).map(|panel|panel.modal_named(if editor.wb().conditional_edit.as_ref().is_some_and(|p|!p.manager&&p.parent.is_some()){"conditional_rule_editor"}else{"conditional_panel"}))).or_else(|| editor.sort_panel(cx).map(|panel| if editor.wb().sort_edit.as_ref().is_some_and(|p|p.editor.is_some()){panel.modal_named("sort_level_editor")}else{panel})).or_else(|| editor.edit_panel(cx)).or_else(|| editor.sheet_chart_panel(cx)).or_else(|| editor.ai_copilot_panel(cx))
         };
         // The pane's input fields show the document's values (Undo, Redo, another cell, an external update).
         editor.sync_format_panel(window, cx);

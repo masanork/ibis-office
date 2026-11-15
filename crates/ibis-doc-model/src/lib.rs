@@ -6,6 +6,7 @@
 //! This crate has no UI or platform dependencies so it can be shared by the
 //! browser client (wasm), the server and native builds, and published as OSS.
 
+pub mod ai_sheet;
 pub mod analysis;
 pub mod repertoire;
 pub mod cmyk;

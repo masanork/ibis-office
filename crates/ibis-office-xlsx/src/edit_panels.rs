@@ -131,6 +131,8 @@ pub struct EditPanels {
     pub threaded_comment: Option<super::threaded_comments::ThreadedCommentPanel>,
     /// ツール > アクセシビリティ チェック…
     pub accessibility: Option<super::accessibility_panel::AccessibilityPanel>,
+    /// AI Copilot サイドバー.
+    pub ai_copilot: Option<super::ai_copilot::AiCopilotPanel>,
     pub(crate) machine_readability: Option<super::machine_readability::MachineReadabilityPanel>,
     /// ツール > 互換性チェック…
     pub(crate) compatibility: Option<super::compatibility_panel::CompatibilityPanel>,
@@ -218,6 +220,7 @@ impl EditPanels {
         self.alt_text = None;
         self.threaded_comment = None;
         self.accessibility = None;
+        self.ai_copilot = None;
         self.machine_readability = None;
         self.compatibility = None;
         self.selection_pane = None;

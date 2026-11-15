@@ -29,6 +29,7 @@ pub(crate) const SIDEBARS: &[SidebarDef] = &[
     sidebar_def!("sidebar.accessibility", "sidebar.accessibility", Right, G::Review, Pane, panels: &[], cmd: Some("xlsx.accessibility-check"), open: None, start: true, available: always, key: None, toolbar: None),
     // Right pane: drawing and settings.
     sidebar_def!("sidebar.ink", "sidebar.ink", Right, G::Tools, Pane, panels: &[], cmd: Some("xlsx.ink"), open: Some(by_format), start: false, available: always, key: None, toolbar: None),
+    sidebar_def!("sidebar.ai-copilot", "sidebar.ai-copilot", Right, G::Tools, Pane, panels: &["ai_copilot_panel"], cmd: Some("xlsx.ai-copilot"), open: None, start: true, available: always, key: None, toolbar: None),
     // Settings dialogs the pane chain shows without a dialog wrapper (their own commands open them; the menu leaves them out).
     sidebar_def!("sidebar.sort", "sidebar.sort", Right, G::Tools, Task, panels: &["sort_panel"], cmd: None, open: None, start: false, available: always, key: None, toolbar: None),
     sidebar_def!("sidebar.edit-basics", "sidebar.edit-basics", Right, G::Tools, Task, panels: &["edit_panel"], cmd: None, open: None, start: false, available: always, key: None, toolbar: None),
