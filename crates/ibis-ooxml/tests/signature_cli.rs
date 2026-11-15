@@ -326,3 +326,30 @@ fn rsa_sha384_and_sha512_signature_and_crl_are_reported_without_trust() {
         assert!(text.contains("Certificate trust: NOT EVALUATED"));
     }
 }
+
+#[test]
+fn rsa_pss_signature_is_reported_without_trust_and_detects_wrong_salt() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    let fixture = fixtures.join("rsa-pss-sha256-signed.docx");
+    let output = run(&fixture);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("RSA-PSS SHA-256: matches; certificate is untrusted"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    let part = "_xmlsignatures/sig1.xml";
+    let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+    let start_tag = "<ds:SignatureValue>"; let end_tag = "</ds:SignatureValue>";
+    let start = xml.find(start_tag).unwrap() + start_tag.len(); let end = xml[start..].find(end_tag).unwrap() + start;
+    let wrong_salt = std::fs::read(fixtures.join("rsa-pss-salt16.sig")).unwrap();
+    let changed = format!("{}{}{}", &xml[..start], ibis_ooxml::base64::encode(&wrong_salt), &xml[end..]);
+    package.set_bytes(part, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-rsa-pss-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("RSA-PSS SHA-256: differs; certificate is untrusted"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}

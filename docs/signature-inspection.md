@@ -9,8 +9,12 @@ cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx
 It accepts a DOCX, XLSX, or PPTX package up to 128 MiB. It reports the
 signature-value comparison against an embedded **untrusted** certificate, the
 package-object digest, and the manifest reference digest and content-type
-comparisons. Signature-value comparisons support RSA with SHA-256/384/512, ECDSA P-256
-with SHA-256, and weak legacy RSA-SHA1. ECDSA uses the XML Signature fixed-width
+comparisons. Signature-value comparisons support RSA PKCS#1 v1.5 with SHA-256/384/512,
+RSA-PSS SHA-256 with MGF1-SHA256 and a 32-byte salt, ECDSA P-256 with
+SHA-256, and weak legacy RSA-SHA1. For RSA-PSS only the parameterless
+`sha256-rsa-MGF1` XML Signature URI is supported; parameterized RSA-PSS,
+RSA-PSS certificate and CRL signatures, and restricted PSS public keys are
+not checked. ECDSA uses the XML Signature fixed-width
 `r || s` encoding; other curves and algorithms are unsupported. These checks
 use an untrusted embedded certificate and do not validate certificate chains.
 Unknown algorithms and transformations are reported as unsupported.

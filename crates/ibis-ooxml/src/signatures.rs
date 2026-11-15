@@ -570,6 +570,8 @@ pub enum SignatureValueCheck {
     LegacySha1 { key_bits: usize, matches: bool },
     /// ECDSA comparison against an untrusted P-256 certificate.
     EcdsaP256 { matches: bool },
+    /// RSA-PSS SHA-256 comparison against an untrusted certificate.
+    RsaPssSha256 { matches: bool },
     MatchesUntrustedCertificate,
     Differs,
     Unsupported,
@@ -579,7 +581,7 @@ fn ds_children<'a, 'input>(parent: ua_cryptography_xml_c14n::roxmltree::Node<'a,
     parent.children().filter(|n| n.is_element() && n.tag_name().namespace() == Some(DS) && n.tag_name().name() == name).collect()
 }
 
-/// Compare RSA SHA-256/384/512, legacy RSA-SHA1, or ECDSA-P256-SHA256 over SignedInfo against exactly one
+/// Compare RSA PKCS#1 SHA-256/384/512, RSA-PSS SHA-256, legacy RSA-SHA1, or ECDSA-P256-SHA256 over SignedInfo against exactly one
 /// embedded certificate. The certificate is not chain- or revocation-checked.
 pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Result<SignatureValueCheck, Error> {
     use rsa::{pkcs1::DecodeRsaPublicKey, pkcs1v15, signature::Verifier, traits::PublicKeyParts, RsaPublicKey};
@@ -602,12 +604,13 @@ pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Resul
         || c14n[0].children().any(|n| n.is_element()) || method[0].children().any(|n| n.is_element()) {
         return Ok(SignatureValueCheck::Unsupported);
     }
-    let (legacy, ecdsa, rsa_hash) = match method[0].attribute("Algorithm") {
-        Some("http://www.w3.org/2000/09/xmldsig#rsa-sha1") => (true, false, ""),
-        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256") => (false, false, "sha256"),
-        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha384") => (false, false, "sha384"),
-        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha512") => (false, false, "sha512"),
-        Some("http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256") => (false, true, ""),
+    let (legacy, ecdsa, pss, rsa_hash) = match method[0].attribute("Algorithm") {
+        Some("http://www.w3.org/2000/09/xmldsig#rsa-sha1") => (true, false, false, ""),
+        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256") => (false, false, false, "sha256"),
+        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha384") => (false, false, false, "sha384"),
+        Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha512") => (false, false, false, "sha512"),
+        Some("http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256") => (false, true, false, ""),
+        Some("http://www.w3.org/2007/05/xmldsig-more#sha256-rsa-MGF1") => (false, false, true, ""),
         _ => return Ok(SignatureValueCheck::Unsupported),
     };
     let x509data = ds_children(keyinfos[0], "X509Data");
@@ -639,6 +642,10 @@ pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Resul
     if !((if legacy { 1024 } else { 2048 })..=8192).contains(&key_bits) { return Ok(SignatureValueCheck::Unsupported); }
     let raw_signature = decode(values[0])?;
     let canonical = canonicalize(infos[0], Algorithm::Inclusive, &[], None);
+    if pss {
+        let matches = rsa::pss::Signature::try_from(raw_signature.as_slice()).is_ok_and(|signature| rsa::pss::VerifyingKey::<Sha256>::new_with_salt_len(key, 32).verify(&canonical, &signature).is_ok());
+        return Ok(SignatureValueCheck::RsaPssSha256 { matches });
+    }
     let signature = pkcs1v15::Signature::try_from(raw_signature.as_slice());
     if legacy {
         let matches = signature.is_ok_and(|signature| pkcs1v15::VerifyingKey::<sha1::Sha1>::new(key).verify(&canonical, &signature).is_ok());
@@ -1126,6 +1133,34 @@ mod tests {
         }
         let duplicate = source.replace("<x:SigningCertificateV2>", "<x:SigningCertificateV2/><x:SigningCertificateV2>");
         assert_eq!(inspect(&duplicate, b"certificate"), ObjectDigest::Unsupported);
+    }
+
+    #[test]
+    fn rsa_pss_requires_sha256_mgf1_and_fixed_salt_length() {
+        let bytes = include_bytes!("../tests/fixtures/signatures/rsa-pss-sha256-signed.docx");
+        let mut pkg = Package::open(bytes.to_vec()).unwrap();
+        let part = "_xmlsignatures/sig1.xml";
+        let xml = String::from_utf8(pkg.read(part).unwrap()).unwrap();
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::RsaPssSha256 { matches: true });
+        let doc = ua_cryptography_xml_c14n::DocumentText::decode(xml.as_bytes()).unwrap();
+        let parsed = doc.parse().unwrap();
+        let value = ds_children(parsed.root_element(), "SignatureValue")[0].text().unwrap();
+        for signature in [include_bytes!("../tests/fixtures/signatures/rsa-pss-salt16.sig").as_slice(), include_bytes!("../tests/fixtures/signatures/rsa-pss-mgf384.sig").as_slice()] {
+            pkg.set_bytes(part, xml.replace(value, &crate::base64::encode(signature)).into_bytes());
+            assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::RsaPssSha256 { matches: false });
+        }
+        pkg.set_bytes(part, xml.replace("#package", "#changed").into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::RsaPssSha256 { matches: false });
+        let cert = extract_single_embedded_certificate(&pkg, part).unwrap();
+        let ec_cert = include_bytes!("../tests/fixtures/signatures/ecdsa-p384-cert.der");
+        pkg.set_bytes(part, xml.replace(&crate::base64::encode(&cert), &crate::base64::encode(ec_cert)).into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::Unsupported);
+        pkg.set_bytes(part, xml.replace("sha256-rsa-MGF1", "rsa-pss").into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::Unsupported);
+        let with_params = xml.replace("sha256-rsa-MGF1\"/>", "sha256-rsa-MGF1\"><p:RSAPSSParams xmlns:p=\"http://www.w3.org/2007/05/xmldsig-more#\"/></ds:SignatureMethod>");
+        assert_ne!(xml, with_params);
+        pkg.set_bytes(part, with_params.into_bytes());
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::Unsupported);
     }
 
     #[test]

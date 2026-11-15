@@ -62,3 +62,9 @@ with nonmatching and unsupported inputs. The signing key was discarded.
 corresponding CRLs, and `rsa-sha384-signed.docx` / `rsa-sha512-signed.docx`
 are synthetic OpenSSL-signed fixtures. OpenSSL verified each leaf, CRL, and
 SignedInfo signature; the private keys were discarded.
+
+`rsa-pss-sha256-signed.docx` is a synthetic OpenSSL-signed package using
+RSA-PSS SHA-256, MGF1-SHA256, and a 32-byte salt. `rsa-pss-salt16.sig` and
+`rsa-pss-mgf384.sig` sign the same canonicalized SignedInfo with unsupported
+parameters. OpenSSL verified all three with their respective parameters, and
+the private key was discarded.
