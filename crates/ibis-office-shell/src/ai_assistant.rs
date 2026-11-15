@@ -59,6 +59,17 @@ pub enum UiMessageKind {
 pub struct UiMessage {
     pub kind: UiMessageKind,
     pub text: String,
+    pub has_edits: bool,
+}
+
+impl UiMessage {
+    fn new(kind: UiMessageKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+            has_edits: false,
+        }
+    }
 }
 
 pub struct AiAssistantState {
@@ -67,11 +78,13 @@ pub struct AiAssistantState {
     pub model_input: Entity<InputState>,
     pub api_key_input: Entity<InputState>,
     pub show_settings: bool,
+    pub show_tool_logs: bool,
     pub messages: Vec<UiMessage>,
     pub history: Vec<ChatMessage>,
     pub streaming: bool,
     pub streaming_text: String,
     pub run_id: u64,
+    pub scroll_handle: ScrollHandle,
     pub _prompt_subscription: Subscription,
 }
 
@@ -165,11 +178,13 @@ impl SlideEditor {
                 model_input,
                 api_key_input,
                 show_settings: false,
+                show_tool_logs: false,
                 messages: Vec::new(),
                 history: Vec::new(),
                 streaming: false,
                 streaming_text: String::new(),
                 run_id: 0,
+                scroll_handle: ScrollHandle::new(),
                 _prompt_subscription,
             });
             prompt_input.update(cx, |input, cx| input.focus(window, cx));
@@ -191,6 +206,13 @@ impl SlideEditor {
     fn toggle_ai_assistant_settings(&mut self, cx: &mut Context<Self>) {
         if let Some(p) = self.ai_assistant.as_mut() {
             p.show_settings = !p.show_settings;
+        }
+        cx.notify();
+    }
+
+    fn toggle_ai_tool_logs(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.ai_assistant.as_mut() {
+            p.show_tool_logs = !p.show_tool_logs;
         }
         cx.notify();
     }
@@ -217,10 +239,7 @@ impl SlideEditor {
             p.run_id = p.run_id.wrapping_add(1);
             if !p.streaming_text.is_empty() {
                 let text = std::mem::take(&mut p.streaming_text);
-                p.messages.push(UiMessage {
-                    kind: UiMessageKind::Assistant,
-                    text,
-                });
+                p.messages.push(UiMessage::new(UiMessageKind::Assistant, text));
             }
         }
         cx.notify();
@@ -268,10 +287,8 @@ impl SlideEditor {
             p.run_id = p.run_id.wrapping_add(1);
             p.streaming = true;
             p.streaming_text.clear();
-            p.messages.push(UiMessage {
-                kind: UiMessageKind::User,
-                text: prompt.clone(),
-            });
+            p.messages.push(UiMessage::new(UiMessageKind::User, prompt.clone()));
+            p.scroll_handle.scroll_to_bottom();
             if p.history.is_empty() {
                 let sys = match kind {
                     AiDocKind::Xlsx => {
@@ -338,6 +355,7 @@ impl SlideEditor {
                                 && p.run_id == run_id
                             {
                                 p.streaming_text.push_str(&delta_owned);
+                                p.scroll_handle.scroll_to_bottom();
                                 cx.notify();
                             }
                         });
@@ -353,10 +371,8 @@ impl SlideEditor {
                             {
                                 p.streaming = false;
                                 p.streaming_text.clear();
-                                p.messages.push(UiMessage {
-                                    kind: UiMessageKind::Error,
-                                    text: err,
-                                });
+                                p.messages.push(UiMessage::new(UiMessageKind::Error, err));
+                                p.scroll_handle.scroll_to_bottom();
                                 cx.notify();
                             }
                         });
@@ -385,14 +401,15 @@ impl SlideEditor {
                             messages_to_send.push(assistant_msg);
 
                             if !out.content.is_empty() {
-                                p.messages.push(UiMessage {
-                                    kind: UiMessageKind::Assistant,
-                                    text: out.content.clone(),
-                                });
+                                p.messages.push(UiMessage::new(
+                                    UiMessageKind::Assistant,
+                                    out.content.clone(),
+                                ));
                             }
 
                             if out.tool_calls.is_empty() {
-                                if !turn_commands.is_empty() {
+                                let applied_edits = !turn_commands.is_empty();
+                                if applied_edits {
                                     let cmds = std::mem::take(&mut turn_commands);
                                     let grouped = if cmds.len() == 1 {
                                         cmds.into_iter().next().expect("single cmd")
@@ -403,6 +420,24 @@ impl SlideEditor {
                                 }
                                 if let Some(p) = editor.ai_assistant.as_mut() {
                                     p.streaming = false;
+                                    if applied_edits {
+                                        if let Some(last) = p
+                                            .messages
+                                            .iter_mut()
+                                            .rev()
+                                            .find(|m| m.kind == UiMessageKind::Assistant)
+                                        {
+                                            last.has_edits = true;
+                                        } else {
+                                            let mut msg = UiMessage::new(
+                                                UiMessageKind::Assistant,
+                                                "変更を適用しました。",
+                                            );
+                                            msg.has_edits = true;
+                                            p.messages.push(msg);
+                                        }
+                                    }
+                                    p.scroll_handle.scroll_to_bottom();
                                 }
                                 cx.notify();
                                 return;
@@ -418,10 +453,8 @@ impl SlideEditor {
                                 messages_to_send.push(tool_msg.clone());
                                 if let Some(p) = editor.ai_assistant.as_mut() {
                                     p.history.push(tool_msg);
-                                    p.messages.push(UiMessage {
-                                        kind: UiMessageKind::Tool,
-                                        text: log_text,
-                                    });
+                                    p.messages.push(UiMessage::new(UiMessageKind::Tool, log_text));
+                                    p.scroll_handle.scroll_to_bottom();
                                 }
                             }
                             should_continue = true;
@@ -448,10 +481,11 @@ impl SlideEditor {
                     && p.run_id == run_id
                 {
                     p.streaming = false;
-                    p.messages.push(UiMessage {
-                        kind: UiMessageKind::Error,
-                        text: format!("ツール実行が上限 ({MAX_TOOL_STEPS} 回) に達しました。"),
-                    });
+                    p.messages.push(UiMessage::new(
+                        UiMessageKind::Error,
+                        format!("ツール実行が上限 ({MAX_TOOL_STEPS} 回) に達しました。"),
+                    ));
+                    p.scroll_handle.scroll_to_bottom();
                 }
                 cx.notify();
             });
@@ -517,9 +551,16 @@ impl SlideEditor {
                 })
             })
             .collect();
+        let selected_shape_id = self.selection.map(|id| id.0);
+        let selected_shape_text = self
+            .selection
+            .and_then(|sid| p.slide(self.current_slide).and_then(|s| s.shape(sid)))
+            .and_then(shape_text);
         json!({
             "slide_count": p.slides.len(),
             "active_slide": active_idx,
+            "selected_shape_id": selected_shape_id,
+            "selected_shape_text": selected_shape_text,
             "slides": slides,
         })
         .to_string()
@@ -544,8 +585,10 @@ impl SlideEditor {
                 }
             })
             .collect();
+        let cursor_paragraph = with_format!(self, ai_docx_cursor_paragraph(self));
         json!({
             "block_count": flow.body.len(),
+            "cursor_paragraph": cursor_paragraph,
             "blocks": paragraphs,
         })
         .to_string()
@@ -1344,9 +1387,15 @@ impl SlideEditor {
         let panel = self.ai_assistant.as_ref()?;
         let cfg = AiConfig::load();
         let show_settings = panel.show_settings;
+        let show_tool_logs = panel.show_tool_logs;
         let streaming = panel.streaming;
         let streaming_text = panel.streaming_text.clone();
         let messages = panel.messages.clone();
+        let tool_log_count = messages
+            .iter()
+            .filter(|m| m.kind == UiMessageKind::Tool)
+            .count();
+        let scroll_handle = panel.scroll_handle.clone();
         let prompt_input = panel.prompt_input.clone();
         let base_url_input = panel.base_url_input.clone();
         let model_input = panel.model_input.clone();
@@ -1365,6 +1414,21 @@ impl SlideEditor {
             .child(
                 h_flex()
                     .gap_1()
+                    .when(tool_log_count > 0, |row| {
+                        row.child(
+                            Button::new("ai-assistant-logs")
+                                .ghost()
+                                .xsmall()
+                                .label(if show_tool_logs {
+                                    format!("ログ非表示 ({tool_log_count})")
+                                } else {
+                                    format!("ログ ({tool_log_count})")
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.toggle_ai_tool_logs(cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("ai-assistant-clear")
                             .ghost()
@@ -1502,6 +1566,9 @@ impl SlideEditor {
                 .child(quick_col);
         }
         for (idx, msg) in messages.iter().enumerate() {
+            if msg.kind == UiMessageKind::Tool && !show_tool_logs {
+                continue;
+            }
             let (bg, fg) = match msg.kind {
                 UiMessageKind::User => (cx.theme().primary.opacity(0.12), cx.theme().foreground),
                 UiMessageKind::Assistant => {
@@ -1515,6 +1582,7 @@ impl SlideEditor {
             };
             let copy_text = msg.text.clone();
             let show_copy = matches!(msg.kind, UiMessageKind::Error | UiMessageKind::Assistant);
+            let show_undo = msg.has_edits;
             msg_list = msg_list.child(
                 v_flex()
                     .p_2()
@@ -1522,19 +1590,36 @@ impl SlideEditor {
                     .rounded_md()
                     .bg(bg)
                     .child(div().text_xs().text_color(fg).child(msg.text.clone()))
-                    .when(show_copy, |box_el| {
+                    .when(show_copy || show_undo, |box_el| {
                         box_el.child(
-                            h_flex().w_full().justify_end().child(
-                                Button::new(("ai-assistant-copy", idx))
-                                    .ghost()
-                                    .xsmall()
-                                    .label("コピー")
-                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            copy_text.clone(),
-                                        ));
-                                    })),
-                            ),
+                            h_flex()
+                                .w_full()
+                                .justify_end()
+                                .gap_1()
+                                .when(show_undo, |row| {
+                                    row.child(
+                                        Button::new(("ai-assistant-undo", idx))
+                                            .ghost()
+                                            .xsmall()
+                                            .label("元に戻す")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.undo(&crate::actions::Undo, window, cx);
+                                            })),
+                                    )
+                                })
+                                .when(show_copy, |row| {
+                                    row.child(
+                                        Button::new(("ai-assistant-copy", idx))
+                                            .ghost()
+                                            .xsmall()
+                                            .label("コピー")
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    copy_text.clone(),
+                                                ));
+                                            })),
+                                    )
+                                }),
                         )
                     }),
             );
@@ -1551,11 +1636,18 @@ impl SlideEditor {
             );
         }
 
+        let scrollable_msgs = div()
+            .id("ai-assistant-msg-scroll")
+            .max_h(px(460.0))
+            .overflow_y_scroll()
+            .track_scroll(&scroll_handle)
+            .child(msg_list);
+
         let content = v_flex()
             .gap_2()
             .child(header)
             .children(settings_box)
-            .child(msg_list);
+            .child(scrollable_msgs);
 
         let footer = v_flex()
             .gap_2()

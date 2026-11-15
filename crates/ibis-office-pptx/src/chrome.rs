@@ -824,6 +824,12 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
             .into(),
     );
     menus.items_mut(MenuId::Tools).push(
+        MenuItem::new("pptx.ai-assistant", "Assistant...")
+            .icon("chat")
+            .on(|this, window, cx| this.open_ai_assistant_panel(window, cx))
+            .into(),
+    );
+    menus.items_mut(MenuId::Tools).push(
         MenuItem::tr("pptx.compatibility-check")
             .icon("rule")
             .on(|this, window, cx| this.open_pptx_compatibility_panel(window, cx))

@@ -2497,6 +2497,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr(if wb_protected { "xlsx.unprotect-workbook" } else { "xlsx.protect-workbook" }).icon("lock").on(|this, window, cx| this.open_protect_workbook_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.allow-edit-ranges").icon("lock").on(|this, window, cx| this.open_allow_edit_ranges_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.accessibility-check").icon("accessibility").on(|this, window, cx| this.open_xlsx_accessibility_panel(window, cx)).into());
+    menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::new("xlsx.ai-assistant", "Assistant...").icon("chat").on(|this, window, cx| this.open_ai_assistant_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.machine-readability.menu").icon("rule").on(|this, window, cx| this.open_machine_readability(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.compatibility-check").icon("rule").on(|this, window, cx| this.open_xlsx_compatibility_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.error-options").icon("rule").on(|this, window, cx| this.open_error_options_panel(window, cx)).into());

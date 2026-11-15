@@ -3144,6 +3144,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
         menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.merge.clear-match-fields").icon("clear").on(|this, _, cx| this.clear_merge_field_map(cx)).into());
         menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.merge.check-errors").icon("fact_check").on(|this, _, cx| { this.check_merge_errors(cx); }).into());
         menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.accessibility-check").icon("accessibility").on(|this, _, cx| this.open_accessibility_panel(cx)).into());
+        menus.items_mut(MenuId::Tools).push(MenuItem::new("docx.ai-assistant", "Assistant...").icon("chat").on(|this, window, cx| this.open_ai_assistant_panel(window, cx)).into());
         menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.inspect-document").icon("find_in_page").on(|this, window, cx| this.open_doc_inspect_panel(window, cx)).into());
         menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.compatibility-check").icon("rule").on(|this, window, cx| this.open_doc_compatibility_panel(window, cx)).into());
         menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.print-settings").icon("tune").on(|this, window, cx| this.open_doc_print_panel(window, cx)).into());

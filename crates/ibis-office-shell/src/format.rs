@@ -310,6 +310,11 @@ pub trait FormatEditor {
     ) {
     }
 
+    /// Active caret paragraph index for AI Assistant (docx only).
+    fn ai_docx_cursor_paragraph(_editor: &SlideEditor) -> Option<u32> {
+        None
+    }
+
     /// Show page `slide`: whether the format handled it (else it is shown
     /// as a presentation shows a slide).
     fn show_page(_editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
@@ -1291,6 +1296,7 @@ pub trait FormatDriver: Sync {
     fn step_page(&self, _editor: &mut SlideEditor, _forward: bool, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn ai_sheet_selection(&self, _editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange>;
     fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange);
+    fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32>;
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn page_changed(&self, _editor: &mut SlideEditor, _from: SlideId, _to: SlideId);
     fn before_render(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
@@ -1543,6 +1549,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange) {
         F::set_ai_sheet_selection(_editor, _slide, _range);
+    }
+    fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32> {
+        F::ai_docx_cursor_paragraph(_editor)
     }
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
         F::show_page(_editor, _slide, _window, _cx)

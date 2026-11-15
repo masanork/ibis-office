@@ -366,6 +366,10 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
 }
 
 impl FormatEditor for Document {
+    fn ai_docx_cursor_paragraph(editor: &crate::shell::editor::SlideEditor) -> Option<u32> {
+        editor.doc_state().and_then(|s| s.caret).map(|p| p.para)
+    }
+
     fn note_open_failed(path: &std::path::Path) {
         repair::note_open_failed(path);
     }
