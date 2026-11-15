@@ -404,6 +404,8 @@ pub struct CrlFacts {
     pub crl_number: CrlNumberObservation,
     /// A serial number match only. Meaning depends on scope, issuer and time.
     pub listed_revocation_time: Option<u64>,
+    /// Claims on an entry with the same serial only; its issuer is not resolved.
+    pub listed_entry_extensions: Option<CrlEntryClaims>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -437,6 +439,18 @@ pub struct IssuingDistributionPointClaims {
     pub only_attribute_certificates: bool,
 }
 
+/// Untrusted claims from a matching serial; no revocation status is derived.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CrlEntryClaims {
+    /// RFC 5280 CRLReason numeric value, including removeFromCRL (8).
+    pub reason: CrlExtensionObservation<u32>,
+    /// Seconds since the Unix epoch; independent of the entry revocation date.
+    pub invalidity_date: CrlExtensionObservation<u64>,
+    /// Presence only; indirect issuer inheritance is not evaluated.
+    pub certificate_issuer_present: bool,
+    pub other_extensions: usize,
+}
+
 /// Presence, criticality, and DER decoding of the CRL number extension.
 /// No comparison with another CRL or issuer policy is performed.
 #[derive(Debug, PartialEq, Eq)]
@@ -464,7 +478,7 @@ pub enum KeyIdentifierComparison { NotComparable, EmptyIdentifier, Matches, Diff
 /// never presented as a positive certificate-status decision.
 pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference_unix_seconds: u64) -> Result<CrlFacts, Error> {
     use rsa::{pkcs1::DecodeRsaPublicKey, pkcs1v15, traits::PublicKeyParts, RsaPublicKey};
-    use x509_cert::{crl::CertificateList, der::{Decode, Encode}, ext::pkix::{AuthorityKeyIdentifier, BaseCrlNumber, CrlNumber, IssuingDistributionPoint, KeyUsage, SubjectKeyIdentifier}, Certificate};
+    use x509_cert::{crl::CertificateList, der::{Decode, Encode, asn1::GeneralizedTime}, ext::pkix::{AuthorityKeyIdentifier, BaseCrlNumber, CrlNumber, CrlReason, IssuingDistributionPoint, KeyUsage, SubjectKeyIdentifier}, Certificate};
     if crl_der.len() > 8 * 1024 * 1024 || cert_der.len() > 1024 * 1024 || issuer_der.len() > 1024 * 1024 { return Err(Error::new("CRL inputs are too large")); }
     let crl = CertificateList::from_der(crl_der).map_err(|_| Error::new("Invalid CRL"))?;
     let cert = Certificate::from_der(cert_der).map_err(|_| Error::new("Invalid target certificate"))?;
@@ -550,11 +564,33 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
         authority_certificate_serial_present: crl_authority_key.as_ref().map(|a| a.authority_cert_serial_number.is_some()),
     };
     let mut listed = None;
+    let mut listed_entry_extensions = None;
     let mut serials = std::collections::HashSet::new();
     for entry in crl.tbs_cert_list.revoked_certificates.as_deref().unwrap_or(&[]) {
         if !serials.insert(entry.serial_number.as_bytes()) { return Err(Error::new("Duplicate serial number in CRL")); }
         if entry.crl_entry_extensions.as_ref().is_some_and(|ext| !ext.is_empty()) { scope = CrlScope::UnsupportedExtensions; }
-        if entry.serial_number == cert.tbs_certificate.serial_number { listed = Some(entry.revocation_date.to_unix_duration().as_secs()); }
+        if entry.serial_number == cert.tbs_certificate.serial_number {
+            listed = Some(entry.revocation_date.to_unix_duration().as_secs());
+            let mut claims = CrlEntryClaims { reason: CrlExtensionObservation::Absent, invalidity_date: CrlExtensionObservation::Absent, certificate_issuer_present: false, other_extensions: 0 };
+            let mut ids = std::collections::HashSet::new();
+            for ext in entry.crl_entry_extensions.as_deref().unwrap_or(&[]) {
+                let oid = ext.extn_id.to_string();
+                if !ids.insert(oid.clone()) { return Err(Error::new("Duplicate extension in matching CRL entry")); }
+                match oid.as_str() {
+                    "2.5.29.21" => claims.reason = match CrlReason::from_der(ext.extn_value.as_bytes()) {
+                        Ok(reason) => CrlExtensionObservation::Decoded { critical: ext.critical, value: reason as u32 },
+                        Err(_) => CrlExtensionObservation::Malformed { critical: ext.critical },
+                    },
+                    "2.5.29.24" => claims.invalidity_date = match GeneralizedTime::from_der(ext.extn_value.as_bytes()) {
+                        Ok(time) => CrlExtensionObservation::Decoded { critical: ext.critical, value: time.to_unix_duration().as_secs() },
+                        Err(_) => CrlExtensionObservation::Malformed { critical: ext.critical },
+                    },
+                    "2.5.29.29" => claims.certificate_issuer_present = true,
+                    _ => claims.other_extensions += 1,
+                }
+            }
+            listed_entry_extensions = Some(claims);
+        }
     }
     let algorithm = &crl.signature_algorithm;
     let spki = &issuer.tbs_certificate.subject_public_key_info;
@@ -583,7 +619,7 @@ pub fn inspect_crl(crl_der: &[u8], cert_der: &[u8], issuer_der: &[u8], reference
     };
     Ok(CrlFacts { issuer_name_exact: crl.tbs_cert_list.issuer == issuer.tbs_certificate.subject,
         certificate_issuer_name_exact: cert.tbs_certificate.issuer == crl.tbs_cert_list.issuer,
-        issuer_crl_sign: issuer_usage, signature, this_update: start, next_update: end, time_status, scope, scope_extensions, authority_key, crl_number, listed_revocation_time: listed })
+        issuer_crl_sign: issuer_usage, signature, this_update: start, next_update: end, time_status, scope, scope_extensions, authority_key, crl_number, listed_revocation_time: listed, listed_entry_extensions })
 }
 
 /// A proposed chain from the signer to a supplied anchor. Edges can have
@@ -2595,5 +2631,49 @@ mod tests {
         let facts = inspect_crl(empty, leaf, issuer, 1796083200).unwrap();
         assert_eq!(facts.scope_extensions.delta_indicator, CrlExtensionObservation::Absent);
         assert_eq!(facts.scope_extensions.issuing_distribution_point, CrlExtensionObservation::Absent);
+    }
+
+    #[test]
+    fn matched_crl_entry_extensions_are_claims_not_status() {
+        use x509_cert::{crl::CertificateList, der::{Decode, Encode, asn1::{ObjectIdentifier, OctetString}}, ext::Extension};
+        let issuer = include_bytes!("../tests/fixtures/signatures/entry-issuer.der");
+        let leaf = include_bytes!("../tests/fixtures/signatures/entry-leaf.der");
+        let bytes = include_bytes!("../tests/fixtures/signatures/entry-remove.crl.der");
+        let facts = inspect_crl(bytes, leaf, issuer, 1796083200).unwrap();
+        assert_eq!(facts.signature, CertificateSignature::Matches);
+        assert_eq!(facts.scope, CrlScope::UnsupportedExtensions);
+        assert!(facts.listed_revocation_time.is_some());
+        let claims = facts.listed_entry_extensions.unwrap();
+        assert_eq!(claims.reason, CrlExtensionObservation::Decoded { critical: false, value: 8 });
+        assert_eq!(claims.invalidity_date, CrlExtensionObservation::Decoded { critical: false, value: 1777593600 });
+        assert!(!claims.certificate_issuer_present);
+        assert_eq!(claims.other_extensions, 0);
+        let other = include_bytes!("../tests/fixtures/signatures/crl-leaf.der");
+        let facts = inspect_crl(bytes, other, issuer, 1796083200).unwrap();
+        assert_eq!(facts.listed_revocation_time, None);
+        assert_eq!(facts.listed_entry_extensions, None);
+
+        let mut crl = CertificateList::from_der(bytes.as_slice()).unwrap();
+        let exts = crl.tbs_cert_list.revoked_certificates.as_mut().unwrap()[0].crl_entry_extensions.as_mut().unwrap();
+        let reason = exts.iter().position(|e| e.extn_id.to_string() == "2.5.29.21").unwrap();
+        let invalidity = exts.iter().position(|e| e.extn_id.to_string() == "2.5.29.24").unwrap();
+        exts[reason].extn_value = OctetString::new([0x0a, 0x01, 0x07]).unwrap();
+        exts[reason].critical = true;
+        exts[invalidity].extn_value = OctetString::new([0xff]).unwrap();
+        exts.push(Extension { extn_id: ObjectIdentifier::new_unwrap("2.5.29.29"), critical: true, extn_value: OctetString::new([0xff]).unwrap() });
+        exts.push(Extension { extn_id: ObjectIdentifier::new_unwrap("1.2.3.4"), critical: false, extn_value: OctetString::new([0xff]).unwrap() });
+        let facts = inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).unwrap();
+        let claims = facts.listed_entry_extensions.unwrap();
+        assert_eq!(claims.reason, CrlExtensionObservation::Malformed { critical: true });
+        assert_eq!(claims.invalidity_date, CrlExtensionObservation::Malformed { critical: false });
+        assert!(claims.certificate_issuer_present);
+        assert_eq!(claims.other_extensions, 1);
+        let exts = crl.tbs_cert_list.revoked_certificates.as_mut().unwrap()[0].crl_entry_extensions.as_mut().unwrap();
+        exts.push(exts[reason].clone());
+        assert!(inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).is_err());
+        crl.tbs_cert_list.revoked_certificates.as_mut().unwrap()[0].crl_entry_extensions = None;
+        let claims = inspect_crl(&crl.to_der().unwrap(), leaf, issuer, 1796083200).unwrap().listed_entry_extensions.unwrap();
+        assert_eq!(claims.reason, CrlExtensionObservation::Absent);
+        assert_eq!(claims.invalidity_date, CrlExtensionObservation::Absent);
     }
 }

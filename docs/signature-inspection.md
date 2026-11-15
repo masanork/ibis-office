@@ -159,6 +159,10 @@ untrusted scope claims, including criticality and malformed DER. Their
 presence remains unsupported for revocation decisions: base and delta CRLs
 are not combined, and distribution point names, certificate types and reason
 coverage are not matched against the target. No locations are fetched.
+For a matching serial, the CLI reports the entry's reason code and invalidity
+date as untrusted claims, plus certificate-issuer extension presence. It does
+not resolve indirect issuer inheritance or interpret removeFromCRL (reason 8)
+as a status change. A matching serial by itself does not establish revocation.
 
 To inspect a caller-supplied OCSP response, provide an explicit time, the
 certificate issuer and the response signer certificate. `--ocsp` can be repeated:

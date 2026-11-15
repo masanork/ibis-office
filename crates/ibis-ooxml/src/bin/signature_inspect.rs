@@ -154,6 +154,7 @@ fn run() -> Result<(), String> {
                 println!("    Time {:?}; thisUpdate {}; nextUpdate {:?}", facts.time_status, facts.this_update, facts.next_update);
                 println!("    Scope {:?}; CRL number {:?}; listed revocation time {:?}", facts.scope, facts.crl_number, facts.listed_revocation_time);
                 println!("    CRL scope extension claims (NOT applied): {:?}", facts.scope_extensions);
+                println!("    Matching serial entry claims (NOT a revocation decision): {:?}", facts.listed_entry_extensions);
                 println!("    CRL authority key observations (NOT issuer authorization): {:?}", facts.authority_key);
                 println!("    CRL applicability and issuer trust: NOT EVALUATED");
             }

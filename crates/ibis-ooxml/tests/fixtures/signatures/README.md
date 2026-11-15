@@ -126,3 +126,9 @@ generated with Python cryptography; the private key was discarded. The CRL
 contains a delta indicator and an issuing distribution point with a user-only,
 reason-limited, indirect scope and an `.invalid` URI. LibreSSL verified the
 signature and displayed the extensions. No base CRL is supplied or fetched.
+
+`entry-issuer.der`, `entry-leaf.der`, and `entry-remove.crl.der` are synthetic
+RSA-2048 data generated using Python cryptography; the key was discarded. The
+delta CRL lists the leaf with `removeFromCRL` and an invalidity date. LibreSSL
+verified the CRL signature and displayed both entry extensions. No base CRL is
+provided, so no certificate status follows from this fixture.

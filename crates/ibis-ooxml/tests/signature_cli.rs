@@ -80,6 +80,13 @@ fn supplied_crl_is_reported_without_a_revocation_verdict() {
     let scoped = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
         .args(["--at", "1796083200", "--crl"]).arg(fixtures.join("scope-delta.crl.der"))
         .arg("--crl-issuer").arg(fixtures.join("scope-issuer.der")).output().unwrap();
+    let entry_leaf = std::fs::read(fixtures.join("entry-leaf.der")).unwrap();
+    let entry_xml = xml.replace(&ibis_ooxml::base64::encode(&previous), &ibis_ooxml::base64::encode(&entry_leaf));
+    package.set_bytes(signature, entry_xml.into_bytes());
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let entry = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .args(["--at", "1796083200", "--crl"]).arg(fixtures.join("entry-remove.crl.der"))
+        .arg("--crl-issuer").arg(fixtures.join("entry-issuer.der")).output().unwrap();
     std::fs::remove_file(path).unwrap();
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
@@ -99,6 +106,11 @@ fn supplied_crl_is_reported_without_a_revocation_verdict() {
     assert!(scoped.contains("delta_indicator: Decoded { critical: true"));
     assert!(scoped.contains("reasons_present: true, indirect_crl: true"));
     assert!(scoped.contains("CRL applicability and issuer trust: NOT EVALUATED"));
+    assert!(entry.status.success());
+    let entry = String::from_utf8(entry.stdout).unwrap();
+    assert!(entry.contains("Matching serial entry claims (NOT a revocation decision)"));
+    assert!(entry.contains("reason: Decoded { critical: false, value: 8 }"));
+    assert!(entry.contains("invalidity_date: Decoded { critical: false, value: 1777593600 }"));
 }
 
 #[test]
