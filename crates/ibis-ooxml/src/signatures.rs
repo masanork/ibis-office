@@ -96,11 +96,53 @@ pub struct ManifestInventory {
     pub examples_truncated: bool,
 }
 
+/// Untrusted certificate extension hints. No URI is fetched or validated.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CertificateLocationHints {
+    pub aia: LocationExtension,
+    pub crl_distribution_points: LocationExtension,
+    pub ocsp: LocationList,
+    pub ca_issuers: LocationList,
+    pub crl: LocationList,
+    pub other_aia_methods: usize,
+    pub scoped_crl_points: usize,
+    pub alternate_crl_issuer_points: usize,
+    pub other_crl_points: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum LocationExtension { Absent, Parsed { critical: bool }, Unsupported }
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LocationList {
+    pub total_uris: usize,
+    /// Up to eight complete URI strings, each at most 2048 bytes.
+    pub examples: Vec<String>,
+    pub omitted_uris: usize,
+    pub non_uri_names: usize,
+}
+
+impl LocationList {
+    fn record(&mut self, name: &x509_cert::ext::pkix::name::GeneralName) {
+        use x509_cert::ext::pkix::name::GeneralName;
+        match name {
+            GeneralName::UniformResourceIdentifier(uri) if !uri.as_str().is_empty() => {
+                self.total_uris += 1;
+                if uri.as_str().len() <= 2048 && self.examples.len() < 8 { self.examples.push(uri.as_str().to_string()); }
+                else { self.omitted_uris += 1; }
+            }
+            _ => self.non_uri_names += 1,
+        }
+    }
+}
+
 /// Individual observations, deliberately without an overall valid verdict.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SignatureInspection {
     pub signature_part: String,
     pub signature_value: SignatureValueCheck,
+    /// None means the embedded certificate could not be inspected.
+    pub certificate_locations: Option<CertificateLocationHints>,
     pub package_object: ObjectDigest,
     /// Additional SignedInfo reference observations, not authenticated results.
     pub additional_signed_info_references: Vec<AdditionalReference>,
@@ -454,6 +496,47 @@ pub fn inspect_signer_certificate(package: &Package, signature_part: &str, refer
     })
 }
 
+/// Read untrusted AIA and CRL distribution-point hints from a DER certificate.
+/// This does not fetch URLs, validate the certificate, or determine revocation.
+pub fn inspect_certificate_location_hints(certificate_der: &[u8]) -> Result<CertificateLocationHints, Error> {
+    use x509_cert::{Certificate, der::Decode, ext::pkix::{AuthorityInfoAccessSyntax, CrlDistributionPoints, name::DistributionPointName}};
+    if certificate_der.len() > 1024 * 1024 { return Err(Error::new("Certificate is too large")); }
+    let cert = Certificate::from_der(certificate_der).map_err(|_| Error::new("Invalid certificate"))?;
+    let mut hints = CertificateLocationHints { aia: LocationExtension::Absent, crl_distribution_points: LocationExtension::Absent, ocsp: LocationList::default(), ca_issuers: LocationList::default(), crl: LocationList::default(), other_aia_methods: 0, scoped_crl_points: 0, alternate_crl_issuer_points: 0, other_crl_points: 0 };
+    match cert.tbs_certificate.get::<AuthorityInfoAccessSyntax>() {
+        Ok(Some((critical, access))) if !access.0.is_empty() => {
+            hints.aia = LocationExtension::Parsed { critical };
+            for item in &access.0 {
+                match item.access_method.to_string().as_str() {
+                    "1.3.6.1.5.5.7.48.1" => hints.ocsp.record(&item.access_location),
+                    "1.3.6.1.5.5.7.48.2" => hints.ca_issuers.record(&item.access_location),
+                    _ => hints.other_aia_methods += 1,
+                }
+            }
+        }
+        Ok(None) => (),
+        _ => hints.aia = LocationExtension::Unsupported,
+    }
+    match cert.tbs_certificate.get::<CrlDistributionPoints>() {
+        Ok(Some((critical, points))) if !points.0.is_empty() => {
+            hints.crl_distribution_points = LocationExtension::Parsed { critical };
+            for point in &points.0 {
+                if point.reasons.is_some() { hints.scoped_crl_points += 1; }
+                if point.crl_issuer.is_some() { hints.alternate_crl_issuer_points += 1; }
+                match &point.distribution_point {
+                    Some(DistributionPointName::FullName(names)) if !names.is_empty() => {
+                        for name in names { hints.crl.record(name); }
+                    }
+                    _ => hints.other_crl_points += 1,
+                }
+            }
+        }
+        Ok(None) => (),
+        _ => hints.crl_distribution_points = LocationExtension::Unsupported,
+    }
+    Ok(hints)
+}
+
 /// Inspect the signatures linked from the package. The resulting observations
 /// do not constitute signature verification or a trust decision.
 pub fn inspect_signatures(package: &Package) -> Result<Vec<SignatureInspection>, Error> {
@@ -468,6 +551,7 @@ pub fn inspect_signatures(package: &Package) -> Result<Vec<SignatureInspection>,
         let manifest_inventory = inspect_manifest_inventory(package, &manifest);
         reports.push(SignatureInspection {
             signature_value: inspect_signature_value(package, &part)?,
+            certificate_locations: extract_single_embedded_certificate(package, &part).ok().and_then(|der| inspect_certificate_location_hints(&der).ok()),
             package_object: inspect_package_object_digest(package, &part)?,
             additional_signed_info_references: additional_signed_info_references(package, &part, &object_id)?,
             manifest,
@@ -1630,6 +1714,50 @@ mod tests {
         assert_eq!(inventory.unlisted_examples.len(), 16);
         assert!(inventory.examples_truncated);
         assert!(inventory.unlisted > inventory.unlisted_examples.len());
+    }
+
+    #[test]
+    fn certificate_location_hints_are_bounded_and_not_revocation_decisions() {
+        use x509_cert::{Certificate, der::{Decode, Encode, asn1::OctetString}};
+        let der = include_bytes!("../tests/fixtures/signatures/location-hints.der");
+        let hints = inspect_certificate_location_hints(der).unwrap();
+        assert_eq!(hints.aia, LocationExtension::Parsed { critical: false });
+        assert_eq!(hints.crl_distribution_points, LocationExtension::Parsed { critical: false });
+        assert_eq!(hints.ocsp.total_uris, 1);
+        assert_eq!(hints.ocsp.examples, ["http://ocsp.example.invalid/status"]);
+        assert_eq!(hints.ocsp.non_uri_names, 1);
+        assert_eq!(hints.ca_issuers.examples, ["https://ca.example.invalid/issuer.der"]);
+        assert_eq!(hints.crl.total_uris, 2);
+        assert_eq!(hints.crl.non_uri_names, 1);
+        assert_eq!(hints.other_aia_methods, 1);
+        assert_eq!((hints.scoped_crl_points, hints.alternate_crl_issuer_points, hints.other_crl_points), (1, 1, 1));
+        let overflow = inspect_certificate_location_hints(include_bytes!("../tests/fixtures/signatures/location-hints-overflow.der")).unwrap();
+        assert_eq!(overflow.ocsp.total_uris, 11);
+        assert_eq!(overflow.ocsp.examples.len(), 8);
+        assert_eq!(overflow.ocsp.omitted_uris, 3);
+        assert!(overflow.ocsp.examples.iter().all(|uri| uri.len() <= 2048));
+        assert_eq!(overflow.crl_distribution_points, LocationExtension::Absent);
+        let absent = inspect_certificate_location_hints(include_bytes!("../tests/fixtures/signatures/ec-ca.der")).unwrap();
+        assert_eq!(absent.aia, LocationExtension::Absent);
+        assert_eq!(absent.crl_distribution_points, LocationExtension::Absent);
+        assert!(inspect_certificate_location_hints(b"bad").is_err());
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        let extensions = cert.tbs_certificate.extensions.as_mut().unwrap();
+        let aia = extensions.iter().find(|e| e.extn_id.to_string() == "1.3.6.1.5.5.7.1.1").unwrap().clone();
+        extensions.push(aia);
+        let duplicate = inspect_certificate_location_hints(&cert.to_der().unwrap()).unwrap();
+        assert_eq!(duplicate.aia, LocationExtension::Unsupported);
+        assert_eq!(duplicate.ocsp.total_uris, 0);
+        assert_eq!(duplicate.crl_distribution_points, LocationExtension::Parsed { critical: false });
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        let extensions = cert.tbs_certificate.extensions.as_mut().unwrap();
+        extensions.iter_mut().find(|e| e.extn_id.to_string() == "2.5.29.31").unwrap().extn_value = OctetString::new(vec![0xff]).unwrap();
+        let malformed = inspect_certificate_location_hints(&cert.to_der().unwrap()).unwrap();
+        assert_eq!(malformed.crl_distribution_points, LocationExtension::Unsupported);
+        assert_eq!(malformed.aia, LocationExtension::Parsed { critical: false });
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        cert.tbs_certificate.extensions.as_mut().unwrap().iter_mut().find(|e| e.extn_id.to_string() == "1.3.6.1.5.5.7.1.1").unwrap().critical = true;
+        assert_eq!(inspect_certificate_location_hints(&cert.to_der().unwrap()).unwrap().aia, LocationExtension::Parsed { critical: true });
     }
 
     #[test]

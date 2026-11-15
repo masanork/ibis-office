@@ -88,3 +88,8 @@ The CA private keys were discarded.
 package with one selected and one unselected relationship. Its package object
 and SignedInfo were canonicalized with lxml, signed with OpenSSL, and its
 signature was verified with OpenSSL. The key was discarded.
+
+`location-hints.der`, `location-hints-overflow.der`, and
+`location-hints-signed.docx` are synthetic certificates and a signed package
+with placeholder OCSP, CA-issuer, and CRL addresses under `.invalid`. The
+package signature was independently checked with LibreSSL; the key was discarded.

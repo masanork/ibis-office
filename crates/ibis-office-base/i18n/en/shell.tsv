@@ -1251,3 +1251,8 @@ file.signature-inspect.ecdsa384-match	matches (ECDSA P-384 SHA-384)
 file.signature-inspect.ecdsa384-differs	differs (ECDSA P-384 SHA-384)
 file.signature-inspect.inventory	Manifest inventory: {entries} package entries; {unlisted} not literally listed, {ambiguous} entry names ambiguous, {unresolved} reference URIs unresolved. Includes metadata and relationships; this does not establish coverage or whether a part is unsigned.
 file.signature-inspect.relationships	Relationship references (unauthenticated, per-reference totals may repeat): {filtered} filtered references, with {selected} current relationships selected and {unselected} not selected; {unmatched} distinct selectors have no current match. {whole} raw-part references, {unavailable} not checked. This does not establish coverage.
+file.signature-inspect.extension-absent	absent
+file.signature-inspect.extension-parsed	read
+file.signature-inspect.extension-critical	read (critical)
+file.signature-inspect.locations	Certificate location hints (untrusted, not fetched): AIA {aia}, CRL distribution points {crldp}; OCSP {ocsp}, CA issuer {issuer}, CRL {crl} URI hints; {omitted} omitted, {other} other forms. CRL points: {scoped} with reason restrictions, {alternate} with alternate issuers. Revocation and applicability are not evaluated.
+file.signature-inspect.locations-unavailable	Certificate location hints were not checked or fetched.

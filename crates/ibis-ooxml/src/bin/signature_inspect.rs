@@ -61,6 +61,14 @@ fn run() -> Result<(), String> {
     if reports.is_empty() { println!("No package signature relationships found."); }
     for report in reports {
         println!("\nSignature part: {:?}", report.signature_part);
+        if let Some(hints) = &report.certificate_locations {
+            println!("  Certificate location hints (UNTRUSTED; NOT FETCHED): AIA {:?}; CRL distribution points {:?}", hints.aia, hints.crl_distribution_points);
+            for (label, list) in [("OCSP", &hints.ocsp), ("CA issuer", &hints.ca_issuers), ("CRL", &hints.crl)] {
+                println!("    {label}: {} URI hints, {} omitted, {} non-URI names", list.total_uris, list.omitted_uris, list.non_uri_names);
+                for uri in &list.examples { println!("      {uri:?}"); }
+            }
+            println!("    Other AIA methods {}; CRL points with reason restrictions {}; alternate issuers {}; other point forms {}. Applicability NOT EVALUATED.", hints.other_aia_methods, hints.scoped_crl_points, hints.alternate_crl_issuer_points, hints.other_crl_points);
+        } else { println!("  Certificate location hints: NOT CHECKED; NOT FETCHED."); }
         if let Some(time) = reference_time {
             let facts = signatures::inspect_signer_certificate(&package, &report.signature_part, time, &anchor_refs).map_err(|e| e.to_string())?;
             println!("  Certificate time at {time}: {:?} (notBefore {}, notAfter {})", facts.time_status, facts.not_before, facts.not_after);

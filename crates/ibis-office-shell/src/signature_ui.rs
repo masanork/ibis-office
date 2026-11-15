@@ -4,7 +4,7 @@
 //! Display bounded observations about the package that was opened.
 
 use gpui_kit::*;
-use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial, RelationshipReference};
+use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial, RelationshipReference, LocationExtension};
 use crate::editor::SlideEditor;
 
 impl SlideEditor {
@@ -72,6 +72,24 @@ fn format_report(reports: &[SignatureInspection]) -> String {
         let matching = matching.to_string(); let legacy = legacy.to_string(); let legacy_differing = legacy_differing.to_string(); let differing = differing.to_string(); let unknown = unknown.to_string();
         message.push_str("\n\n");
         message.push_str(&crate::i18n::format("file.signature-inspect.entry", &[("number", &number), ("value", &value), ("object", &object), ("matching", &matching), ("legacy", &legacy), ("legacy_differing", &legacy_differing), ("differing", &differing), ("unknown", &unknown)]));
+        if let Some(hints) = &report.certificate_locations {
+            let status = |extension: &LocationExtension| crate::i18n::text(match extension {
+                LocationExtension::Absent => "file.signature-inspect.extension-absent",
+                LocationExtension::Parsed { critical: false } => "file.signature-inspect.extension-parsed",
+                LocationExtension::Parsed { critical: true } => "file.signature-inspect.extension-critical",
+                LocationExtension::Unsupported => "file.signature-inspect.unknown",
+            });
+            let aia = status(&hints.aia); let crldp = status(&hints.crl_distribution_points);
+            let ocsp = hints.ocsp.total_uris.to_string(); let issuer = hints.ca_issuers.total_uris.to_string(); let crl = hints.crl.total_uris.to_string();
+            let omitted = hints.ocsp.omitted_uris.saturating_add(hints.ca_issuers.omitted_uris).saturating_add(hints.crl.omitted_uris).to_string();
+            let other = hints.ocsp.non_uri_names.saturating_add(hints.ca_issuers.non_uri_names).saturating_add(hints.crl.non_uri_names).saturating_add(hints.other_aia_methods).saturating_add(hints.other_crl_points).to_string();
+            let scoped = hints.scoped_crl_points.to_string(); let alternate = hints.alternate_crl_issuer_points.to_string();
+            message.push_str("\n");
+            message.push_str(&crate::i18n::format("file.signature-inspect.locations", &[("aia", &aia), ("crldp", &crldp), ("ocsp", &ocsp), ("issuer", &issuer), ("crl", &crl), ("omitted", &omitted), ("other", &other), ("scoped", &scoped), ("alternate", &alternate)]));
+        } else {
+            message.push_str("\n");
+            message.push_str(&crate::i18n::text("file.signature-inspect.locations-unavailable"));
+        }
         let inventory = &report.manifest_inventory;
         let entries = inventory.entries.to_string(); let unlisted = inventory.unlisted.to_string();
         let ambiguous = inventory.ambiguous_entries.to_string(); let unresolved = inventory.unresolved_references.to_string();

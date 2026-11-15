@@ -488,3 +488,50 @@ fn relationship_selection_shows_partial_transform_and_tampering() {
         assert!(text.contains("Certificate trust: NOT EVALUATED"));
     }
 }
+
+#[test]
+fn certificate_location_hints_are_reported_as_untrusted() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/location-hints-signed.docx");
+    let output = run(&fixture);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Certificate location hints (UNTRUSTED; NOT FETCHED)"));
+    assert!(text.contains("OCSP: 1 URI hints, 0 omitted, 1 non-URI names"));
+    assert!(text.contains("http://ocsp.example.invalid/status"));
+    assert!(text.contains("CA issuer: 1 URI hints, 0 omitted, 0 non-URI names"));
+    assert!(text.contains("CRL: 2 URI hints, 0 omitted, 1 non-URI names"));
+    assert!(text.contains("Other AIA methods 1; CRL points with reason restrictions 1; alternate issuers 1; other point forms 1. Applicability NOT EVALUATED"));
+    assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}
+
+#[test]
+fn certificate_location_hints_do_not_trigger_loopback_fetches() {
+    use x509_cert::{Certificate, der::{Decode, Encode, asn1::{Ia5String, OctetString}}, ext::pkix::{AuthorityInfoAccessSyntax, name::GeneralName}};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let uri = format!("http://{}/ocsp", listener.local_addr().unwrap());
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/location-hints-signed.docx");
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    let part = "_xmlsignatures/sig1.xml";
+    let old = ibis_ooxml::signatures::extract_single_embedded_certificate(&package, part).unwrap();
+    let mut cert = Certificate::from_der(&old).unwrap();
+    let (_, mut aia) = cert.tbs_certificate.get::<AuthorityInfoAccessSyntax>().unwrap().unwrap();
+    aia.0[0].access_location = GeneralName::UniformResourceIdentifier(Ia5String::new(&uri).unwrap());
+    let ext = cert.tbs_certificate.extensions.as_mut().unwrap().iter_mut().find(|e| e.extn_id.to_string() == "1.3.6.1.5.5.7.1.1").unwrap();
+    ext.extn_value = OctetString::new(aia.to_der().unwrap()).unwrap();
+    let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+    let changed = xml.replace(&ibis_ooxml::base64::encode(&old), &ibis_ooxml::base64::encode(&cert.to_der().unwrap()));
+    assert_ne!(xml, changed);
+    package.set_bytes(part, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-certificate-hints-loopback-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(&uri));
+    assert!(text.contains("UNTRUSTED; NOT FETCHED"));
+    let error = listener.accept().expect_err("inspector must not connect to the supplied endpoint");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+}

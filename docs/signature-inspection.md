@@ -80,6 +80,16 @@ Exit status 0 means inspection completed; it is not a validity verdict. Exit
 status 2 means the input could not be inspected. The command does not fetch
 certificates or revocation information and does not modify the input file.
 
+The inspector also reads location hints from the single embedded signing
+certificate's AIA and CRL distribution-point extensions. It distinguishes
+OCSP, CA-issuer and CRL URI counts, non-URI or unsupported forms, critical
+extensions, and CRL reason restrictions or alternate issuers. The CLI prints
+at most eight complete URI examples per category, each at most 2048 bytes;
+the desktop dialog shows counts. These strings are untrusted certificate
+contents and are not fetched, validated as URLs, or treated as proof of issuer
+identity, CRL applicability or revocation status. Intermediate certificates,
+Freshest CRL and other access methods are not processed as revocation sources.
+
 Optionally, supply an explicit Unix reference time and DER certificates:
 
 ```sh
