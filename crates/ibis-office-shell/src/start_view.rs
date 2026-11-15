@@ -74,7 +74,7 @@ const ISSUES_URL: &str = "https://github.com/masanork/ibis-office/issues";
 
 /// The window's title while no file is open: the app and its version.
 pub fn start_title() -> String {
-    format!("Sorane Docs {}", env!("IBIS_VERSION"))
+    format!("Docs {}", env!("IBIS_VERSION"))
 }
 
 /// 協力のお願い, right of the column: what ibisOffice aims at, and a link to

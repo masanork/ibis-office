@@ -4,9 +4,9 @@
 # Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 # Build the desktop version as a macOS app bundle:
 #
-#   scripts/bundle-macos.sh            debug build   (target/debug/Sorane Docs.app)
-#   scripts/bundle-macos.sh --release  release build (target/release/Sorane Docs.app)
-#   scripts/bundle-macos.sh --quick    the everyday release build (target/release/Sorane Docs.app) for this Mac only:
+#   scripts/bundle-macos.sh            debug build   (target/debug/Docs.app)
+#   scripts/bundle-macos.sh --release  release build (target/release/Docs.app)
+#   scripts/bundle-macos.sh --quick    the everyday release build (target/release/Docs.app) for this Mac only:
 #                                      the development profile (incremental) in target/release, so an up-to-date
 #                                      target/release/ibisOffice is packed as it is (seconds) and a stale one is brought up
 #                                      to date first. Its executable keeps this Mac's paths: never distribute it.
@@ -50,7 +50,7 @@ fi
 VERSION=$(awk -F'\t' '$1 == "macOS" { sub(/\r$/, "", $2); print $2 }' version.txt)
 [[ -n $VERSION ]] || { echo "version.txt has no macOS line" >&2; exit 1; }
 
-APP="target/$PROFILE/Sorane Docs.app"
+APP="target/$PROFILE/Docs.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/ibisOffice" "$APP/Contents/MacOS/ibisOffice"
@@ -77,9 +77,9 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Sorane Docs</string>
+	<string>Docs</string>
 	<key>CFBundleDisplayName</key>
-	<string>Sorane Docs</string>
+	<string>Docs</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.sorane.docs</string>
 	<key>CFBundleIconFile</key>

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! Sorane Docs desktop updater (currently disabled until release keys and
+//! Docs desktop updater (currently disabled until release keys and
 //! platform signing are provisioned). Signed metadata and the downloaded
 //! artifact are verified before the inherited replacement logic is entered.
 //! See docs/sorane-desktop-updates.md for activation gates and limitations.
@@ -25,9 +25,9 @@ const MANIFEST_URL: &str = "https://github.com/masanork/ibis-office/releases/lat
 const RELEASES_URL: &str = "https://github.com/masanork/ibis-office/releases";
 /// Attempts at one version after which no more offers are made.
 const MAX_ATTEMPTS: u32 = 2;
-/// The Sorane Docs Apple developer team, configured before activation.
+/// The Docs Apple developer team, configured before activation.
 #[cfg(target_os = "macos")]
-const TEAM_ID: &str = ""; // Set to the Sorane Docs Apple Developer team before enabling updates.
+const TEAM_ID: &str = ""; // Set to the Docs Apple Developer team before enabling updates.
 
 const CHECK_KEY: &str = "check-updates";
 const ATTEMPT_KEY: &str = "update-attempt";
@@ -664,7 +664,7 @@ fn unpack(log: &Log, version: &str, zip: &Path) -> Result<Unpacked, String> {
         if found.trim() != version {
             return Err(format!("the new app is version {}, not {version}", found.trim()));
         }
-        if TEAM_ID.is_empty() { return Err("Sorane Docs signing team is not configured".into()); }
+        if TEAM_ID.is_empty() { return Err("Docs signing team is not configured".into()); }
         run(command("codesign").args(["--verify", "--deep", "--strict"]).arg(&app)).map_err(|e| format!("codesign --verify: {e}"))?;
         let info = run_stderr(command("codesign").args(["-dv", "--verbose=2"]).arg(&app));
         if !info.contains(&format!("TeamIdentifier={TEAM_ID}")) { return Err("unexpected signing team".into()); }

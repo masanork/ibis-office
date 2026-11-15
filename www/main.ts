@@ -378,7 +378,7 @@ async function fetchWasm(): Promise<Response> {
     progressFill.style.width = '100%';
   }
   progress?.classList.add('starting');
-  if (statusText) statusText.textContent = ja ? 'Sorane Docs を起動しています…' : 'Starting Sorane Docs…';
+  if (statusText) statusText.textContent = ja ? 'Docs を起動しています…' : 'Starting Docs…';
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return response;
 }

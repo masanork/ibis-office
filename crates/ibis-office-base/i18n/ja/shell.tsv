@@ -32,7 +32,7 @@ tools.settings	設定…
 help.search	メニューを検索
 help.help	ヘルプ
 help.shortcuts	キーボード ショートカット
-help.about	Sorane Docs について
+help.about	Docs について
 file.new.document	ドキュメント
 file.new.workbook	スプレッドシート
 file.new.presentation	プレゼンテーション
@@ -120,7 +120,7 @@ settings.general	一般
 settings.language	言語
 settings.language.system	OS の設定に従う
 settings.language.note	メニュー・ツールバー・パネルの文字の言語。変えるとすぐに切り替わります。
-app.quit	Sorane Docs を終了
+app.quit	Docs を終了
 app.file.new	新規ドキュメント
 app.file.open	開く…
 app.file.save	保存
@@ -167,7 +167,7 @@ start.open	開く…
 start.recent	最近開いたファイル
 start.recent-none	最近開いたファイルはありません
 start.request	協力のお願い
-start.request-body	Sorane Docs は無料のオフィス スイートです。Word・Excel・PowerPoint のファイルを、描画のレイアウトの精度とファイルの構造の互換性の両方で、完全に正確に扱えることを目標にしています。
+start.request-body	Docs は無料のオフィス スイートです。Word・Excel・PowerPoint のファイルを、描画のレイアウトの精度とファイルの構造の互換性の両方で、完全に正確に扱えることを目標にしています。
 start.request-report	不具合やご要望がありましたら、{link} で報告していただけると幸いです。
 start.request-link	GitHub Issues
 _shell.top	上
@@ -559,7 +559,7 @@ _shell.accessibility	ユーザー補助
 _shell.settings	設定…
 _shell.search-menus-2	メニューを検索
 _shell.keyboard-shortcuts	キーボード ショートカット
-_shell.about-ibisoffice	Sorane Docs について
+_shell.about-ibisoffice	Docs について
 _shell.document	ドキュメント
 _shell.spreadsheet	スプレッドシート
 _shell.presentation	プレゼンテーション
@@ -685,7 +685,7 @@ _shell.paste-special	形式を選択して貼り付け
 _shell.general	一般
 _shell.use-system-setting	OS の設定に従う
 _shell.the-language-of-the-menus-toolbars-and-panes-it	メニュー・ツールバー・パネルの文字の言語。変えるとすぐに切り替わります。
-_shell.quit-ibisoffice	Sorane Docs を終了
+_shell.quit-ibisoffice	Docs を終了
 _shell.new-document	新規ドキュメント
 _shell.legend	凡例
 _shell.chart-styles	グラフのスタイル
@@ -796,7 +796,7 @@ autocorrect.auto-lists	* や 1. で始まる段落を箇条書き・段落番号
 autocorrect.auto-borders	--- や === だけの段落を Enter で罫線にする
 _shell.hide-notes-pane	ノートを非表示
 _shell.show-notes-pane	ノートを表示
-shell.linux-desktop.ask	Sorane Docs をアプリの一覧に登録しますか？
+shell.linux-desktop.ask	Docs をアプリの一覧に登録しますか？
 shell.linux-desktop.ask.detail	アプリの一覧から起動できるようになり、Word・Excel・PowerPoint の文書の「別のアプリで開く」にも出ます。登録しないと、Dock（タスクバー）にアイコンが出ないことがあります。登録は自分のホーム フォルダーにだけ書き、あとでヘルプ メニューの「アプリの一覧に登録」からやり直せます。
 shell.linux-desktop.yes	登録する
 shell.linux-desktop.no	登録しない

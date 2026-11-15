@@ -1,4 +1,4 @@
-# Sorane Docs desktop updates
+# Docs desktop updates
 
 The fork does not yet ship an enabled update channel. The code now has an
 Ed25519 verifier for a stable-channel manifest and checks the exact signed
@@ -100,7 +100,7 @@ a symlinked install path to check the path reported by LaunchServices. Desktop
 CI opts into this test on all three platforms. The Linux fixture marks synthetic
 ELF executables as AppImages and also checks stale-backup preservation and that
 a live parent is never terminated. Three seconds of process liveness is not an
-application health check. This does not test a real Sorane Docs install, a
+application health check. This does not test a real Docs install, a
 Developer ID signature or notarization, a download or archive, user-interface
 confirmation, machine interruption, or a real AppImage update.
 
@@ -118,7 +118,7 @@ or establish a successful GUI restart or power-loss recovery.
   in this repository is a production trust anchor.
 - Set up release packaging and publication for each supported architecture,
   including platform-specific integrity checks and independent verification.
-- macOS requires the Sorane Docs Developer ID team and signed/notarized app;
+- macOS requires the Docs Developer ID team and signed/notarized app;
   the inherited ibis inc. team identifier must never be used as the fork's.
   Windows release signing and verification also require a distribution policy.
 - Validate the complete Linux app-to-helper handoff on installed AppImages,

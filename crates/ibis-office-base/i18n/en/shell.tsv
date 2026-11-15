@@ -32,7 +32,7 @@ tools.settings	Settings…
 help.search	Search Menus
 help.help	Help
 help.shortcuts	Keyboard Shortcuts
-help.about	About Sorane Docs
+help.about	About Docs
 file.new.document	Document
 file.new.workbook	Spreadsheet
 file.new.presentation	Presentation
@@ -120,7 +120,7 @@ settings.general	General
 settings.language	Language
 settings.language.system	Use System Setting
 settings.language.note	The language of the menus, toolbars and panes. It changes at once.
-app.quit	Quit Sorane Docs
+app.quit	Quit Docs
 app.file.new	New Document
 app.file.open	Open…
 app.file.save	Save
@@ -516,7 +516,7 @@ _shell.accessibility	Accessibility
 _shell.settings	Settings…
 _shell.search-menus-2	Search Menus
 _shell.keyboard-shortcuts	Keyboard Shortcuts
-_shell.about-ibisoffice	About Sorane Docs
+_shell.about-ibisoffice	About Docs
 _shell.document	Document
 _shell.spreadsheet	Spreadsheet
 _shell.presentation	Presentation
@@ -642,7 +642,7 @@ _shell.paste-special	Paste Special
 _shell.general	General
 _shell.use-system-setting	Use System Setting
 _shell.the-language-of-the-menus-toolbars-and-panes-it	The language of the menus, toolbars and panes. It changes at once.
-_shell.quit-ibisoffice	Quit Sorane Docs
+_shell.quit-ibisoffice	Quit Docs
 _shell.new-document	New Document
 _shell.legend	Legend
 file.cannot-write	Can't write to {path}: {error}
@@ -704,7 +704,7 @@ start.open	Open…
 start.recent	Recent Files
 start.recent-none	No Recent Files
 start.request	We Need Your Help
-start.request-body	Sorane Docs is a free office suite. Its goal is complete accuracy with Word, Excel and PowerPoint files, both in the layout of what it draws and in the compatibility of the file structure.
+start.request-body	Docs is a free office suite. Its goal is complete accuracy with Word, Excel and PowerPoint files, both in the layout of what it draws and in the compatibility of the file structure.
 start.request-report	If you find a bug or have a request, we would be grateful if you could report it on {link}.
 start.request-link	GitHub Issues
 _shell.stem-slide-slide-index-png	{stem}-Slide{slide_index}.png
@@ -798,8 +798,8 @@ autocorrect.auto-lists	Make paragraphs that start with * or 1. into lists
 autocorrect.auto-borders	Turn a paragraph of --- or === into a border line with Enter
 _shell.hide-notes-pane	Hide Notes
 _shell.show-notes-pane	Show Notes
-shell.linux-desktop.ask	Add Sorane Docs to your list of apps?
-shell.linux-desktop.ask.detail	You can then start it from the list of apps, and it appears under "Open With Other Application" for Word, Excel and PowerPoint documents. Without it, the dock may show no icon for Sorane Docs. Only your home folder is changed, and you can do this later from Help > Add to List of Apps.
+shell.linux-desktop.ask	Add Docs to your list of apps?
+shell.linux-desktop.ask.detail	You can then start it from the list of apps, and it appears under "Open With Other Application" for Word, Excel and PowerPoint documents. Without it, the dock may show no icon for Docs. Only your home folder is changed, and you can do this later from Help > Add to List of Apps.
 shell.linux-desktop.yes	Add
 shell.linux-desktop.no	Don't Add
 _shell.comma-style	Comma Style

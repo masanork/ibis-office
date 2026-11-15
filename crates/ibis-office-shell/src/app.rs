@@ -85,7 +85,7 @@ fn quit_asking_to_save_now(cx: &mut App) {
 pub fn set_app_menus(cx: &mut App) {
     use crate::i18n::text;
     cx.set_menus([
-        Menu::new("Sorane Docs").items([MenuItem::action(text("help.about"), OpenAbout), MenuItem::separator(), MenuItem::action(text("app.settings"), OpenSettings), MenuItem::separator(), MenuItem::action(text("app.quit"), Quit)]),
+        Menu::new("Docs").items([MenuItem::action(text("help.about"), OpenAbout), MenuItem::separator(), MenuItem::action(text("app.settings"), OpenSettings), MenuItem::separator(), MenuItem::action(text("app.quit"), Quit)]),
         Menu::new(text("menu.file")).items([
             MenuItem::action(text("file.start-window"), OpenStartWindow),
             MenuItem::separator(),
@@ -136,7 +136,7 @@ pub fn open_editor(document: Option<(ibis_doc_model::Presentation, SharedString)
     }
     // A start window is as wide as its view (shell/start_view.rs).
     let width = if document.is_none() { crate::start_view::START_WINDOW_WIDTH } else { 1280. };
-    // The Sorane Docs update channel remains disabled until its trust key is provisioned.
+    // The Docs update channel remains disabled until its trust key is provisioned.
     open_window_sized(width, cx, move |editor, window, cx| {
         if let Some((presentation, name)) = document {
             editor.load(presentation, name, window, cx);

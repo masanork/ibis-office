@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sorane Docs</title>
+    <title>Docs</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="license" href="./font-notices.html">
     <style>
@@ -27,7 +27,7 @@
     </style>
   </head>
   <body>
-    <div id="status"><span id="status-text">Loading Sorane Docs…</span><div id="progress"><div></div></div></div>
+    <div id="status"><span id="status-text">Loading Docs…</span><div id="progress"><div></div></div></div>
     <script>
       // The same language as the playground page's menu, else the browser's.
       (() => {
@@ -35,7 +35,7 @@
         try { lang = localStorage.getItem('ibisoffice-lang'); } catch { /* storage blocked */ }
         if ((lang ?? navigator.language).toLowerCase().startsWith('ja')) {
           document.documentElement.lang = 'ja';
-          document.getElementById('status-text').textContent = 'Sorane Docs を読み込んでいます…';
+          document.getElementById('status-text').textContent = 'Docs を読み込んでいます…';
         }
       })();
     </script>

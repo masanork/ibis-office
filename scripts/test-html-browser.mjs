@@ -43,7 +43,7 @@ try {
   assert(html.startsWith('<!DOCTYPE html>'), 'download must be HTML');
   assert(html.includes('name=\"viewport\"'), 'HTML must adapt to the device viewport');
   assert(html.includes('HTML&lt;&amp;検証'), 'download must contain the escaped edit');
-  assert(html.includes('Sorane Docs') && html.includes('<table>'), 'document text and table must be present');
+  assert(html.includes('Docs へようこそ') && html.includes('<table>'), 'document text and table must be present');
   assert((await page.evaluate(() => window.__ibisBlobTypes)).includes('text/html;charset=utf-8'), 'HTML must use an HTML MIME type');
   await page.context().close();
   const preview = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true });

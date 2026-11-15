@@ -841,8 +841,8 @@ impl SlideEditor {
         let slots = bar_slots(items, self.kind(), window);
         let viewport = f32::from(window.viewport_size().width);
         let total: f32 = slots.iter().map(|s| s.width).sum();
-        let logo_width = LOGO_HEIGHT_IN_BAR * crate::chrome::LOGO_ASPECT + 2.0 * MENU_BAR_BUTTON_PADDING;
-        let show_logo = viewport >= 8. + total + 16. + LOGO_HEIGHT_IN_BAR * crate::chrome::LOGO_ASPECT + 12.;
+        let logo_width = LOGO_HEIGHT_IN_BAR * crate::chrome::WORDMARK_ASPECT + 2.0 * MENU_BAR_BUTTON_PADDING;
+        let show_logo = viewport >= 8. + total + 16. + LOGO_HEIGHT_IN_BAR * crate::chrome::WORDMARK_ASPECT + 12.;
         let leading = bar_leading(show_logo);
         let available = viewport - leading - if show_logo { logo_width } else { 0.0 } - BAR_TRAILING;
         let (visible, hidden) = overflow_split(&slots, available, MORE_WIDTH);

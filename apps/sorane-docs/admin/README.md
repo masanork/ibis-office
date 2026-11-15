@@ -1,4 +1,4 @@
-# Sorane Docs sample administration (local prototype)
+# Docs sample administration (local prototype)
 
 This Worker is a separately deployable OIDC relying party and sample service.
 It uses Mikaki's confidential-client Authorization Code flow with PKCE. A valid
@@ -7,7 +7,7 @@ that issuer and this RP's pairwise subject. A logged-in account can redeem a
 short-lived, single-use invitation created by the operator; authentication alone
 does not grant access.
 
-The production configuration references dedicated Sorane Docs resources.
+The production configuration references dedicated Docs resources.
 The local Wrangler configuration uses only local D1 and R2. Do not substitute production database IDs, credentials or
 keys in it. The checked-in OIDC implementation and its MIT licence are pinned
 in `vendor/README.md`.

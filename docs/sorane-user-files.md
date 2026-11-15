@@ -1,4 +1,4 @@
-# Sorane Docs の個人ファイル保存（試作）
+# Docs の個人ファイル保存（試作）
 
 Mikaki でログインした人が、自分の Word / Excel / PowerPoint ファイルを Cloudflare 上に保存し、ブラウザ版エディターで開いて書き戻すための試作です。共有リンク、WebDAV、共同編集は対象外です。
 

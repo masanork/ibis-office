@@ -76,7 +76,7 @@ export function filesPage(env: FileEnv, content: string, status = 200, browser?:
   if (browser) headers.append('Set-Cookie', cookieHeader(BROWSER, browser, 86400));
   headers.append('Set-Cookie', cookieHeader(NEXT, '/files', 600));
   return new Response(
-    `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>保存したファイル · Sorane Docs</title><style>body{font:16px system-ui;max-width:46rem;margin:3rem auto;padding:0 1rem;color:#17233d}a{color:#1a5fd6}input,button{font:inherit;padding:.6rem}form{margin:1rem 0}label{display:block;margin:1rem 0}small,p.note{color:#53627b}button,a.button{cursor:pointer}ul{list-style:none;padding:0}li{display:flex;gap:1rem;align-items:center;justify-content:space-between;border-bottom:1px solid #e3e7ee;padding:.8rem 0}li form{margin:0}.meta{color:#53627b;font-size:.9rem}#result[data-kind=error]{color:#9b1c1c}</style><main><h1>保存したファイル</h1>${content}</main></html>`,
+    `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>保存したファイル · Docs</title><style>body{font:16px system-ui;max-width:46rem;margin:3rem auto;padding:0 1rem;color:#17233d}a{color:#1a5fd6}input,button{font:inherit;padding:.6rem}form{margin:1rem 0}label{display:block;margin:1rem 0}small,p.note{color:#53627b}button,a.button{cursor:pointer}ul{list-style:none;padding:0}li{display:flex;gap:1rem;align-items:center;justify-content:space-between;border-bottom:1px solid #e3e7ee;padding:.8rem 0}li form{margin:0}.meta{color:#53627b;font-size:.9rem}#result[data-kind=error]{color:#9b1c1c}</style><main><h1>保存したファイル</h1>${content}</main></html>`,
     { status, headers },
   );
 }

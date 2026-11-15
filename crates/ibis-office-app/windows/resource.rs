@@ -98,7 +98,7 @@ fn push_version_resource(res: &mut Vec<u8>, version: &str, description: &str, fi
             string("InternalName", file_name.trim_end_matches(".exe")),
             string("LegalCopyright", "Copyright (c) ibis inc."),
             string("OriginalFilename", file_name),
-            string("ProductName", "Sorane Docs"),
+            string("ProductName", "Docs"),
             string("ProductVersion", version),
         ],
     );

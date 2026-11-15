@@ -1149,7 +1149,7 @@ impl SlideEditor {
         self.sidebar_scroll.set_offset(Point::default());
         // The document's split, reading mode, focus mode and the way its pages move are in its own state, which is
         // new (`docx::State`).
-        window.set_window_title(&format!("{name} - Sorane Docs"));
+        window.set_window_title(&format!("{name} - Docs"));
         self.file_name = Some(name);
         self.has_document = true;
         crate::app::track_start_window(cx.entity_id(),None,false,cx);
@@ -2130,7 +2130,7 @@ impl SlideEditor {
                 editor.zoom = current_zoom;
                 with_format!(editor, relayout_if_changed(editor));
                 let title = format!("{name}:{new_num}");
-                window.set_window_title(&format!("{title} - Sorane Docs"));
+                window.set_window_title(&format!("{title} - Docs"));
             });
         } else if let Some(path) = self.file_path() {
             let slide = self.presentation().slide_index(self.current_slide).map(|i| i + 1);
@@ -2248,7 +2248,7 @@ impl SlideEditor {
                 editor_entity.update(app, |editor, cx| {
                     editor.window_number = num;
                     let title = editor.display_title_formatted();
-                    window.set_window_title(&format!("{title} - Sorane Docs"));
+                    window.set_window_title(&format!("{title} - Docs"));
                     cx.notify();
                     window.refresh();
                 });
@@ -3887,7 +3887,7 @@ impl SlideEditor {
     /// Compact document controls when the browser is used as a phone viewer.
     fn render_mobile_viewer_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let name = self.file_name.clone().unwrap_or_else(|| "Sorane Docs".into());
+        let name = self.file_name.clone().unwrap_or_else(|| "Docs".into());
         h_flex().h(px(48.)).flex_shrink_0().px_3().gap_3().items_center()
             .bg(theme.title_bar).border_b_1().border_color(theme.title_bar_border)
             .child(div().flex_1().min_w_0().overflow_hidden().text_sm().child(name))

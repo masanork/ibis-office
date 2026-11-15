@@ -29,5 +29,5 @@ test('home stays put and links to the editor and a distributable sample', () => 
   }
   assert.match(home, /digital\.go\.jp\/councils\/digital-system-reform/);
   assert.match(home, /www\.mlit\.go\.jp/);
-  assert.match(home, /Sorane Docs が加工/);
+  assert.match(home, /Docs が加工/);
 });

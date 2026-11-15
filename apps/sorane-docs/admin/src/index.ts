@@ -10,7 +10,7 @@ function page(env: Env, content: string, status = 200, browser?: string): Respon
   headers.set('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self' ${env.ISSUER}; frame-ancestors 'none'; base-uri 'none'`);
   if (browser) headers.append('Set-Cookie', cookieHeader(BROWSER, browser, 86400));
   headers.append('Set-Cookie', cookieHeader(NEXT, '/admin', 600));
-  return new Response(`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>サンプル管理 · Sorane Docs</title><style>body{font:16px system-ui;max-width:46rem;margin:3rem auto;padding:0 1rem;color:#17233d}input,button{font:inherit;padding:.6rem}form{margin:1rem 0}label{display:block;margin:1rem 0}small{color:#53627b}button{cursor:pointer}</style><main><h1>サンプル管理</h1>${content}</main></html>`, { status, headers });
+  return new Response(`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>サンプル管理 · Docs</title><style>body{font:16px system-ui;max-width:46rem;margin:3rem auto;padding:0 1rem;color:#17233d}input,button{font:inherit;padding:.6rem}form{margin:1rem 0}label{display:block;margin:1rem 0}small{color:#53627b}button{cursor:pointer}</style><main><h1>サンプル管理</h1>${content}</main></html>`, { status, headers });
 }
 async function admin(request: Request, env: Env) {
   const session = await current(request, env, true);

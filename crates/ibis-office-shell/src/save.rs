@@ -322,7 +322,7 @@ impl SlideEditor {
             self.save_note = Some(crate::i18n::text("file.standard-copy-saved"));
         }
         let name: SharedString = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
-        window.set_window_title(&format!("{name} - Sorane Docs"));
+        window.set_window_title(&format!("{name} - Docs"));
         self.file_name = Some(name);
         // A newly created file becomes recent as soon as its first save succeeds.
         self.recent_files = crate::recent_files::add(&path);
