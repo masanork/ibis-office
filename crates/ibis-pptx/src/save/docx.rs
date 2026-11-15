@@ -3461,6 +3461,16 @@ impl Writer<'_> {
                     let e = self.doc.append_element(tc_pr, &w("gridSpan"));
                     self.doc.set_attr(e, "w:val", &cell.span.to_string());
                 }
+                match cell.merge {
+                    VerticalMerge::None => {}
+                    VerticalMerge::Start => {
+                        let e = self.doc.append_element(tc_pr, &w("vMerge"));
+                        self.doc.set_attr(e, "w:val", "restart");
+                    }
+                    VerticalMerge::Continue => {
+                        self.doc.append_element(tc_pr, &w("vMerge"));
+                    }
+                }
                 // A newly constructed table may have per-cell rules even
                 // when its table-level grid is absent (for example, an
                 // imported document with different borders on each row).
