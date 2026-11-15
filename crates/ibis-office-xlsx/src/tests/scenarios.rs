@@ -8719,6 +8719,7 @@ fn auto006_form_controls() {
         e.selection = Some(check);
         e.open_control_properties_panel(window, cx);
         if let Some(p) = e.wb_mut().panels.control_properties.as_mut() {
+            p.name.update(cx, |s, cx| s.set_value("disclose.Consent".to_string(), window, cx));
             p.three_d = false;
         }
         e.apply_control_properties_panel(cx);
@@ -8759,6 +8760,7 @@ fn auto006_form_controls() {
         .find(|c| c.kind == ControlKind::CheckBox && !c.three_d)
         .expect("CheckBox with three_d=false should roundtrip");
     assert!(!reopened_orig_chk.three_d);
+    assert_eq!(reopened_orig_chk.name, "disclose.Consent");
 }
 
 fn of_state(all: &[(ibis_doc_model::ShapeId, ibis_doc_model::FormControl)], k: ibis_doc_model::ControlKind) -> ibis_doc_model::FormControl {

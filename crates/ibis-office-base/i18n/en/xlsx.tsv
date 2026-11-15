@@ -2131,6 +2131,7 @@ xlsx.insert-control.label	Label
 xlsx.control-properties	Format Control…
 xlsx.control-properties.title	Format Control
 xlsx.control-properties.select	Select a form control first.
+xlsx.control-properties.name	Control name
 xlsx.control-properties.text	Caption text
 xlsx.control-properties.link	Cell link
 xlsx.control-properties.range	Input range

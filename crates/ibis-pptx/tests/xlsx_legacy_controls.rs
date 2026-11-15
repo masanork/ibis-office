@@ -62,17 +62,20 @@ fn a_changed_state_is_written_to_the_vml_and_the_ctrl_prop_and_the_rest_is_kept(
         let ShapeKind::Control(c) = &mut slide.kind else { unreachable!() };
         let mut next = (**c).clone();
         next.checked = 1;
+        next.name = "sd.size_option".to_string();
         *c = Arc::new(next);
     }
     let saved = loaded.source.save(&loaded.presentation, SaveOptions::default()).expect("save");
     let vml = zip_text(&saved, "xl/drawings/vmlDrawing1.vml");
     assert!(vml.contains("<x:Checked>1</x:Checked>"), "the second option button's VML says it is chosen:\n{vml}");
+    assert!(vml.contains("id=\"sd.size_option\" o:spid=\"_x0000_s1026\""), "custom control name saved in VML id:\n{vml}");
     assert!(zip_text(&saved, "xl/ctrlProps/ctrlProp2.xml").contains("checked=\"Checked\""));
     // Reading the saved file gives the same controls; the group box is still hidden.
     let again = ibis_pptx::open(saved).expect("reopen");
     let found = controls(&again.presentation);
     assert_eq!(found.len(), 5);
     assert_eq!(found[1].1.checked, 1);
+    assert_eq!(found[1].1.name, "sd.size_option");
     assert!(found[2].2);
 }
 
@@ -86,4 +89,101 @@ fn deleting_a_control_takes_its_shape_and_ctrl_prop_with_it() {
     assert!(!zip_text(&saved, "xl/drawings/vmlDrawing1.vml").contains("_x0000_s1028"));
     let again = ibis_pptx::open(saved).expect("reopen");
     assert_eq!(controls(&again.presentation).len(), 4);
+}
+
+#[test]
+fn custom_control_name_roundtrips_for_modern_and_legacy_controls() {
+    use ibis_doc_model::EmuRect;
+
+    // 1. Modern DrawingML + <controls> form control rename roundtrip on a blank workbook
+    let mut opened = ibis_pptx::open(ibis_pptx::blank_file(ibis_pptx::Kind::Workbook).unwrap()).unwrap();
+    let slide_id = opened.presentation.slides[0].id;
+    let mut ctrl = FormControl::new(ControlKind::CheckBox, "Check Box 1");
+    ctrl.text = "メールを開示".to_string();
+    ctrl.link = Some("$B$2".to_string());
+    ctrl.checked = 1;
+    opened.presentation.slide_mut(slide_id).unwrap().shapes.push(Shape::new(
+        ibis_doc_model::ShapeId(500),
+        EmuRect::new(914_400, 457_200, 1_828_800, 274_320),
+        ShapeKind::Control(Arc::new(ctrl)),
+    ));
+    let saved1 = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+    let mut reopened1 = ibis_pptx::open(saved1).unwrap();
+    {
+        let sh = reopened1
+            .presentation
+            .slides[0]
+            .shapes
+            .iter_mut()
+            .find(|s| matches!(s.kind, ShapeKind::Control(_)))
+            .unwrap();
+        let ShapeKind::Control(c) = &mut sh.kind else { unreachable!() };
+        let mut next = (**c).clone();
+        assert_eq!(next.name, "Check Box 1");
+        next.name = "disclose.email".to_string();
+        *c = Arc::new(next);
+    }
+    let saved2 = reopened1.source.save(&reopened1.presentation, SaveOptions::default()).unwrap();
+    let sheet_xml = zip_text(&saved2, "xl/worksheets/sheet1.xml");
+    let drawing_xml = zip_text(&saved2, "xl/drawings/drawing1.xml");
+    assert!(sheet_xml.contains(r#"name="disclose.email""#), "sheet1.xml should contain renamed control:\n{sheet_xml}");
+    assert!(drawing_xml.contains(r#"name="disclose.email""#), "drawing1.xml should contain renamed control:\n{drawing_xml}");
+    let reopened2 = ibis_pptx::open(saved2.clone()).unwrap();
+    let found = controls(&reopened2.presentation);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].1.name, "disclose.email");
+    assert_eq!(found[0].1.text, "メールを開示");
+
+    // 2. Legacy VML-only control rename roundtrip (stripped <controls> + <drawing>, keeping vmlDrawing1.vml)
+    let mut pkg = ibis_ooxml::Package::open(saved2).unwrap();
+    let vml_bytes = br##"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+<v:shape id="_x0000_s1043" type="#_x0000_t201" style="position:absolute;margin-left:72pt;margin-top:36pt;width:120pt;height:18pt">
+ <v:textbox><div>Option A</div></v:textbox>
+ <x:ClientData ObjectType="CheckBox"><x:Checked>1</x:Checked><x:FmlaLink>$B$2</x:FmlaLink></x:ClientData>
+</v:shape>
+</xml>"##;
+    pkg.set_bytes("xl/drawings/vmlDrawing1.vml", vml_bytes.to_vec());
+    pkg.add_relationship(
+        "xl/worksheets/sheet1.xml",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing",
+        "../drawings/vmlDrawing1.vml",
+        false,
+    )
+    .unwrap();
+    {
+        let doc = pkg.xml_mut("xl/worksheets/sheet1.xml").unwrap();
+        let root = doc.root_element().unwrap();
+        for name in ["drawing", "controls"] {
+            if let Some(node) = doc.children(root).into_iter().copied().find(|&n| doc.is_element(n) && doc.local_name(n) == name) {
+                doc.detach(node);
+            }
+        }
+    }
+    let vml_only_bytes = pkg.save(SaveOptions::default()).unwrap();
+    let mut vml_loaded = ibis_pptx::open(vml_only_bytes).unwrap();
+    {
+        let sh = vml_loaded
+            .presentation
+            .slides[0]
+            .shapes
+            .iter_mut()
+            .find(|s| matches!(s.kind, ShapeKind::Control(_)))
+            .expect("legacy VML control loaded");
+        let ShapeKind::Control(c) = &mut sh.kind else { unreachable!() };
+        let mut next = (**c).clone();
+        assert_eq!(next.vml_id, "_x0000_s1043");
+        next.name = "sd.size_option".to_string();
+        *c = Arc::new(next);
+    }
+    let vml_saved = vml_loaded.source.save(&vml_loaded.presentation, SaveOptions::default()).unwrap();
+    let vml_text = zip_text(&vml_saved, "xl/drawings/vmlDrawing1.vml");
+    assert!(
+        vml_text.contains(r#"id="sd.size_option" o:spid="_x0000_s1043""#),
+        "VML shape should store custom name in id and preserve o:spid:\n{vml_text}"
+    );
+    let vml_reopened = ibis_pptx::open(vml_saved).unwrap();
+    let vml_controls = controls(&vml_reopened.presentation);
+    assert_eq!(vml_controls.len(), 1);
+    assert_eq!(vml_controls[0].1.name, "sd.size_option");
+    assert_eq!(vml_controls[0].1.vml_id, "_x0000_s1043");
 }

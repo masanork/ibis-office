@@ -9651,6 +9651,7 @@ fn form_control_insert_move_resize_format_and_delete_roundtrip() {
         sh.frame.height += 228600;
         if let ShapeKind::Control(c) = &mut sh.kind {
             let mut c_mut = (**c).clone();
+            c_mut.name = "btn.submit".to_string();
             c_mut.text = "実行更新".to_string();
             c_mut.font = Some("Yu Gothic".to_string());
             c_mut.font_size = Some(1400); // 14pt
@@ -9749,6 +9750,7 @@ fn form_control_insert_move_resize_format_and_delete_roundtrip() {
         btn_sh.frame.x,
         orig_btn_x
     );
+    assert_eq!(btn_c.name, "btn.submit");
     assert_eq!(btn_c.text, "実行更新");
     assert_eq!(btn_c.font.as_deref(), Some("Yu Gothic"));
     assert_eq!(btn_c.font_size, Some(1400));

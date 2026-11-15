@@ -44,6 +44,7 @@ pub(crate) fn default_control(kind: ControlKind, name: &str, text: &str) -> (For
 pub(crate) struct ControlPropertiesPanel {
     pub(crate) shape: ShapeId,
     pub(crate) kind: ControlKind,
+    pub(crate) name: Entity<InputState>,
     pub(crate) text: Entity<InputState>,
     pub(crate) link: Entity<InputState>,
     pub(crate) range: Entity<InputState>,
@@ -148,6 +149,7 @@ impl SlideEditor {
             state.update(cx, |i, cx| i.set_value(val, window, cx));
             state
         };
+        let name_input = make(control.name.clone(), window, cx);
         let text_input = make(control.text.clone(), window, cx);
         let link_input = make(control.link.clone().unwrap_or_default(), window, cx);
         let range_input = make(control.range.clone().unwrap_or_default(), window, cx);
@@ -170,6 +172,7 @@ impl SlideEditor {
         let panel = ControlPropertiesPanel {
             shape,
             kind: control.kind,
+            name: name_input,
             text: text_input,
             link: link_input,
             range: range_input,
@@ -198,6 +201,7 @@ impl SlideEditor {
         let Some(p) = self.sheet_state().and_then(|s| s.panels.control_properties.as_ref()) else { return };
         let shape = p.shape;
         let _kind = p.kind;
+        let name_val = p.name.read(cx).value();
         let text_val = p.text.read(cx).value();
         let link_val = p.link.read(cx).value();
         let range_val = p.range.read(cx).value();
@@ -215,6 +219,10 @@ impl SlideEditor {
         let Some(existing_sh) = self.slide().shape(shape) else { return };
         let ShapeKind::Control(c) = &existing_sh.kind else { return };
         let mut next = (**c).clone();
+        let trimmed_name = name_val.trim();
+        if !trimmed_name.is_empty() {
+            next.name = trimmed_name.to_string();
+        }
         next.text = text_val.to_string();
         next.link = if link_val.trim().is_empty() { None } else { Some(link_val.trim().to_string()) };
         next.range = if range_val.trim().is_empty() { None } else { Some(range_val.trim().to_string()) };
@@ -273,7 +281,13 @@ impl SlideEditor {
                         ui.borrow_mut().insert(id.clone(), bounds);
                     })
         };
-        let mut body = v_flex().gap_2().px(px(16.)).py(px(8.)).p_0();
+        let mut body = v_flex()
+            .gap_2()
+            .px(px(16.))
+            .py(px(8.))
+            .p_0()
+            .child(div().text_sm().child(text("xlsx.control-properties.name")))
+            .child(mark("name", crate::shell::chrome::text_field(&p.name).full_width().into_any_element()));
 
         // 表示テキスト・文字の書式 (Button, CheckBox, Radio, GroupBox, Label)
         if matches!(
@@ -466,6 +480,7 @@ mod tests {
                 "xlsx.control-properties",
                 "xlsx.control-properties.title",
                 "xlsx.control-properties.select",
+                "xlsx.control-properties.name",
                 "xlsx.control-properties.text",
                 "xlsx.control-properties.link",
                 "xlsx.control-properties.range",

@@ -2128,6 +2128,7 @@ xlsx.insert-control.label	ラベル
 xlsx.control-properties	コントロールの書式設定…
 xlsx.control-properties.title	コントロールの書式設定
 xlsx.control-properties.select	先にフォーム コントロールを選んでください。
+xlsx.control-properties.name	コントロール名
 xlsx.control-properties.text	表示テキスト
 xlsx.control-properties.link	リンクするセル
 xlsx.control-properties.range	入力範囲

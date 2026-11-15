@@ -88,10 +88,21 @@ pub(crate) fn read(vml: &Document, props: &[(String, String)]) -> Vec<LegacyCont
     let mut out = Vec::new();
     for (i, raw) in raws.iter().enumerate() {
         let id = raw.shape.attribute("id").unwrap_or("");
-        let number = id.rsplit("_s").next().unwrap_or(id).to_string();
-        if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        let spid = raw
+            .shape
+            .attributes()
+            .find(|a| a.name() == "spid" || a.name().ends_with(":spid"))
+            .map(|a| a.value())
+            .unwrap_or("");
+        let id_num = id.rsplit("_s").next().unwrap_or(id);
+        let spid_num = spid.rsplit("_s").next().unwrap_or(spid);
+        let (number, has_custom_id) = if !id_num.is_empty() && id_num.bytes().all(|b| b.is_ascii_digit()) {
+            (id_num.to_string(), false)
+        } else if !spid_num.is_empty() && spid_num.bytes().all(|b| b.is_ascii_digit()) {
+            (spid_num.to_string(), !id.is_empty())
+        } else {
             continue;
-        }
+        };
         let prop = if lined_up { parsed[i].as_ref().map(|d| d.root_element()) } else { None };
         let vml_tag = |name: &str| raw.client.children().find(|n| local(*n, name));
         let vml_text = |name: &str| vml_tag(name).and_then(|n| n.text()).map(|t| t.trim().to_string());
@@ -113,9 +124,11 @@ pub(crate) fn read(vml: &Document, props: &[(String, String)]) -> Vec<LegacyCont
             ControlKind::GroupBox => "Group Box",
             ControlKind::Label => "Label",
         };
-        // Excel numbers the names from the shape number (1043 is "Option Button 19": 1043 - 1024).
-        let mut c = FormControl::new(kind, &format!("{english} {}", number_n % 1024));
-        c.vml_id = id.to_string();
+        // Excel numbers the names from the shape number (1043 is "Option Button 19": 1043 - 1024),
+        // unless the VML shape carries a custom `id` alongside `o:spid`.
+        let default_name = format!("{english} {}", number_n % 1024);
+        let mut c = FormControl::new(kind, if has_custom_id { id } else { &default_name });
+        c.vml_id = if has_custom_id && !spid.is_empty() { spid.to_string() } else { id.to_string() };
         if let Some(i) = lined_up.then_some(i) {
             c.part = props[i].0.clone();
         }
@@ -237,5 +250,20 @@ mod tests {
         // Kinds out of order: no ctrlProp is taken.
         let wrong = vec![props[1].clone(), props[0].clone()];
         assert!(read(&doc, &wrong).iter().all(|c| c.control.part.is_empty()));
+    }
+
+    #[test]
+    fn reads_custom_shape_id_when_spid_has_the_shape_number() {
+        let vml = r##"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+<v:shape id="sd.prefecture" o:spid="_x0000_s1056" type="#_x0000_t201" style='position:absolute;margin-left:1pt;margin-top:2pt;width:30pt;height:20pt'>
+ <x:ClientData ObjectType="Drop"><x:Sel>2</x:Sel><x:FmlaLink>$AW$5</x:FmlaLink><x:FmlaRange>$AX$13:$AX$22</x:FmlaRange></x:ClientData></v:shape>
+</xml>"##;
+        let doc = Document::parse(vml).unwrap();
+        let found = read(&doc, &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].shape_number, "1056");
+        assert_eq!(found[0].control.name, "sd.prefecture");
+        assert_eq!(found[0].control.vml_id, "_x0000_s1056");
+        assert_eq!(found[0].control.value, 2);
     }
 }

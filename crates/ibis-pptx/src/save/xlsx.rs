@@ -3176,20 +3176,45 @@ fn sheet_vml_part(package: &Package, sheet_part: &str) -> Option<String> {
     package.relationships(sheet_part).ok()?.iter().find(|r| r.kind == REL_VML && !r.external).and_then(|r| r.target_part(sheet_part))
 }
 
-/// The byte range of the shape `id="{vml_id}"` in a VML drawing.
+/// The byte range of the shape `id="{vml_id}"` or `o:spid="{vml_id}"` in a VML drawing.
 fn vml_shape_range(text: &str, vml_id: &str) -> Option<(usize, usize)> {
-    let needle = format!("id=\"{vml_id}\"");
-    vml_shapes(text).into_iter().find(|&(a, b)| text[a..b].find('>').is_some_and(|open| text[a..a + open].contains(&needle)))
+    let id_needle = format!("id=\"{vml_id}\"");
+    let spid_needle = format!("spid=\"{vml_id}\"");
+    vml_shapes(text).into_iter().find(|&(a, b)| {
+        text[a..b].find('>').is_some_and(|open| {
+            let tag = &text[a..a + open];
+            tag.contains(&id_needle) || tag.contains(&spid_needle)
+        })
+    })
+}
+
+/// Set `id="{name}"` on a VML `<v:shape ...>` opening tag, preserving `vml_id` in `o:spid`.
+fn vml_set_shape_name(shape: &mut String, vml_id: &str, name: &str) {
+    let Some(open_end) = shape.find('>') else { return };
+    let has_spid = shape[..open_end].contains("spid=\"");
+    let Some(id_pos) = shape[..open_end].find("id=\"") else { return };
+    let val_start = id_pos + 4;
+    let Some(val_len) = shape[val_start..open_end].find('"') else { return };
+    let escaped = name.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
+    let replacement = if has_spid {
+        format!("id=\"{escaped}\"")
+    } else {
+        format!("id=\"{escaped}\" o:spid=\"{vml_id}\"")
+    };
+    shape.replace_range(id_pos..val_start + val_len + 1, &replacement);
 }
 
 /// Write the state, and the place when it moved, of a control that only the VML describes (Excel 2007's form).
-fn write_legacy_control(package: &mut Package, sheet_part: &str, sheet: &Sheet, c: &ibis_doc_model::FormControl, frame: Option<ibis_doc_model::EmuRect>) -> Result<(), Error> {
+fn write_legacy_control(package: &mut Package, sheet_part: &str, sheet: &Sheet, c: &ibis_doc_model::FormControl, name_changed: bool, frame: Option<ibis_doc_model::EmuRect>) -> Result<(), Error> {
     use ibis_doc_model::ControlKind as K;
     let Some(vml_part) = sheet_vml_part(package, sheet_part) else { return Ok(()) };
     let Ok(bytes) = package.read(&vml_part) else { return Ok(()) };
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     let Some((a, b)) = vml_shape_range(&text, &c.vml_id) else { return Ok(()) };
     let mut shape = text[a..b].to_string();
+    if name_changed {
+        vml_set_shape_name(&mut shape, &c.vml_id, &c.name);
+    }
     match c.kind {
         K::CheckBox | K::Radio => vml_set_client_tag(&mut shape, "Checked", match c.checked { 0 => None, 2 => Some("2"), _ => Some("1") }),
         K::Scroll | K::Spin => vml_set_client_tag(&mut shape, "Val", Some(&c.value.to_string())),
@@ -3246,7 +3271,7 @@ fn write_control_changes(
         }
         if !cb.vml_id.is_empty() {
             // Excel 2007's form: no `control` element and no drawing shape; the VML holds the place and the state.
-            write_legacy_control(package, sheet_part, sheet, cb, (a.frame != b.frame).then_some(b.frame))?;
+            write_legacy_control(package, sheet_part, sheet, cb, ca.name != cb.name, (a.frame != b.frame).then_some(b.frame))?;
             continue;
         }
         let rid = rels
@@ -3275,9 +3300,10 @@ fn write_control_changes(
                 }
             }
         }
-        let text_diff = (&ca.name, &ca.text, &ca.font, ca.font_size, ca.bold, ca.italic, ca.text_color)
-            != (&cb.name, &cb.text, &cb.font, cb.font_size, cb.bold, cb.italic, cb.text_color);
-        if (a.frame != b.frame || text_diff)
+        let name_diff = ca.name != cb.name;
+        let text_diff = (&ca.text, &ca.font, ca.font_size, ca.bold, ca.italic, ca.text_color)
+            != (&cb.text, &cb.font, cb.font_size, cb.bold, cb.italic, cb.text_color);
+        if (a.frame != b.frame || name_diff || text_diff)
             && let (Some(drawing), Some(shape_id)) = (drawing_part.as_deref(), shape_id_found.as_deref())
             && package.contains(drawing)
         {
@@ -3287,7 +3313,7 @@ fn write_control_changes(
                     draw_doc.local_name(n) == "cNvPr" && draw_doc.attr(n, "id") == Some(shape_id)
                 });
                 if let Some(cnv) = cnv {
-                    if ca.name != cb.name {
+                    if name_diff {
                         draw_doc.set_attr(cnv, "name", &cb.name);
                     }
                     let mut p = draw_doc.parent(cnv);
