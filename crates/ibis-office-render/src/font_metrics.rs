@@ -334,10 +334,14 @@ pub(crate) fn is_proportional_japanese_typeface(name: &str) -> bool {
 }
 
 /// Fallback advance width (in `1/256 em`, from `msgothic.ttc` `MS PGothic` / `meiryo.ttc` `Meiryo UI` `hmtx`)
-/// for a full-width alphanumeric or sign (`U+FF01..=U+FF5E`, `U+30FB`) in a proportional Japanese typeface
+/// for a full-width alphanumeric (`U+FF10..=U+FF5A`) or space/triangle in a proportional Japanese typeface
 /// when substituted by `Hiragino Sans` (`pwid` in `Hiragino Sans` narrows `U+FF10..=U+FF3A` to ~0.71–0.85 em
 /// instead of `MS PGothic` / `Meiryo UI`'s proportional widths, where full-width digits and Latin letters
 /// match their half-width counterparts).
+///
+/// Full-width punctuation (`（`, `）`, `：`, `；`, `・`) is intentionally omitted so it keeps the shaped
+/// fallback glyph's own advance instead of shrinking to ~0.30 em and overlapping adjacent characters when
+/// the fallback font does not shift the glyph by `palt`.
 pub(crate) fn fallback_fullwidth_alnum_width(c: char) -> Option<u16> {
     const DIGITS: [u16; 10] = [128, 128, 128, 128, 128, 128, 128, 128, 128, 128];
     const UPPER: [u16; 26] = [
@@ -350,7 +354,6 @@ pub(crate) fn fallback_fullwidth_alnum_width(c: char) -> Option<u16> {
     ];
     match c as u32 {
         0x3000 | 0x25b6 | 0x25b7 | 0x25c0 | 0x25c1 => Some(256),
-        0xff08 | 0xff09 | 0xff1a | 0xff1b | 0x30fb => Some(76),
         0xff10..=0xff19 => Some(DIGITS[(c as usize) - 0xff10]),
         0xff21..=0xff3a => Some(UPPER[(c as usize) - 0xff21]),
         0xff41..=0xff5a => Some(LOWER[(c as usize) - 0xff41]),
@@ -463,5 +466,14 @@ mod glyph_range_tests {
         // Not in a block of the tables, or a typeface without one: unknown.
         assert_eq!(office_has_glyph("Courier New", 'é'), None);
         assert_eq!(office_has_glyph("No Such Typeface", '■'), None);
+    }
+
+    #[test]
+    fn fullwidth_punctuation_keeps_shaped_advance() {
+        use super::fallback_fullwidth_alnum_width;
+        for c in ['（', '）', '：', '；', '・'] {
+            assert_eq!(fallback_fullwidth_alnum_width(c), None, "unexpected override for {c}");
+        }
+        assert_eq!(fallback_fullwidth_alnum_width('０'), Some(128));
     }
 }
