@@ -2936,3 +2936,15 @@ xlsx.sd-jwt.bind-sd	Bind as sd.* (with Disclose Check)
 xlsx.sd-jwt.bind-claim	Bind as claim.* (Always Disclosed)
 xlsx.sd-jwt.bound-status	Bound selection as {name}
 xlsx.sd-jwt.bind-error	Select a cell or range and enter a valid claim path.
+xlsx.sd-jwt.step1	1. Start from a Template
+xlsx.sd-jwt.step2	2. Choose Items to Disclose (click to toggle)
+xlsx.sd-jwt.step3	3. Export
+xlsx.sd-jwt.empty-guide	Click a button above to generate an editable form and disclosure checkboxes on the sheet.
+xlsx.sd-jwt.disclosed-count	Disclosing: {disclosed} / {total} items
+xlsx.sd-jwt.disclosed-preview	Disclosed Data Preview (JSON)
+xlsx.sd-jwt.copy-sd-jwt	Copy SD-JWT
+xlsx.sd-jwt.advanced-show	Advanced & OID4VP ▸
+xlsx.sd-jwt.advanced-hide	Hide Advanced & OID4VP ▾
+xlsx.sd-jwt.tag-disclose	[Disclose]
+xlsx.sd-jwt.tag-hidden	[Hidden]
+xlsx.sd-jwt.tag-fixed	[Fixed]

@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! 開発 / データ > SD-JWT の生成とプレビュー・OID4VP 提示パネル.
-//! シート上のフォーム コントロールおよび定義された名前 (`claim.*`, `sd.*`, `disclose.*`) から
-//! RFC 9901 SD-JWT および OID4VP `vp_token` (Key Binding JWT `kb+jwt` 付) を生成し、
-//! テンプレートからのフォーム自動生成、選択範囲のワンクリック `sd.*` バインド、
-//! OID4VP Authorization Request によるシート上 `disclose.*` チェックボックスの自動同期を行う。
+//! 開発 / 書式 > SD-JWT の生成とプレビュー・OID4VP 提示パネル.
+//! 初心者向けのシンプルな3ステップ（1. ひな形を作る → 2. 見せる項目を選ぶ → 3. 出力する）を
+//! 基本画面とし、発行者設定・任意範囲バインド・OID4VP 提示は折りたたみ可能な詳細セクションにまとめる。
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -34,6 +32,7 @@ pub(crate) struct SdJwtPanel {
     pub(crate) bind_path: Entity<InputState>,
     pub(crate) oid4vp_request: Entity<InputState>,
     pub(crate) include_cnf: bool,
+    pub(crate) show_advanced: bool,
     pub(crate) bindings: SheetClaimBindings,
     pub(crate) output: Option<SdJwtOutput>,
     pub(crate) kb_output: Option<KeyBindingJwtOutput>,
@@ -45,12 +44,12 @@ pub(crate) struct SdJwtPanel {
 fn format_bound_claim_line(c: &BoundClaim) -> String {
     let mode = if c.selective {
         if c.disclose {
-            "[SD: ✓]"
+            text("xlsx.sd-jwt.tag-disclose")
         } else {
-            "[SD: -]"
+            text("xlsx.sd-jwt.tag-hidden")
         }
     } else {
-        "[Plain]"
+        text("xlsx.sd-jwt.tag-fixed")
     };
     format!("{mode} {} = {}", c.path_str, c.value.to_json())
 }
@@ -102,6 +101,7 @@ impl SlideEditor {
             bind_path,
             oid4vp_request,
             include_cnf: true,
+            show_advanced: false,
             bindings,
             output: Some(sd_out),
             kb_output: Some(kb_out),
@@ -231,7 +231,7 @@ impl SlideEditor {
             return;
         };
 
-        // If `bind_path` is left empty and there is a label in the cell to the left, infer from it!
+        // If `bind_path` is left empty and there is a label in the cell to the left, infer from it.
         if raw_path.is_empty() && range.first_column > 0 {
             if let Some((_, sheet)) = self.current_sheet()
                 && let Some(left_cell) = sheet.cell(range.first_row, range.first_column - 1)
@@ -321,11 +321,26 @@ impl SlideEditor {
     pub fn sd_jwt_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.sheet_state()?.panels.sd_jwt.as_ref()?;
         let include_cnf = p.include_cnf;
-        let claims: Vec<(String, bool, String)> = p
+        let show_advanced = p.show_advanced;
+        let total_claims = p.bindings.claims.len();
+        let disclosed_count = p
             .bindings
             .claims
             .iter()
-            .map(|c| (c.path_str.clone(), c.selective, format_bound_claim_line(c)))
+            .filter(|c| !c.selective || c.disclose)
+            .count();
+        let claims: Vec<(String, bool, bool, String)> = p
+            .bindings
+            .claims
+            .iter()
+            .map(|c| {
+                (
+                    c.path_str.clone(),
+                    c.selective,
+                    c.disclose,
+                    format_bound_claim_line(c),
+                )
+            })
             .collect();
         let presentation_token = p
             .output
@@ -341,6 +356,11 @@ impl SlideEditor {
             .output
             .as_ref()
             .map(|o| o.payload_json.clone())
+            .unwrap_or_default();
+        let disclosed_json_pretty = p
+            .output
+            .as_ref()
+            .map(|o| o.disclosed_claims.to_json_pretty())
             .unwrap_or_default();
         let vp_token = p
             .kb_output
@@ -376,7 +396,8 @@ impl SlideEditor {
             .px(px(16.))
             .py(px(8.))
             .p_0()
-            .child(div().text_sm().child(text("xlsx.sd-jwt.templates")))
+            // Step 1: Template scaffolding
+            .child(div().text_sm().child(text("xlsx.sd-jwt.step1")))
             .child(
                 h_flex()
                     .gap_2()
@@ -397,216 +418,259 @@ impl SlideEditor {
                                 this.apply_sd_jwt_template(SdJwtTemplateKind::Iso18013Mdl, cx)
                             })),
                     ),
-            )
-            .child(div().text_sm().child(text("xlsx.sd-jwt.bind-selection")))
-            .child(mark(
-                "bind_path",
-                crate::shell::chrome::text_field(&p.bind_path)
-                    .full_width()
-                    .into_any_element(),
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(
-                        crate::shell::chrome::action_button("sd-jwt-bind-sd")
-                            .small()
-                            .label(text("xlsx.sd-jwt.bind-sd"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.bind_selection_to_sd_jwt(true, cx)
-                            })),
-                    )
-                    .child(
-                        crate::shell::chrome::action_button("sd-jwt-bind-claim")
-                            .small()
-                            .label(text("xlsx.sd-jwt.bind-claim"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.bind_selection_to_sd_jwt(false, cx)
-                            })),
-                    ),
-            )
-            .child(div().text_sm().child(text("xlsx.sd-jwt.iss")))
-            .child(mark(
-                "iss",
-                crate::shell::chrome::text_field(&p.iss)
-                    .full_width()
-                    .into_any_element(),
-            ))
-            .child(div().text_sm().child(text("xlsx.sd-jwt.vct")))
-            .child(mark(
-                "vct",
-                crate::shell::chrome::text_field(&p.vct)
-                    .full_width()
-                    .into_any_element(),
-            ))
-            .child(div().text_sm().child(text("xlsx.sd-jwt.issuer-jwk")))
-            .child(mark(
-                "issuer_jwk",
-                crate::shell::chrome::text_field(&p.issuer_jwk)
-                    .full_width()
-                    .into_any_element(),
-            ))
-            .child(mark(
-                "include_cnf",
-                {
-                    let btn = crate::shell::chrome::action_button("sd-jwt-include-cnf")
-                        .small()
-                        .label(text("xlsx.sd-jwt.include-cnf"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
-                                panel.include_cnf = !panel.include_cnf;
-                            }
-                            this.regenerate_sd_jwt(cx);
-                        }));
-                    if include_cnf { btn.primary() } else { btn }.into_any_element()
-                },
-            ))
-            .child(div().text_sm().child(text("xlsx.sd-jwt.oid4vp-request")))
-            .child(mark(
-                "oid4vp_request",
-                crate::shell::chrome::text_field(&p.oid4vp_request)
-                    .full_width()
-                    .into_any_element(),
-            ))
-            .child(
-                crate::shell::chrome::action_button("sd-jwt-apply-oid4vp")
-                    .small()
-                    .label(text("xlsx.sd-jwt.apply-oid4vp"))
-                    .on_click(cx.listener(|this, _, _, cx| this.apply_oid4vp_request(cx))),
-            )
-            .child(div().text_sm().child(text("xlsx.sd-jwt.claims-summary")));
+            );
+
+        // Step 2: Interactive disclosure list
+        body = body.child(div().text_sm().child(text("xlsx.sd-jwt.step2")));
 
         if claims.is_empty() {
             body = body.child(
                 div()
                     .text_xs()
                     .text_color(rgb(0x666666))
-                    .child(text("xlsx.sd-jwt.no-claims")),
+                    .child(text("xlsx.sd-jwt.empty-guide")),
             );
         } else {
-            let mut list = v_flex().gap_1();
-            for (idx, (path_str, selective, line)) in claims.into_iter().enumerate() {
-                if selective {
-                    let btn_id = SharedString::from(format!("sd-jwt-claim-toggle-{idx}"));
-                    list = list.child(
-                        crate::shell::chrome::action_button(btn_id)
-                            .small()
-                            .label(SharedString::from(line))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_sd_jwt_claim_disclose(&path_str, cx);
-                            })),
-                    );
-                } else {
-                    list = list.child(div().text_xs().child(SharedString::from(line)));
-                }
-            }
-            body = body.child(list);
-        }
-
-        if !payload_json.is_empty() {
-            let preview = if presentation_token.len() > 180 {
-                format!("{}…", &presentation_token[..180])
-            } else {
-                presentation_token.clone()
-            };
+            let disclosed_str = disclosed_count.to_string();
+            let total_str = total_claims.to_string();
+            let summary_line = tr_format(
+                "xlsx.sd-jwt.disclosed-count",
+                &[("disclosed", &disclosed_str), ("total", &total_str)],
+            );
             body = body.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x333333))
-                    .child(SharedString::from(preview)),
+                    .text_color(rgb(0x2E7D32))
+                    .child(SharedString::from(summary_line)),
+            );
+
+            let mut list = v_flex().gap_1();
+            for (idx, (path_str, selective, disclose, line)) in claims.into_iter().enumerate() {
+                if selective {
+                    let btn_id = SharedString::from(format!("sd-jwt-claim-toggle-{idx}"));
+                    let btn = crate::shell::chrome::action_button(btn_id)
+                        .small()
+                        .label(SharedString::from(line))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_sd_jwt_claim_disclose(&path_str, cx);
+                        }));
+                    list = list.child(if disclose { btn.primary() } else { btn });
+                } else {
+                    list = list.child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x555555))
+                            .child(SharedString::from(line)),
+                    );
+                }
+            }
+            body = body.child(list);
+
+            // Step 3: Export & human-readable JSON preview
+            body = body
+                .child(div().text_sm().child(text("xlsx.sd-jwt.step3")))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x555555))
+                        .child(text("xlsx.sd-jwt.disclosed-preview")),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x333333))
+                        .child(SharedString::from(disclosed_json_pretty)),
+                );
+
+            let pres_copy = presentation_token.clone();
+            body = body.child(
+                crate::shell::chrome::action_button("sd-jwt-copy-presentation")
+                    .primary()
+                    .label(text("xlsx.sd-jwt.copy-sd-jwt"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.regenerate_sd_jwt(cx);
+                        let token = this
+                            .sheet_state()
+                            .and_then(|s| s.panels.sd_jwt.as_ref())
+                            .and_then(|p| p.output.as_ref())
+                            .map(|o| o.sd_jwt_presentation.clone())
+                            .unwrap_or_else(|| pres_copy.clone());
+                        cx.write_to_clipboard(ClipboardItem::new_string(token));
+                        if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                            panel.message = text("xlsx.sd-jwt.copied").to_string();
+                            panel.is_error = false;
+                        }
+                        cx.notify();
+                    })),
             );
         }
 
-        let pres_copy = presentation_token.clone();
-        let full_copy = full_token.clone();
-        let payload_copy = payload_json.clone();
-        let vp_copy = vp_token.clone();
+        // Collapsible Advanced & OID4VP section
         body = body.child(
-            h_flex()
-                .gap_2()
-                .flex_wrap()
-                .child(
-                    crate::shell::chrome::action_button("sd-jwt-copy-presentation")
-                        .small()
-                        .label(text("xlsx.sd-jwt.copy-presentation"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.regenerate_sd_jwt(cx);
-                            let token = this
-                                .sheet_state()
-                                .and_then(|s| s.panels.sd_jwt.as_ref())
-                                .and_then(|p| p.output.as_ref())
-                                .map(|o| o.sd_jwt_presentation.clone())
-                                .unwrap_or_else(|| pres_copy.clone());
-                            cx.write_to_clipboard(ClipboardItem::new_string(token));
-                            if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
-                                panel.message = text("xlsx.sd-jwt.copied").to_string();
-                                panel.is_error = false;
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    crate::shell::chrome::action_button("sd-jwt-copy-vp-token")
-                        .small()
-                        .label(text("xlsx.sd-jwt.copy-vp-token"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.regenerate_sd_jwt(cx);
-                            let token = this
-                                .sheet_state()
-                                .and_then(|s| s.panels.sd_jwt.as_ref())
-                                .and_then(|p| p.kb_output.as_ref())
-                                .map(|k| k.vp_token.clone())
-                                .unwrap_or_else(|| vp_copy.clone());
-                            cx.write_to_clipboard(ClipboardItem::new_string(token));
-                            if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
-                                panel.message = text("xlsx.sd-jwt.copied").to_string();
-                                panel.is_error = false;
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    crate::shell::chrome::action_button("sd-jwt-copy-all")
-                        .small()
-                        .label(text("xlsx.sd-jwt.copy-all"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.regenerate_sd_jwt(cx);
-                            let token = this
-                                .sheet_state()
-                                .and_then(|s| s.panels.sd_jwt.as_ref())
-                                .and_then(|p| p.output.as_ref())
-                                .map(|o| o.sd_jwt_all.clone())
-                                .unwrap_or_else(|| full_copy.clone());
-                            cx.write_to_clipboard(ClipboardItem::new_string(token));
-                            if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
-                                panel.message = text("xlsx.sd-jwt.copied").to_string();
-                                panel.is_error = false;
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    crate::shell::chrome::action_button("sd-jwt-copy-payload")
-                        .small()
-                        .label(text("xlsx.sd-jwt.copy-payload"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.regenerate_sd_jwt(cx);
-                            let payload = this
-                                .sheet_state()
-                                .and_then(|s| s.panels.sd_jwt.as_ref())
-                                .and_then(|p| p.output.as_ref())
-                                .map(|o| o.payload_json.clone())
-                                .unwrap_or_else(|| payload_copy.clone());
-                            cx.write_to_clipboard(ClipboardItem::new_string(payload));
-                            if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
-                                panel.message = text("xlsx.sd-jwt.copied").to_string();
-                                panel.is_error = false;
-                            }
-                            cx.notify();
-                        })),
-                ),
+            crate::shell::chrome::action_button("sd-jwt-toggle-advanced")
+                .small()
+                .label(text(if show_advanced {
+                    "xlsx.sd-jwt.advanced-hide"
+                } else {
+                    "xlsx.sd-jwt.advanced-show"
+                }))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                        panel.show_advanced = !panel.show_advanced;
+                    }
+                    cx.notify();
+                })),
         );
+
+        if show_advanced {
+            let full_copy = full_token.clone();
+            let payload_copy = payload_json.clone();
+            let vp_copy = vp_token.clone();
+
+            body = body
+                .child(div().text_sm().child(text("xlsx.sd-jwt.bind-selection")))
+                .child(mark(
+                    "bind_path",
+                    crate::shell::chrome::text_field(&p.bind_path)
+                        .full_width()
+                        .into_any_element(),
+                ))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(
+                            crate::shell::chrome::action_button("sd-jwt-bind-sd")
+                                .small()
+                                .label(text("xlsx.sd-jwt.bind-sd"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.bind_selection_to_sd_jwt(true, cx)
+                                })),
+                        )
+                        .child(
+                            crate::shell::chrome::action_button("sd-jwt-bind-claim")
+                                .small()
+                                .label(text("xlsx.sd-jwt.bind-claim"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.bind_selection_to_sd_jwt(false, cx)
+                                })),
+                        ),
+                )
+                .child(div().text_sm().child(text("xlsx.sd-jwt.iss")))
+                .child(mark(
+                    "iss",
+                    crate::shell::chrome::text_field(&p.iss)
+                        .full_width()
+                        .into_any_element(),
+                ))
+                .child(div().text_sm().child(text("xlsx.sd-jwt.vct")))
+                .child(mark(
+                    "vct",
+                    crate::shell::chrome::text_field(&p.vct)
+                        .full_width()
+                        .into_any_element(),
+                ))
+                .child(div().text_sm().child(text("xlsx.sd-jwt.issuer-jwk")))
+                .child(mark(
+                    "issuer_jwk",
+                    crate::shell::chrome::text_field(&p.issuer_jwk)
+                        .full_width()
+                        .into_any_element(),
+                ))
+                .child(mark(
+                    "include_cnf",
+                    {
+                        let btn = crate::shell::chrome::action_button("sd-jwt-include-cnf")
+                            .small()
+                            .label(text("xlsx.sd-jwt.include-cnf"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                    panel.include_cnf = !panel.include_cnf;
+                                }
+                                this.regenerate_sd_jwt(cx);
+                            }));
+                        if include_cnf { btn.primary() } else { btn }.into_any_element()
+                    },
+                ))
+                .child(div().text_sm().child(text("xlsx.sd-jwt.oid4vp-request")))
+                .child(mark(
+                    "oid4vp_request",
+                    crate::shell::chrome::text_field(&p.oid4vp_request)
+                        .full_width()
+                        .into_any_element(),
+                ))
+                .child(
+                    crate::shell::chrome::action_button("sd-jwt-apply-oid4vp")
+                        .small()
+                        .label(text("xlsx.sd-jwt.apply-oid4vp"))
+                        .on_click(cx.listener(|this, _, _, cx| this.apply_oid4vp_request(cx))),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(
+                            crate::shell::chrome::action_button("sd-jwt-copy-vp-token")
+                                .small()
+                                .label(text("xlsx.sd-jwt.copy-vp-token"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.regenerate_sd_jwt(cx);
+                                    let token = this
+                                        .sheet_state()
+                                        .and_then(|s| s.panels.sd_jwt.as_ref())
+                                        .and_then(|p| p.kb_output.as_ref())
+                                        .map(|k| k.vp_token.clone())
+                                        .unwrap_or_else(|| vp_copy.clone());
+                                    cx.write_to_clipboard(ClipboardItem::new_string(token));
+                                    if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                        panel.message = text("xlsx.sd-jwt.copied").to_string();
+                                        panel.is_error = false;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            crate::shell::chrome::action_button("sd-jwt-copy-all")
+                                .small()
+                                .label(text("xlsx.sd-jwt.copy-all"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.regenerate_sd_jwt(cx);
+                                    let token = this
+                                        .sheet_state()
+                                        .and_then(|s| s.panels.sd_jwt.as_ref())
+                                        .and_then(|p| p.output.as_ref())
+                                        .map(|o| o.sd_jwt_all.clone())
+                                        .unwrap_or_else(|| full_copy.clone());
+                                    cx.write_to_clipboard(ClipboardItem::new_string(token));
+                                    if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                        panel.message = text("xlsx.sd-jwt.copied").to_string();
+                                        panel.is_error = false;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            crate::shell::chrome::action_button("sd-jwt-copy-payload")
+                                .small()
+                                .label(text("xlsx.sd-jwt.copy-payload"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.regenerate_sd_jwt(cx);
+                                    let payload = this
+                                        .sheet_state()
+                                        .and_then(|s| s.panels.sd_jwt.as_ref())
+                                        .and_then(|p| p.output.as_ref())
+                                        .map(|o| o.payload_json.clone())
+                                        .unwrap_or_else(|| payload_copy.clone());
+                                    cx.write_to_clipboard(ClipboardItem::new_string(payload));
+                                    if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                        panel.message = text("xlsx.sd-jwt.copied").to_string();
+                                        panel.is_error = false;
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                );
+        }
 
         if !message.is_empty() {
             let color = if is_error {
@@ -679,6 +743,18 @@ mod tests {
                 "xlsx.sd-jwt.bind-claim",
                 "xlsx.sd-jwt.bound-status",
                 "xlsx.sd-jwt.bind-error",
+                "xlsx.sd-jwt.step1",
+                "xlsx.sd-jwt.step2",
+                "xlsx.sd-jwt.step3",
+                "xlsx.sd-jwt.empty-guide",
+                "xlsx.sd-jwt.disclosed-count",
+                "xlsx.sd-jwt.disclosed-preview",
+                "xlsx.sd-jwt.copy-sd-jwt",
+                "xlsx.sd-jwt.advanced-show",
+                "xlsx.sd-jwt.advanced-hide",
+                "xlsx.sd-jwt.tag-disclose",
+                "xlsx.sd-jwt.tag-hidden",
+                "xlsx.sd-jwt.tag-fixed",
             ] {
                 assert!(
                     table.lines().any(|l| l.split('\t').next() == Some(id)),
