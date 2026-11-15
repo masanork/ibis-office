@@ -113,7 +113,7 @@ impl SlideEditor {
                 }
             }))
             .children(left_texts)
-            .child(div().flex_1().min_w_0().overflow_hidden().child(hint))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(hint))
             .child(
                 h_flex()
                     .relative()

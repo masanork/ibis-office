@@ -931,7 +931,7 @@ shell.menu-search.history	History
 shell.menu-search.commands	Commands
 file.modify-locked-no-overwrite	This file needs its password to modify, so it cannot be overwritten. Use Save As
 start.update	Update ibisOffice
-jtd.read-only-notice	Ichitaro: Read-only preview with limited vertical text, ruby and tables. Table borders are approximate; formatting and images are omitted.
+jtd.read-only-notice	Ichitaro (read-only preview)
 jtd.gallery-heading	Some unplaced embedded images (original pages, position, size, and order are not reproduced; rendering is approximate).
 jtd.gallery-item	Embedded item {index}
 jtd.gallery-count	Showing {displayed} of {candidates} inspected image candidates. Other embedded content may not be included.
@@ -948,8 +948,8 @@ jtd.show-images	Show Ichitaro embedded images
 jtd.show-body	Return to Ichitaro body preview
 jtd.gallery-loading	Loading embedded images…
 jtd.no-embedded-images	No displayable embedded images were found. The body preview is unchanged.
-jtd.omitted-sheets	 {count} additional sheet(s) are not displayed or converted.
-jtd.omitted-objects	 {count} embedded-object storage(s) are not displayed or converted.
+jtd.omitted-sheets	 {count} additional sheet(s) omitted.
+jtd.omitted-objects	 {count} embedded-object storage(s) omitted.
 jtd.read-only	Ichitaro documents are read-only
 jtd.edit-as-docx	Convert to Word and edit
 jtd.editable-notice	Converted to Word. Unsupported formatting, images and some table lines are omitted. Save separately from the original Ichitaro file.
