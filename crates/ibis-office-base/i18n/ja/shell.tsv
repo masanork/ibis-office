@@ -1247,3 +1247,4 @@ file.signature-inspect.pss-match	一致（RSA-PSS SHA-256）
 file.signature-inspect.pss-differs	不一致（RSA-PSS SHA-256）
 file.signature-inspect.ecdsa384-match	一致（ECDSA P-384 SHA-384）
 file.signature-inspect.ecdsa384-differs	不一致（ECDSA P-384 SHA-384）
+file.signature-inspect.inventory	マニフェストの一覧: パッケージ内 {entries} 件中、文字どおりの参照がない項目 {unlisted} 件、名前が曖昧な項目 {ambiguous} 件、解釈できない参照 URI {unresolved} 件。管理情報と関係情報を含み、署名範囲や署名対象外かどうかの判定ではありません。

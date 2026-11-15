@@ -437,3 +437,21 @@ fn p384_document_chain_and_crl_are_reported_without_trust() {
     assert!(text.contains("CRL applicability and issuer trust: NOT EVALUATED"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn manifest_inventory_reports_unlisted_parts_without_claiming_coverage() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures/synthetic-signed.docx");
+    let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+    package.set_bytes("word/added.xml", b"added".to_vec());
+    let path = std::env::temp_dir().join(format!("ibis-signature-inventory-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+    assert!(text.contains("7 package entries; 6 not literally listed; 0 ambiguous entry names; 0 unresolved reference URIs"));
+    assert!(text.contains("Not literally listed: \"word/added.xml\""));
+    assert!(text.contains("does NOT establish coverage or unsigned status"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}

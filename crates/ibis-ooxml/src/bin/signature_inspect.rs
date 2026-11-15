@@ -136,6 +136,11 @@ fn run() -> Result<(), String> {
                 }
             }
         }
+        let inventory = &report.manifest_inventory;
+        println!("  Manifest inventory (per signature, unauthenticated): {} package entries; {} not literally listed; {} ambiguous entry names; {} unresolved reference URIs.", inventory.entries, inventory.unlisted, inventory.ambiguous_entries, inventory.unresolved_references);
+        println!("  Inventory includes metadata and relationship parts; listing or absence does NOT establish coverage or unsigned status.");
+        for name in &inventory.unlisted_examples { println!("    Not literally listed: {name:?}"); }
+        if inventory.examples_truncated { println!("    Some names or entries omitted from inventory examples."); }
         if report.manifest.is_empty() { println!("  No manifest references found; coverage is not established."); }
         for item in report.manifest {
             let digest = match item.digest { ManifestDigest::LegacySha1 { matches: true } => "matches (weak legacy SHA-1)", ManifestDigest::LegacySha1 { matches: false } => "differs (weak legacy SHA-1)", ManifestDigest::Matches => "matches", ManifestDigest::Differs => "differs", ManifestDigest::Unsupported => "not checked (unsupported)", ManifestDigest::MissingPart => "part missing" };

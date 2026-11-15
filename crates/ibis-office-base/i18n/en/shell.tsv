@@ -1249,3 +1249,4 @@ file.signature-inspect.pss-match	matches (RSA-PSS SHA-256)
 file.signature-inspect.pss-differs	differs (RSA-PSS SHA-256)
 file.signature-inspect.ecdsa384-match	matches (ECDSA P-384 SHA-384)
 file.signature-inspect.ecdsa384-differs	differs (ECDSA P-384 SHA-384)
+file.signature-inspect.inventory	Manifest inventory: {entries} package entries; {unlisted} not literally listed, {ambiguous} entry names ambiguous, {unresolved} reference URIs unresolved. Includes metadata and relationships; this does not establish coverage or whether a part is unsigned.

@@ -60,6 +60,20 @@ pub enum XadesIssuerSerial {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ContentTypeCheck { Matches, Differs, Missing, Unsupported }
 
+/// Literal current package-entry inventory relative to one manifest. This does not
+/// establish coverage: transformations, relationships, other references,
+/// signatures and OPC metadata require separate interpretation.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ManifestInventory {
+    pub entries: usize,
+    pub unlisted: usize,
+    pub ambiguous_entries: usize,
+    pub unresolved_references: usize,
+    /// At most 16 examples; names longer than 200 characters are shortened.
+    pub unlisted_examples: Vec<String>,
+    pub examples_truncated: bool,
+}
+
 /// Individual observations, deliberately without an overall valid verdict.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SignatureInspection {
@@ -69,6 +83,7 @@ pub struct SignatureInspection {
     /// Additional SignedInfo reference observations, not authenticated results.
     pub additional_signed_info_references: Vec<AdditionalReference>,
     pub manifest: Vec<ManifestReference>,
+    pub manifest_inventory: ManifestInventory,
     /// Certificate path, revocation, timestamps, and complete reference coverage
     /// are not evaluated by this inspection.
     pub trust: TrustCheck,
@@ -427,16 +442,54 @@ pub fn inspect_signatures(package: &Package) -> Result<Vec<SignatureInspection>,
             PackageObjectBinding::Declared { object_id } => object_id,
             PackageObjectBinding::Unsupported => return Err(Error::new("Unsupported package object binding")),
         };
+        let manifest = inspect_manifest_digests(package, &part)?;
+        let manifest_inventory = inspect_manifest_inventory(package, &manifest);
         reports.push(SignatureInspection {
             signature_value: inspect_signature_value(package, &part)?,
             package_object: inspect_package_object_digest(package, &part)?,
             additional_signed_info_references: additional_signed_info_references(package, &part, &object_id)?,
-            manifest: inspect_manifest_digests(package, &part)?,
+            manifest,
+            manifest_inventory,
             trust: TrustCheck::NotEvaluated,
             signature_part: part,
         });
     }
     Ok(reports)
+}
+
+/// Inventory current package entry names against recognizable manifest URIs. An
+/// entry listed here may be metadata, may be covered in another way, or may
+/// not affect the displayed document; this function makes no coverage verdict.
+fn inspect_manifest_inventory(package: &Package, manifest: &[ManifestReference]) -> ManifestInventory {
+    use std::collections::HashSet;
+    fn simple_path(path: &str) -> bool {
+        !path.is_empty() && !path.starts_with('/') && !path.contains(['%', '\\', '#', ':', '?'])
+            && !path.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    }
+    let mut paths = HashSet::new();
+    let mut unresolved_references = 0usize;
+    for reference in manifest {
+        let parsed = reference.uri.strip_prefix('/').and_then(|uri| uri.split_once("?ContentType="));
+        match parsed {
+            Some((path, content_type)) if simple_path(path) && !content_type.is_empty() && !content_type.contains(['%', '&', '#', '?']) => { paths.insert(path); }
+            _ => unresolved_references += 1,
+        }
+    }
+    let mut inventory = ManifestInventory { entries: 0, unlisted: 0, ambiguous_entries: 0, unresolved_references, unlisted_examples: Vec::new(), examples_truncated: false };
+    for name in package.names().filter(|name| !name.ends_with('/')) {
+        inventory.entries += 1;
+        if !simple_path(name) { inventory.ambiguous_entries += 1; continue; }
+        if !paths.contains(name) {
+            inventory.unlisted += 1;
+            if inventory.unlisted_examples.len() < 16 {
+                let mut chars = name.chars();
+                let mut example: String = chars.by_ref().take(200).collect();
+                if chars.next().is_some() { example.push('…'); inventory.examples_truncated = true; }
+                inventory.unlisted_examples.push(example);
+            } else { inventory.examples_truncated = true; }
+        }
+    }
+    inventory
 }
 
 /// Compare a bounded subset of additional references: direct ds:Object nodes
@@ -1405,6 +1458,43 @@ mod tests {
         invalid_crl.signature_algorithm.parameters = Some(Any::null());
         invalid_crl.tbs_cert_list.signature.parameters = Some(Any::null());
         assert_eq!(inspect_crl(&invalid_crl.to_der().unwrap(), leaf, ca, 0).unwrap().signature, CertificateSignature::Unsupported);
+    }
+
+    #[test]
+    fn manifest_inventory_is_literal_bounded_and_not_a_coverage_verdict() {
+        let bytes = include_bytes!("../tests/fixtures/signatures/synthetic-signed.docx");
+        let mut pkg = Package::open(bytes.to_vec()).unwrap();
+        let report = inspect_signatures(&pkg).unwrap();
+        assert_eq!(report.len(), 1);
+        let original = &report[0].manifest_inventory;
+        assert_eq!(original.entries, 6);
+        assert_eq!(original.unlisted, 5);
+        assert_eq!(original.ambiguous_entries, 0);
+        assert_eq!(original.unresolved_references, 0);
+        assert!(!original.unlisted_examples.iter().any(|name| name == "word/document.xml"));
+        pkg.set_bytes("word/added.xml", b"changed".to_vec());
+        pkg.set_bytes("word/ambiguous%20name.xml", b"data".to_vec());
+        pkg.set_bytes("folder/", b"".to_vec());
+        let report = inspect_signatures(&pkg).unwrap();
+        assert_eq!(report[0].signature_value, SignatureValueCheck::MatchesUntrustedCertificate);
+        assert_eq!(report[0].manifest_inventory.entries, 8);
+        assert_eq!(report[0].manifest_inventory.unlisted, 6);
+        assert_eq!(report[0].manifest_inventory.ambiguous_entries, 1);
+        assert!(report[0].manifest_inventory.unlisted_examples.iter().any(|name| name == "word/added.xml"));
+        let unsupported = [ManifestReference { uri: "/word/added.xml?ContentType=application/xml".into(), digest: ManifestDigest::Unsupported, content_type: ContentTypeCheck::Unsupported }, ManifestReference { uri: "/word/ambiguous%20name.xml?ContentType=application/xml".into(), digest: ManifestDigest::Unsupported, content_type: ContentTypeCheck::Unsupported }];
+        let inventory = inspect_manifest_inventory(&pkg, &unsupported);
+        assert_eq!(inventory.unresolved_references, 1);
+        assert!(!inventory.unlisted_examples.iter().any(|name| name == "word/added.xml"));
+        assert!(inventory.unlisted_examples.iter().any(|name| name == "word/document.xml"));
+        pkg.set_bytes(&format!("extra/{}", "a".repeat(250)), b"x".to_vec());
+        let inventory = inspect_manifest_inventory(&pkg, &[]);
+        assert!(inventory.examples_truncated);
+        assert!(inventory.unlisted_examples.iter().any(|name| name.ends_with('…') && name.chars().count() == 201));
+        for i in 0..25 { pkg.set_bytes(&format!("extra/{i}.xml"), b"x".to_vec()); }
+        let inventory = inspect_manifest_inventory(&pkg, &[]);
+        assert_eq!(inventory.unlisted_examples.len(), 16);
+        assert!(inventory.examples_truncated);
+        assert!(inventory.unlisted > inventory.unlisted_examples.len());
     }
 
     #[test]

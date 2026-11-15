@@ -38,6 +38,16 @@ unsupported transformations, are reported as not checked and are never fetched.
 The inspector rejects more than 256 additional references or an additional URI
 longer than 4096 bytes, and limits total object bytes processed to 16 MiB.
 
+For each signature, an inventory compares non-directory package entry names with
+literal, directly recognizable package-manifest reference paths. The CLI shows
+up to 16 shortened examples of unlisted entries; the desktop dialog shows
+counts. Percent-encoded or otherwise ambiguous paths are counted separately.
+This is not a coverage verdict: the inventory includes metadata and signature
+parts; other references or signatures may apply, and a relationship transform
+can select only some relationships from a listed entry. Listed entries are not
+necessarily fully protected, and unlisted entries are not necessarily unsigned
+or relevant to rendered content. See the [OPC signature overview](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/opc/digital-signatures-overview).
+
 **This is not signature validation.** Certificate path and trust, revocation,
 timestamps, unsupported SignedInfo references, complete document coverage, and
 the effect of later edits are not established. A matching digest or signature

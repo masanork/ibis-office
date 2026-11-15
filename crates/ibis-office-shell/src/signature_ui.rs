@@ -72,6 +72,11 @@ fn format_report(reports: &[SignatureInspection]) -> String {
         let matching = matching.to_string(); let legacy = legacy.to_string(); let legacy_differing = legacy_differing.to_string(); let differing = differing.to_string(); let unknown = unknown.to_string();
         message.push_str("\n\n");
         message.push_str(&crate::i18n::format("file.signature-inspect.entry", &[("number", &number), ("value", &value), ("object", &object), ("matching", &matching), ("legacy", &legacy), ("legacy_differing", &legacy_differing), ("differing", &differing), ("unknown", &unknown)]));
+        let inventory = &report.manifest_inventory;
+        let entries = inventory.entries.to_string(); let unlisted = inventory.unlisted.to_string();
+        let ambiguous = inventory.ambiguous_entries.to_string(); let unresolved = inventory.unresolved_references.to_string();
+        message.push_str("\n");
+        message.push_str(&crate::i18n::format("file.signature-inspect.inventory", &[("entries", &entries), ("unlisted", &unlisted), ("ambiguous", &ambiguous), ("unresolved", &unresolved)]));
         if !report.additional_signed_info_references.is_empty() {
             let mut matching = 0usize;
             let mut legacy = 0usize;
