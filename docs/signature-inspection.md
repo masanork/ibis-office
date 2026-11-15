@@ -9,8 +9,8 @@ cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx
 It accepts a DOCX, XLSX, or PPTX package up to 128 MiB. It reports the
 signature-value comparison against an embedded **untrusted** certificate, the
 package-object digest, and the manifest reference digest and content-type
-comparisons. Signature-value comparisons support RSA-SHA256, ECDSA P-256 with
-SHA-256, and weak legacy RSA-SHA1. ECDSA uses the XML Signature fixed-width
+comparisons. Signature-value comparisons support RSA with SHA-256/384/512, ECDSA P-256
+with SHA-256, and weak legacy RSA-SHA1. ECDSA uses the XML Signature fixed-width
 `r || s` encoding; other curves and algorithms are unsupported. These checks
 use an untrusted embedded certificate and do not validate certificate chains.
 Unknown algorithms and transformations are reported as unsupported.
@@ -66,7 +66,7 @@ cargo run --locked -p ibis-ooxml --bin ibis-signature-inspect -- document.docx \
 and `--intermediate` can be repeated and enumerate bounded candidate chains.
 These candidates use exact ASN.1 name matching and are **not validated**;
 signature mismatches may appear among them. Individual certificate and CRL
-signature comparisons support RSA-SHA256 and ECDSA P-256/SHA-256, with
+signature comparisons support RSA with SHA-256/384/512 and ECDSA P-256/SHA-256, with
 DER-encoded ECDSA signatures. Other algorithms and curves are not checked. A zero-candidate result does not
 establish that no path exists. DER inputs are supplied explicitly; the tool
 does not use the system trust store.

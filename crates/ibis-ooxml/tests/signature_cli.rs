@@ -292,3 +292,37 @@ fn xades_issuer_serial_exact_and_mismatch_are_not_trust_verdicts() {
     assert!(text.contains("Additional SignedInfo reference \"#props\": digest differs"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn rsa_sha384_and_sha512_signature_and_crl_are_reported_without_trust() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    for bits in [384, 512] {
+        let fixture = fixtures.join(format!("rsa-sha{bits}-signed.docx"));
+        let output = run(&fixture);
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+        assert!(text.contains("Certificate trust: NOT EVALUATED"));
+        let mut package = Package::open(std::fs::read(fixture).unwrap()).unwrap();
+        let part = "_xmlsignatures/sig1.xml";
+        let old = ibis_ooxml::signatures::extract_single_embedded_certificate(&package, part).unwrap();
+        let leaf = std::fs::read(fixtures.join(format!("rsa-sha{bits}-leaf.der"))).unwrap();
+        let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+        let changed = xml.replace(&ibis_ooxml::base64::encode(&old), &ibis_ooxml::base64::encode(&leaf));
+        assert_ne!(xml, changed);
+        package.set_bytes(part, changed.into_bytes());
+        let path = std::env::temp_dir().join(format!("ibis-rsa-sha{bits}-{}.docx", std::process::id()));
+        std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+            .args(["--at", "0", "--anchor"]).arg(fixtures.join("rsa-sha2-ca.der"))
+            .arg("--crl").arg(fixtures.join(format!("rsa-sha{bits}.crl.der")))
+            .arg("--crl-issuer").arg(fixtures.join("rsa-sha2-ca.der")).output().unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("Link 1: signature Matches, CA Some(true), keyCertSign Some(true)"));
+        assert!(text.contains("Signature Matches; issuer name exact true; certificate issuer name exact true; cRLSign Some(true)"));
+        assert!(text.contains("CRL applicability and issuer trust: NOT EVALUATED"));
+        assert!(text.contains("Certificate trust: NOT EVALUATED"));
+    }
+}

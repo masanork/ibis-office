@@ -57,3 +57,8 @@ and both CRL signatures against `ec-ca.der`; all private keys were discarded.
 with an independently encoded IssuerSerialV2. `xades-wrong-issuer.der`,
 `xades-wrong-serial.der` and `xades-multiple-names.der` exercise the diagnostic
 with nonmatching and unsupported inputs. The signing key was discarded.
+
+`rsa-sha2-ca.der`, `rsa-sha384-leaf.der`, `rsa-sha512-leaf.der`, the
+corresponding CRLs, and `rsa-sha384-signed.docx` / `rsa-sha512-signed.docx`
+are synthetic OpenSSL-signed fixtures. OpenSSL verified each leaf, CRL, and
+SignedInfo signature; the private keys were discarded.
