@@ -120,3 +120,9 @@ Python cryptography with a synthetic RSA-2048 key, which was discarded. Both
 CRLs have valid signatures independently checked with LibreSSL, but only the
 first CRL's authority key identifier matches the issuer's subject key
 identifier. These identifiers and signatures do not establish trust.
+
+`scope-issuer.der` and `scope-delta.crl.der` are synthetic RSA-2048 test data
+generated with Python cryptography; the private key was discarded. The CRL
+contains a delta indicator and an issuing distribution point with a user-only,
+reason-limited, indirect scope and an `.invalid` URI. LibreSSL verified the
+signature and displayed the extensions. No base CRL is supplied or fetched.

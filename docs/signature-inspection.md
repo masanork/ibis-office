@@ -154,6 +154,11 @@ The CRL authority key identifier and supplied issuer's subject key identifier
 are reported as untrusted extension observations, with literal key identifier
 comparison only. Authority certificate issuer/serial fields are not compared;
 identifier equality does not establish authorization, path validity or trust.
+Delta CRL indicator and issuing distribution point extensions are decoded as
+untrusted scope claims, including criticality and malformed DER. Their
+presence remains unsupported for revocation decisions: base and delta CRLs
+are not combined, and distribution point names, certificate types and reason
+coverage are not matched against the target. No locations are fetched.
 
 To inspect a caller-supplied OCSP response, provide an explicit time, the
 certificate issuer and the response signer certificate. `--ocsp` can be repeated:

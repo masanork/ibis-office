@@ -77,6 +77,9 @@ fn supplied_crl_is_reported_without_a_revocation_verdict() {
         .arg("--crl-issuer").arg(fixtures.join("crl-issuer.der")).output().unwrap();
     let incomplete = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
         .arg("--crl").arg(fixtures.join("revoked.crl.der")).output().unwrap();
+    let scoped = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .args(["--at", "1796083200", "--crl"]).arg(fixtures.join("scope-delta.crl.der"))
+        .arg("--crl-issuer").arg(fixtures.join("scope-issuer.der")).output().unwrap();
     std::fs::remove_file(path).unwrap();
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
@@ -85,10 +88,17 @@ fn supplied_crl_is_reported_without_a_revocation_verdict() {
     assert!(text.contains("Time NotYetIssued"));
     assert!(text.contains("CRL number NonCritical"));
     assert!(text.contains("CRL authority key observations (NOT issuer authorization)"));
+    assert!(text.contains("CRL scope extension claims (NOT applied)"));
     assert!(text.contains("listed revocation time Some("));
     assert!(text.contains("CRL applicability and issuer trust: NOT EVALUATED"));
     assert!(text.contains("Signature value: does not match"));
     assert_eq!(incomplete.status.code(), Some(2));
+    assert!(scoped.status.success());
+    let scoped = String::from_utf8(scoped.stdout).unwrap();
+    assert!(scoped.contains("Scope UnsupportedExtensions"));
+    assert!(scoped.contains("delta_indicator: Decoded { critical: true"));
+    assert!(scoped.contains("reasons_present: true, indirect_crl: true"));
+    assert!(scoped.contains("CRL applicability and issuer trust: NOT EVALUATED"));
 }
 
 #[test]
