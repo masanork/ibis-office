@@ -614,6 +614,53 @@ fn ds_children<'a, 'input>(parent: ua_cryptography_xml_c14n::roxmltree::Node<'a,
     parent.children().filter(|n| n.is_element() && n.tag_name().namespace() == Some(DS) && n.tag_name().name() == name).collect()
 }
 
+/// Accept only the RFC 9231 SHA-256 / MGF1-SHA256 / salt 32 / trailer 1
+/// subset, including its XML defaults. Unknown or ambiguous markup is refused.
+fn supported_parameterized_xml_pss(method: ua_cryptography_xml_c14n::roxmltree::Node<'_, '_>) -> bool {
+    const PSS: &str = "http://www.w3.org/2007/05/xmldsig-more#";
+    const SHA256_URI: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
+    fn whitespace_or_element(node: ua_cryptography_xml_c14n::roxmltree::Node<'_, '_>) -> bool {
+        node.children().all(|n| n.is_element() || (n.is_text() && n.text().is_none_or(|t| t.trim_matches([' ', '\t', '\n', '\r']).is_empty())))
+    }
+    fn attrs_only_algorithm(node: ua_cryptography_xml_c14n::roxmltree::Node<'_, '_>) -> bool {
+        node.attributes().all(|a| a.namespace().is_none() && a.name() == "Algorithm")
+    }
+    fn digest_is_sha256(node: ua_cryptography_xml_c14n::roxmltree::Node<'_, '_>) -> bool {
+        node.tag_name().namespace() == Some(DS) && node.tag_name().name() == "DigestMethod"
+            && attrs_only_algorithm(node) && node.attribute("Algorithm") == Some(SHA256_URI)
+            && !node.children().any(|n| n.is_element()) && whitespace_or_element(node)
+    }
+    if !attrs_only_algorithm(method) || !whitespace_or_element(method) { return false; }
+    let nodes: Vec<_> = method.children().filter(|n| n.is_element()).collect();
+    if nodes.is_empty() { return true; }
+    let [params] = nodes.as_slice() else { return false };
+    if params.tag_name().namespace() != Some(PSS) || params.tag_name().name() != "RSAPSSParams"
+        || params.attributes().len() != 0 || !whitespace_or_element(*params) { return false; }
+    let mut previous = 0u8;
+    for field in params.children().filter(|n| n.is_element()) {
+        let position = match (field.tag_name().namespace(), field.tag_name().name()) {
+            (Some(DS), "DigestMethod") => { if !digest_is_sha256(field) { return false; } 1 }
+            (Some(PSS), "MaskGenerationFunction") => {
+                if !attrs_only_algorithm(field) || field.attribute("Algorithm").is_some_and(|a| a != "http://www.w3.org/2007/05/xmldsig-more#MGF1") || !whitespace_or_element(field) { return false; }
+                let children: Vec<_> = field.children().filter(|n| n.is_element()).collect();
+                if children.len() > 1 || children.first().is_some_and(|n| !digest_is_sha256(*n)) { return false; }
+                2
+            }
+            (Some(PSS), "SaltLength") | (Some(PSS), "TrailerField") => {
+                if field.attributes().len() != 0 || field.children().any(|n| !n.is_text()) { return false; }
+                let value: String = field.children().filter_map(|n| n.text()).collect();
+                let value = value.trim_matches([' ', '\t', '\n', '\r']);
+                if field.tag_name().name() == "SaltLength" { if value != "32" { return false; } 3 }
+                else { if value != "1" { return false; } 4 }
+            }
+            _ => return false,
+        };
+        if position <= previous { return false; }
+        previous = position;
+    }
+    true
+}
+
 /// Compare RSA PKCS#1 SHA-256/384/512, RSA-PSS SHA-256, legacy RSA-SHA1, or ECDSA-P256-SHA256 over SignedInfo against exactly one
 /// embedded certificate. The certificate is not chain- or revocation-checked.
 pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Result<SignatureValueCheck, Error> {
@@ -634,7 +681,12 @@ pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Resul
     let c14n = ds_children(infos[0], "CanonicalizationMethod");
     let method = ds_children(infos[0], "SignatureMethod");
     if c14n.len() != 1 || method.len() != 1 || c14n[0].attribute("Algorithm") != Some(C14N)
-        || c14n[0].children().any(|n| n.is_element()) || method[0].children().any(|n| n.is_element()) {
+        || c14n[0].children().any(|n| n.is_element()) {
+        return Ok(SignatureValueCheck::Unsupported);
+    }
+    if method[0].attribute("Algorithm") == Some("http://www.w3.org/2007/05/xmldsig-more#rsa-pss") {
+        if !supported_parameterized_xml_pss(method[0]) { return Ok(SignatureValueCheck::Unsupported); }
+    } else if method[0].children().any(|n| n.is_element()) {
         return Ok(SignatureValueCheck::Unsupported);
     }
     let (legacy, ecdsa, pss, rsa_hash) = match method[0].attribute("Algorithm") {
@@ -643,7 +695,7 @@ pub fn inspect_signature_value(package: &Package, signature_part: &str) -> Resul
         Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha384") => (false, false, false, "sha384"),
         Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha512") => (false, false, false, "sha512"),
         Some("http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256") => (false, true, false, ""),
-        Some("http://www.w3.org/2007/05/xmldsig-more#sha256-rsa-MGF1") => (false, false, true, ""),
+        Some("http://www.w3.org/2007/05/xmldsig-more#sha256-rsa-MGF1") | Some("http://www.w3.org/2007/05/xmldsig-more#rsa-pss") => (false, false, true, ""),
         _ => return Ok(SignatureValueCheck::Unsupported),
     };
     let x509data = ds_children(keyinfos[0], "X509Data");
@@ -1189,11 +1241,46 @@ mod tests {
         pkg.set_bytes(part, xml.replace(&crate::base64::encode(&cert), &crate::base64::encode(ec_cert)).into_bytes());
         assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::Unsupported);
         pkg.set_bytes(part, xml.replace("sha256-rsa-MGF1", "rsa-pss").into_bytes());
-        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::Unsupported);
+        assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::RsaPssSha256 { matches: false });
         let with_params = xml.replace("sha256-rsa-MGF1\"/>", "sha256-rsa-MGF1\"><p:RSAPSSParams xmlns:p=\"http://www.w3.org/2007/05/xmldsig-more#\"/></ds:SignatureMethod>");
         assert_ne!(xml, with_params);
         pkg.set_bytes(part, with_params.into_bytes());
         assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::Unsupported);
+    }
+
+    #[test]
+    fn parameterized_xml_pss_accepts_only_unambiguous_supported_parameters() {
+        use ua_cryptography_xml_c14n::DocumentText;
+        let check = |body: &str| {
+            let xml = format!(r#"<ds:SignatureMethod xmlns:ds="{DS}" xmlns:p="http://www.w3.org/2007/05/xmldsig-more#" Algorithm="http://www.w3.org/2007/05/xmldsig-more#rsa-pss">{body}</ds:SignatureMethod>"#);
+            let source = DocumentText::decode(xml.as_bytes()).unwrap();
+            let doc = source.parse().unwrap();
+            supported_parameterized_xml_pss(doc.root_element())
+        };
+        let digest = r#"<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>"#;
+        assert!(check(""));
+        assert!(check("<p:RSAPSSParams/>"));
+        assert!(check("<p:RSAPSSParams><p:MaskGenerationFunction/></p:RSAPSSParams>"));
+        assert!(check(&format!(r#"<p:RSAPSSParams>{digest}<p:MaskGenerationFunction Algorithm="http://www.w3.org/2007/05/xmldsig-more#MGF1">{digest}</p:MaskGenerationFunction><p:SaltLength> 32 </p:SaltLength><p:TrailerField>1</p:TrailerField></p:RSAPSSParams>"#)));
+        for body in [
+            "<p:RSAPSSParams/><p:RSAPSSParams/>".to_string(),
+            "<p:RSAPSSParams unexpected=\"x\"/>".to_string(),
+            "<p:RSAPSSParams><p:SaltLength>16</p:SaltLength></p:RSAPSSParams>".to_string(),
+            "<p:RSAPSSParams><p:TrailerField>2</p:TrailerField></p:RSAPSSParams>".to_string(),
+            "<p:RSAPSSParams><p:SaltLength>32</p:SaltLength><p:SaltLength>32</p:SaltLength></p:RSAPSSParams>".to_string(),
+            format!("<p:RSAPSSParams><p:SaltLength>32</p:SaltLength>{digest}</p:RSAPSSParams>"),
+            "<p:RSAPSSParams><p:MaskGenerationFunction Algorithm=\"urn:unknown\"/></p:RSAPSSParams>".to_string(),
+            "<p:RSAPSSParams><p:MaskGenerationFunction><ds:DigestMethod Algorithm=\"http://www.w3.org/2001/04/xmlenc#sha512\"/></p:MaskGenerationFunction></p:RSAPSSParams>".to_string(),
+            "<p:RSAPSSParams><p:Unknown/></p:RSAPSSParams>".to_string(),
+            "<p:RSAPSSParams><p:SaltLength>32<evil/></p:SaltLength></p:RSAPSSParams>".to_string(),
+        ] { assert!(!check(&body), "{body}"); }
+        for document in [include_bytes!("../tests/fixtures/signatures/rsa-pss-param-default.docx").as_slice(), include_bytes!("../tests/fixtures/signatures/rsa-pss-param-empty.docx").as_slice(), include_bytes!("../tests/fixtures/signatures/rsa-pss-param-explicit.docx").as_slice()] {
+            let mut pkg = Package::open(document.to_vec()).unwrap(); let part = "_xmlsignatures/sig1.xml";
+            let xml = String::from_utf8(pkg.read(part).unwrap()).unwrap();
+            assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::RsaPssSha256 { matches: true });
+            pkg.set_bytes(part, xml.replace("#package", "#changed").into_bytes());
+            assert_eq!(inspect_signature_value(&pkg, part).unwrap(), SignatureValueCheck::RsaPssSha256 { matches: false });
+        }
     }
 
     #[test]

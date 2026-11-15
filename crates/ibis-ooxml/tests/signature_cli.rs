@@ -380,3 +380,29 @@ fn rsa_pss_certificate_and_crl_candidates_are_not_trust_verdicts() {
     assert!(text.contains("CRL applicability and issuer trust: NOT EVALUATED"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn parameterized_rsa_pss_is_reported_without_trust() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    for kind in ["default", "empty", "explicit"] {
+        let output = run(&fixtures.join(format!("rsa-pss-param-{kind}.docx")));
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("RSA-PSS SHA-256: matches; certificate is untrusted"));
+        assert!(text.contains("Certificate trust: NOT EVALUATED"));
+    }
+    let mut package = Package::open(std::fs::read(fixtures.join("rsa-pss-param-explicit.docx")).unwrap()).unwrap();
+    let part = "_xmlsignatures/sig1.xml";
+    let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+    let changed = xml.replace("<pss:SaltLength>32</pss:SaltLength>", "<pss:SaltLength>16</pss:SaltLength>");
+    assert_ne!(xml, changed);
+    package.set_bytes(part, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-pss-param-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Signature value: not checked (unsupported)"));
+    assert!(text.contains("Certificate trust: NOT EVALUATED"));
+}

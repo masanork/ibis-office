@@ -11,9 +11,10 @@ signature-value comparison against an embedded **untrusted** certificate, the
 package-object digest, and the manifest reference digest and content-type
 comparisons. Signature-value comparisons support RSA PKCS#1 v1.5 with SHA-256/384/512,
 RSA-PSS SHA-256 with MGF1-SHA256 and a 32-byte salt, ECDSA P-256 with
-SHA-256, and weak legacy RSA-SHA1. For RSA-PSS only the parameterless
-`sha256-rsa-MGF1` XML Signature URI is supported; parameterized XML RSA-PSS
-and restricted PSS public keys are not checked. ECDSA uses the XML Signature fixed-width
+SHA-256, and weak legacy RSA-SHA1. RSA-PSS supports the parameterless
+`sha256-rsa-MGF1` URI and the `rsa-pss` URI with the same parameters, whether
+omitted or explicitly encoded in the supported subset. Other parameter
+combinations and restricted PSS public keys are not checked. ECDSA uses the XML Signature fixed-width
 `r || s` encoding; other curves and algorithms are unsupported. These checks
 use an untrusted embedded certificate and do not validate certificate chains.
 Unknown algorithms and transformations are reported as unsupported.

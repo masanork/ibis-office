@@ -73,3 +73,7 @@ the private key was discarded.
 `.crl.der` are synthetic Python cryptography-generated RSA certificates and
 CRLs. The two CAs have the same subject and distinct keys. LibreSSL verified
 all leaf and CRL signatures independently; the keys were discarded.
+
+`rsa-pss-param-{default,empty,explicit}.docx` are synthetic RSA-PSS XML
+signatures with omitted, empty, and explicitly specified parameters. OpenSSL
+verified each SHA-256/MGF1-SHA256/32-byte-salt signature. The key was discarded.
