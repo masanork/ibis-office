@@ -8255,7 +8255,7 @@ fn paragraph_id_roundtrip_and_text_edit() {
 }
 
 #[test]
-fn paragraph_id_repairs_are_deterministic_and_package_wide() {
+fn paragraph_id_preserves_authored_values_and_repairs_invalid_values() {
     let data = para_id_docx(r#"<w:p w14:paraId="00000010"/><w:p w14:paraId="00000010"/><w:p w14:paraId="garbage!"/><w:p w14:paraId="00000005"/><w:p w14:paraId="00000004"/><w:p w14:paraId="00000000"/><w:p w14:paraId="80000000"/><w:p w14:paraId="0000010"/><w:p w14:paraId="1234abcd"/>"#);
     let save = || {
         let opened = ibis_pptx::open(data.clone()).unwrap();
@@ -8268,13 +8268,15 @@ fn paragraph_id_repairs_are_deterministic_and_package_wide() {
     };
     let ids = save();
     assert_eq!(ids, save());
-    assert_valid_para_ids(&ids);
     assert_eq!(ids[0], "00000010");
+    assert_eq!(ids[1], "00000010"); // Preserve even an authored duplicate.
     assert_eq!(ids[3], "00000005");
-    assert_eq!(ids[8], "1234ABCD");
-    for reserved in ["00000001", "00000002", "00000003", "00000004"] {
-        assert!(!ids.iter().any(|id| id == reserved));
+    assert_eq!(ids[4], "00000004"); // The same ID exists in comments.xml.
+    assert_eq!(ids[8], "1234abcd");
+    for index in [2, 5, 6, 7] {
+        assert!(!["00000001", "00000002", "00000003", "00000004", "00000005", "00000010"].contains(&ids[index].as_str()));
     }
+    assert_valid_para_ids(&[ids[2].clone(), ids[5].clone(), ids[6].clone(), ids[7].clone()]);
 }
 
 #[test]
