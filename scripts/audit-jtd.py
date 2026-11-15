@@ -168,7 +168,12 @@ def tokenize(units):
                 if any(ord(c) < 0x20 and c not in '\t\n\r' for c in value):
                     value = ''  # Preserve/count field controls; do not invent visible text.
                 selector = units[i + 4:i + 6]
-                if selector in ([0, 1], [0, 3]):
+                if selector == [1, 0x0101]:
+                    # Cached table-of-contents page number. Show printable
+                    # units only; a unit below U+0020 stays out of the text.
+                    if value and all(ord(c) >= 0x20 for c in value):
+                        text.append(value)
+                elif selector in ([0, 1], [0, 3]):
                     text.append(value)
                 elif selector == [1, 0x82]:
                     ruby.append(value)

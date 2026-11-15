@@ -87,6 +87,7 @@ fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
         highlight: Some(style.highlight),
         spacing: Some(style.spacing),
         scale: Some(style.scale),
+        tate_chu_yoko: style.tate_chu_yoko.then_some(true),
         ..Default::default()
     };
     FlowRun {
@@ -257,7 +258,12 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
             styles.defaults_run.italic = Some(defaults.italic);
         }
     }
-    let segments = table_candidates(extract_decoded(&decoded, &defaults, flow.page.line_pitch)?);
+    let segments = table_candidates(extract_decoded(
+        &decoded,
+        &defaults,
+        flow.page.line_pitch,
+        flow.page.direction.vertical(),
+    )?);
     let mut template = match flow.body.first() {
         Some(Block::Paragraph(p)) => p.clone(),
         _ => return Err(Error::new("文書の段落を作成できません")),
@@ -1325,7 +1331,7 @@ fn rule_row_lines(
 /// Decode the logical store before interpreting any text or record.
 #[cfg(test)]
 fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
-    extract_decoded(&decode::decode(bytes)?, &FlowRunStyle::default(), None)
+    extract_decoded(&decode::decode(bytes)?, &FlowRunStyle::default(), None, false)
 }
 
 /// Inspect original logical units and record ranges without applying table
@@ -1415,10 +1421,40 @@ fn append_text(
     Ok(())
 }
 
+/// Cached table-of-contents page number, selector `(1, 0x0101)`.
+/// The payload is the digits Ichitaro stored, not a recomputed page.
+/// A unit below U+0020 is dropped, as with other numeric fields.
+/// Two or three ASCII digits become 縦中横 only when the page is vertical:
+/// layout squeezes a run whenever `tate_chu_yoko` is set.
+fn append_cached_page_number(
+    document: &DecodedText,
+    text: std::ops::Range<usize>,
+    defaults: &FlowRunStyle,
+    vertical: bool,
+    out: &mut Vec<Segment>,
+) -> Result<(), Error> {
+    let units = &document.units[text.clone()];
+    if units.iter().any(|unit| *unit < 0x20) {
+        return Ok(());
+    }
+    let value = document.text(text.clone())?;
+    let upright = vertical
+        && (2..=3).contains(&value.chars().count())
+        && value.bytes().all(|byte| byte.is_ascii_digit());
+    if upright {
+        let mut style = run_style(document, text.start, defaults);
+        style.tate_chu_yoko = true;
+        out.push(Segment::StyledText(value, Box::new(style)));
+        return Ok(());
+    }
+    append_text(document, text, defaults, out)
+}
+
 fn extract_decoded(
     document: &DecodedText,
     defaults: &FlowRunStyle,
     normal_pitch: Option<i64>,
+    vertical: bool,
 ) -> Result<Vec<Segment>, Error> {
     use decode::RecordKind;
     let mut out = Vec::new();
@@ -1470,6 +1506,10 @@ fn extract_decoded(
                 }
                 append_text(document, text.clone(), defaults, &mut out)?;
             }
+            RecordKind::Inline {
+                selector: [1, 0x0101],
+                text,
+            } => append_cached_page_number(document, text.clone(), defaults, vertical, &mut out)?,
             RecordKind::Record {
                 class: 0x10,
                 payload,
@@ -2043,6 +2083,113 @@ mod tests {
         assert_eq!(decoded.diagnostics.len(), 1);
         let reopened = crate::read(&export_docx(&read(&data).unwrap()).unwrap()).unwrap();
         assert!(matches!(&reopened.flow.unwrap().body[0], Block::Paragraph(p) if p.text() == "甲"));
+    }
+
+    fn page_field(text: &str) -> Vec<u16> {
+        let mut units = vec![0x1c, 1, 7, 0, 1, 0x0101, 0x1d];
+        units.extend(text.encode_utf16());
+        units.extend([0x1e, 5, 0, 1, 0x1f]);
+        units
+    }
+
+    fn segment_text(segments: &[Segment]) -> String {
+        segments
+            .iter()
+            .map(|segment| match segment {
+                Segment::Text(text) | Segment::StyledText(text, _) => text.as_str(),
+                _ => "",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cached_toc_page_number_follows_its_heading() {
+        let mut units: Vec<u16> = "第一条".encode_utf16().collect();
+        units.extend(page_field("30"));
+        let decoded = decode::decode(&decode::fixture(&units)).unwrap();
+        assert!(decoded.diagnostics.is_empty());
+        let segments = extract(&decode::fixture(&units)).unwrap();
+        assert_eq!(segment_text(&segments), "第一条30");
+        assert!(segments.iter().all(
+            |segment| !matches!(segment, Segment::StyledText(_, style) if style.tate_chu_yoko)
+        ));
+    }
+
+    #[test]
+    fn control_valued_toc_page_number_is_omitted() {
+        for control in [5u16, 9] {
+            let units = [0x1c, 1, 7, 0, 1, 0x0101, 0x1d, control, 0x1e, 5, 0, 1, 0x1f, 0x7532];
+            let decoded = decode::decode(&decode::fixture(&units)).unwrap();
+            assert_eq!(decoded.diagnostics.len(), 1);
+            assert_eq!(decoded.diagnostics[0].message, "未解読の本文要素を保持しました");
+            assert_eq!(segment_text(&extract(&decode::fixture(&units)).unwrap()), "甲");
+        }
+    }
+
+    #[test]
+    fn vertical_toc_page_numbers_are_tate_chu_yoko_and_horizontal_ones_are_not() {
+        let mut units = Vec::new();
+        units.extend("見出し".encode_utf16());
+        units.push(0x000a);
+        for digits in ["30", "1", "122", "1234", "ab"] {
+            units.extend(page_field(digits));
+            units.push(0x000a);
+        }
+        units.pop();
+        let text = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
+        let mut view = vec![0, 1, 0, 2, 0x10, 0];
+        let record = [0x10u8, 2, 0, 4, 0, 0, 0x10, 1];
+        view.extend((record.len() as u32).to_be_bytes());
+        view.extend(record);
+        let vertical_bytes = ibis_ooxml::cfb::write(&[
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&units)),
+            ibis_ooxml::cfb::Item::stream("DocumentViewStyles", view),
+        ]);
+        let check = |data: &[u8], vertical: bool| {
+            let imported = read(data).unwrap();
+            assert_eq!(imported.flow.as_ref().unwrap().page.direction.vertical(), vertical);
+            let saved = crate::read(&export_docx(&imported).unwrap()).unwrap();
+            for doc in [&imported, &saved] {
+                let flow = doc.flow.as_ref().unwrap();
+                let paragraphs: Vec<_> = flow
+                    .body
+                    .iter()
+                    .filter_map(|block| match block {
+                        Block::Paragraph(paragraph) if !paragraph.runs.is_empty() => {
+                            Some(paragraph.text())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(paragraphs, ["見出し", "30", "1", "122", "1234", "ab"]);
+                let mut runs = Vec::new();
+                for block in &flow.body {
+                    let Block::Paragraph(paragraph) = block else { continue };
+                    for run in &paragraph.runs {
+                        let FlowRunKind::Text(text) = &run.kind else { continue };
+                        runs.push((text.clone(), run.style.tate_chu_yoko, run.format.tate_chu_yoko));
+                    }
+                }
+                let flag = |text: &str| {
+                    runs.iter()
+                        .find(|(value, _, _)| value == text)
+                        .map(|(_, style, format)| (*style, *format))
+                };
+                let upright = Some((true, Some(true)));
+                let plain = Some((false, None));
+                assert_eq!(flag("見出し"), plain);
+                assert_eq!(flag("30"), if vertical { upright } else { plain });
+                assert_eq!(flag("122"), if vertical { upright } else { plain });
+                assert_eq!(flag("1"), plain);
+                assert_eq!(flag("1234"), plain);
+                assert_eq!(flag("ab"), plain);
+            }
+        };
+        check(&text, false);
+        check(&vertical_bytes, true);
     }
 
     #[test]
