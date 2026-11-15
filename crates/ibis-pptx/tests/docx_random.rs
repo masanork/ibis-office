@@ -139,7 +139,11 @@ fn normalized(doc: &FlowDocument) -> FlowDocument {
         for b in blocks {
             *next += 1;
             match b {
-                Block::Paragraph(p) => p.id = *next,
+                Block::Paragraph(p) => {
+                    p.id = *next;
+                    // Saving gives written paragraphs an identity when they had none.
+                    p.para_id = None;
+                }
                 Block::Table(t) => {
                     t.id = *next;
                     for row in &mut t.rows {

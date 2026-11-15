@@ -79,7 +79,7 @@ impl SlideEditor {
         for (cells, p) in rows.into_iter().zip(&paragraphs) {
             let mut row = FlowRow { id: id(), ..FlowRow::default() };
             for i in 0..columns {
-                let mut para = FlowParagraph { id: id(), runs: cells.get(i).cloned().unwrap_or_default(), section: None, section_break: ibis_doc_model::SectionBreak::None, bookmarks: Vec::new(), field_start: None, field_end: false, table_style: styles.default_table.clone(), ..p.clone() };
+                let mut para = FlowParagraph { id: id(), para_id: None, runs: cells.get(i).cloned().unwrap_or_default(), section: None, section_break: ibis_doc_model::SectionBreak::None, bookmarks: Vec::new(), field_start: None, field_end: false, table_style: styles.default_table.clone(), ..p.clone() };
                 para.resolve(&styles);
                 para.normalize();
                 row.cells.push(FlowCell { id: id(), span: 1, margins: [0, 108 * 635, 0, 108 * 635], blocks: vec![Block::Paragraph(para)], ..FlowCell::default() });
@@ -114,7 +114,7 @@ impl SlideEditor {
                 template.get_or_insert_with(|| p.clone());
             }
             let Some(p) = template else { continue };
-            let mut para = FlowParagraph { id: next, runs, table_style: None, table_regions: Vec::new(), ..p };
+            let mut para = FlowParagraph { id: next, para_id: None, runs, table_style: None, table_regions: Vec::new(), ..p };
             next += 1;
             para.resolve(&styles);
             para.normalize();
@@ -146,6 +146,7 @@ impl SlideEditor {
             // 表の直前に空段落を挿入
             let mut para = FlowParagraph {
                 id: next_id,
+                para_id: None,
                 runs: Vec::new(),
                 table_style: None,
                 table_regions: Vec::new(),
@@ -168,6 +169,7 @@ impl SlideEditor {
 
             let mut between_para = FlowParagraph {
                 id: next_id,
+                para_id: None,
                 runs: Vec::new(),
                 table_style: None,
                 table_regions: Vec::new(),

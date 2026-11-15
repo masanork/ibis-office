@@ -2589,6 +2589,9 @@ pub struct FlowParagraph {
     /// Names the paragraph in the document (unique; see
     /// [`FlowDocument::new_id`]). A save finds the paragraph's element by it.
     pub id: u32,
+    /// The paragraph's `w14:paraId` when the source carried one, validated
+    /// on read. New paragraphs have none until a save assigns one.
+    pub para_id: Option<String>,
     /// A drop cap on the paragraph's initial letter (`w:framePr w:dropCap="drop|margin"`).
     pub drop_cap: Option<DropCap>,
     /// A text frame (`w:framePr` without `w:dropCap`), such as a page-number frame in a footer.
