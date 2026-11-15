@@ -59,6 +59,7 @@ mod docx;
 pub mod docx_convert;
 pub mod html_export;
 pub mod markdown;
+pub mod mermaid;
 pub(crate) mod drawing_table_style;
 pub mod geometry;
 pub mod shape_clipboard;

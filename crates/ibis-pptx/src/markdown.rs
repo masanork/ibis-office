@@ -1280,6 +1280,9 @@ fn parse_blocks(
                 "chart" => {
                     blocks.push(build_chart_block(&content, ctx)?);
                 }
+                "mermaid" => {
+                    blocks.push(build_mermaid_block(&content, ctx)?);
+                }
                 _ => {
                     blocks.push(build_code_block(&content, ctx));
                 }
@@ -2137,10 +2140,83 @@ fn build_chart_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block,
         }
     }
 
+    build_chart_block_from_spec(kind, title, size, categories, series_list, content, ctx)
+}
+
+fn build_mermaid_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block, Error> {
+    match crate::mermaid::render_mermaid(content) {
+        Some(crate::mermaid::MermaidOutput::Chart(spec)) => build_chart_block_from_spec(
+            spec.kind,
+            spec.title,
+            DEFAULT_CHART_SIZE,
+            spec.categories,
+            spec.series,
+            content,
+            ctx,
+        ),
+        Some(crate::mermaid::MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        }) => {
+            const EMU_PER_PX: i64 = 9_525;
+            let raw_w = (width_px.max(1) as i64) * EMU_PER_PX;
+            let raw_h = (height_px.max(1) as i64) * EMU_PER_PX;
+            let max_w = 6 * EMU_PER_INCH;
+            let (width, height) = if raw_w > max_w {
+                let scaled_h = (raw_h * max_w / raw_w).max(EMU_PER_PT * 10);
+                (max_w, scaled_h)
+            } else {
+                (raw_w, raw_h)
+            };
+            let media_id = ctx.fresh_media_id();
+            ctx.media.push(Media {
+                id: media_id,
+                format: MediaFormat::Svg,
+                data: bytes.into(),
+            });
+            let mut look = PictureLook::default();
+            look.alt_text.title = "__mermaid__".to_string();
+            look.alt_text.description = content.to_string();
+            let mut p = FlowParagraph {
+                id: ctx.fresh_id(),
+                style: ctx.styles.default_paragraph.clone(),
+                direct: ParaFormat {
+                    align: Some(FlowAlign::Center),
+                    before: Some(6 * EMU_PER_PT),
+                    after: Some(6 * EMU_PER_PT),
+                    ..ParaFormat::default()
+                },
+                runs: vec![FlowRun::new(
+                    FlowRunKind::Picture {
+                        media: media_id,
+                        size: EmuSize::new(width, height),
+                        look,
+                    },
+                    FlowRunStyle::default(),
+                )],
+                ..FlowParagraph::default()
+            };
+            p.resolve(&ctx.styles);
+            Ok(Block::Paragraph(p))
+        }
+        None => Ok(build_code_block(content, ctx)),
+    }
+}
+
+fn build_chart_block_from_spec(
+    kind: NewChartKind,
+    title: Option<String>,
+    size: EmuSize,
+    categories: Vec<String>,
+    series_list: Vec<(String, Vec<Option<Number>>)>,
+    raw_fallback: &str,
+    ctx: &mut ParseContext<'_>,
+) -> Result<Block, Error> {
     let shape_id = ctx.fresh_shape_id();
     let (Some(source), Some(baseline_pres)) = (ctx.source, ctx.baseline_pres) else {
         // Without a DOCX source (e.g. clipboard fragment paste), render as a fenced code fallback.
-        return Ok(build_code_block(content, ctx));
+        return Ok(build_code_block(raw_fallback, ctx));
     };
     let base_para_id = baseline_pres
         .flow
@@ -3422,6 +3498,15 @@ fn serialize_paragraph(
                     return;
                 }
             }
+            FlowRunKind::Picture { look, .. } if look.alt_text.title == "__mermaid__" => {
+                out.push_str("```mermaid\n");
+                out.push_str(&look.alt_text.description);
+                if !look.alt_text.description.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str("```\n\n");
+                return;
+            }
             _ => {}
         }
     }
@@ -4107,5 +4192,61 @@ series:
         assert!(out.contains("| **Left** | **Center** | **Right** |"));
         assert!(out.contains("| :--- | :---: | ---: |"));
         assert!(out.contains("| a | b | c |"));
+    }
+
+    #[test]
+    fn mermaid_diagrams_roundtrip_svg_and_native_charts() {
+        let md = "\
+# Mermaid
+
+```mermaid
+sequenceDiagram
+  User->>API: Request
+  API-->>User: Response
+```
+
+```mermaid
+flowchart LR
+  A[Start] --> B{Check}
+  B -->|OK| C((Done))
+```
+
+```mermaid
+pie showData
+  title Share
+  \"Chrome\" : 65
+  \"Other\" : 35
+```
+";
+        let opened = open_markdown(md.as_bytes().to_vec()).expect("open_markdown");
+        let pres = &opened.presentation;
+        let flow = pres.flow.as_ref().unwrap();
+
+        let svg_count = pres
+            .media
+            .iter()
+            .filter(|m| m.format == MediaFormat::Svg)
+            .count();
+        assert_eq!(svg_count, 2, "sequenceDiagram and flowchart should produce 2 SVG media items");
+
+        let has_native_chart = flow.body.iter().any(|b| {
+            matches!(
+                b,
+                Block::Paragraph(p)
+                    if p.runs.iter().any(|r| matches!(&r.kind, FlowRunKind::Shape(s) if matches!(s.kind, ShapeKind::Chart(_))))
+            )
+        });
+        assert!(has_native_chart, "pie diagram should produce a native Office chart");
+
+        // Verify .docx save + reread works cleanly
+        let saved = opened.source.save(pres, Default::default()).expect("save docx");
+        let reread = crate::read(&saved).expect("reread docx");
+        assert!(reread.media.iter().any(|m| m.format == MediaFormat::Svg));
+
+        // Verify Markdown export preserves mermaid source for SVG diagrams and chart YAML for native charts
+        let exported = export_markdown(flow, &pres.media);
+        assert!(exported.contains("```mermaid\nsequenceDiagram"));
+        assert!(exported.contains("```mermaid\nflowchart LR"));
+        assert!(exported.contains("```chart\ntype: pie"));
     }
 }
