@@ -15,7 +15,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let path = args.next().ok_or("usage: ibis-signature-inspect <docx|xlsx|pptx> [--at <unix-seconds>] [--anchor <der>] [--intermediate <der>] [--crl <der> --crl-issuer <der>] [--ocsp <der> --ocsp-issuer <der> --ocsp-responder <der> [--ocsp-nonce <raw-file>]]")?;
+    let path = args.next().ok_or("usage: ibis-signature-inspect <docx|xlsx|pptx> [--at <unix-seconds>] [--anchor <der>] [--intermediate <der>] [--crl <der> --crl-issuer <der>] [--ocsp <der> --ocsp-issuer <der> --ocsp-responder <der> [--ocsp-nonce <raw-file> | --ocsp-request <der>]]")?;
     let mut reference_time: Option<u64> = None;
     let mut anchors = Vec::new();
     let mut intermediates = Vec::new();
@@ -25,6 +25,7 @@ fn run() -> Result<(), String> {
     let mut ocsp_issuer = None;
     let mut ocsp_responder = None;
     let mut ocsp_nonce = None;
+    let mut ocsp_request = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--at") if reference_time.is_none() => {
@@ -55,6 +56,10 @@ fn run() -> Result<(), String> {
                 let issuer_path = args.next().ok_or("--ocsp-issuer requires a DER file")?;
                 ocsp_issuer = Some(read_limited(&issuer_path, 1024 * 1024)?);
             }
+            Some("--ocsp-request") if ocsp_request.is_none() => {
+                let request_path = args.next().ok_or("--ocsp-request requires a DER file")?;
+                ocsp_request = Some(read_limited(&request_path, 1024 * 1024)?);
+            }
             Some("--ocsp-nonce") if ocsp_nonce.is_none() => {
                 let nonce_path = args.next().ok_or("--ocsp-nonce requires a raw file")?;
                 let nonce = read_limited(&nonce_path, 32)?;
@@ -72,9 +77,10 @@ fn run() -> Result<(), String> {
     if (!crls.is_empty() || crl_issuer.is_some()) && (crls.is_empty() || crl_issuer.is_none() || reference_time.is_none()) {
         return Err("CRL inspection requires --crl, --crl-issuer, and --at".into());
     }
-    if (!ocsps.is_empty() || ocsp_issuer.is_some() || ocsp_responder.is_some() || ocsp_nonce.is_some()) && (ocsps.is_empty() || ocsp_issuer.is_none() || ocsp_responder.is_none() || reference_time.is_none()) {
+    if (!ocsps.is_empty() || ocsp_issuer.is_some() || ocsp_responder.is_some() || ocsp_nonce.is_some() || ocsp_request.is_some()) && (ocsps.is_empty() || ocsp_issuer.is_none() || ocsp_responder.is_none() || reference_time.is_none()) {
         return Err("OCSP inspection requires --ocsp, --ocsp-issuer, --ocsp-responder, and --at".into());
     }
+    if ocsp_request.is_some() && ocsp_nonce.is_some() { return Err("--ocsp-request and --ocsp-nonce are mutually exclusive".into()); }
     if ocsps.iter().map(Vec::len).sum::<usize>() > 16 * 1024 * 1024 { return Err("OCSP inputs exceed 16 MiB".into()); }
     if crls.iter().map(Vec::len).sum::<usize>() > 16 * 1024 * 1024 { return Err("CRL inputs exceed 16 MiB".into()); }
     if anchors.iter().chain(intermediates.iter()).map(Vec::len).sum::<usize>() > 4 * 1024 * 1024 { return Err("certificate inputs exceed 4 MiB".into()); }
@@ -142,6 +148,10 @@ fn run() -> Result<(), String> {
                         println!("    Response {}: CertID {:?}; UNAUTHENTICATED claim {:?}; thisUpdate {}; nextUpdate {:?}; window {:?}; extensions present {}", position + 1, single.cert_id, single.claimed_status, single.this_update, single.next_update, single.time_window, single.extensions_present);
                     }
                 } else { println!("    Basic response: NOT INSPECTED."); }
+                if let Some(request) = ocsp_request.as_deref() {
+                    let comparison = ibis_ooxml::ocsp::inspect_ocsp_request(request, response).map_err(|e| e.to_string())?;
+                    println!("    Request/response observations (UNTRUSTED; NOT acceptance): {:?}", comparison);
+                }
                 println!("    Responder authorization, issuer trust, nonce policy, other extension semantics and revocation: NOT EVALUATED");
             }
         }

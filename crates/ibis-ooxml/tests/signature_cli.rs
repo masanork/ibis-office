@@ -557,6 +557,17 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
         .arg("--ocsp-issuer").arg(fixtures.join("ocsp-issuer.der"))
         .arg("--ocsp-responder").arg(fixtures.join("ocsp-responder.der"))
         .arg("--ocsp-nonce").arg(&nonce_path).output().unwrap();
+    let request_output = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .args(["--at", "0", "--ocsp"]).arg(fixtures.join("ocsp-revoked.der"))
+        .arg("--ocsp-issuer").arg(fixtures.join("ocsp-issuer.der"))
+        .arg("--ocsp-responder").arg(fixtures.join("ocsp-responder.der"))
+        .arg("--ocsp-request").arg(fixtures.join("ocsp-request.der")).output().unwrap();
+    let conflicting = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
+        .args(["--at", "0", "--ocsp"]).arg(fixtures.join("ocsp-revoked.der"))
+        .arg("--ocsp-issuer").arg(fixtures.join("ocsp-issuer.der"))
+        .arg("--ocsp-responder").arg(fixtures.join("ocsp-responder.der"))
+        .arg("--ocsp-request").arg(fixtures.join("ocsp-request.der"))
+        .arg("--ocsp-nonce").arg(&nonce_path).output().unwrap();
     let incomplete = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
         .arg("--ocsp").arg(fixtures.join("ocsp-good.der")).output().unwrap();
     let nonce_alone = Command::new(env!("CARGO_BIN_EXE_ibis-signature-inspect")).arg(&path)
@@ -583,6 +594,12 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
     assert!(text.contains("response extensions present true"));
     assert!(text.contains("Responder authorization, issuer trust, nonce policy, other extension semantics and revocation: NOT EVALUATED"));
     assert_eq!(incomplete.status.code(), Some(2));
+    assert!(request_output.status.success(), "{}", String::from_utf8_lossy(&request_output.stderr));
+    let request_text = String::from_utf8(request_output.stdout).unwrap();
+    assert!(request_text.contains("Request/response observations (UNTRUSTED; NOT acceptance)"));
+    assert!(request_text.contains("comparison: Matches"));
+    assert!(request_text.contains("exact_response_cert_id_counts: [1]"));
+    assert_eq!(conflicting.status.code(), Some(2));
     assert_eq!(nonce_alone.status.code(), Some(2));
     assert_eq!(empty.status.code(), Some(2));
     assert_eq!(oversized.status.code(), Some(2));

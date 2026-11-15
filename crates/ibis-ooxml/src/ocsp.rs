@@ -16,7 +16,9 @@ use x509_cert::{
     Certificate,
     der::{Decode, Encode, asn1::Any},
 };
-use x509_ocsp::{BasicOcspResponse, CertStatus, OcspResponse, OcspResponseStatus, ResponderId};
+use x509_ocsp::{
+    BasicOcspResponse, CertStatus, OcspRequest, OcspResponse, OcspResponseStatus, ResponderId,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct OcspInspection {
@@ -225,6 +227,115 @@ pub enum OcspTimeWindow {
     Expired,
     NoNextUpdate,
     InvalidWindow,
+}
+
+/// Bounded comparisons of untrusted request and response data, not request
+/// authentication, response acceptance, or a revocation decision.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OcspRequestObservations {
+    pub signature_present: bool,
+    pub requestor_name_present: bool,
+    pub request_extensions_present: bool,
+    pub nonce: OcspNonce,
+    pub total_requests: usize,
+    pub requests_truncated: bool,
+    pub response_status: OcspResponseStatus,
+    /// None means no supported BasicOCSPResponse was available for comparison.
+    pub response: Option<OcspRequestResponseObservations>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct OcspRequestResponseObservations {
+    pub nonce: OcspNonce,
+    pub total_responses: usize,
+    pub responses_truncated: bool,
+    /// One count per first 64 request entries; counts use only first 64 responses.
+    /// Matching is exact ASN.1 structure equality, not semantic equivalence.
+    pub exact_response_cert_id_counts: Vec<usize>,
+    pub single_request_extensions_present: Vec<bool>,
+}
+
+/// Compare a caller-provided request with a response without trusting either.
+/// Neither request signature nor identity, request provenance, response
+/// authorization, freshness, extension semantics, or status is validated.
+pub fn inspect_ocsp_request(
+    request_der: &[u8],
+    response_der: &[u8],
+) -> Result<OcspRequestObservations, Error> {
+    use x509_cert::der::asn1::OctetString;
+    if request_der.len() > 1024 * 1024 || response_der.len() > 8 * 1024 * 1024 {
+        return Err(Error::new("OCSP request or response is too large"));
+    }
+    let request =
+        OcspRequest::from_der(request_der).map_err(|_| Error::new("Invalid OCSP request"))?;
+    let response =
+        OcspResponse::from_der(response_der).map_err(|_| Error::new("Invalid OCSP response"))?;
+    let request_nonce = observe_nonce(request.tbs_request.request_extensions.as_ref(), None);
+    // Only use a uniquely present, well-formed nonce of permitted length.
+    let expected = if matches!(request_nonce, OcspNonce::Present { .. }) {
+        request
+            .tbs_request
+            .request_extensions
+            .as_ref()
+            .and_then(|extensions| {
+                extensions
+                    .iter()
+                    .find(|ext| ext.extn_id.to_string() == "1.3.6.1.5.5.7.48.1.2")
+            })
+            .and_then(|ext| OctetString::from_der(ext.extn_value.as_bytes()).ok())
+    } else {
+        None
+    };
+    let mut result = OcspRequestObservations {
+        signature_present: request.optional_signature.is_some(),
+        requestor_name_present: request.tbs_request.requestor_name.is_some(),
+        request_extensions_present: request.tbs_request.request_extensions.is_some(),
+        nonce: request_nonce,
+        total_requests: request.tbs_request.request_list.len(),
+        requests_truncated: request.tbs_request.request_list.len() > 64,
+        response_status: response.response_status,
+        response: None,
+    };
+    if response.response_status != OcspResponseStatus::Successful {
+        if response.response_bytes.is_some() {
+            return Err(Error::new("Unexpected OCSP response body"));
+        }
+        return Ok(result);
+    }
+    let bytes = response
+        .response_bytes
+        .ok_or_else(|| Error::new("Missing OCSP response body"))?;
+    if bytes.response_type.to_string() != "1.3.6.1.5.5.7.48.1.1" {
+        return Ok(result);
+    }
+    let basic = BasicOcspResponse::from_der(bytes.response.as_bytes())
+        .map_err(|_| Error::new("Invalid basic OCSP response"))?;
+    let requests = request.tbs_request.request_list.iter().take(64);
+    let counts = requests
+        .clone()
+        .map(|entry| {
+            basic
+                .tbs_response_data
+                .responses
+                .iter()
+                .take(64)
+                .filter(|response| response.cert_id == entry.req_cert)
+                .count()
+        })
+        .collect();
+    result.response = Some(OcspRequestResponseObservations {
+        nonce: observe_nonce(
+            basic.tbs_response_data.response_extensions.as_ref(),
+            expected.as_ref().map(|nonce| nonce.as_bytes()),
+        ),
+        total_responses: basic.tbs_response_data.responses.len(),
+        responses_truncated: basic.tbs_response_data.responses.len() > 64,
+        exact_response_cert_id_counts: counts,
+        single_request_extensions_present: requests
+            .map(|entry| entry.single_request_extensions.is_some())
+            .collect(),
+    });
+    Ok(result)
 }
 
 fn signature_observation(
@@ -595,6 +706,137 @@ mod tests {
         );
         assert!(unsuccessful.basic.is_none());
         assert!(inspect_ocsp(b"bad", LEAF, ISSUER, RESPONDER, 0).is_err());
+    }
+
+    #[test]
+    fn request_response_comparison_is_bounded_and_untrusted() {
+        let request = include_bytes!("../tests/fixtures/signatures/ocsp-request.der");
+        let facts = inspect_ocsp_request(request, REVOKED).unwrap();
+        assert!(!facts.signature_present);
+        assert_eq!(facts.total_requests, 1);
+        assert_eq!(
+            facts.nonce,
+            OcspNonce::Present {
+                length: 15,
+                critical: false,
+                comparison: OcspNonceComparison::NotProvided
+            }
+        );
+        let response = facts.response.unwrap();
+        assert_eq!(
+            response.nonce,
+            OcspNonce::Present {
+                length: 15,
+                critical: false,
+                comparison: OcspNonceComparison::Matches
+            }
+        );
+        assert_eq!(response.exact_response_cert_id_counts, vec![1]);
+        assert_eq!(response.single_request_extensions_present, vec![false]);
+        let different = inspect_ocsp_request(request, GOOD)
+            .unwrap()
+            .response
+            .unwrap();
+        assert_eq!(different.exact_response_cert_id_counts, vec![0]);
+        assert_eq!(different.nonce, OcspNonce::Absent);
+        assert!(inspect_ocsp_request(b"bad", REVOKED).is_err());
+        assert!(inspect_ocsp_request(request, b"bad").is_err());
+        assert!(inspect_ocsp_request(&vec![0; 1024 * 1024 + 1], REVOKED).is_err());
+        let unsigned_status = inspect_ocsp_request(
+            request,
+            include_bytes!("../tests/fixtures/signatures/ocsp-unauthorized.der"),
+        )
+        .unwrap();
+        assert_eq!(
+            unsigned_status.response_status,
+            OcspResponseStatus::Unauthorized
+        );
+        assert!(unsigned_status.response.is_none());
+
+        let mut parsed = OcspRequest::from_der(request).unwrap();
+        parsed.tbs_request.request_extensions = None;
+        let unsigned = OcspResponse::from_der(REVOKED)
+            .unwrap()
+            .response_bytes
+            .unwrap();
+        let basic = BasicOcspResponse::from_der(unsigned.response.as_bytes()).unwrap();
+        parsed.optional_signature = Some(x509_ocsp::Signature {
+            signature_algorithm: basic.signature_algorithm,
+            signature: basic.signature,
+            certs: None,
+        });
+        let with_signature = inspect_ocsp_request(&parsed.to_der().unwrap(), REVOKED).unwrap();
+        assert!(with_signature.signature_present);
+        assert_eq!(with_signature.nonce, OcspNonce::Absent);
+        assert!(matches!(
+            with_signature.response.unwrap().nonce,
+            OcspNonce::Present {
+                comparison: OcspNonceComparison::NotProvided,
+                ..
+            }
+        ));
+        let mut parsed = OcspRequest::from_der(request).unwrap();
+        let first = parsed.tbs_request.request_list[0].clone();
+        for _ in 0..64 {
+            parsed.tbs_request.request_list.push(first.clone());
+        }
+        let mut duplicate_nonce =
+            parsed.tbs_request.request_extensions.as_ref().unwrap()[0].clone();
+        parsed
+            .tbs_request
+            .request_extensions
+            .as_mut()
+            .unwrap()
+            .push(duplicate_nonce.clone());
+        let many = inspect_ocsp_request(&parsed.to_der().unwrap(), REVOKED).unwrap();
+        assert!(many.requests_truncated);
+        assert_eq!(many.total_requests, 65);
+        assert_eq!(many.nonce, OcspNonce::Duplicate);
+        let response = many.response.unwrap();
+        assert_eq!(response.exact_response_cert_id_counts.len(), 64);
+        assert!(
+            response
+                .exact_response_cert_id_counts
+                .iter()
+                .all(|count| *count == 1)
+        );
+        assert!(matches!(
+            response.nonce,
+            OcspNonce::Present {
+                comparison: OcspNonceComparison::NotProvided,
+                ..
+            }
+        ));
+        parsed
+            .tbs_request
+            .request_extensions
+            .as_mut()
+            .unwrap()
+            .pop();
+        duplicate_nonce.extn_value = OctetString::new(vec![0xff]).unwrap();
+        parsed.tbs_request.request_extensions.as_mut().unwrap()[0] = duplicate_nonce;
+        let malformed = inspect_ocsp_request(&parsed.to_der().unwrap(), REVOKED).unwrap();
+        assert_eq!(malformed.nonce, OcspNonce::InvalidEncoding);
+        assert!(matches!(
+            malformed.response.unwrap().nonce,
+            OcspNonce::Present {
+                comparison: OcspNonceComparison::NotProvided,
+                ..
+            }
+        ));
+        let many_responses = modify(REVOKED, |basic| {
+            let entry = basic.tbs_response_data.responses[0].clone();
+            for _ in 0..64 {
+                basic.tbs_response_data.responses.push(entry.clone());
+            }
+        });
+        let counts = inspect_ocsp_request(request, &many_responses)
+            .unwrap()
+            .response
+            .unwrap();
+        assert!(counts.responses_truncated);
+        assert_eq!(counts.total_responses, 65);
+        assert_eq!(counts.exact_response_cert_id_counts, vec![64]);
     }
 
     #[test]

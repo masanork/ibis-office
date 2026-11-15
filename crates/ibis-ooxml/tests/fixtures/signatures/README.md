@@ -100,3 +100,7 @@ the private keys were discarded. The response signer is deliberately
 untrusted and unauthorized, so a matching signature does not establish
 responder authorization. The two issuer certificates have the same subject
 and different keys.
+
+`ocsp-request.der` is a synthetic SHA-256 CertID request with a fixed test
+nonce generated independently with Python cryptography and inspected with
+LibreSSL. The fixed nonce is for tests only.

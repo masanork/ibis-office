@@ -150,6 +150,19 @@ unauthenticated or otherwise unacceptable response is not replay protection.
 See [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960) and
 [RFC 8954](https://www.rfc-editor.org/rfc/rfc8954.html).
 
+Alternatively, provide a saved DER OCSP request with `--ocsp-request request.der`
+in place of `--ocsp-nonce`. For each supplied response, the inspector reports
+the request nonce and its comparison to the response nonce, plus the number
+of exactly matching response CertIDs for each request entry. Exact matching
+includes the encoded algorithm identifier; semantically equivalent but
+structurally different identifiers may not match. Comparisons inspect at most
+64 requests and 64 responses, and report truncation; zero or partial counts
+are not proof that an identifier is absent. Request and response extension
+presence and the presence of a request signature are reported, but request
+signature and identity, request provenance, extension semantics, and request
+or response acceptance are not verified. A request file does not establish
+that the nonce was freshly generated or that the request was sent.
+
 All status claims remain unauthenticated observations, including `Good`.
 The supplied responder certificate is also inspected for byte equality with
 the supplied issuer, a proposed issuer link, validity dates at both the explicit
