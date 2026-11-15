@@ -104,3 +104,8 @@ and different keys.
 `ocsp-request.der` is a synthetic SHA-256 CertID request with a fixed test
 nonce generated independently with Python cryptography and inspected with
 LibreSSL. The fixed nonce is for tests only.
+
+`certificate-policies.der` is an independently generated synthetic self-signed
+certificate with an arbitrary test policy, anyPolicy and an `.invalid` CPS
+URI. Python cryptography created it and LibreSSL inspected the policy extension;
+the private key was discarded. These OIDs do not establish policy compliance.

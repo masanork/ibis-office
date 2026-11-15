@@ -1256,3 +1256,8 @@ file.signature-inspect.extension-parsed	read
 file.signature-inspect.extension-critical	read (critical)
 file.signature-inspect.locations	Certificate location hints (untrusted, not fetched): AIA {aia}, CRL distribution points {crldp}; OCSP {ocsp}, CA issuer {issuer}, CRL {crl} URI hints; {omitted} omitted, {other} other forms. CRL points: {scoped} with reason restrictions, {alternate} with alternate issuers. Revocation and applicability are not evaluated.
 file.signature-inspect.locations-unavailable	Certificate location hints were not checked or fetched.
+file.signature-inspect.policies	Certificate policy claims (untrusted): {status}, {total} OIDs; repeated among inspected entries {repeated}, entries with qualifiers {qualifiers}. Examples: {examples}. {limit} Certificate path and policy compliance are not evaluated.
+file.signature-inspect.policies-absent	The embedded certificate has no certificate policies extension. Policy and trust are not evaluated.
+file.signature-inspect.policies-unavailable	Certificate policy claims could not be inspected. Policy and trust are not evaluated.
+file.signature-inspect.policy-truncated	Only the first 64 entries were inspected and up to eight examples are shown.
+file.signature-inspect.policy-complete	Up to eight examples are shown.

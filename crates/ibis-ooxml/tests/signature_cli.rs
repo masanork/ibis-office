@@ -611,3 +611,28 @@ fn supplied_ocsp_is_reported_without_a_revocation_verdict() {
     assert_eq!(empty.status.code(), Some(2));
     assert_eq!(oversized.status.code(), Some(2));
 }
+
+#[test]
+fn certificate_policy_claims_are_not_policy_validation() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    let mut package = Package::open(std::fs::read(fixtures.join("synthetic-signed.docx")).unwrap()).unwrap();
+    let part = "_xmlsignatures/sig1.xml";
+    let old = ibis_ooxml::signatures::extract_single_embedded_certificate(&package, part).unwrap();
+    let cert = std::fs::read(fixtures.join("certificate-policies.der")).unwrap();
+    let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+    let changed = xml.replace(&ibis_ooxml::base64::encode(&old), &ibis_ooxml::base64::encode(&cert));
+    assert_ne!(xml, changed);
+    package.set_bytes(part, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-policy-cli-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let output = run(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Certificate policies (UNTRUSTED; NOT path or jurisdiction validation)"));
+    assert!(text.contains("critical: true, total: 2"));
+    assert!(text.contains("any_policy_inspected: true"));
+    assert!(text.contains("1.2.3.4.5"));
+    assert!(text.contains("Signature value: does not match"));
+    assert!(!text.contains("cps.example.invalid"));
+}

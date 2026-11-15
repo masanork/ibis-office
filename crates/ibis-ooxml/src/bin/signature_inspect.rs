@@ -94,6 +94,7 @@ fn run() -> Result<(), String> {
     if reports.is_empty() { println!("No package signature relationships found."); }
     for report in reports {
         println!("\nSignature part: {:?}", report.signature_part);
+        println!("  Certificate policies (UNTRUSTED; NOT path or jurisdiction validation): {:?}", report.certificate_policies);
         if let Some(hints) = &report.certificate_locations {
             println!("  Certificate location hints (UNTRUSTED; NOT FETCHED): AIA {:?}; CRL distribution points {:?}", hints.aia, hints.crl_distribution_points);
             for (label, list) in [("OCSP", &hints.ocsp), ("CA issuer", &hints.ca_issuers), ("CRL", &hints.crl)] {

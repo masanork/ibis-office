@@ -8,7 +8,7 @@ use super::{repo_root, Scenario};
 use ibis_pptx::ibis_ooxml::Package;
 
 pub fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::signature_open_warning", signature_open_warning), ("shell::signature_relationship_selection", signature_relationship_selection), ("shell::signature_certificate_locations", signature_certificate_locations)]
+    vec![("shell::signature_open_warning", signature_open_warning), ("shell::signature_relationship_selection", signature_relationship_selection), ("shell::signature_certificate_locations", signature_certificate_locations), ("shell::signature_certificate_policies", signature_certificate_policies)]
 }
 
 fn signature_open_warning() {
@@ -148,4 +148,40 @@ fn signature_certificate_locations() {
     assert!(report.1.contains("OCSP 1 件、CA 発行者 1 件、CRL 2 件"), "{}", report.1);
     assert!(report.1.contains("理由の制限がある CRL 配布点 1 件"), "{}", report.1);
     assert!(report.1.contains("失効状態と適用性は未確認"), "{}", report.1);
+}
+
+fn signature_certificate_policies() {
+    use ibis_pptx::ibis_ooxml::{base64, signatures::extract_single_embedded_certificate, SaveOptions};
+    let fixtures = repo_root().join("crates/ibis-ooxml/tests/fixtures/signatures");
+    let mut package = Package::open(std::fs::read(fixtures.join("signed-editable.docx")).unwrap()).unwrap();
+    let part = "_xmlsignatures/sig1.xml";
+    let old = extract_single_embedded_certificate(&package, part).unwrap();
+    let cert = std::fs::read(fixtures.join("certificate-policies.der")).unwrap();
+    let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+    let changed = xml.replace(&base64::encode(&old), &base64::encode(&cert));
+    assert_ne!(xml, changed);
+    package.set_bytes(part, changed.into_bytes());
+    let path = std::env::temp_dir().join(format!("ibis-policy-scenario-{}.docx", std::process::id()));
+    std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+    let mut scenario = Scenario::start_view();
+    scenario.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
+    for _ in 0..200 {
+        if scenario.with(|e, _| e.alert.is_some()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        scenario.settle();
+    }
+    assert!(scenario.with(|e, _| e.alert.is_some()));
+    scenario.key("enter");
+    scenario.menu("file.signature-inspect");
+    for _ in 0..200 {
+        if scenario.with(|e, _| e.alert.is_some()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        scenario.settle();
+    }
+    let report = scenario.with(|e, _| e.alert.clone()).expect("signature inspection result");
+    assert!(report.1.contains("証明書ポリシーの記載（未認証）"), "{}", report.1);
+    assert!(report.1.contains("1.2.3.4.5"), "{}", report.1);
+    assert!(report.1.contains("ポリシー適合性は未検証"), "{}", report.1);
+    assert!(!report.1.contains("cps.example.invalid"));
+    std::fs::remove_file(path).unwrap();
 }

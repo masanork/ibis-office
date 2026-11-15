@@ -80,6 +80,17 @@ Exit status 0 means inspection completed; it is not a validity verdict. Exit
 status 2 means the input could not be inspected. The command does not fetch
 certificates or revocation information and does not modify the input file.
 
+The embedded signing certificate's `certificatePolicies` extension is also
+reported as untrusted metadata. The CLI and desktop display up to eight OID
+examples, criticality, and bounded counts of policy entries, duplicates and
+entries with qualifiers. At most 64 entries are inspected; truncation is
+reported. Qualifier contents and policy mappings are not interpreted or fetched.
+An absent, malformed, empty or duplicated extension is distinguished from a
+parsed extension. `anyPolicy` and other OIDs are only certificate claims:
+the inspector does not build a policy tree, validate a certificate path, or
+determine FPKI, eIDAS, Japanese PKI or legal compliance. See
+[RFC 5280 section 4.2.1.4](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.4).
+
 The inspector also reads location hints from the single embedded signing
 certificate's AIA and CRL distribution-point extensions. It distinguishes
 OCSP, CA-issuer and CRL URI counts, non-URI or unsupported forms, critical

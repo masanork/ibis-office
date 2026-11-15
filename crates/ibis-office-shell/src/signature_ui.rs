@@ -4,7 +4,7 @@
 //! Display bounded observations about the package that was opened.
 
 use gpui_kit::*;
-use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial, RelationshipReference, LocationExtension};
+use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial, RelationshipReference, LocationExtension, CertificatePolicyObservations};
 use crate::editor::SlideEditor;
 
 impl SlideEditor {
@@ -72,6 +72,20 @@ fn format_report(reports: &[SignatureInspection]) -> String {
         let matching = matching.to_string(); let legacy = legacy.to_string(); let legacy_differing = legacy_differing.to_string(); let differing = differing.to_string(); let unknown = unknown.to_string();
         message.push_str("\n\n");
         message.push_str(&crate::i18n::format("file.signature-inspect.entry", &[("number", &number), ("value", &value), ("object", &object), ("matching", &matching), ("legacy", &legacy), ("legacy_differing", &legacy_differing), ("differing", &differing), ("unknown", &unknown)]));
+        message.push_str("\n");
+        match &report.certificate_policies {
+            Some(CertificatePolicyObservations::Present { critical, total, truncated, repeated_oid_entries_inspected, qualifier_entries_inspected, examples, .. }) => {
+                let status = crate::i18n::text(if *critical { "file.signature-inspect.extension-critical" } else { "file.signature-inspect.extension-parsed" });
+                let total = total.to_string();
+                let repeated = repeated_oid_entries_inspected.to_string();
+                let qualifiers = qualifier_entries_inspected.to_string();
+                let examples = examples.join(", ");
+                let limit = crate::i18n::text(if *truncated { "file.signature-inspect.policy-truncated" } else { "file.signature-inspect.policy-complete" });
+                message.push_str(&crate::i18n::format("file.signature-inspect.policies", &[("status", &status), ("total", &total), ("repeated", &repeated), ("qualifiers", &qualifiers), ("examples", &examples), ("limit", &limit)]));
+            }
+            Some(CertificatePolicyObservations::Absent) => message.push_str(&crate::i18n::text("file.signature-inspect.policies-absent")),
+            _ => message.push_str(&crate::i18n::text("file.signature-inspect.policies-unavailable")),
+        }
         if let Some(hints) = &report.certificate_locations {
             let status = |extension: &LocationExtension| crate::i18n::text(match extension {
                 LocationExtension::Absent => "file.signature-inspect.extension-absent",

@@ -96,6 +96,50 @@ pub struct ManifestInventory {
     pub examples_truncated: bool,
 }
 
+/// Unauthenticated metadata from one certificate's certificatePolicies.
+/// No policy tree, qualifiers, path, jurisdiction, or legal status is validated.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CertificatePolicyObservations {
+    Absent,
+    InvalidOrDuplicateExtension,
+    Present { critical: bool, total: usize, inspected: usize, truncated: bool,
+        repeated_oid_entries_inspected: usize, any_policy_inspected: bool,
+        qualifier_entries_inspected: usize, empty_qualifier_sequences_inspected: usize,
+        examples: Vec<String> },
+}
+
+/// Inspect policy extension metadata in an explicitly supplied certificate.
+pub fn inspect_certificate_policies(certificate_der: &[u8]) -> Result<CertificatePolicyObservations, Error> {
+    use x509_cert::{Certificate, der::Decode, ext::pkix::CertificatePolicies};
+    if certificate_der.len() > 1024 * 1024 { return Err(Error::new("Certificate is too large")); }
+    let cert = Certificate::from_der(certificate_der).map_err(|_| Error::new("Invalid certificate"))?;
+    let (critical, policies) = match cert.tbs_certificate.get::<CertificatePolicies>() {
+        Ok(None) => return Ok(CertificatePolicyObservations::Absent),
+        Ok(Some((critical, policies))) if !policies.0.is_empty() => (critical, policies),
+        _ => return Ok(CertificatePolicyObservations::InvalidOrDuplicateExtension),
+    };
+    let total = policies.0.len();
+    let mut seen = Vec::with_capacity(64);
+    let mut examples = Vec::new();
+    let mut repeated = 0usize;
+    let mut any_policy = false;
+    let mut qualifier_entries = 0usize;
+    let mut empty_qualifiers = 0usize;
+    for policy in policies.0.iter().take(64) {
+        if seen.contains(&policy.policy_identifier) { repeated += 1; } else { seen.push(policy.policy_identifier); }
+        let oid = policy.policy_identifier.to_string();
+        any_policy |= oid == "2.5.29.32.0";
+        if examples.len() < 8 { examples.push(oid); }
+        if let Some(qualifiers) = &policy.policy_qualifiers {
+            qualifier_entries += 1;
+            if qualifiers.is_empty() { empty_qualifiers += 1; }
+        }
+    }
+    Ok(CertificatePolicyObservations::Present { critical, total, inspected: total.min(64), truncated: total > 64,
+        repeated_oid_entries_inspected: repeated, any_policy_inspected: any_policy,
+        qualifier_entries_inspected: qualifier_entries, empty_qualifier_sequences_inspected: empty_qualifiers, examples })
+}
+
 /// Untrusted certificate extension hints. No URI is fetched or validated.
 #[derive(Debug, PartialEq, Eq)]
 pub struct CertificateLocationHints {
@@ -143,6 +187,8 @@ pub struct SignatureInspection {
     pub signature_value: SignatureValueCheck,
     /// None means the embedded certificate could not be inspected.
     pub certificate_locations: Option<CertificateLocationHints>,
+    /// Embedded certificate policy OIDs are untrusted, not validated policies.
+    pub certificate_policies: Option<CertificatePolicyObservations>,
     pub package_object: ObjectDigest,
     /// Additional SignedInfo reference observations, not authenticated results.
     pub additional_signed_info_references: Vec<AdditionalReference>,
@@ -552,6 +598,7 @@ pub fn inspect_signatures(package: &Package) -> Result<Vec<SignatureInspection>,
         reports.push(SignatureInspection {
             signature_value: inspect_signature_value(package, &part)?,
             certificate_locations: extract_single_embedded_certificate(package, &part).ok().and_then(|der| inspect_certificate_location_hints(&der).ok()),
+            certificate_policies: extract_single_embedded_certificate(package, &part).ok().and_then(|der| inspect_certificate_policies(&der).ok()),
             package_object: inspect_package_object_digest(package, &part)?,
             additional_signed_info_references: additional_signed_info_references(package, &part, &object_id)?,
             manifest,
@@ -1714,6 +1761,37 @@ mod tests {
         assert_eq!(inventory.unlisted_examples.len(), 16);
         assert!(inventory.examples_truncated);
         assert!(inventory.unlisted > inventory.unlisted_examples.len());
+    }
+
+    #[test]
+    fn certificate_policy_observations_are_bounded_and_untrusted() {
+        use x509_cert::{Certificate, der::{Decode, Encode, asn1::OctetString}, ext::pkix::CertificatePolicies};
+        let der = include_bytes!("../tests/fixtures/signatures/certificate-policies.der");
+        let facts = inspect_certificate_policies(der).unwrap();
+        assert_eq!(facts, CertificatePolicyObservations::Present { critical: true, total: 2, inspected: 2, truncated: false,
+            repeated_oid_entries_inspected: 0, any_policy_inspected: true, qualifier_entries_inspected: 1,
+            empty_qualifier_sequences_inspected: 0, examples: vec!["1.2.3.4.5".into(), "2.5.29.32.0".into()] });
+        assert_eq!(inspect_certificate_policies(include_bytes!("../tests/fixtures/signatures/ocsp-leaf.der")).unwrap(), CertificatePolicyObservations::Absent);
+        assert!(inspect_certificate_policies(b"bad").is_err());
+        assert!(inspect_certificate_policies(&vec![0; 1024 * 1024 + 1]).is_err());
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        let extensions = cert.tbs_certificate.extensions.as_mut().unwrap();
+        extensions.push(extensions[0].clone());
+        assert_eq!(inspect_certificate_policies(&cert.to_der().unwrap()).unwrap(), CertificatePolicyObservations::InvalidOrDuplicateExtension);
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        cert.tbs_certificate.extensions.as_mut().unwrap()[0].extn_value = OctetString::new(vec![0xff]).unwrap();
+        assert_eq!(inspect_certificate_policies(&cert.to_der().unwrap()).unwrap(), CertificatePolicyObservations::InvalidOrDuplicateExtension);
+        let mut cert = Certificate::from_der(der.as_slice()).unwrap();
+        let mut policies = cert.tbs_certificate.get::<CertificatePolicies>().unwrap().unwrap().1;
+        let repeated = policies.0[0].clone();
+        for _ in 0..64 { policies.0.push(repeated.clone()); }
+        cert.tbs_certificate.extensions.as_mut().unwrap()[0].extn_value = OctetString::new(policies.to_der().unwrap()).unwrap();
+        let overflow = inspect_certificate_policies(&cert.to_der().unwrap()).unwrap();
+        assert!(matches!(overflow, CertificatePolicyObservations::Present { total: 66, inspected: 64, truncated: true, repeated_oid_entries_inspected: 62, qualifier_entries_inspected: 63, .. }));
+        if let CertificatePolicyObservations::Present { examples, .. } = overflow { assert_eq!(examples.len(), 8); }
+        policies.0.clear();
+        cert.tbs_certificate.extensions.as_mut().unwrap()[0].extn_value = OctetString::new(policies.to_der().unwrap()).unwrap();
+        assert_eq!(inspect_certificate_policies(&cert.to_der().unwrap()).unwrap(), CertificatePolicyObservations::InvalidOrDuplicateExtension);
     }
 
     #[test]
