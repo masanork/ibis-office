@@ -2647,6 +2647,7 @@ impl Writer<'_> {
         if a.direction != b.direction {
             let value = match b.direction {
                 ibis_doc_model::CellDirection::TbRl => Some("tbRl"),
+                ibis_doc_model::CellDirection::TbRlV => Some("tbRlV"),
                 ibis_doc_model::CellDirection::BtLr => Some("btLr"),
                 ibis_doc_model::CellDirection::TbLrV => Some("tbLrV"),
                 ibis_doc_model::CellDirection::LrTbV => Some("lrTbV"),
@@ -3315,6 +3316,7 @@ impl Writer<'_> {
             let v = match new.direction {
                 ibis_doc_model::CellDirection::LrTb => None,
                 ibis_doc_model::CellDirection::TbRl => Some("tbRl"),
+                ibis_doc_model::CellDirection::TbRlV => Some("tbRlV"),
                 ibis_doc_model::CellDirection::BtLr => Some("btLr"),
                 ibis_doc_model::CellDirection::LrTbV => Some("lrTbV"),
                 ibis_doc_model::CellDirection::TbLrV => Some("tbLrV"),
@@ -3472,6 +3474,7 @@ impl Writer<'_> {
                 if cell.direction != ibis_doc_model::CellDirection::LrTb {
                     let d = match cell.direction {
                         ibis_doc_model::CellDirection::TbRl => "tbRl",
+                        ibis_doc_model::CellDirection::TbRlV => "tbRlV",
                         ibis_doc_model::CellDirection::BtLr => "btLr",
                         ibis_doc_model::CellDirection::LrTbV => "lrTbV",
                         ibis_doc_model::CellDirection::TbLrV => "tbLrV",

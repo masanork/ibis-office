@@ -2764,9 +2764,12 @@ pub enum CellDirection {
     /// Across, lines down (`lrTb`).
     #[default]
     LrTb,
-    /// Down, lines right to left; Japanese upright, Latin turned
-    /// clockwise (`tbRl`, `tbRlV`).
+    /// Down, lines right to left (`tbRl`). In Word table cells this rotates
+    /// the text clockwise; the preview currently treats Japanese as upright.
     TbRl,
+    /// Down, lines right to left; East Asian characters remain upright (`tbRlV`).
+    /// Preserved separately from `tbRl` when read from a table cell.
+    TbRlV,
     /// Up, lines left to right; all turned anticlockwise (`btLr`).
     BtLr,
     /// Across, Japanese turned anticlockwise (`lrTbV`).
@@ -2786,9 +2789,16 @@ impl CellDirection {
         }
     }
 
+    /// Cell direction distinguishes Word's upright East Asian form (`tbRlV`)
+    /// from its clockwise-rotated form (`tbRl`). Section direction keeps the
+    /// historical interpretation because its `tbRl` has different behavior.
+    pub fn from_cell_name(name: &str) -> Self {
+        if name == "tbRlV" { Self::TbRlV } else { Self::from_name(name) }
+    }
+
     /// Its lines run down or up.
     pub fn vertical(self) -> bool {
-        matches!(self, Self::TbRl | Self::BtLr | Self::TbLrV)
+        matches!(self, Self::TbRl | Self::TbRlV | Self::BtLr | Self::TbLrV)
     }
 }
 
