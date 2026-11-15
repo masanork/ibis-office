@@ -5,22 +5,12 @@
 pub(crate) enum Face { Mincho, Gothic }
 
 pub(crate) fn face_hint(name: &str) -> Option<Face> {
-    // Normalize full-width ASCII used in Windows font names without changing
-    // Japanese letters; keep the original document's font name intact.
-    let normalized: String = name.chars().map(|c| match c {
-        '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap(),
-        '\u{3000}' => ' ',
-        _ => c,
-    }).collect::<String>().to_lowercase();
-    let tokens = normalized.split(|c: char| !c.is_ascii_alphanumeric()).collect::<Vec<_>>();
-    // Check sans-serif first: it contains the substring "serif".
-    if normalized.contains("ゴシック") || normalized.contains("ｺﾞｼｯｸ") || normalized.contains("gothic")
-        || normalized.contains("メイリオ") || normalized.contains("meiryo")
-        || normalized.contains("sansserif") || tokens.contains(&"sans") || tokens.contains(&"ui") {
-        Some(Face::Gothic)
-    } else if normalized.contains("明朝") || normalized.contains("mincho") || tokens.contains(&"serif") {
-        Some(Face::Mincho)
-    } else { None }
+    // The desktop renderer shares this classification. The document's font name stays as stored.
+    match ibis_office_render::shape_view::cjk_face_hint(name) {
+        Some(ibis_office_render::shape_view::CjkFace::Mincho) => Some(Face::Mincho),
+        Some(ibis_office_render::shape_view::CjkFace::Gothic) => Some(Face::Gothic),
+        None => None,
+    }
 }
 
 #[cfg(test)]

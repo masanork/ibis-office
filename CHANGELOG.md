@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- A missing Japanese mincho or gothic, when the file records neither a character set nor an Excel font family, is drawn with an installed face of that category from Windows, macOS or Linux. When both IPAmj Mincho and the additional administrative mincho are installed, a missing mincho is drawn with IPAmj Mincho, and glyphs it lacks come from the additional face. The stored typeface name is unchanged. A recorded character set or Excel family still decides the stand-in.
+- A JTD font table that stores italic as byte 255, observed on an italic MS Mincho face, is read. That value is italic, and the rest of the table, including the document's regular face, is kept.
+
 ## [0.8.7] - 2026-11-13
 
 The two large changes of this version:

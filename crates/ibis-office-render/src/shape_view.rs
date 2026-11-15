@@ -1231,6 +1231,36 @@ fn browser_fallbacks(_: &TextStyle) -> Option<FontFallbacks> {
     None
 }
 
+/// A Japanese mincho or gothic named by a typeface. Full-width ASCII is folded
+/// so Windows names match. Sans-serif is classified before serif, because
+/// "serif" is a substring of it. Generic Latin tokens (`serif`, `sans`, `ui`)
+/// are part of the hint the web catalog shares; a desktop stand-in uses this
+/// only together with [`is_east_asian_typeface`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CjkFace {
+    Mincho,
+    Gothic,
+}
+
+pub fn cjk_face_hint(name: &str) -> Option<CjkFace> {
+    let normalized: String = name.chars().map(|c| match c {
+        '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap(),
+        '\u{3000}' => ' ',
+        _ => c,
+    }).collect::<String>().to_lowercase();
+    let tokens = normalized.split(|c: char| !c.is_ascii_alphanumeric()).collect::<Vec<_>>();
+    if normalized.contains("ゴシック") || normalized.contains("ｺﾞｼｯｸ") || normalized.contains("gothic")
+        || normalized.contains("メイリオ") || normalized.contains("meiryo")
+        || normalized.contains("sansserif") || tokens.contains(&"sans") || tokens.contains(&"ui")
+    {
+        Some(CjkFace::Gothic)
+    } else if normalized.contains("明朝") || normalized.contains("mincho") || tokens.contains(&"serif") {
+        Some(CjkFace::Mincho)
+    } else {
+        None
+    }
+}
+
 /// Typefaces made for Japanese (or other East Asian) text.
 pub fn is_east_asian_typeface(name: &str) -> bool {
     const HINTS: &[&str] = &[
@@ -1923,6 +1953,15 @@ pub(crate) fn workbook_latin_stand_in(family: Option<u8>) -> &'static [&'static 
 /// The Japanese stand-ins in the order they are tried: the Windows typeface PowerPoint, Word and Excel draw, then what the other systems have.
 const MS_GOTHIC_STAND_INS: [&str; 6] = ["MS Gothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans CJK JP", "IPAexGothic"];
 const MS_MINCHO_STAND_INS: [&str; 7] = ["MS Mincho", "Hiragino Mincho ProN", "Yu Mincho", "YuMincho", "BIZ UDMincho", "Noto Serif CJK JP", "IPAexMincho"];
+/// System gothic faces on Windows, macOS and Linux, for a missing name that says gothic and records no charset or Excel family.
+const SYSTEM_GOTHIC: &[&str] = &[
+    "MS Gothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "BIZ UDGothic", "Meiryo",
+    "Noto Sans CJK JP", "Noto Sans JP", "IPAexGothic",
+];
+/// Families of the two downloadable mincho faces. A missing mincho uses IPAmj only when both are installed;
+/// glyphs IPAmj lacks then come from the additional administrative face.
+const IPAMJ_FAMILIES: &[&str] = &["IPAmjMincho", "IPAmj明朝"]; // i18n-ok（フォントのファミリー名）
+const ACGJ_FAMILIES: &[&str] = &["Add Character_GJMincho", "追加文字行政事務標準明朝"]; // i18n-ok（フォントのファミリー名）
 
 /// The first of `names` that is installed, in their order: each by the name the text system lists it under, or else by any name in the
 /// typeface's `name` table (`OpenTypeIndex`: all locales), as a Japanese PC lists Yu Gothic and MS Mincho by their Japanese names only.
@@ -2246,7 +2285,7 @@ impl Fonts {
             // Kerned above the size the file says (`kern`, inherited from the master: 1200 is 12 pt; text of exactly 12 pt is not kerned in
             // PowerPoint's PDFs, PTXT-00107); not kerned when it says nothing.
             features: FontFeatures(Arc::new(features)),
-            fallbacks: browser_fallbacks(style),
+            fallbacks: browser_fallbacks(style).or_else(|| self.mincho_supplement(style.font.as_deref())),
             ..font(".SystemUIFont")
         }
     }
@@ -2278,6 +2317,60 @@ impl Fonts {
         }
     }
 
+    /// Word's `w:charset`, PowerPoint's East Asian charset, or Excel's font family.
+    /// Absent means the file did not record the evidence Office uses.
+    fn recorded_office_face(&self, name: &str) -> bool {
+        if let Some(table) = &self.docx_font_table {
+            return table.get(name).and_then(|entry| entry.charset).is_some();
+        }
+        match self.traits.get(name) {
+            Some(traits) if traits.charset.is_some() => true,
+            Some(traits) if self.kind() == DocKind::Workbook && traits.family.is_some() => true,
+            _ => false,
+        }
+    }
+
+    fn installed_of(&self, names: &[&str]) -> Option<SharedString> {
+        first_installed_family(names, &self.installed, Some(&self.embedded_index), true)
+    }
+
+    /// Both downloadable mincho faces are present, so a missing mincho can use them as one set.
+    fn administrative_mincho_set(&self) -> bool {
+        self.installed_of(IPAMJ_FAMILIES).is_some() && self.installed_of(ACGJ_FAMILIES).is_some()
+    }
+
+    /// An installed face of the same category. IPAmj is used for mincho only when the additional
+    /// administrative mincho is installed too. `None` leaves the Office stand-in in place.
+    fn category_stand_in(&self, face: CjkFace) -> Option<SharedString> {
+        match face {
+            CjkFace::Mincho if self.administrative_mincho_set() => self.installed_of(IPAMJ_FAMILIES),
+            CjkFace::Mincho => self.installed_of(&MS_MINCHO_STAND_INS),
+            CjkFace::Gothic => self.installed_of(SYSTEM_GOTHIC),
+        }
+    }
+
+    /// Glyphs a missing mincho does not have in IPAmj, drawn from the additional administrative face.
+    fn mincho_supplement(&self, requested: Option<&str>) -> Option<FontFallbacks> {
+        let name = self.resolve(requested?);
+        if self.available(name).is_some()
+            || !is_east_asian_typeface(name)
+            || cjk_face_hint(name) != Some(CjkFace::Mincho)
+            || self.recorded_office_face(name)
+            || !self.administrative_mincho_set()
+        {
+            return None;
+        }
+        let supplement = self.installed_of(ACGJ_FAMILIES)?;
+        Some(FontFallbacks::from_fonts(vec![supplement.to_string()]))
+    }
+
+    fn named_weight(name: &str, family: SharedString, weight: FontWeight) -> (SharedString, FontWeight) {
+        // ＭＳ ゴシック's strokes are heavier than 游ゴシック's / Hiragino Sans W3's regular weight (c006_b2).
+        let ms_gothic = matches!(name, "ＭＳ ゴシック" | "MS Gothic" | "ＭＳ Ｐゴシック" | "MS PGothic" | "ＭＳゴシック" | "ＭＳＰゴシック"); // i18n-ok（フォント名の判定）
+        let weight = if ms_gothic && weight == FontWeight::NORMAL { FontWeight::MEDIUM } else { weight };
+        (family, weight)
+    }
+
     /// The installed typeface that stands in for the missing East Asian typeface `name`, by `missing_japanese_stand_in`.
     fn japanese_stand_in_family(&self, name: &str) -> Option<SharedString> {
         let (family, charset) = match self.docx_font_table.as_ref() {
@@ -2305,17 +2398,25 @@ impl Fonts {
             return found;
         }
         let weight = strip_weight_suffix(name).map_or(FontWeight::NORMAL, |(_, w)| w);
+        // A missing East Asian face whose file records neither a charset nor an Excel family follows the
+        // category in its name: a system mincho or gothic on Windows, macOS or Linux. Mincho uses IPAmj
+        // Mincho when the additional administrative mincho is installed as well, and that face supplies
+        // the glyphs IPAmj lacks (`mincho_supplement`). The stored name is left as the file wrote it.
+        // A recorded charset or Excel family still decides (`missing_japanese_stand_in`), including
+        // Word's charset 128, which is Yu Gothic even for a mincho name.
+        if is_east_asian_typeface(name)
+            && !self.recorded_office_face(name)
+            && let Some(face) = cjk_face_hint(name)
+            && let Some(fallback) = self.category_stand_in(face)
+        {
+            return Self::named_weight(name, fallback, weight);
+        }
         // A typeface the PC lacks that is East Asian gives way to the stand-in Word, Excel or PowerPoint draws for it, by what the file says about
         // the typeface, not by its name (`missing_japanese_stand_in`). Found by any of its names: a Japanese PC lists MS Mincho and Yu Gothic by
         // their Japanese names (PowerPoint's PDF of 082.ppt has YuGothic-Regular, not the UI face whose kana are narrower).
         let stand_in = is_east_asian_typeface(name).then(|| self.japanese_stand_in_family(name)).flatten();
         match stand_in {
-            Some(fallback) => {
-                // ＭＳ ゴシック's strokes are heavier than 游ゴシック's / Hiragino Sans W3's regular weight (c006_b2).
-                let ms_gothic = matches!(name, "ＭＳ ゴシック" | "MS Gothic" | "ＭＳ Ｐゴシック" | "MS PGothic" | "ＭＳゴシック" | "ＭＳＰゴシック"); // i18n-ok（フォント名の判定）
-                let w = if ms_gothic && weight == FontWeight::NORMAL { FontWeight::MEDIUM } else { weight };
-                (fallback, w)
-            }
+            Some(fallback) => Self::named_weight(name, fallback, weight),
             // Excel draws a typeface the PC lacks by the family of its font (Times New Roman, Courier New, Arial).
             _ if self.kind() == DocKind::Workbook => {
                 let family = self.traits.get(name).and_then(|t| t.family);
@@ -6908,6 +7009,79 @@ mod font_resolution_tests {
         assert_eq!(missing_japanese_stand_in(Presentation, None, Some(-128)), YuGothic);
         assert_eq!(missing_japanese_stand_in(Presentation, Some(1), None), MsGothic);
         assert_eq!(missing_japanese_stand_in(Presentation, None, Some(128)), MsGothic);
+    }
+
+    fn category_fonts(
+        installed: &[&str],
+        table: Option<std::collections::BTreeMap<String, ibis_doc_model::FontTableEntry>>,
+        traits: std::collections::BTreeMap<String, ibis_doc_model::TypefaceTraits>,
+    ) -> Fonts {
+        Fonts {
+            installed: installed.iter().map(|s| (*s).to_string()).collect(),
+            embedded_index: OpenTypeIndex::default(),
+            east_asian_fallback: Some("Hiragino Sans".into()),
+            substitutions: HashMap::new(),
+            calibri_for_missing: table.is_none() && traits.values().any(|t| t.charset == Some(-128)),
+            docx_font_table: table,
+            traits,
+        }
+    }
+
+    /// A missing mincho uses IPAmj when both downloadable mincho faces are installed.
+    /// Glyphs IPAmj lacks come from the additional face. A gothic name stays gothic.
+    /// An installed 游明朝 still draws as Yu Mincho.
+    #[test]
+    fn missing_mincho_uses_ipamj_only_when_the_administrative_pair_is_installed() {
+        let both = ["IPAmjMincho", "Add Character_GJMincho", "Hiragino Mincho ProN", "Hiragino Sans", "YuMincho"];
+        let fonts = category_fonts(&both, Some(std::collections::BTreeMap::new()), std::collections::BTreeMap::new());
+        assert_eq!(fonts.family("ＭＳ 明朝").0.as_ref(), "IPAmjMincho");
+        assert_eq!(fonts.family("游明朝").0.as_ref(), "YuMincho");
+        let drawn = fonts.font(&TextStyle { font: Some("ＭＳ 明朝".into()), ..TextStyle::default() });
+        assert_eq!(drawn.family.as_ref(), "IPAmjMincho");
+        assert_eq!(
+            drawn.fallbacks.as_ref().map(|list| list.fallback_list().to_vec()),
+            Some(vec!["Add Character_GJMincho".to_string()])
+        );
+        let (gothic, weight) = fonts.family("ＭＳ ゴシック");
+        assert_eq!(gothic.as_ref(), "Hiragino Sans");
+        assert_eq!(weight, FontWeight::MEDIUM);
+
+        let ipamj_only = category_fonts(
+            &["IPAmjMincho", "Hiragino Mincho ProN", "Hiragino Sans"],
+            Some(std::collections::BTreeMap::new()),
+            std::collections::BTreeMap::new(),
+        );
+        assert_eq!(ipamj_only.family("ＭＳ 明朝").0.as_ref(), "Hiragino Mincho ProN");
+        let acgj_only = category_fonts(
+            &["Add Character_GJMincho", "Hiragino Mincho ProN"],
+            Some(std::collections::BTreeMap::new()),
+            std::collections::BTreeMap::new(),
+        );
+        assert_eq!(acgj_only.family("ＭＳ 明朝").0.as_ref(), "Hiragino Mincho ProN");
+        let yu_only = category_fonts(&["YuGothic"], Some(std::collections::BTreeMap::new()), std::collections::BTreeMap::new());
+        assert_eq!(yu_only.family("ＭＳ ゴシック").0.as_ref(), "YuGothic");
+    }
+
+    /// A recorded charset or Excel family still decides, including a mincho name with charset 128.
+    #[test]
+    fn a_recorded_charset_or_excel_family_is_not_replaced_by_the_name() {
+        let installed = ["IPAmjMincho", "Add Character_GJMincho", "Hiragino Mincho ProN", "Hiragino Sans"];
+        let mut table = std::collections::BTreeMap::new();
+        table.insert("ＭＳ 明朝".into(), ibis_doc_model::FontTableEntry { charset: Some(128), ..Default::default() });
+        let word = category_fonts(&installed, Some(table), std::collections::BTreeMap::new());
+        assert_eq!(word.family("ＭＳ 明朝").0.as_ref(), "Hiragino Sans");
+        let drawn = word.font(&TextStyle { font: Some("ＭＳ 明朝".into()), ..TextStyle::default() });
+        assert!(drawn.fallbacks.is_none());
+
+        let mut traits = std::collections::BTreeMap::new();
+        traits.insert("ＭＳ ゴシック".into(), ibis_doc_model::TypefaceTraits { family: Some(1), charset: None });
+        let excel = category_fonts(&installed, None, traits);
+        assert_eq!(excel.family("ＭＳ ゴシック").0.as_ref(), "Hiragino Mincho ProN");
+
+        let mut ppt = std::collections::BTreeMap::new();
+        ppt.insert("ＭＳ 明朝".into(), ibis_doc_model::TypefaceTraits { family: None, charset: Some(-128) });
+        let presentation = category_fonts(&installed, None, ppt);
+        assert_eq!(presentation.family("ＭＳ 明朝").0.as_ref(), "Hiragino Sans");
     }
 
     #[test]

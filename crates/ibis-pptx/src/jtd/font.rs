@@ -43,7 +43,10 @@ pub fn parse(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
         }
         let fixed = data.get(at..at + 28).ok_or_else(invalid)?;
         at += 28;
-        if u32::from_be_bytes(fixed[16..20].try_into().unwrap()) > 1000 || fixed[20] > 1 {
+        // 0 and 1 are the usual italic flag. 255 is the italic byte observed on a
+        // face whose style name is 斜体; rejecting it dropped the whole table,
+        // including the document's regular face. Any other value stays rejected.
+        if u32::from_be_bytes(fixed[16..20].try_into().unwrap()) > 1000 || !matches!(fixed[20], 0 | 1 | 255) {
             return Err(invalid());
         }
         let face = string(data, &mut at)?;
@@ -122,6 +125,29 @@ mod tests {
         assert_eq!(records[1].face, "ＭＳ 明朝");
         assert_eq!(records[1].weight, 700);
         assert!(records[1].italic);
+    }
+    #[test]
+    fn an_observed_italic_byte_of_255_keeps_the_rest_of_the_table() {
+        let fonts = [(0u16, "ＭＳ 明朝", 400u32, false), (5, "ＭＳ 明朝", 400, true)];
+        let mut bytes = fixture(&fonts);
+        let mut at = 10usize;
+        for (i, (_, name, _, _)) in fonts.iter().enumerate() {
+            at += 2;
+            if i == 1 {
+                bytes[at + 20] = 255;
+                break;
+            }
+            at += 28;
+            at += (name.encode_utf16().count() + 1) * 2;
+            at += 12;
+            at += ("標準".encode_utf16().count() + 1) * 2;
+        }
+        let records = parse(&bytes).unwrap();
+        assert_eq!(records[0].face, "ＭＳ 明朝");
+        assert!(!records[0].italic);
+        assert!(records[1].italic);
+        bytes[at + 20] = 2;
+        assert!(parse(&bytes).is_err());
     }
     #[test]
     fn truncated_ambiguous_or_extended_tables_are_not_guessed() {
