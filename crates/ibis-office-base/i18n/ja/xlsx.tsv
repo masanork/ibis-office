@@ -2863,7 +2863,7 @@ xlsx.design-mode.close	デザイン モードを閉じる
 xlsx.sheet.delete-ask	シートを削除してよろしいですか？
 xlsx.machine-readability.menu	機械可読性チェック…
 xlsx.machine-readability.title	機械可読性チェック
-xlsx.machine-readability.scope	結合セル・非表示行列・数式・文字を確認します。候補の一覧であり、合否や点数ではありません。表の領域と非表示シート、その他の項目は未検査です。編集後は再検査してください。
+xlsx.machine-readability.scope	結合セル・非表示行列・数式・セル内の複数データ・文字を確認します。候補の一覧であり、合否や点数ではありません。表の領域と非表示シート、その他の項目は未検査です。編集後は再検査してください。
 xlsx.machine-readability.loading	CSV を読み込み中です。完了後に再検査してください。
 xlsx.machine-readability.none	確認する候補はありません。ほかの項目は未検査です。
 xlsx.machine-readability.merge	L1-12 結合セル：見出しとデータのどちらか確認してください。
@@ -2873,3 +2873,4 @@ xlsx.machine-readability.formula	L2-06 数式：公開データとして値が�
 xlsx.machine-readability.omitted	表示していない候補の件数
 xlsx.machine-readability.platform-characters	L1-08 機種依存文字・全角英数字：公開形式での表示を確認してください。
 xlsx.machine-readability.private-use	私用文字：環境によって表示や文字の意味が異なる場合があります。利用先のフォントや対応表を確認してください。
+xlsx.machine-readability.multiple-data	L1-07 複数データの可能性：セル内の改行や列挙を確認してください。

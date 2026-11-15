@@ -13,7 +13,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | Carlito | Calibri が入っていないときの代わりの文字 | SIL Open Font License 1.1 |
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
-| Harunobu L1-08 character classification | 機械可読性の文字候補 | MIT |
+| Harunobu L1-07 and L1-08 rule logic | 機械可読性の確認候補 | MIT |
 | gjs character classification | 私用文字の確認候補 | MIT |
 
 ## Rust の部品（479 件）
@@ -690,10 +690,10 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### Harunobu character classification
+### Harunobu rule logic
 
 ```text
-Harunobu L1-08 character classification (adapted)
+Harunobu L1-07 and L1-08 rule logic (adapted)
 Source: https://github.com/digital-go-jp/machine_readability_rule
 Revision: 88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f
 

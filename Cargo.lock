@@ -3288,6 +3288,8 @@ name = "ibis-doc-model"
 version = "0.8.0"
 dependencies = [
  "ibis-calc",
+ "regex",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-Harunobu L1-08 character classification (adapted)
+Harunobu L1-07 and L1-08 rule logic (adapted)
 Source: https://github.com/digital-go-jp/machine_readability_rule
 Revision: 88014ff9cfe685d4e0e5f24a2d4d2e021ca3fd9f
 

@@ -30055,4 +30055,18 @@ fn machine_readability_candidates_and_live_edits() {
         .position(|f| f.kind == CandidateKind::PrivateUseCharacters).expect("private-use candidate"));
     s.update(|e, _, cx| e.jump_machine_readability(index, cx));
     assert_eq!(s.selected(), "C5");
+    s.click_cell("C5");
+    s.type_text("東京、大阪、名古屋");
+    s.key("enter");
+    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    let index = s.with(|e, _| e.wb().panels.machine_readability.as_ref().unwrap().findings.iter()
+        .position(|f| f.kind == CandidateKind::MultipleData).expect("multiple-data candidate"));
+    s.update(|e, _, cx| e.jump_machine_readability(index, cx));
+    assert_eq!(s.selected(), "C5");
+    s.click_cell("C5");
+    s.type_text("東京");
+    s.key("enter");
+    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    s.with(|e, _| assert!(!e.wb().panels.machine_readability.as_ref().unwrap().findings.iter()
+        .any(|f| f.kind == CandidateKind::MultipleData)));
 }

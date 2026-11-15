@@ -74,6 +74,7 @@ impl SlideEditor {
                 CandidateKind::HiddenRow => "xlsx.machine-readability.hidden-row",
                 CandidateKind::HiddenColumn => "xlsx.machine-readability.hidden-column",
                 CandidateKind::Formula => "xlsx.machine-readability.formula",
+                CandidateKind::MultipleData => "xlsx.machine-readability.multiple-data",
                 CandidateKind::PlatformDependentCharacters => "xlsx.machine-readability.platform-characters",
                 CandidateKind::PrivateUseCharacters => "xlsx.machine-readability.private-use",
             };

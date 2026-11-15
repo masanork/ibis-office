@@ -7,7 +7,7 @@
 use crate::sheet::{CellRange, CellValue, Sheet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CandidateKind { MergedCells, HiddenRow, HiddenColumn, Formula, PlatformDependentCharacters, PrivateUseCharacters }
+pub enum CandidateKind { MergedCells, HiddenRow, HiddenColumn, Formula, MultipleData, PlatformDependentCharacters, PrivateUseCharacters }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -54,6 +54,11 @@ pub fn candidates(sheet: &Sheet) -> Vec<Candidate> {
         max_col = Some(max_col.map_or(cell.column, |n| n.max(cell.column)));
         if let CellValue::Text(value) = &cell.value {
             let range = CellRange { first_row: cell.row, last_row: cell.row, first_column: cell.column, last_column: cell.column };
+            // No schema is known here. The numeric guard avoids making a
+            // comma-separated numeric-looking string a confident candidate.
+            if crate::machine_readability_one_data::multiple_data_reason(value, Some(crate::machine_readability_one_data::ColumnType::Numeric)).is_some() {
+                out.push(Candidate { kind: CandidateKind::MultipleData, range });
+            }
             if platform_character_candidate(value) {
                 out.push(Candidate { kind: CandidateKind::PlatformDependentCharacters, range });
             }
