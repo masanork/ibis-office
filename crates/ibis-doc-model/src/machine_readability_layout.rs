@@ -176,3 +176,55 @@ pub fn evaluate_island(region: CellRange, cells: &[LayoutCell]) -> Option<Island
     } else { None };
     Some(IslandEvaluation { candidate, others: trimmed.others })
 }
+
+/// Whether a text cell matches Harunobu's CSV numeric patterns and represents
+/// a data-like value rather than a short column number.
+fn is_numeric_string(value: &str) -> bool {
+    use std::sync::OnceLock;
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| regex::Regex::new(r"^[+-]?(?:\d+|\d+\.\d+|\d{1,3}(?:,\d{3})*(?:\.\d+)?)$").unwrap()).is_match(value)
+}
+fn is_data_like_numeric(value: &str) -> bool {
+    is_numeric_string(value) && (value.contains(',') || value.contains('.') || value.trim_start_matches(['+', '-']).chars().count() >= 3)
+}
+
+/// Header signal for one row, before any header-row selection. Returns
+/// 0 for no signal, 1 for textual signal, or 2 for bold/merge signal.
+/// The caller must provide all cells and merged ranges for the sheet; an
+/// invalid range or duplicate cell makes the result unknown (`None`).
+pub fn header_row_strength(row: u32, first_column: u32, last_column: u32, cells: &[LayoutCell], merges: &[CellRange]) -> Option<u8> {
+    if first_column > last_column || merges.iter().any(|m| m.first_row > m.last_row || m.first_column > m.last_column) { return None; }
+    let mut positions = BTreeSet::new();
+    let mut nonempty = Vec::new();
+    for cell in cells {
+        if !positions.insert((cell.row, cell.column)) { return None; }
+        if cell.row == row && cell.column >= first_column && cell.column <= last_column && cell.value.is_some() { nonempty.push(cell); }
+    }
+    Some(row_strength_for_cells(row, first_column, last_column, &nonempty, merges))
+}
+
+fn row_strength_for_cells(row: u32, first_column: u32, last_column: u32, nonempty: &[&LayoutCell], merges: &[CellRange]) -> u8 {
+    if nonempty.is_empty() { return 0; }
+    if nonempty.iter().any(|cell| cell.bold) { return 2; }
+    if nonempty.iter().any(|cell| cell.merged) {
+        let mut vertical_count = 0;
+        for m in merges.iter().filter(|m| m.first_row <= row && m.last_row >= row && m.first_column >= first_column && m.last_column <= last_column) {
+            if m.last_column > m.first_column { return 2; }
+            if m.last_row > m.first_row { vertical_count += 1; }
+        }
+        if vertical_count >= 3 { return 2; }
+    }
+    if nonempty.iter().all(|cell| matches!(&cell.value, Some(LayoutValue::Text(_)))) {
+        let mut data_like = 0;
+        let mut meaningful = 0;
+        for cell in nonempty {
+            let Some(LayoutValue::Text(value)) = &cell.value else { unreachable!() };
+            let value = value.trim_matches(python_space);
+            if value.is_empty() || matches!(value, "-" | "－" | "–" | "―" | "…" | "‥" | "*" | "×" | "x" | "X" | "N/A" | "n/a" | "NA" | "-\u{3000}") { continue; }
+            meaningful += 1;
+            if is_data_like_numeric(value) { data_like += 1; }
+        }
+        if data_like as f64 <= (meaningful.max(1) as f64) * 0.3 { return 1; }
+    }
+    0
+}
