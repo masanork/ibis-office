@@ -18,6 +18,7 @@ cargo test --locked --manifest-path experiments/certval-path-probe/Cargo.toml --
 cargo +nightly-2026-09-17 check --locked \
   --manifest-path experiments/certval-path-probe/Cargo.toml --target wasm32-unknown-unknown
 python3 experiments/certval-path-probe/verify_policy_reference.py
+python3 experiments/certval-path-probe/verify_algorithm_reference.py
 ```
 
 Two tests exercise 11 combinations: a direct valid path, an existing
@@ -44,6 +45,21 @@ the private keys were discarded. These results cover only these fixtures and
 settings, not general policy-tree conformance. The reference script uses the host
 clock and requires it to be within the synthetic certificates' 2026–2029 validity
 period; the Rust probe uses the fixed time above.
+
+A fourth test exercises existing synthetic P-256/SHA-256, P-384/SHA-384,
+P-384/SHA-256 and RSA-PSS signatures, including different PSS salt lengths.
+A matching independent LibreSSL check accepts all six intact signatures and
+rejects a wrong issuer and a damaged signature. With SHA-256 as the signature
+hash and MGF1/SHA-384, LibreSSL accepts the signature but certval 0.2.0-rc.3
+returns `SignatureVerificationFailure`. Its [crypto callback](https://docs.rs/crate/certval/0.2.0-rc.3/source/src/util/crypto.rs)
+reports this MGF combination as unrecognized, while its [path validator](https://docs.rs/crate/certval/0.2.0-rc.3/source/src/validator/path_validator.rs)
+converts signature-verification errors to the same path status used for a bad
+signature. This is fail-closed, but the path result alone cannot distinguish an
+unsupported parameter from a cryptographic mismatch. Any integration needs an
+explicit indeterminate/unsupported outcome and must not label that result as
+proof of a bad signature. The reference script uses the host clock and requires
+it to be in the fixtures' common validity window, 2026-11-15 01:22:06 UTC to
+2027-11-15 01:22:06 UTC. The Rust probe uses its fixed reference time.
 
 The pinned crate uses Apache-2.0 OR MIT licensing. Its own
 [security warning](https://docs.rs/crate/certval/0.2.0-rc.3/source/README.md)

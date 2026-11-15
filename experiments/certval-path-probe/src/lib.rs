@@ -131,6 +131,64 @@ mod tests {
         }
     }
     #[test]
+    fn signature_algorithm_observations() {
+        const P256_ROOT: &[u8] =
+            include_bytes!("../../../crates/ibis-ooxml/tests/fixtures/signatures/ec-ca.der");
+        const P256_LEAF: &[u8] =
+            include_bytes!("../../../crates/ibis-ooxml/tests/fixtures/signatures/ec-leaf.der");
+        const P384_ROOT: &[u8] =
+            include_bytes!("../../../crates/ibis-ooxml/tests/fixtures/signatures/p384-ca.der");
+        const P384_LEAF: &[u8] = include_bytes!(
+            "../../../crates/ibis-ooxml/tests/fixtures/signatures/p384-normal-leaf.der"
+        );
+        const P384_SHA256: &[u8] = include_bytes!(
+            "../../../crates/ibis-ooxml/tests/fixtures/signatures/p384-sha256-leaf.der"
+        );
+        const PSS_ROOT: &[u8] =
+            include_bytes!("../../../crates/ibis-ooxml/tests/fixtures/signatures/pss-ca.der");
+        const PSS_OTHER: &[u8] =
+            include_bytes!("../../../crates/ibis-ooxml/tests/fixtures/signatures/pss-other.der");
+        const PSS_NORMAL: &[u8] = include_bytes!(
+            "../../../crates/ibis-ooxml/tests/fixtures/signatures/pss-normal-leaf.der"
+        );
+        const PSS_SALT20: &[u8] = include_bytes!(
+            "../../../crates/ibis-ooxml/tests/fixtures/signatures/pss-salt20-leaf.der"
+        );
+        const PSS_MGF384: &[u8] = include_bytes!(
+            "../../../crates/ibis-ooxml/tests/fixtures/signatures/pss-mgf384-leaf.der"
+        );
+        for (name, leaf, issuer) in [
+            ("p256-sha256", P256_LEAF, P256_ROOT),
+            ("p384-sha384", P384_LEAF, P384_ROOT),
+            ("p384-sha256", P384_SHA256, P384_ROOT),
+            ("pss-sha256-salt32", PSS_NORMAL, PSS_ROOT),
+            ("pss-salt20", PSS_SALT20, PSS_ROOT),
+        ] {
+            let result = validate(leaf, issuer, 1796083200);
+            println!("{name}: {result:?}");
+            assert!(result.is_ok(), "{name}: {result:?}");
+        }
+        let unsupported = validate(PSS_MGF384, PSS_ROOT, 1796083200);
+        let wrong_issuer = validate(PSS_NORMAL, PSS_OTHER, 1796083200);
+        let mut damaged = PSS_NORMAL.to_vec();
+        let end = damaged.len();
+        damaged[end - 1] ^= 1;
+        let invalid = validate(&damaged, PSS_ROOT, 1796083200);
+        println!(
+            "pss-mgf384: {unsupported:?}; wrong issuer: {wrong_issuer:?}; damaged: {invalid:?}"
+        );
+        // certval 0.2.0-rc.3's path API returns the same status for the
+        // independently verified but unsupported MGF and a bad signature.
+        assert_eq!(unsupported, invalid);
+        assert_eq!(wrong_issuer, invalid);
+        assert!(
+            invalid
+                .unwrap_err()
+                .contains("SignatureVerificationFailure")
+        );
+    }
+
+    #[test]
     fn policy_inputs_change_path_results() {
         let root = include_bytes!("../data/policy-root.der");
         let ca = include_bytes!("../data/policy-intermediate-a.der");
