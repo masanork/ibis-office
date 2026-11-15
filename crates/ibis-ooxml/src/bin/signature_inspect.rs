@@ -4,7 +4,7 @@
 //! Inspect signature-related observations, without making a trust decision.
 
 use std::process::ExitCode;
-use ibis_ooxml::{Package, signatures::{self, ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureValueCheck, XadesIssuerSerial}};
+use ibis_ooxml::{Package, signatures::{self, ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureValueCheck, XadesIssuerSerial, RelationshipReference}};
 
 fn main() -> ExitCode {
     match run() {
@@ -146,6 +146,17 @@ fn run() -> Result<(), String> {
             let digest = match item.digest { ManifestDigest::LegacySha1 { matches: true } => "matches (weak legacy SHA-1)", ManifestDigest::LegacySha1 { matches: false } => "differs (weak legacy SHA-1)", ManifestDigest::Matches => "matches", ManifestDigest::Differs => "differs", ManifestDigest::Unsupported => "not checked (unsupported)", ManifestDigest::MissingPart => "part missing" };
             let content = match item.content_type { ContentTypeCheck::Matches => "matches", ContentTypeCheck::Differs => "differs", ContentTypeCheck::Missing => "missing", ContentTypeCheck::Unsupported => "not checked (unsupported)" };
             println!("  Reference {:?}: digest {digest}; content type {content}", item.uri);
+            match item.relationships {
+                Some(RelationshipReference::WholePart) => println!("    Relationship reference declares raw part bytes; NOT AUTHENTICATED."),
+                Some(RelationshipReference::Unsupported) => println!("    Relationship selection: NOT CHECKED; NOT AUTHENTICATED."),
+                Some(RelationshipReference::Filtered(selection)) => {
+                    println!("    Current relationship selection: {} selected, {} not selected; {} distinct ID selectors and {} distinct type selectors without current matches; NOT AUTHENTICATED.", selection.selected, selection.unselected, selection.unmatched_id_selectors, selection.unmatched_type_selectors);
+                    for id in &selection.selected_examples { println!("      Selected ID: {id:?}"); }
+                    for id in &selection.unselected_examples { println!("      Not selected ID: {id:?}"); }
+                    if selection.examples_truncated { println!("      Some IDs or examples omitted."); }
+                }
+                None => (),
+            }
         }
         println!("  Certificate trust: NOT EVALUATED");
     }

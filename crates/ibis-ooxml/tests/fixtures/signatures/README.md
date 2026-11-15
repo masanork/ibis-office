@@ -83,3 +83,8 @@ verified each SHA-256/MGF1-SHA256/32-byte-salt signature. The key was discarded.
 independently generated P-384 test data. LibreSSL verified each signature,
 and `p384-signature.der` checks rejection of DER in XML SignatureValue.
 The CA private keys were discarded.
+
+`relationship-selection-signed.docx` is an independently generated synthetic
+package with one selected and one unselected relationship. Its package object
+and SignedInfo were canonicalized with lxml, signed with OpenSSL, and its
+signature was verified with OpenSSL. The key was discarded.

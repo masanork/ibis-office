@@ -455,3 +455,36 @@ fn manifest_inventory_reports_unlisted_parts_without_claiming_coverage() {
     assert!(text.contains("does NOT establish coverage or unsigned status"));
     assert!(text.contains("Certificate trust: NOT EVALUATED"));
 }
+
+#[test]
+fn relationship_selection_shows_partial_transform_and_tampering() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signatures");
+    let fixture = fixtures.join("relationship-selection-signed.docx");
+    let output = run(&fixture);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+    assert!(text.contains("digest matches; content type matches\n    Current relationship selection: 1 selected, 1 not selected"));
+    assert!(text.contains("Selected ID: \"rSigned\""));
+    assert!(text.contains("Not selected ID: \"rOther\""));
+    assert!(text.contains("NOT AUTHENTICATED"));
+    let bytes = std::fs::read(fixture).unwrap();
+    for (old, new, digest) in [("other.xml", "other-changed.xml", "digest matches"), ("signed.xml", "signed-changed.xml", "digest differs")] {
+        let mut package = Package::open(bytes.clone()).unwrap();
+        let part = "word/_rels/document.xml.rels";
+        let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+        let changed = xml.replace(old, new);
+        assert_ne!(xml, changed);
+        package.set_bytes(part, changed.into_bytes());
+        let path = std::env::temp_dir().join(format!("ibis-relationship-{old}-{}.docx", std::process::id()));
+        std::fs::write(&path, package.save(SaveOptions::default()).unwrap()).unwrap();
+        let output = run(&path);
+        std::fs::remove_file(path).unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("Signature value: matches embedded untrusted certificate"));
+        assert!(text.contains(&format!("Reference \"/word/_rels/document.xml.rels?ContentType=application/vnd.openxmlformats-package.relationships+xml\": {digest}; content type matches")));
+        assert!(text.contains("Current relationship selection: 1 selected, 1 not selected"));
+        assert!(text.contains("Certificate trust: NOT EVALUATED"));
+    }
+}

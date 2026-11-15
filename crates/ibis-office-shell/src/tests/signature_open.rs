@@ -8,7 +8,7 @@ use super::{repo_root, Scenario};
 use ibis_pptx::ibis_ooxml::Package;
 
 pub fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::signature_open_warning", signature_open_warning)]
+    vec![("shell::signature_open_warning", signature_open_warning), ("shell::signature_relationship_selection", signature_relationship_selection)]
 }
 
 fn signature_open_warning() {
@@ -99,4 +99,28 @@ fn signature_open_warning() {
     scenario.key("enter");
     assert!(completed.get(), "confirmed save runs the continuation");
     assert!(!scenario.with(|e, _| e.is_dirty()));
+}
+
+fn signature_relationship_selection() {
+    let fixture = repo_root().join("crates/ibis-ooxml/tests/fixtures/signatures/relationship-selection-signed.docx");
+    let mut scenario = Scenario::start_view();
+    scenario.update(|e, w, cx| e.open_path(fixture.clone(), None, w, cx));
+    for _ in 0..200 {
+        if scenario.with(|e, _| e.alert.is_some()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        scenario.settle();
+    }
+    let alert = scenario.with(|e, _| e.alert.clone()).expect("signature warning after native open");
+    assert!(alert.1.contains("有効性は確認していません"), "{}", alert.1);
+    scenario.key("enter");
+    scenario.menu("file.signature-inspect");
+    for _ in 0..200 {
+        if scenario.with(|e, _| e.alert.is_some()) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        scenario.settle();
+    }
+    let report = scenario.with(|e, _| e.alert.clone()).expect("signature inspection result");
+    assert!(report.1.contains("フィルター付き 1 件"), "{}", report.1);
+    assert!(report.1.contains("選択 1 件・非選択 1 件"), "{}", report.1);
+    assert!(report.1.contains("署名範囲の確定ではありません"), "{}", report.1);
 }

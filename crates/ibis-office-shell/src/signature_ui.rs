@@ -4,7 +4,7 @@
 //! Display bounded observations about the package that was opened.
 
 use gpui_kit::*;
-use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial};
+use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial, RelationshipReference};
 use crate::editor::SlideEditor;
 
 impl SlideEditor {
@@ -77,6 +77,25 @@ fn format_report(reports: &[SignatureInspection]) -> String {
         let ambiguous = inventory.ambiguous_entries.to_string(); let unresolved = inventory.unresolved_references.to_string();
         message.push_str("\n");
         message.push_str(&crate::i18n::format("file.signature-inspect.inventory", &[("entries", &entries), ("unlisted", &unlisted), ("ambiguous", &ambiguous), ("unresolved", &unresolved)]));
+        let mut selected = 0usize; let mut unselected = 0usize; let mut unmatched = 0usize; let mut whole = 0usize; let mut unavailable = 0usize; let mut filtered = 0usize;
+        for reference in &report.manifest {
+            match &reference.relationships {
+                Some(RelationshipReference::Filtered(selection)) => {
+                    filtered += 1;
+                    selected = selected.saturating_add(selection.selected);
+                    unselected = unselected.saturating_add(selection.unselected);
+                    unmatched = unmatched.saturating_add(selection.unmatched_id_selectors).saturating_add(selection.unmatched_type_selectors);
+                }
+                Some(RelationshipReference::WholePart) => whole += 1,
+                Some(RelationshipReference::Unsupported) => unavailable += 1,
+                None => (),
+            }
+        }
+        if filtered + whole + unavailable > 0 {
+            let filtered = filtered.to_string(); let selected = selected.to_string(); let unselected = unselected.to_string(); let unmatched = unmatched.to_string(); let whole = whole.to_string(); let unavailable = unavailable.to_string();
+            message.push_str("\n");
+            message.push_str(&crate::i18n::format("file.signature-inspect.relationships", &[("filtered", &filtered), ("selected", &selected), ("unselected", &unselected), ("unmatched", &unmatched), ("whole", &whole), ("unavailable", &unavailable)]));
+        }
         if !report.additional_signed_info_references.is_empty() {
             let mut matching = 0usize;
             let mut legacy = 0usize;

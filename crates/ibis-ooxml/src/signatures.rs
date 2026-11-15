@@ -38,6 +38,28 @@ pub struct ManifestReference {
     /// Comparison against the package's declared content type. This is not an
     /// authenticated result before the signature chain has been checked.
     pub content_type: ContentTypeCheck,
+    /// Relationship selection is unauthenticated and applies to this reference only.
+    pub relationships: Option<RelationshipReference>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RelationshipReference {
+    /// The reference declares the complete relationship part as raw bytes.
+    WholePart,
+    Filtered(RelationshipSelection),
+    Unsupported,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct RelationshipSelection {
+    pub selected: usize,
+    pub unselected: usize,
+    pub unmatched_id_selectors: usize,
+    pub unmatched_type_selectors: usize,
+    /// Up to eight examples each, truncated at 200 characters.
+    pub selected_examples: Vec<String>,
+    pub unselected_examples: Vec<String>,
+    pub examples_truncated: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -951,13 +973,35 @@ pub fn inspect_manifest_digests(package: &Package, signature_part: &str) -> Resu
                     _ => ContentTypeCheck::Unsupported,
                 };
                 let transforms = find("Transforms");
-                let digest = if transforms.len() > 1 || path.is_none_or(|p| p.is_empty() || p.contains(['%', '\\', '#', ':']) || p.split('/').any(|s| s.is_empty() || s == "." || s == "..")) {
+                let valid_shape = match children.as_slice() {
+                    [method, value] => *method == methods[0] && *value == values[0],
+                    [transform, method, value] => transforms.len() == 1 && *transform == transforms[0] && *method == methods[0] && *value == values[0],
+                    _ => false,
+                };
+                let allowed_attrs = |node, allowed: &[&str]| {
+                    let mut seen = std::collections::HashSet::new();
+                    doc.attributes(node).iter().all(|a| seen.insert(a.name.as_str()) && (is_namespace_attr(&a.name) || allowed.contains(&a.name.as_str())))
+                };
+                let valid_fields = valid_shape && allowed_attrs(methods[0], &["Algorithm"]) && allowed_attrs(values[0], &[])
+                    && doc.elements(methods[0]).next().is_none() && doc.elements(values[0]).next().is_none();
+                let mut relationships = path.filter(|path| path.ends_with(".rels")).map(|_| RelationshipReference::Unsupported);
+                let digest = if !valid_fields || transforms.len() > 1 || path.is_none_or(|p| p.is_empty() || p.contains(['%', '\\', '#', ':']) || p.split('/').any(|s| s.is_empty() || s == "." || s == "..")) {
                     ManifestDigest::Unsupported
                 } else {
                     let path = path.unwrap();
                     if !package.contains(path) { ManifestDigest::MissingPart } else {
-                        let bytes = if transforms.is_empty() { Some(package.read(path)?) }
-                            else { relationship_transform(package, path, &doc, transforms[0])? };
+                        let bytes = if transforms.is_empty() {
+                            if relationships.is_some() { relationships = Some(RelationshipReference::WholePart); }
+                            Some(package.read(path)?)
+                        } else {
+                            match relationship_transform(package, path, &doc, transforms[0])? {
+                                Some(transformed) => {
+                                    relationships = Some(RelationshipReference::Filtered(transformed.selection));
+                                    Some(transformed.bytes)
+                                }
+                                None => None,
+                            }
+                        };
                         let actual = bytes.and_then(|bytes| match algorithm {
                             "http://www.w3.org/2000/09/xmldsig#sha1" => Some(sha1::Sha1::digest(&bytes).to_vec()),
                             "http://www.w3.org/2001/04/xmlenc#sha256" => Some(Sha256::digest(&bytes).to_vec()),
@@ -973,7 +1017,7 @@ pub fn inspect_manifest_digests(package: &Package, signature_part: &str) -> Resu
                         }
                     }
                 };
-                result.push(ManifestReference { uri, digest, content_type });
+                result.push(ManifestReference { uri, digest, content_type, relationships });
             }
         }
     }
@@ -983,19 +1027,37 @@ pub fn inspect_manifest_digests(package: &Package, signature_part: &str) -> Resu
 // Implements only the strict, namespace-clean subset of OPC Relationship
 // Transform followed by inclusive C14N 1.0. Markup Compatibility and other
 // extensions are rejected rather than silently transformed incorrectly.
-fn relationship_transform(package: &Package, path: &str, signature: &crate::XmlDocument, transforms: crate::NodeId) -> Result<Option<Vec<u8>>, Error> {
+struct RelationshipTransformResult {
+    bytes: Vec<u8>,
+    selection: RelationshipSelection,
+}
+
+fn relationship_transform(package: &Package, path: &str, signature: &crate::XmlDocument, transforms: crate::NodeId) -> Result<Option<RelationshipTransformResult>, Error> {
+    use std::collections::HashSet;
     if !path.ends_with(".rels") { return Ok(None) }
+    let attrs_allowed = |doc: &crate::XmlDocument, node: crate::NodeId, allowed: &[&str]| {
+        let mut seen = HashSet::new();
+        doc.attributes(node).iter().all(|a| seen.insert(a.name.as_str()) && (is_namespace_attr(&a.name) || allowed.contains(&a.name.as_str())))
+    };
+    let content_allowed = |doc: &crate::XmlDocument, node: crate::NodeId| {
+        doc.children(node).iter().all(|&n| match doc.kind(n) {
+            crate::xml::NodeKind::Element | crate::xml::NodeKind::Comment => true,
+            crate::xml::NodeKind::Text | crate::xml::NodeKind::CData => doc.text(n).trim_matches([' ', '\t', '\n', '\r']).is_empty(),
+            _ => false,
+        })
+    };
     let steps: Vec<_> = signature.elements(transforms).collect();
-    if steps.len() != 2 || steps.iter().any(|&n| signature.local_name(n) != "Transform" || signature.namespace(n) != Some(DS))
+    if !attrs_allowed(signature, transforms, &[]) || !content_allowed(signature, transforms)
+        || steps.len() != 2 || steps.iter().any(|&n| signature.local_name(n) != "Transform" || signature.namespace(n) != Some(DS) || !attrs_allowed(signature, n, &["Algorithm"]) || !content_allowed(signature, n))
         || !matches!(signature.attr(steps[0], "Algorithm"), Some(REL_TRANSFORM | REL_TRANSFORM_2006)) || signature.attr(steps[1], "Algorithm") != Some(C14N)
         || signature.elements(steps[1]).next().is_some() { return Ok(None) }
-    let mut ids = Vec::new();
-    let mut types = Vec::new();
+    let mut ids = HashSet::new();
+    let mut types = HashSet::new();
     for selector in signature.elements(steps[0]) {
-        if signature.namespace(selector) != Some(OPC_DS) || signature.elements(selector).next().is_some() { return Ok(None) }
+        if signature.namespace(selector) != Some(OPC_DS) || signature.elements(selector).next().is_some() || !content_allowed(signature, selector) { return Ok(None) }
         match signature.local_name(selector) {
-            "RelationshipReference" => match signature.attr(selector, "SourceId") { Some(s) if !s.is_empty() => ids.push(s), _ => return Ok(None) },
-            "RelationshipsGroupReference" => match signature.attr(selector, "SourceType") { Some(s) if !s.is_empty() => types.push(s), _ => return Ok(None) },
+            "RelationshipReference" if attrs_allowed(signature, selector, &["SourceId"]) => match signature.attr(selector, "SourceId") { Some(s) if !s.is_empty() => { ids.insert(s); }, _ => return Ok(None) },
+            "RelationshipsGroupReference" if attrs_allowed(signature, selector, &["SourceType"]) => match signature.attr(selector, "SourceType") { Some(s) if !s.is_empty() => { types.insert(s); }, _ => return Ok(None) },
             _ => return Ok(None),
         }
     }
@@ -1003,21 +1065,34 @@ fn relationship_transform(package: &Package, path: &str, signature: &crate::XmlD
     let rels = package.xml(path)?;
     let root = rels.root_element().ok_or_else(|| Error::new("Empty relationships part"))?;
     if rels.local_name(root) != "Relationships" || rels.namespace(root) != Some(REL_NS)
-        || rels.attributes(root).iter().any(|a| !is_namespace_attr(&a.name))
+        || !attrs_allowed(&rels, root, &[]) || !content_allowed(&rels, root)
         || rels.children(crate::XmlDocument::ROOT).iter().any(|&n| matches!(rels.kind(n), crate::xml::NodeKind::Doctype | crate::xml::NodeKind::ProcessingInstruction)) {
         return Ok(None);
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
+    let mut matched_types = HashSet::new();
     let mut selected = Vec::new();
+    let mut selection = RelationshipSelection { selected: 0, unselected: 0, unmatched_id_selectors: 0, unmatched_type_selectors: 0, selected_examples: Vec::new(), unselected_examples: Vec::new(), examples_truncated: false };
     for n in rels.elements(root) {
         if rels.local_name(n) != "Relationship" || rels.namespace(n) != Some(REL_NS)
-            || rels.attributes(n).iter().any(|a| !matches!(a.name.as_str(), "Id" | "Type" | "Target" | "TargetMode") && !is_namespace_attr(&a.name)) { return Ok(None) }
+            || !attrs_allowed(&rels, n, &["Id", "Type", "Target", "TargetMode"]) || rels.elements(n).next().is_some() || !content_allowed(&rels, n) { return Ok(None) }
         let (Some(id), Some(kind), Some(target)) = (rels.attr(n, "Id"), rels.attr(n, "Type"), rels.attr(n, "Target")) else { return Ok(None) };
-        if id.is_empty() || !seen.insert(id) { return Ok(None) }
+        if id.is_empty() || kind.is_empty() || target.is_empty() || !seen.insert(id) { return Ok(None) }
         let mode = rels.attr(n, "TargetMode").unwrap_or("Internal");
         if mode != "Internal" && mode != "External" { return Ok(None) }
-        if ids.contains(&id) || types.contains(&kind) { selected.push((id, kind, target, mode)); }
+        if types.contains(kind) { matched_types.insert(kind); }
+        let is_selected = ids.contains(id) || types.contains(kind);
+        let (count, examples) = if is_selected { (&mut selection.selected, &mut selection.selected_examples) } else { (&mut selection.unselected, &mut selection.unselected_examples) };
+        *count += 1;
+        if examples.len() < 8 {
+            let mut chars = id.chars(); let mut value: String = chars.by_ref().take(200).collect();
+            if chars.next().is_some() { value.push('…'); selection.examples_truncated = true; }
+            examples.push(value);
+        } else { selection.examples_truncated = true; }
+        if is_selected { selected.push((id, kind, target, mode)); }
     }
+    selection.unmatched_id_selectors = ids.difference(&seen).count();
+    selection.unmatched_type_selectors = types.difference(&matched_types).count();
     selected.sort_by(|a, b| a.0.cmp(b.0));
     let mut out = format!("<Relationships xmlns=\"{REL_NS}\">");
     for (id, kind, target, mode) in selected {
@@ -1028,7 +1103,7 @@ fn relationship_transform(package: &Package, path: &str, signature: &crate::XmlD
         out.push_str("\"></Relationship>");
     }
     out.push_str("</Relationships>");
-    Ok(Some(out.into_bytes()))
+    Ok(Some(RelationshipTransformResult { bytes: out.into_bytes(), selection }))
 }
 
 fn is_namespace_attr(name: &str) -> bool { name == "xmlns" || name.starts_with("xmlns:") }
@@ -1177,12 +1252,72 @@ mod tests {
         let expected = crate::base64::encode(&Sha256::digest(canonical.as_bytes()));
         let xml = format!(r#"<Signature xmlns="{DS}" xmlns:p="{OPC_DS}"><Object><Manifest><Reference URI="/word/_rels/document.xml.rels?ContentType=application/vnd.openxmlformats-package.relationships+xml"><Transforms><Transform Algorithm="{REL_TRANSFORM}"><p:RelationshipReference SourceId="a"/><p:RelationshipsGroupReference SourceType="wanted"/></Transform><Transform Algorithm="{C14N}"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>{expected}</DigestValue></Reference></Manifest></Object></Signature>"#);
         pkg.set_bytes("sig.xml", xml.clone().into_bytes());
+        let references = inspect_manifest_digests(&pkg, "sig.xml").unwrap();
+        assert_eq!(references[0].digest, ManifestDigest::Matches);
+        let Some(RelationshipReference::Filtered(selection)) = &references[0].relationships else { panic!("expected filtered relationships") };
+        assert_eq!((selection.selected, selection.unselected), (2, 1));
+        assert_eq!(selection.unmatched_id_selectors, 0);
+        assert_eq!(selection.unmatched_type_selectors, 0);
+        assert_eq!(selection.selected_examples, ["b", "a"]);
+        assert_eq!(selection.unselected_examples, ["z"]);
+        let untouched = format!(r#"<r:Relationships xmlns:r="{REL_NS}"><r:Relationship Id="z" Type="kind" Target="changed"/><r:Relationship Target="b&amp;c" Type="wanted" Id="b"/><r:Relationship Target="a" Id="a" Type="one" TargetMode="External"/></r:Relationships>"#);
+        pkg.set_bytes("word/_rels/document.xml.rels", untouched.into_bytes());
         assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].digest, ManifestDigest::Matches);
+        let extra = xml.replace("<p:RelationshipReference SourceId=\"a\"/>", "<p:RelationshipReference SourceId=\"a\"/><p:RelationshipReference SourceId=\"missing\"/><p:RelationshipsGroupReference SourceType=\"missing-type\"/>");
+        pkg.set_bytes("sig.xml", extra.into_bytes());
+        let references = inspect_manifest_digests(&pkg, "sig.xml").unwrap();
+        assert_eq!(references[0].digest, ManifestDigest::Matches);
+        let Some(RelationshipReference::Filtered(selection)) = &references[0].relationships else { panic!("expected filtered relationships") };
+        assert_eq!((selection.unmatched_id_selectors, selection.unmatched_type_selectors), (1, 1));
         pkg.set_bytes("sig.xml", xml.replace(REL_TRANSFORM, REL_TRANSFORM_2006).into_bytes());
         assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].digest, ManifestDigest::Matches);
         let changed = format!(r#"<Relationships xmlns="{REL_NS}"><Relationship Id="b" Type="wanted" Target="changed"/><Relationship Id="a" Type="one" Target="a" TargetMode="External"/></Relationships>"#);
         pkg.set_bytes("word/_rels/document.xml.rels", changed.into_bytes());
         assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].digest, ManifestDigest::Differs);
+    }
+
+    #[test]
+    fn relationship_selection_rejects_ambiguous_and_unknown_markup() {
+        let mut pkg = package(&rels(""), None);
+        pkg.set_bytes("r.rels", format!(r#"<Relationships xmlns="{REL_NS}"><Relationship Id="a" Type="one" Target="a"/></Relationships>"#).into_bytes());
+        let xml = format!(r#"<Signature xmlns="{DS}" xmlns:p="{OPC_DS}"><Object><Manifest><Reference URI="/r.rels?ContentType=application/xml"><Transforms><Transform Algorithm="{REL_TRANSFORM}"><p:RelationshipReference SourceId="a"/></Transform><Transform Algorithm="{C14N}"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>YQ==</DigestValue></Reference></Manifest></Object></Signature>"#);
+        for bad in [
+            xml.replace("SourceId=\"a\"", "SourceId=\"a\" unknown=\"x\""),
+            xml.replace("SourceId=\"a\"", "SourceId=\"a\" SourceId=\"a\""),
+            xml.replace(&format!("Algorithm=\"{REL_TRANSFORM}\""), &format!("Algorithm=\"{REL_TRANSFORM}\" unknown=\"x\"")),
+            xml.replace("<p:RelationshipReference", "unexpected<p:RelationshipReference"),
+            xml.replace("<DigestMethod", "<Unknown/><DigestMethod"),
+            xml.replace("<DigestValue>YQ==</DigestValue>", "<DigestValue><Unexpected>YQ==</Unexpected></DigestValue>"),
+            xml.replace("<DigestValue>YQ==</DigestValue>", "<DigestValue unexpected=\"x\">YQ==</DigestValue>"),
+        ] {
+            pkg.set_bytes("sig.xml", bad.into_bytes());
+            match inspect_manifest_digests(&pkg, "sig.xml") {
+                Ok(refs) => { assert_eq!(refs[0].digest, ManifestDigest::Unsupported); assert_eq!(refs[0].relationships, Some(RelationshipReference::Unsupported)); }
+                Err(_) => (),
+            }
+        }
+        let raw = xml.replace(&format!("<Transforms><Transform Algorithm=\"{REL_TRANSFORM}\"><p:RelationshipReference SourceId=\"a\"/></Transform><Transform Algorithm=\"{C14N}\"/></Transforms>"), "");
+        assert_ne!(raw, xml);
+        pkg.set_bytes("sig.xml", raw.into_bytes());
+        assert_eq!(inspect_manifest_digests(&pkg, "sig.xml").unwrap()[0].relationships, Some(RelationshipReference::WholePart));
+    }
+
+    #[test]
+    fn relationship_selection_examples_are_bounded() {
+        let mut pkg = package(&rels(""), None);
+        let long_id = "a".repeat(250);
+        let mut records = format!(r#"<Relationship Id="{long_id}" Type="one" Target="a"/>"#);
+        for i in 0..12 { records.push_str(&format!(r#"<Relationship Id="r{i}" Type="other" Target="b"/>"#)); }
+        pkg.set_bytes("r.rels", format!(r#"<Relationships xmlns="{REL_NS}">{records}</Relationships>"#).into_bytes());
+        let xml = format!(r#"<Signature xmlns="{DS}" xmlns:p="{OPC_DS}"><Object><Manifest><Reference URI="/r.rels?ContentType=application/xml"><Transforms><Transform Algorithm="{REL_TRANSFORM}"><p:RelationshipReference SourceId="{long_id}"/></Transform><Transform Algorithm="{C14N}"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>YQ==</DigestValue></Reference></Manifest></Object></Signature>"#);
+        pkg.set_bytes("sig.xml", xml.into_bytes());
+        let references = inspect_manifest_digests(&pkg, "sig.xml").unwrap();
+        let Some(RelationshipReference::Filtered(selection)) = &references[0].relationships else { panic!("expected filtered relationships") };
+        assert_eq!((selection.selected, selection.unselected), (1, 12));
+        assert_eq!(selection.selected_examples[0].chars().count(), 201);
+        assert!(selection.selected_examples[0].ends_with('…'));
+        assert_eq!(selection.unselected_examples.len(), 8);
+        assert!(selection.examples_truncated);
     }
 
     #[test]
@@ -1481,7 +1616,7 @@ mod tests {
         assert_eq!(report[0].manifest_inventory.unlisted, 6);
         assert_eq!(report[0].manifest_inventory.ambiguous_entries, 1);
         assert!(report[0].manifest_inventory.unlisted_examples.iter().any(|name| name == "word/added.xml"));
-        let unsupported = [ManifestReference { uri: "/word/added.xml?ContentType=application/xml".into(), digest: ManifestDigest::Unsupported, content_type: ContentTypeCheck::Unsupported }, ManifestReference { uri: "/word/ambiguous%20name.xml?ContentType=application/xml".into(), digest: ManifestDigest::Unsupported, content_type: ContentTypeCheck::Unsupported }];
+        let unsupported = [ManifestReference { uri: "/word/added.xml?ContentType=application/xml".into(), digest: ManifestDigest::Unsupported, content_type: ContentTypeCheck::Unsupported, relationships: None }, ManifestReference { uri: "/word/ambiguous%20name.xml?ContentType=application/xml".into(), digest: ManifestDigest::Unsupported, content_type: ContentTypeCheck::Unsupported, relationships: None }];
         let inventory = inspect_manifest_inventory(&pkg, &unsupported);
         assert_eq!(inventory.unresolved_references, 1);
         assert!(!inventory.unlisted_examples.iter().any(|name| name == "word/added.xml"));
