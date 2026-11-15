@@ -23,6 +23,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::menu_layout_no_unreplaced_placeholders", no_unreplaced_placeholders),
         ("shell::menu_layout_paste_special_submenu_is_the_dialog", paste_special_submenu_is_the_dialog),
         ("shell::menu_layout_sheet_menus", sheet_menus),
+        ("shell::menu_layout_sheet_machine_readability", sheet_machine_readability),
         ("shell::menu_layout_order", order),
         ("shell::menu_layout_items_match_old_menus", items_match_old_menus),
         ("shell::menu_layout_review_comment_lines", review_comment_lines),
@@ -272,6 +273,23 @@ fn paste_special_submenu_is_the_dialog() {
         for id in ["xlsx.select-formulas", "xlsx.pivot-select-values"] {
             assert!(!ids.contains(&id), "{id} is not a paste: {ids:?}");
         }
+    });
+}
+
+/// The distributed spreadsheet Review menu exposes the machine readability check.
+fn sheet_machine_readability() {
+    with_planned(false, || {
+        let mut s = Scenario::new_document(ibis_pptx::Kind::Workbook);
+        s.with(|e, _| {
+            let menus = e.menu_bar_menus();
+            let (_, review) = menus.menus.iter().find(|(id, _)| *id == MenuId::Review).expect("Review menu");
+            let item = review.iter().find_map(|entry| match entry {
+                MenuEntry::Item(item) if item.id == "xlsx.machine-readability.menu" => Some(item),
+                _ => None,
+            }).expect("machine readability command in Review");
+            assert!(item.enabled());
+            assert!(item.handler.is_some());
+        });
     });
 }
 
