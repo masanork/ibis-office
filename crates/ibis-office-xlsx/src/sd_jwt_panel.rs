@@ -14,10 +14,10 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use ibis_doc_model::{
-    BoundClaim, CellRange, Es256KeyPair, KeyBindingJwtOutput, Oid4vpRequest, SdJwtOptions,
-    SdJwtOutput, SdJwtSchema, SdJwtTemplateKind, SheetClaimBindings,
-    bind_range_as_sd_claim_commands, build_sd_jwt_template_commands, extract_sheet_claims,
-    issue_sd_jwt,
+    BoundClaim, CellRange, Es256KeyPair, KeyBindingJwtOutput, Oid4vpRequest,
+    ParsedCredentialFormat, SdJwtOptions, SdJwtOutput, SdJwtSchema, SdJwtTemplateKind,
+    SheetClaimBindings, bind_range_as_sd_claim_commands, build_sd_jwt_template_commands,
+    extract_sheet_claims, issue_sd_jwt, parse_mdoc_text, parse_sd_jwt,
 };
 
 use crate::ext::*;
@@ -32,8 +32,10 @@ pub(crate) struct SdJwtPanel {
     pub(crate) issuer_jwk: Entity<InputState>,
     pub(crate) bind_path: Entity<InputState>,
     pub(crate) schema_json: Entity<InputState>,
+    pub(crate) import_token: Entity<InputState>,
     pub(crate) oid4vp_request: Entity<InputState>,
     pub(crate) include_cnf: bool,
+    pub(crate) show_import: bool,
     pub(crate) show_advanced: bool,
     pub(crate) bindings: SheetClaimBindings,
     pub(crate) output: Option<SdJwtOutput>,
@@ -77,6 +79,7 @@ impl SlideEditor {
         let issuer_jwk = cx.new(|cx| InputState::new(window, cx));
         let bind_path = cx.new(|cx| InputState::new(window, cx));
         let schema_json = cx.new(|cx| InputState::new(window, cx));
+        let import_token = cx.new(|cx| InputState::new(window, cx));
         let oid4vp_request = cx.new(|cx| InputState::new(window, cx));
         let slide = self.current_slide;
         let bindings = extract_sheet_claims(self.presentation(), slide).unwrap_or(
@@ -103,8 +106,10 @@ impl SlideEditor {
             issuer_jwk,
             bind_path,
             schema_json,
+            import_token,
             oid4vp_request,
             include_cnf: true,
+            show_import: false,
             show_advanced: false,
             bindings,
             output: Some(sd_out),
@@ -271,6 +276,67 @@ impl SlideEditor {
         cx.notify();
     }
 
+    pub(crate) fn import_sd_jwt_or_mdoc(&mut self, cx: &mut Context<Self>) {
+        self.commit_cell_edit(cx);
+        let Some(p) = self.sheet_state().and_then(|s| s.panels.sd_jwt.as_ref()) else {
+            return;
+        };
+        let raw = p.import_token.read(cx).value().trim().to_string();
+        let jwk_raw = p.issuer_jwk.read(cx).value().trim().to_string();
+        let jwk_opt = (!jwk_raw.is_empty()).then_some(jwk_raw.as_str());
+
+        let parsed_res = if raw.contains('~') || raw.contains('.') {
+            parse_sd_jwt(&raw, jwk_opt)
+        } else {
+            parse_mdoc_text(&raw, jwk_opt)
+        };
+
+        let parsed = match parsed_res {
+            Ok(p) => p,
+            Err(err) => {
+                if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                    panel.message = err;
+                    panel.is_error = true;
+                }
+                cx.notify();
+                return;
+            }
+        };
+
+        let slide = self.current_slide;
+        let cmds = parsed.build_sheet_commands(self.presentation(), slide);
+        if !cmds.is_empty() {
+            self.run_sheet(cmds, cx);
+        }
+        self.regenerate_sd_jwt(cx);
+
+        let fmt_str = match parsed.format {
+            ParsedCredentialFormat::SdJwt => "SD-JWT",
+            ParsedCredentialFormat::Mdoc => "mDOC",
+        };
+        let verified_str = parsed.digests_verified.to_string();
+        let total_str = parsed.digests_total.to_string();
+        let sig_str = match parsed.signature_valid {
+            Some(true) => "OK",
+            Some(false) => "INVALID",
+            None => "N/A",
+        };
+        let msg = tr_format(
+            "xlsx.sd-jwt.import-ok",
+            &[
+                ("format", &fmt_str),
+                ("verified", &verified_str),
+                ("total", &total_str),
+                ("sig", &sig_str),
+            ],
+        );
+        if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+            panel.message = msg;
+            panel.is_error = parsed.signature_valid == Some(false);
+        }
+        cx.notify();
+    }
+
     pub(crate) fn bind_selection_to_sd_jwt(&mut self, selective: bool, cx: &mut Context<Self>) {
         self.commit_cell_edit(cx);
         let Some(p) = self.sheet_state().and_then(|s| s.panels.sd_jwt.as_ref()) else {
@@ -385,6 +451,7 @@ impl SlideEditor {
     pub fn sd_jwt_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.sheet_state()?.panels.sd_jwt.as_ref()?;
         let include_cnf = p.include_cnf;
+        let show_import = p.show_import;
         let show_advanced = p.show_advanced;
         let total_claims = p.bindings.claims.len();
         let disclosed_count = p
@@ -481,8 +548,42 @@ impl SlideEditor {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.apply_sd_jwt_template(SdJwtTemplateKind::Iso18013Mdl, cx)
                             })),
+                    )
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-toggle-import")
+                            .small()
+                            .label(text(if show_import {
+                                "xlsx.sd-jwt.import-hide"
+                            } else {
+                                "xlsx.sd-jwt.import-toggle"
+                            }))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                    panel.show_import = !panel.show_import;
+                                }
+                                cx.notify();
+                            })),
                     ),
             );
+
+        if show_import {
+            body = body
+                .child(div().text_xs().child(text("xlsx.sd-jwt.import-input")))
+                .child(mark(
+                    "import_token",
+                    crate::shell::chrome::text_field(&p.import_token)
+                        .full_width()
+                        .into_any_element(),
+                ))
+                .child(
+                    crate::shell::chrome::action_button("sd-jwt-import-apply")
+                        .small()
+                        .label(text("xlsx.sd-jwt.import-apply"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.import_sd_jwt_or_mdoc(cx)
+                        })),
+                );
+        }
 
         // Step 2: Interactive disclosure list
         body = body.child(div().text_sm().child(text("xlsx.sd-jwt.step2")));
@@ -547,25 +648,51 @@ impl SlideEditor {
                 );
 
             let pres_copy = presentation_token.clone();
+            let vp_step3_copy = vp_token.clone();
             body = body.child(
-                crate::shell::chrome::action_button("sd-jwt-copy-presentation")
-                    .primary()
-                    .label(text("xlsx.sd-jwt.copy-sd-jwt"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.regenerate_sd_jwt(cx);
-                        let token = this
-                            .sheet_state()
-                            .and_then(|s| s.panels.sd_jwt.as_ref())
-                            .and_then(|p| p.output.as_ref())
-                            .map(|o| o.sd_jwt_presentation.clone())
-                            .unwrap_or_else(|| pres_copy.clone());
-                        cx.write_to_clipboard(ClipboardItem::new_string(token));
-                        if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
-                            panel.message = text("xlsx.sd-jwt.copied").to_string();
-                            panel.is_error = false;
-                        }
-                        cx.notify();
-                    })),
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-copy-presentation")
+                            .primary()
+                            .label(text("xlsx.sd-jwt.copy-sd-jwt"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.regenerate_sd_jwt(cx);
+                                let token = this
+                                    .sheet_state()
+                                    .and_then(|s| s.panels.sd_jwt.as_ref())
+                                    .and_then(|p| p.output.as_ref())
+                                    .map(|o| o.sd_jwt_presentation.clone())
+                                    .unwrap_or_else(|| pres_copy.clone());
+                                cx.write_to_clipboard(ClipboardItem::new_string(token));
+                                if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                    panel.message = text("xlsx.sd-jwt.copied").to_string();
+                                    panel.is_error = false;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-copy-vp-step3")
+                            .small()
+                            .label(text("xlsx.sd-jwt.copy-vp-short"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.regenerate_sd_jwt(cx);
+                                let token = this
+                                    .sheet_state()
+                                    .and_then(|s| s.panels.sd_jwt.as_ref())
+                                    .and_then(|p| p.kb_output.as_ref())
+                                    .map(|k| k.vp_token.clone())
+                                    .unwrap_or_else(|| vp_step3_copy.clone());
+                                cx.write_to_clipboard(ClipboardItem::new_string(token));
+                                if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                    panel.message = text("xlsx.sd-jwt.copied").to_string();
+                                    panel.is_error = false;
+                                }
+                                cx.notify();
+                            })),
+                    ),
             );
         }
 
@@ -869,6 +996,12 @@ mod tests {
                 "xlsx.sd-jwt.copy-schema",
                 "xlsx.sd-jwt.schema-inferred",
                 "xlsx.sd-jwt.schema-applied",
+                "xlsx.sd-jwt.import-toggle",
+                "xlsx.sd-jwt.import-hide",
+                "xlsx.sd-jwt.import-input",
+                "xlsx.sd-jwt.import-apply",
+                "xlsx.sd-jwt.import-ok",
+                "xlsx.sd-jwt.copy-vp-short",
             ] {
                 assert!(
                     table.lines().any(|l| l.split('\t').next() == Some(id)),

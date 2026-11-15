@@ -55,6 +55,7 @@ pub mod sheet_ops;
 pub mod form_control;
 pub mod sd_jwt;
 pub mod sd_jwt_binding;
+pub mod sd_jwt_import;
 pub mod sd_jwt_schema;
 pub mod timeline;
 pub mod slicer;
@@ -118,6 +119,10 @@ pub use sd_jwt::{
 pub use sd_jwt_binding::{
     BindingSource, BoundClaim, ClaimValue, DiscloseBinding, SdJwtTemplateKind, SheetClaimBindings,
     bind_range_as_sd_claim_commands, build_sd_jwt_template_commands, extract_sheet_claims,
+};
+pub use sd_jwt_import::{
+    CborValue, ParsedClaim, ParsedCredential, ParsedCredentialFormat, decode_cbor, encode_cbor,
+    parse_mdoc_bytes, parse_mdoc_text, parse_sd_jwt,
 };
 pub use sd_jwt_schema::{
     SdJwtSchema, SdJwtSchemaClaim, SdJwtSchemaTableColumn, SdJwtSchemaValueType,

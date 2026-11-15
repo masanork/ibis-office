@@ -2954,3 +2954,9 @@ xlsx.sd-jwt.apply-schema	Apply Schema to Sheet
 xlsx.sd-jwt.copy-schema	Copy Schema
 xlsx.sd-jwt.schema-inferred	Inferred custom schema from worksheet bindings.
 xlsx.sd-jwt.schema-applied	Generated worksheet form from custom schema.
+xlsx.sd-jwt.import-toggle	Import .sd-jwt / .mdoc ▸
+xlsx.sd-jwt.import-hide	Hide Import ▾
+xlsx.sd-jwt.import-input	Paste .sd-jwt or .mdoc (Base64 / Hex)
+xlsx.sd-jwt.import-apply	Verify & Expand to Sheet
+xlsx.sd-jwt.import-ok	Imported {format} (digests {verified}/{total} verified, signature: {sig}).
+xlsx.sd-jwt.copy-vp-short	Copy VP (Presentation)

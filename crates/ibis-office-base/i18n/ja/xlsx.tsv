@@ -2951,3 +2951,9 @@ xlsx.sd-jwt.apply-schema	スキーマからシート生成
 xlsx.sd-jwt.copy-schema	スキーマをコピー
 xlsx.sd-jwt.schema-inferred	シートのバインディングからスキーマを推論しました。
 xlsx.sd-jwt.schema-applied	カスタムスキーマをシートへ展開しました。
+xlsx.sd-jwt.import-toggle	手元の .sd-jwt / .mdoc を読み込む ▸
+xlsx.sd-jwt.import-hide	読み込み欄を閉じる ▾
+xlsx.sd-jwt.import-input	.sd-jwt または .mdoc（Base64 / Hex）を貼り付け
+xlsx.sd-jwt.import-apply	検証してシートに展開
+xlsx.sd-jwt.import-ok	{format} を読み込みました（ダイジェスト {verified}/{total} 一致・署名: {sig}）。
+xlsx.sd-jwt.copy-vp-short	VP をコピー (提示用)
