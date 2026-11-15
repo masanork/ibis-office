@@ -39,6 +39,25 @@ impl SlideEditor {
         }
     }
 
+    /// A new, empty Markdown document backed by a `.docx` flow model (`Document1.md` / `文書 1.md`).
+    pub fn new_markdown_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_edit(window, cx);
+        let opened = match ibis_pptx::markdown::open_markdown(Vec::new()) {
+            Ok(opened) => opened,
+            Err(err) => {
+                self.status = Some(crate::i18n::format("file.new-failed", &[("error", &err)]).into());
+                return cx.notify();
+            }
+        };
+        let name: SharedString = crate::i18n::text("_shell.document-1-md");
+        #[cfg(not(target_family = "wasm"))]
+        if self.has_document {
+            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            return;
+        }
+        self.show_new(opened, name, window, cx);
+    }
+
     /// Show `opened`, a new file named `name` that has no path yet.
     fn show_new(&mut self, opened: ibis_pptx::Opened, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.load(opened.presentation, name, window, cx);

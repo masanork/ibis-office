@@ -129,7 +129,12 @@ impl SlideEditor {
             .child(crate::i18n::text("start.open"))
             .on_click(cx.listener(|this, _, window, cx| this.open_file(&OpenFile, window, cx)));
         // The first badge's left edge under 新規作成's.
-        let new_files = div().flex().gap_4().ml(px(BADGE_OVERHANG - TILE_PADDING)).children(crate::format::infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)));
+        let new_files = div()
+            .flex()
+            .gap_4()
+            .ml(px(BADGE_OVERHANG - TILE_PADDING))
+            .children(crate::format::infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)))
+            .child(self.new_markdown_tile(cx));
 
         div()
             .id("start-view")
@@ -203,6 +208,21 @@ impl SlideEditor {
     /// One kind of 新規作成: a blank page with the format's badge on its
     /// lower left; a click makes an empty file of it.
     fn new_file_tile(&self, kind: ibis_pptx::Kind, label: &'static str, color: u32, cx: &mut Context<Self>) -> AnyElement {
+        self.render_new_tile(label, color, move |this, window, cx| this.new_file(kind, window, cx), cx)
+    }
+
+    /// 新規作成 tile for a blank Markdown document (`.md`).
+    fn new_markdown_tile(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.render_new_tile("md", 0x334155, |this, window, cx| this.new_markdown_file(window, cx), cx)
+    }
+
+    fn render_new_tile(
+        &self,
+        label: &'static str,
+        color: u32,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let page = div()
             .w(px(PAGE_WIDTH))
             .h(px(PAGE_HEIGHT))
@@ -229,7 +249,7 @@ impl SlideEditor {
             .cursor_pointer()
             .hover(|s| s.bg(rgb(0xf0f4f9)))
             .child(div().relative().child(page).child(badge))
-            .on_click(cx.listener(move |this, _, window, cx| this.new_file(kind, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             .into_any_element()
     }
 

@@ -34,6 +34,7 @@ help.help	Help
 help.shortcuts	Keyboard Shortcuts
 help.about	About Docs
 file.new.document	Document
+file.new.markdown	Markdown
 file.new.workbook	Spreadsheet
 file.new.presentation	Presentation
 file.open	Open…
@@ -325,6 +326,7 @@ _shell.chart-editor	Chart Editor
 _shell.macros-in-this-file-will-not-run-they-are-preser	Macros in this file will not run (they are preserved when you save)
 _shell.loading	Loading...
 _shell.document-1-docx	Document1.docx
+_shell.document-1-md	Document1.md
 _shell.presentation-1-pptx	Presentation1.pptx
 _shell.this-file-cannot-be-saved-yet	This file cannot be saved yet
 _shell.copy-saved	Copy saved

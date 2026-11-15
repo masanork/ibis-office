@@ -34,6 +34,7 @@ help.help	ヘルプ
 help.shortcuts	キーボード ショートカット
 help.about	Docs について
 file.new.document	ドキュメント
+file.new.markdown	Markdown
 file.new.workbook	スプレッドシート
 file.new.presentation	プレゼンテーション
 file.open	開く…
@@ -368,6 +369,7 @@ _shell.chart-editor	グラフ エディタ
 _shell.macros-in-this-file-will-not-run-they-are-preser	このファイルのマクロは実行されません（保存してもマクロはそのまま残ります）
 _shell.loading	読み込み中...
 _shell.document-1-docx	文書 1.docx
+_shell.document-1-md	文書 1.md
 _shell.presentation-1-pptx	プレゼンテーション 1.pptx
 _shell.this-file-cannot-be-saved-yet	このファイルはまだ保存できません
 _shell.copy-saved	コピーを保存しました
