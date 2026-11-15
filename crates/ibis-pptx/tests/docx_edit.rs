@@ -8368,3 +8368,57 @@ fn paragraph_id_comments_keep_their_thread_identity() {
     assert_eq!(ids.len(), 6);
     assert_valid_para_ids(&ids);
 }
+
+#[test]
+fn paragraph_id_style_edit_keeps_identities_on_paragraphs_only() {
+    let data = para_id_docx(r#"<w:p w14:paraId="00000002"><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:t>First</w:t></w:r></w:p><w:p w14:paraId="1234ABCD"><w:r><w:t>Second</w:t></w:r></w:p>"#);
+    let mut package = ibis_ooxml::Package::open(data).unwrap();
+    package.set_bytes("word/styles.xml", br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:pPr><w:jc w:val="left"/></w:pPr></w:style></w:styles>"#.to_vec());
+    package.set_override("word/styles.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml").unwrap();
+    package.add_relationship("word/document.xml", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles", "styles.xml", false).unwrap();
+    let data = package.save(SaveOptions::default()).unwrap();
+    let ids = body_para_ids(&data);
+    assert_eq!(ids, ["00000002", "1234ABCD"]);
+    let out = scenario_data("style paragraph identities", data, &["word/styles.xml"], |doc| {
+        let mut style = doc.styles.styles["Normal"].clone();
+        style.para.align = Some(FlowAlign::Center);
+        vec![FlowCommand::SetStyle { id: "Normal".into(), style: Some(style) }]
+    });
+    assert_eq!(body_para_ids(&out.saved), ids);
+    let package = ibis_ooxml::Package::open(out.saved.clone()).unwrap();
+    let bytes = package.read("word/styles.xml").unwrap();
+    let xml = roxmltree::Document::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    assert!(!xml.descendants().any(|n| n.attributes().any(|a| a.name() == "paraId")));
+    let style = xml.descendants().find(|n| n.attribute(("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "styleId")) == Some("Normal")).unwrap();
+    let align = style.descendants().find(|n| n.has_tag_name(("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "jc"))).unwrap();
+    assert_eq!(align.attribute(("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "val")), Some("center"));
+    let reopened = ibis_pptx::open(out.saved).unwrap();
+    assert_eq!(flow(&reopened.presentation).styles.styles["Normal"].para.align, Some(FlowAlign::Center));
+    let saved_again = reopened.source.save(&reopened.presentation, SaveOptions::default()).unwrap();
+    assert_eq!(body_para_ids(&saved_again), ids);
+}
+
+#[test]
+fn paragraph_id_default_w14_namespace_uses_named_prefix() {
+    let data = para_id_docx("<w:p><w:r><w:t>First</w:t></w:r></w:p>");
+    let mut package = ibis_ooxml::Package::open(data).unwrap();
+    let bytes = package.read("word/document.xml").unwrap();
+    let xml = std::str::from_utf8(&bytes).unwrap().replace("xmlns:w14=", "xmlns=");
+    package.set_bytes("word/document.xml", xml.into_bytes());
+    let data = package.save(SaveOptions::default()).unwrap();
+    let out = scenario_data("default namespace paragraph identities", data, BODY, |doc| {
+        vec![FlowCommand::InsertText { at: FlowPos::new(body_paragraphs(doc)[0].id, 2), text: "!".into(), format: None }]
+    });
+    let package = ibis_ooxml::Package::open(out.saved.clone()).unwrap();
+    let bytes = package.read("word/document.xml").unwrap();
+    let xml = std::str::from_utf8(&bytes).unwrap();
+    assert!(!xml.contains(" :paraId="), "{xml}");
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let p = doc.descendants().find(|n| n.has_tag_name(("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "p"))).unwrap();
+    let w14 = "http://schemas.microsoft.com/office/word/2010/wordml";
+    assert!(p.namespaces().any(|ns| ns.uri() == w14 && ns.name().is_some_and(|prefix| !prefix.is_empty())));
+    assert_valid_para_ids(&body_para_ids(&out.saved));
+    assert_eq!(p.attribute((w14, "paraId")), Some("00000005"));
+    let reopened = ibis_pptx::open(out.saved).unwrap();
+    assert_eq!(body_paragraphs(flow(&reopened.presentation))[0].text(), "Fi!rst");
+}

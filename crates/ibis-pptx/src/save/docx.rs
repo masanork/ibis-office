@@ -561,16 +561,21 @@ fn write_theme(package: &mut Package, main: &str, colors: &[(String, ibis_doc_mo
     Ok(())
 }
 
-/// Write an identity using the part's Word 2010 prefix (which need not be w14).
-fn set_para_id(doc: &mut XmlDocument, p: NodeId, id: &str) {
-    let prefix = match doc.lookup_prefix(p, W14_NS) {
+/// Return a named Word 2010 prefix: a default namespace cannot qualify attributes.
+fn ensure_w14_prefix(doc: &mut XmlDocument, node: NodeId) -> String {
+    match doc.lookup_prefix(node, W14_NS).filter(|prefix| !prefix.is_empty()) {
         Some(prefix) => prefix,
         None => {
             let root = doc.root_element().unwrap_or(XmlDocument::ROOT);
             doc.set_attr(root, "xmlns:w14", W14_NS);
             "w14".to_string()
         }
-    };
+    }
+}
+
+/// Write an identity using the part's Word 2010 prefix (which need not be w14).
+fn set_para_id(doc: &mut XmlDocument, p: NodeId, id: &str) {
+    let prefix = ensure_w14_prefix(doc, p);
     doc.set_attr(p, &format!("{prefix}:paraId"), id);
 }
 
@@ -1059,10 +1064,7 @@ fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model:
         let pristine = package.xml(&part)?;
         let doc = package.xml_mut(&part)?;
         let root = doc.root_element().ok_or_else(|| unsupported("空の comments.xml"))?;
-        if doc.lookup_prefix(root, W14_NS).is_none() {
-            doc.set_attr(root, "xmlns:w14", W14_NS);
-        }
-        let w14 = doc.lookup_prefix(root, W14_NS).unwrap_or_else(|| "w14".into());
+        let w14 = ensure_w14_prefix(doc, root);
         let mut writer = Writer { para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
         writer.resolve_nodes();
         let find = |w: &Writer, id: u32| w.doc.elements(root).find(|&e| w.doc.local_name(e) == "comment" && w.doc.attr_local(e, "id") == Some(id.to_string().as_str()));
@@ -1675,20 +1677,18 @@ fn write_image_quality_settings(
     let doc = package.xml_mut(&part)?;
     let root = doc.root_element().ok_or_else(|| unsupported("空の settings.xml"))?;
 
-    if doc.lookup_prefix(root, W14_NS).is_none() {
-        doc.set_attr(root, "xmlns:w14", W14_NS);
-    }
+    let w14 = ensure_w14_prefix(doc, root);
 
     // w14:defaultImageDpi
     let existing_dpi = doc.elements(root).find(|&c| doc.local_name(c) == "defaultImageDpi");
     match (existing_dpi, default_dpi) {
         (Some(e), None) => doc.detach(e),
         (Some(e), Some(dpi)) => {
-            doc.set_attr(e, "w14:val", &dpi.to_string());
+            doc.set_attr(e, &format!("{w14}:val"), &dpi.to_string());
         }
         (None, Some(dpi)) => {
-            let e = doc.append_element(root, "w14:defaultImageDpi");
-            doc.set_attr(e, "w14:val", &dpi.to_string());
+            let e = doc.append_element(root, &format!("{w14}:defaultImageDpi"));
+            doc.set_attr(e, &format!("{w14}:val"), &dpi.to_string());
         }
         (None, None) => {}
     }
@@ -1699,7 +1699,7 @@ fn write_image_quality_settings(
         (Some(e), false) => doc.detach(e),
         (Some(_e), true) => {}
         (None, true) => {
-            doc.append_element(root, "w14:discardImageEditingData");
+            doc.append_element(root, &format!("{w14}:discardImageEditingData"));
         }
         (None, false) => {}
     }
@@ -3228,6 +3228,8 @@ impl Writer<'_> {
         // marks (bookmarks, a field's start) are written.
         self.clean_copy(node);
         let template = FlowParagraph { bookmarks: Vec::new(), field_start: None, field_end: false, section_break: ibis_doc_model::SectionBreak::None, section: None, subdoc: None, ..template.clone() };
+        let id = new.para_id.clone().or_else(|| self.doc.attr_local(node, "paraId").map(str::to_string)).unwrap_or_else(|| self.para_ids.fresh());
+        set_para_id(self.doc, node, &id);
         self.paragraph_props(node, &template, new)?;
         Ok(())
     }
@@ -4923,6 +4925,8 @@ impl Writer<'_> {
         if old.runs != new.runs || self.paragraph_group_changed(old, new) {
             self.prune_wrappers(p);
         }
+        let id = new.para_id.clone().or_else(|| self.doc.attr_local(p, "paraId").map(str::to_string)).unwrap_or_else(|| self.para_ids.fresh());
+        set_para_id(self.doc, p, &id);
         self.paragraph_props(p, old, new)?;
         Ok(used)
     }
@@ -5704,10 +5708,7 @@ impl Writer<'_> {
                     flush(self, run, &mut text);
                     let char_to_show = if *checked { *checked_char } else { *unchecked_char };
                     let root = self.doc.root_element().unwrap_or(XmlDocument::ROOT);
-                    if self.doc.lookup_prefix(root, W14_NS).is_none() {
-                        self.doc.set_attr(root, "xmlns:w14", W14_NS);
-                    }
-                    let w14 = self.doc.lookup_prefix(root, W14_NS).unwrap_or_else(|| "w14".into());
+                    let w14 = ensure_w14_prefix(self.doc, root);
 
                     let candidate = original.filter(|&n| {
                         self.doc.local_name(n) == "sdt" && self.doc.child(n, "sdtPr").and_then(|pr| self.doc.child(pr, "checkbox")).is_some()
@@ -6906,10 +6907,7 @@ impl Writer<'_> {
 
     fn w14_prefix(&mut self) -> String {
         let root = self.doc.root_element().unwrap_or(XmlDocument::ROOT);
-        if self.doc.lookup_prefix(root, W14_NS).is_none() {
-            self.doc.set_attr(root, "xmlns:w14", W14_NS);
-        }
-        self.doc.lookup_prefix(root, W14_NS).unwrap_or_else(|| "w14".into())
+        ensure_w14_prefix(self.doc, root)
     }
 
     /// Make `w14` an ignorable namespace of the part (`mc:Ignorable`), so a reader that does not know Word 2010's extensions skips them.
@@ -7348,9 +7346,8 @@ impl Writer<'_> {
     }
 
     /// Write the paragraph's own formatting (`w:pPr`).
+    /// Also used for style definitions; paragraph callers write identities separately.
     fn paragraph_props(&mut self, p: NodeId, old: &FlowParagraph, new: &FlowParagraph) -> Result<(), Error> {
-        let id = new.para_id.clone().or_else(|| self.doc.attr_local(p, "paraId").map(str::to_string)).unwrap_or_else(|| self.para_ids.fresh());
-        set_para_id(self.doc, p, &id);
         if old.bookmarks != new.bookmarks || old.field_start != new.field_start || old.field_end != new.field_end {
             self.paragraph_marks(p, old, new)?;
         }
