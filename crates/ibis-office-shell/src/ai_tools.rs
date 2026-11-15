@@ -13,6 +13,7 @@ use ibis_doc_model::command::Command;
 use ibis_doc_model::flow::FlowAlign;
 use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange, RunChange};
 use ibis_doc_model::model::SlideId;
+use ibis_doc_model::sd_jwt_binding::SdJwtTemplateKind;
 use ibis_doc_model::sheet::{CellAlign, CellRange, CellVerticalAlign};
 use ibis_doc_model::sheet_command::Axis;
 use serde::Deserialize;
@@ -311,6 +312,70 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                         "text": { "type": ["string", "null"], "description": "Comment text, or null/empty to remove." }
                     },
                     "required": ["cell", "text"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "inspect_vc_bindings",
+                description: "Inspect SD-JWT Verifiable Credential bindings (claim.*, sd.*, disclose.*) on a worksheet.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "apply_vc_template",
+                description: "Populate a worksheet with a built-in SD-JWT VC template ('pid' for EUDI PID / JPKI identity, or 'mdl' for ISO 18013-5 driving licence).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "template": { "type": "string", "enum": ["pid", "mdl"] }
+                    },
+                    "required": ["template"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "infer_vc_schema",
+                description: "Infer a portable SD-JWT VC schema JSON from the current worksheet layout, optionally applying bindings to the sheet.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "vct": { "type": "string", "description": "Optional Verifiable Credential Type URI." },
+                        "apply": { "type": "boolean", "description": "If true, scaffold/apply the inferred bindings to the sheet." }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "bind_vc_claim",
+                description: "Bind a cell or range on a worksheet as an SD-JWT VC claim (selective sd.<path> with disclose checkbox, or mandatory claim.<path>).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "range": { "type": "string", "description": "A1 cell or range, e.g. 'B2' or 'B10:C12'." },
+                        "claim_path": { "type": "string", "description": "Claim path, e.g. 'family_name', 'address.locality', or 'vct'." },
+                        "selective": { "type": "boolean", "description": "Default true (sd.<path> with disclose toggle); false for always-disclosed claim.<path>." }
+                    },
+                    "required": ["range", "claim_path"],
                     "additionalProperties": false
                 }),
             },
@@ -1164,6 +1229,34 @@ pub fn parse_set_cell_comment_command(
     let args: SetCellCommentArgs =
         serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
     build_set_comment_command(slide, &args.cell, args.text)
+}
+
+#[derive(Deserialize)]
+pub struct ApplyVcTemplateArgs {
+    pub template: String,
+}
+
+pub fn parse_vc_template_kind(raw: &str) -> Result<SdJwtTemplateKind, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "pid" => Ok(SdJwtTemplateKind::Pid),
+        "mdl" | "iso18013" | "iso18013_mdl" => Ok(SdJwtTemplateKind::Iso18013Mdl),
+        other => Err(format!("unknown VC template '{other}' (expected 'pid' or 'mdl')")),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct InferVcSchemaArgs {
+    pub vct: Option<String>,
+    #[serde(default)]
+    pub apply: bool,
+}
+
+#[derive(Deserialize)]
+pub struct BindVcClaimArgs {
+    pub range: String,
+    pub claim_path: String,
+    #[serde(default = "default_true")]
+    pub selective: bool,
 }
 
 pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command, String> {

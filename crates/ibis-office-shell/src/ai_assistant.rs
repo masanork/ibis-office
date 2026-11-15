@@ -10,8 +10,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_doc_model::EmuRect;
 use ibis_doc_model::ai_sheet::{
-    audit_sheet_errors, find_sheet_cells, format_range, parse_hex_rgb, read_sheet_range,
-    resolve_sheet_slide, workbook_overview,
+    audit_sheet_errors, find_sheet_cells, format_range, parse_cell_range, parse_hex_rgb,
+    read_sheet_range, resolve_sheet_slide, workbook_overview,
 };
 use ibis_doc_model::command::Command;
 use ibis_doc_model::drawing::{Color, Fill, Geometry};
@@ -19,6 +19,11 @@ use ibis_doc_model::flow::{Block, FlowParagraph, FlowRunKind};
 use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange};
 use ibis_doc_model::machine_readability::{CandidateKind, candidates as mr_candidates};
 use ibis_doc_model::model::{AutoShape, Shape, ShapeId, ShapeKind, Slide, SlideId};
+use ibis_doc_model::sd_jwt_binding::{
+    BindingSource, ClaimValue, bind_range_as_sd_claim_commands, build_sd_jwt_template_commands,
+    extract_sheet_claims,
+};
+use ibis_doc_model::sd_jwt_schema::SdJwtSchema;
 use ibis_doc_model::sheet_calc::sheet_of_slide;
 use ibis_doc_model::sheet_command::SheetCommand;
 use ibis_doc_model::text::{TextBody, TextStyle};
@@ -28,8 +33,9 @@ use crate::with_format;
 
 use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_chat_completion};
 use crate::ai_tools::{
-    AddSlideArgs, FindCellsArgs, FindTextArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs,
-    MAX_READ_CELLS, MoveSlideArgs, ReadParagraphsArgs, ReplaceParagraphArgs, SetParagraphStyleArgs,
+    AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
+    InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, MAX_READ_CELLS,
+    MoveSlideArgs, ReadParagraphsArgs, ReplaceParagraphArgs, SetParagraphStyleArgs,
     SetRunFormatArgs, SetShapeStyleArgs, SetShapeTextArgs, SetSlideNotesArgs,
     SlideIndexOptionalArg, SlideIndexRequiredArg, build_replace_paragraph_command,
     build_set_run_format_command, docx_tool_definitions, parse_clear_cells_command,
@@ -37,7 +43,7 @@ use crate::ai_tools::{
     parse_merge_cells_command, parse_range_arg, parse_set_axis_size_command,
     parse_set_cell_comment_command, parse_set_cells_command, parse_set_format_command,
     parse_set_paragraph_align_command, parse_sheet_arg, parse_switch_sheet_arg,
-    pptx_tool_definitions, spreadsheet_tool_definitions,
+    parse_vc_template_kind, pptx_tool_definitions, spreadsheet_tool_definitions,
 };
 use crate::chrome::SidebarPanel;
 use crate::editor::SlideEditor;
@@ -1144,6 +1150,209 @@ impl SlideEditor {
                     ),
                 }
             }
+            "inspect_vc_bindings" => {
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ inspect_vc_bindings: {e}"),
+                        );
+                    }
+                };
+                match extract_sheet_claims(self.presentation(), slide) {
+                    None => (
+                        json!({
+                            "bound": false,
+                            "claims": [],
+                            "disclosures": [],
+                            "hint": "No SD-JWT bindings found. Use apply_vc_template, infer_vc_schema, or bind_vc_claim to set up VC bindings."
+                        })
+                        .to_string(),
+                        None,
+                        "✓ inspect_vc_bindings (0 claims)".to_string(),
+                    ),
+                    Some(bindings) => {
+                        let claims: Vec<_> = bindings
+                            .claims
+                            .iter()
+                            .map(|c| {
+                                let source = match c.source {
+                                    BindingSource::Cell { row, column } => {
+                                        format!("cell:{}{}", column_letters(column), row + 1)
+                                    }
+                                    BindingSource::Control { shape } => {
+                                        format!("control:{}", shape.0)
+                                    }
+                                };
+                                json!({
+                                    "path": c.path_str,
+                                    "selective": c.selective,
+                                    "disclose": c.disclose,
+                                    "value": claim_value_to_json(&c.value),
+                                    "source": source,
+                                })
+                            })
+                            .collect();
+                        let count = claims.len();
+                        let has_vct = bindings.claims.iter().any(|c| c.path_str == "vct");
+                        let has_iss = bindings.claims.iter().any(|c| c.path_str == "iss");
+                        (
+                            json!({
+                                "bound": true,
+                                "claim_count": count,
+                                "has_vct": has_vct,
+                                "has_iss": has_iss,
+                                "claims": claims,
+                            })
+                            .to_string(),
+                            None,
+                            format!("✓ inspect_vc_bindings ({count} claims)"),
+                        )
+                    }
+                }
+            }
+            "apply_vc_template" => {
+                let parsed: Result<ApplyVcTemplateArgs, _> = serde_json::from_str(args);
+                let kind = match parsed.map_err(|e| format!("invalid arguments: {e}")).and_then(|a| {
+                    parse_vc_template_kind(&a.template).map(|k| (a.template, k))
+                }) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ apply_vc_template: {e}"),
+                        );
+                    }
+                };
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ apply_vc_template: {e}"),
+                        );
+                    }
+                };
+                let cmds = build_sd_jwt_template_commands(self.presentation(), slide, kind.1);
+                (
+                    json!({ "ok": true, "template": kind.0, "command_count": cmds.len() })
+                        .to_string(),
+                    Some(Command::Group(cmds)),
+                    format!("✓ apply_vc_template ({})", kind.0),
+                )
+            }
+            "infer_vc_schema" => {
+                let parsed: Result<InferVcSchemaArgs, _> = if args.trim().is_empty() {
+                    Ok(InferVcSchemaArgs {
+                        vct: None,
+                        apply: false,
+                    })
+                } else {
+                    serde_json::from_str(args)
+                };
+                let arg = match parsed {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return (
+                            json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                            None,
+                            format!("✗ infer_vc_schema: {e}"),
+                        );
+                    }
+                };
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ infer_vc_schema: {e}"),
+                        );
+                    }
+                };
+                match SdJwtSchema::infer_from_sheet(self.presentation(), slide, arg.vct.as_deref())
+                {
+                    None => (
+                        json!({ "error": "could not infer VC schema from this worksheet (ensure key-value labels/values or tables exist)" }).to_string(),
+                        None,
+                        "✗ infer_vc_schema: no inferable layout".to_string(),
+                    ),
+                    Some(schema) => {
+                        let schema_json = schema.to_json_pretty();
+                        let claim_count = schema.claims.len();
+                        let cmd = if arg.apply {
+                            let cmds = schema.build_sheet_commands(self.presentation(), slide);
+                            Some(Command::Group(cmds))
+                        } else {
+                            None
+                        };
+                        (
+                            json!({
+                                "ok": true,
+                                "applied": arg.apply,
+                                "claim_count": claim_count,
+                                "schema_json": schema_json,
+                            })
+                            .to_string(),
+                            cmd,
+                            format!("✓ infer_vc_schema ({claim_count} claims, applied={})", arg.apply),
+                        )
+                    }
+                }
+            }
+            "bind_vc_claim" => {
+                let parsed: Result<BindVcClaimArgs, _> = serde_json::from_str(args);
+                let arg = match parsed {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return (
+                            json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                            None,
+                            format!("✗ bind_vc_claim: {e}"),
+                        );
+                    }
+                };
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ bind_vc_claim: {e}"),
+                        );
+                    }
+                };
+                let Some(range) = parse_cell_range(&arg.range) else {
+                    return (
+                        json!({ "error": format!("invalid cell range: {}", arg.range) }).to_string(),
+                        None,
+                        format!("✗ bind_vc_claim: invalid range {}", arg.range),
+                    );
+                };
+                match bind_range_as_sd_claim_commands(
+                    self.presentation(),
+                    slide,
+                    range,
+                    &arg.claim_path,
+                    arg.selective,
+                ) {
+                    None => (
+                        json!({ "error": "invalid claim_path" }).to_string(),
+                        None,
+                        "✗ bind_vc_claim: invalid claim_path".to_string(),
+                    ),
+                    Some((full_name, cmds)) => (
+                        json!({ "ok": true, "binding": full_name, "selective": arg.selective })
+                            .to_string(),
+                        Some(Command::Group(cmds)),
+                        format!("✓ bind_vc_claim ({full_name})"),
+                    ),
+                }
+            }
             other => (
                 json!({ "error": format!("unknown tool: {other}") }).to_string(),
                 None,
@@ -2247,5 +2456,25 @@ impl SlideEditor {
             title: "Assistant".into(),
             body: body.into_any_element(),
         })
+    }
+}
+
+fn claim_value_to_json(val: &ClaimValue) -> serde_json::Value {
+    match val {
+        ClaimValue::Null => serde_json::Value::Null,
+        ClaimValue::Bool(b) => serde_json::Value::Bool(*b),
+        ClaimValue::Int(i) => json!(*i),
+        ClaimValue::Float(f) => json!(*f),
+        ClaimValue::String(s) => serde_json::Value::String(s.clone()),
+        ClaimValue::Array(items) => {
+            serde_json::Value::Array(items.iter().map(claim_value_to_json).collect())
+        }
+        ClaimValue::Object(map) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in map {
+                obj.insert(k.clone(), claim_value_to_json(v));
+            }
+            serde_json::Value::Object(obj)
+        }
     }
 }
