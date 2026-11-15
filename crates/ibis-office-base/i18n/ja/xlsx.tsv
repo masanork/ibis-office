@@ -2945,3 +2945,9 @@ xlsx.sd-jwt.advanced-hide	詳細設定・OID4VP を閉じる ▾
 xlsx.sd-jwt.tag-disclose	[開示]
 xlsx.sd-jwt.tag-hidden	[非開示]
 xlsx.sd-jwt.tag-fixed	[固定]
+xlsx.sd-jwt.schema-section	カスタムスキーマ (JSON)
+xlsx.sd-jwt.infer-schema	シートから推論
+xlsx.sd-jwt.apply-schema	スキーマからシート生成
+xlsx.sd-jwt.copy-schema	スキーマをコピー
+xlsx.sd-jwt.schema-inferred	シートのバインディングからスキーマを推論しました。
+xlsx.sd-jwt.schema-applied	カスタムスキーマをシートへ展開しました。

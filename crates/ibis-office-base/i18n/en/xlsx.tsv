@@ -2948,3 +2948,9 @@ xlsx.sd-jwt.advanced-hide	Hide Advanced & OID4VP ▾
 xlsx.sd-jwt.tag-disclose	[Disclose]
 xlsx.sd-jwt.tag-hidden	[Hidden]
 xlsx.sd-jwt.tag-fixed	[Fixed]
+xlsx.sd-jwt.schema-section	Custom Schema (JSON)
+xlsx.sd-jwt.infer-schema	Infer from Sheet
+xlsx.sd-jwt.apply-schema	Apply Schema to Sheet
+xlsx.sd-jwt.copy-schema	Copy Schema
+xlsx.sd-jwt.schema-inferred	Inferred custom schema from worksheet bindings.
+xlsx.sd-jwt.schema-applied	Generated worksheet form from custom schema.

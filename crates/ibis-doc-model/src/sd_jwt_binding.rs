@@ -85,6 +85,27 @@ impl ClaimValue {
         }
     }
 
+    pub fn as_array(&self) -> Option<&[ClaimValue]> {
+        match self {
+            Self::Array(items) => Some(items.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Parses an RFC 8259 JSON document into a `ClaimValue`.
+    pub fn parse_json(input: &str) -> Result<Self, String> {
+        let mut parser = JsonParser {
+            bytes: input.as_bytes(),
+            pos: 0,
+        };
+        let value = parser.parse_value()?;
+        parser.skip_ws();
+        if parser.pos < parser.bytes.len() {
+            return Err(format!("unexpected trailing characters at byte {}", parser.pos));
+        }
+        Ok(value)
+    }
+
     /// Compact, deterministic JSON serialization (RFC 8259).
     pub fn to_json(&self) -> String {
         let mut out = String::new();
@@ -192,6 +213,229 @@ fn write_escaped_json_string(out: &mut String, s: &str) {
         }
     }
     out.push('"');
+}
+
+struct JsonParser<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn skip_ws(&mut self) {
+        while self.pos < self.bytes.len() {
+            match self.bytes[self.pos] {
+                b' ' | b'\t' | b'\r' | b'\n' => self.pos += 1,
+                _ => break,
+            }
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+
+    fn next_byte(&mut self) -> Result<u8, String> {
+        let b = self
+            .bytes
+            .get(self.pos)
+            .copied()
+            .ok_or_else(|| "unexpected end of JSON".to_string())?;
+        self.pos += 1;
+        Ok(b)
+    }
+
+    fn parse_value(&mut self) -> Result<ClaimValue, String> {
+        self.skip_ws();
+        match self.peek() {
+            Some(b'n') => self.parse_literal(b"null", ClaimValue::Null),
+            Some(b't') => self.parse_literal(b"true", ClaimValue::Bool(true)),
+            Some(b'f') => self.parse_literal(b"false", ClaimValue::Bool(false)),
+            Some(b'"') => self.parse_string().map(ClaimValue::String),
+            Some(b'[') => self.parse_array(),
+            Some(b'{') => self.parse_object(),
+            Some(b'-' | b'0'..=b'9') => self.parse_number(),
+            Some(b) => Err(format!("unexpected byte '{}' at {}", b as char, self.pos)),
+            None => Err("unexpected end of JSON".to_string()),
+        }
+    }
+
+    fn parse_literal(&mut self, expected: &[u8], val: ClaimValue) -> Result<ClaimValue, String> {
+        if self.bytes[self.pos..].starts_with(expected) {
+            self.pos += expected.len();
+            Ok(val)
+        } else {
+            Err(format!("invalid literal at byte {}", self.pos))
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        if self.next_byte()? != b'"' {
+            return Err("expected '\"'".to_string());
+        }
+        let mut out = String::new();
+        loop {
+            let b = self.next_byte()?;
+            match b {
+                b'"' => return Ok(out),
+                b'\\' => {
+                    let esc = self.next_byte()?;
+                    match esc {
+                        b'"' => out.push('"'),
+                        b'\\' => out.push('\\'),
+                        b'/' => out.push('/'),
+                        b'b' => out.push('\x08'),
+                        b'f' => out.push('\x0C'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => {
+                            let code = self.parse_hex4()?;
+                            if (0xD800..=0xDBFF).contains(&code)
+                                && self.bytes[self.pos..].starts_with(b"\\u")
+                            {
+                                self.pos += 2;
+                                let low = self.parse_hex4()?;
+                                if (0xDC00..=0xDFFF).contains(&low) {
+                                    let cp = 0x10000
+                                        + (((code as u32 - 0xD800) << 10) | (low as u32 - 0xDC00));
+                                    let ch = char::from_u32(cp)
+                                        .ok_or_else(|| "invalid surrogate pair".to_string())?;
+                                    out.push(ch);
+                                    continue;
+                                }
+                                return Err("invalid low surrogate".to_string());
+                            }
+                            let ch = char::from_u32(code as u32)
+                                .ok_or_else(|| "invalid unicode escape".to_string())?;
+                            out.push(ch);
+                        }
+                        _ => return Err(format!("invalid escape '\\{}'", esc as char)),
+                    }
+                }
+                c if c < 0x20 => return Err("unescaped control character in string".to_string()),
+                _ => {
+                    // Decode UTF-8 sequence starting at self.pos - 1
+                    let start = self.pos - 1;
+                    let s = std::str::from_utf8(&self.bytes[start..])
+                        .map_err(|_| "invalid UTF-8 in JSON string".to_string())?;
+                    let ch = s.chars().next().ok_or_else(|| "unexpected EOF".to_string())?;
+                    out.push(ch);
+                    self.pos = start + ch.len_utf8();
+                }
+            }
+        }
+    }
+
+    fn parse_hex4(&mut self) -> Result<u16, String> {
+        let mut val: u16 = 0;
+        for _ in 0..4 {
+            let b = self.next_byte()?;
+            let digit = match b {
+                b'0'..=b'9' => (b - b'0') as u16,
+                b'a'..=b'f' => (b - b'a' + 10) as u16,
+                b'A'..=b'F' => (b - b'A' + 10) as u16,
+                _ => return Err("invalid hex digit in \\u escape".to_string()),
+            };
+            val = (val << 4) | digit;
+        }
+        Ok(val)
+    }
+
+    fn parse_number(&mut self) -> Result<ClaimValue, String> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        let mut is_float = false;
+        let digits_start = self.pos;
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.pos += 1;
+        }
+        if self.pos == digits_start {
+            return Err(format!("invalid number at byte {start}"));
+        }
+        if self.peek() == Some(b'.') {
+            is_float = true;
+            self.pos += 1;
+            let frac_start = self.pos;
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+            if self.pos == frac_start {
+                return Err(format!("invalid fraction at byte {start}"));
+            }
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            is_float = true;
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            let exp_start = self.pos;
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+            if self.pos == exp_start {
+                return Err(format!("invalid exponent at byte {start}"));
+            }
+        }
+        let num_str = std::str::from_utf8(&self.bytes[start..self.pos])
+            .map_err(|_| "invalid UTF-8 in number".to_string())?;
+        if !is_float {
+            if let Ok(i) = num_str.parse::<i64>() {
+                return Ok(ClaimValue::Int(i));
+            }
+        }
+        let f = num_str
+            .parse::<f64>()
+            .map_err(|_| format!("invalid float '{num_str}'"))?;
+        Ok(ClaimValue::Float(f))
+    }
+
+    fn parse_array(&mut self) -> Result<ClaimValue, String> {
+        self.next_byte()?; // '['
+        let mut items = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b']') {
+            self.pos += 1;
+            return Ok(ClaimValue::Array(items));
+        }
+        loop {
+            items.push(self.parse_value()?);
+            self.skip_ws();
+            match self.next_byte()? {
+                b',' => continue,
+                b']' => return Ok(ClaimValue::Array(items)),
+                other => return Err(format!("expected ',' or ']', got '{}'", other as char)),
+            }
+        }
+    }
+
+    fn parse_object(&mut self) -> Result<ClaimValue, String> {
+        self.next_byte()?; // '{'
+        let mut map = BTreeMap::new();
+        self.skip_ws();
+        if self.peek() == Some(b'}') {
+            self.pos += 1;
+            return Ok(ClaimValue::Object(map));
+        }
+        loop {
+            self.skip_ws();
+            let key = self.parse_string()?;
+            self.skip_ws();
+            if self.next_byte()? != b':' {
+                return Err("expected ':' after object key".to_string());
+            }
+            let val = self.parse_value()?;
+            map.insert(key, val);
+            self.skip_ws();
+            match self.next_byte()? {
+                b',' => continue,
+                b'}' => return Ok(ClaimValue::Object(map)),
+                other => return Err(format!("expected ',' or '}}', got '{}'", other as char)),
+            }
+        }
+    }
 }
 
 /// Where a claim or disclosure toggle was bound from on the worksheet.
@@ -941,7 +1185,7 @@ pub enum SdJwtTemplateKind {
     Iso18013Mdl,
 }
 
-fn slide_sheet_formula_prefix(presentation: &Presentation, slide_id: SlideId) -> String {
+pub(crate) fn slide_sheet_formula_prefix(presentation: &Presentation, slide_id: SlideId) -> String {
     let raw_name = presentation
         .workbook
         .as_ref()
@@ -952,11 +1196,42 @@ fn slide_sheet_formula_prefix(presentation: &Presentation, slide_id: SlideId) ->
     format!("{}!", ibis_calc::formula::quote_sheet(&raw_name))
 }
 
-fn abs_cell_ref(col: u32, row: u32) -> String {
+pub(crate) fn abs_cell_ref(col: u32, row: u32) -> String {
     let col_letters = crate::sheet::cell_name(col, 0)
         .trim_end_matches('1')
         .to_string();
     format!("${col_letters}${}", row + 1)
+}
+
+pub(crate) fn clear_sd_jwt_bindings_commands(
+    presentation: &Presentation,
+    slide_id: SlideId,
+) -> Vec<Command> {
+    let mut cmds = Vec::new();
+    if let Some(slide) = presentation.slide(slide_id) {
+        for sh in &slide.shapes {
+            if let ShapeKind::Control(c) = &sh.kind
+                && parse_binding_name(&c.name).is_some()
+            {
+                cmds.push(Command::RemoveShape {
+                    slide: slide_id,
+                    shape: sh.id,
+                });
+            }
+        }
+    }
+    if let Some(wb) = presentation.workbook.as_ref() {
+        for dn in &wb.names {
+            if parse_binding_name(&dn.name).is_some() {
+                cmds.push(Command::Sheet(SheetCommand::SetName {
+                    name: dn.name.clone(),
+                    sheet: dn.sheet,
+                    formula: None,
+                }));
+            }
+        }
+    }
+    cmds
 }
 
 /// Generates undoable worksheet commands that bind `range` on `slide_id` to `claim.<path>` or `sd.<path>`
@@ -1077,32 +1352,8 @@ pub fn build_sd_jwt_template_commands(
     checkbox_style.checkbox = true;
 
     let mut cells: Vec<PutCell> = Vec::new();
-    let mut name_cmds: Vec<Command> = Vec::new();
-
     // Remove previous `claim.*`, `sd.*`, `disclose.*` names and form controls on this sheet so switching templates is clean
-    if let Some(slide) = presentation.slide(slide_id) {
-        for sh in &slide.shapes {
-            if let ShapeKind::Control(c) = &sh.kind
-                && parse_binding_name(&c.name).is_some()
-            {
-                name_cmds.push(Command::RemoveShape {
-                    slide: slide_id,
-                    shape: sh.id,
-                });
-            }
-        }
-    }
-    if let Some(wb) = presentation.workbook.as_ref() {
-        for dn in &wb.names {
-            if parse_binding_name(&dn.name).is_some() {
-                name_cmds.push(Command::Sheet(SheetCommand::SetName {
-                    name: dn.name.clone(),
-                    sheet: dn.sheet,
-                    formula: None,
-                }));
-            }
-        }
-    }
+    let mut name_cmds = clear_sd_jwt_bindings_commands(presentation, slide_id);
 
     fn put_text(cells: &mut Vec<crate::sheet_command::PutCell>, r: u32, c: u32, s: &str, style: Option<crate::sheet::CellStyle>) {
         cells.push(crate::sheet_command::PutCell {

@@ -55,6 +55,7 @@ pub mod sheet_ops;
 pub mod form_control;
 pub mod sd_jwt;
 pub mod sd_jwt_binding;
+pub mod sd_jwt_schema;
 pub mod timeline;
 pub mod slicer;
 pub mod solver;
@@ -117,6 +118,9 @@ pub use sd_jwt::{
 pub use sd_jwt_binding::{
     BindingSource, BoundClaim, ClaimValue, DiscloseBinding, SdJwtTemplateKind, SheetClaimBindings,
     bind_range_as_sd_claim_commands, build_sd_jwt_template_commands, extract_sheet_claims,
+};
+pub use sd_jwt_schema::{
+    SdJwtSchema, SdJwtSchemaClaim, SdJwtSchemaTableColumn, SdJwtSchemaValueType,
 };
 pub use shape_geometry::{FormulaGeometry, GeometryDef, GeometryPath, Guide, Outline, PathFill, PathOp, Subpath};
 pub use sheet::{
