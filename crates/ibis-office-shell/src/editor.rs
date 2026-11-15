@@ -1390,6 +1390,7 @@ impl SlideEditor {
                 // Closed (ファイル > 閉じる) while it was read.
                 _ if this.closed != closed => {}
                 Ok(loaded) => {
+                    let signature_presence = loaded.source.has_package_signatures();
                     let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
                     if let Some(bytes) = loaded.jtd_original {
                         this.load_jtd(loaded.presentation, name, bytes, loaded.jtd_gallery, window, cx);
@@ -1505,6 +1506,11 @@ impl SlideEditor {
                     crate::timing::document_loaded(window);
                     if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_slideshow) {
                         with_format!(this, show_start(this, window, cx));
+                    }
+                    match signature_presence {
+                        Ok(true) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.message"), cx),
+                        Err(_) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.unknown"), cx),
+                        Ok(false) => {},
                     }
                     // A file with a password to modify: asked for, or read as it is.
                     if this.is_modify_locked() {

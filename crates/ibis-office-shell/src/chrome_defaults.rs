@@ -177,6 +177,8 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
         item("file.print", "print").shortcut("⌘P").on(|this, window, cx| this.print(window, cx)).into(),
         SEP,
         item("file.info", "info").into(),
+        #[cfg(not(target_family = "wasm"))]
+        item("file.signature-inspect", "verified_user").disabled(!editor.has_document || editor.source.is_none()).on(|this, window, cx| this.inspect_document_signatures(window, cx)).into(),
         item("file.protect", "lock").on(|this, window, cx| this.protect_with_password(window, cx)).into(),
         item("file.language", "language").into(),
         item("file.page-setup", "crop_landscape").into(),

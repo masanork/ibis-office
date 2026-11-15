@@ -28,6 +28,34 @@ pub enum RefusedWay {
 }
 
 impl SlideEditor {
+    /// Confirm before saving changes to a package with signatures, including
+    /// when signature discovery is malformed or unsupported. A cancelled
+    /// confirmation neither writes nor runs the caller's continuation.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn confirm_signature_output(&mut self, way: RefusedWay, window: &mut Window, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) {
+        let is_output = matches!(way, RefusedWay::Copy | RefusedWay::Export);
+        let signature_state = (self.is_dirty() || is_output).then(|| self.source.as_ref().map(|source| source.has_package_signatures())).flatten();
+        let message = match (signature_state, is_output) {
+            (Some(Ok(true)), false) => "file.signature-save.message",
+            (Some(Err(_)), false) => "file.signature-save.unknown",
+            (Some(Ok(true)), true) => "file.signature-output.message",
+            (Some(Err(_)), true) => "file.signature-output.unknown",
+            _ => { then(self, window, cx); return; }
+        };
+        let handle = window.window_handle();
+        let editor = cx.entity().downgrade();
+        let action = std::rc::Rc::new(std::cell::RefCell::new(Some(then)));
+        self.ask(crate::i18n::text("file.signature-save.title"), crate::i18n::text(message),
+            std::rc::Rc::new(move |_, cx| {
+                let Some(then) = action.borrow_mut().take() else { return };
+                let editor = editor.clone();
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        let _ = editor.update(cx, |this, cx| then(this, window, cx));
+                    });
+                });
+            }), cx);
+    }
     /// A copy made while viewing Standard encryption must stay password-protected.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn check_standard_copy_format(&self, path: &std::path::Path) -> Result<(), String> {
@@ -103,14 +131,13 @@ impl SlideEditor {
             return;
         }
         #[cfg(not(target_family = "wasm"))]
-        // A file opened read-only for its password to modify is not written over: 名前を付けて保存 (as Office does).
-        match self.path.clone().filter(|_| !self.is_modify_locked() && !self.standard_read_only) {
-            Some(path) => {
-                let result = self.save_to(path, window);
-                self.report_save(result, cx);
+        self.confirm_signature_output(RefusedWay::Save, window, cx, |this, window, cx| {
+            // A file opened read-only for its password to modify is not overwritten.
+            match this.path.clone().filter(|_| !this.is_modify_locked() && !this.standard_read_only) {
+                Some(path) => { let result = this.save_to(path, window); this.report_save(result, cx); }
+                None => this.save_as_then_confirmed(window, cx, |_, _, _| {}),
             }
-            None => self.save_as(&SaveAs, window, cx),
-        }
+        });
         #[cfg(target_family = "wasm")]
         {
             let _ = window;
@@ -134,6 +161,14 @@ impl SlideEditor {
         if self.refuse_save(cx) {
             return;
         }
+        #[cfg(not(target_family = "wasm"))]
+        { self.confirm_signature_output(RefusedWay::Save, window, cx, move |this, window, cx| this.save_as_then_confirmed(window, cx, then)); }
+        #[cfg(target_family = "wasm")]
+        { let _ = (window, then); self.status = Some(crate::i18n::text("_shell.saving-is-not-yet-available-in-the-browser-versi").into()); cx.notify(); }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn save_as_then_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) {
         if self.source.is_none() {
             self.status = Some(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").into());
             return cx.notify();
@@ -142,7 +177,6 @@ impl SlideEditor {
         if crate::scenario::button_probe::save_as_caught() {
             return;
         }
-        #[cfg(not(target_family = "wasm"))]
         {
             let directory = self.save_dialog_folder();
             let name = self.file_name.clone().unwrap_or_default();
@@ -173,12 +207,6 @@ impl SlideEditor {
             })
             .detach();
         }
-        #[cfg(target_family = "wasm")]
-        {
-            let _ = (window, then);
-            self.status = Some(crate::i18n::text("_shell.saving-is-not-yet-available-in-the-browser-versi").into());
-            cx.notify();
-        }
     }
 
     /// Save (as ⌘S, asking where for a file that has no path yet) and then, once the file is written, `then` (the
@@ -194,6 +222,13 @@ impl SlideEditor {
             return;
         }
         #[cfg(not(target_family = "wasm"))]
+        { self.confirm_signature_output(RefusedWay::Save, window, cx, move |this, window, cx| this.save_then_confirmed(window, cx, then)); }
+        #[cfg(target_family = "wasm")]
+        { let _ = (window, then); self.status = Some(crate::i18n::text("_shell.saving-is-not-yet-available-in-the-browser-versi").into()); cx.notify(); }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn save_then_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) {
         {
             if let Some(path) = self.path.clone().filter(|_| !self.is_modify_locked() && !self.standard_read_only) {
                 let result = self.save_to(path, window);
@@ -236,12 +271,6 @@ impl SlideEditor {
                 .ok();
             })
             .detach();
-        }
-        #[cfg(target_family = "wasm")]
-        {
-            let _ = (window, then);
-            self.status = Some(crate::i18n::text("_shell.saving-is-not-yet-available-in-the-browser-versi").into());
-            cx.notify();
         }
     }
 

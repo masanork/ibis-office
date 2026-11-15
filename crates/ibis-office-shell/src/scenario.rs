@@ -78,6 +78,9 @@ pub mod segment_control_ui;
 pub mod input_components_rendering;
 #[path = "tests/menu_viewport.rs"]
 pub mod menu_viewport;
+#[cfg(not(target_family = "wasm"))]
+#[path = "tests/signature_open.rs"]
+pub mod signature_open_scenarios;
 
 /// What the system's frameworks autoreleased during a scenario (the URLs and strings of font and file lookups: 350 000
 /// of them after 40 scenarios). The scenarios run on a thread with no run loop, which would never drain them.

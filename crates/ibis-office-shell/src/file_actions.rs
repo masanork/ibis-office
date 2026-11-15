@@ -254,6 +254,12 @@ impl SlideEditor {
     /// password is in what is saved).
     #[cfg(not(target_family = "wasm"))]
     pub fn set_protection(&mut self, password: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_pending_edit(window, cx);
+        self.confirm_signature_output(crate::save::RefusedWay::Save, window, cx, move |this, window, cx| this.set_protection_confirmed(password, window, cx));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn set_protection_confirmed(&mut self, password: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let on = password.is_some();
         self.protection_password = password;
         match self.path.clone() {
@@ -293,6 +299,11 @@ impl SlideEditor {
         if self.refuse_as(way, cx) {
             return;
         }
+        self.confirm_signature_output(way, window, cx, move |this, window, cx| this.ask_path_confirmed(way, name, window, cx, then));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn ask_path_confirmed(&mut self, way: crate::save::RefusedWay, name: String, window: &mut Window, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, std::path::PathBuf, &mut Window, &mut Context<Self>) + 'static) {
         let directory = self
             .path
             .as_deref()

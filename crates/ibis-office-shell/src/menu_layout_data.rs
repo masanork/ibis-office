@@ -36,6 +36,7 @@ pub(super) const DOC: &[MenuSpec] = &[
         LayoutItem::CmdOrPlanned { id: "window.open-in-office", key: "menu.planned.doc.file.7" },
         LayoutItem::Sep,
         LayoutItem::Cmd("file.info"),
+        LayoutItem::Cmd("file.signature-inspect"),
         LayoutItem::Sub { id: None, label_key: "menu.group.protect-document", items: &[
             LayoutItem::Cmd("file.protect"),
             LayoutItem::Cmd("docx.mark-as-final"),
@@ -641,6 +642,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
         LayoutItem::CmdOrPlanned { id: "window.open-in-office", key: "menu.planned.sheet.file.5" },
         LayoutItem::Sep,
         LayoutItem::Cmd("file.info"),
+        LayoutItem::Cmd("file.signature-inspect"),
         LayoutItem::Sub { id: None, label_key: "menu.group.protect-workbook", items: &[
             LayoutItem::Cmd("file.protect"),
             LayoutItem::CmdOrPlanned { id: "xlsx.protect-sheet", key: "menu.planned.sheet.file.6" },
@@ -1256,6 +1258,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
         LayoutItem::CmdOrPlanned { id: "window.open-in-office", key: "menu.planned.slide.file.7" },
         LayoutItem::Sep,
         LayoutItem::Cmd("file.info"),
+        LayoutItem::Cmd("file.signature-inspect"),
         LayoutItem::Sub { id: None, label_key: "menu.group.protect-presentation", items: &[
             LayoutItem::Cmd("file.protect"),
             LayoutItem::Cmd("pptx.modify-password"),

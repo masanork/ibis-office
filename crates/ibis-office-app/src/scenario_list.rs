@@ -165,6 +165,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     all.extend(menu_contexts_scenarios::all());
     all.extend(sidebars_scenarios::all());
     all.extend(crate::shell::scenario::title_buttons_scenarios::all());
+    #[cfg(not(target_family = "wasm"))]
+    all.extend(crate::shell::scenario::signature_open_scenarios::all());
     all.extend(bar_keys_scenarios::all());
     all.extend(access_key_menus_scenarios::all());
     all.extend(menu_dump_scenarios::all());

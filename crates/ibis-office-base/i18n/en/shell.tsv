@@ -964,6 +964,25 @@ file.standard-copy-saved	The copy was saved with newer encryption. The original 
 file.standard-copy-format	Save the copy in an Office format to keep password protection.
 start.version	ver.{version}
 shell.open-failed.title	Could not open the file
+file.signature-warning.title	Digital signature
+file.signature-warning.message	This file contains a digital signature. Its validity has not been checked. Editing or saving may invalidate it; keep the signed original.
+file.signature-warning.unknown	The file's signature information could not be checked. Editing or saving may invalidate a signature; keep the original.
+file.signature-save.title	Save changes?
+file.signature-save.message	Saving these changes may invalidate the file's digital signature. Continue saving?
+file.signature-save.unknown	The file's signature information could not be checked. Saving changes may invalidate a signature. Continue saving?
+file.signature-output.message	The signature may not be included in the copy or export, or it may become invalid. Continue?
+file.signature-output.unknown	The file's signature information could not be checked. A signature may not be included in the copy or export, or it may become invalid. Continue?
+file.signature-inspect	Inspect Digital Signatures…
+file.signature-inspect.title	Digital signature inspection
+file.signature-inspect.checking	Inspecting the originally opened file…
+file.signature-inspect.boundary	These observations describe the file as originally opened, not subsequent edits or saves. Certificate trust, revocation, timestamps and complete document coverage are not checked. A match does not mean the signature is valid.
+file.signature-inspect.none	No package signatures were found.
+file.signature-inspect.failed	Signature information could not be inspected or uses an unsupported format. Trust and validity are not established.
+file.signature-inspect.matches	matches
+file.signature-inspect.differs	differs or is missing
+file.signature-inspect.unknown	not checked
+file.signature-inspect.entry	Signature {number}: signature value {value}; package-object digest {object}. Referenced parts: {matching} match, {differing} differ or are missing, {unknown} not checked.
+file.signature-inspect.truncated	Additional signatures are not shown.
 shell.file-name-menu.tooltip	File name menu
 shell.file-name-menu.copy-name	Copy File Name
 shell.file-name-menu.copy-path	Copy File Path

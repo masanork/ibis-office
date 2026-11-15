@@ -54,6 +54,8 @@ pub mod autorecover;
 pub mod editor;
 pub mod embed;
 pub mod file_actions;
+#[cfg(not(target_family = "wasm"))]
+mod signature_ui;
 pub mod file_watch;
 pub(crate) mod view_state;
 pub(crate) mod message_box;
