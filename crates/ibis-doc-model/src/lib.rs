@@ -24,6 +24,7 @@ pub mod compare;
 pub mod connector;
 pub mod cover;
 pub mod date_field;
+pub mod japanese_date_review;
 pub mod eq_field;
 pub mod field_format;
 pub mod drawing;

@@ -66,6 +66,7 @@ impl SlideEditor {
             "goal_seek_panel" => { state.panels.goal_seek = None; }
             "function_panel" => { state.panels.function = None; }
             "sheet_word_count_panel" => { state.panels.word_count = None; }
+            "sheet_date_review_panel" => { state.panels.date_review = None; }
             "data_table_panel" => { state.panels.data_table = None; }
             "scenario_manager_panel" => { state.panels.scenario_manager = None; }
             "sparkline_panel" => { state.panels.sparkline = None; }

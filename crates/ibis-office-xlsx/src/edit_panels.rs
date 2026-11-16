@@ -52,6 +52,7 @@ pub struct EditPanels {
     pub(crate) function: Option<super::function_dialog::FunctionPanel>,
     /// ツール > 文字カウント.
     pub(crate) word_count: Option<super::word_count::WordCountPanel>,
+    pub(crate) date_review: Option<super::date_review::DateReviewPanel>,
     /// ツール > 辞書 / 校閲 > 類義語辞典.
     pub(crate) thesaurus: Option<super::thesaurus_panel::SheetThesaurusPanel>,
     /// 編集 > 条件を選択してジャンプ.
@@ -185,6 +186,7 @@ impl EditPanels {
         self.goal_seek = None;
         self.function = None;
         self.word_count = None;
+        self.date_review = None;
         self.thesaurus = None;
         self.data_table = None;
         self.pivot = None;
@@ -260,6 +262,7 @@ impl crate::shell::editor::SlideEditor {
             .or_else(|| self.series_panel(cx).map(|panel| panel.modal_named("series_panel")))
             .or_else(|| self.goal_seek_panel(cx).map(|panel| panel.modal_named("goal_seek_panel")))
             .or_else(|| self.function_panel(cx).map(|panel| panel.modeless_named("function_panel")))
+            .or_else(|| self.sheet_date_review_panel(cx).map(|panel| panel.modal_named("sheet_date_review_panel")))
             .or_else(|| self.sheet_word_count_panel(cx).map(|panel| panel.modal_named("sheet_word_count_panel")))
             .or_else(|| self.sheet_thesaurus_panel(cx))
             .or_else(|| self.data_table_panel(cx).map(|panel| panel.modal_named("data_table_panel")))

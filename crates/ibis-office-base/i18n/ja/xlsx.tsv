@@ -2957,3 +2957,16 @@ xlsx.sd-jwt.import-input	.sd-jwt または .mdoc（Base64 / Hex）を貼り付�
 xlsx.sd-jwt.import-apply	検証してシートに展開
 xlsx.sd-jwt.import-ok	{format} を読み込みました（ダイジェスト {verified}/{total} 一致・署名: {sig}）。
 xlsx.sd-jwt.copy-vp-short	VP をコピー (提示用)
+xlsx.date-review.title	日付の表記を確認…
+xlsx.date-review.explanation	選択範囲の通常の文字列を確認します。数式・数値・文字ごとの書式やふりがな付きのセルは対象外です。適用後はまとめて元に戻せます。
+xlsx.date-review.pivot	年/月/日の順で、2桁の年は 00〜29 を2000〜2029年、30〜99 を1930〜1999年と推定します。
+xlsx.date-review.empty	選択範囲に対象の文字列がありません。
+xlsx.date-review.candidate	候補:
+xlsx.date-review.inferred	年を推定:
+xlsx.date-review.invalid	日付が不正です
+xlsx.date-review.unrecognized	日付を認識できません
+xlsx.date-review.apply	候補を適用
+xlsx.date-review.stale	値が変更されました。閉じて再確認してください。
+xlsx.date-review.no-changes	適用する変更はありません。
+xlsx.date-review.applied	候補を適用しました。元に戻すことができます。
+xlsx.date-review.rejected	変更できません。読み取り専用またはシート保護の状態を確認してください。

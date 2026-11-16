@@ -229,3 +229,5 @@ pub(crate) use super::word_count::WordCountCrate as _;
 pub(crate) use super::workspace_hooks::WorkspaceHooksCrate as _;
 pub use super::xml_maps::XmlMaps as _;
 pub(crate) use super::xml_maps::XmlMapsCrate as _;
+
+pub use super::date_review::DateReview as _;

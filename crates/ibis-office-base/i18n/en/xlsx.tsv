@@ -2960,3 +2960,16 @@ xlsx.sd-jwt.import-input	Paste .sd-jwt or .mdoc (Base64 / Hex)
 xlsx.sd-jwt.import-apply	Verify & Expand to Sheet
 xlsx.sd-jwt.import-ok	Imported {format} (digests {verified}/{total} verified, signature: {sig}).
 xlsx.sd-jwt.copy-vp-short	Copy VP (Presentation)
+xlsx.date-review.title	Review Dates…
+xlsx.date-review.explanation	Review plain text in the selection. Formulas, numbers, rich text and phonetic cells are excluded. Apply can be undone together.
+xlsx.date-review.pivot	Year/month/day order; two-digit years 00–29 are inferred as 2000–2029; 30–99 as 1930–1999.
+xlsx.date-review.empty	No text cells in the selection.
+xlsx.date-review.candidate	Candidate:
+xlsx.date-review.inferred	Inferred year:
+xlsx.date-review.invalid	Invalid date
+xlsx.date-review.unrecognized	Date not recognized
+xlsx.date-review.apply	Apply candidates
+xlsx.date-review.stale	Values changed. Close and review again.
+xlsx.date-review.no-changes	There are no changes to apply.
+xlsx.date-review.applied	Candidates applied. You can undo this change.
+xlsx.date-review.rejected	Cannot change cells. Check read-only or sheet protection.

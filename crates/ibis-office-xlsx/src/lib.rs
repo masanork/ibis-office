@@ -38,6 +38,7 @@ pub(crate) mod clipboard_xmlss;
 mod function_dialog;
 mod thesaurus_panel;
 mod word_count;
+mod date_review;
 mod quick_analysis;
 pub(crate) mod paste_placement;
 pub mod paste_special_dialog;
