@@ -6508,6 +6508,7 @@ fn issue27_make_edit(s: &mut Scenario, kind: ibis_pptx::Kind) {
             let frame = ibis_doc_model::EmuRect::new(0, 0, 914_400, 914_400);
             e.execute(vec![ibis_doc_model::Command::InsertShape { slide, index: 0, shape: ibis_doc_model::Shape::text_box(id, frame, "a") }], cx);
         }),
+        ibis_pptx::Kind::Pdf => unreachable!("PDF is not part of issue27 scenarios"),
     }
 }
 
@@ -6591,6 +6592,7 @@ fn client_close_button_click_saves_then_closes() {
             ibis_pptx::Kind::Presentation => {
                 assert!(saved.slides.iter().flat_map(|slide| &slide.shapes).any(|shape| shape.text_body().is_some_and(|body| body.paragraphs.iter().flat_map(|p| &p.runs).any(|run| run.text.contains('a')))), "inserted text was saved");
             }
+            ibis_pptx::Kind::Pdf => unreachable!("PDF is not part of issue27 scenarios"),
         }
     }
 }

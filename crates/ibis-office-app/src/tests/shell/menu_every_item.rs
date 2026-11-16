@@ -1208,6 +1208,7 @@ fn static_audit(screen: &Screen) {
                     popups.push(crate::pptx::chrome::chart_context_menu_items(e));
                     popups.push(crate::pptx::chrome::zoom_context_menu_items(e));
                 }
+                Kind::Pdf => unreachable!("PDF is not part of menu_every_item"),
             }
             for entries in &popups {
                 entry_ids(entries, &mut toolbar);
@@ -1258,6 +1259,7 @@ fn static_audit(screen: &Screen) {
             Kind::Document => "doc",
             Kind::Workbook => "sheet",
             Kind::Presentation => "slide",
+            Kind::Pdf => unreachable!("PDF is not part of menu_every_item"),
         };
         let norm = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace() && !"　…・（）()「」、。:：／/-.,▸>".contains(*c)).collect() }; // i18n-ok (Japanese text under test or a name table that matches labels)
         let mut missing: Vec<String> = Vec::new();
@@ -1288,6 +1290,7 @@ fn static_audit(screen: &Screen) {
             Kind::Document => "doc",
             Kind::Workbook => "sheet",
             Kind::Presentation => "slide",
+            Kind::Pdf => unreachable!("PDF is not part of menu_every_item"),
         };
         let norm = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace() && !"　…・（）()「」、。:：／/-.,▸>".contains(*c)).collect() }; // i18n-ok (Japanese text under test or a name table that matches labels)
         let mut spec_ids: HashSet<String> = HashSet::new();

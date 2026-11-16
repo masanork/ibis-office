@@ -51,6 +51,7 @@ fn sample(kind: Kind) -> &'static str {
         Kind::Document => "test/editing/docx-report.docx",
         Kind::Workbook => "test/editing/xlsx-sales.xlsx",
         Kind::Presentation => "test/editing/pptx-comments-modern.pptx",
+        Kind::Pdf => unreachable!("PDF is not part of title_file_menu scenarios"),
     }
 }
 
@@ -80,6 +81,7 @@ fn edit(s: &mut Scenario, kind: Kind) {
             let frame = ibis_doc_model::EmuRect::new(0, 0, 914_400, 914_400);
             e.execute(vec![ibis_doc_model::Command::InsertShape { slide: e.current_slide, index: 0, shape: ibis_doc_model::Shape::text_box(id, frame, "unsaved") }], cx);
         }),
+        Kind::Pdf => unreachable!("PDF is not part of title_file_menu scenarios"),
     }
     assert!(s.with(|e, _| e.is_dirty()));
 }

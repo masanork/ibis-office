@@ -43,6 +43,7 @@ fn edit(s: &mut Scenario, kind: ibis_pptx::Kind) {
                 shape: ibis_doc_model::Shape::text_box(id, frame, "unsaved"),
             }], cx);
         }),
+        ibis_pptx::Kind::Pdf => unreachable!("PDF is not part of native_quit scenarios"),
     }
     assert!(s.with(|e, _| e.is_dirty()));
 }
