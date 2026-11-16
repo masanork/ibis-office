@@ -38,8 +38,8 @@ use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_c
 use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
-    GetVcPublicKeysArgs, GenerateLawtext5SetArgs, LintLawtextArgs, MAX_READ_CELLS, MoveSlideArgs,
-    OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs,
+    FetchEgovLawArgs, GetVcPublicKeysArgs, GenerateLawtext5SetArgs, LintLawtextArgs, MAX_READ_CELLS,
+    MoveSlideArgs, OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs,
     VerifyLawtextAratameArgs, claim_value_to_json, resolve_vc_holder_key,
     resolve_vc_issuer_key, vc_public_keys_json,
     ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
@@ -2830,6 +2830,58 @@ impl SlideEditor {
                             ),
                         }
                     }
+                }
+            }
+            "fetch_egov_law" => {
+                let parsed: Result<FetchEgovLawArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ fetch_egov_law: {e}"),
+                    ),
+                    Ok(a) => match crate::ai_client::fetch_egov_law_xml(
+                        a.law_title.as_deref(),
+                        a.law_num.as_deref(),
+                        a.law_id.as_deref(),
+                    ) {
+                        Ok((id, title, xml)) => match ibis_pptx::lawtext::parse_law_xml(&xml) {
+                            Ok(doc) => {
+                                let lt = ibis_pptx::lawtext::to_lawtext(&doc);
+                                let set_baseline = a.set_as_baseline.unwrap_or(true);
+                                if set_baseline {
+                                    if let Some(p) = self.ai_assistant.as_mut() {
+                                        p.pending_old_lawtext = Some((
+                                            format!("{}.xml", doc.law_title),
+                                            lt.clone(),
+                                        ));
+                                    }
+                                }
+                                (
+                                    json!({
+                                        "law_id": id,
+                                        "law_title": if doc.law_title.is_empty() { title } else { doc.law_title },
+                                        "law_num": doc.law_num,
+                                        "set_as_baseline": set_baseline,
+                                        "lawtext": lt,
+                                    })
+                                    .to_string(),
+                                    None,
+                                    format!("✓ fetch_egov_law ({id})"),
+                                )
+                            }
+                            Err(e) => (
+                                json!({ "error": e.to_string() }).to_string(),
+                                None,
+                                format!("✗ fetch_egov_law parse: {e}"),
+                            ),
+                        },
+                        Err(e) => (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ fetch_egov_law: {e}"),
+                        ),
+                    },
                 }
             }
             "open_markdown_document" => {

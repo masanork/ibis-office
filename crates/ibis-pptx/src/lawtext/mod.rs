@@ -748,6 +748,21 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
             write_lawtext_node(&mut out, node);
         }
     }
+    for appdx in &doc.appdx_tables {
+        out.push_str(&appdx.title);
+        if let Some(rel) = appdx.related_article_num.as_deref().filter(|s| !s.is_empty()) {
+            out.push_str(&format!("（{rel}）"));
+        }
+        out.push_str("\n\n");
+        for row in &appdx.rows {
+            out.push_str("| ");
+            out.push_str(&row.join(" | "));
+            out.push_str(" |\n");
+        }
+        if !appdx.rows.is_empty() {
+            out.push('\n');
+        }
+    }
     out.trim_end().to_string() + "\n"
 }
 
@@ -834,6 +849,7 @@ fn write_lawtext_subitem(out: &mut String, sub: &LawSubitem) {
 pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
     let mut doc = LawDoc::default();
     let mut in_suppl = false;
+    let mut in_appdx = false;
     let mut pending_caption: Option<String> = None;
     let mut cur_article: Option<LawArticle> = None;
     let mut div_stack: Vec<LawNode> = Vec::new();
@@ -861,7 +877,39 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 }
             }
         }
+        if trimmed.starts_with("別表") && !trimmed.contains('。') {
+            flush_article(&mut cur_article, &mut div_stack, &mut doc, in_suppl);
+            flush_all_divisions(&mut div_stack, &mut doc, in_suppl);
+            in_appdx = true;
+            let (title, rel) = split_title_and_parens(trimmed)
+                .map(|(t, r)| (t, Some(r)))
+                .unwrap_or_else(|| (trimmed.to_string(), None));
+            doc.appdx_tables.push(LawAppdxTable {
+                title,
+                related_article_num: rel,
+                rows: Vec::new(),
+            });
+            continue;
+        }
+        if in_appdx && trimmed.starts_with('|') && trimmed.ends_with('|') {
+            let cells: Vec<String> = trimmed
+                .trim_matches('|')
+                .split('|')
+                .map(|c| c.trim().replace("\\|", "|"))
+                .collect();
+            let is_sep = !cells.is_empty()
+                && cells
+                    .iter()
+                    .all(|c| !c.is_empty() && c.chars().all(|ch| matches!(ch, '-' | ':' | ' ')));
+            if !is_sep && !cells.is_empty() {
+                if let Some(appdx) = doc.appdx_tables.last_mut() {
+                    appdx.rows.push(cells);
+                }
+            }
+            continue;
+        }
         if let Some(suppl_label) = parse_suppl_header(trimmed) {
+            in_appdx = false;
             flush_article(&mut cur_article, &mut div_stack, &mut doc, in_suppl);
             flush_all_divisions(&mut div_stack, &mut doc, in_suppl);
             in_suppl = true;
@@ -1244,6 +1292,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     }
     doc.main_provision = std::mem::take(&mut parsed.main_provision);
     doc.suppl_provisions = std::mem::take(&mut parsed.suppl_provisions);
+    doc.appdx_tables = std::mem::take(&mut parsed.appdx_tables);
     Ok(doc)
 }
 
@@ -1309,7 +1358,7 @@ fn parse_article_header(s: &str) -> Option<(String, String, &str)> {
     while let Some(branch_rest) = after_jo.strip_prefix('の') {
         let len = branch_rest
             .chars()
-            .take_while(|c| is_kanji_digit(*c))
+            .take_while(|c| is_kanji_digit(*c) || fullwidth_or_ascii_digit(*c).is_some())
             .map(char::len_utf8)
             .sum::<usize>();
         if len == 0 {
@@ -1394,8 +1443,12 @@ fn kanji_num_to_ascii(s: &str) -> Option<String> {
     if s.is_empty() {
         return None;
     }
-    if s.chars().all(|c| c.is_ascii_digit()) {
-        return Some(s.to_string());
+    let normalized: String = s
+        .chars()
+        .filter_map(fullwidth_or_ascii_digit)
+        .collect();
+    if normalized.len() == s.chars().count() {
+        return Some(normalized);
     }
     let mut total = 0u32;
     let mut current = 0u32;
@@ -1614,5 +1667,25 @@ mod tests {
         let md = to_markdown(&parsed);
         assert!(md.contains("## 別表第一（第一条関係）"));
         assert!(md.contains("| 区分 | 手数料 |"));
+    }
+
+    #[test]
+    fn supports_arabic_numeral_corporate_and_municipal_rules() {
+        let old_lt = "\
+就業規則（2025年規程第1号）
+第1条 社員の服務規律を定める。
+第2条の2 特別休暇を定める。";
+        let new_lt = "\
+就業規則（2025年規程第1号）
+第1条 社員及び嘱託社員の服務規律を定める。
+第2条の2 特別休暇及び育児休暇を定める。";
+
+        let old_doc = parse_lawtext(old_lt).unwrap();
+        let new_doc = parse_lawtext(new_lt).unwrap();
+        assert_eq!(old_doc.main_provision.len(), 2);
+
+        let shinkyu = generate_shinkyu_markdown(&old_doc, &new_doc);
+        assert!(shinkyu.contains("社員++及び嘱託社員++の服務規律"));
+        assert!(shinkyu.contains("特別休暇++及び育児休暇++を定める"));
     }
 }

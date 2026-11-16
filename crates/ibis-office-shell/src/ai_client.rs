@@ -511,6 +511,107 @@ pub async fn stream_chat_completion(
     Err("Assistant is not supported in browser builds yet".to_string())
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn percent_encode_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
+/// Fetch a Japanese statute XML from e-Gov 法令 API v2 (`laws.e-gov.go.jp/api/2`).
+/// Returns `(law_id, law_title, law_xml)`.
+pub fn fetch_egov_law_xml(
+    law_title: Option<&str>,
+    law_num: Option<&str>,
+    law_id: Option<&str>,
+) -> Result<(String, String, String), String> {
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (law_title, law_num, law_id);
+        return Err("e-Gov 法令 API からの取得はデスクトップ版でのみ利用可能です。".to_string());
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let mut resolved_id = law_id.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        let mut resolved_title = law_title.unwrap_or("").to_string();
+
+        if resolved_id.is_none() {
+            let mut params = Vec::new();
+            if let Some(t) = law_title.map(str::trim).filter(|s| !s.is_empty()) {
+                params.push(format!("law_title={}", percent_encode_component(t)));
+            }
+            if let Some(n) = law_num.map(str::trim).filter(|s| !s.is_empty()) {
+                params.push(format!("law_num={}", percent_encode_component(n)));
+            }
+            if params.is_empty() {
+                return Err("law_title, law_num, または law_id のいずれかを指定してください。".to_string());
+            }
+            params.push("limit=5".to_string());
+            let search_url = format!("https://laws.e-gov.go.jp/api/2/laws?{}", params.join("&"));
+            let out = std::process::Command::new("curl")
+                .args(["-sSL", "--fail", "--max-time", "15", &search_url])
+                .output()
+                .map_err(|e| format!("e-Gov API 呼び出しに失敗しました: {e}"))?;
+            if !out.status.success() {
+                return Err(format!("e-Gov 法令検索に失敗しました (status={})", out.status));
+            }
+            let body: Value = serde_json::from_slice(&out.stdout)
+                .map_err(|e| format!("e-Gov API 応答の JSON 解析に失敗しました: {e}"))?;
+            let first = body
+                .get("laws")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .ok_or_else(|| "該当する法令が見つかりませんでした。".to_string())?;
+            let id = first
+                .pointer("/law_info/law_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "law_id が取得できませんでした。".to_string())?;
+            resolved_id = Some(id.to_string());
+            if let Some(t) = first
+                .pointer("/current_revision_info/law_title")
+                .and_then(|v| v.as_str())
+            {
+                resolved_title = t.to_string();
+            }
+        }
+
+        let id = resolved_id.unwrap();
+        let data_url = format!(
+            "https://laws.e-gov.go.jp/api/2/law_data/{}?response_format=xml",
+            percent_encode_component(&id)
+        );
+        let out = std::process::Command::new("curl")
+            .args(["-sSL", "--fail", "--max-time", "20", &data_url])
+            .output()
+            .map_err(|e| format!("e-Gov 法令データ取得に失敗しました: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("e-Gov 法令データ取得に失敗しました (status={})", out.status));
+        }
+        let raw = String::from_utf8(out.stdout)
+            .map_err(|_| "e-Gov API 応答が有効な UTF-8 ではありません".to_string())?;
+        let xml = if raw.trim_start().starts_with('{') {
+            let v: Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("e-Gov 法令データ JSON 解析に失敗しました: {e}"))?;
+            v.get("law_full_text")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| "law_full_text が応答に含まれていません。".to_string())?
+        } else {
+            raw
+        };
+        Ok((id, resolved_title, xml))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -203,6 +203,46 @@ pub fn generate_aratame_draft(old: &LawDoc, new: &LawDoc) -> AratameDraft {
         }
     }
 
+    for at in &ir.appdx_table_changes {
+        match at.kind {
+            NodeChangeKind::Modified => {
+                let mut parts = Vec::new();
+                for rc in &at.row_changes {
+                    if rc.kind == NodeChangeKind::Modified {
+                        let cols = rc.old_cells.len().max(rc.new_cells.len());
+                        for c in 0..cols {
+                            let oc = rc.old_cells.get(c).map(String::as_str).unwrap_or("");
+                            let nc = rc.new_cells.get(c).map(String::as_str).unwrap_or("");
+                            if oc != nc && !oc.is_empty() && !nc.is_empty() {
+                                parts.push(format!("「{oc}」を「{nc}」に"));
+                            }
+                        }
+                    }
+                }
+                if !parts.is_empty() {
+                    let joined = join_aratame_parts(&parts, "改め、", "改める。");
+                    clauses.push(AratameClause {
+                        target: at.title.clone(),
+                        text: format!("{}中{joined}", at.title),
+                    });
+                }
+            }
+            NodeChangeKind::Added => {
+                clauses.push(AratameClause {
+                    target: at.title.clone(),
+                    text: format!("附則の次に次の別表を加える。\n{}", at.title),
+                });
+            }
+            NodeChangeKind::Deleted => {
+                clauses.push(AratameClause {
+                    target: at.title.clone(),
+                    text: format!("{}を削る。", at.title),
+                });
+            }
+            _ => {}
+        }
+    }
+
     let mut full_text = String::new();
     full_text.push_str(&header);
     full_text.push('\n');
@@ -436,7 +476,8 @@ pub fn verify_aratame(old: &LawDoc, aratame_text: &str, expected_new: &LawDoc) -
     let is_exact_match = diagnostics.is_empty()
         && residual_diff.title_change.is_none()
         && residual_diff.division_changes.is_empty()
-        && residual_diff.article_changes.is_empty();
+        && residual_diff.article_changes.is_empty()
+        && residual_diff.appdx_table_changes.is_empty();
 
     VerifyResult {
         is_exact_match,
@@ -587,6 +628,32 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
         if let Some((target, rest)) = line.split_once("中「") {
             let pairs = parse_quote_replacements(&format!("「{rest}"));
             if !pairs.is_empty() {
+                if target.starts_with("別表") {
+                    if let Some(tbl) = doc.appdx_tables.iter_mut().find(|t| t.title == target) {
+                        for (o, n) in pairs {
+                            let mut replaced = false;
+                            for row in &mut tbl.rows {
+                                for cell in row.iter_mut() {
+                                    if cell.contains(&o) {
+                                        *cell = cell.replacen(&o, &n, 1);
+                                        applied += 1;
+                                        replaced = true;
+                                        break;
+                                    }
+                                }
+                                if replaced {
+                                    break;
+                                }
+                            }
+                            if !replaced {
+                                diagnostics.push(format!("{target} に語句「{o}」が見つかりません"));
+                            }
+                        }
+                    } else {
+                        diagnostics.push(format!("対象の別表が見つかりません: {target}"));
+                    }
+                    continue;
+                }
                 if let Some((art_t, para_n, item_t, sub_t)) = parse_full_target(target) {
                     if let Some(art) = find_article_mut_by_title(&mut doc.main_provision, &art_t) {
                         if let Some(para) = find_para_mut(art, para_n.as_deref()) {
@@ -985,5 +1052,33 @@ mod tests {
         let verify = verify_aratame(&old_doc, broken_aratame, &new_doc);
         assert!(!verify.is_exact_match);
         assert!(!verify.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn generates_and_verifies_appdx_table_amendment() {
+        let old_lt = "\
+手数料法（令和七年法律第一号）
+第一条 手数料を定める。
+
+別表第一（第一条関係）
+
+| 区分 | 金額 |
+| 電子申請 | 三百円 |";
+        let new_lt = "\
+手数料法（令和七年法律第一号）
+第一条 手数料を定める。
+
+別表第一（第一条関係）
+
+| 区分 | 金額 |
+| 電子申請 | 五百円 |";
+
+        let old_doc = parse_lawtext(old_lt).unwrap();
+        let new_doc = parse_lawtext(new_lt).unwrap();
+
+        let draft = generate_aratame_draft(&old_doc, &new_doc);
+        assert!(draft.full_text.contains("別表第一中「三百円」を「五百円」に改める。"));
+        let verify = verify_aratame(&old_doc, &draft.full_text, &new_doc);
+        assert!(verify.is_exact_match, "diagnostics={:?}", verify.diagnostics);
     }
 }

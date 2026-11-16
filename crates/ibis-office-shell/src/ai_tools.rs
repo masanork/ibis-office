@@ -1125,6 +1125,23 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
+                name: "fetch_egov_law",
+                description: "Fetch an official Japanese statute XML from e-Gov 法令 API v2 by law_title, law_num, or law_id, convert it to Lawtext, and optionally set it as the baseline (現行法令) for 5-set generation.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "law_title": { "type": "string", "description": "Statute title (e.g. '行政手続法')." },
+                        "law_num": { "type": "string", "description": "Optional statute number (e.g. '平成五年法律第八十八号')." },
+                        "law_id": { "type": "string", "description": "Optional e-Gov law_id." },
+                        "set_as_baseline": { "type": "boolean", "description": "Store as the baseline (現行法令) for subsequent generate_lawtext_5set / lint_lawtext calls (default true)." }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
                 name: "open_markdown_document",
                 description: "Open a generated Markdown document (such as 新旧対照表, 改め文, 参照条文, 法律案要綱, or 理由) in a new ibisOffice DOCX window.",
                 parameters: json!({
@@ -1145,6 +1162,14 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
 pub struct LintLawtextArgs {
     pub new_lawtext: Option<String>,
     pub old_lawtext: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct FetchEgovLawArgs {
+    pub law_title: Option<String>,
+    pub law_num: Option<String>,
+    pub law_id: Option<String>,
+    pub set_as_baseline: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1776,6 +1801,7 @@ mod tests {
             "generate_lawtext_5set",
             "verify_lawtext_aratame",
             "lint_lawtext",
+            "fetch_egov_law",
             "open_markdown_document",
         ] {
             assert!(

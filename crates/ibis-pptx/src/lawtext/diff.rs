@@ -7,8 +7,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    DivisionKind, LawArticle, LawDoc, LawItem, LawNode, LawParagraph, LawSubitem, SupplProvision,
-    to_fullwidth_digits,
+    DivisionKind, LawAppdxTable, LawArticle, LawDoc, LawItem, LawNode, LawParagraph, LawSubitem,
+    SupplProvision, to_fullwidth_digits,
 };
 use crate::Error;
 
@@ -263,6 +263,44 @@ impl SupplChange {
     }
 }
 
+/// Change to a row inside an appended table (`AppdxTable`: 別表).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppdxRowChange {
+    pub kind: NodeChangeKind,
+    pub row_index: usize,
+    pub old_cells: Vec<String>,
+    pub new_cells: Vec<String>,
+}
+
+impl AppdxRowChange {
+    fn to_json(&self) -> Value {
+        json!({
+            "kind": self.kind.as_str(),
+            "row_index": self.row_index,
+            "old_cells": self.old_cells,
+            "new_cells": self.new_cells,
+        })
+    }
+}
+
+/// Change to an appended table (`AppdxTable`: 別表).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppdxTableChange {
+    pub title: String,
+    pub kind: NodeChangeKind,
+    pub row_changes: Vec<AppdxRowChange>,
+}
+
+impl AppdxTableChange {
+    fn to_json(&self) -> Value {
+        json!({
+            "title": self.title,
+            "kind": self.kind.as_str(),
+            "row_changes": self.row_changes.iter().map(AppdxRowChange::to_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
 /// Structured intermediate representation of differences between two [`LawDoc`]s.
 ///
 /// Designed as the shared backbone for 新旧対照表 generation, 改め文 drafting/verification,
@@ -276,6 +314,7 @@ pub struct AmendmentIr {
     pub division_changes: Vec<DivisionChange>,
     pub article_changes: Vec<ArticleChange>,
     pub suppl_changes: Vec<SupplChange>,
+    pub appdx_table_changes: Vec<AppdxTableChange>,
 }
 
 impl AmendmentIr {
@@ -293,6 +332,7 @@ impl AmendmentIr {
             "division_changes": self.division_changes.iter().map(DivisionChange::to_json).collect::<Vec<_>>(),
             "article_changes": self.article_changes.iter().map(ArticleChange::to_json).collect::<Vec<_>>(),
             "suppl_changes": self.suppl_changes.iter().map(SupplChange::to_json).collect::<Vec<_>>(),
+            "appdx_table_changes": self.appdx_table_changes.iter().map(AppdxTableChange::to_json).collect::<Vec<_>>(),
         })
     }
 
@@ -324,6 +364,7 @@ pub fn diff_laws(old: &LawDoc, new: &LawDoc) -> AmendmentIr {
     let new_articles = collect_articles(&new.main_provision);
     let article_changes = diff_article_lists(&old_articles, &new_articles);
     let suppl_changes = diff_suppl_provisions(&old.suppl_provisions, &new.suppl_provisions);
+    let appdx_table_changes = diff_appdx_tables(&old.appdx_tables, &new.appdx_tables);
 
     AmendmentIr {
         law_title,
@@ -333,6 +374,7 @@ pub fn diff_laws(old: &LawDoc, new: &LawDoc) -> AmendmentIr {
         division_changes,
         article_changes,
         suppl_changes,
+        appdx_table_changes,
     }
 }
 
@@ -434,6 +476,45 @@ pub fn generate_shinkyu_markdown_with_options(
                 );
             }
         }
+    }
+
+    for at in &ir.appdx_table_changes {
+        let header = format!("**{}**", at.title);
+        let mut new_lines = vec![header.clone()];
+        let mut old_lines = vec![header];
+        for rc in &at.row_changes {
+            match rc.kind {
+                NodeChangeKind::Added => {
+                    new_lines.push(format!("++{}++", rc.new_cells.join(" | ")));
+                    old_lines.push("（新設）".to_string());
+                }
+                NodeChangeKind::Deleted => {
+                    new_lines.push("（削る）".to_string());
+                    old_lines.push(format!("~~{}~~", rc.old_cells.join(" | ")));
+                }
+                NodeChangeKind::Modified | NodeChangeKind::Renumbered => {
+                    let cols = rc.old_cells.len().max(rc.new_cells.len());
+                    let mut nc = Vec::new();
+                    let mut oc = Vec::new();
+                    for c in 0..cols {
+                        let o = rc.old_cells.get(c).map(String::as_str).unwrap_or("");
+                        let n = rc.new_cells.get(c).map(String::as_str).unwrap_or("");
+                        let (dn, do_) = diff_clause_tokens(o, n);
+                        nc.push(dn);
+                        oc.push(do_);
+                    }
+                    new_lines.push(nc.join(" / "));
+                    old_lines.push(oc.join(" / "));
+                }
+                NodeChangeKind::Unchanged => {}
+            }
+        }
+        push_table_row(
+            &mut out,
+            &new_lines.join("<br>"),
+            &old_lines.join("<br>"),
+            opts.new_on_left,
+        );
     }
 
     out
@@ -1001,6 +1082,105 @@ fn diff_subitem_lists(old_subs: &[LawSubitem], new_subs: &[LawSubitem]) -> Vec<S
             children: Vec::new(),
         });
     }
+    changes
+}
+
+fn diff_appdx_tables(
+    old_tables: &[LawAppdxTable],
+    new_tables: &[LawAppdxTable],
+) -> Vec<AppdxTableChange> {
+    let mut changes = Vec::new();
+    let mut old_used = vec![false; old_tables.len()];
+
+    for nt in new_tables {
+        if let Some(pos) = old_tables
+            .iter()
+            .enumerate()
+            .position(|(i, ot)| !old_used[i] && ot.title == nt.title)
+        {
+            old_used[pos] = true;
+            let ot = &old_tables[pos];
+            if ot != nt {
+                let mut row_changes = Vec::new();
+                let max_r = ot.rows.len().max(nt.rows.len());
+                for r in 0..max_r {
+                    match (ot.rows.get(r), nt.rows.get(r)) {
+                        (Some(orow), Some(nrow)) if orow != nrow => {
+                            row_changes.push(AppdxRowChange {
+                                kind: NodeChangeKind::Modified,
+                                row_index: r,
+                                old_cells: orow.clone(),
+                                new_cells: nrow.clone(),
+                            });
+                        }
+                        (None, Some(nrow)) => {
+                            row_changes.push(AppdxRowChange {
+                                kind: NodeChangeKind::Added,
+                                row_index: r,
+                                old_cells: Vec::new(),
+                                new_cells: nrow.clone(),
+                            });
+                        }
+                        (Some(orow), None) => {
+                            row_changes.push(AppdxRowChange {
+                                kind: NodeChangeKind::Deleted,
+                                row_index: r,
+                                old_cells: orow.clone(),
+                                new_cells: Vec::new(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if !row_changes.is_empty() {
+                    changes.push(AppdxTableChange {
+                        title: nt.title.clone(),
+                        kind: NodeChangeKind::Modified,
+                        row_changes,
+                    });
+                }
+            }
+        } else {
+            let row_changes = nt
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(r, nrow)| AppdxRowChange {
+                    kind: NodeChangeKind::Added,
+                    row_index: r,
+                    old_cells: Vec::new(),
+                    new_cells: nrow.clone(),
+                })
+                .collect();
+            changes.push(AppdxTableChange {
+                title: nt.title.clone(),
+                kind: NodeChangeKind::Added,
+                row_changes,
+            });
+        }
+    }
+
+    for (i, ot) in old_tables.iter().enumerate() {
+        if !old_used[i] {
+            let row_changes = ot
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(r, orow)| AppdxRowChange {
+                    kind: NodeChangeKind::Deleted,
+                    row_index: r,
+                    old_cells: orow.clone(),
+                    new_cells: Vec::new(),
+                })
+                .collect();
+            changes.push(AppdxTableChange {
+                title: ot.title.clone(),
+                kind: NodeChangeKind::Deleted,
+                row_changes,
+            });
+        }
+    }
+
     changes
 }
 
