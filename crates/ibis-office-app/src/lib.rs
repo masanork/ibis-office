@@ -117,6 +117,19 @@ pub fn init(cx: &mut App) {
     // The window knows the system's fonts; the words (ibis-office-base) ask it for their English names.
     ibis_office_base::i18n::set_english_font_name(shell::font_list::english_name);
     gpui_kit::init(cx);
+    // An optional locally prepared compatibility font; no font or mapping is
+    // fetched at runtime. Used only by the PUP review prototype.
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(path) = std::env::var_os("IBIS_PUP_ALIAS_FONT") {
+        match std::fs::read(&path) {
+            Ok(data) => {
+                if let Err(err) = cx.text_system().add_fonts(vec![std::borrow::Cow::Owned(data)]) {
+                    log::warn!("Could not register local PUP alias font: {err}");
+                }
+            }
+            Err(err) => log::warn!("Could not read local PUP alias font: {err}"),
+        }
+    }
     shell::dialog::init(cx);
     // Questions drawn as ibisOffice's dialogs where the system has none (Linux).
     linux_desktop::install_prompts(cx);
