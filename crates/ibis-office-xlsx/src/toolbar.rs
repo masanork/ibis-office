@@ -1040,6 +1040,12 @@ impl SlideEditor {
     pub fn write_csv(&self, path: &std::path::Path) -> std::io::Result<()> {
         self.check_standard_output(path)?;
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
+        #[cfg(not(target_family = "wasm"))]
+        if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
+            && self.current_csv_format.is_some()
+        {
+            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
+        }
         std::fs::write(path, ibis_pptx::csv::sheet_to_csv(self.presentation(), index))
     }
 
@@ -1191,13 +1197,27 @@ impl SlideEditor {
     pub fn write_csv_sjis(&self, path: &std::path::Path) -> std::io::Result<()> {
         self.check_standard_output(path)?;
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
-        std::fs::write(path, ibis_pptx::csv::sheet_to_csv_sjis(self.presentation(), index))
+        #[cfg(not(target_family = "wasm"))]
+        if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
+            && self.current_csv_format.is_some()
+        {
+            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
+        }
+        let bytes = ibis_pptx::csv::sheet_to_csv_sjis_strict(self.presentation(), index)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        std::fs::write(path, bytes)
     }
 
     /// The sheet shown, as TSV, to `path`.
     pub fn write_tsv(&self, path: &std::path::Path) -> std::io::Result<()> {
         self.check_standard_output(path)?;
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
+        #[cfg(not(target_family = "wasm"))]
+        if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
+            && self.current_csv_format.is_some()
+        {
+            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
+        }
         std::fs::write(path, ibis_pptx::csv::sheet_to_tsv(self.presentation(), index))
     }
 

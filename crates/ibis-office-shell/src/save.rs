@@ -28,6 +28,26 @@ pub enum RefusedWay {
 }
 
 impl SlideEditor {
+    /// Prepare a same-file CSV save only when the source and tracked sheet
+    /// are still the ones that were opened or last saved.
+    #[cfg(not(target_family = "wasm"))]
+    fn tracked_csv_bytes(&self, path: &std::path::Path) -> Result<Vec<u8>, String> {
+        if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
+        let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() { return Err("シンボリックリンク経由の CSV は上書き保存できません".into()); }
+        if !metadata.is_file() { return Err("CSV が通常のファイルではありません".into()); }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() > 1 { return Err("ハードリンクのある CSV は上書き保存できません".into()); }
+        }
+        let format = self.current_csv_format.ok_or("元の CSV 形式がありません")?;
+        let original = self.current_csv_original.as_deref().ok_or("元の CSV データがありません")?;
+        let slide = self.current_csv_slide.ok_or("元の CSV シートがありません")?;
+        if self.current_slide != slide { return Err("元の CSV シートを選択して保存してください".into()); }
+        let disk = std::fs::read(path).map_err(|e| e.to_string())?;
+        ibis_pptx::csv::rewrite_tracked_csv(original, &disk, format, &self.document, slide).map_err(|e| e.to_string())
+    }
     /// Confirm before saving changes to a package with signatures, including
     /// when signature discovery is malformed or unsupported. A cancelled
     /// confirmation neither writes nor runs the caller's continuation.
@@ -72,9 +92,16 @@ impl SlideEditor {
     }
 
     pub fn check_standard_output(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if self.is_csv_streaming {
+            return Err(std::io::Error::other(crate::i18n::text("file.csv-loading-blocked").to_string()));
+        }
         #[cfg(not(target_family = "wasm"))]
         if self.standard_source_path.as_deref().is_some_and(|original| same_file(original, path)) {
             return Err(std::io::Error::other(crate::i18n::text("file.standard-source-protected").to_string()));
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if self.current_csv_format.is_some() && self.path.as_deref().is_some_and(|original| same_file(original, path)) {
+            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
         }
         let _ = path;
         Ok(())
@@ -103,7 +130,9 @@ impl SlideEditor {
 
     /// `refuse_save`, told in the words of what was asked for (saving, exporting, saving a copy, printing).
     pub fn refuse_as(&mut self, way: RefusedWay, cx: &mut Context<Self>) -> bool {
-        match crate::format::with_format!(self, save_refused(self)) {
+        let refusal = if self.is_csv_streaming { Some(crate::i18n::text("file.csv-loading-blocked").to_string()) }
+            else { crate::format::with_format!(self, save_refused(self)) };
+        match refusal {
             Some(why) => {
                 let key = match way {
                     RefusedWay::Save => "file.save-failed",
@@ -311,6 +340,7 @@ impl SlideEditor {
     /// Save to `path`, and make it the file's path.
     #[cfg(not(target_family = "wasm"))]
     pub fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
+        if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         self.check_standard_copy_format(&path)?;
         if self.standard_source_path.as_deref().is_some_and(|original| same_file(original, &path)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
@@ -327,24 +357,46 @@ impl SlideEditor {
         if self.is_modify_locked() && self.path.as_deref().is_some_and(|own| same_file(own, &path)) {
             return Err(crate::i18n::text("file.modify-locked-no-overwrite").to_string());
         }
+        let saving_original = self.path.as_deref().is_some_and(|old| same_file(old, &path));
         let source = self.source.clone().ok_or(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string())?;
         // The format's own package, or what the format writes under this extension (a workbook saved as .csv is the sheet shown, as
         // Excel's 「CSV UTF-8」).
-        let (bytes, may_protect) = match crate::format::with_format!(self, bytes_for_path(self, &path, &source, false)) {
-            Some(other) => {
-                let other = other?;
-                if let Some(note) = other.note {
-                    self.save_note = note;
+        let (bytes, may_protect) = if saving_original && self.current_csv_format.is_some() {
+            (self.tracked_csv_bytes(&path)?, false)
+        } else {
+            match crate::format::with_format!(self, bytes_for_path(self, &path, &source, false)) {
+                Some(other) => {
+                    let other = other?;
+                    if let Some(note) = other.note {
+                        self.save_note = note;
+                    }
+                    (other.bytes, other.protect)
                 }
-                (other.bytes, other.protect)
+                None => (source.save(&self.presentation_for_save(), ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?, true),
             }
-            None => (source.save(&self.presentation_for_save(), ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?, true),
         };
         // 常にバックアップ コピーを作成する: what the file is now is kept, where the format has the option.
         crate::format::with_format!(self, backup_before_write(self, &path));
         // Protected with the password the file has (パスワードを使用して暗号化).
         let bytes = if let (Some(password), true) = (&self.protection_password, may_protect) { protect(&bytes, password)? } else { bytes };
-        write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)]))?;
+        let written = if saving_original && self.current_csv_format.is_some() {
+            let original = self.current_csv_original.as_deref().ok_or("元の CSV データがありません")?;
+            write_checked_csv(&path, original, &bytes)
+        } else { write_replacing(&path, &bytes) };
+        written.map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)]))?;
+        // A different output path is a new export, whose current serializer is
+        // UTF-8 BOM. A later in-place save must remember that new format.
+        if !saving_original {
+            self.current_csv_format = path.extension().and_then(|x| x.to_str()).and_then(|ext| {
+                let delimiter = if ext.eq_ignore_ascii_case("csv") { ',' }
+                    else if ["tsv", "tab", "txt"].iter().any(|x| ext.eq_ignore_ascii_case(x)) { '\t' }
+                    else { return None };
+                Some(ibis_pptx::csv::OriginalCsvFormat { encoding: ibis_pptx::csv::OriginalEncoding::Utf8Bom, delimiter, record_ending: ibis_pptx::csv::RecordEnding::CrLf, final_record_ending: true })
+            });
+        }
+        self.current_csv_original = self.current_csv_format.map(|_| std::sync::Arc::from(bytes.as_slice()));
+        self.current_csv_slide = self.current_csv_original.as_ref().map(|_| self.current_slide);
+        if self.current_csv_original.is_some() { self.document.begin_csv_edit_tracking(); }
         if self.standard_read_only {
             self.standard_read_only = false;
             self.document.set_read_only(self.read_only);
@@ -378,6 +430,45 @@ impl SlideEditor {
         });
         cx.notify();
     }
+}
+
+/// Write to an exclusively created sibling and check the original bytes just
+/// before replacing it. A concurrent writer can still race after the check;
+/// this is not a filesystem compare-and-swap.
+#[cfg(not(target_family = "wasm"))]
+fn write_checked_csv(path: &std::path::Path, expected: &[u8], bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path.file_name().ok_or_else(|| std::io::Error::other("CSV のファイル名がありません"))?.to_string_lossy();
+    let (temporary, mut file) = loop {
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let temporary = path.with_file_name(format!(".{name}.ibis-csv-{}-{nonce}", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
+            Ok(file) => break (temporary, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(std::io::Error::other("CSV のファイル種別が変更されました"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() > 1 { return Err(std::io::Error::other("ハードリンクのある CSV は保存できません")); }
+        }
+        if std::fs::read(path)? != expected { return Err(std::io::Error::other("CSV が外部で変更されました")); }
+        file.set_permissions(metadata.permissions())?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+    result
 }
 
 /// `package` protected with `password`: an OOXML package kept encrypted in a compound file.
@@ -457,7 +548,7 @@ fn write_in_place(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Whether `a` and `b` are one file (the same path, or one that links to the other).
 #[cfg(not(target_family = "wasm"))]
-pub(crate) fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+pub fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
     a == b || same_file::is_same_file(a, b).unwrap_or(false) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
@@ -470,6 +561,35 @@ mod write_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn checked_csv_write_rejects_external_change_and_keeps_original() {
+        let dir = folder("csv-checked-write");
+        let path = dir.join("source.csv");
+        std::fs::write(&path, b"old").unwrap();
+        assert!(super::write_checked_csv(&path, b"different", b"new").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "failed write removes its temporary file");
+        super::write_checked_csv(&path, b"old", b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_csv_write_refuses_linked_files() {
+        let dir = folder("csv-checked-links");
+        let path = dir.join("source.csv");
+        let alias = dir.join("alias.csv");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert!(super::write_checked_csv(&path, b"old", b"new").is_err());
+        assert_eq!(std::fs::read(&alias).unwrap(), b"old");
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        assert!(super::write_checked_csv(&alias, b"old", b"new").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
     }
 
     #[test]

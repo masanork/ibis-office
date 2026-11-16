@@ -150,6 +150,7 @@ impl SlideEditor {
     /// The open file as it would be saved now.
     #[cfg(not(target_family = "wasm"))]
     pub fn current_bytes(&self) -> Result<Vec<u8>, String> {
+        if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         if self.is_jtd_read_only() {
             if self.jtd_gallery { return Err(crate::i18n::text("jtd.gallery-export-disabled").to_string()); }
             return ibis_pptx::jtd::export_docx(self.presentation()).map_err(|e| e.to_string());
@@ -164,7 +165,11 @@ impl SlideEditor {
     /// Write the file as it is now to `path`, leaving the file's own path.
     #[cfg(not(target_family = "wasm"))]
     pub fn copy_to(&self, path: &std::path::Path) -> Result<(), String> {
+        if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         self.check_standard_copy_format(path)?;
+        if self.current_csv_format.is_some() && self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
+            return Err("元の CSV へのコピーはできません。通常の保存を使用してください".into());
+        }
         if self.standard_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
@@ -367,6 +372,7 @@ impl SlideEditor {
     /// (the slides, handouts, colour, frame).
     #[cfg(not(target_family = "wasm"))]
     pub fn write_pdf_with(&self, pdf: std::path::PathBuf, printing: bool) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        self.check_standard_output(&pdf).map_err(|e| e.to_string())?;
         if self.standard_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &pdf)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
@@ -830,6 +836,7 @@ impl SlideEditor {
     /// ファイル > 印刷… (⌘P): the file as it is now, as a PDF given to the
     /// system to print (Preview's print dialog on macOS).
     pub fn print(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_csv_streaming && self.refuse_as(crate::save::RefusedWay::Print, cx) { return; }
         // Each format asks what to print in its own way (a presentation: 印刷の設定; a document and a workbook: their print panels).
         if with_format!(self, open_print_panel(self, window, cx)) {
             return;
@@ -839,6 +846,7 @@ impl SlideEditor {
 
     /// The print made, with the settings of a presentation.
     pub fn print_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_csv_streaming && self.refuse_as(crate::save::RefusedWay::Print, cx) { return; }
         self.commit_pending_edit(window, cx);
         with_format!(self, prepare_print_or_export(self, cx));
         #[cfg(target_os = "macos")]

@@ -695,6 +695,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::cell005_formula_bar_edit", cell005_formula_bar_edit),
         ("xlsx::pq001_import_text", pq001_import_text),
         ("xlsx::file_open_csv_and_tsv", file_open_csv_and_tsv),
+        ("xlsx::csv_in_place_preserves_cp932", csv_in_place_preserves_cp932),
         ("xlsx::csv_cell_of_many_lines", csv_cell_of_many_lines),
         ("xlsx::cell_edit_lines_stack", cell_edit_lines_stack),
         ("xlsx::cell_edit_paste_many_lines", cell_edit_paste_many_lines),
@@ -20692,6 +20693,86 @@ fn file_open_csv_and_tsv() {
         assert_eq!(s.value("A2"), CellValue::Text("りんご".into()), "{extension}");
         assert_eq!(number_at(&mut s, "B3"), 5.0, "{extension}");
     }
+}
+
+/// Save a CP932 source in place, reject an unencodable edit, then save as UTF-8.
+fn csv_in_place_preserves_cp932() {
+    let dir = crate::shell::scenario::repo_root().join("target/scenario-input");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join(format!("csv-encoding-{}.csv", std::process::id()));
+    let copy = dir.join(format!("csv-encoding-copy-{}.csv", std::process::id()));
+    let original = ibis_pptx::csv::encode_sjis("名前,数量,\r\nりんご,00123,\r\n");
+    std::fs::write(&source_path, &original).unwrap();
+    let relative = format!("target/scenario-input/csv-encoding-{}.csv", std::process::id());
+    let mut s = Scenario::open(&relative);
+    s.settle();
+    let path = s.with(|e, _| e.file_path().expect("opened CSV path"));
+    let blocked = dir.join(format!("csv-stream-blocked-{}.csv", std::process::id()));
+    s.update(|e, w, cx| {
+        e.is_csv_streaming = true;
+        assert!(e.save_to(blocked.clone(), w).is_err());
+        assert!(e.copy_to(&blocked).is_err());
+        assert!(e.write_csv(&blocked).is_err());
+        assert!(e.write_pdf(blocked.with_extension("pdf")).is_err());
+        assert!(e.current_bytes().is_err());
+        assert!(e.refuse_as(crate::shell::save::RefusedWay::Print, cx));
+        e.is_csv_streaming = false;
+    });
+    assert!(!blocked.exists());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    s.click_cell("A2");
+    s.enter("みかん", "enter");
+    s.settle();
+    s.key("cmd-z");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after undo to original"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    s.click_cell("A2");
+    s.enter("みかん", "enter");
+    s.settle();
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("CP932 save"));
+    let saved = std::fs::read(&path).unwrap();
+    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,\r\n"));
+    let (decoded, encoding) = ibis_pptx::csv::decode_with_original_encoding(&saved).unwrap();
+    assert_eq!(encoding, ibis_pptx::csv::OriginalEncoding::Cp932);
+    assert!(decoded.contains("みかん"));
+    s.click_cell("E2");
+    s.enter("追加", "enter");
+    s.key("cmd-z");
+    s.key("cmd-shift-z");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after redo and field addition"));
+    let saved = std::fs::read(&path).unwrap();
+    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n"));
+    s.click_cell("B4");
+    s.enter("新行", "enter");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save appended row"));
+    let saved = std::fs::read(&path).unwrap();
+    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n\r\n,新行\r\n"));
+    s.click_cell("C4");
+    s.enter("50%", "enter");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save percentage"));
+    let saved = std::fs::read(&path).unwrap();
+    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n\r\n,新行,50%\r\n"));
+    s.with(|e, _| {
+        assert!(e.copy_to(&path).is_err());
+        assert!(e.write_csv(&path).is_err());
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    std::fs::write(&path, b"external change").unwrap();
+    s.update(|e, w, _| assert!(e.save_to(path.clone(), w).is_err()));
+    assert_eq!(std::fs::read(&path).unwrap(), b"external change");
+    std::fs::write(&path, &saved).unwrap();
+    s.click_cell("A2");
+    s.enter("😀", "enter");
+    s.settle();
+    s.update(|e, w, _| assert!(e.save_to(path.clone(), w).is_err()));
+    assert_eq!(std::fs::read(&path).unwrap(), saved, "failed save must not alter the source");
+    s.update(|e, w, _| e.save_to(copy.clone(), w).expect("save as UTF-8"));
+    assert!(std::fs::read(&copy).unwrap().starts_with(b"\xEF\xBB\xBF"));
+    s.update(|e, w, _| e.save_to(copy.clone(), w).expect("subsequent UTF-8 save"));
+    assert!(std::fs::read(&copy).unwrap().starts_with(b"\xEF\xBB\xBF"));
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(copy);
+    let _ = std::fs::remove_file(source_path);
 }
 
 /// A CSV with a cell of 100 lines (todo-fix #37, a report of a CSV of about 100 MB that aborted): the row is no higher than Excel's most (409.5 pt) and is shown that high; typing into the cell stacks its lines in the box, which grows down over the cells below (not over what is above the sheet).

@@ -33,7 +33,25 @@ pub fn read_file(path: &std::path::Path) -> Result<Loaded, String> {
 /// As `read_file`; `password` opens a protected file (パスワードを使用して暗号化).
 #[cfg(not(target_family = "wasm"))]
 pub fn read_file_with(path: &std::path::Path, password: Option<&str>) -> Result<Loaded, String> {
-    catch_read_panic(path, || read_file_unguarded(path, password))
+    read_file_with_stack(path, password, ibis_pptx::csv::TextEncoding::Auto)
+}
+
+/// Re-read a CSV after the user has selected its encoding.
+#[cfg(not(target_family = "wasm"))]
+pub fn read_file_with_csv_encoding(path: &std::path::Path, encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
+    read_file_with_stack(path, None, encoding)
+}
+
+/// ZIP creation during CSV import needs more stack than GPUI workers provide.
+/// Both automatic and explicitly selected reads can run on those workers.
+#[cfg(not(target_family = "wasm"))]
+fn read_file_with_stack(path: &std::path::Path, password: Option<&str>, encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
+    let path = path.to_owned();
+    let password = password.map(str::to_owned);
+    std::thread::Builder::new().name("file-read".into()).stack_size(8 * 1024 * 1024)
+        .spawn(move || catch_read_panic(&path, || read_file_unguarded(&path, password.as_deref(), encoding)))
+        .map_err(|error| error.to_string())?
+        .join().map_err(|_| "File reader thread failed".to_string())?
 }
 
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
@@ -49,8 +67,23 @@ pub fn catch_read_panic<T>(path: &std::path::Path, read: impl FnOnce() -> Result
     })
 }
 
+#[cfg(all(test, not(target_family = "wasm")))]
+mod stack_tests {
+    #[test]
+    fn automatic_csv_read_works_from_a_small_stack() {
+        let path = std::env::temp_dir().join(format!("ibis-csv-small-stack-{}-{}.csv", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let bytes = ibis_pptx::csv::encode_sjis("名前,数量\r\nりんご,00123\r\n");
+        std::fs::write(&path, &bytes).unwrap();
+        let read_path = path.clone();
+        let loaded = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || super::read_file(&read_path)).unwrap().join().unwrap().unwrap();
+        assert_eq!(loaded.source.original_csv_bytes().unwrap().as_ref(), bytes);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
-fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result<Loaded, String> {
+fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -139,7 +172,7 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
         ibis_pptx::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
     } else {
         // The volatile cells calculated again on open (CELL("filename") among them) need the file's path.
-        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || ibis_pptx::open_progressive(data,100_000))
+        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || ibis_pptx::open_progressive_with_csv_encoding(data,100_000,csv_encoding))
     };
     let (opened, csv_stream) = open_result.map_err(|e| {
         note_open_failed(path);

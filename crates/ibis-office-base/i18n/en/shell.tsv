@@ -1239,3 +1239,7 @@ shell.font-setup.progress	Downloading {name} ({index}/{count}, {received} / {tot
 shell.font-setup.failed	{name} could not be installed ({count} failed). {error}
 shell.font-setup.cancelled	Cancelled.
 shell.font-setup.done	Installed. The fonts are in the font lists now.
+file.csv-encoding.title	Choose the CSV encoding
+file.csv-encoding.detail	The encoding cannot be determined uniquely. Choose the encoding used to open and overwrite this file. Shift_JIS is treated as Windows CP932.
+file.csv-encoding.changed	The file changed while you were choosing. Open it again.
+file.csv-loading-blocked	Wait until the CSV has finished loading.

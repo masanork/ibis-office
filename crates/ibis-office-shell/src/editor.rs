@@ -497,6 +497,11 @@ pub struct SlideEditor {
     /// Where the open file came from, for saving it (`shell/save.rs`);
     /// `None` for a new document or one that cannot be saved.
     pub source: Option<std::sync::Arc<ibis_pptx::Source>>,
+    /// Encoding and delimiter of the current CSV for a same-file save.
+    pub current_csv_format: Option<ibis_pptx::csv::OriginalCsvFormat>,
+    /// Bytes and sheet corresponding to the last successful CSV read or save.
+    pub current_csv_original: Option<std::sync::Arc<[u8]>>,
+    pub current_csv_slide: Option<SlideId>,
     /// The file's path, for ⌘S (none in the browser, or for a new document).
     #[cfg(not(target_family = "wasm"))]
     pub path: Option<std::path::PathBuf>,
@@ -843,6 +848,9 @@ impl SlideEditor {
             chrome_compact: false,
             toolbar_bounds: Default::default(),
             source: None,
+            current_csv_format: None,
+            current_csv_original: None,
+            current_csv_slide: None,
             opened_from_legacy: false,
             #[cfg(not(target_family = "wasm"))]
             path: None,
@@ -910,6 +918,10 @@ impl SlideEditor {
     /// The exception is a table of contents the file marks for making again (`w:dirty`, `w:updateFields`): Word makes it as it
     /// opens the file and saves it made (`docx::toc017_unupdated_toc_is_made_on_open`), so that stays a change to save.
     pub fn set_loaded_source(&mut self, source: std::sync::Arc<ibis_pptx::Source>) {
+        self.current_csv_format = source.original_csv_format();
+        self.current_csv_original = source.original_csv_bytes();
+        self.current_csv_slide = self.current_csv_original.as_ref().map(|_| self.current_slide);
+        if self.current_csv_original.is_some() { self.document.begin_csv_edit_tracking(); }
         let marked_toc = source.baseline().flow.as_ref().is_some_and(|doc| {
             doc.body.iter().any(|b| {
                 matches!(b, ibis_doc_model::Block::Paragraph(p) if (doc.update_fields || p.field_dirty) && p.field_start.as_ref().is_some_and(|f| f.trim_start().to_ascii_uppercase().starts_with("TOC")))
@@ -1135,6 +1147,9 @@ impl SlideEditor {
         self.document.set_read_only(self.read_only);
         self.document_memory = Default::default();
         self.source = None;
+        self.current_csv_format = None;
+        self.current_csv_original = None;
+        self.current_csv_slide = None;
         #[cfg(not(target_family = "wasm"))]
         {
             self.path = None;
@@ -1384,7 +1399,41 @@ impl SlideEditor {
         self.watch.opening_path = Some(path.clone());
         let closed = self.closed;
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { read() }).await;
+            let mut result = cx.background_executor().spawn(async move { read() }).await;
+            let ambiguous = result.as_ref().ok().and_then(|loaded| loaded.source.original_csv_format())
+                .is_some_and(|format| matches!(format.encoding, ibis_pptx::csv::OriginalEncoding::AsciiAmbiguous | ibis_pptx::csv::OriginalEncoding::Utf8OrCp932));
+            if ambiguous {
+                let buttons = [PromptButton::ok("UTF-8"), PromptButton::ok("Shift_JIS (CP932)"), PromptButton::cancel(crate::i18n::text("_shell.cancel"))];
+                let receiver = this.update_in(cx, |_, window, cx| window.prompt(
+                    PromptLevel::Info, &crate::i18n::text("file.csv-encoding.title"),
+                    Some(&crate::i18n::text("file.csv-encoding.detail")), &buttons, cx)).ok();
+                let answer = match receiver { Some(receiver) => receiver.await.ok(), None => None };
+                // A later open or close must not be replaced by an old prompt.
+                let still_opening = this.update(cx, |this, _| this.closed == closed && this.watch.opening_path.as_deref() == Some(path.as_path())).unwrap_or(false);
+                if !still_opening { return; }
+                let encoding = match answer {
+                    Some(0) => ibis_pptx::csv::TextEncoding::Utf8,
+                    Some(1) => ibis_pptx::csv::TextEncoding::ShiftJis,
+                    _ => {
+                        this.update(cx, |this, cx| { this.watch.opening_path = None; this.fail_loading(String::new(), cx); }).ok();
+                        return;
+                    }
+                };
+                // Re-read after the choice; do not apply it to a changed file.
+                drop(result);
+                let chosen_path = path.clone();
+                let expected = stamp_before_read.clone();
+                result = cx.background_executor().spawn(async move {
+                    if expected.is_none() || crate::file_watch::DiskStamp::stat(&chosen_path) != expected {
+                        return Err(crate::i18n::text("file.csv-encoding.changed").to_string());
+                    }
+                    let opened = crate::read_file::read_file_with_csv_encoding(&chosen_path, encoding)?;
+                    if crate::file_watch::DiskStamp::stat(&chosen_path) != expected {
+                        return Err(crate::i18n::text("file.csv-encoding.changed").to_string());
+                    }
+                    Ok(opened)
+                }).await;
+            }
             this.update(cx, |this, _| this.watch.opening_path = None).ok();
             this.update_in(cx, |this, window, cx| {
             let restore = this.watch.restore_view.take().filter(|(p, _)| *p == path).map(|(_, view)| view);
@@ -1416,6 +1465,9 @@ impl SlideEditor {
                         this.load(loaded.presentation, name, window, cx);
                         // A sheet read in chunks is saved as changes from the empty sheet it starts as.
                         if loaded.csv_stream.is_some() {
+                            this.current_csv_format = loaded.source.original_csv_format();
+                            this.current_csv_original = loaded.source.original_csv_bytes();
+                            this.current_csv_slide = this.current_csv_original.as_ref().map(|_| this.current_slide);
                             this.source = Some(loaded.source);
                         } else {
                             this.set_loaded_source(loaded.source);
@@ -1483,6 +1535,7 @@ impl SlideEditor {
                                     let formatted = format_commas(current_rows);
                                     if is_last {
                                         this.is_csv_streaming = false;
+                                        if this.current_csv_original.is_some() { this.document.begin_csv_edit_tracking(); }
                                         this.set_status(crate::i18n::format("editor.csv.loaded", &[("rows", &formatted)]), cx);
                                     } else {
                                         this.set_status(crate::i18n::format("editor.csv.loading", &[("rows", &formatted)]), cx);
@@ -2109,6 +2162,9 @@ impl SlideEditor {
             let name = self.file_name.clone().unwrap_or_else(|| crate::i18n::text(self.format_info().untitled_key).into());
             let path = self.file_path();
             let source = self.source.clone();
+            let current_csv_format = self.current_csv_format;
+            let current_csv_original = self.current_csv_original.clone();
+            let current_csv_slide = self.current_csv_slide;
             let current = self.current_slide;
             let current_zoom = self.zoom;
             let existing_count = Self::count_matching_windows(file_id, cx) + 1;
@@ -2122,6 +2178,9 @@ impl SlideEditor {
                 editor.document_memory=document_memory.clone();
                 editor.set_file_path(path);
                 editor.source = source;
+                editor.current_csv_format = current_csv_format;
+                editor.current_csv_original = current_csv_original;
+                editor.current_csv_slide = current_csv_slide;
                 editor.standard_read_only = standard_read_only;
                 #[cfg(not(target_family = "wasm"))]
                 { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; }

@@ -107,6 +107,8 @@ pub(crate) enum SourceMap {
 #[derive(Clone)]
 pub struct Source {
     kind: Kind,
+    original_csv_format: Option<crate::csv::OriginalCsvFormat>,
+    original_csv_bytes: Option<Arc<[u8]>>,
     package: Package,
     baseline: Presentation,
     map: SourceMap,
@@ -141,6 +143,15 @@ pub struct CsvProgressiveChunk {
 pub fn open_progressive(
     data: impl Into<Arc<[u8]>>,
     first_chunk_rows: usize,
+) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
+    open_progressive_with_csv_encoding(data, first_chunk_rows, crate::csv::TextEncoding::Auto)
+}
+
+/// Read a CSV with an explicitly selected encoding; non-CSV formats are unchanged.
+pub fn open_progressive_with_csv_encoding(
+    data: impl Into<Arc<[u8]>>,
+    first_chunk_rows: usize,
+    csv_encoding: crate::csv::TextEncoding,
 ) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
     let mut data: Arc<[u8]> = data.into();
     crate::progress::reset();
@@ -178,6 +189,8 @@ pub fn open_progressive(
     }
 
     let mut csv_records = None;
+    let mut original_csv_format = None;
+    let mut original_csv_bytes = None;
     #[allow(unused_mut)]
     let mut csv_rx = None;
 
@@ -206,9 +219,12 @@ pub fn open_progressive(
     }
 
     if crate::csv::is_csv(&data) {
-        let text: std::sync::Arc<str> = std::sync::Arc::from(crate::csv::decode(&data)?);
+        original_csv_bytes = Some(data.clone());
+        let (decoded, encoding) = crate::csv::decode_with_choice(&data, csv_encoding)?;
+        let text: std::sync::Arc<str> = std::sync::Arc::from(decoded);
         crate::progress::fraction(0.02);
         let delimiter = crate::csv::detect_delimiter(&text);
+        original_csv_format = Some(crate::csv::original_csv_format(&text, encoding, delimiter));
         let mut iter = crate::csv::CsvRecordIter::new(&text, delimiter);
 
         let mut first = Vec::new();
@@ -325,7 +341,7 @@ pub fn open_progressive(
         let (presentation, map) = crate::reader::read_with_sources(&data)?;
         (Kind::Presentation, presentation, SourceMap::Presentation(map))
     };
-    let source = Source { kind, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
+    let source = Source { kind, original_csv_format, original_csv_bytes, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
     crate::progress::fraction(1.0);
     #[cfg(not(target_family = "wasm"))]
     std::thread::spawn(move || drop(csv_records));
@@ -338,6 +354,16 @@ pub fn open(data: impl Into<Arc<[u8]>>) -> Result<Opened, Error> {
 }
 
 impl Source {
+    /// Encoding detected when a CSV file was opened, if it was a CSV.
+    pub fn original_csv_format(&self) -> Option<crate::csv::OriginalCsvFormat> {
+        self.original_csv_format
+    }
+
+    /// Original CSV bytes, retained separately from the generated workbook.
+    pub fn original_csv_bytes(&self) -> Option<Arc<[u8]>> {
+        self.original_csv_bytes.clone()
+    }
+
     /// Whether the original package declares digital signature parts. This is
     /// discovery only and does not assert that any signature is valid.
     pub fn has_package_signatures(&self) -> Result<bool, ibis_ooxml::Error> {
