@@ -1228,9 +1228,17 @@ mod ios_entry {
             fn ibis_ios_find_font_path(name: *const std::ffi::c_char) -> *mut std::ffi::c_char;
             fn ibis_ios_free_c_string(ptr: *mut std::ffi::c_char);
         }
+        let mut loaded_paths = std::collections::HashSet::new();
         for font_name in [
             c"HiraginoSans-W3",
             c"HiraginoSans-W6",
+            c"HiraMinProN-W3",
+            c"HiraMinProN-W6",
+            c"HiraMaruProN-W4",
+            c"TimesNewRomanPSMT",
+            c"TimesNewRomanPS-BoldMT",
+            c"TimesNewRomanPS-ItalicMT",
+            c"TimesNewRomanPS-BoldItalicMT",
             c"PingFangSC-Regular",
             c".AppleSystemUIFont",
         ] {
@@ -1240,9 +1248,24 @@ mod ios_entry {
                     .to_string_lossy()
                     .into_owned();
                 unsafe { ibis_ios_free_c_string(ptr) };
-                if let Ok(bytes) = std::fs::read(&path) {
+                if loaded_paths.insert(path.clone())
+                    && let Ok(bytes) = std::fs::read(&path)
+                {
                     fonts.push(std::borrow::Cow::Owned(bytes));
                 }
+            }
+        }
+        for fallback_path in [
+            "/System/Library/Fonts/AppFonts/HiraginoMincho.ttc",
+            "/System/Library/Fonts/Core/TimesNewRoman.ttf",
+            "/System/Library/Fonts/Core/TimesNewRomanBold.ttf",
+            "/System/Library/Fonts/Core/TimesNewRomanItalic.ttf",
+            "/System/Library/Fonts/Core/TimesNewRomanBoldItalic.ttf",
+        ] {
+            if loaded_paths.insert(fallback_path.to_string())
+                && let Ok(bytes) = std::fs::read(fallback_path)
+            {
+                fonts.push(std::borrow::Cow::Owned(bytes));
             }
         }
         let _ = app.text_system().add_fonts(fonts);
