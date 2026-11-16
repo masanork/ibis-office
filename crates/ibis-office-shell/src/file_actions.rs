@@ -168,7 +168,7 @@ impl SlideEditor {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         self.check_standard_copy_format(path)?;
         if self.current_csv_format.is_some() && self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
-            return Err("元の CSV へのコピーはできません。通常の保存を使用してください".into());
+            return Err(crate::i18n::text("file.csv-error.copy-original").to_string());
         }
         if self.standard_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());

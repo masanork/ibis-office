@@ -1241,3 +1241,27 @@ file.csv-encoding.title	CSV の文字コードを選択
 file.csv-encoding.detail	このファイルの文字コードを一意に判定できません。読み込みと上書き保存に使う文字コードを選んでください。Shift_JIS は Windows の CP932 として扱います。
 file.csv-encoding.changed	選択中にファイルが変更されました。もう一度開いてください。
 file.csv-loading-blocked	CSV の読み込みが完了するまでお待ちください。
+file.csv-error.external-change	CSV が外部で変更されたため上書き保存できません。
+file.csv-error.untracked-edits	追跡できない編集があるため CSV を上書き保存できません。名前を付けて保存を使用してください。
+file.csv-error.missing-sheet	元の CSV シートがありません。
+file.csv-error.other-sheet	元の CSV 以外のシートが変更されています。
+file.csv-error.text-roundtrip	文字列を再読込時に同じ文字列として保持できません。
+file.csv-error.value-roundtrip	表示された値を CSV へ正確に書き戻せません。
+file.csv-error.formula-roundtrip	数式を CSV へ正確に書き戻せません。
+file.csv-error.unsupported-delimiter	CSV の区切り文字に対応していません。
+file.csv-error.encoding-mismatch	CSV の文字コードが元の形式と一致しません。
+file.csv-error.unclosed-quote	閉じられていない CSV の引用符があります。
+file.csv-error.out-of-range	CSV のセル位置が範囲外です。
+file.csv-error.duplicate-cell	同じ CSV セルが複数回指定されました。
+file.csv-error.unencodable	元の文字コードで正確に表現できない文字があるため保存できません。
+file.csv-error.ambiguous-encoding	元の文字コードを判別できないため、ASCII 以外の文字を上書き保存できません。
+file.csv-error.symlink	シンボリックリンク経由の CSV は上書き保存できません。
+file.csv-error.not-regular-file	CSV が通常のファイルではありません。
+file.csv-error.hardlink	ハードリンクのある CSV は上書き保存できません。
+file.csv-error.missing-format	元の CSV 形式がありません。
+file.csv-error.missing-data	元の CSV データがありません。
+file.csv-error.wrong-sheet	元の CSV シートを選択して保存してください。
+file.csv-error.export-original	元の CSV への書き出しはできません。通常の保存を使用してください。
+file.csv-error.copy-original	元の CSV へのコピーはできません。通常の保存を使用してください。
+file.csv-error.no-filename	CSV のファイル名がありません。
+file.csv-error.type-changed	CSV のファイル種別が変更されました。

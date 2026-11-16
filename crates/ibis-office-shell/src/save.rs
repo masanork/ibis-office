@@ -34,19 +34,23 @@ impl SlideEditor {
     fn tracked_csv_bytes(&self, path: &std::path::Path) -> Result<Vec<u8>, String> {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-        if metadata.file_type().is_symlink() { return Err("シンボリックリンク経由の CSV は上書き保存できません".into()); }
-        if !metadata.is_file() { return Err("CSV が通常のファイルではありません".into()); }
+        if metadata.file_type().is_symlink() { return Err(crate::i18n::text("file.csv-error.symlink").to_string()); }
+        if !metadata.is_file() { return Err(crate::i18n::text("file.csv-error.not-regular-file").to_string()); }
+        if metadata.permissions().readonly() {
+            return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).to_string());
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            if metadata.nlink() > 1 { return Err("ハードリンクのある CSV は上書き保存できません".into()); }
+            if metadata.nlink() > 1 { return Err(crate::i18n::text("file.csv-error.hardlink").to_string()); }
         }
-        let format = self.current_csv_format.ok_or("元の CSV 形式がありません")?;
-        let original = self.current_csv_original.as_deref().ok_or("元の CSV データがありません")?;
-        let slide = self.current_csv_slide.ok_or("元の CSV シートがありません")?;
-        if self.current_slide != slide { return Err("元の CSV シートを選択して保存してください".into()); }
+        let format = self.current_csv_format.ok_or_else(|| crate::i18n::text("file.csv-error.missing-format").to_string())?;
+        let original = self.current_csv_original.as_deref().ok_or_else(|| crate::i18n::text("file.csv-error.missing-data").to_string())?;
+        let slide = self.current_csv_slide.ok_or_else(|| crate::i18n::text("file.csv-error.missing-sheet").to_string())?;
+        if self.current_slide != slide { return Err(crate::i18n::text("file.csv-error.wrong-sheet").to_string()); }
         let disk = std::fs::read(path).map_err(|e| e.to_string())?;
-        ibis_pptx::csv::rewrite_tracked_csv(original, &disk, format, &self.document, slide).map_err(|e| e.to_string())
+        ibis_pptx::csv::rewrite_tracked_csv_checked(original, &disk, format, &self.document, slide)
+            .map_err(|e| crate::i18n::text(e.i18n_key()).to_string())
     }
     /// Confirm before saving changes to a package with signatures, including
     /// when signature discovery is malformed or unsupported. A cancelled
@@ -101,7 +105,7 @@ impl SlideEditor {
         }
         #[cfg(not(target_family = "wasm"))]
         if self.current_csv_format.is_some() && self.path.as_deref().is_some_and(|original| same_file(original, path)) {
-            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
+            return Err(std::io::Error::other(crate::i18n::text("file.csv-error.export-original").to_string()));
         }
         let _ = path;
         Ok(())
@@ -380,7 +384,7 @@ impl SlideEditor {
         // Protected with the password the file has (パスワードを使用して暗号化).
         let bytes = if let (Some(password), true) = (&self.protection_password, may_protect) { protect(&bytes, password)? } else { bytes };
         let written = if saving_original && self.current_csv_format.is_some() {
-            let original = self.current_csv_original.as_deref().ok_or("元の CSV データがありません")?;
+            let original = self.current_csv_original.as_deref().ok_or_else(|| crate::i18n::text("file.csv-error.missing-data").to_string())?;
             write_checked_csv(&path, original, &bytes)
         } else { write_replacing(&path, &bytes) };
         written.map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)]))?;
@@ -440,7 +444,7 @@ fn write_checked_csv(path: &std::path::Path, expected: &[u8], bytes: &[u8]) -> s
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let name = path.file_name().ok_or_else(|| std::io::Error::other("CSV のファイル名がありません"))?.to_string_lossy();
+    let name = path.file_name().ok_or_else(|| std::io::Error::other(crate::i18n::text("file.csv-error.no-filename").to_string()))?.to_string_lossy();
     let (temporary, mut file) = loop {
         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
         let temporary = path.with_file_name(format!(".{name}.ibis-csv-{}-{nonce}", std::process::id()));
@@ -455,14 +459,17 @@ fn write_checked_csv(path: &std::path::Path, expected: &[u8], bytes: &[u8]) -> s
         file.sync_all()?;
         let metadata = std::fs::symlink_metadata(path)?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(std::io::Error::other("CSV のファイル種別が変更されました"));
+            return Err(std::io::Error::other(crate::i18n::text("file.csv-error.type-changed").to_string()));
+        }
+        if metadata.permissions().readonly() {
+            return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            if metadata.nlink() > 1 { return Err(std::io::Error::other("ハードリンクのある CSV は保存できません")); }
+            if metadata.nlink() > 1 { return Err(std::io::Error::other(crate::i18n::text("file.csv-error.hardlink").to_string())); }
         }
-        if std::fs::read(path)? != expected { return Err(std::io::Error::other("CSV が外部で変更されました")); }
+        if std::fs::read(path)? != expected { return Err(std::io::Error::other(crate::i18n::text("file.csv-error.external-change").to_string())); }
         file.set_permissions(metadata.permissions())?;
         drop(file);
         std::fs::rename(&temporary, path)

@@ -1243,3 +1243,27 @@ file.csv-encoding.title	Choose the CSV encoding
 file.csv-encoding.detail	The encoding cannot be determined uniquely. Choose the encoding used to open and overwrite this file. Shift_JIS is treated as Windows CP932.
 file.csv-encoding.changed	The file changed while you were choosing. Open it again.
 file.csv-loading-blocked	Wait until the CSV has finished loading.
+file.csv-error.external-change	The CSV file was modified externally and cannot be overwritten.
+file.csv-error.untracked-edits	The CSV contains edits that cannot be safely saved in place. Use Save As instead.
+file.csv-error.missing-sheet	The original CSV worksheet is missing.
+file.csv-error.other-sheet	Another worksheet was modified.
+file.csv-error.text-roundtrip	The text cannot be preserved as the same text when reloaded as CSV.
+file.csv-error.value-roundtrip	The displayed value cannot be written back to CSV accurately.
+file.csv-error.formula-roundtrip	The formula cannot be written back to CSV accurately.
+file.csv-error.unsupported-delimiter	Unsupported CSV delimiter.
+file.csv-error.encoding-mismatch	The CSV encoding does not match the original format.
+file.csv-error.unclosed-quote	The CSV contains an unclosed quote.
+file.csv-error.out-of-range	The CSV cell position is out of range.
+file.csv-error.duplicate-cell	The same CSV cell was specified multiple times.
+file.csv-error.unencodable	Some characters cannot be represented in the original encoding.
+file.csv-error.ambiguous-encoding	Non-ASCII characters cannot be saved because the original encoding is ambiguous.
+file.csv-error.symlink	A CSV opened through a symbolic link cannot be overwritten.
+file.csv-error.not-regular-file	The CSV target is not a regular file.
+file.csv-error.hardlink	A CSV with multiple hard links cannot be overwritten.
+file.csv-error.missing-format	The original CSV format is missing.
+file.csv-error.missing-data	The original CSV data is missing.
+file.csv-error.wrong-sheet	Select the original CSV worksheet before saving.
+file.csv-error.export-original	Cannot export over the original CSV. Use Save instead.
+file.csv-error.copy-original	Cannot save a copy over the original CSV. Use Save instead.
+file.csv-error.no-filename	The CSV path has no file name.
+file.csv-error.type-changed	The CSV target file type changed.

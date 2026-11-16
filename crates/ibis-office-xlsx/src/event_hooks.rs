@@ -208,7 +208,7 @@ impl SlideEditor {
             && self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
             && self.current_csv_format.is_some()
         {
-            return Some(Err("元の CSV へのコピーはできません。通常の保存を使用してください".into()));
+            return Some(Err(crate::shell::i18n::text("file.csv-error.copy-original").to_string()));
         }
         if is(&["csv"]) {
             let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);

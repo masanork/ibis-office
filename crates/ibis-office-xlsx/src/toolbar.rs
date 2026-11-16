@@ -1044,7 +1044,7 @@ impl SlideEditor {
         if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
             && self.current_csv_format.is_some()
         {
-            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
+            return Err(std::io::Error::other(crate::shell::i18n::text("file.csv-error.export-original").to_string()));
         }
         std::fs::write(path, ibis_pptx::csv::sheet_to_csv(self.presentation(), index))
     }
@@ -1201,7 +1201,7 @@ impl SlideEditor {
         if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
             && self.current_csv_format.is_some()
         {
-            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
+            return Err(std::io::Error::other(crate::shell::i18n::text("file.csv-error.export-original").to_string()));
         }
         let bytes = ibis_pptx::csv::sheet_to_csv_sjis_strict(self.presentation(), index)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -1216,7 +1216,7 @@ impl SlideEditor {
         if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
             && self.current_csv_format.is_some()
         {
-            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
+            return Err(std::io::Error::other(crate::shell::i18n::text("file.csv-error.export-original").to_string()));
         }
         std::fs::write(path, ibis_pptx::csv::sheet_to_tsv(self.presentation(), index))
     }

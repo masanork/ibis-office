@@ -1106,14 +1106,23 @@ pub struct Document {
     csv_edits: Option<CsvEditJournal>,
 }
 
+/// Opt-in journal entry for lossless same-file CSV edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CsvEditOp {
+    Cells { slide: SlideId, cells: Vec<(u32, u32)> },
+    Insert { slide: SlideId, axis: crate::sheet_command::Axis, at: u32, count: u32 },
+    Delete { slide: SlideId, axis: crate::sheet_command::Axis, at: u32, count: u32 },
+    ShiftCells { slide: SlideId, range: crate::CellRange, down: bool, insert: bool },
+}
+
 #[derive(Clone, Debug, Default)]
 struct CsvEditJournal {
     valid: bool,
-    cells: std::collections::BTreeSet<(SlideId, u32, u32)>,
-    cell_counts: std::collections::BTreeMap<(SlideId, u32, u32), usize>,
-    undo_steps: Vec<Vec<(SlideId, u32, u32)>>,
-    redo_steps: Vec<Vec<(SlideId, u32, u32)>>,
+    undo_steps: Vec<Vec<CsvEditOp>>,
+    redo_steps: Vec<Vec<CsvEditOp>>,
+    pre_branch_ops: Vec<CsvEditOp>,
     baseline_undo_len: usize,
+    saved_undo_len: usize,
 }
 
 impl Default for Document {
@@ -1128,23 +1137,54 @@ impl Document {
     }
 
     /// Start a journal only after the source bytes and model describe the same
-    /// saved state. Restart it after a successful write, never before one.
+    /// saved state. Advance the saved boundary when tracking is already valid,
+    /// so pre-save undo/redo remains trackable.
     pub fn begin_csv_edit_tracking(&mut self) {
-        self.csv_edits = Some(CsvEditJournal { valid: true, baseline_undo_len: self.undo.len(), ..Default::default() });
+        let undo_len = self.undo.len();
+        if let Some(journal) = self.csv_edits.as_mut().filter(|j| j.valid && undo_len >= j.baseline_undo_len && j.undo_steps.len() == undo_len - j.baseline_undo_len) {
+            journal.saved_undo_len = undo_len;
+            journal.pre_branch_ops.clear();
+            return;
+        }
+        self.csv_edits = Some(CsvEditJournal {
+            valid: true,
+            baseline_undo_len: undo_len,
+            saved_undo_len: undo_len,
+            ..Default::default()
+        });
     }
 
-    /// Cells touched since tracking started; `None` means tracking is disabled
-    /// or an operation occurred whose effect cannot be safely replayed.
-    pub fn tracked_csv_cells(&self) -> Option<&std::collections::BTreeSet<(SlideId, u32, u32)>> {
-        self.csv_edits.as_ref().filter(|journal| journal.valid).map(|journal| &journal.cells)
+    /// Replayable CSV operations between the saved state and the current state.
+    /// `None` means tracking is disabled or an unsupported operation occurred.
+    pub fn tracked_csv_ops(&self) -> Option<Vec<CsvEditOp>> {
+        let journal = self.csv_edits.as_ref().filter(|j| j.valid)?;
+        if self.undo.len() < journal.baseline_undo_len || journal.saved_undo_len < journal.baseline_undo_len {
+            return None;
+        }
+        let current = self.undo.len() - journal.baseline_undo_len;
+        let saved = journal.saved_undo_len - journal.baseline_undo_len;
+        if journal.undo_steps.len() != current {
+            return None;
+        }
+        if current >= saved {
+            let mut ops = journal.pre_branch_ops.clone();
+            ops.extend(journal.undo_steps[saved..current].iter().flatten().cloned());
+            return Some(ops);
+        }
+        let undone_count = saved - current;
+        if journal.redo_steps.len() < undone_count {
+            return None;
+        }
+        let mut ops = journal.pre_branch_ops.clone();
+        invert_csv_steps(&self.presentation, &journal.redo_steps[journal.redo_steps.len() - undone_count..], &mut ops);
+        Some(ops)
     }
 
     fn invalidate_csv_edits(&mut self) {
         if let Some(journal) = &mut self.csv_edits { journal.valid = false; }
     }
 
-    /// Update only steps recorded since the bytes were last read or saved.
-    /// Any older history or unsupported command remains a fail-closed barrier.
+    /// Update steps recorded since tracking began.
     fn csv_after_undo(&mut self) {
         let Some(journal) = self.csv_edits.as_mut().filter(|j| j.valid) else { return };
         if self.undo.len() < journal.baseline_undo_len || journal.undo_steps.len() != self.undo.len() - journal.baseline_undo_len + 1 {
@@ -1152,11 +1192,6 @@ impl Document {
             return;
         }
         let Some(step) = journal.undo_steps.pop() else { journal.valid = false; return };
-        for cell in &step {
-            let Some(count) = journal.cell_counts.get_mut(cell) else { journal.valid = false; return };
-            *count -= 1;
-            if *count == 0 { journal.cell_counts.remove(cell); journal.cells.remove(cell); }
-        }
         journal.redo_steps.push(step);
     }
 
@@ -1167,7 +1202,6 @@ impl Document {
             return;
         }
         let Some(step) = journal.redo_steps.pop() else { journal.valid = false; return };
-        for cell in &step { *journal.cell_counts.entry(*cell).or_insert(0) += 1; journal.cells.insert(*cell); }
         journal.undo_steps.push(step);
     }
 
@@ -1240,27 +1274,7 @@ impl Document {
         if self.read_only && commands.iter().any(|command| !matches!(command, Command::Flow(crate::flow_command::FlowCommand::SetViewMode(_)))) {
             return Err(EditError::ReadOnly);
         }
-        let csv_delta = self.csv_edits.as_ref().filter(|j| j.valid).map(|_| {
-            let mut cells = std::collections::BTreeSet::new();
-            for command in &commands {
-                if let Command::Sheet(crate::SheetCommand::SetCells { slide, edits }) = command {
-                    cells.extend(edits.iter().map(|edit| (*slide, edit.row, edit.column)));
-                }
-            }
-            for command in &commands {
-                match command {
-                    Command::Sheet(crate::SheetCommand::SetCells { .. }) => {}
-                    Command::Sheet(crate::SheetCommand::SetRowHeightFitted { .. } | crate::SheetCommand::SetColumnWidthAuto { .. }) => {}
-                    // Typing a percentage or date can set the number format
-                    // in the same step. Only accept formats on cells whose
-                    // contents are explicitly recorded in that very step.
-                    Command::Sheet(crate::SheetCommand::SetFormat { slide, ranges, change: crate::sheet_command::StyleChange::NumberFormat(_) })
-                        if !ranges.is_empty() && ranges.iter().all(|r| r.first_row == r.last_row && r.first_column == r.last_column && cells.contains(&(*slide, r.first_row, r.first_column))) => {}
-                    _ => return None,
-                }
-            }
-            Some(cells.into_iter().collect::<Vec<_>>())
-        });
+        let csv_delta = self.csv_edits.as_ref().filter(|j| j.valid).map(|_| csv_ops_for_commands(&self.presentation, &commands));
         let repeat:Vec<_> = commands.iter().filter_map(|command|match command {
             Command::Sheet(edit @ (crate::SheetCommand::SetFormat{..}|crate::SheetCommand::Insert{..}|crate::SheetCommand::Delete{..}|crate::SheetCommand::ClearFormats{..}|crate::SheetCommand::ShiftCells{..})) => Some(edit.clone()),
             _ => None,
@@ -1268,10 +1282,22 @@ impl Document {
         let inverses = self.apply_all(commands)?;
         if !inverses.is_empty() {
             if let (Some(journal), Some(delta)) = (&mut self.csv_edits, csv_delta) {
-                if let Some(cells) = delta {
-                    for cell in &cells { *journal.cell_counts.entry(*cell).or_insert(0) += 1; journal.cells.insert(*cell); }
-                    journal.undo_steps.push(cells);
-                    journal.redo_steps.clear();
+                if let Some(ops) = delta {
+                    if self.undo.len() < journal.saved_undo_len {
+                        let undone_count = journal.saved_undo_len - self.undo.len();
+                        if journal.redo_steps.len() >= undone_count {
+                            let start = journal.redo_steps.len() - undone_count;
+                            invert_csv_steps(&self.presentation, &journal.redo_steps[start..], &mut journal.pre_branch_ops);
+                            journal.saved_undo_len = self.undo.len();
+                            journal.undo_steps.push(ops);
+                            journal.redo_steps.clear();
+                        } else {
+                            journal.valid = false;
+                        }
+                    } else {
+                        journal.undo_steps.push(ops);
+                        journal.redo_steps.clear();
+                    }
                 } else { journal.valid = false; }
             }
             if self.clean_undo_len.is_some_and(|clean| clean > self.undo.len()) {
@@ -1368,6 +1394,107 @@ impl Document {
         }
         inverses.reverse();
         Ok(inverses)
+    }
+}
+
+fn csv_cells_in_ranges(presentation: &Presentation, slide: SlideId, ranges: &[crate::CellRange]) -> Vec<(u32, u32)> {
+    let mut cells = Vec::new();
+    if let Some(sheet) = presentation.slide(slide).and_then(crate::sheet_calc::sheet_of_slide) {
+        for c in &sheet.cells {
+            if ranges.iter().any(|r| (r.first_row..=r.last_row).contains(&c.row) && (r.first_column..=r.last_column).contains(&c.column)) {
+                cells.push((c.row, c.column));
+            }
+        }
+    }
+    for r in ranges {
+        if r.first_row == r.last_row && r.first_column == r.last_column && !cells.contains(&(r.first_row, r.first_column)) {
+            cells.push((r.first_row, r.first_column));
+        }
+    }
+    cells
+}
+
+fn csv_ops_for_commands(presentation: &Presentation, commands: &[Command]) -> Option<Vec<CsvEditOp>> {
+    let mut ops = Vec::new();
+    for command in commands {
+        match command {
+            Command::Sheet(crate::SheetCommand::SetCells { slide, edits }) => {
+                ops.push(CsvEditOp::Cells { slide: *slide, cells: edits.iter().map(|e| (e.row, e.column)).collect() });
+            }
+            Command::Sheet(crate::SheetCommand::PutCells { slide, cells }) => {
+                ops.push(CsvEditOp::Cells { slide: *slide, cells: cells.iter().map(|c| (c.row, c.column)).collect() });
+            }
+            Command::Sheet(crate::SheetCommand::SetFormat { slide, ranges, change }) => {
+                if matches!(change, crate::sheet_command::StyleChange::NumberFormat(_)) {
+                    let cells = csv_cells_in_ranges(presentation, *slide, ranges);
+                    if !cells.is_empty() {
+                        ops.push(CsvEditOp::Cells { slide: *slide, cells });
+                    }
+                }
+            }
+            Command::Sheet(crate::SheetCommand::ClearFormats { slide, ranges }) => {
+                let cells = csv_cells_in_ranges(presentation, *slide, ranges);
+                if !cells.is_empty() {
+                    ops.push(CsvEditOp::Cells { slide: *slide, cells });
+                }
+            }
+            Command::Sheet(
+                crate::SheetCommand::SetRowHeightFitted { .. }
+                | crate::SheetCommand::SetColumnWidthAuto { .. },
+            ) => {}
+            Command::Sheet(crate::SheetCommand::Insert { slide, axis, at, count }) => {
+                ops.push(CsvEditOp::Insert { slide: *slide, axis: *axis, at: *at, count: *count });
+            }
+            Command::Sheet(crate::SheetCommand::Delete { slide, axis, at, count }) => {
+                ops.push(CsvEditOp::Delete { slide: *slide, axis: *axis, at: *at, count: *count });
+            }
+            Command::Sheet(crate::SheetCommand::ShiftCells { slide, range, down, insert }) => {
+                ops.push(CsvEditOp::ShiftCells { slide: *slide, range: *range, down: *down, insert: *insert });
+            }
+            _ => return None,
+        }
+    }
+    Some(ops)
+}
+
+fn invert_csv_steps(presentation: &Presentation, steps: &[Vec<CsvEditOp>], out: &mut Vec<CsvEditOp>) {
+    for step in steps {
+        for op in step.iter().rev() {
+            match op {
+                CsvEditOp::Cells { slide, cells } => {
+                    out.push(CsvEditOp::Cells { slide: *slide, cells: cells.clone() });
+                }
+                CsvEditOp::Insert { slide, axis, at, count } => {
+                    out.push(CsvEditOp::Delete { slide: *slide, axis: *axis, at: *at, count: *count });
+                }
+                CsvEditOp::Delete { slide, axis, at, count } => {
+                    out.push(CsvEditOp::Insert { slide: *slide, axis: *axis, at: *at, count: *count });
+                    if let Some(sheet) = presentation.slide(*slide).and_then(crate::sheet_calc::sheet_of_slide) {
+                        let restored: Vec<(u32, u32)> = sheet.cells.iter().filter(|c| match axis {
+                            crate::sheet_command::Axis::Rows => (*at..*at + *count).contains(&c.row),
+                            crate::sheet_command::Axis::Columns => (*at..*at + *count).contains(&c.column),
+                        }).map(|c| (c.row, c.column)).collect();
+                        if !restored.is_empty() {
+                            out.push(CsvEditOp::Cells { slide: *slide, cells: restored });
+                        }
+                    }
+                }
+                CsvEditOp::ShiftCells { slide, range, down, insert } => {
+                    out.push(CsvEditOp::ShiftCells { slide: *slide, range: *range, down: *down, insert: !*insert });
+                    if !*insert {
+                        if let Some(sheet) = presentation.slide(*slide).and_then(crate::sheet_calc::sheet_of_slide) {
+                            let restored: Vec<(u32, u32)> = sheet.cells.iter().filter(|c| {
+                                (range.first_row..=range.last_row).contains(&c.row)
+                                    && (range.first_column..=range.last_column).contains(&c.column)
+                            }).map(|c| (c.row, c.column)).collect();
+                            if !restored.is_empty() {
+                                out.push(CsvEditOp::Cells { slide: *slide, cells: restored });
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

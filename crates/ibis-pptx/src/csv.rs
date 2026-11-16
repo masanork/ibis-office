@@ -39,6 +39,77 @@ pub struct OriginalCsvFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordEnding { CrLf, Lf, Cr, Mixed, QuotedCarriageReturn }
 
+/// Structured error for in-place CSV saves, allowing UI callers to localize
+/// messages while library callers still get a descriptive `Error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsvInPlaceError {
+    ExternalChange,
+    UntrackedEdits,
+    MissingSheet,
+    OtherSheetEdited,
+    TextNotRoundTrip,
+    ValueNotRoundTrip,
+    FormulaNotRoundTrip,
+    UnsupportedDelimiter,
+    EncodingMismatch,
+    UnclosedQuote,
+    OutOfRange,
+    DuplicateCell,
+    UnencodableCharacter,
+    AmbiguousEncoding,
+}
+
+impl CsvInPlaceError {
+    /// Localization key in `ibis-office-base/i18n/*/shell.tsv`.
+    pub const fn i18n_key(self) -> &'static str {
+        match self {
+            Self::ExternalChange => "file.csv-error.external-change",
+            Self::UntrackedEdits => "file.csv-error.untracked-edits",
+            Self::MissingSheet => "file.csv-error.missing-sheet",
+            Self::OtherSheetEdited => "file.csv-error.other-sheet",
+            Self::TextNotRoundTrip => "file.csv-error.text-roundtrip",
+            Self::ValueNotRoundTrip => "file.csv-error.value-roundtrip",
+            Self::FormulaNotRoundTrip => "file.csv-error.formula-roundtrip",
+            Self::UnsupportedDelimiter => "file.csv-error.unsupported-delimiter",
+            Self::EncodingMismatch => "file.csv-error.encoding-mismatch",
+            Self::UnclosedQuote => "file.csv-error.unclosed-quote",
+            Self::OutOfRange => "file.csv-error.out-of-range",
+            Self::DuplicateCell => "file.csv-error.duplicate-cell",
+            Self::UnencodableCharacter => "file.csv-error.unencodable",
+            Self::AmbiguousEncoding => "file.csv-error.ambiguous-encoding",
+        }
+    }
+}
+
+impl std::fmt::Display for CsvInPlaceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExternalChange => f.write_str("The CSV file was modified externally and cannot be overwritten."),
+            Self::UntrackedEdits => f.write_str("The CSV contains edits that cannot be safely saved in place."),
+            Self::MissingSheet => f.write_str("The original CSV worksheet is missing."),
+            Self::OtherSheetEdited => f.write_str("Another worksheet was modified."),
+            Self::TextNotRoundTrip => f.write_str("The text cannot be preserved as the same text when reloaded as CSV."),
+            Self::ValueNotRoundTrip => f.write_str("The displayed value cannot be written back to CSV accurately."),
+            Self::FormulaNotRoundTrip => f.write_str("The formula cannot be written back to CSV accurately."),
+            Self::UnsupportedDelimiter => f.write_str("Unsupported CSV delimiter."),
+            Self::EncodingMismatch => f.write_str("The CSV encoding does not match the original format."),
+            Self::UnclosedQuote => f.write_str("The CSV contains an unclosed quote."),
+            Self::OutOfRange => f.write_str("The CSV cell position is out of range."),
+            Self::DuplicateCell => f.write_str("The same CSV cell was specified multiple times."),
+            Self::UnencodableCharacter => f.write_str("Some characters cannot be represented in the original encoding."),
+            Self::AmbiguousEncoding => f.write_str("Non-ASCII characters cannot be saved because the original encoding is ambiguous."),
+        }
+    }
+}
+
+impl std::error::Error for CsvInPlaceError {}
+
+impl From<CsvInPlaceError> for Error {
+    fn from(err: CsvInPlaceError) -> Self {
+        Error::new(err.to_string())
+    }
+}
+
 /// Byte ranges into the original file. Delimiters lie between field ranges;
 /// each record's terminator is retained separately, including an empty final
 /// terminator. The BOM, when present, precedes the first field.
@@ -71,8 +142,8 @@ enum RawCsvEvent {
 
 /// Scan fields without allocating one range per field. Byte values used as
 /// separators cannot occur as trail bytes in UTF-8 or CP932.
-fn scan_raw_csv(data: &[u8], encoding: OriginalEncoding, delimiter: char, mut visit: impl FnMut(RawCsvEvent)) -> Result<(), Error> {
-    if !matches!(delimiter, ',' | ';' | '\t') { return Err(Error::new("CSV の区切り文字に対応していません")); }
+fn scan_raw_csv_checked(data: &[u8], encoding: OriginalEncoding, delimiter: char, mut visit: impl FnMut(RawCsvEvent)) -> Result<(), CsvInPlaceError> {
+    if !matches!(delimiter, ',' | ';' | '\t') { return Err(CsvInPlaceError::UnsupportedDelimiter); }
     let (start, width, le, valid) = match encoding {
         OriginalEncoding::Utf8 => (0, 1, true, !data.starts_with(b"\xef\xbb\xbf") && std::str::from_utf8(data).is_ok()),
         OriginalEncoding::Utf8Bom => (3, 1, true, data.starts_with(b"\xef\xbb\xbf") && std::str::from_utf8(&data[3..]).is_ok()),
@@ -82,7 +153,7 @@ fn scan_raw_csv(data: &[u8], encoding: OriginalEncoding, delimiter: char, mut vi
         OriginalEncoding::AsciiAmbiguous => (0, 1, true, data.is_ascii()),
         OriginalEncoding::Utf8OrCp932 => (0, 1, true, !data.is_ascii() && !data.starts_with(b"\xef\xbb\xbf") && std::str::from_utf8(data).is_ok() && valid_encoded_bytes(data, encoding_rs::SHIFT_JIS)),
     };
-    if !valid { return Err(Error::new("CSV の文字コードが元の形式と一致しません")); }
+    if !valid { return Err(CsvInPlaceError::EncodingMismatch); }
     let unit = |pos: usize| -> u16 {
         if width == 1 { data[pos] as u16 }
         else if le { u16::from_le_bytes([data[pos], data[pos + 1]]) }
@@ -119,12 +190,16 @@ fn scan_raw_csv(data: &[u8], encoding: OriginalEncoding, delimiter: char, mut vi
             empty = true;
         } else { empty = false; pos += width; }
     }
-    if quoted { return Err(Error::new("閉じられていない CSV の引用符があります")); }
+    if quoted { return Err(CsvInPlaceError::UnclosedQuote); }
     if field_start < data.len() || column != 0 {
         visit(RawCsvEvent::Field(row, column, field_start..data.len()));
         visit(RawCsvEvent::End(data.len()..data.len()));
     }
     Ok(())
+}
+
+fn scan_raw_csv(data: &[u8], encoding: OriginalEncoding, delimiter: char, visit: impl FnMut(RawCsvEvent)) -> Result<(), Error> {
+    scan_raw_csv_checked(data, encoding, delimiter, visit).map_err(Into::into)
 }
 
 /// Locate original CSV fields without decoding and re-encoding their bytes.
@@ -139,30 +214,66 @@ pub fn raw_csv_records(data: &[u8], encoding: OriginalEncoding, delimiter: char)
     Ok(records)
 }
 
-/// Replace fields or append fields and records, copying every other byte
-/// verbatim. Coordinates are zero-based. Inserting or deleting existing rows
-/// or columns requires a separate policy and is not inferred here.
-pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter: char, changes: &[(usize, usize, String)]) -> Result<Vec<u8>, Error> {
-    let mut pending = std::collections::BTreeMap::new();
-    for (row, column, value) in changes {
-        if *row >= 1_048_576 || *column >= 16_384 { return Err(Error::new("CSV のセル位置が範囲外です")); }
-        let field = if value.contains([delimiter, '"', '\r', '\n']) {
-            format!("\"{}\"", value.replace('"', "\"\""))
-        } else { value.clone() };
-        let mut bytes = encode_original(&field, encoding)?;
-        let bom_len = match encoding { OriginalEncoding::Utf8Bom => 3, OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => 2, _ => 0 };
-        bytes.drain(..bom_len);
-        if pending.insert((*row, *column), bytes).is_some() { return Err(Error::new("同じ CSV セルが複数回指定されました")); }
+fn csv_bom_len(encoding: OriginalEncoding) -> usize {
+    match encoding {
+        OriginalEncoding::Utf8Bom => 3,
+        OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => 2,
+        _ => 0,
     }
+}
+
+fn encode_csv_field_bytes(value: &str, encoding: OriginalEncoding, delimiter: char) -> Result<Vec<u8>, CsvInPlaceError> {
+    let field = if value.contains([delimiter, '"', '\r', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    };
+    let mut bytes = encode_original_checked(&field, encoding)?;
+    bytes.drain(..csv_bom_len(encoding));
+    Ok(bytes)
+}
+
+fn encode_csv_cell_value(cell: Option<&ibis_doc_model::sheet::SheetCell>) -> Result<String, CsvInPlaceError> {
+    match cell {
+        None => Ok(String::new()),
+        Some(cell) if cell.formula.is_none() => match &cell.value {
+            CellValue::Text(value) => {
+                // A CSV quote does not prevent the importer interpreting a
+                // text constant as a number, formula, or apostrophe escape.
+                if value.is_empty() || value.contains('\r') || !matches!(parse_imported(value, false), Typed::Value(CellValue::Text(ref parsed), _) if parsed == value) {
+                    return Err(CsvInPlaceError::TextNotRoundTrip);
+                }
+                Ok(value.clone())
+            }
+            CellValue::Empty => Ok(String::new()),
+            value => {
+                if !matches!(parse_imported(&cell.text, false), Typed::Value(ref parsed, _) if parsed == value) {
+                    return Err(CsvInPlaceError::ValueNotRoundTrip);
+                }
+                Ok(cell.text.clone())
+            }
+        },
+        Some(cell) => {
+            let formula = cell.formula.as_ref().expect("formula checked above");
+            let text = format!("={formula}");
+            if !matches!(parse_imported(&text, false), Typed::Formula(ref parsed) if ibis_calc::formula::from_file(&ibis_calc::formula::to_file(parsed)) == *formula) {
+                return Err(CsvInPlaceError::FormulaNotRoundTrip);
+            }
+            Ok(text)
+        }
+    }
+}
+
+fn rewrite_raw_csv_fields_checked(data: &[u8], encoding: OriginalEncoding, delimiter: char, pending: std::collections::BTreeMap<(usize, usize), Vec<u8>>) -> Result<Vec<u8>, CsvInPlaceError> {
     let mut pending: std::collections::VecDeque<_> = pending.into_iter().collect();
     let mut replacements = Vec::with_capacity(pending.len());
-    let bom_len = match encoding { OriginalEncoding::Utf8Bom => 3, OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => 2, _ => 0 };
-    let separator = encode_original(&delimiter.to_string(), encoding)?[bom_len..].to_vec();
+    let bom_len = csv_bom_len(encoding);
+    let separator = encode_original_checked(&delimiter.to_string(), encoding)?[bom_len..].to_vec();
     let (mut current_row, mut field_count, mut record_count) = (0usize, 0usize, 0usize);
     let mut too_many_columns = false;
     let mut last_ending = None;
     let mut trailing_ending = false;
-    scan_raw_csv(data, encoding, delimiter, |event| {
+    scan_raw_csv_checked(data, encoding, delimiter, |event| {
         match event {
             RawCsvEvent::Field(row, column, range) => {
                 current_row = row;
@@ -191,25 +302,25 @@ pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter
             }
         }
     })?;
-    if too_many_columns { return Err(Error::new("CSV の列数が範囲外です")); }
+    if too_many_columns { return Err(CsvInPlaceError::OutOfRange); }
     // Cleared cells outside the original data do not create empty records.
     pending.retain(|(_, bytes)| !bytes.is_empty());
     if !pending.is_empty() {
         let last_ending = match last_ending {
             Some(range) => data[range].to_vec(),
-            None => encode_original("\r\n", encoding)?[bom_len..].to_vec(),
+            None => encode_original_checked("\r\n", encoding)?[bom_len..].to_vec(),
         };
         let mut suffix = Vec::new();
         if record_count != 0 && !trailing_ending { suffix.extend_from_slice(&last_ending); }
         let mut next_row = record_count;
         while let Some(((row, _), _)) = pending.front() {
             let row = *row;
-            if row < next_row || row >= 1_048_576 { return Err(Error::new("CSV の行数が範囲外です")); }
+            if row < next_row || row >= 1_048_576 { return Err(CsvInPlaceError::OutOfRange); }
             while next_row < row { suffix.extend_from_slice(&last_ending); next_row += 1; }
             let mut next_column = 0usize;
             while pending.front().is_some_and(|((r, _), _)| *r == row) {
                 let ((_, column), bytes) = pending.pop_front().expect("checked above");
-                if column >= 16_384 || column < next_column { return Err(Error::new("CSV の列数が範囲外です")); }
+                if column >= 16_384 || column < next_column { return Err(CsvInPlaceError::OutOfRange); }
                 for _ in next_column..column { suffix.extend_from_slice(&separator); }
                 suffix.extend_from_slice(&bytes);
                 next_column = column + 1;
@@ -231,49 +342,356 @@ pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter
     Ok(output)
 }
 
+/// Replace fields or append fields and records, copying every other byte
+/// verbatim. Coordinates are zero-based. Inserting or deleting existing rows
+/// or columns requires a separate policy and is not inferred here.
+pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter: char, changes: &[(usize, usize, String)]) -> Result<Vec<u8>, Error> {
+    let mut pending = std::collections::BTreeMap::new();
+    for (row, column, value) in changes {
+        if *row >= 1_048_576 || *column >= 16_384 { return Err(CsvInPlaceError::OutOfRange.into()); }
+        let bytes = encode_csv_field_bytes(value, encoding, delimiter)?;
+        if pending.insert((*row, *column), bytes).is_some() { return Err(CsvInPlaceError::DuplicateCell.into()); }
+    }
+    rewrite_raw_csv_fields_checked(data, encoding, delimiter, pending).map_err(Into::into)
+}
+
+fn map_orig_axis_index(mut idx: usize, target_is_rows: bool, ops: &[ibis_doc_model::command::CsvEditOp]) -> Option<usize> {
+    use ibis_doc_model::{command::CsvEditOp, sheet_command::Axis};
+    for op in ops {
+        match op {
+            CsvEditOp::Insert { axis, at, count, .. } if (*axis == Axis::Rows) == target_is_rows => {
+                if idx >= *at as usize { idx += *count as usize; }
+            }
+            CsvEditOp::Delete { axis, at, count, .. } if (*axis == Axis::Rows) == target_is_rows => {
+                let (at, count) = (*at as usize, *count as usize);
+                if (at..at + count).contains(&idx) { return None; }
+                if idx >= at + count { idx -= count; }
+            }
+            _ => {}
+        }
+    }
+    Some(idx)
+}
+
+fn map_orig_cell_coords(mut row: usize, mut col: usize, ops: &[ibis_doc_model::command::CsvEditOp]) -> Option<(usize, usize)> {
+    use ibis_doc_model::{command::CsvEditOp, sheet_command::Axis};
+    for op in ops {
+        match op {
+            CsvEditOp::Cells { .. } => {}
+            CsvEditOp::Insert { axis: Axis::Rows, at, count, .. } => {
+                if row >= *at as usize { row += *count as usize; }
+            }
+            CsvEditOp::Delete { axis: Axis::Rows, at, count, .. } => {
+                let (at, count) = (*at as usize, *count as usize);
+                if (at..at + count).contains(&row) { return None; }
+                if row >= at + count { row -= count; }
+            }
+            CsvEditOp::Insert { axis: Axis::Columns, at, count, .. } => {
+                if col >= *at as usize { col += *count as usize; }
+            }
+            CsvEditOp::Delete { axis: Axis::Columns, at, count, .. } => {
+                let (at, count) = (*at as usize, *count as usize);
+                if (at..at + count).contains(&col) { return None; }
+                if col >= at + count { col -= count; }
+            }
+            CsvEditOp::ShiftCells { range, down, insert, .. } => {
+                let (fr, lr) = (range.first_row as usize, range.last_row as usize);
+                let (fc, lc) = (range.first_column as usize, range.last_column as usize);
+                if *down {
+                    if (fc..=lc).contains(&col) && row >= fr {
+                        let n = lr - fr + 1;
+                        if *insert { row += n; }
+                        else if row < fr + n { return None; }
+                        else { row -= n; }
+                    }
+                } else if (fr..=lr).contains(&row) && col >= fc {
+                    let n = lc - fc + 1;
+                    if *insert { col += n; }
+                    else if col < fc + n { return None; }
+                    else { col -= n; }
+                }
+            }
+        }
+    }
+    Some((row, col))
+}
+
+fn emit_new_csv_row(
+    output: &mut Vec<u8>,
+    row: usize,
+    encoded_dirty: &mut std::collections::BTreeMap<(usize, usize), Vec<u8>>,
+    separator: &[u8],
+) -> Result<(), CsvInPlaceError> {
+    let cols: Vec<usize> = encoded_dirty.range((row, 0)..=(row, usize::MAX)).filter(|(_, v)| !v.is_empty()).map(|(&(_, c), _)| c).collect();
+    let mut next_col = 0usize;
+    for (i, col) in cols.into_iter().enumerate() {
+        if col >= 16_384 { return Err(CsvInPlaceError::OutOfRange); }
+        if i > 0 { output.extend_from_slice(separator); }
+        for _ in next_col..col { output.extend_from_slice(separator); }
+        if let Some(bytes) = encoded_dirty.remove(&(row, col)) {
+            output.extend_from_slice(&bytes);
+        }
+        next_col = col + 1;
+    }
+    Ok(())
+}
+
+fn rewrite_raw_csv_with_ops(
+    data: &[u8],
+    format: OriginalCsvFormat,
+    ops: &[ibis_doc_model::command::CsvEditOp],
+    sheet: &ibis_doc_model::sheet::Sheet,
+    slide: ibis_doc_model::SlideId,
+) -> Result<Vec<u8>, CsvInPlaceError> {
+    use ibis_doc_model::{command::CsvEditOp, sheet_command::Axis};
+    let mut dirty_cur = std::collections::BTreeSet::<(usize, usize)>::new();
+    let mut has_structural = false;
+    let mut has_shift_cells = false;
+    for op in ops {
+        let op_slide = match op {
+            CsvEditOp::Cells { slide, .. }
+            | CsvEditOp::Insert { slide, .. }
+            | CsvEditOp::Delete { slide, .. }
+            | CsvEditOp::ShiftCells { slide, .. } => *slide,
+        };
+        if op_slide != slide { return Err(CsvInPlaceError::OtherSheetEdited); }
+        match op {
+            CsvEditOp::Cells { cells, .. } => {
+                for &(r, c) in cells { dirty_cur.insert((r as usize, c as usize)); }
+            }
+            CsvEditOp::Insert { axis: Axis::Rows, at, count, .. } => {
+                has_structural = true;
+                let (at, count) = (*at as usize, *count as usize);
+                dirty_cur = dirty_cur.into_iter().map(|(r, c)| if r >= at { (r + count, c) } else { (r, c) }).collect();
+            }
+            CsvEditOp::Delete { axis: Axis::Rows, at, count, .. } => {
+                has_structural = true;
+                let (at, count) = (*at as usize, *count as usize);
+                dirty_cur = dirty_cur.into_iter().filter_map(|(r, c)| {
+                    if (at..at + count).contains(&r) { None }
+                    else if r >= at + count { Some((r - count, c)) }
+                    else { Some((r, c)) }
+                }).collect();
+            }
+            CsvEditOp::Insert { axis: Axis::Columns, at, count, .. } => {
+                has_structural = true;
+                let (at, count) = (*at as usize, *count as usize);
+                dirty_cur = dirty_cur.into_iter().map(|(r, c)| if c >= at { (r, c + count) } else { (r, c) }).collect();
+            }
+            CsvEditOp::Delete { axis: Axis::Columns, at, count, .. } => {
+                has_structural = true;
+                let (at, count) = (*at as usize, *count as usize);
+                dirty_cur = dirty_cur.into_iter().filter_map(|(r, c)| {
+                    if (at..at + count).contains(&c) { None }
+                    else if c >= at + count { Some((r, c - count)) }
+                    else { Some((r, c)) }
+                }).collect();
+            }
+            CsvEditOp::ShiftCells { range, down, insert, .. } => {
+                has_structural = true;
+                has_shift_cells = true;
+                let (fr, lr) = (range.first_row as usize, range.last_row as usize);
+                let (fc, lc) = (range.first_column as usize, range.last_column as usize);
+                dirty_cur = dirty_cur.into_iter().filter_map(|(mut r, mut c)| {
+                    if *down {
+                        if (fc..=lc).contains(&c) && r >= fr {
+                            let n = lr - fr + 1;
+                            if *insert { r += n; }
+                            else if r < fr + n { return None; }
+                            else { r -= n; }
+                        }
+                    } else if (fr..=lr).contains(&r) && c >= fc {
+                        let n = lc - fc + 1;
+                        if *insert { c += n; }
+                        else if c < fc + n { return None; }
+                        else { c -= n; }
+                    }
+                    Some((r, c))
+                }).collect();
+            }
+        }
+    }
+    let mut encoded_dirty = std::collections::BTreeMap::new();
+    for (r, c) in dirty_cur {
+        if r >= 1_048_576 || c >= 16_384 { return Err(CsvInPlaceError::OutOfRange); }
+        let text = encode_csv_cell_value(sheet.cell(r as u32, c as u32))?;
+        let bytes = encode_csv_field_bytes(&text, format.encoding, format.delimiter)?;
+        encoded_dirty.insert((r, c), bytes);
+    }
+    if !has_structural {
+        return rewrite_raw_csv_fields_checked(data, format.encoding, format.delimiter, encoded_dirty);
+    }
+    let bom_len = csv_bom_len(format.encoding);
+    let separator = encode_original_checked(&format.delimiter.to_string(), format.encoding)?[bom_len..].to_vec();
+    let default_ending_str = match format.record_ending {
+        RecordEnding::Lf => "\n",
+        RecordEnding::Cr => "\r",
+        _ => "\r\n",
+    };
+    let default_ending = encode_original_checked(default_ending_str, format.encoding)?[bom_len..].to_vec();
+
+    if has_shift_cells {
+        let mut orig_fields = std::collections::BTreeMap::<(usize, usize), std::ops::Range<usize>>::new();
+        let mut max_row = None::<usize>;
+        let mut last_ending = None;
+        let mut trailing_ending = false;
+        scan_raw_csv_checked(data, format.encoding, format.delimiter, |event| match event {
+            RawCsvEvent::Field(orig_r, orig_c, range) => {
+                if let Some((cur_r, cur_c)) = map_orig_cell_coords(orig_r, orig_c, ops) {
+                    orig_fields.insert((cur_r, cur_c), range);
+                    max_row = Some(max_row.map_or(cur_r, |m| m.max(cur_r)));
+                }
+            }
+            RawCsvEvent::End(terminator) => {
+                trailing_ending = !terminator.is_empty();
+                if trailing_ending { last_ending = Some(terminator); }
+            }
+        })?;
+        for (&(r, _), bytes) in &encoded_dirty {
+            if !bytes.is_empty() { max_row = Some(max_row.map_or(r, |m| m.max(r))); }
+        }
+        let ending = last_ending.map(|r| data[r].to_vec()).unwrap_or(default_ending);
+        let mut output = Vec::with_capacity(data.len());
+        output.extend_from_slice(&data[..bom_len]);
+        if let Some(max_r) = max_row {
+            if max_r >= 1_048_576 { return Err(CsvInPlaceError::OutOfRange); }
+            for r in 0..=max_r {
+                let max_orig_c = orig_fields.range((r, 0)..=(r, usize::MAX)).next_back().map(|(&(_, c), _)| c);
+                let max_dirty_c = encoded_dirty.range((r, 0)..=(r, usize::MAX)).filter(|(_, v)| !v.is_empty()).next_back().map(|(&(_, c), _)| c);
+                let max_c = match (max_orig_c, max_dirty_c) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (Some(a), None) | (None, Some(a)) => Some(a),
+                    (None, None) => None,
+                };
+                if let Some(mc) = max_c {
+                    if mc >= 16_384 { return Err(CsvInPlaceError::OutOfRange); }
+                    for c in 0..=mc {
+                        if c > 0 { output.extend_from_slice(&separator); }
+                        if let Some(bytes) = encoded_dirty.get(&(r, c)) {
+                            output.extend_from_slice(bytes);
+                        } else if let Some(range) = orig_fields.get(&(r, c)) {
+                            output.extend_from_slice(&data[range.clone()]);
+                        }
+                    }
+                }
+                if r < max_r || trailing_ending {
+                    output.extend_from_slice(&ending);
+                }
+            }
+        }
+        return Ok(output);
+    }
+
+    // Streaming pass for Insert/Delete of Rows/Columns.
+    let mut output = Vec::with_capacity(data.len());
+    output.extend_from_slice(&data[..bom_len]);
+    let mut next_cur_row = 0usize;
+    let mut cur_row_opt: Option<usize> = None;
+    let mut next_cur_col = 0usize;
+    let mut emitted_in_row = false;
+    let mut last_ending = default_ending.clone();
+    let mut last_row_had_terminator = true;
+    let mut out_of_range = false;
+    scan_raw_csv_checked(data, format.encoding, format.delimiter, |event| {
+        if out_of_range { return; }
+        match event {
+            RawCsvEvent::Field(orig_r, orig_c, range) => {
+                let Some(cur_r) = map_orig_axis_index(orig_r, true, ops) else { return };
+                if cur_row_opt != Some(cur_r) {
+                    if cur_r >= 1_048_576 { out_of_range = true; return; }
+                    while next_cur_row < cur_r {
+                        if emit_new_csv_row(&mut output, next_cur_row, &mut encoded_dirty, &separator).is_err() {
+                            out_of_range = true;
+                            return;
+                        }
+                        output.extend_from_slice(&last_ending);
+                        next_cur_row += 1;
+                    }
+                    cur_row_opt = Some(cur_r);
+                    next_cur_col = 0;
+                    emitted_in_row = false;
+                }
+                let Some(cur_c) = map_orig_axis_index(orig_c, false, ops) else { return };
+                if cur_c >= 16_384 { out_of_range = true; return; }
+                for col in next_cur_col..cur_c {
+                    if emitted_in_row { output.extend_from_slice(&separator); }
+                    if let Some(bytes) = encoded_dirty.remove(&(cur_r, col)) {
+                        output.extend_from_slice(&bytes);
+                    }
+                    emitted_in_row = true;
+                }
+                if emitted_in_row { output.extend_from_slice(&separator); }
+                if let Some(bytes) = encoded_dirty.remove(&(cur_r, cur_c)) {
+                    output.extend_from_slice(&bytes);
+                } else {
+                    output.extend_from_slice(&data[range]);
+                }
+                emitted_in_row = true;
+                next_cur_col = cur_c + 1;
+            }
+            RawCsvEvent::End(terminator) => {
+                if let Some(cur_r) = cur_row_opt.take() {
+                    let trailing_cols: Vec<usize> = encoded_dirty.range((cur_r, next_cur_col)..=(cur_r, usize::MAX))
+                        .filter(|(_, v)| !v.is_empty())
+                        .map(|(&(_, c), _)| c)
+                        .collect();
+                    for col in trailing_cols {
+                        if col >= 16_384 { out_of_range = true; return; }
+                        for _ in next_cur_col..=col {
+                            if emitted_in_row { output.extend_from_slice(&separator); }
+                            emitted_in_row = true;
+                        }
+                        if let Some(bytes) = encoded_dirty.remove(&(cur_r, col)) {
+                            output.extend_from_slice(&bytes);
+                        }
+                        next_cur_col = col + 1;
+                    }
+                    last_row_had_terminator = !terminator.is_empty();
+                    if last_row_had_terminator { last_ending = data[terminator.clone()].to_vec(); }
+                    output.extend_from_slice(&data[terminator]);
+                    next_cur_row = cur_r + 1;
+                }
+            }
+        }
+    })?;
+    if out_of_range { return Err(CsvInPlaceError::OutOfRange); }
+    encoded_dirty.retain(|_, v| !v.is_empty());
+    if !encoded_dirty.is_empty() {
+        if next_cur_row != 0 && !last_row_had_terminator {
+            output.extend_from_slice(&last_ending);
+        }
+        while let Some((&(row, _), _)) = encoded_dirty.iter().next() {
+            if row < next_cur_row || row >= 1_048_576 { return Err(CsvInPlaceError::OutOfRange); }
+            while next_cur_row < row {
+                output.extend_from_slice(&last_ending);
+                next_cur_row += 1;
+            }
+            emit_new_csv_row(&mut output, row, &mut encoded_dirty, &separator)?;
+            next_cur_row = row + 1;
+            if !encoded_dirty.is_empty() || format.final_record_ending {
+                output.extend_from_slice(&last_ending);
+            }
+        }
+    }
+    Ok(output)
+}
+
+/// Apply tracked edits (cell edits, row/column insert/delete, cell shifts, and
+/// undo/redo across saves) while keeping unedited original field bytes intact.
+pub fn rewrite_tracked_csv_checked(data: &[u8], current_disk: &[u8], format: OriginalCsvFormat, document: &ibis_doc_model::Document, slide: ibis_doc_model::SlideId) -> Result<Vec<u8>, CsvInPlaceError> {
+    if data != current_disk { return Err(CsvInPlaceError::ExternalChange); }
+    let ops = document.tracked_csv_ops().ok_or(CsvInPlaceError::UntrackedEdits)?;
+    let sheet = document.presentation().slide(slide).and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
+        .ok_or(CsvInPlaceError::MissingSheet)?;
+    rewrite_raw_csv_with_ops(data, format, &ops, sheet, slide)
+}
+
 /// Apply tracked cell edits when their CSV text re-imports to the same value
-/// or formula. Structural changes are refused. `current_disk` is a fresh read used to reject outside changes; the
+/// or formula. `current_disk` is a fresh read used to reject outside changes; the
 /// caller must also handle changes after that read and restart tracking only
 /// after a successful write.
 pub fn rewrite_tracked_csv(data: &[u8], current_disk: &[u8], format: OriginalCsvFormat, document: &ibis_doc_model::Document, slide: ibis_doc_model::SlideId) -> Result<Vec<u8>, Error> {
-    if data != current_disk { return Err(Error::new("CSV が外部で変更されたため上書き保存できません")); }
-    let tracked = document.tracked_csv_cells().ok_or_else(|| Error::new("追跡できない編集があるため CSV を上書き保存できません"))?;
-    let sheet = document.presentation().slide(slide).and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
-        .ok_or_else(|| Error::new("元の CSV シートがありません"))?;
-    let mut changes = Vec::with_capacity(tracked.len());
-    for &(edited_slide, row, column) in tracked {
-        if edited_slide != slide { return Err(Error::new("元の CSV 以外のシートが変更されています")); }
-        let value = match sheet.cell(row, column) {
-            None => String::new(),
-            Some(cell) if cell.formula.is_none() => match &cell.value {
-                CellValue::Text(value) => {
-                    // A CSV quote does not prevent the importer interpreting a
-                    // text constant as a number, formula, or apostrophe escape.
-                    if value.is_empty() || value.contains('\r') || !matches!(parse_imported(value, false), Typed::Value(CellValue::Text(ref parsed), _) if parsed == value) {
-                        return Err(Error::new("文字列を再読込時に同じ文字列として保持できません"));
-                    }
-                    value.clone()
-                }
-                CellValue::Empty => String::new(),
-                value => {
-                    if !matches!(parse_imported(&cell.text, false), Typed::Value(ref parsed, _) if parsed == value) {
-                        return Err(Error::new("表示された値を CSV へ正確に書き戻せません"));
-                    }
-                    cell.text.clone()
-                },
-            },
-            Some(cell) => {
-                let formula = cell.formula.as_ref().expect("formula checked above");
-                let text = format!("={formula}");
-                if !matches!(parse_imported(&text, false), Typed::Formula(ref parsed) if ibis_calc::formula::from_file(&ibis_calc::formula::to_file(parsed)) == *formula) {
-                    return Err(Error::new("数式を CSV へ正確に書き戻せません"));
-                }
-                text
-            },
-        };
-        changes.push((row as usize, column as usize, value));
-    }
-    rewrite_raw_csv_fields(data, format.encoding, format.delimiter, &changes)
+    rewrite_tracked_csv_checked(data, current_disk, format, document, slide).map_err(Into::into)
 }
 
 /// Determine record separators without mistaking line breaks inside quotes for records.
@@ -353,9 +771,9 @@ pub fn decode_with_choice(data: &[u8], choice: TextEncoding) -> Result<(String, 
 }
 
 /// Encode without replacement or HTML numeric character references.
-pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>, Error> {
+pub fn encode_original_checked(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>, CsvInPlaceError> {
     match encoding {
-        OriginalEncoding::AsciiAmbiguous | OriginalEncoding::Utf8OrCp932 if !text.is_ascii() => Err(Error::new("元の文字コードを判別できないため、ASCII 以外の文字を上書き保存できません")),
+        OriginalEncoding::AsciiAmbiguous | OriginalEncoding::Utf8OrCp932 if !text.is_ascii() => Err(CsvInPlaceError::AmbiguousEncoding),
         OriginalEncoding::AsciiAmbiguous | OriginalEncoding::Utf8OrCp932 | OriginalEncoding::Utf8 => Ok(text.as_bytes().to_vec()),
         OriginalEncoding::Utf8Bom => {
             let mut bytes = b"\xEF\xBB\xBF".to_vec();
@@ -374,10 +792,15 @@ pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>
             let (bytes, _, invalid) = encoding_rs::SHIFT_JIS.encode(text);
             let (decoded, _, decode_error) = encoding_rs::SHIFT_JIS.decode(&bytes);
             if invalid || decode_error || decoded != text {
-                Err(Error::new("Shift_JIS で正確に表現できない文字があるため保存できません"))
+                Err(CsvInPlaceError::UnencodableCharacter)
             } else { Ok(bytes.into_owned()) }
         }
     }
+}
+
+/// Encode without replacement or HTML numeric character references.
+pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>, Error> {
+    encode_original_checked(text, encoding).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -438,7 +861,6 @@ mod original_encoding_tests {
     #[test]
     fn tracked_text_edits_preserve_original_bytes_across_successive_saves() {
         use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand};
-        use ibis_doc_model::sheet_command::Axis;
         let original = b"\xef\xbb\xbf00123,\"a\",\r\nb,c\n";
         let opened = crate::open(original.to_vec()).unwrap();
         let format = opened.source.original_csv_format().unwrap();
@@ -464,38 +886,37 @@ mod original_encoding_tests {
         let third = rewrite_tracked_csv(&second, &second, format, &doc, slide).unwrap();
         assert_eq!(third, b"\xef\xbb\xbf12,first,\r\nb,\"next,field\"\n");
         doc.begin_csv_edit_tracking();
-        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 0, count: 1 })]).unwrap();
+        doc.execute(vec![Command::SetSlideName { slide, name: Some("x".into()) }]).unwrap();
         assert!(rewrite_tracked_csv(&third, &third, format, &doc, slide).is_err());
     }
 
     #[test]
     fn edit_tracking_rejects_untracked_or_reverted_operations() {
         use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand, SlideId};
-        use ibis_doc_model::sheet_command::Axis;
         let opened = crate::open(b"00123,abc\r\n".to_vec()).unwrap();
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
         let set = |slide, row, column| Command::Sheet(SheetCommand::SetCells {
             slide, edits: vec![CellEdit { row, column, input: CellInput::Value(CellValue::Text("changed".into())) }],
         });
-        assert!(doc.tracked_csv_cells().is_none());
+        assert!(doc.tracked_csv_ops().is_none());
         doc.begin_csv_edit_tracking();
         doc.execute(vec![set(slide, 0, 1)]).unwrap();
-        assert_eq!(doc.tracked_csv_cells().unwrap().iter().copied().collect::<Vec<_>>(), vec![(slide, 0, 1)]);
+        assert_eq!(doc.tracked_csv_ops().unwrap(), vec![ibis_doc_model::command::CsvEditOp::Cells { slide, cells: vec![(0, 1)] }]);
         // A failed transaction rolls back and does not contaminate the journal.
         assert!(doc.execute(vec![set(slide, 0, 0), set(SlideId(u64::MAX), 0, 0)]).is_err());
-        assert_eq!(doc.tracked_csv_cells().unwrap().len(), 1);
-        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 0, count: 1 })]).unwrap();
-        assert!(doc.tracked_csv_cells().is_none());
+        assert_eq!(doc.tracked_csv_ops().unwrap().len(), 1);
+        doc.execute(vec![Command::SetSlideName { slide, name: Some("x".into()) }]).unwrap();
+        assert!(doc.tracked_csv_ops().is_none());
         assert!(doc.undo());
-        assert!(doc.tracked_csv_cells().is_none());
+        assert!(doc.tracked_csv_ops().is_none());
         doc.begin_csv_edit_tracking();
         doc.execute(vec![set(slide, 0, 0)]).unwrap();
         assert!(doc.undo());
-        assert!(doc.tracked_csv_cells().unwrap().is_empty());
+        assert!(doc.tracked_csv_ops().unwrap().is_empty());
         doc.begin_csv_edit_tracking();
         let _ = doc.presentation_mut();
-        assert!(doc.tracked_csv_cells().is_none());
+        assert!(doc.tracked_csv_ops().is_none());
     }
 
     #[test]
@@ -511,24 +932,24 @@ mod original_encoding_tests {
             row: 0, column: 0, input: CellInput::Value(CellValue::Text("changed".into())),
         }] })]).unwrap();
         assert!(doc.undo());
-        assert!(doc.tracked_csv_cells().unwrap().is_empty());
+        assert!(doc.tracked_csv_ops().unwrap().is_empty());
         assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), original);
         assert!(doc.redo());
         assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), b"changed,\"text\",\r\n");
         assert!(doc.undo());
-        assert!(doc.tracked_csv_cells().unwrap().is_empty());
+        assert!(doc.tracked_csv_ops().unwrap().is_empty());
         // Mutations outside command history cannot be proven undone.
         let _ = doc.presentation_mut();
         assert!(doc.redo());
         assert!(doc.undo());
-        assert!(doc.tracked_csv_cells().is_none());
+        assert!(doc.tracked_csv_ops().is_none());
         let opened = crate::open(original.to_vec()).unwrap();
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
         doc.begin_csv_edit_tracking();
-        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: ibis_doc_model::sheet_command::Axis::Rows, at: 0, count: 1 })]).unwrap();
+        doc.execute(vec![Command::SetSlideName { slide, name: Some("x".into()) }]).unwrap();
         assert!(doc.undo());
-        assert!(doc.tracked_csv_cells().is_none(), "unsupported operations stay invalid even after undo");
+        assert!(doc.tracked_csv_ops().is_none(), "unsupported operations stay invalid even after undo");
     }
 
     #[test]
@@ -560,7 +981,7 @@ mod original_encoding_tests {
         doc.begin_csv_edit_tracking();
         doc.mark_clean();
         assert!(doc.undo());
-        assert!(rewrite_tracked_csv(&saved, &saved, format, &doc, slide).is_err(), "history from before saving is not relative to the saved bytes");
+        assert_eq!(rewrite_tracked_csv(&saved, &saved, format, &doc, slide).unwrap(), b"123,\"first\",\"second\",\r\n");
     }
 
     #[test]
@@ -663,8 +1084,74 @@ mod original_encoding_tests {
         assert_eq!(output, b"00123,50%\r\n");
         assert!(doc.undo());
         assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), input);
-        doc.execute(vec![Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![range], change: StyleChange::NumberFormat("0%".into()) })]).unwrap();
-        assert!(doc.tracked_csv_cells().is_none(), "formatting alone may change a field's exported display");
+        // A number format that changes the displayed text into a non-round-tripping form is refused.
+        doc.execute(vec![
+            Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 0, column: 1, input: CellInput::Value(CellValue::Number(1000.0)) }] }),
+            Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![range], change: StyleChange::NumberFormat("\"prefix \"0".into()) }),
+        ]).unwrap();
+        assert!(rewrite_tracked_csv(input, input, format, &doc, slide).is_err(), "non-round-tripping formatted display must be refused");
+    }
+
+    #[test]
+    fn structural_insert_delete_shift_and_presave_undo_preserve_original_bytes() {
+        use ibis_doc_model::{CellEdit, CellInput, CellRange, CellValue, Command, Document, PutCell, SheetCommand};
+        use ibis_doc_model::sheet_command::Axis;
+        // Non-canonical CP932 (0x87 0x90), leading zero, quoted field, trailing empty field.
+        let original = b"\x87\x90,00123,\"q,1\",\r\nrow2,keep\r\n";
+        let opened = crate::open(original.to_vec()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        doc.begin_csv_edit_tracking();
+
+        // Insert row at 1, put a cell in it, and insert a column at 1.
+        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 1, count: 1 })]).unwrap();
+        doc.execute(vec![Command::Sheet(SheetCommand::PutCells {
+            slide,
+            cells: vec![PutCell { row: 1, column: 0, input: CellInput::Value(CellValue::Text("mid".into())), style: None }],
+        })]).unwrap();
+        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Columns, at: 1, count: 1 })]).unwrap();
+
+        let saved1 = rewrite_tracked_csv(original, original, format, &doc, slide).unwrap();
+        assert_eq!(saved1, b"\x87\x90,,00123,\"q,1\",\r\nmid\r\nrow2,,keep\r\n");
+
+        // Advance saved boundary and test pre-save undo!
+        doc.begin_csv_edit_tracking();
+        assert!(doc.undo()); // Undo Insert Columns at 1
+        let saved2 = rewrite_tracked_csv(&saved1, &saved1, format, &doc, slide).unwrap();
+        assert_eq!(saved2, b"\x87\x90,00123,\"q,1\",\r\nmid\r\nrow2,keep\r\n");
+
+        // Redo Insert Columns at 1, then delete row 0, save, then undo Delete Row 0!
+        assert!(doc.redo());
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![Command::Sheet(SheetCommand::Delete { slide, axis: Axis::Rows, at: 0, count: 1 })]).unwrap();
+        let saved3 = rewrite_tracked_csv(&saved1, &saved1, format, &doc, slide).unwrap();
+        assert_eq!(saved3, b"mid\r\nrow2,,keep\r\n");
+
+        // Save at saved3, then undo Delete Row 0 (restores row 0 from sheet).
+        doc.begin_csv_edit_tracking();
+        assert!(doc.undo());
+        let saved4 = rewrite_tracked_csv(&saved3, &saved3, format, &doc, slide).unwrap();
+        assert_eq!(saved4, b"\x81\xe0,,123,\"q,1\"\r\nmid\r\nrow2,,keep\r\n");
+
+        // ShiftCells down in column 0.
+        let opened2 = crate::open(b"a,b\r\nc,d\r\n".to_vec()).unwrap();
+        let format2 = opened2.source.original_csv_format().unwrap();
+        let slide2 = opened2.presentation.slides[0].id;
+        let mut doc2 = Document::new(opened2.presentation);
+        doc2.begin_csv_edit_tracking();
+        doc2.execute(vec![Command::Sheet(SheetCommand::ShiftCells {
+            slide: slide2,
+            range: CellRange { first_row: 0, last_row: 0, first_column: 0, last_column: 0 },
+            down: true,
+            insert: true,
+        })]).unwrap();
+        doc2.execute(vec![Command::Sheet(SheetCommand::SetCells {
+            slide: slide2,
+            edits: vec![CellEdit { row: 0, column: 0, input: CellInput::Value(CellValue::Text("top".into())) }],
+        })]).unwrap();
+        let shifted = rewrite_tracked_csv(b"a,b\r\nc,d\r\n", b"a,b\r\nc,d\r\n", format2, &doc2, slide2).unwrap();
+        assert_eq!(shifted, b"top,b\r\na,d\r\nc\r\n");
     }
 
     #[test]

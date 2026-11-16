@@ -696,6 +696,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::pq001_import_text", pq001_import_text),
         ("xlsx::file_open_csv_and_tsv", file_open_csv_and_tsv),
         ("xlsx::csv_in_place_preserves_cp932", csv_in_place_preserves_cp932),
+        ("xlsx::csv_in_place_structural_and_presave_undo", csv_in_place_structural_and_presave_undo),
+        ("xlsx::csv_in_place_large_progressive_and_filesystem", csv_in_place_large_progressive_and_filesystem),
         ("xlsx::csv_cell_of_many_lines", csv_cell_of_many_lines),
         ("xlsx::cell_edit_lines_stack", cell_edit_lines_stack),
         ("xlsx::cell_edit_paste_many_lines", cell_edit_paste_many_lines),
@@ -20773,6 +20775,116 @@ fn csv_in_place_preserves_cp932() {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(copy);
     let _ = std::fs::remove_file(source_path);
+}
+
+/// Insert/delete rows and columns and undo past a save boundary while keeping unedited bytes.
+fn csv_in_place_structural_and_presave_undo() {
+    use ibis_doc_model::{Command, SheetCommand, sheet_command::Axis};
+    let dir = crate::shell::scenario::repo_root().join("target/scenario-input");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join(format!("csv-struct-{}.csv", std::process::id()));
+    let original = ibis_pptx::csv::encode_sjis("名前,コード,\r\nりんご,00123,\r\n");
+    std::fs::write(&source_path, &original).unwrap();
+    let relative = format!("target/scenario-input/csv-struct-{}.csv", std::process::id());
+    let mut s = Scenario::open(&relative);
+    s.settle();
+    let path = s.with(|e, _| e.file_path().expect("opened CSV path"));
+    let slide = s.with(|e, _| e.current_slide);
+
+    // Insert row at 1, edit A2, insert column at 1, and save in place.
+    s.update(|e, _, cx| {
+        e.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 1, count: 1 })], cx);
+    });
+    s.click_cell("A2");
+    s.enter("中間", "enter");
+    s.update(|e, _, cx| {
+        e.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Columns, at: 1, count: 1 })], cx);
+    });
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after structural edits"));
+    let saved1 = std::fs::read(&path).unwrap();
+    assert_eq!(saved1, ibis_pptx::csv::encode_sjis("名前,,コード,\r\n中間\r\nりんご,,00123,\r\n"));
+
+    // Undo past the save boundary (undo column insert) and save in place.
+    s.key("cmd-z");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after pre-save undo"));
+    let saved2 = std::fs::read(&path).unwrap();
+    assert_eq!(saved2, ibis_pptx::csv::encode_sjis("名前,コード,\r\n中間\r\nりんご,00123,\r\n"));
+
+    // Redo column insert, delete row 1 ("中間"), and save in place.
+    s.key("cmd-shift-z");
+    s.update(|e, _, cx| {
+        e.execute(vec![Command::Sheet(SheetCommand::Delete { slide, axis: Axis::Rows, at: 1, count: 1 })], cx);
+    });
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after delete row"));
+    let saved3 = std::fs::read(&path).unwrap();
+    assert_eq!(saved3, ibis_pptx::csv::encode_sjis("名前,,コード,\r\nりんご,,00123,\r\n"));
+
+    let _ = std::fs::remove_file(source_path);
+}
+
+/// Real app progressive CSV loading (>100k rows), UI save blocking, and filesystem guards.
+fn csv_in_place_large_progressive_and_filesystem() {
+    let dir = crate::shell::scenario::repo_root().join("target/scenario-input");
+    std::fs::create_dir_all(&dir).unwrap();
+    let pid = std::process::id();
+    let large_path = dir.join(format!("csv-large-{pid}.csv"));
+    let row = ibis_pptx::csv::encode_sjis("品名,00123,\r\n");
+    let total_rows = 105_000usize;
+    let mut bytes = Vec::with_capacity(row.len() * total_rows);
+    for _ in 0..total_rows {
+        bytes.extend_from_slice(&row);
+    }
+    std::fs::write(&large_path, &bytes).unwrap();
+    let relative = format!("target/scenario-input/csv-large-{pid}.csv");
+    let t0 = std::time::Instant::now();
+    let mut s = Scenario::open(&relative);
+    // While streaming or once settled, verify final state and save time.
+    s.settle();
+    let open_elapsed = t0.elapsed();
+    assert!(!s.with(|e, _| e.is_csv_streaming), "progressive CSV should finish after settle");
+    let path = s.with(|e, _| e.file_path().expect("opened CSV path"));
+    s.click_cell("A1");
+    s.enter("先頭", "enter");
+    s.settle();
+    let save_t0 = std::time::Instant::now();
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("large CP932 in-place save"));
+    let save_elapsed = save_t0.elapsed();
+    eprintln!("large CSV ({total_rows} rows, {} bytes): open={open_elapsed:?}, save={save_elapsed:?}", bytes.len());
+    let saved = std::fs::read(&path).unwrap();
+    assert!(saved.starts_with(&ibis_pptx::csv::encode_sjis("先頭,00123,\r\n")));
+    assert_eq!(saved.len(), bytes.len() - ibis_pptx::csv::encode_sjis("品名").len() + ibis_pptx::csv::encode_sjis("先頭").len());
+
+    // Filesystem guards: read-only, symlink, and hardlink refusal.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o444);
+        std::fs::set_permissions(&path, perms.clone()).unwrap();
+        s.click_cell("A2");
+        s.enter("変更", "enter");
+        s.settle();
+        s.update(|e, w, _| assert!(e.save_to(path.clone(), w).is_err(), "read-only CSV must be refused"));
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let hardlink_path = dir.join(format!("csv-hardlink-{pid}.csv"));
+        std::fs::hard_link(&path, &hardlink_path).unwrap();
+        s.update(|e, w, _| assert!(e.save_to(path.clone(), w).is_err(), "hardlinked CSV must be refused"));
+        let _ = std::fs::remove_file(&hardlink_path);
+
+        let symlink_path = dir.join(format!("csv-symlink-{pid}.csv"));
+        std::os::unix::fs::symlink(&path, &symlink_path).unwrap();
+        s.update(|e, w, _| {
+            let orig_path = e.file_path();
+            e.set_file_path(Some(symlink_path.clone()));
+            assert!(e.save_to(symlink_path.clone(), w).is_err(), "symlink CSV must be refused");
+            e.set_file_path(orig_path);
+        });
+        let _ = std::fs::remove_file(&symlink_path);
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&large_path);
 }
 
 /// A CSV with a cell of 100 lines (todo-fix #37, a report of a CSV of about 100 MB that aborted): the row is no higher than Excel's most (409.5 pt) and is shown that high; typing into the cell stacks its lines in the box, which grows down over the cells below (not over what is above the sheet).
