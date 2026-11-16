@@ -642,7 +642,7 @@ fn url_path(url: &str) -> Option<std::path::PathBuf> {
 
 
 /// Native entry point; see [`Args`] for the command line.
-#[cfg(all(not(target_family = "wasm"), not(target_os = "android")))]
+#[cfg(all(not(target_family = "wasm"), not(target_os = "android"), not(target_os = "ios")))]
 pub fn run_native() {
     register_hooks();
     // TODAY, NOW and a date typed without its year read the local time.
@@ -1175,6 +1175,198 @@ mod android_entry {
                 }
             } else {
                 super::open_editor(None, None, cx);
+            }
+        });
+    }
+}
+
+#[cfg(target_os = "ios")]
+mod ios_entry {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
+    use std::rc::Rc;
+
+    const UI_FONT: &[u8] = include_bytes!("../fonts/IBMPlexSans-Regular.ttf");
+
+    thread_local! {
+        static PLATFORM: RefCell<Option<Rc<gpui_ios::IosPlatform>>> = const { RefCell::new(None) };
+        static APP_HANDLE: RefCell<Option<gpui_kit::gpui::ApplicationHandle>> = const { RefCell::new(None) };
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_start(
+        ui_view: *mut c_void,
+        logical_width: f32,
+        logical_height: f32,
+        scale_factor: f32,
+    ) {
+        if PLATFORM.with(|p| p.borrow().is_some()) {
+            return;
+        }
+        let Some(view) = gpui_ios::make_non_null_view(ui_view) else {
+            return;
+        };
+        super::register_hooks();
+        ibis_calc::eval::convert::set_clock(super::clock::calc_clock);
+
+        let platform = Rc::new(gpui_ios::IosPlatform::new(
+            view,
+            logical_width,
+            logical_height,
+            scale_factor,
+        ));
+        PLATFORM.with(|p| *p.borrow_mut() = Some(Rc::clone(&platform)));
+
+        let app = super::Application::with_platform(platform)
+            .with_assets(crate::shell::icons::Assets::new(""));
+        let mut fonts: Vec<std::borrow::Cow<'static, [u8]>> =
+            vec![std::borrow::Cow::Borrowed(UI_FONT)];
+        unsafe extern "C" {
+            fn ibis_ios_find_font_path(name: *const std::ffi::c_char) -> *mut std::ffi::c_char;
+            fn ibis_ios_free_c_string(ptr: *mut std::ffi::c_char);
+        }
+        for font_name in [
+            c"HiraginoSans-W3",
+            c"HiraginoSans-W6",
+            c"PingFangSC-Regular",
+            c".AppleSystemUIFont",
+        ] {
+            let ptr = unsafe { ibis_ios_find_font_path(font_name.as_ptr()) };
+            if !ptr.is_null() {
+                let path = unsafe { std::ffi::CStr::from_ptr(ptr) }
+                    .to_string_lossy()
+                    .into_owned();
+                unsafe { ibis_ios_free_c_string(ptr) };
+                if let Ok(bytes) = std::fs::read(&path) {
+                    fonts.push(std::borrow::Cow::Owned(bytes));
+                }
+            }
+        }
+        let _ = app.text_system().add_fonts(fonts);
+        let names = app.text_system().all_font_names();
+        let ui_font = [
+            "Hiragino Sans",
+            "Hiragino Kaku Gothic ProN",
+            "PingFang SC",
+            "IBM Plex Sans",
+        ]
+        .into_iter()
+        .find(|name| names.iter().any(|n| n == name))
+        .unwrap_or("IBM Plex Sans")
+        .to_string();
+
+        let opener: Rc<RefCell<(Option<super::AsyncApp>, Vec<std::path::PathBuf>)>> =
+            Default::default();
+        let handed = opener.clone();
+        app.on_open_urls(move |urls| {
+            let paths: Vec<std::path::PathBuf> =
+                urls.iter().filter_map(|u| super::url_path(u)).collect();
+            let mut state = handed.borrow_mut();
+            match state.0.clone() {
+                Some(cx) => {
+                    drop(state);
+                    cx.update(|cx| {
+                        paths
+                            .into_iter()
+                            .for_each(|p| super::open_path_in_app(p, cx))
+                    });
+                }
+                None => state.1.extend(paths),
+            }
+        });
+
+        let handle = app.run_embedded(move |cx| {
+            opener.borrow_mut().0 = Some(cx.to_async());
+            let pending: Vec<std::path::PathBuf> = std::mem::take(&mut opener.borrow_mut().1);
+            super::init(cx);
+            super::shell::file_watch::start(cx);
+            gpui_kit::component::Theme::global_mut(cx).font_family = ui_font.into();
+            if let Some((first, rest)) = pending.split_first() {
+                super::open_path_in_app(first.clone(), cx);
+                for p in rest {
+                    super::open_path_in_app(p.clone(), cx);
+                }
+            } else {
+                super::open_editor(None, None, cx);
+            }
+        });
+        APP_HANDLE.with(|slot| *slot.borrow_mut() = Some(handle));
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_tick() {
+        PLATFORM.with(|p| {
+            if let Some(platform) = p.borrow().as_ref() {
+                platform.tick();
+            }
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_resize(logical_width: f32, logical_height: f32, scale_factor: f32) {
+        PLATFORM.with(|p| {
+            if let Some(platform) = p.borrow().as_ref() {
+                platform.resize(logical_width, logical_height, scale_factor);
+            }
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_touch_began(x: f32, y: f32) {
+        PLATFORM.with(|p| {
+            if let Some(platform) = p.borrow().as_ref() {
+                platform.touch_began(x, y);
+            }
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_touch_moved(x: f32, y: f32) {
+        PLATFORM.with(|p| {
+            if let Some(platform) = p.borrow().as_ref() {
+                platform.touch_moved(x, y);
+            }
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_touch_ended(x: f32, y: f32, cancelled: bool) {
+        PLATFORM.with(|p| {
+            if let Some(platform) = p.borrow().as_ref() {
+                platform.touch_ended(x, y, cancelled);
+            }
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_pinch(x: f32, y: f32, delta: f32, phase: u8) {
+        PLATFORM.with(|p| {
+            if let Some(platform) = p.borrow().as_ref() {
+                platform.pinch(x, y, delta, phase);
+            }
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_lifecycle(phase: u8) {
+        let phase = match phase {
+            0 => gpui_kit::gpui::AppLifecyclePhase::Active,
+            1 => gpui_kit::gpui::AppLifecyclePhase::Inactive,
+            2 => gpui_kit::gpui::AppLifecyclePhase::Background,
+            _ => gpui_kit::gpui::AppLifecyclePhase::Foreground,
+        };
+        PLATFORM.with(|p| {
+            if let Some(platform) = p.borrow().as_ref() {
+                platform.lifecycle(phase);
+            }
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ibis_ios_memory_warning() {
+        PLATFORM.with(|p| {
+            if let Some(platform) = p.borrow().as_ref() {
+                platform.memory_warning();
             }
         });
     }

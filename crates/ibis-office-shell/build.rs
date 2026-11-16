@@ -59,6 +59,7 @@ fn app_version() {
         ("macos", _) => "macOS",
         ("linux", _) => "Linux",
         ("android", _) => "Android",
+        ("ios", _) => "iOS",
         (_, "wasm") => "wasm",
         (os, _) => panic!("version.txt has no line for {os}"),
     };

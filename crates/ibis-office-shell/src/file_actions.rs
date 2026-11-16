@@ -629,6 +629,10 @@ impl SlideEditor {
                 if result.is_ok() {
                     gpui_android::sync_saved_file(&path);
                 }
+                #[cfg(target_os = "ios")]
+                if result.is_ok() {
+                    gpui_ios::sync_saved_file(&path);
+                }
                 this.report(result.map(|()| crate::i18n::format("file.odp-done", &[("path", &path.display())])).map_err(|e| crate::i18n::format("file.odp-failed", &[("error", &e)])), cx);
             });
         }

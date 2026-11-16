@@ -405,6 +405,8 @@ pub fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<
     let Err(error) = moved else {
         #[cfg(target_os = "android")]
         gpui_android::sync_saved_file(path);
+        #[cfg(target_os = "ios")]
+        gpui_ios::sync_saved_file(path);
         return Ok(());
     };
     let _ = std::fs::remove_file(&temporary);
@@ -417,6 +419,8 @@ pub fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<
     write_in_place(path, bytes)?;
     #[cfg(target_os = "android")]
     gpui_android::sync_saved_file(path);
+    #[cfg(target_os = "ios")]
+    gpui_ios::sync_saved_file(path);
     Ok(())
 }
 

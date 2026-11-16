@@ -3,3 +3,4 @@ macOS	0.8.7
 wasm	0.8.7
 Linux	0.8.7
 Android	0.8.7
+iOS	0.8.7

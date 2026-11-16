@@ -256,10 +256,44 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  ios:
+    name: iOS arm64
+    needs: validate-source
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned Rust and iOS target
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --target aarch64-apple-ios
+          rustup default 1.98.1
+      - name: Record clean source and toolchain
+        run: python3 scripts/desktop-ci-info.py source ci-artifact
+      - name: Build iOS device app bundle
+        run: scripts/build-ios.sh --device
+      - name: Verify and package IbisOffice.app
+        run: |
+          set -euo pipefail
+          test -x target/ios-app/IbisOffice.app/IbisOffice
+          test -f target/ios-app/IbisOffice.app/Info.plist
+          (cd target/ios-app && ditto -c -k --keepParent IbisOffice.app ../../ci-artifact/desktop-ios-arm64-ci.zip)
+      - name: Hash deliverables
+        run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ci-ios-arm64
+          path: ci-artifact/
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish milestone release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [validate-source, desktop, linux, android]
+    needs: [validate-source, desktop, linux, android, ios]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -283,7 +317,7 @@ jobs:
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
           git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/masanork
           mkdir release
-          for platform in linux-x64 macos-arm64 windows-x64 android-arm64; do
+          for platform in linux-x64 macos-arm64 windows-x64 android-arm64 ios-arm64; do
             dir="artifacts/desktop-ci-$platform"
             (cd "$dir" && sha256sum -c SHA256SUMS)
             python3 -c 'import json,os,sys; assert json.load(open(sys.argv[1]))["source_sha"] == os.environ["EXPECTED_SOURCE_SHA"]' "$dir/build-info.json"
@@ -292,6 +326,7 @@ jobs:
               macos-arm64) package=desktop-macos-arm64-ci.zip ;;
               windows-x64) package=desktop-windows-x64-ci.zip ;;
               android-arm64) package=desktop-android-arm64-ci.apk ;;
+              ios-arm64) package=desktop-ios-arm64-ci.zip ;;
             esac
             cp "$dir/$package" release/
             cp "$dir/build-info.json" "release/build-info-$platform.json"

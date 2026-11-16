@@ -79,7 +79,7 @@ fn system_format(seconds: i64) -> Option<String> {
     )
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn system_format(_seconds: i64) -> Option<String> {
     None
 }

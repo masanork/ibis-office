@@ -126,6 +126,9 @@ gpui-pre-wgpu = { version = "=0.3.6", features = ["test-support"], optional = tr
 [target.'cfg(target_os = "android")'.dependencies]
 gpui-android = { path = "../gpui-android" }
 
+[target.'cfg(target_os = "ios")'.dependencies]
+gpui-ios = { path = "../gpui-ios" }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 # Reading a fetched response's body (the art borders' pictures); the version
 # GPUI already uses.
