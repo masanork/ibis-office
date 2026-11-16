@@ -401,6 +401,27 @@ mod original_encoding_tests {
         assert!(rewrite_raw_csv_fields(b"a,b\n\"unfinished", OriginalEncoding::AsciiAmbiguous, ',', &[(0, 0, "x".into())]).is_err());
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn progressive_csv_keeps_original_bytes_through_final_chunk() {
+        let record = encode_original("名,00123,\r\n", OriginalEncoding::Cp932).unwrap();
+        let rows = 100_001usize;
+        let input = record.repeat(rows);
+        let (opened, stream) = crate::open_progressive(input.clone(), 100_000).unwrap();
+        assert_eq!(opened.source.original_csv_bytes().unwrap().as_ref(), input);
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&opened.presentation.slides[0]).unwrap();
+        assert!(sheet.cell(99_999, 0).is_some());
+        assert!(sheet.cell(100_000, 0).is_none());
+        let stream = stream.expect("the last row is loaded progressively");
+        let mut final_chunk = None;
+        while let Ok(chunk) = stream.recv_timeout(std::time::Duration::from_secs(60)) {
+            if chunk.is_last { final_chunk = Some(chunk); break; }
+        }
+        let final_chunk = final_chunk.expect("the stream completed");
+        assert_eq!(final_chunk.current_rows, rows);
+        assert!(final_chunk.cells.iter().any(|cell| cell.row == 100_000 && cell.column == 0));
+    }
+
     #[test]
     fn bounded_decoder_matches_encoding_rs_on_valid_and_invalid_inputs() {
         for (encoding, original, bom) in [(encoding_rs::SHIFT_JIS, OriginalEncoding::Cp932, 0), (encoding_rs::UTF_16LE, OriginalEncoding::Utf16LeBom, 2), (encoding_rs::UTF_16BE, OriginalEncoding::Utf16BeBom, 2)] {
