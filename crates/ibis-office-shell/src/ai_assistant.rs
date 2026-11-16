@@ -102,6 +102,7 @@ pub struct AiAssistantState {
     pub streaming_text: String,
     pub run_id: u64,
     pub scroll_handle: ScrollHandle,
+    pub pending_old_lawtext: Option<(String, String)>,
     pub _prompt_subscription: Subscription,
 }
 
@@ -117,7 +118,7 @@ fn column_letters(mut col: u32) -> String {
     out.into_iter().rev().collect()
 }
 
-fn parse_law_input_str(text: &str) -> Result<ibis_pptx::lawtext::LawDoc, String> {
+pub(crate) fn parse_law_input_str(text: &str) -> Result<ibis_pptx::lawtext::LawDoc, String> {
     if ibis_pptx::lawtext::is_law_xml(text.as_bytes()) {
         ibis_pptx::lawtext::parse_law_xml(text).map_err(|e| e.to_string())
     } else if text.trim_start().starts_with("---") && text.contains("type: lawtext") {
@@ -212,6 +213,7 @@ impl SlideEditor {
                 streaming_text: String::new(),
                 run_id: 0,
                 scroll_handle: ScrollHandle::new(),
+                pending_old_lawtext: None,
                 _prompt_subscription,
             });
             prompt_input.update(cx, |input, cx| input.focus(window, cx));
@@ -242,6 +244,63 @@ impl SlideEditor {
             p.show_tool_logs = !p.show_tool_logs;
         }
         cx.notify();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn pick_old_lawtext_for_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            extensions: vec![
+                "xml".to_string(),
+                "lawtext".to_string(),
+                "txt".to_string(),
+                "md".to_string(),
+            ],
+            multiple: false,
+            prompt: Some("比較対象の現行法令 (.xml / .lawtext / .md) を選択".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let Ok(bytes) = std::fs::read(&path) else {
+                return;
+            };
+            let Ok(text) = String::from_utf8(bytes) else {
+                return;
+            };
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("現行法令")
+                .to_string();
+            let _ = this.update(cx, |editor, cx| {
+                if let Err(err) = parse_law_input_str(&text) {
+                    if let Some(p) = editor.ai_assistant.as_mut() {
+                        p.messages.push(UiMessage::new(
+                            UiMessageKind::Error,
+                            format!("現行法令「{file_name}」の解析に失敗しました: {err}"),
+                        ));
+                    }
+                    cx.notify();
+                    return;
+                }
+                if let Some(p) = editor.ai_assistant.as_mut() {
+                    p.pending_old_lawtext = Some((file_name.clone(), text));
+                }
+                editor.submit_ai_assistant_text(
+                    format!(
+                        "現行法令「{file_name}」を読み込みました。現在開いている文書（改正後）と比較して、generate_lawtext_5set と lint_lawtext を実行し、新旧対照表・改め文（検算付き）・参照条文・要綱案・理由案を作成してください。"
+                    ),
+                    cx,
+                );
+            });
+        })
+        .detach();
     }
 
     fn save_ai_assistant_settings(&mut self, cx: &mut Context<Self>) {
@@ -2601,8 +2660,26 @@ impl SlideEditor {
                         None,
                         format!("✗ generate_lawtext_5set: {e}"),
                     ),
-                    Ok(a) => match (
-                        parse_law_input_str(&a.old_lawtext),
+                    Ok(a) => {
+                        let old_src = a
+                            .old_lawtext
+                            .as_deref()
+                            .filter(|s| !s.trim().is_empty())
+                            .or_else(|| {
+                                self.ai_assistant
+                                    .as_ref()
+                                    .and_then(|p| p.pending_old_lawtext.as_ref())
+                                    .map(|(_, s)| s.as_str())
+                            });
+                        let Some(old_str) = old_src else {
+                            return (
+                                json!({ "error": "old_lawtext が指定されていません（サイドバーから現行法令を選択するか、old_lawtext を渡してください）" }).to_string(),
+                                None,
+                                "✗ generate_lawtext_5set: missing old_lawtext".to_string(),
+                            );
+                        };
+                        match (
+                        parse_law_input_str(old_str),
                         match a.new_lawtext.as_deref() {
                             Some(s) => parse_law_input_str(s),
                             None => ibis_pptx::lawtext::export_presentation_to_lawtext(
@@ -2635,7 +2712,8 @@ impl SlideEditor {
                             None,
                             format!("✗ generate_lawtext_5set: {e}"),
                         ),
-                    },
+                    }
+                    }
                 }
             }
             "verify_lawtext_aratame" => {
@@ -2646,8 +2724,26 @@ impl SlideEditor {
                         None,
                         format!("✗ verify_lawtext_aratame: {e}"),
                     ),
-                    Ok(a) => match (
-                        parse_law_input_str(&a.old_lawtext),
+                    Ok(a) => {
+                        let old_src = a
+                            .old_lawtext
+                            .as_deref()
+                            .filter(|s| !s.trim().is_empty())
+                            .or_else(|| {
+                                self.ai_assistant
+                                    .as_ref()
+                                    .and_then(|p| p.pending_old_lawtext.as_ref())
+                                    .map(|(_, s)| s.as_str())
+                            });
+                        let Some(old_str) = old_src else {
+                            return (
+                                json!({ "error": "old_lawtext が指定されていません" }).to_string(),
+                                None,
+                                "✗ verify_lawtext_aratame: missing old_lawtext".to_string(),
+                            );
+                        };
+                        match (
+                        parse_law_input_str(old_str),
                         match a.expected_new_lawtext.as_deref() {
                             Some(s) => parse_law_input_str(s),
                             None => ibis_pptx::lawtext::export_presentation_to_lawtext(
@@ -2675,7 +2771,8 @@ impl SlideEditor {
                             None,
                             format!("✗ verify_lawtext_aratame: {e}"),
                         ),
-                    },
+                    }
+                    }
                 }
             }
             "lint_lawtext" => {
@@ -2695,7 +2792,17 @@ impl SlideEditor {
                             .map_err(|e| e.to_string())
                             .and_then(|lt| parse_law_input_str(&lt)),
                         };
-                        let old_res = a.old_lawtext.as_deref().map(parse_law_input_str).transpose();
+                        let old_src = a
+                            .old_lawtext
+                            .as_deref()
+                            .filter(|s| !s.trim().is_empty())
+                            .or_else(|| {
+                                self.ai_assistant
+                                    .as_ref()
+                                    .and_then(|p| p.pending_old_lawtext.as_ref())
+                                    .map(|(_, s)| s.as_str())
+                            });
+                        let old_res = old_src.map(parse_law_input_str).transpose();
                         match (old_res, new_res) {
                             (Ok(old_opt), Ok(new_doc)) => {
                                 let report = match old_opt.as_ref() {
@@ -2935,6 +3042,11 @@ impl SlideEditor {
                             "見出し・構成を提案",
                             "文書の内容に基づいて見出しや章立ての改善案を提案してください。",
                         ),
+                        (
+                            "ai-quick-law-lint",
+                            "法制執務 Lint チェック",
+                            "現在開いている文書を lint_lawtext でチェックし、参照切れ・接続詞階層・条番号・略称重複の指摘事項をわかりやすく報告してください。",
+                        ),
                     ],
                 ),
             };
@@ -2951,6 +3063,18 @@ impl SlideEditor {
                         .label(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.submit_ai_assistant_text(prompt_owned.clone(), cx);
+                        })),
+                );
+            }
+            #[cfg(not(target_family = "wasm"))]
+            if kind == AiDocKind::Docx {
+                quick_col = quick_col.child(
+                    Button::new("ai-quick-pick-old-law")
+                        .outline()
+                        .xsmall()
+                        .label("現行法令 (.xml / .lawtext) を選んで 5点セット生成...")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.pick_old_lawtext_for_assistant(window, cx);
                         })),
                 );
             }

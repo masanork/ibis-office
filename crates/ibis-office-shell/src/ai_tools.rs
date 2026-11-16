@@ -1081,12 +1081,11 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML format." },
+                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML format. Optional if already loaded via the file picker." },
                         "new_lawtext": { "type": "string", "description": "Optional amended (改正後) statute in Lawtext or e-Gov XML. Defaults to the active document." },
                         "policy_memo": { "type": "string", "description": "Optional policy background memo for drafting 要綱 and 理由." },
                         "old_on_left": { "type": "boolean", "description": "Put 現行 on the left column of 新旧対照表 (default false: 改正後 | 現行)." }
                     },
-                    "required": ["old_lawtext"],
                     "additionalProperties": false
                 }),
             },
@@ -1095,15 +1094,15 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
             kind: "function",
             function: ToolFunctionDef {
                 name: "verify_lawtext_aratame",
-                description: "Verify a 改め文 (amendment text) by applying it to old_lawtext and comparing the simulated result against expected_new_lawtext (defaults to the active document).",
+                description: "Verify a 改め文 (amendment text) by applying it to old_lawtext (or the loaded baseline file) and comparing the simulated result against expected_new_lawtext (defaults to the active document).",
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML." },
+                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML. Optional if already loaded via the file picker." },
                         "aratame_text": { "type": "string", "description": "Amendment text (改め文) to verify." },
                         "expected_new_lawtext": { "type": "string", "description": "Optional expected amended statute in Lawtext or e-Gov XML. Defaults to the active document." }
                     },
-                    "required": ["old_lawtext", "aratame_text"],
+                    "required": ["aratame_text"],
                     "additionalProperties": false
                 }),
             },
@@ -1156,7 +1155,7 @@ pub struct OpenMarkdownDocumentArgs {
 
 #[derive(Deserialize)]
 pub struct GenerateLawtext5SetArgs {
-    pub old_lawtext: String,
+    pub old_lawtext: Option<String>,
     pub new_lawtext: Option<String>,
     pub policy_memo: Option<String>,
     pub old_on_left: Option<bool>,
@@ -1164,7 +1163,7 @@ pub struct GenerateLawtext5SetArgs {
 
 #[derive(Deserialize)]
 pub struct VerifyLawtextAratameArgs {
-    pub old_lawtext: String,
+    pub old_lawtext: Option<String>,
     pub aratame_text: String,
     pub expected_new_lawtext: Option<String>,
 }
@@ -1767,5 +1766,60 @@ mod tests {
         assert_eq!(issuer.get("kty").and_then(|v| v.as_str()), Some("EC"));
         assert_eq!(holder.get("crv").and_then(|v| v.as_str()), Some("P-256"));
         assert!(vc_public_keys_json("invalid").is_err());
+    }
+
+    #[test]
+    fn exposes_and_parses_lawtext_docx_tools() {
+        let defs = docx_tool_definitions();
+        for name in [
+            "export_active_lawtext",
+            "generate_lawtext_5set",
+            "verify_lawtext_aratame",
+            "lint_lawtext",
+            "open_markdown_document",
+        ] {
+            assert!(
+                defs.iter().any(|d| d.function.name == name),
+                "missing docx tool definition: {name}"
+            );
+        }
+
+        let gen_args: GenerateLawtext5SetArgs = serde_json::from_str(
+            r#"{"old_lawtext":"テスト法（令和七年法律第一号）\n第一条 旧。","policy_memo":"改正背景","old_on_left":true}"#,
+        )
+        .unwrap();
+        assert_eq!(gen_args.old_on_left, Some(true));
+        assert_eq!(gen_args.policy_memo.as_deref(), Some("改正背景"));
+
+        let verify_args: VerifyLawtextAratameArgs = serde_json::from_str(
+            r#"{"old_lawtext":"old","aratame_text":"第一条中「旧」を「新」に改める。"}"#,
+        )
+        .unwrap();
+        assert!(verify_args.expected_new_lawtext.is_none());
+
+        let lint_args: LintLawtextArgs =
+            serde_json::from_str(r#"{"old_lawtext":"old","new_lawtext":"new"}"#).unwrap();
+        assert_eq!(lint_args.old_lawtext.as_deref(), Some("old"));
+
+        let open_args: OpenMarkdownDocumentArgs =
+            serde_json::from_str(r#"{"title":"新旧対照表.md","markdown":"| 改正後 | 現行 |"}"#)
+                .unwrap();
+        assert_eq!(open_args.title, "新旧対照表.md");
+
+        let old_lt = "テスト法（令和七年法律第一号）\n第一条 この法律は、処分に関する手続を定める。";
+        let new_lt = "テスト法（令和七年法律第一号）\n第一条 この法律は、処分及び行政指導に関する手続を定める。";
+        let old_doc = crate::ai_assistant::parse_law_input_str(old_lt).unwrap();
+        let new_doc = crate::ai_assistant::parse_law_input_str(new_lt).unwrap();
+        let pkg = ibis_pptx::lawtext::build_5set_package(
+            &old_doc,
+            &new_doc,
+            "行政指導を追加",
+            &ibis_pptx::lawtext::ShinkyuOptions::default(),
+        );
+        assert!(pkg.aratame_verification.is_exact_match);
+        let md = ibis_pptx::lawtext::to_markdown(&new_doc);
+        assert_eq!(crate::ai_assistant::parse_law_input_str(&md).unwrap().law_title, "テスト法");
+        let xml = ibis_pptx::lawtext::to_law_xml(&new_doc);
+        assert_eq!(crate::ai_assistant::parse_law_input_str(&xml).unwrap().law_num, "令和七年法律第一号");
     }
 }

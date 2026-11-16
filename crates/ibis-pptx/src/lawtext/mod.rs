@@ -140,6 +140,14 @@ pub struct SupplProvision {
     pub nodes: Vec<LawNode>,
 }
 
+/// An appended table (`AppdxTable`: 別表).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LawAppdxTable {
+    pub title: String,
+    pub related_article_num: Option<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
 /// Top-level AST for an e-Gov 法令標準XML / Lawtext document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LawDoc {
@@ -150,8 +158,11 @@ pub struct LawDoc {
     pub num: Option<String>,
     pub law_type: Option<String>,
     pub lang: Option<String>,
+    pub enact_statement: Option<String>,
+    pub preamble: Option<String>,
     pub main_provision: Vec<LawNode>,
     pub suppl_provisions: Vec<SupplProvision>,
+    pub appdx_tables: Vec<LawAppdxTable>,
 }
 
 impl Default for LawDoc {
@@ -164,8 +175,11 @@ impl Default for LawDoc {
             num: None,
             law_type: None,
             lang: Some("ja".to_string()),
+            enact_statement: None,
+            preamble: None,
             main_provision: Vec::new(),
             suppl_provisions: Vec::new(),
+            appdx_tables: Vec::new(),
         }
     }
 }
@@ -254,6 +268,18 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
     if let Some(title) = child_elem(body, "LawTitle") {
         out.law_title = collect_text(title);
     }
+    if let Some(enact) = child_elem(body, "EnactStatement") {
+        let s = collect_text(enact);
+        if !s.is_empty() {
+            out.enact_statement = Some(s);
+        }
+    }
+    if let Some(pre) = child_elem(body, "Preamble") {
+        let s = collect_text(pre);
+        if !s.is_empty() {
+            out.preamble = Some(s);
+        }
+    }
     if let Some(main) = child_elem(body, "MainProvision") {
         out.main_provision = parse_xml_nodes(main);
     }
@@ -267,6 +293,35 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             extract: suppl.attribute("Extract").is_some_and(|v| v == "true"),
             label,
             nodes: parse_xml_nodes(suppl),
+        });
+    }
+    for appdx in body.children().filter(|n| n.is_element() && n.tag_name().name() == "AppdxTable") {
+        let title = child_elem(appdx, "AppdxTableTitle")
+            .map(collect_text)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "別表".to_string());
+        let related_article_num = child_elem(appdx, "RelatedArticleNum")
+            .map(collect_text)
+            .filter(|s| !s.is_empty());
+        let mut rows = Vec::new();
+        if let Some(ts) = child_elem(appdx, "TableStruct") {
+            if let Some(tbl) = child_elem(ts, "Table") {
+                for tr in tbl.children().filter(|n| n.is_element() && n.tag_name().name() == "TableRow") {
+                    let row: Vec<String> = tr
+                        .children()
+                        .filter(|n| n.is_element() && n.tag_name().name() == "TableColumn")
+                        .map(collect_text)
+                        .collect();
+                    if !row.is_empty() {
+                        rows.push(row);
+                    }
+                }
+            }
+        }
+        out.appdx_tables.push(LawAppdxTable {
+            title,
+            related_article_num,
+            rows,
         });
     }
     Ok(out)
@@ -298,8 +353,12 @@ fn collect_text_into(node: roxmltree::Node<'_, '_>, out: &mut String) {
         return;
     }
     // Skip Ruby annotations <Rt> when flattening plain text so reading stays clean.
-    if node.tag_name().name() == "Rt" {
+    let tag = node.tag_name().name();
+    if tag == "Rt" || tag == "Rp" {
         return;
+    }
+    if tag == "Column" && !out.is_empty() && !out.ends_with(char::is_whitespace) {
+        out.push(' ');
     }
     for child in node.children() {
         collect_text_into(child, out);
@@ -445,6 +504,16 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         push_xml_escaped(&mut out, &doc.law_title);
         out.push_str("</LawTitle>\n");
     }
+    if let Some(enact) = doc.enact_statement.as_deref().filter(|s| !s.is_empty()) {
+        out.push_str("    <EnactStatement>");
+        push_xml_escaped(&mut out, enact);
+        out.push_str("</EnactStatement>\n");
+    }
+    if let Some(pre) = doc.preamble.as_deref().filter(|s| !s.is_empty()) {
+        out.push_str("    <Preamble><Paragraph Num=\"1\"><ParagraphNum/><ParagraphSentence><Sentence>");
+        push_xml_escaped(&mut out, pre);
+        out.push_str("</Sentence></ParagraphSentence></Paragraph></Preamble>\n");
+    }
     out.push_str("    <MainProvision>\n");
     for node in &doc.main_provision {
         write_xml_node(&mut out, node, 3);
@@ -464,6 +533,30 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
             write_xml_node(&mut out, node, 3);
         }
         out.push_str("    </SupplProvision>\n");
+    }
+    for appdx in &doc.appdx_tables {
+        out.push_str("    <AppdxTable>\n      <AppdxTableTitle>");
+        push_xml_escaped(&mut out, &appdx.title);
+        out.push_str("</AppdxTableTitle>\n");
+        if let Some(rel) = appdx.related_article_num.as_deref() {
+            out.push_str("      <RelatedArticleNum>");
+            push_xml_escaped(&mut out, rel);
+            out.push_str("</RelatedArticleNum>\n");
+        }
+        if !appdx.rows.is_empty() {
+            out.push_str("      <TableStruct>\n        <Table>\n");
+            for row in &appdx.rows {
+                out.push_str("          <TableRow>\n");
+                for cell in row {
+                    out.push_str("            <TableColumn><Sentence>");
+                    push_xml_escaped(&mut out, cell);
+                    out.push_str("</Sentence></TableColumn>\n");
+                }
+                out.push_str("          </TableRow>\n");
+            }
+            out.push_str("        </Table>\n      </TableStruct>\n");
+        }
+        out.push_str("    </AppdxTable>\n");
     }
     out.push_str("  </LawBody>\n</Law>\n");
     out
@@ -962,6 +1055,32 @@ pub fn to_markdown(doc: &LawDoc) -> String {
             write_markdown_node(&mut out, node, 3);
         }
     }
+    for appdx in &doc.appdx_tables {
+        if let Some(rel) = appdx.related_article_num.as_deref() {
+            out.push_str(&format!("## {}（{}）\n\n", appdx.title, rel));
+        } else {
+            out.push_str(&format!("## {}\n\n", appdx.title));
+        }
+        if !appdx.rows.is_empty() {
+            let cols = appdx.rows.iter().map(|r| r.len()).max().unwrap_or(1);
+            for (r_idx, row) in appdx.rows.iter().enumerate() {
+                out.push('|');
+                for c in 0..cols {
+                    let cell = row.get(c).map(|s| s.replace('|', "\\|")).unwrap_or_default();
+                    out.push_str(&format!(" {cell} |"));
+                }
+                out.push('\n');
+                if r_idx == 0 {
+                    out.push('|');
+                    for _ in 0..cols {
+                        out.push_str(" :--- |");
+                    }
+                    out.push('\n');
+                }
+            }
+            out.push('\n');
+        }
+    }
     out.trim_end().to_string() + "\n"
 }
 
@@ -1427,5 +1546,73 @@ mod tests {
         let pptx = crate::markdown::open_markdown_presentation(shinkyu_md.into_bytes())
             .expect("open shinkyu markdown as pptx");
         assert!(!pptx.presentation.slides.is_empty());
+    }
+
+    #[test]
+    fn handles_real_egov_xml_ruby_enact_quote_and_appdx_table() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Law Era="Reiwa" Lang="ja" LawType="Act" Num="001" Year="07">
+  <LawNum>令和七年法律第一号</LawNum>
+  <LawBody>
+    <LawTitle>情報公開法</LawTitle>
+    <EnactStatement>情報公開法をここに公布する。</EnactStatement>
+    <TOC><TOCLabel>目次</TOCLabel></TOC>
+    <MainProvision>
+      <Article Num="1">
+        <ArticleTitle>第一条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum/>
+          <ParagraphSentence>
+            <Sentence>この法律は、<Ruby>行政<Rt>ぎょうせい</Rt></Ruby>の<QuoteStruct>「情報公開」</QuoteStruct>を定める。</Sentence>
+          </ParagraphSentence>
+          <List>
+            <ListSentence>
+              <Column><Sentence>第一欄</Sentence></Column>
+              <Column><Sentence>第二欄</Sentence></Column>
+            </ListSentence>
+          </List>
+        </Paragraph>
+      </Article>
+    </MainProvision>
+    <AppdxTable>
+      <AppdxTableTitle>別表第一</AppdxTableTitle>
+      <RelatedArticleNum>第一条関係</RelatedArticleNum>
+      <TableStruct>
+        <Table>
+          <TableRow>
+            <TableColumn><Sentence>区分</Sentence></TableColumn>
+            <TableColumn><Sentence>手数料</Sentence></TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn><Sentence>電子申請</Sentence></TableColumn>
+            <TableColumn><Sentence>三百円</Sentence></TableColumn>
+          </TableRow>
+        </Table>
+      </TableStruct>
+    </AppdxTable>
+  </LawBody>
+</Law>"#;
+
+        let parsed = parse_law_xml(xml).expect("parse real e-Gov XML");
+        assert_eq!(parsed.enact_statement.as_deref(), Some("情報公開法をここに公布する。"));
+        assert_eq!(parsed.appdx_tables.len(), 1);
+        assert_eq!(parsed.appdx_tables[0].title, "別表第一");
+        assert_eq!(parsed.appdx_tables[0].related_article_num.as_deref(), Some("第一条関係"));
+        assert_eq!(parsed.appdx_tables[0].rows.len(), 2);
+
+        if let LawNode::Article(a) = &parsed.main_provision[0] {
+            assert_eq!(a.paragraphs[0].sentence, "この法律は、行政の「情報公開」を定める。");
+        } else {
+            panic!("expected Article");
+        }
+
+        let xml_roundtrip = to_law_xml(&parsed);
+        let reparsed = parse_law_xml(&xml_roundtrip).expect("reparse XML");
+        assert_eq!(reparsed.enact_statement, parsed.enact_statement);
+        assert_eq!(reparsed.appdx_tables, parsed.appdx_tables);
+
+        let md = to_markdown(&parsed);
+        assert!(md.contains("## 別表第一（第一条関係）"));
+        assert!(md.contains("| 区分 | 手数料 |"));
     }
 }
