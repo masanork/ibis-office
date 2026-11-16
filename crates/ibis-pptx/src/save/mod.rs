@@ -193,6 +193,12 @@ pub fn open_progressive(
         return Ok((opened, None));
     }
 
+    if crate::dpc::is_dpc_ef(&data) {
+        let opened = crate::dpc::open_dpc_ef(&data)?;
+        crate::progress::fraction(1.0);
+        return Ok((opened, None));
+    }
+
     if crate::uke::is_uke(&data) {
         let opened = crate::uke::open_uke(&data)?;
         crate::progress::fraction(1.0);

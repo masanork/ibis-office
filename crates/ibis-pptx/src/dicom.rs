@@ -38,13 +38,24 @@ pub const DEFAULT_PII_TAGS: &[(Tag, &str)] = &[
     (Tag(0x0008, 0x1070), "OperatorsName"),
 ];
 
-/// Configurable anonymization profile (can be populated from declarative JSON/YAML).
+/// Rectangular region of interest (in pixels) to black out in-memory before PNG embedding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedactionRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Configurable anonymization profile (can be populated from declarative JSON).
 #[derive(Debug, Clone)]
 pub struct DicomAnonymizationProfile {
     /// Additional `(group, element)` tags to strip alongside [`DEFAULT_PII_TAGS`].
     pub extra_strip_tags: Vec<Tag>,
     /// Strip study/series/acquisition/content dates (`(0008,0020..0023)`).
     pub strip_dates: bool,
+    /// Optional pixel-space rectangles to mask out burned-in annotations.
+    pub roi_masks: Vec<RedactionRect>,
 }
 
 impl Default for DicomAnonymizationProfile {
@@ -52,8 +63,51 @@ impl Default for DicomAnonymizationProfile {
         Self {
             extra_strip_tags: Vec::new(),
             strip_dates: true,
+            roi_masks: Vec::new(),
         }
     }
+}
+
+impl DicomAnonymizationProfile {
+    /// Parse a declarative JSON anonymization profile:
+    /// `{"strip_dates": true, "extra_strip_tags": ["0008,1040"], "roi_masks": [{"x":0,"y":0,"width":100,"height":20}]}`.
+    pub fn from_json_str(json: &str) -> Result<Self, Error> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| Error::new(format!("DICOM 匿名化プロファイル JSON の解析に失敗しました: {e}")))?;
+        let mut profile = Self::default();
+        if let Some(b) = v.get("strip_dates").and_then(serde_json::Value::as_bool) {
+            profile.strip_dates = b;
+        }
+        if let Some(tags) = v.get("extra_strip_tags").and_then(serde_json::Value::as_array) {
+            for item in tags {
+                if let Some(s) = item.as_str()
+                    && let Some(tag) = parse_hex_tag(s)
+                {
+                    profile.extra_strip_tags.push(tag);
+                }
+            }
+        }
+        if let Some(masks) = v.get("roi_masks").and_then(serde_json::Value::as_array) {
+            for m in masks {
+                let x = m.get("x").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+                let y = m.get("y").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+                let width = m.get("width").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+                let height = m.get("height").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+                if width > 0 && height > 0 {
+                    profile.roi_masks.push(RedactionRect { x, y, width, height });
+                }
+            }
+        }
+        Ok(profile)
+    }
+}
+
+fn parse_hex_tag(s: &str) -> Option<Tag> {
+    let cleaned = s.trim().trim_start_matches('(').trim_end_matches(')');
+    let (g, e) = cleaned.split_once(',')?;
+    let group = u16::from_str_radix(g.trim().trim_start_matches("0x"), 16).ok()?;
+    let elem = u16::from_str_radix(e.trim().trim_start_matches("0x"), 16).ok()?;
+    Some(Tag(group, elem))
 }
 
 /// Extracted non-diagnostic DICOM asset ready for Office document embedding.
@@ -137,7 +191,16 @@ pub fn anonymize_and_extract(
     metadata_rows.push(("TransferSyntaxUID".to_string(), ts_uid.clone()));
 
     let mut warnings = Vec::new();
-    let png_bytes = extract_uncompressed_png(&obj, &ts_uid, &mut warnings);
+    if let Ok(elem) = obj.element(Tag(0x0028, 0x0301))
+        && let Ok(val) = elem.to_str()
+        && val.trim().eq_ignore_ascii_case("YES")
+    {
+        warnings.push(
+            "BurnedInAnnotation (0028,0301) = YES: 画像ピクセル内に患者情報が焼き込まれている可能性があります。roi_masks で黒塗り領域を指定してください。"
+                .to_string(),
+        );
+    }
+    let png_bytes = extract_uncompressed_png(&obj, &ts_uid, &profile.roi_masks, &mut warnings);
 
     let mut anonymized_dcm = Vec::new();
     obj.write_all(&mut anonymized_dcm)
@@ -159,6 +222,11 @@ pub fn input_to_markdown(data: &[u8]) -> Result<Option<String>, Error> {
         return Ok(None);
     }
     let asset = anonymize_and_extract(data, &DicomAnonymizationProfile::default())?;
+    Ok(Some(format_asset_markdown(&asset)))
+}
+
+/// Format an extracted [`DicomNonDiagnosticAsset`] into Markdown blocks.
+pub fn format_asset_markdown(asset: &DicomNonDiagnosticAsset) -> String {
     let mut md = String::new();
     let _ = writeln!(md, "---");
     let _ = writeln!(md, "title: \"DICOM 非診断研究・発表用アセット\"");
@@ -201,7 +269,7 @@ pub fn input_to_markdown(data: &[u8]) -> Result<Option<String>, Error> {
             v.replace('|', "\\|")
         );
     }
-    Ok(Some(md))
+    md
 }
 
 fn is_uncompressed_le_ts(ts_uid: &str) -> bool {
@@ -235,16 +303,17 @@ fn is_jxl_ts(ts_uid: &str) -> bool {
 fn extract_uncompressed_png(
     obj: &dicom_object::DefaultDicomObject,
     ts_uid: &str,
+    roi_masks: &[RedactionRect],
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
     if is_jpeg2000_ts(ts_uid) {
-        return extract_jpeg2000_png(obj, warnings);
+        return extract_jpeg2000_png(obj, roi_masks, warnings);
     }
     if is_jpegls_ts(ts_uid) {
-        return extract_jpegls_png(obj, warnings);
+        return extract_jpegls_png(obj, roi_masks, warnings);
     }
     if is_jxl_ts(ts_uid) {
-        return extract_jxl_png(obj, warnings);
+        return extract_jxl_png(obj, roi_masks, warnings);
     }
     if !is_uncompressed_le_ts(ts_uid) {
         warnings.push(format!(
@@ -334,11 +403,31 @@ fn extract_uncompressed_png(
         return None;
     };
 
+    let mut rgba = rgba;
+    apply_roi_masks(&mut rgba, cols, rows, roi_masks);
     Some(encode_rgba_png(cols, rows, &rgba))
+}
+
+fn apply_roi_masks(rgba: &mut [u8], width: u32, height: u32, masks: &[RedactionRect]) {
+    for mask in masks {
+        let x0 = mask.x.min(width);
+        let y0 = mask.y.min(height);
+        let x1 = mask.x.saturating_add(mask.width).min(width);
+        let y1 = mask.y.saturating_add(mask.height).min(height);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let off = ((y as usize * width as usize) + x as usize) * 4;
+                if off + 4 <= rgba.len() {
+                    rgba[off..off + 4].copy_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+    }
 }
 
 fn extract_jpeg2000_png(
     obj: &dicom_object::DefaultDicomObject,
+    roi_masks: &[RedactionRect],
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
     let Some(j2k_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
@@ -375,6 +464,8 @@ fn extract_jpeg2000_png(
             return None;
         }
     };
+    let mut rgba = rgba;
+    apply_roi_masks(&mut rgba, decoded.width, decoded.height, roi_masks);
     Some(encode_rgba_png(decoded.width, decoded.height, &rgba))
 }
 
@@ -395,6 +486,7 @@ fn read_encapsulated_or_raw_pixel_bytes(obj: &dicom_object::DefaultDicomObject) 
 
 fn extract_jpegls_png(
     obj: &dicom_object::DefaultDicomObject,
+    roi_masks: &[RedactionRect],
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
     let Some(jls_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
@@ -435,11 +527,16 @@ fn extract_jpegls_png(
             return None;
         }
     };
+    let mut rgba = rgba;
+    apply_roi_masks(&mut rgba, decoded.width, decoded.height, roi_masks);
+    let mut rgba = rgba;
+    apply_roi_masks(&mut rgba, decoded.width, decoded.height, roi_masks);
     Some(encode_rgba_png(decoded.width, decoded.height, &rgba))
 }
 
 fn extract_jxl_png(
     obj: &dicom_object::DefaultDicomObject,
+    roi_masks: &[RedactionRect],
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
     let Some(jxl_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
@@ -491,7 +588,74 @@ fn extract_jxl_png(
             return None;
         }
     }
+    apply_roi_masks(&mut rgba, w, h, roi_masks);
     Some(encode_rgba_png(w, h, &rgba))
+}
+
+/// Anonymize a DICOM file in memory and embed its PNG preview directly onto a
+/// PowerPoint slide (`slide_idx`) as a [`ShapeKind::Picture`] shape, returning
+/// the extracted [`DicomNonDiagnosticAsset`].
+pub fn embed_dicom_into_pptx_slide(
+    presentation: &mut ibis_doc_model::Presentation,
+    slide_idx: usize,
+    dcm_bytes: &[u8],
+    profile: &DicomAnonymizationProfile,
+) -> Result<DicomNonDiagnosticAsset, Error> {
+    use ibis_doc_model::{EMU_PER_POINT, EmuRect, MediaFormat, Picture, Shape, ShapeKind};
+
+    let asset = anonymize_and_extract(dcm_bytes, profile)?;
+    let Some(png) = asset.png_bytes.clone() else {
+        return Err(Error::new(
+            "この DICOM ファイルからはプレビュー PNG を生成できないため、スライドへ埋め込めませんでした",
+        ));
+    };
+    if slide_idx >= presentation.slides.len() {
+        return Err(Error::new(format!(
+            "スライド番号 {slide_idx} が範囲外です（総スライド数: {}）",
+            presentation.slides.len()
+        )));
+    }
+    let media_id = presentation.add_media(MediaFormat::Png, png);
+    let shape_id = presentation.new_shape_id();
+    let mut pic = Picture::new(media_id);
+    pic.name = "DICOM Anonymized Asset".to_string();
+    pic.alt_text.description =
+        "Non-diagnostic anonymized DICOM asset (PII tags stripped in memory)".to_string();
+
+    let frame = EmuRect::new(
+        72 * EMU_PER_POINT,
+        72 * EMU_PER_POINT,
+        360 * EMU_PER_POINT,
+        360 * EMU_PER_POINT,
+    );
+    presentation.slides[slide_idx]
+        .shapes
+        .push(Shape::new(shape_id, frame, ShapeKind::Picture(pic)));
+    Ok(asset)
+}
+
+/// Anonymize a DICOM file in memory and append its non-diagnostic Markdown
+/// blocks (disclaimer, anonymized PNG preview, imaging parameter table) into an
+/// existing Word (`FlowDocument`) presentation.
+pub fn embed_dicom_into_docx_flow(
+    presentation: &mut ibis_doc_model::Presentation,
+    dcm_bytes: &[u8],
+    profile: &DicomAnonymizationProfile,
+) -> Result<DicomNonDiagnosticAsset, Error> {
+    let asset = anonymize_and_extract(dcm_bytes, profile)?;
+    let md = format_asset_markdown(&asset);
+    let parsed = crate::markdown::open_markdown(md.into_bytes())?;
+    let Some(new_flow) = parsed.presentation.flow else {
+        return Err(Error::new("DICOM ブロックの DOCX 変換に失敗しました"));
+    };
+    if let Some(existing_flow) = presentation.flow.as_mut() {
+        std::sync::Arc::make_mut(existing_flow)
+            .body
+            .extend(new_flow.body.iter().cloned());
+    } else {
+        presentation.flow = Some(new_flow);
+    }
+    Ok(asset)
 }
 
 /// Minimal pure-Rust RGBA PNG encoder using `miniz_oxide` (no extra crate deps).
@@ -766,5 +930,36 @@ mod tests {
         assert!(asset.png_bytes.is_none());
         assert!(!asset.warnings.is_empty());
         assert!(asset.stripped_tags.contains(&"PatientName".to_string()));
+    }
+
+    #[test]
+    fn json_profile_roi_mask_and_direct_pptx_docx_embedding() {
+        let profile = DicomAnonymizationProfile::from_json_str(
+            r#"{"strip_dates": true, "extra_strip_tags": ["0008,1030"], "roi_masks": [{"x": 0, "y": 0, "width": 2, "height": 2}]}"#,
+        )
+        .expect("from_json_str");
+        assert!(profile.extra_strip_tags.contains(&Tag(0x0008, 0x1030)));
+        assert_eq!(profile.roi_masks.len(), 1);
+
+        let dcm = build_synthetic_dicom("1.2.840.10008.1.2.1", true);
+
+        // Embed directly into a blank PPTX slide
+        let blank_pptx = crate::blank::blank_file(crate::Kind::Presentation).unwrap();
+        let mut pptx = crate::save::open(blank_pptx).unwrap();
+        let before_shapes = pptx.presentation.slides[0].shapes.len();
+        embed_dicom_into_pptx_slide(&mut pptx.presentation, 0, &dcm, &profile)
+            .expect("embed into pptx");
+        assert_eq!(pptx.presentation.slides[0].shapes.len(), before_shapes + 1);
+        assert!(matches!(
+            pptx.presentation.slides[0].shapes.last().unwrap().kind,
+            ibis_doc_model::ShapeKind::Picture(_)
+        ));
+
+        // Embed directly into a blank DOCX flow
+        let blank_docx = crate::blank::blank_file(crate::Kind::Document).unwrap();
+        let mut docx = crate::save::open(blank_docx).unwrap();
+        embed_dicom_into_docx_flow(&mut docx.presentation, &dcm, &profile)
+            .expect("embed into docx");
+        assert!(docx.presentation.flow.as_ref().unwrap().body.len() > 2);
     }
 }

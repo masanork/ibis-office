@@ -4727,7 +4727,7 @@ fn shape_text_body_mut(kind: &mut ShapeKind) -> Option<&mut ibis_doc_model::Text
     }
 }
 
-fn flow_paragraph_plain_text(p: &FlowParagraph) -> String {
+pub(crate) fn flow_paragraph_plain_text(p: &FlowParagraph) -> String {
     let mut out = String::new();
     for r in &p.runs {
         if let FlowRunKind::Text(t) = &r.kind {

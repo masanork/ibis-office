@@ -31,6 +31,9 @@ pub fn input_to_markdown(data: &[u8]) -> Result<Option<String>, Error> {
     if trimmed.starts_with('{') && looks_like_fhir_json(trimmed) {
         return render_fhir_json_to_markdown(trimmed).map(Some);
     }
+    if trimmed.starts_with('<') && looks_like_cda_xml(trimmed) {
+        return render_cda_xml_to_markdown(trimmed).map(Some);
+    }
     if trimmed.starts_with('<') && looks_like_fhir_xml(trimmed) {
         return render_fhir_xml_to_markdown(trimmed).map(Some);
     }
@@ -38,6 +41,55 @@ pub fn input_to_markdown(data: &[u8]) -> Result<Option<String>, Error> {
         return Ok(Some(render_hl7v2_to_markdown(trimmed)));
     }
     Ok(None)
+}
+
+fn looks_like_cda_xml(trimmed: &str) -> bool {
+    trimmed.contains("urn:hl7-org:v3") && trimmed.contains("<ClinicalDocument")
+}
+
+/// Summary of authenticity / signature markers in a FHIR Bundle.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FhirAuthenticityReport {
+    pub signature_count: usize,
+    pub provenance_count: usize,
+    pub signers: Vec<String>,
+}
+
+/// Inspect `Signature` / `Provenance` elements in a FHIR JSON Bundle.
+pub fn inspect_fhir_authenticity(data: &[u8]) -> Result<FhirAuthenticityReport, Error> {
+    let text = std::str::from_utf8(data)
+        .map_err(|e| Error::new(format!("UTF-8 変換に失敗しました: {e}")))?;
+    let root: Value = serde_json::from_str(text.trim_start_matches('\u{FEFF}'))
+        .map_err(|e| Error::new(format!("FHIR JSON のパースに失敗しました: {e}")))?;
+    Ok(collect_fhir_authenticity(&root))
+}
+
+fn collect_fhir_authenticity(root: &Value) -> FhirAuthenticityReport {
+    let mut report = FhirAuthenticityReport::default();
+    if root.get("signature").is_some() {
+        report.signature_count += 1;
+    }
+    if let Some(entries) = root.get("entry").and_then(Value::as_array) {
+        for e in entries {
+            let Some(res) = e.get("resource") else { continue };
+            if res_type(res) == "Provenance" {
+                report.provenance_count += 1;
+                if let Some(sigs) = res.get("signature").and_then(Value::as_array) {
+                    report.signature_count += sigs.len();
+                    for sig in sigs {
+                        if let Some(who) = sig
+                            .get("who")
+                            .and_then(|w| w.get("display").or_else(|| w.get("reference")))
+                            .and_then(Value::as_str)
+                        {
+                            report.signers.push(who.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    report
 }
 
 fn looks_like_fhir_json(trimmed: &str) -> bool {
@@ -107,6 +159,20 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
         md,
         "> 本表示は HL7 FHIR データの忠実な構造化転記であり、診断・治療の判断支援を行うものではありません。\n"
     );
+    let auth = collect_fhir_authenticity(&root);
+    if auth.signature_count > 0 || auth.provenance_count > 0 {
+        let _ = writeln!(
+            md,
+            "> **真正性情報 (Provenance/Signature)**: Provenance {} 件 / 署名要素 {} 件（署名者: {}）\n",
+            auth.provenance_count,
+            auth.signature_count,
+            if auth.signers.is_empty() {
+                "-".to_string()
+            } else {
+                auth.signers.join(", ")
+            }
+        );
+    }
 
     // Patient(s)
     let patients: Vec<&Value> = resources
@@ -282,6 +348,225 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
     }
 
     Ok(md)
+}
+
+/// Convert HL7 CDA `<ClinicalDocument>` (e.g. 特定健診・特定保健指導 XML) into Markdown.
+fn render_cda_xml_to_markdown(text: &str) -> Result<String, Error> {
+    let doc = roxmltree::Document::parse(text)
+        .map_err(|e| Error::new(format!("HL7 CDA XML のパースに失敗しました: {e}")))?;
+    let root = doc.root_element();
+    let title = root
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "title")
+        .and_then(|n| n.text())
+        .unwrap_or("特定健診・HL7 CDA 文書");
+    let effective_time = root
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "effectiveTime")
+        .and_then(|n| n.attribute("value"))
+        .unwrap_or("-");
+
+    let mut md = String::new();
+    let _ = writeln!(
+        md,
+        "---\ntitle: {}\ncda_effective_time: {}\n---\n",
+        yaml_escape(title),
+        yaml_escape(effective_time)
+    );
+    let _ = writeln!(md, "# {title}\n");
+    let _ = writeln!(md, "- 作成/実施日時: `{effective_time}`\n");
+    let _ = writeln!(md, "## 検査・観察項目 (Observation)\n");
+    let _ = writeln!(md, "| 項目名 | コード | 値 | 単位 |");
+    let _ = writeln!(md, "| --- | --- | --- | --- |");
+
+    for obs in root
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "observation")
+    {
+        let code_node = obs
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "code");
+        let disp = code_node
+            .and_then(|c| c.attribute("displayName"))
+            .unwrap_or("-");
+        let code = code_node.and_then(|c| c.attribute("code")).unwrap_or("-");
+        let val_node = obs
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "value");
+        let val = val_node
+            .and_then(|v| v.attribute("value").or_else(|| v.text()))
+            .unwrap_or("-");
+        let unit = val_node.and_then(|v| v.attribute("unit")).unwrap_or("-");
+        let _ = writeln!(
+            md,
+            "| {} | {} | {} | {} |",
+            md_cell(disp),
+            md_cell(code),
+            md_cell(val),
+            md_cell(unit)
+        );
+    }
+    Ok(md)
+}
+
+/// Convert a structured Word (`FlowDocument`) presentation created from a
+/// medical form (or round-tripped from `input_to_markdown`) back into an HL7
+/// FHIR R4 `Bundle` JSON string (`resourceType: "Bundle"`, `type: "document"`).
+pub fn flow_to_fhir_bundle_json(
+    presentation: &ibis_doc_model::Presentation,
+) -> Result<String, Error> {
+    use ibis_doc_model::flow::Block;
+
+    let flow = presentation
+        .flow
+        .as_ref()
+        .ok_or_else(|| Error::new("DOCX フロードキュメントが存在しません"))?;
+
+    let mut title = "診療情報提供書".to_string();
+    let mut entries: Vec<Value> = Vec::new();
+    let mut current_section = String::new();
+
+    for block in &flow.body {
+        match block {
+            Block::Paragraph(p) => {
+                let text = crate::markdown::flow_paragraph_plain_text(p);
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if p.style.as_deref() == Some("Heading1") {
+                    title = trimmed.to_string();
+                } else if p.style.as_deref().is_some_and(|s| s.starts_with("Heading")) {
+                    current_section = trimmed.to_string();
+                }
+            }
+            Block::Table(tbl) => {
+                let rows: Vec<Vec<String>> = tbl
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        r.cells
+                            .iter()
+                            .map(|c| {
+                                c.blocks
+                                    .iter()
+                                    .filter_map(|b| match b {
+                                        Block::Paragraph(p) => {
+                                            Some(crate::markdown::flow_paragraph_plain_text(p))
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                                    .trim()
+                                    .to_string()
+                            })
+                            .collect()
+                    })
+                    .collect();
+                if rows.len() < 2 {
+                    continue;
+                }
+                if current_section.contains("患者情報") {
+                    let mut map = serde_json::Map::new();
+                    map.insert("resourceType".into(), Value::String("Patient".into()));
+                    for row in rows.iter().skip(1) {
+                        if row.len() >= 2 {
+                            match row[0].as_str() {
+                                "患者ID" => {
+                                    map.insert("id".into(), Value::String(row[1].clone()));
+                                }
+                                "氏名" => {
+                                    map.insert(
+                                        "name".into(),
+                                        serde_json::json!([{ "text": row[1] }]),
+                                    );
+                                }
+                                "性別" => {
+                                    map.insert("gender".into(), Value::String(row[1].clone()));
+                                }
+                                "生年月日" => {
+                                    map.insert("birthDate".into(), Value::String(row[1].clone()));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    entries.push(serde_json::json!({ "resource": Value::Object(map) }));
+                } else if current_section.contains("Condition") || current_section.contains("傷病名") {
+                    for row in rows.iter().skip(1) {
+                        if !row.is_empty() {
+                            entries.push(serde_json::json!({
+                                "resource": {
+                                    "resourceType": "Condition",
+                                    "code": {
+                                        "coding": [{
+                                            "code": row.get(1).cloned().unwrap_or_default(),
+                                            "display": row[0]
+                                        }]
+                                    },
+                                    "onsetDateTime": row.get(3).cloned().unwrap_or_default()
+                                }
+                            }));
+                        }
+                    }
+                } else if current_section.contains("Observation") || current_section.contains("検査") {
+                    for row in rows.iter().skip(1) {
+                        if !row.is_empty() {
+                            entries.push(serde_json::json!({
+                                "resource": {
+                                    "resourceType": "Observation",
+                                    "code": {
+                                        "coding": [{
+                                            "code": row.get(1).cloned().unwrap_or_default(),
+                                            "display": row[0]
+                                        }]
+                                    },
+                                    "valueString": row.get(2).cloned().unwrap_or_default(),
+                                    "effectiveDateTime": row.get(3).cloned().unwrap_or_default()
+                                }
+                            }));
+                        }
+                    }
+                } else if current_section.contains("Medication") || current_section.contains("処方") {
+                    for row in rows.iter().skip(1) {
+                        if !row.is_empty() {
+                            entries.push(serde_json::json!({
+                                "resource": {
+                                    "resourceType": "MedicationRequest",
+                                    "status": row.get(3).cloned().unwrap_or_else(|| "active".to_string()),
+                                    "medicationCodeableConcept": {
+                                        "coding": [{
+                                            "code": row.get(1).cloned().unwrap_or_default(),
+                                            "display": row[0]
+                                        }]
+                                    },
+                                    "dosageInstruction": [{ "text": row.get(2).cloned().unwrap_or_default() }]
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut all_entries = vec![serde_json::json!({
+        "resource": {
+            "resourceType": "Composition",
+            "status": "final",
+            "title": title
+        }
+    })];
+    all_entries.extend(entries);
+
+    let bundle = serde_json::json!({
+        "resourceType": "Bundle",
+        "type": "document",
+        "entry": all_entries
+    });
+    serde_json::to_string_pretty(&bundle)
+        .map_err(|e| Error::new(format!("FHIR Bundle JSON の生成に失敗しました: {e}")))
 }
 
 fn render_fhir_xml_to_markdown(text: &str) -> Result<String, Error> {
@@ -492,5 +777,31 @@ mod tests {
     fn ignores_non_fhir_json_and_plain_text() {
         assert_eq!(input_to_markdown(b"{\"hello\": \"world\"}").unwrap(), None);
         assert_eq!(input_to_markdown(b"# Normal Markdown\nhello").unwrap(), None);
+    }
+
+    #[test]
+    fn converts_tokutei_kenshin_cda_and_roundtrips_docx_to_fhir_bundle() {
+        let cda = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ClinicalDocument xmlns="urn:hl7-org:v3">
+  <title>特定健康診査結果報告書</title>
+  <effectiveTime value="20261115"/>
+  <component><observation>
+    <code code="9N001000000000001" displayName="腹囲"/>
+    <value value="82.5" unit="cm"/>
+  </observation></component>
+</ClinicalDocument>"#;
+        let md = input_to_markdown(cda.as_bytes()).unwrap().unwrap();
+        assert!(md.contains("特定健康診査結果報告書"));
+        assert!(md.contains("腹囲"));
+        assert!(md.contains("82.5"));
+
+        // Roundtrip FHIR JSON -> DOCX FlowDocument -> FHIR Bundle JSON
+        let fhir_md = input_to_markdown(SYNTHETIC_FHIR_BUNDLE.as_bytes()).unwrap().unwrap();
+        let opened = crate::markdown::open_markdown(fhir_md.into_bytes()).unwrap();
+        let bundle_json = flow_to_fhir_bundle_json(&opened.presentation).expect("flow_to_fhir_bundle_json");
+        assert!(bundle_json.contains("\"resourceType\": \"Bundle\""));
+        assert!(bundle_json.contains("山田 太郎"));
+        assert!(bundle_json.contains("2型糖尿病"));
+        assert!(bundle_json.contains("HbA1c(NGSP)"));
     }
 }

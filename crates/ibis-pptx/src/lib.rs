@@ -49,7 +49,9 @@ mod chart;
 mod chart_ex;
 pub mod csv;
 pub mod dicom;
+pub mod dpc;
 pub mod fhir;
+pub mod pii_preflight;
 pub mod uke;
 pub mod machine_readability_csv;
 #[cfg(not(target_family = "wasm"))]
