@@ -56,7 +56,15 @@ clang -fobjc-arc -arch arm64 -isysroot "$SDK_PATH" "$MIN_VERSION_FLAG" \
   -o "$APP_DIR/IbisOffice"
 
 cp apps/ios/Info.plist "$APP_DIR/Info.plist"
-cp crates/ibis-office-shell/logo/png/ico/ibisOffice_icon_win_256px.png "$APP_DIR/AppIcon.png"
+PARTIAL_PLIST=$(mktemp)
+xcrun actool apps/ios/Assets.xcassets \
+  --compile "$APP_DIR" \
+  --platform "$SDK" \
+  --minimum-deployment-target 16.0 \
+  --app-icon AppIcon \
+  --output-partial-info-plist "$PARTIAL_PLIST" >/dev/null
+/usr/libexec/PlistBuddy -c "Merge $PARTIAL_PLIST" "$APP_DIR/Info.plist"
+rm -f "$PARTIAL_PLIST"
 codesign --force --sign - "$APP_DIR"
 
 echo "Built: $APP_DIR"

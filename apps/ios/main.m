@@ -228,8 +228,57 @@ static NSString *CopyUrlToOpenedStorage(NSURL *url) {
 
 @end
 
-@interface IbisAppDelegate : UIResponder <UIApplicationDelegate>
+@interface IbisSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (nonatomic, strong) UIWindow *window;
+@end
+
+@implementation IbisSceneDelegate
+
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    if (![scene isKindOfClass:[UIWindowScene class]]) {
+        return;
+    }
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+    self.window = [[UIWindow alloc] initWithWindowScene:windowScene];
+    self.window.rootViewController = [[IbisViewController alloc] init];
+    [self.window makeKeyAndVisible];
+
+    for (UIOpenURLContext *ctx in connectionOptions.URLContexts) {
+        NSString *path = CopyUrlToOpenedStorage(ctx.URL);
+        if (path) {
+            ibis_ios_on_open_path([path UTF8String]);
+        }
+    }
+}
+
+- (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)URLContexts {
+    for (UIOpenURLContext *ctx in URLContexts) {
+        NSString *path = CopyUrlToOpenedStorage(ctx.URL);
+        if (path) {
+            ibis_ios_on_open_path([path UTF8String]);
+        }
+    }
+}
+
+- (void)sceneDidBecomeActive:(UIScene *)scene {
+    ibis_ios_lifecycle(0);
+}
+
+- (void)sceneWillResignActive:(UIScene *)scene {
+    ibis_ios_lifecycle(1);
+}
+
+- (void)sceneDidEnterBackground:(UIScene *)scene {
+    ibis_ios_lifecycle(2);
+}
+
+- (void)sceneWillEnterForeground:(UIScene *)scene {
+    ibis_ios_lifecycle(3);
+}
+
+@end
+
+@interface IbisAppDelegate : UIResponder <UIApplicationDelegate>
 @end
 
 @implementation IbisAppDelegate
@@ -240,35 +289,11 @@ static NSString *CopyUrlToOpenedStorage(NSURL *url) {
         NSString *lang = [langs.firstObject stringByReplacingOccurrencesOfString:@"-" withString:@"_"];
         setenv("LANG", [[lang stringByAppendingString:@".UTF-8"] UTF8String], 1);
     }
-    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    self.window.rootViewController = [[IbisViewController alloc] init];
-    [self.window makeKeyAndVisible];
     return YES;
 }
 
-- (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options {
-    NSString *path = CopyUrlToOpenedStorage(url);
-    if (path) {
-        ibis_ios_on_open_path([path UTF8String]);
-        return YES;
-    }
-    return NO;
-}
-
-- (void)applicationDidBecomeActive:(UIApplication *)application {
-    ibis_ios_lifecycle(0);
-}
-
-- (void)applicationWillResignActive:(UIApplication *)application {
-    ibis_ios_lifecycle(1);
-}
-
-- (void)applicationDidEnterBackground:(UIApplication *)application {
-    ibis_ios_lifecycle(2);
-}
-
-- (void)applicationWillEnterForeground:(UIApplication *)application {
-    ibis_ios_lifecycle(3);
+- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession options:(UISceneConnectionOptions *)options {
+    return [[UISceneConfiguration alloc] initWithName:@"Default Configuration" sessionRole:connectingSceneSession.role];
 }
 
 - (void)applicationDidReceiveMemoryWarning:(UIApplication *)application {

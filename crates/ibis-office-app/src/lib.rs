@@ -1203,6 +1203,9 @@ mod ios_entry {
         if PLATFORM.with(|p| p.borrow().is_some()) {
             return;
         }
+        std::panic::set_hook(Box::new(|info| {
+            eprintln!("[ibis-ios] PANIC: {info}");
+        }));
         let Some(view) = gpui_ios::make_non_null_view(ui_view) else {
             return;
         };
