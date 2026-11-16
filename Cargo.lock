@@ -3599,6 +3599,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ibis-ofd"
+version = "0.8.0"
+dependencies = [
+ "ibis-ooxml",
+ "ibis-pdf",
+ "image",
+ "roxmltree 0.21.1",
+]
+
+[[package]]
 name = "ibis-office-app"
 version = "0.8.0"
 dependencies = [
@@ -3703,6 +3713,7 @@ version = "0.8.0"
 dependencies = [
  "gpui-kit",
  "ibis-doc-model",
+ "ibis-ofd",
  "ibis-office-base",
  "ibis-office-shell",
  "ibis-pdf",
@@ -3774,6 +3785,7 @@ dependencies = [
  "ibis-calc",
  "ibis-doc-model",
  "ibis-emf",
+ "ibis-ofd",
  "ibis-office-base",
  "ibis-office-render",
  "ibis-office-updater",

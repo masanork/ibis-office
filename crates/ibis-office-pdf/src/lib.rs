@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use gpui_kit::{Bounds, Pixels, Point, RenderImage, Window, px, size};
+use gpui_kit::{App, Bounds, Pixels, Point, RenderImage, Window, px, size};
+use ibis_ofd::OfdContainer;
 use ibis_pdf::interpret::interpret_page_scene;
 use ibis_pdf::scene::{PageInfo, PageScene, collect_pages};
 use ibis_pdf::signature::{SignatureRecord, inspect_signatures};
@@ -16,11 +17,18 @@ pub mod editor;
 pub mod render;
 pub use editor::PdfDocument;
 
-/// Viewer state for an open PDF document (lazy page scene & GPU image cache).
+enum ViewerSource {
+    Empty,
+    Pdf(Arc<Mutex<PdfContainer>>),
+    Ofd(Arc<OfdContainer>),
+}
+
+/// Viewer state for an open PDF or OFD document (lazy page scene & GPU image cache).
 pub struct PdfViewerState {
-    container: Option<Arc<Mutex<PdfContainer>>>,
+    source: ViewerSource,
     pub pages: Vec<PageInfo>,
     pub signatures: Vec<SignatureRecord>,
+    ofd_signature_count: usize,
     scene_cache: HashMap<usize, Arc<PageScene>>,
     image_cache: HashMap<(usize, usize), Option<Arc<RenderImage>>>,
     pub zoom: f32,
@@ -31,9 +39,10 @@ impl PdfViewerState {
     /// Empty viewer state used as a non-panicking placeholder while loading.
     pub fn empty() -> Self {
         Self {
-            container: None,
+            source: ViewerSource::Empty,
             pages: Vec::new(),
             signatures: Vec::new(),
+            ofd_signature_count: 0,
             scene_cache: HashMap::new(),
             image_cache: HashMap::new(),
             zoom: 1.0,
@@ -41,16 +50,33 @@ impl PdfViewerState {
         }
     }
 
-    /// Open a PDF container, resolving the page tree and signature metadata without
-    /// eagerly interpreting page content streams.
+    /// Open a PDF or OFD container, resolving page metadata and signature counts
+    /// without eagerly interpreting page content streams.
     pub fn open(bytes: impl Into<Arc<[u8]>>) -> Result<Self> {
-        let mut container = PdfContainer::from_bytes(bytes)?;
+        let raw: Arc<[u8]> = bytes.into();
+        if ibis_ofd::is_ofd(&raw) {
+            let ofd = OfdContainer::from_bytes(raw).map_err(|e| ibis_pdf::Error::new(e.to_string()))?;
+            let pages = ofd.page_infos();
+            let ofd_signature_count = ofd.signature_count();
+            return Ok(Self {
+                source: ViewerSource::Ofd(Arc::new(ofd)),
+                pages,
+                signatures: Vec::new(),
+                ofd_signature_count,
+                scene_cache: HashMap::new(),
+                image_cache: HashMap::new(),
+                zoom: 1.0,
+                current_page: 0,
+            });
+        }
+        let mut container = PdfContainer::from_bytes(raw)?;
         let pages = collect_pages(&mut container)?;
         let signatures = inspect_signatures(&mut container)?;
         Ok(Self {
-            container: Some(Arc::new(Mutex::new(container))),
+            source: ViewerSource::Pdf(Arc::new(Mutex::new(container))),
             pages,
             signatures,
+            ofd_signature_count: 0,
             scene_cache: HashMap::new(),
             image_cache: HashMap::new(),
             zoom: 1.0,
@@ -62,18 +88,25 @@ impl PdfViewerState {
         self.pages.len()
     }
 
+    pub fn signature_count(&self) -> usize {
+        self.signatures.len() + self.ofd_signature_count
+    }
+
     /// Lazily interpret and cache `page_index`.
     pub fn page_scene(&mut self, page_index: usize) -> Result<Arc<PageScene>> {
         if let Some(scene) = self.scene_cache.get(&page_index) {
             return Ok(scene.clone());
         }
-        let container = self
-            .container
-            .as_ref()
-            .ok_or_else(|| ibis_pdf::Error::new("empty pdf viewer"))?;
-        let scene = {
-            let mut guard = container.lock().expect("pdf container lock poisoned");
-            Arc::new(interpret_page_scene(&mut guard, page_index)?)
+        let scene = match &self.source {
+            ViewerSource::Empty => return Err(ibis_pdf::Error::new("empty pdf viewer")),
+            ViewerSource::Pdf(container) => {
+                let mut guard = container.lock().expect("pdf container lock poisoned");
+                Arc::new(interpret_page_scene(&mut guard, page_index)?)
+            }
+            ViewerSource::Ofd(ofd) => Arc::new(
+                ofd.interpret_page_scene(page_index)
+                    .map_err(|e| ibis_pdf::Error::new(e.to_string()))?,
+            ),
         };
         self.scene_cache.insert(page_index, scene.clone());
         Ok(scene)
@@ -86,6 +119,7 @@ impl PdfViewerState {
         origin: Point<Pixels>,
         scale: f32,
         window: &mut Window,
+        cx: &mut App,
     ) -> Result<()> {
         let scene = self.page_scene(page_index)?;
         let bounds = Bounds::new(
@@ -102,6 +136,7 @@ impl PdfViewerState {
             scale,
             &mut self.image_cache,
             window,
+            cx,
         );
         Ok(())
     }

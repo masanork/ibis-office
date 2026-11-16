@@ -107,6 +107,12 @@ cat > "$APP/Contents/Info.plist" <<EOF
 			<key>CFBundleTypeExtensions</key><array><string>jtd</string><string>jtt</string><string>jttc</string></array>
 		</dict>
 		<dict>
+			<key>CFBundleTypeName</key><string>OFD document</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>CFBundleTypeExtensions</key><array><string>ofd</string></array>
+		</dict>
+		<dict>
 			<key>CFBundleTypeName</key>
 			<string>Office document</string>
 			<key>CFBundleTypeRole</key>

@@ -159,10 +159,11 @@ impl FormatEditor for PdfDocument {
             return Vec::new();
         };
         let guard = state.viewer.lock().expect("pdf viewer lock");
-        if guard.signatures.is_empty() {
+        let sigs = guard.signature_count();
+        if sigs == 0 {
             Vec::new()
         } else {
-            vec![format!("署名: {}件", guard.signatures.len()).into()]
+            vec![format!("署名: {}件", sigs).into()]
         }
     }
 
@@ -205,7 +206,7 @@ impl FormatEditor for PdfDocument {
                             .child(
                                 canvas(
                                     |_bounds, _window, _cx| {},
-                                    move |bounds: Bounds<Pixels>, _, window: &mut Window, _cx| {
+                                    move |bounds: Bounds<Pixels>, _, window: &mut Window, cx| {
                                         let mut guard = viewer.lock().expect("pdf viewer lock");
                                         let page_count = guard.pages.len();
                                         let mut y = f32::from(bounds.origin.y) + PAGE_PAD_PX;
@@ -238,6 +239,7 @@ impl FormatEditor for PdfDocument {
                                                     point(px(x), px(y)),
                                                     scale,
                                                     window,
+                                                    cx,
                                                 );
                                             }
                                             y += ph + PAGE_GAP_PX;

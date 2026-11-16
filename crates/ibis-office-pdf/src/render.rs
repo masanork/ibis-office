@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::{
-    Bounds, Hsla, PathBuilder, Pixels, Point, RenderImage, Rgba, Window, fill, point, px, size,
+    App, Bounds, Font, Hsla, PathBuilder, Pixels, Point, RenderImage, Rgba, SharedString,
+    TextAlign, TextRun, Window, fill, point, px, size,
 };
 use ibis_pdf::scene::{DisplayCmd, PageScene, PathCmd, PdfRect};
 
@@ -96,6 +97,7 @@ pub fn paint_page_scene(
     scale: f32,
     image_cache: &mut HashMap<(usize, usize), Option<Arc<RenderImage>>>,
     window: &mut Window,
+    cx: &mut App,
 ) {
     // White page paper background.
     window.paint_quad(fill(page_bounds, gpui_kit::white()));
@@ -148,9 +150,46 @@ pub fn paint_page_scene(
                     );
                 }
             }
-            // Text glyph atlas & clip/transparency stacks will be wired in next iteration.
-            DisplayCmd::DrawGlyphRun { .. }
-            | DisplayCmd::PushClip(_)
+            DisplayCmd::DrawGlyphRun {
+                text,
+                origin: (gx, gy),
+                font_size,
+                rgba,
+            } => {
+                if !text.is_empty() {
+                    let size_px = (*font_size * scale).max(1.0);
+                    let run = TextRun {
+                        len: text.len(),
+                        font: Font {
+                            family: SharedString::from(".SystemUIFont"),
+                            ..Default::default()
+                        },
+                        color: rgba_to_hsla(*rgba),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let shaped = window.text_system().shape_line(
+                        SharedString::from(text.clone()),
+                        px(size_px),
+                        &[run],
+                        None,
+                    );
+                    let pos = point(
+                        origin.x + px(*gx * scale),
+                        origin.y + px(*gy * scale) - shaped.ascent,
+                    );
+                    let _ = shaped.paint(
+                        pos,
+                        shaped.ascent + shaped.descent,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
+            }
+            DisplayCmd::PushClip(_)
             | DisplayCmd::PopClip
             | DisplayCmd::PushTransparencyGroup { .. }
             | DisplayCmd::PopTransparencyGroup => {}

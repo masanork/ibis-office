@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 ibis-pdf = { path = "../ibis-pdf", features = ["interpret"] }
+ibis-ofd.workspace = true
 ibis-office-base.workspace = true
 ibis-office-shell.workspace = true
 ibis-doc-model.workspace = true

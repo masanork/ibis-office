@@ -54,20 +54,32 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
-    if path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")) || data.starts_with(b"%PDF-") {
+    if path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf") || ext.eq_ignore_ascii_case("ofd")) || data.starts_with(b"%PDF-") || ibis_ofd::is_ofd(&data) {
         let raw: std::sync::Arc<[u8]> = data.into();
-        let mut container = ibis_pdf::PdfContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
-        let pages = ibis_pdf::scene::collect_pages(&mut container).map_err(|e| e.to_string())?;
-        let first_size = pages
+        let page_boxes: Vec<(f32, f32)> = if ibis_ofd::is_ofd(&raw) {
+            let ofd = ibis_ofd::OfdContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
+            ofd.page_infos()
+                .into_iter()
+                .map(|p| (p.crop_box.width(), p.crop_box.height()))
+                .collect()
+        } else {
+            let mut container = ibis_pdf::PdfContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
+            ibis_pdf::scene::collect_pages(&mut container)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|p| (p.crop_box.width(), p.crop_box.height()))
+                .collect()
+        };
+        let first_size = page_boxes
             .first()
-            .map(|p| ibis_doc_model::EmuSize::new((p.crop_box.width() as i64) * ibis_doc_model::EMU_PER_POINT, (p.crop_box.height() as i64) * ibis_doc_model::EMU_PER_POINT))
+            .map(|&(w, h)| ibis_doc_model::EmuSize::new((w as i64) * ibis_doc_model::EMU_PER_POINT, (h as i64) * ibis_doc_model::EMU_PER_POINT))
             .unwrap_or_else(|| ibis_doc_model::EmuSize::new(595 * ibis_doc_model::EMU_PER_POINT, 842 * ibis_doc_model::EMU_PER_POINT));
         let mut presentation = ibis_doc_model::Presentation::empty(first_size);
-        for page in &pages {
+        for (w, h) in &page_boxes {
             let mut slide = ibis_doc_model::Slide::new(presentation.new_slide_id());
             slide.size = Some(ibis_doc_model::EmuSize::new(
-                (page.crop_box.width() as i64) * ibis_doc_model::EMU_PER_POINT,
-                (page.crop_box.height() as i64) * ibis_doc_model::EMU_PER_POINT,
+                (*w as i64) * ibis_doc_model::EMU_PER_POINT,
+                (*h as i64) * ibis_doc_model::EMU_PER_POINT,
             ));
             presentation.slides.push(slide);
         }
