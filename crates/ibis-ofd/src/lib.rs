@@ -13,6 +13,12 @@ use ibis_pdf::scene::{
 };
 use roxmltree::{Document as XmlDoc, Node};
 
+pub mod signature;
+pub use signature::{
+    OfdSignatureCryptoResult, OfdSignatureVerification, format_signature_status,
+    verify_signatures,
+};
+
 const PT_PER_MM: f32 = 72.0 / 25.4;
 const MAX_ENTRY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DELTA_REPEAT: usize = 10_000;
@@ -59,7 +65,7 @@ pub struct OfdContainer {
     pages: Vec<OfdPageRef>,
     templates: HashMap<String, OfdTemplate>,
     medias: HashMap<String, OfdMedia>,
-    signature_count: usize,
+    signatures: Vec<OfdSignatureVerification>,
 }
 
 /// Returns `true` if `bytes` looks like an OFD ZIP package (contains `OFD.xml`).
@@ -90,12 +96,12 @@ impl OfdContainer {
         let doc_root_path = resolve_path("", doc_root_rel)?;
 
         let signatures_rel = child_text(doc_body, "Signatures");
-        let signature_count = match signatures_rel {
+        let signatures = match signatures_rel {
             Some(rel) => {
                 let sig_path = resolve_path("", rel)?;
-                count_signatures(&archive, &sig_path).unwrap_or(0)
+                verify_signatures(&archive, &sig_path)
             }
-            None => 0,
+            None => Vec::new(),
         };
 
         let doc_xml = read_entry_utf8(&archive, &doc_root_path)?;
@@ -158,7 +164,7 @@ impl OfdContainer {
             pages,
             templates,
             medias,
-            signature_count,
+            signatures,
         })
     }
 
@@ -167,7 +173,15 @@ impl OfdContainer {
     }
 
     pub fn signature_count(&self) -> usize {
-        self.signature_count
+        self.signatures.len()
+    }
+
+    pub fn signature_verifications(&self) -> &[OfdSignatureVerification] {
+        &self.signatures
+    }
+
+    pub fn signature_status_text(&self) -> Option<String> {
+        format_signature_status(&self.signatures)
     }
 
     /// Return [`PageInfo`] metadata for all pages (boxes converted from mm to PDF points).
@@ -382,12 +396,6 @@ fn read_entry_bytes(archive: &Archive, path: &str) -> Result<Vec<u8>> {
 fn read_entry_utf8(archive: &Archive, path: &str) -> Result<String> {
     let bytes = read_entry_bytes(archive, path)?;
     String::from_utf8(bytes).map_err(|e| Error::new(format!("{path} is not valid UTF-8: {e}")))
-}
-
-fn count_signatures(archive: &Archive, sig_path: &str) -> Result<usize> {
-    let xml = read_entry_utf8(archive, sig_path)?;
-    let doc = XmlDoc::parse(&xml).map_err(|e| Error::new(format!("{sig_path}: {e}")))?;
-    Ok(doc.descendants().filter(|n| is_tag(*n, "Signature")).count())
 }
 
 fn load_resources(
@@ -778,10 +786,7 @@ mod tests {
   <ofd:Signature ID="s1" BaseLoc="Sign_0/Signature.xml"/>
 </ofd:Signatures>"#,
         ).unwrap();
-        w.add(
-            "Doc_0/Pages/Page_0/Content.xml",
-            meta,
-            r#"<?xml version="1.0" encoding="UTF-8"?>
+        let page_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
   <ofd:Content>
     <ofd:Layer ID="1">
@@ -796,13 +801,33 @@ mod tests {
       </ofd:TextObject>
     </ofd:Layer>
   </ofd:Content>
-</ofd:Page>"#.as_bytes(),
-        ).unwrap();
+</ofd:Page>"#.as_bytes();
+        w.add("Doc_0/Pages/Page_0/Content.xml", meta, page_xml).unwrap();
+        use base64::Engine as _;
+        let digest_b64 = base64::engine::general_purpose::STANDARD.encode(signature::sm3_digest(page_xml));
+        let sig_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Signature xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:SignedInfo>
+    <ofd:SignatureMethod>1.2.156.10197.1.501</ofd:SignatureMethod>
+    <ofd:References CheckMethod="1.2.156.10197.1.401">
+      <ofd:Reference FileRef="/Doc_0/Pages/Page_0/Content.xml">
+        <ofd:CheckValue>{digest_b64}</ofd:CheckValue>
+      </ofd:Reference>
+    </ofd:References>
+  </ofd:SignedInfo>
+  <ofd:SignedValue>SignedValue.dat</ofd:SignedValue>
+</ofd:Signature>"#
+        );
+        w.add("Doc_0/Signs/Sign_0/Signature.xml", meta, sig_xml.as_bytes()).unwrap();
+        w.add("Doc_0/Signs/Sign_0/SignedValue.dat", meta, &[0u8; 64]).unwrap();
         let bytes: Arc<[u8]> = w.finish().unwrap().into();
         assert!(is_ofd(&bytes));
         let ofd = OfdContainer::from_bytes(bytes).expect("parse synthetic OFD");
         assert_eq!(ofd.page_count(), 1);
         assert_eq!(ofd.signature_count(), 1);
+        assert!(ofd.signature_verifications()[0].all_references_ok());
+        assert_eq!(ofd.signature_status_text().as_deref(), Some("署名: 1件 (SM3ダイジェスト一致)"));
         let scene = ofd.interpret_page_scene(0).expect("render synthetic OFD page");
         assert_eq!(scene.display_list.len(), 2);
         assert_eq!(scene.text_index.plain_text(), "OFD测试");

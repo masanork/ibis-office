@@ -28,7 +28,7 @@ pub struct PdfViewerState {
     source: ViewerSource,
     pub pages: Vec<PageInfo>,
     pub signatures: Vec<SignatureRecord>,
-    ofd_signature_count: usize,
+    ofd_signature_status: Option<String>,
     scene_cache: HashMap<usize, Arc<PageScene>>,
     image_cache: HashMap<(usize, usize), Option<Arc<RenderImage>>>,
     pub zoom: f32,
@@ -42,7 +42,7 @@ impl PdfViewerState {
             source: ViewerSource::Empty,
             pages: Vec::new(),
             signatures: Vec::new(),
-            ofd_signature_count: 0,
+            ofd_signature_status: None,
             scene_cache: HashMap::new(),
             image_cache: HashMap::new(),
             zoom: 1.0,
@@ -57,12 +57,12 @@ impl PdfViewerState {
         if ibis_ofd::is_ofd(&raw) {
             let ofd = OfdContainer::from_bytes(raw).map_err(|e| ibis_pdf::Error::new(e.to_string()))?;
             let pages = ofd.page_infos();
-            let ofd_signature_count = ofd.signature_count();
+            let ofd_signature_status = ofd.signature_status_text();
             return Ok(Self {
                 source: ViewerSource::Ofd(Arc::new(ofd)),
                 pages,
                 signatures: Vec::new(),
-                ofd_signature_count,
+                ofd_signature_status,
                 scene_cache: HashMap::new(),
                 image_cache: HashMap::new(),
                 zoom: 1.0,
@@ -76,7 +76,7 @@ impl PdfViewerState {
             source: ViewerSource::Pdf(Arc::new(Mutex::new(container))),
             pages,
             signatures,
-            ofd_signature_count: 0,
+            ofd_signature_status: None,
             scene_cache: HashMap::new(),
             image_cache: HashMap::new(),
             zoom: 1.0,
@@ -88,8 +88,15 @@ impl PdfViewerState {
         self.pages.len()
     }
 
-    pub fn signature_count(&self) -> usize {
-        self.signatures.len() + self.ofd_signature_count
+    pub fn signature_status_text(&self) -> Option<String> {
+        if let Some(status) = &self.ofd_signature_status {
+            return Some(status.clone());
+        }
+        if self.signatures.is_empty() {
+            None
+        } else {
+            Some(format!("署名: {}件", self.signatures.len()))
+        }
     }
 
     /// Lazily interpret and cache `page_index`.

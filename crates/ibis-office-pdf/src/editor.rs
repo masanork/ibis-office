@@ -159,12 +159,11 @@ impl FormatEditor for PdfDocument {
             return Vec::new();
         };
         let guard = state.viewer.lock().expect("pdf viewer lock");
-        let sigs = guard.signature_count();
-        if sigs == 0 {
-            Vec::new()
-        } else {
-            vec![format!("署名: {}件", sigs).into()]
-        }
+        guard
+            .signature_status_text()
+            .map(SharedString::from)
+            .into_iter()
+            .collect()
     }
 
     fn render_body(
