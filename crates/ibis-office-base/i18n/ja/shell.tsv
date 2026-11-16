@@ -1237,3 +1237,6 @@ shell.font-setup.progress	{name} をダウンロードしています（{index}/
 shell.font-setup.failed	{name} をインストールできませんでした（全{count}件）。{error}
 shell.font-setup.cancelled	取り消しました。
 shell.font-setup.done	インストールしました。書体の一覧から選べます。
+file.csv-encoding.title	CSV の文字コードを選択
+file.csv-encoding.detail	このファイルの文字コードを一意に判定できません。読み込みと上書き保存に使う文字コードを選んでください。Shift_JIS は Windows の CP932 として扱います。
+file.csv-encoding.changed	選択中にファイルが変更されました。もう一度開いてください。

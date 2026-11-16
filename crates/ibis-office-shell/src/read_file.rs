@@ -33,7 +33,19 @@ pub fn read_file(path: &std::path::Path) -> Result<Loaded, String> {
 /// As `read_file`; `password` opens a protected file (パスワードを使用して暗号化).
 #[cfg(not(target_family = "wasm"))]
 pub fn read_file_with(path: &std::path::Path, password: Option<&str>) -> Result<Loaded, String> {
-    catch_read_panic(path, || read_file_unguarded(path, password))
+    catch_read_panic(path, || read_file_unguarded(path, password, ibis_pptx::csv::TextEncoding::Auto))
+}
+
+/// Re-read a CSV after the user has selected its encoding.
+#[cfg(not(target_family = "wasm"))]
+pub fn read_file_with_csv_encoding(path: &std::path::Path, encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
+    // The GPUI worker used after the encoding prompt can have a small stack;
+    // ZIP creation during CSV import needs more than that stack provides.
+    let path = path.to_owned();
+    std::thread::Builder::new().name("csv-encoding-read".into()).stack_size(8 * 1024 * 1024)
+        .spawn(move || catch_read_panic(&path, || read_file_unguarded(&path, None, encoding)))
+        .map_err(|error| error.to_string())?
+        .join().map_err(|_| "CSV reader thread failed".to_string())?
 }
 
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
@@ -50,7 +62,7 @@ pub fn catch_read_panic<T>(path: &std::path::Path, read: impl FnOnce() -> Result
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result<Loaded, String> {
+fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -139,7 +151,7 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
         ibis_pptx::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
     } else {
         // The volatile cells calculated again on open (CELL("filename") among them) need the file's path.
-        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || ibis_pptx::open_progressive(data,100_000))
+        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || ibis_pptx::open_progressive_with_csv_encoding(data,100_000,csv_encoding))
     };
     let (opened, csv_stream) = open_result.map_err(|e| {
         note_open_failed(path);

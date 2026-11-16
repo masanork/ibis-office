@@ -1389,7 +1389,41 @@ impl SlideEditor {
         self.watch.opening_path = Some(path.clone());
         let closed = self.closed;
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { read() }).await;
+            let mut result = cx.background_executor().spawn(async move { read() }).await;
+            let ambiguous = result.as_ref().ok().and_then(|loaded| loaded.source.original_csv_format())
+                .is_some_and(|format| matches!(format.encoding, ibis_pptx::csv::OriginalEncoding::AsciiAmbiguous | ibis_pptx::csv::OriginalEncoding::Utf8OrCp932));
+            if ambiguous {
+                let buttons = [PromptButton::ok("UTF-8"), PromptButton::ok("Shift_JIS (CP932)"), PromptButton::cancel(crate::i18n::text("_shell.cancel"))];
+                let receiver = this.update_in(cx, |_, window, cx| window.prompt(
+                    PromptLevel::Info, &crate::i18n::text("file.csv-encoding.title"),
+                    Some(&crate::i18n::text("file.csv-encoding.detail")), &buttons, cx)).ok();
+                let answer = match receiver { Some(receiver) => receiver.await.ok(), None => None };
+                // A later open or close must not be replaced by an old prompt.
+                let still_opening = this.update(cx, |this, _| this.closed == closed && this.watch.opening_path.as_deref() == Some(path.as_path())).unwrap_or(false);
+                if !still_opening { return; }
+                let encoding = match answer {
+                    Some(0) => ibis_pptx::csv::TextEncoding::Utf8,
+                    Some(1) => ibis_pptx::csv::TextEncoding::ShiftJis,
+                    _ => {
+                        this.update(cx, |this, cx| { this.watch.opening_path = None; this.fail_loading(String::new(), cx); }).ok();
+                        return;
+                    }
+                };
+                // Re-read after the choice; do not apply it to a changed file.
+                drop(result);
+                let chosen_path = path.clone();
+                let expected = stamp_before_read.clone();
+                result = cx.background_executor().spawn(async move {
+                    if expected.is_none() || crate::file_watch::DiskStamp::stat(&chosen_path) != expected {
+                        return Err(crate::i18n::text("file.csv-encoding.changed").to_string());
+                    }
+                    let opened = crate::read_file::read_file_with_csv_encoding(&chosen_path, encoding)?;
+                    if crate::file_watch::DiskStamp::stat(&chosen_path) != expected {
+                        return Err(crate::i18n::text("file.csv-encoding.changed").to_string());
+                    }
+                    Ok(opened)
+                }).await;
+            }
             this.update(cx, |this, _| this.watch.opening_path = None).ok();
             this.update_in(cx, |this, window, cx| {
             let restore = this.watch.restore_view.take().filter(|(p, _)| *p == path).map(|(_, view)| view);

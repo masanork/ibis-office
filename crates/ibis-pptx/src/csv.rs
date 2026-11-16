@@ -100,6 +100,21 @@ pub fn decode_with_original_encoding(data: &[u8]) -> Result<(String, OriginalEnc
     else { Ok((text.into_owned(), OriginalEncoding::Cp932)) }
 }
 
+/// Decode a delimited file using a user-selected encoding, without guessing.
+pub fn decode_with_choice(data: &[u8], choice: TextEncoding) -> Result<(String, OriginalEncoding), Error> {
+    match choice {
+        TextEncoding::Auto => decode_with_original_encoding(data),
+        TextEncoding::Utf8 => Ok((decode_as(data, choice)?, if data.starts_with(b"\xEF\xBB\xBF") { OriginalEncoding::Utf8Bom } else { OriginalEncoding::Utf8 })),
+        TextEncoding::ShiftJis => Ok((decode_as(data, choice)?, OriginalEncoding::Cp932)),
+        TextEncoding::Utf16 => {
+            let encoding = if data.starts_with(b"\xFE\xFF") { OriginalEncoding::Utf16BeBom }
+                else if data.starts_with(b"\xFF\xFE") { OriginalEncoding::Utf16LeBom }
+                else { return Err(Error::new("UTF-16 のバイト順を判定できません")); };
+            Ok((decode_as(data, choice)?, encoding))
+        }
+    }
+}
+
 /// Encode without replacement or HTML numeric character references.
 pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>, Error> {
     match encoding {
@@ -130,7 +145,7 @@ pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>
 
 #[cfg(test)]
 mod original_encoding_tests {
-    use super::{decode_with_original_encoding, encode_original, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding, RecordEnding};
+    use super::{decode_with_choice, decode_with_original_encoding, encode_original, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding, RecordEnding, TextEncoding};
 
     #[test]
     fn cp932_is_retained_and_unrepresentable_text_is_rejected() {
@@ -219,6 +234,24 @@ mod original_encoding_tests {
         let format = opened.source.original_csv_format().unwrap();
         assert_eq!(format.record_ending, RecordEnding::QuotedCarriageReturn);
         assert!(sheet_to_original_csv(&opened.presentation, 0, format).is_err());
+    }
+
+    #[test]
+    fn explicit_choice_decodes_ambiguous_bytes_before_editing() {
+        let bytes = b"\xc2\xa2\r\n";
+        let (utf8, a) = decode_with_choice(bytes, TextEncoding::Utf8).unwrap();
+        let (cp932, b) = decode_with_choice(bytes, TextEncoding::ShiftJis).unwrap();
+        assert_eq!(utf8, "¢\r\n");
+        assert_ne!(utf8, cp932);
+        assert_eq!(a, OriginalEncoding::Utf8);
+        assert_eq!(b, OriginalEncoding::Cp932);
+        assert_eq!(encode_original(&utf8, a).unwrap(), bytes);
+        assert_eq!(encode_original(&cp932, b).unwrap(), bytes);
+        assert!(decode_with_choice(&[0x81], TextEncoding::ShiftJis).is_err());
+        let (opened, _) = crate::open_progressive_with_csv_encoding(bytes.to_vec(), usize::MAX, TextEncoding::ShiftJis).unwrap();
+        assert_eq!(opened.source.original_csv_format().unwrap().encoding, OriginalEncoding::Cp932);
+        let saved = sheet_to_original_csv(&opened.presentation, 0, opened.source.original_csv_format().unwrap()).unwrap();
+        assert_eq!(saved, bytes);
     }
 }
 

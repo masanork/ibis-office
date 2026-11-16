@@ -143,6 +143,15 @@ pub fn open_progressive(
     data: impl Into<Arc<[u8]>>,
     first_chunk_rows: usize,
 ) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
+    open_progressive_with_csv_encoding(data, first_chunk_rows, crate::csv::TextEncoding::Auto)
+}
+
+/// Read a CSV with an explicitly selected encoding; non-CSV formats are unchanged.
+pub fn open_progressive_with_csv_encoding(
+    data: impl Into<Arc<[u8]>>,
+    first_chunk_rows: usize,
+    csv_encoding: crate::csv::TextEncoding,
+) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
     let mut data: Arc<[u8]> = data.into();
     crate::progress::reset();
     // An old workbook (.xls): read into the .xlsx the rest reads.
@@ -208,7 +217,7 @@ pub fn open_progressive(
     }
 
     if crate::csv::is_csv(&data) {
-        let (decoded, encoding) = crate::csv::decode_with_original_encoding(&data)?;
+        let (decoded, encoding) = crate::csv::decode_with_choice(&data, csv_encoding)?;
         let text: std::sync::Arc<str> = std::sync::Arc::from(decoded);
         crate::progress::fraction(0.02);
         let delimiter = crate::csv::detect_delimiter(&text);
@@ -346,6 +355,7 @@ impl Source {
     pub fn original_csv_format(&self) -> Option<crate::csv::OriginalCsvFormat> {
         self.original_csv_format
     }
+
     /// Whether the original package declares digital signature parts. This is
     /// discovery only and does not assert that any signature is valid.
     pub fn has_package_signatures(&self) -> Result<bool, ibis_ooxml::Error> {
