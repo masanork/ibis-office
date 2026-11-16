@@ -2970,10 +2970,12 @@ xlsx.date-review.stale	値が変更されました。閉じて再確認してく
 xlsx.date-review.no-changes	適用する変更はありません。
 xlsx.date-review.applied	候補を適用しました。元に戻すことができます。
 xlsx.date-review.rejected	変更できません。読み取り専用またはシート保護の状態を確認してください。
-xlsx.variant-review.title	異体字クラスタを確認…
-xlsx.variant-review.explanation	選択範囲の文字と同じクラスタに属する文字を表示します。直接の対応関係や置換の安全性を示すものではありません。異体字セレクタ付きの文字は対象外です。
 xlsx.variant-review.unavailable	異体字辞書が組み込まれていないか、読み込めません。
-xlsx.variant-review.empty	選択範囲に辞書に登録された文字はありません。
-xlsx.variant-review.representative	代表字:
-xlsx.variant-review.members	同じクラスタ:
-xlsx.variant-review.truncated	表示は先頭200件までです。範囲を狭めて確認してください。
+xlsx.variant-review.title	異体字を考慮して照合…
+xlsx.variant-review.explanation	選択範囲の文字列を異体字クラスタに基づいて照合します。候補は同一人物や安全な置換を意味しません。セルの値は変更しません。
+xlsx.variant-review.empty	異なる表記の一致候補はありません。
+xlsx.variant-review.group	一致候補
+xlsx.variant-review.cells	セル / 件数
+xlsx.variant-review.more-forms	表示していない表記数:
+xlsx.variant-review.skipped	異体字セレクタ付きまたは4096文字を超えるため除外したセル数:
+xlsx.variant-review.truncated	対象は先頭10万セル・合計100万文字、一致候補は先頭200組までです。範囲を狭めて確認してください。

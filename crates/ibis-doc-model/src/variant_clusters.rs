@@ -155,6 +155,11 @@ impl VariantClusters {
         let values = 16 + DIRECTORY * 2 + self.pages * 36;
         Some(u16_at(&self.raw, values + rank * 2))
     }
+    /// Stable within this dictionary snapshot, suitable for comparing cluster membership.
+    pub fn cluster_index(&self, c: char) -> Option<u32> {
+        self.group(c).map(|group| group as u32)
+    }
+
     pub fn cluster(&self, c: char) -> Option<Cluster> {
         let group = self.group(c)?;
         let c = self.common;

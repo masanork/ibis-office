@@ -2973,10 +2973,12 @@ xlsx.date-review.stale	Values changed. Close and review again.
 xlsx.date-review.no-changes	There are no changes to apply.
 xlsx.date-review.applied	Candidates applied. You can undo this change.
 xlsx.date-review.rejected	Cannot change cells. Check read-only or sheet protection.
-xlsx.variant-review.title	Review Variant Clusters…
-xlsx.variant-review.explanation	Shows characters in the same cluster as characters in the selection. Cluster membership does not establish a direct relationship or safe replacement. Characters with variation selectors are excluded.
 xlsx.variant-review.unavailable	The variant dictionary is not embedded or could not be loaded.
-xlsx.variant-review.empty	No registered characters were found in the selection.
-xlsx.variant-review.representative	Representative:
-xlsx.variant-review.members	Same cluster:
-xlsx.variant-review.truncated	Only the first 200 results are shown. Select a smaller range to review the rest.
+xlsx.variant-review.title	Match Variant Spellings…
+xlsx.variant-review.explanation	Compares text in the selection using variant clusters. Matches do not establish identity or a safe replacement. Cell values are not changed.
+xlsx.variant-review.empty	No different spellings matched.
+xlsx.variant-review.group	Possible match
+xlsx.variant-review.cells	Cells / count
+xlsx.variant-review.more-forms	Additional spellings:
+xlsx.variant-review.skipped	Cells skipped because they contain variation selectors or exceed 4096 characters:
+xlsx.variant-review.truncated	At most 100,000 text cells, 1 million characters, and 200 match groups are reviewed. Select a smaller range to continue.
