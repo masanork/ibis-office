@@ -146,3 +146,5 @@ pub use text::{east_asian_language, EastAsianLang, tate_chu_yoko_fit_scale, Kern
     SlideLink, TextField, TextStyle, VerticalAnchor, step_font_size, autofit_font_size_pt, Strike, Caps, Underline, VerticalKind,
     TextTabAlign, TextTabStop,
 };
+
+pub mod variant_clusters;

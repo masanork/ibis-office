@@ -231,3 +231,4 @@ pub use super::xml_maps::XmlMaps as _;
 pub(crate) use super::xml_maps::XmlMapsCrate as _;
 
 pub use super::date_review::DateReview as _;
+pub use super::variant_review::VariantReview as _;

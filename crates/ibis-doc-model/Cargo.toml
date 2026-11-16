@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 ibis-calc.workspace = true
+ruzstd = "0.8"
 unicode-segmentation = "1"
 regex = "1"
 unicode-normalization = "0.1.26"

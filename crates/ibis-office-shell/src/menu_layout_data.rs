@@ -942,6 +942,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
         LayoutItem::Sep,
         LayoutItem::Cmd("xlsx.accessibility-check"),
         LayoutItem::Cmd("xlsx.date-review.title"),
+        LayoutItem::Cmd("xlsx.variant-review.title"),
         LayoutItem::Cmd("xlsx.machine-readability.menu"),
         LayoutItem::Cmd("xlsx.compatibility-check"),
         LayoutItem::Sep,

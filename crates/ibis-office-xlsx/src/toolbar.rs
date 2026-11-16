@@ -2499,6 +2499,9 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.accessibility-check").icon("accessibility").on(|this, window, cx| this.open_xlsx_accessibility_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::new("xlsx.ai-assistant", "Assistant...").icon("chat").on(|this, window, cx| this.open_ai_assistant_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.date-review.title").icon("rule").on(|this, window, cx| this.open_sheet_date_review(window, cx)).into());
+    if ibis_doc_model::variant_clusters::is_embedded() {
+        menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.variant-review.title").icon("rule").on(|this, window, cx| this.open_sheet_variant_review(window, cx)).into());
+    }
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.machine-readability.menu").icon("rule").on(|this, window, cx| this.open_machine_readability(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.compatibility-check").icon("rule").on(|this, window, cx| this.open_xlsx_compatibility_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.error-options").icon("rule").on(|this, window, cx| this.open_error_options_panel(window, cx)).into());
@@ -3597,6 +3600,9 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("xlsx.watch-window", |this, window, cx| this.open_watch_window(window, cx));
     menus.connect("xlsx.accessibility-check", |this, window, cx| this.open_xlsx_accessibility_panel(window, cx));
     menus.connect("xlsx.date-review.title", |this, window, cx| this.open_sheet_date_review(window, cx));
+    if ibis_doc_model::variant_clusters::is_embedded() {
+        menus.connect("xlsx.variant-review.title", |this, window, cx| this.open_sheet_variant_review(window, cx));
+    }
     menus.connect("xlsx.machine-readability.menu", |this, window, cx| this.open_machine_readability(window, cx));
     menus.connect("xlsx.compatibility-check", |this, window, cx| this.open_xlsx_compatibility_panel(window, cx));
     menus.connect("xlsx.error-options", |this, window, cx| this.open_error_options_panel(window, cx));

@@ -1,0 +1,253 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) masanork
+//! Read-only cluster lookup over a bitmap and contiguous membership arrays.
+//! Cluster membership is not evidence of a direct relation or safe replacement.
+use std::{io::Read, sync::OnceLock};
+
+const BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/variant-clusters.zst"));
+const DIRECTORY: usize = 4352;
+static DICTIONARY: OnceLock<Option<VariantClusters>> = OnceLock::new();
+
+/// Whether a dictionary was supplied at build time.
+pub fn is_embedded() -> bool {
+    !BLOB.is_empty()
+}
+
+pub fn embedded() -> Option<&'static VariantClusters> {
+    DICTIONARY
+        .get_or_init(|| {
+            if BLOB.is_empty() {
+                return None;
+            }
+            let mut decoder = ruzstd::decoding::StreamingDecoder::new(BLOB).ok()?;
+            let mut raw = Vec::new();
+            decoder.read_to_end(&mut raw).ok()?;
+            VariantClusters::from_bytes(raw)
+        })
+        .as_ref()
+}
+
+#[derive(Debug)]
+pub struct VariantClusters {
+    raw: Vec<u8>,
+    count: usize,
+    groups: usize,
+    pages: usize,
+    common: usize,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cluster {
+    pub representative: char,
+    pub members: Vec<char>,
+}
+fn u16_at(d: &[u8], i: usize) -> usize {
+    u16::from_le_bytes([d[i], d[i + 1]]) as usize
+}
+fn u32_at(d: &[u8], i: usize) -> u32 {
+    u32::from_le_bytes([d[i], d[i + 1], d[i + 2], d[i + 3]])
+}
+impl VariantClusters {
+    pub fn from_bytes(raw: Vec<u8>) -> Option<Self> {
+        if raw.len() < 16 + DIRECTORY * 2 {
+            return None;
+        }
+        let count = u32_at(&raw, 0) as usize;
+        let groups = u32_at(&raw, 4) as usize;
+        let pages = u32_at(&raw, 8) as usize;
+        if count == 0
+            || count > 0x110000
+            || groups == 0
+            || groups > u16::MAX as usize
+            || pages == 0
+            || pages > DIRECTORY
+            || u32_at(&raw, 12) != 0
+        {
+            return None;
+        }
+        let common = (16 + DIRECTORY * 2)
+            .checked_add(pages.checked_mul(36)?)?
+            .checked_add(count.checked_mul(2)?)?;
+        let len = common
+            .checked_add((groups + 1).checked_mul(4)?)?
+            .checked_add(groups.checked_mul(4)?)?
+            .checked_add(count.checked_mul(4)?)?;
+        if raw.len() != len {
+            return None;
+        }
+        let mut next = 1;
+        let mut rank = 0;
+        for p in 0..DIRECTORY {
+            let i = u16_at(&raw, 16 + p * 2);
+            if i == 0 {
+                continue;
+            }
+            if i != next || i > pages {
+                return None;
+            }
+            let b = 16 + DIRECTORY * 2 + (i - 1) * 36;
+            if u32_at(&raw, b) as usize != rank {
+                return None;
+            }
+            for word in 0..8 {
+                rank += u32_at(&raw, b + 4 + word * 4).count_ones() as usize;
+            }
+            next += 1;
+        }
+        if next != pages + 1 || rank != count {
+            return None;
+        }
+        let values = 16 + DIRECTORY * 2 + pages * 36;
+        for i in 0..count {
+            if u16_at(&raw, values + i * 2) >= groups {
+                return None;
+            }
+        }
+        let mut prev = 0;
+        for i in 0..=groups {
+            let off = u32_at(&raw, common + i * 4) as usize;
+            if off < prev || off > count {
+                return None;
+            }
+            prev = off;
+        }
+        if u32_at(&raw, common) != 0 || prev != count {
+            return None;
+        }
+        let reps = common + (groups + 1) * 4;
+        let members = reps + groups * 4;
+        for i in 0..groups {
+            if char::from_u32(u32_at(&raw, reps + i * 4)).is_none() {
+                return None;
+            }
+        }
+        for i in 0..count {
+            if char::from_u32(u32_at(&raw, members + i * 4)).is_none() {
+                return None;
+            }
+        }
+        Some(Self {
+            raw,
+            count,
+            groups,
+            pages,
+            common,
+        })
+    }
+    fn group(&self, c: char) -> Option<usize> {
+        let cp = c as usize;
+        let page = u16_at(&self.raw, 16 + (cp / 256) * 2);
+        if page == 0 {
+            return None;
+        }
+        let b = 16 + DIRECTORY * 2 + (page - 1) * 36;
+        let bit = cp % 256;
+        let word = bit / 32;
+        let w = u32_at(&self.raw, b + 4 + word * 4);
+        let mask = 1u32 << (bit % 32);
+        if w & mask == 0 {
+            return None;
+        }
+        let mut rank = u32_at(&self.raw, b) as usize;
+        for i in 0..word {
+            rank += u32_at(&self.raw, b + 4 + i * 4).count_ones() as usize;
+        }
+        rank += (w & (mask - 1)).count_ones() as usize;
+        let values = 16 + DIRECTORY * 2 + self.pages * 36;
+        Some(u16_at(&self.raw, values + rank * 2))
+    }
+    pub fn cluster(&self, c: char) -> Option<Cluster> {
+        let group = self.group(c)?;
+        let c = self.common;
+        let start = u32_at(&self.raw, c + group * 4) as usize;
+        let end = u32_at(&self.raw, c + (group + 1) * 4) as usize;
+        let reps = c + (self.groups + 1) * 4;
+        let members = reps + self.groups * 4;
+        Some(Cluster {
+            representative: char::from_u32(u32_at(&self.raw, reps + group * 4))?,
+            members: (start..end)
+                .filter_map(|i| char::from_u32(u32_at(&self.raw, members + i * 4)))
+                .collect(),
+        })
+    }
+    pub fn len(&self) -> usize {
+        self.count
+    }
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture() -> Vec<u8> {
+        let mut v = vec![0; 16 + DIRECTORY * 2];
+        v[0..4].copy_from_slice(&2u32.to_le_bytes());
+        v[4..8].copy_from_slice(&1u32.to_le_bytes());
+        v[8..12].copy_from_slice(&1u32.to_le_bytes());
+        v[16..18].copy_from_slice(&1u16.to_le_bytes());
+        let mut page = [0u8; 36];
+        page[12..16].copy_from_slice(&6u32.to_le_bytes());
+        v.extend(page);
+        v.extend([0u8; 4]);
+        for x in [0u32, 2, 0x41, 0x41, 0x42] {
+            v.extend(x.to_le_bytes());
+        }
+        v
+    }
+    #[test]
+    fn missing_dictionary_is_reported() {
+        if BLOB.is_empty() {
+            assert!(!is_embedded());
+            assert!(embedded().is_none());
+        }
+    }
+    #[test]
+    fn lookup_and_reject_invalid_data() {
+        let bytes = fixture();
+        let d = VariantClusters::from_bytes(bytes.clone()).unwrap();
+        assert_eq!(
+            d.cluster('A'),
+            Some(Cluster {
+                representative: 'A',
+                members: vec!['A', 'B']
+            })
+        );
+        assert_eq!(d.cluster('B'), d.cluster('A'));
+        assert_eq!(d.cluster('C'), None);
+        assert!(VariantClusters::from_bytes(bytes[..bytes.len() - 1].to_vec()).is_none());
+        let mut corrupt = bytes;
+        corrupt[8] = 0;
+        assert!(VariantClusters::from_bytes(corrupt).is_none());
+    }
+    #[test]
+    #[ignore = "requires the locally reviewed cluster CSV and embedded bitmap"]
+    fn local_snapshot_matches_every_member_and_absent_scalar() {
+        let csv = std::fs::read_to_string(std::env::var("IBIS_VARIANT_CSV").unwrap()).unwrap();
+        let dict = embedded().expect("build with IBIS_VARIANT_BITMAP");
+        let mut expected = std::collections::BTreeMap::<char, (String, char)>::new();
+        let mut groups = std::collections::BTreeMap::<String, Vec<char>>::new();
+        for line in csv.lines().skip(1) {
+            let r: Vec<_> = line.split(',').collect();
+            let cp = char::from_u32(u32::from_str_radix(&r[0][2..], 16).unwrap()).unwrap();
+            let rep = char::from_u32(u32::from_str_radix(&r[2][2..], 16).unwrap()).unwrap();
+            expected.insert(cp, (r[1].to_owned(), rep));
+            groups.entry(r[1].to_owned()).or_default().push(cp);
+        }
+        assert_eq!(dict.len(), expected.len());
+        for (&cp, (id, rep)) in &expected {
+            let cluster = dict.cluster(cp).unwrap();
+            assert_eq!(cluster.representative, *rep);
+            assert_eq!(cluster.members, groups[id]);
+        }
+        for code in 0..=0x10ffff {
+            if let Some(c) = char::from_u32(code) {
+                assert_eq!(
+                    dict.group(c).is_some(),
+                    expected.contains_key(&c),
+                    "U+{code:04X}"
+                );
+            }
+        }
+    }
+}
