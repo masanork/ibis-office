@@ -38,7 +38,7 @@ use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_c
 use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
-    GetVcPublicKeysArgs, GenerateLawtext5SetArgs, MAX_READ_CELLS, MoveSlideArgs,
+    GetVcPublicKeysArgs, GenerateLawtext5SetArgs, LintLawtextArgs, MAX_READ_CELLS, MoveSlideArgs,
     OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs,
     VerifyLawtextAratameArgs, claim_value_to_json, resolve_vc_holder_key,
     resolve_vc_issuer_key, vc_public_keys_json,
@@ -333,7 +333,7 @@ impl SlideEditor {
                     AiDocKind::Docx => {
                         "You are an AI document assistant inside ibisOffice. \
                          Use the provided tools to inspect paragraphs and edit or format document text. \
-                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, and verify_lawtext_aratame to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
+                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
                          Respond concisely in the user's language."
                     }
                 };
@@ -2676,6 +2676,53 @@ impl SlideEditor {
                             format!("✗ verify_lawtext_aratame: {e}"),
                         ),
                     },
+                }
+            }
+            "lint_lawtext" => {
+                let parsed: Result<LintLawtextArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ lint_lawtext: {e}"),
+                    ),
+                    Ok(a) => {
+                        let new_res = match a.new_lawtext.as_deref() {
+                            Some(s) => parse_law_input_str(s),
+                            None => ibis_pptx::lawtext::export_presentation_to_lawtext(
+                                self.presentation(),
+                            )
+                            .map_err(|e| e.to_string())
+                            .and_then(|lt| parse_law_input_str(&lt)),
+                        };
+                        let old_res = a.old_lawtext.as_deref().map(parse_law_input_str).transpose();
+                        match (old_res, new_res) {
+                            (Ok(old_opt), Ok(new_doc)) => {
+                                let report = match old_opt.as_ref() {
+                                    Some(old_doc) => {
+                                        ibis_pptx::lawtext::lint_amendment(old_doc, &new_doc)
+                                    }
+                                    None => ibis_pptx::lawtext::lint_law(&new_doc),
+                                };
+                                let errs = report.error_count;
+                                let warns = report.warning_count;
+                                (
+                                    json!({
+                                        "report": report.to_json_value(),
+                                        "markdown": report.to_markdown(),
+                                    })
+                                    .to_string(),
+                                    None,
+                                    format!("✓ lint_lawtext ({errs} errors, {warns} warnings)"),
+                                )
+                            }
+                            (Err(e), _) | (_, Err(e)) => (
+                                json!({ "error": e }).to_string(),
+                                None,
+                                format!("✗ lint_lawtext: {e}"),
+                            ),
+                        }
+                    }
                 }
             }
             "open_markdown_document" => {

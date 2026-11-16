@@ -1111,6 +1111,21 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
+                name: "lint_lawtext",
+                description: "Run static legislative drafting lint checks (dangling internal references, renumbered/deleted ripple references, conjunction hierarchy 及び/並びに・又は/若しくは, duplicate abbreviations, and article numbering) on the active document or provided Lawtext/XML.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "new_lawtext": { "type": "string", "description": "Optional Lawtext or e-Gov XML to lint. Defaults to the active document." },
+                        "old_lawtext": { "type": "string", "description": "Optional baseline (現行) Lawtext or e-Gov XML to enable ripple-effect checks across deleted/renumbered articles." }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
                 name: "open_markdown_document",
                 description: "Open a generated Markdown document (such as 新旧対照表, 改め文, 参照条文, 法律案要綱, or 理由) in a new ibisOffice DOCX window.",
                 parameters: json!({
@@ -1125,6 +1140,12 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
             },
         },
     ]
+}
+
+#[derive(Deserialize)]
+pub struct LintLawtextArgs {
+    pub new_lawtext: Option<String>,
+    pub old_lawtext: Option<String>,
 }
 
 #[derive(Deserialize)]

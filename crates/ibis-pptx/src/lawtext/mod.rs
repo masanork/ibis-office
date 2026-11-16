@@ -14,6 +14,7 @@ use crate::Error;
 pub mod aratame;
 pub mod assistant;
 pub mod diff;
+pub mod lint;
 pub mod refs;
 pub use aratame::{
     AratameClause, AratameDraft, VerifyResult, apply_aratame, generate_aratame_draft,
@@ -25,6 +26,7 @@ pub use diff::{
     ItemChange, NodeChangeKind, ParagraphChange, ShinkyuOptions, SubitemChange, SupplChange,
     diff_laws, generate_shinkyu_markdown, generate_shinkyu_markdown_with_options,
 };
+pub use lint::{LintFinding, LintReport, LintSeverity, lint_amendment, lint_law};
 pub use refs::{LawReference, extract_references, generate_sansho_markdown};
 
 /// Structural division kind within `MainProvision` or `SupplProvision`.

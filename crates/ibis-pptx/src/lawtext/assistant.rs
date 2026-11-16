@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::aratame::{AratameDraft, VerifyResult, generate_aratame_draft, verify_aratame};
 use super::diff::{AmendmentIr, ShinkyuOptions, diff_laws, generate_shinkyu_markdown_with_options};
+use super::lint::{LintReport, lint_amendment};
 use super::refs::{LawReference, extract_references, generate_sansho_markdown};
 use super::LawDoc;
 
@@ -20,6 +21,7 @@ pub struct Legislation5SetPackage {
     pub aratame_verification: VerifyResult,
     pub sansho_markdown: String,
     pub references: Vec<LawReference>,
+    pub lint_report: LintReport,
     pub youkou_prompt: String,
     pub riyuu_prompt: String,
     pub aratame_polish_prompt: String,
@@ -38,6 +40,7 @@ impl Legislation5SetPackage {
                 "aratame_verification": self.aratame_verification.to_json_value(),
                 "sansho_markdown": self.sansho_markdown,
                 "references": self.references.iter().map(LawReference::to_json_value).collect::<Vec<_>>(),
+                "lint_report": self.lint_report.to_json_value(),
             },
             "assistant_prompts": {
                 "youkou": self.youkou_prompt,
@@ -62,6 +65,7 @@ pub fn build_5set_package(
     let aratame_verification = verify_aratame(old, &aratame_draft.full_text, new);
     let references = extract_references(new);
     let sansho_markdown = generate_sansho_markdown(old, new);
+    let lint_report = lint_amendment(old, new);
 
     let ir_summary = ir.to_json_string().unwrap_or_default();
     let memo_section = if policy_memo.trim().is_empty() {
@@ -105,6 +109,7 @@ pub fn build_5set_package(
         aratame_verification,
         sansho_markdown,
         references,
+        lint_report,
         youkou_prompt,
         riyuu_prompt,
         aratame_polish_prompt,
