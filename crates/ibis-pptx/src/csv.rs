@@ -39,6 +39,121 @@ pub struct OriginalCsvFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordEnding { CrLf, Lf, Cr, Mixed, QuotedCarriageReturn }
 
+/// Byte ranges into the original file. Delimiters lie between field ranges;
+/// each record's terminator is retained separately, including an empty final
+/// terminator. The BOM, when present, precedes the first field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawCsvRecord {
+    pub fields: Vec<std::ops::Range<usize>>,
+    pub terminator: std::ops::Range<usize>,
+}
+
+/// Locate original CSV fields without decoding and re-encoding their bytes.
+/// This is a building block for lossless same-file editing, not a serializer.
+pub fn raw_csv_records(data: &[u8], encoding: OriginalEncoding, delimiter: char) -> Result<Vec<RawCsvRecord>, Error> {
+    if !matches!(delimiter, ',' | ';' | '\t') {
+        return Err(Error::new("CSV の区切り文字に対応していません"));
+    }
+    let choice = match encoding {
+        OriginalEncoding::Utf8 | OriginalEncoding::Utf8Bom => TextEncoding::Utf8,
+        OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => TextEncoding::Utf16,
+        OriginalEncoding::Cp932 => TextEncoding::ShiftJis,
+        OriginalEncoding::AsciiAmbiguous | OriginalEncoding::Utf8OrCp932 => TextEncoding::Auto,
+    };
+    let (_, actual) = decode_with_choice(data, choice)?;
+    if actual != encoding { return Err(Error::new("CSV の文字コードが元の形式と一致しません")); }
+    let (start, width, le) = match encoding {
+        OriginalEncoding::Utf8Bom => (3, 1, true),
+        OriginalEncoding::Utf16LeBom => (2, 2, true),
+        OriginalEncoding::Utf16BeBom => (2, 2, false),
+        _ => (0, 1, true),
+    };
+    let unit = |pos: usize| -> u16 {
+        if width == 1 { data[pos] as u16 }
+        else if le { u16::from_le_bytes([data[pos], data[pos + 1]]) }
+        else { u16::from_be_bytes([data[pos], data[pos + 1]]) }
+    };
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    let mut pos = start;
+    let mut field_start = start;
+    let mut empty = true;
+    let mut quoted = false;
+    while pos < data.len() {
+        let c = unit(pos);
+        if quoted {
+            if c == b'"' as u16 {
+                if pos + width < data.len() && unit(pos + width) == c {
+                    empty = false;
+                    pos += 2 * width;
+                    continue;
+                }
+                quoted = false;
+            } else { empty = false; }
+            pos += width;
+            continue;
+        }
+        if c == b'"' as u16 && empty {
+            quoted = true;
+            pos += width;
+        } else if c == delimiter as u16 {
+            fields.push(field_start..pos);
+            pos += width;
+            field_start = pos;
+            empty = true;
+        } else if c == b'\r' as u16 || c == b'\n' as u16 {
+            fields.push(field_start..pos);
+            let begin = pos;
+            pos += width;
+            if c == b'\r' as u16 && pos < data.len() && unit(pos) == b'\n' as u16 { pos += width; }
+            records.push(RawCsvRecord { fields: std::mem::take(&mut fields), terminator: begin..pos });
+            field_start = pos;
+            empty = true;
+        } else {
+            empty = false;
+            pos += width;
+        }
+    }
+    if quoted { return Err(Error::new("閉じられていない CSV の引用符があります")); }
+    if field_start < data.len() || !fields.is_empty() {
+        fields.push(field_start..data.len());
+        records.push(RawCsvRecord { fields, terminator: data.len()..data.len() });
+    }
+    Ok(records)
+}
+
+/// Replace selected existing fields while copying every other byte verbatim.
+/// Coordinates are zero-based. Structural edits require a separate policy and
+/// are deliberately not inferred by this function.
+pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter: char, changes: &[(usize, usize, String)]) -> Result<Vec<u8>, Error> {
+    let records = raw_csv_records(data, encoding, delimiter)?;
+    let mut replacements = Vec::with_capacity(changes.len());
+    for (row, column, value) in changes {
+        let range = records.get(*row).and_then(|r| r.fields.get(*column))
+            .ok_or_else(|| Error::new("元の CSV にないセルはこの方法で保存できません"))?.clone();
+        let field = if value.contains([delimiter, '"', '\r', '\n']) {
+            format!("\"{}\"", value.replace('"', "\"\""))
+        } else { value.clone() };
+        let mut bytes = encode_original(&field, encoding)?;
+        let bom_len = match encoding { OriginalEncoding::Utf8Bom => 3, OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => 2, _ => 0 };
+        bytes.drain(..bom_len);
+        replacements.push((range, bytes));
+    }
+    replacements.sort_by_key(|(range, _)| range.start);
+    if replacements.windows(2).any(|pair| pair[0].0.end > pair[1].0.start || pair[0].0 == pair[1].0) {
+        return Err(Error::new("同じ CSV セルが複数回指定されました"));
+    }
+    let mut output = Vec::with_capacity(data.len());
+    let mut offset = 0;
+    for (range, bytes) in replacements {
+        output.extend_from_slice(&data[offset..range.start]);
+        output.extend_from_slice(&bytes);
+        offset = range.end;
+    }
+    output.extend_from_slice(&data[offset..]);
+    Ok(output)
+}
+
 /// Determine record separators without mistaking line breaks inside quotes for records.
 pub fn original_csv_format(text: &str, encoding: OriginalEncoding, delimiter: char) -> OriginalCsvFormat {
     let mut iter = CsvRecordIter::new(text, delimiter);
@@ -145,7 +260,56 @@ pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>
 
 #[cfg(test)]
 mod original_encoding_tests {
-    use super::{decode_with_choice, decode_with_original_encoding, encode_original, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding, RecordEnding, TextEncoding};
+    use super::{decode_with_choice, decode_with_original_encoding, encode_original, raw_csv_records, rewrite_raw_csv_fields, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding, RecordEnding, TextEncoding};
+
+    #[test]
+    fn raw_field_rewrites_only_selected_bytes() {
+        let original = b"\x87\x90,00123,\r\n\x81\xe0,\"x\",\n";
+        assert_eq!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[]).unwrap(), original);
+        let changes = [(1, 1, "a,\"b\"".to_string())];
+        assert_eq!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &changes).unwrap(), b"\x87\x90,00123,\r\n\x81\xe0,\"a,\"\"b\"\"\",\n");
+        assert!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[(0, 1, "😀".into())]).is_err());
+        assert!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[(3, 0, "x".into())]).is_err());
+        assert!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[(0, 1, "x".into()), (0, 1, "y".into())]).is_err());
+        for encoding in [OriginalEncoding::Utf8Bom, OriginalEncoding::Utf16LeBom, OriginalEncoding::Utf16BeBom] {
+            let input = encode_original("00123,\"old\",\r\n", encoding).unwrap();
+            let output = rewrite_raw_csv_fields(&input, encoding, ',', &[(0, 1, "名,前".into())]).unwrap();
+            assert_eq!(output, encode_original("00123,\"名,前\",\r\n", encoding).unwrap());
+        }
+    }
+
+    #[test]
+    fn raw_ranges_preserve_fields_and_each_record_separator() {
+        let data = b"\xef\xbb\xbf\"a,\"\"b\"\"\",00123,\r\nx,\"line\r\nline\"\n\rfinal";
+        let records = raw_csv_records(data, OriginalEncoding::Utf8Bom, ',').unwrap();
+        let fields: Vec<Vec<&[u8]>> = records.iter().map(|r| r.fields.iter().map(|range| &data[range.clone()]).collect()).collect();
+        assert_eq!(fields, vec![vec![&b"\"a,\"\"b\"\"\""[..], &b"00123"[..], &b""[..]], vec![&b"x"[..], &b"\"line\r\nline\""[..]], vec![&b""[..]], vec![&b"final"[..]]]);
+        let endings: Vec<&[u8]> = records.iter().map(|r| &data[r.terminator.clone()]).collect();
+        assert_eq!(endings, vec![&b"\r\n"[..], &b"\n"[..], &b"\r"[..], &b""[..]]);
+        assert!(raw_csv_records(b"\"unterminated", OriginalEncoding::AsciiAmbiguous, ',').is_err());
+        assert!(raw_csv_records(&[0xff, 0xfe, 0], OriginalEncoding::Utf16LeBom, ',').is_err());
+    }
+
+    #[test]
+    fn raw_ranges_keep_noncanonical_cp932_and_utf16() {
+        let data = b"\x87\x90,\x81\xe0\r\n";
+        let records = raw_csv_records(data, OriginalEncoding::Cp932, ',').unwrap();
+        let fields = &records[0].fields;
+        assert_eq!(&data[fields[0].clone()], b"\x87\x90");
+        assert_eq!(&data[fields[1].clone()], b"\x81\xe0");
+        assert_eq!(encoding_rs::SHIFT_JIS.decode(&data[fields[0].clone()]).0, encoding_rs::SHIFT_JIS.decode(&data[fields[1].clone()]).0);
+        for encoding in [OriginalEncoding::Utf16LeBom, OriginalEncoding::Utf16BeBom] {
+            let data = encode_original("\"名,前\",00123,\r\n", encoding).unwrap();
+            let records = raw_csv_records(&data, encoding, ',').unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].fields.len(), 3);
+            let bytes = &data[records[0].fields[1].clone()];
+            let mut with_bom = data[..2].to_vec();
+            with_bom.extend_from_slice(bytes);
+            assert_eq!(decode_with_original_encoding(&with_bom).unwrap().0, "00123");
+            assert_eq!(records[0].terminator.len(), 4);
+        }
+    }
 
     #[test]
     fn cp932_is_retained_and_unrepresentable_text_is_rejected() {
