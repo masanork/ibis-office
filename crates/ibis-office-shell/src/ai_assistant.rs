@@ -38,9 +38,9 @@ use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_c
 use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
-    GetVcPublicKeysArgs, MAX_READ_CELLS, MoveSlideArgs, ParseVcTokenArgs, PrepareOid4vpArgs,
-    ReadParagraphsArgs, claim_value_to_json, resolve_vc_holder_key, resolve_vc_issuer_key,
-    vc_public_keys_json,
+    GetVcPublicKeysArgs, GenerateLawtext5SetArgs, MAX_READ_CELLS, MoveSlideArgs, ParseVcTokenArgs,
+    PrepareOid4vpArgs, ReadParagraphsArgs, VerifyLawtextAratameArgs, claim_value_to_json,
+    resolve_vc_holder_key, resolve_vc_issuer_key, vc_public_keys_json,
     ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
     SetShapeTextArgs, SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
     build_replace_paragraph_command, build_set_run_format_command, docx_tool_definitions,
@@ -114,6 +114,16 @@ fn column_letters(mut col: u32) -> String {
         col = col / 26 - 1;
     }
     out.into_iter().rev().collect()
+}
+
+fn parse_law_input_str(text: &str) -> Result<ibis_pptx::lawtext::LawDoc, String> {
+    if ibis_pptx::lawtext::is_law_xml(text.as_bytes()) {
+        ibis_pptx::lawtext::parse_law_xml(text).map_err(|e| e.to_string())
+    } else if text.trim_start().starts_with("---") && text.contains("type: lawtext") {
+        ibis_pptx::lawtext::parse_markdown_law(text).map_err(|e| e.to_string())
+    } else {
+        ibis_pptx::lawtext::parse_lawtext(text).map_err(|e| e.to_string())
+    }
 }
 
 fn paragraph_plain_text(p: &FlowParagraph) -> String {
@@ -322,6 +332,7 @@ impl SlideEditor {
                     AiDocKind::Docx => {
                         "You are an AI document assistant inside ibisOffice. \
                          Use the provided tools to inspect paragraphs and edit or format document text. \
+                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, and verify_lawtext_aratame to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame. \
                          Respond concisely in the user's language."
                     }
                 };
@@ -2549,6 +2560,117 @@ impl SlideEditor {
                             format!("✓ find_text_in_document ({count} matches)"),
                         )
                     }
+                }
+            }
+            "export_active_lawtext" => {
+                match ibis_pptx::lawtext::export_presentation_to_lawtext(self.presentation()) {
+                    Ok(lt) => match ibis_pptx::lawtext::parse_lawtext(&lt) {
+                        Ok(doc) => (
+                            json!({
+                                "law_title": doc.law_title,
+                                "law_num": doc.law_num,
+                                "lawtext": lt,
+                            })
+                            .to_string(),
+                            None,
+                            "✓ export_active_lawtext".to_string(),
+                        ),
+                        Err(e) => (
+                            json!({ "error": e.to_string(), "lawtext": lt }).to_string(),
+                            None,
+                            format!("✗ export_active_lawtext: {e}"),
+                        ),
+                    },
+                    Err(e) => (
+                        json!({ "error": e.to_string() }).to_string(),
+                        None,
+                        format!("✗ export_active_lawtext: {e}"),
+                    ),
+                }
+            }
+            "generate_lawtext_5set" => {
+                let parsed: Result<GenerateLawtext5SetArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ generate_lawtext_5set: {e}"),
+                    ),
+                    Ok(a) => match (
+                        parse_law_input_str(&a.old_lawtext),
+                        match a.new_lawtext.as_deref() {
+                            Some(s) => parse_law_input_str(s),
+                            None => ibis_pptx::lawtext::export_presentation_to_lawtext(
+                                self.presentation(),
+                            )
+                            .map_err(|e| e.to_string())
+                            .and_then(|lt| parse_law_input_str(&lt)),
+                        },
+                    ) {
+                        (Ok(old_doc), Ok(new_doc)) => {
+                            let opts = ibis_pptx::lawtext::ShinkyuOptions {
+                                new_on_left: !a.old_on_left.unwrap_or(false),
+                                ..Default::default()
+                            };
+                            let pkg = ibis_pptx::lawtext::build_5set_package(
+                                &old_doc,
+                                &new_doc,
+                                a.policy_memo.as_deref().unwrap_or(""),
+                                &opts,
+                            );
+                            let exact = pkg.aratame_verification.is_exact_match;
+                            (
+                                pkg.to_json_value().to_string(),
+                                None,
+                                format!("✓ generate_lawtext_5set (aratame_exact={exact})"),
+                            )
+                        }
+                        (Err(e), _) | (_, Err(e)) => (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ generate_lawtext_5set: {e}"),
+                        ),
+                    },
+                }
+            }
+            "verify_lawtext_aratame" => {
+                let parsed: Result<VerifyLawtextAratameArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ verify_lawtext_aratame: {e}"),
+                    ),
+                    Ok(a) => match (
+                        parse_law_input_str(&a.old_lawtext),
+                        match a.expected_new_lawtext.as_deref() {
+                            Some(s) => parse_law_input_str(s),
+                            None => ibis_pptx::lawtext::export_presentation_to_lawtext(
+                                self.presentation(),
+                            )
+                            .map_err(|e| e.to_string())
+                            .and_then(|lt| parse_law_input_str(&lt)),
+                        },
+                    ) {
+                        (Ok(old_doc), Ok(new_doc)) => {
+                            let res = ibis_pptx::lawtext::verify_aratame(
+                                &old_doc,
+                                &a.aratame_text,
+                                &new_doc,
+                            );
+                            let exact = res.is_exact_match;
+                            (
+                                res.to_json_value().to_string(),
+                                None,
+                                format!("✓ verify_lawtext_aratame (exact={exact})"),
+                            )
+                        }
+                        (Err(e), _) | (_, Err(e)) => (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ verify_lawtext_aratame: {e}"),
+                        ),
+                    },
                 }
             }
             other => (

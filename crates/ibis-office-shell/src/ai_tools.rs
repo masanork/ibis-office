@@ -1061,7 +1061,69 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "export_active_lawtext",
+                description: "Export the currently open document as Lawtext plain text and return its law title, law number, and article count.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "generate_lawtext_5set",
+                description: "Generate the Japanese legislative 5-piece package (AmendmentIr, 新旧対照表 Markdown, 改め文 draft + verification, 参照条文 Markdown, and prompts for 要綱/理由) from old and new Lawtext or e-Gov XML. If new_lawtext is omitted, the active document is used as the new version.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML format." },
+                        "new_lawtext": { "type": "string", "description": "Optional amended (改正後) statute in Lawtext or e-Gov XML. Defaults to the active document." },
+                        "policy_memo": { "type": "string", "description": "Optional policy background memo for drafting 要綱 and 理由." },
+                        "old_on_left": { "type": "boolean", "description": "Put 現行 on the left column of 新旧対照表 (default false: 改正後 | 現行)." }
+                    },
+                    "required": ["old_lawtext"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "verify_lawtext_aratame",
+                description: "Verify a 改め文 (amendment text) by applying it to old_lawtext and comparing the simulated result against expected_new_lawtext (defaults to the active document).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML." },
+                        "aratame_text": { "type": "string", "description": "Amendment text (改め文) to verify." },
+                        "expected_new_lawtext": { "type": "string", "description": "Optional expected amended statute in Lawtext or e-Gov XML. Defaults to the active document." }
+                    },
+                    "required": ["old_lawtext", "aratame_text"],
+                    "additionalProperties": false
+                }),
+            },
+        },
     ]
+}
+
+#[derive(Deserialize)]
+pub struct GenerateLawtext5SetArgs {
+    pub old_lawtext: String,
+    pub new_lawtext: Option<String>,
+    pub policy_memo: Option<String>,
+    pub old_on_left: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct VerifyLawtextAratameArgs {
+    pub old_lawtext: String,
+    pub aratame_text: String,
+    pub expected_new_lawtext: Option<String>,
 }
 
 #[derive(Deserialize)]
