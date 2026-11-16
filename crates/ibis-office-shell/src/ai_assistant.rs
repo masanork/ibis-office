@@ -19,9 +19,9 @@ use ibis_doc_model::flow::{Block, FlowParagraph, FlowRunKind};
 use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange};
 use ibis_doc_model::machine_readability::{CandidateKind, candidates as mr_candidates};
 use ibis_doc_model::model::{AutoShape, Shape, ShapeId, ShapeKind, Slide, SlideId};
-use ibis_doc_model::sd_jwt::{Es256KeyPair, Oid4vpRequest, SdJwtOptions, issue_sd_jwt};
+use ibis_doc_model::sd_jwt::{Oid4vpRequest, SdJwtOptions, issue_sd_jwt};
 use ibis_doc_model::sd_jwt_binding::{
-    BindingSource, ClaimValue, bind_range_as_sd_claim_commands, build_sd_jwt_template_commands,
+    BindingSource, bind_range_as_sd_claim_commands, build_sd_jwt_template_commands,
     extract_sheet_claims,
 };
 use ibis_doc_model::sd_jwt_import::{ParsedCredentialFormat, parse_mdoc_text, parse_sd_jwt};
@@ -38,7 +38,9 @@ use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_c
 use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
-    MAX_READ_CELLS, MoveSlideArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs,
+    GetVcPublicKeysArgs, MAX_READ_CELLS, MoveSlideArgs, ParseVcTokenArgs, PrepareOid4vpArgs,
+    ReadParagraphsArgs, claim_value_to_json, resolve_vc_holder_key, resolve_vc_issuer_key,
+    vc_public_keys_json,
     ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
     SetShapeTextArgs, SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
     build_replace_paragraph_command, build_set_run_format_command, docx_tool_definitions,
@@ -1433,7 +1435,8 @@ impl SlideEditor {
                     if let Some(ns) = arg.name_space.filter(|s| !s.trim().is_empty()) {
                         mdoc_opts.name_space = ns;
                     }
-                    let mdoc = issue_mdoc(&bindings, &mdoc_opts, &Es256KeyPair::demo_issuer_key());
+                    let (issuer_key, _) = resolve_vc_issuer_key();
+                    let mdoc = issue_mdoc(&bindings, &mdoc_opts, &issuer_key);
                     return (
                         json!({
                             "ok": true,
@@ -1461,7 +1464,8 @@ impl SlideEditor {
                 if let Some(iss) = arg.iss.filter(|s| !s.trim().is_empty()) {
                     options.default_iss = Some(iss);
                 }
-                let output = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
+                let (issuer_key, _) = resolve_vc_issuer_key();
+                let output = issue_sd_jwt(&bindings, &options, &issuer_key);
                 let disc_count = output.disclosures.len();
                 (
                     json!({
@@ -1632,11 +1636,26 @@ impl SlideEditor {
                     }
                 }
 
-                let holder_key = Es256KeyPair::demo_holder_key();
-                let mut options = SdJwtOptions::default();
-                options.holder_public_jwk = Some(holder_key.to_public_jwk());
-                let output = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
-                let kb = output.attach_key_binding(&req.client_id, &req.nonce, 1_700_000_000, &holder_key);
+                let use_mdoc = match arg
+                    .format
+                    .as_deref()
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .as_deref()
+                {
+                    Some("mdoc" | "mso_mdoc") => true,
+                    Some("sd-jwt" | "sd_jwt" | "vc+sd-jwt" | "dc+sd-jwt") => false,
+                    Some(other) => {
+                        return (
+                            json!({ "error": format!("unsupported OID4VP format '{other}' (expected 'sd-jwt' or 'mdoc')") }).to_string(),
+                            None,
+                            format!("✗ prepare_oid4vp_presentation: unsupported format {other}"),
+                        );
+                    }
+                    None => {
+                        let lower = arg.request.to_ascii_lowercase();
+                        lower.contains("mso_mdoc") || lower.contains("org.iso.18013")
+                    }
+                };
 
                 let disclosed_paths: Vec<_> = bindings
                     .claims
@@ -1651,9 +1670,61 @@ impl SlideEditor {
                     .map(|c| c.path_str.clone())
                     .collect();
                 let req_count = req.requested_claims.len();
+                let (issuer_key, _) = resolve_vc_issuer_key();
+
+                if use_mdoc {
+                    let mut mdoc_opts = MdocOptions::default();
+                    if let Some(vct) = bindings
+                        .claim("vct")
+                        .and_then(|c| c.value.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                    {
+                        mdoc_opts.doc_type = vct.to_string();
+                    }
+                    if let Some(ns) = arg.name_space.filter(|s| !s.trim().is_empty()) {
+                        mdoc_opts.name_space = ns;
+                    }
+                    let mdoc = issue_mdoc(&bindings, &mdoc_opts, &issuer_key);
+                    return (
+                        json!({
+                            "ok": true,
+                            "format": "mso_mdoc",
+                            "doc_type": mdoc.doc_type,
+                            "name_space": mdoc.name_space,
+                            "client_id": req.client_id,
+                            "nonce": req.nonce,
+                            "response_uri": req.response_uri,
+                            "requested_claims": req.requested_claims,
+                            "matched_claims": matched_claims,
+                            "missing_claims": missing_claims,
+                            "disclosed_paths": disclosed_paths,
+                            "hidden_paths": hidden_paths,
+                            "applied_to_sheet": cmd.is_some(),
+                            "disclosed_items": mdoc.disclosed_items,
+                            "total_items": mdoc.total_items,
+                            "vp_token": mdoc.base64url_presentation,
+                            "device_response_base64url": mdoc.base64url_presentation,
+                            "device_response_hex": mdoc.hex_presentation,
+                        })
+                        .to_string(),
+                        cmd,
+                        format!(
+                            "✓ prepare_oid4vp_presentation (mso_mdoc, aud={}, {req_count} requested)",
+                            req.client_id
+                        ),
+                    );
+                }
+
+                let (holder_key, _) = resolve_vc_holder_key();
+                let mut options = SdJwtOptions::default();
+                options.holder_public_jwk = Some(holder_key.to_public_jwk());
+                let output = issue_sd_jwt(&bindings, &options, &issuer_key);
+                let kb = output.attach_key_binding(&req.client_id, &req.nonce, 1_700_000_000, &holder_key);
+
                 (
                     json!({
                         "ok": true,
+                        "format": "vc+sd-jwt",
                         "client_id": req.client_id,
                         "nonce": req.nonce,
                         "response_uri": req.response_uri,
@@ -1669,10 +1740,28 @@ impl SlideEditor {
                     .to_string(),
                     cmd,
                     format!(
-                        "✓ prepare_oid4vp_presentation (aud={}, {req_count} requested)",
+                        "✓ prepare_oid4vp_presentation (sd-jwt, aud={}, {req_count} requested)",
                         req.client_id
                     ),
                 )
+            }
+            "get_vc_public_keys" => {
+                let which = serde_json::from_str::<GetVcPublicKeysArgs>(args)
+                    .ok()
+                    .and_then(|a| a.which)
+                    .unwrap_or_else(|| "all".to_string());
+                match vc_public_keys_json(&which) {
+                    Ok(payload) => (
+                        payload.to_string(),
+                        None,
+                        format!("✓ get_vc_public_keys ({which})"),
+                    ),
+                    Err(e) => (
+                        json!({ "error": e }).to_string(),
+                        None,
+                        format!("✗ get_vc_public_keys: {e}"),
+                    ),
+                }
             }
             other => (
                 json!({ "error": format!("unknown tool: {other}") }).to_string(),
@@ -2777,25 +2866,5 @@ impl SlideEditor {
             title: "Assistant".into(),
             body: body.into_any_element(),
         })
-    }
-}
-
-fn claim_value_to_json(val: &ClaimValue) -> serde_json::Value {
-    match val {
-        ClaimValue::Null => serde_json::Value::Null,
-        ClaimValue::Bool(b) => serde_json::Value::Bool(*b),
-        ClaimValue::Int(i) => json!(*i),
-        ClaimValue::Float(f) => json!(*f),
-        ClaimValue::String(s) => serde_json::Value::String(s.clone()),
-        ClaimValue::Array(items) => {
-            serde_json::Value::Array(items.iter().map(claim_value_to_json).collect())
-        }
-        ClaimValue::Object(map) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in map {
-                obj.insert(k.clone(), claim_value_to_json(v));
-            }
-            serde_json::Value::Object(obj)
-        }
     }
 }

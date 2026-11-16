@@ -1183,6 +1183,12 @@ pub enum SdJwtTemplateKind {
     Pid,
     /// ISO/IEC 18013-5 mDL Driving Licence (flat elements + `driving_privileges` 2D object table).
     Iso18013Mdl,
+    /// Japanese Employee ID (社員証 / 職員証) preset.
+    EmployeeId,
+    /// Japanese University Enrollment Certificate (在学証明書) preset.
+    EnrollmentCert,
+    /// Japanese Program/Training Completion Certificate (修了証明書 / 受講証明書) preset.
+    CompletionCert,
 }
 
 pub(crate) fn slide_sheet_formula_prefix(presentation: &Presentation, slide_id: SlideId) -> String {
@@ -1747,6 +1753,123 @@ pub fn build_sd_jwt_template_commands(
                 sheet: None,
                 formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(2, 12))),
             }));
+        }
+        SdJwtTemplateKind::EmployeeId => {
+            put_text(&mut cells, 0, 0, "属性 (社員証 Claim)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 1, "値 (Value)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 2, "開示 (Disclose)", Some(header_style.clone()));
+
+            put_text(&mut cells, 1, 0, "クレデンシャル種別 (vct)", None);
+            put_text(&mut cells, 1, 1, "urn:jp:business:employee_id:1", None);
+            put_text(&mut cells, 1, 2, "常時 (claim.vct)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.vct".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 1))),
+            }));
+
+            put_text(&mut cells, 2, 0, "発行者 (iss)", None);
+            put_text(&mut cells, 2, 1, "https://hr.example.co.jp", None);
+            put_text(&mut cells, 2, 2, "常時 (claim.iss)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.iss".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 2))),
+            }));
+
+            let hire = ibis_calc::eval::convert::serial_from_date(2020, 4, 1, date1904) as f64;
+            let rows: [(&str, &str, CellInput, Option<crate::sheet::CellStyle>, bool); 9] = [
+                ("社員番号 (employee_id)", "employee_id", CellInput::Value(CellValue::Text("EMP-001234".into())), Some(text_style.clone()), false),
+                ("姓 (family_name)", "family_name", CellInput::Value(CellValue::Text("山田".into())), None, true),
+                ("名 (given_name)", "given_name", CellInput::Value(CellValue::Text("太郎".into())), None, true),
+                ("会社名 (company_name)", "company_name", CellInput::Value(CellValue::Text("株式会社サンプル".into())), None, true),
+                ("所属部署 (department)", "department", CellInput::Value(CellValue::Text("デジタル推進部".into())), None, true),
+                ("役職 (title)", "title", CellInput::Value(CellValue::Text("シニアエンジニア".into())), None, false),
+                ("メールアドレス (email)", "email", CellInput::Value(CellValue::Text("taro.yamada@example.co.jp".into())), None, false),
+                ("入社日 (hire_date)", "hire_date", CellInput::Value(CellValue::Number(hire)), Some(date_style.clone()), false),
+                ("在籍中 (is_active)", "is_active", CellInput::Value(CellValue::Bool(true)), Some(checkbox_style.clone()), true),
+            ];
+            for (idx, (label, path, val_input, val_style, disclose)) in rows.into_iter().enumerate() {
+                add_sd_row(&mut cells, &mut name_cmds, &sheet_prefix, &checkbox_style, 3 + idx as u32, label, path, val_input, val_style, disclose);
+            }
+        }
+        SdJwtTemplateKind::EnrollmentCert => {
+            put_text(&mut cells, 0, 0, "属性 (在学証明書 Claim)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 1, "値 (Value)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 2, "開示 (Disclose)", Some(header_style.clone()));
+
+            put_text(&mut cells, 1, 0, "クレデンシャル種別 (vct)", None);
+            put_text(&mut cells, 1, 1, "urn:jp:edu:enrollment_cert:1", None);
+            put_text(&mut cells, 1, 2, "常時 (claim.vct)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.vct".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 1))),
+            }));
+
+            put_text(&mut cells, 2, 0, "発行者 (iss)", None);
+            put_text(&mut cells, 2, 1, "https://univ.example.ac.jp", None);
+            put_text(&mut cells, 2, 2, "常時 (claim.iss)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.iss".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 2))),
+            }));
+
+            let bday = ibis_calc::eval::convert::serial_from_date(2004, 8, 20, date1904) as f64;
+            let enrolled = ibis_calc::eval::convert::serial_from_date(2023, 4, 1, date1904) as f64;
+            let expiry = ibis_calc::eval::convert::serial_from_date(2027, 3, 31, date1904) as f64;
+            let rows: [(&str, &str, CellInput, Option<crate::sheet::CellStyle>, bool); 9] = [
+                ("学籍番号 (student_id)", "student_id", CellInput::Value(CellValue::Text("2023-1042".into())), Some(text_style.clone()), false),
+                ("姓 (family_name)", "family_name", CellInput::Value(CellValue::Text("佐藤".into())), None, true),
+                ("名 (given_name)", "given_name", CellInput::Value(CellValue::Text("花子".into())), None, true),
+                ("生年月日 (birth_date)", "birth_date", CellInput::Value(CellValue::Number(bday)), Some(date_style.clone()), false),
+                ("大学名 (university_name)", "university_name", CellInput::Value(CellValue::Text("サンプル大学".into())), None, true),
+                ("学部・学科 (faculty)", "faculty", CellInput::Value(CellValue::Text("情報工学部".into())), None, true),
+                ("学年 (grade)", "grade", CellInput::Value(CellValue::Number(3.0)), None, false),
+                ("入学年月日 (enrollment_date)", "enrollment_date", CellInput::Value(CellValue::Number(enrolled)), Some(date_style.clone()), false),
+                ("有効期限 (expiry_date)", "expiry_date", CellInput::Value(CellValue::Number(expiry)), Some(date_style.clone()), true),
+            ];
+            for (idx, (label, path, val_input, val_style, disclose)) in rows.into_iter().enumerate() {
+                add_sd_row(&mut cells, &mut name_cmds, &sheet_prefix, &checkbox_style, 3 + idx as u32, label, path, val_input, val_style, disclose);
+            }
+        }
+        SdJwtTemplateKind::CompletionCert => {
+            put_text(&mut cells, 0, 0, "属性 (修了証明書 Claim)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 1, "値 (Value)", Some(header_style.clone()));
+            put_text(&mut cells, 0, 2, "開示 (Disclose)", Some(header_style.clone()));
+
+            put_text(&mut cells, 1, 0, "クレデンシャル種別 (vct)", None);
+            put_text(&mut cells, 1, 1, "urn:jp:edu:completion_cert:1", None);
+            put_text(&mut cells, 1, 2, "常時 (claim.vct)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.vct".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 1))),
+            }));
+
+            put_text(&mut cells, 2, 0, "発行者 (iss)", None);
+            put_text(&mut cells, 2, 1, "https://academy.example.or.jp", None);
+            put_text(&mut cells, 2, 2, "常時 (claim.iss)", None);
+            name_cmds.push(Command::Sheet(SheetCommand::SetName {
+                name: "claim.iss".into(),
+                sheet: None,
+                formula: Some(format!("{sheet_prefix}{}", abs_cell_ref(1, 2))),
+            }));
+
+            let completed = ibis_calc::eval::convert::serial_from_date(2025, 9, 30, date1904) as f64;
+            let rows: [(&str, &str, CellInput, Option<crate::sheet::CellStyle>, bool); 7] = [
+                ("証明書番号 (certificate_id)", "certificate_id", CellInput::Value(CellValue::Text("CERT-2025-0881".into())), Some(text_style.clone()), true),
+                ("受講者氏名 (recipient_name)", "recipient_name", CellInput::Value(CellValue::Text("鈴木 一郎".into())), None, true),
+                ("プログラム名 (program_name)", "program_name", CellInput::Value(CellValue::Text("AIガバナンス実践講座".into())), None, true),
+                ("発行機関名 (issuer_name)", "issuer_name", CellInput::Value(CellValue::Text("一般社団法人デジタル研修協会".into())), None, true),
+                ("修了日 (completion_date)", "completion_date", CellInput::Value(CellValue::Number(completed)), Some(date_style.clone()), true),
+                ("成績評価 (grade_or_score)", "grade_or_score", CellInput::Value(CellValue::Text("A+".into())), None, false),
+                ("修得単位数 (credits)", "credits", CellInput::Value(CellValue::Number(4.0)), None, false),
+            ];
+            for (idx, (label, path, val_input, val_style, disclose)) in rows.into_iter().enumerate() {
+                add_sd_row(&mut cells, &mut name_cmds, &sheet_prefix, &checkbox_style, 3 + idx as u32, label, path, val_input, val_style, disclose);
+            }
         }
     }
 

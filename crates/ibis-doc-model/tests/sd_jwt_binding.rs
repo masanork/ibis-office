@@ -533,3 +533,59 @@ fn pid_and_iso18013_mdl_templates_and_range_bindings_roundtrip() {
     );
 }
 
+#[test]
+fn japanese_business_presets_roundtrip() {
+    use ibis_doc_model::{
+        Es256KeyPair, SdJwtOptions, SdJwtTemplateKind, build_sd_jwt_template_commands,
+        issue_sheet_sd_jwt,
+    };
+
+    let (pres, slide_id, _) = sample_presentation();
+    let mut doc = Document::new(pres);
+
+    let cases = [
+        (
+            SdJwtTemplateKind::EmployeeId,
+            "urn:jp:business:employee_id:1",
+            "employee_id",
+            "EMP-001234",
+        ),
+        (
+            SdJwtTemplateKind::EnrollmentCert,
+            "urn:jp:edu:enrollment_cert:1",
+            "student_id",
+            "2023-1042",
+        ),
+        (
+            SdJwtTemplateKind::CompletionCert,
+            "urn:jp:edu:completion_cert:1",
+            "certificate_id",
+            "CERT-2025-0881",
+        ),
+    ];
+
+    for (kind, expected_vct, key_claim, expected_val) in cases {
+        let cmds = build_sd_jwt_template_commands(doc.presentation(), slide_id, kind);
+        doc.execute(cmds).unwrap();
+
+        let bindings = extract_sheet_claims(doc.presentation(), slide_id).unwrap();
+        assert_eq!(
+            bindings.claim("vct").and_then(|c| c.value.as_str()),
+            Some(expected_vct)
+        );
+        assert_eq!(
+            bindings.claim(key_claim).and_then(|c| c.value.as_str()),
+            Some(expected_val)
+        );
+
+        let (_b, sd_out) = issue_sheet_sd_jwt(
+            doc.presentation(),
+            slide_id,
+            &SdJwtOptions::default(),
+            &Es256KeyPair::demo_issuer_key(),
+        )
+        .unwrap();
+        assert!(!sd_out.disclosures.is_empty());
+    }
+}
+

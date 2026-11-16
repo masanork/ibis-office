@@ -13,7 +13,8 @@ use ibis_doc_model::command::Command;
 use ibis_doc_model::flow::FlowAlign;
 use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange, RunChange};
 use ibis_doc_model::model::SlideId;
-use ibis_doc_model::sd_jwt_binding::SdJwtTemplateKind;
+use ibis_doc_model::sd_jwt::Es256KeyPair;
+use ibis_doc_model::sd_jwt_binding::{ClaimValue, SdJwtTemplateKind};
 use ibis_doc_model::sheet::{CellAlign, CellRange, CellVerticalAlign};
 use ibis_doc_model::sheet_command::Axis;
 use serde::Deserialize;
@@ -334,12 +335,12 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
             kind: "function",
             function: ToolFunctionDef {
                 name: "apply_vc_template",
-                description: "Populate a worksheet with a built-in SD-JWT VC template ('pid' for EUDI PID / JPKI identity, or 'mdl' for ISO 18013-5 driving licence).",
+                description: "Populate a worksheet with a built-in SD-JWT VC template ('pid' for EUDI PID / JPKI, 'mdl' for ISO 18013-5 mDL, 'employee' for 社員証, 'enrollment' for 在学証明書, or 'completion' for 修了証明書).",
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "sheet": { "type": "string" },
-                        "template": { "type": "string", "enum": ["pid", "mdl"] }
+                        "template": { "type": "string", "enum": ["pid", "mdl", "employee", "enrollment", "completion"] }
                     },
                     "required": ["template"],
                     "additionalProperties": false
@@ -425,15 +426,31 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
             kind: "function",
             function: ToolFunctionDef {
                 name: "prepare_oid4vp_presentation",
-                description: "Parse an OID4VP Authorization Request (openid4vp:// URL or JSON with dcql_query / presentation_definition), match requested claims against the worksheet, and generate a Key Binding JWT vp_token preview.",
+                description: "Parse an OID4VP Authorization Request (openid4vp:// URL or JSON with dcql_query / presentation_definition), match requested claims against the worksheet, and generate a Key Binding JWT vp_token (sd-jwt) or ISO 18013-5 DeviceResponse (mdoc) preview.",
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "sheet": { "type": "string" },
                         "request": { "type": "string", "description": "OID4VP URL (openid4vp://?...) or Authorization Request JSON." },
+                        "format": { "type": "string", "enum": ["sd-jwt", "mdoc"], "description": "Optional presentation format override. Auto-detects 'mso_mdoc' from request if omitted." },
+                        "name_space": { "type": "string", "description": "Optional ISO 18013-5 namespace when format is 'mdoc'." },
                         "apply_to_sheet": { "type": "boolean", "description": "If true, update the worksheet's disclose.* checkboxes to match the requested claims." }
                     },
                     "required": ["request"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "get_vc_public_keys",
+                description: "Inspect the active VC issuer and holder ES256 public JWKs (never exposes private key material) so Verifiers can verify issued SD-JWTs, mDOCs, or KB-JWTs.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "which": { "type": "string", "enum": ["all", "issuer", "holder"], "description": "Which public key(s) to return (default 'all')." }
+                    },
                     "additionalProperties": false
                 }),
             },
@@ -1298,7 +1315,12 @@ pub fn parse_vc_template_kind(raw: &str) -> Result<SdJwtTemplateKind, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "pid" => Ok(SdJwtTemplateKind::Pid),
         "mdl" | "iso18013" | "iso18013_mdl" => Ok(SdJwtTemplateKind::Iso18013Mdl),
-        other => Err(format!("unknown VC template '{other}' (expected 'pid' or 'mdl')")),
+        "employee" | "employee_id" => Ok(SdJwtTemplateKind::EmployeeId),
+        "enrollment" | "enrollment_cert" => Ok(SdJwtTemplateKind::EnrollmentCert),
+        "completion" | "completion_cert" => Ok(SdJwtTemplateKind::CompletionCert),
+        other => Err(format!(
+            "unknown VC template '{other}' (expected 'pid', 'mdl', 'employee', 'enrollment', or 'completion')"
+        )),
     }
 }
 
@@ -1337,8 +1359,78 @@ pub struct ParseVcTokenArgs {
 #[derive(Deserialize)]
 pub struct PrepareOid4vpArgs {
     pub request: String,
+    pub format: Option<String>,
+    pub name_space: Option<String>,
     #[serde(default)]
     pub apply_to_sheet: bool,
+}
+
+#[derive(Deserialize)]
+pub struct GetVcPublicKeysArgs {
+    pub which: Option<String>,
+}
+
+fn resolve_vc_key(setting_key: &str, demo: fn() -> Es256KeyPair) -> (Es256KeyPair, &'static str) {
+    if let Some(raw) = crate::settings::get(setting_key) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty()
+            && let Some(kp) = Es256KeyPair::from_jwk_json(trimmed)
+        {
+            return (kp, "settings");
+        }
+    }
+    (demo(), "demo")
+}
+
+pub fn resolve_vc_issuer_key() -> (Es256KeyPair, &'static str) {
+    resolve_vc_key("vc.issuer_jwk", Es256KeyPair::demo_issuer_key)
+}
+
+pub fn resolve_vc_holder_key() -> (Es256KeyPair, &'static str) {
+    resolve_vc_key("vc.holder_jwk", Es256KeyPair::demo_holder_key)
+}
+
+pub(crate) fn claim_value_to_json(val: &ClaimValue) -> Value {
+    match val {
+        ClaimValue::Null => Value::Null,
+        ClaimValue::Bool(b) => Value::Bool(*b),
+        ClaimValue::Int(i) => json!(*i),
+        ClaimValue::Float(f) => json!(*f),
+        ClaimValue::String(s) => Value::String(s.clone()),
+        ClaimValue::Array(items) => Value::Array(items.iter().map(claim_value_to_json).collect()),
+        ClaimValue::Object(map) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in map {
+                obj.insert(k.clone(), claim_value_to_json(v));
+            }
+            Value::Object(obj)
+        }
+    }
+}
+
+pub fn vc_public_keys_json(which: &str) -> Result<Value, String> {
+    let mode = which.trim().to_ascii_lowercase();
+    let include_issuer = matches!(mode.as_str(), "" | "all" | "issuer");
+    let include_holder = matches!(mode.as_str(), "" | "all" | "holder");
+    if !include_issuer && !include_holder {
+        return Err(format!(
+            "unknown key selector '{which}' (expected 'all', 'issuer', or 'holder')"
+        ));
+    }
+
+    let mut out = serde_json::Map::new();
+    out.insert("ok".to_string(), json!(true));
+    if include_issuer {
+        let (kp, src) = resolve_vc_issuer_key();
+        out.insert("issuer_source".to_string(), json!(src));
+        out.insert("issuer_public_jwk".to_string(), claim_value_to_json(&kp.to_public_jwk()));
+    }
+    if include_holder {
+        let (kp, src) = resolve_vc_holder_key();
+        out.insert("holder_source".to_string(), json!(src));
+        out.insert("holder_public_jwk".to_string(), claim_value_to_json(&kp.to_public_jwk()));
+    }
+    Ok(Value::Object(out))
 }
 
 pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command, String> {
@@ -1505,6 +1597,18 @@ mod tests {
             parse_vc_template_kind("mdl").unwrap(),
             SdJwtTemplateKind::Iso18013Mdl
         );
+        assert_eq!(
+            parse_vc_template_kind("employee").unwrap(),
+            SdJwtTemplateKind::EmployeeId
+        );
+        assert_eq!(
+            parse_vc_template_kind("enrollment_cert").unwrap(),
+            SdJwtTemplateKind::EnrollmentCert
+        );
+        assert_eq!(
+            parse_vc_template_kind("completion").unwrap(),
+            SdJwtTemplateKind::CompletionCert
+        );
         assert!(parse_vc_template_kind("unknown").is_err());
 
         let bind_default: BindVcClaimArgs =
@@ -1538,10 +1642,25 @@ mod tests {
         assert!(parse_args.import_to_sheet);
 
         let vp_args: PrepareOid4vpArgs = serde_json::from_str(
-            r#"{"request":"openid4vp://?client_id=https://verifier.example&nonce=abc","apply_to_sheet":true}"#,
+            r#"{"request":"openid4vp://?client_id=https://verifier.example&nonce=abc","format":"mdoc","name_space":"org.iso.18013.5.1","apply_to_sheet":true}"#,
         )
         .unwrap();
         assert!(vp_args.apply_to_sheet);
+        assert_eq!(vp_args.format.as_deref(), Some("mdoc"));
+        assert_eq!(vp_args.name_space.as_deref(), Some("org.iso.18013.5.1"));
         assert!(vp_args.request.starts_with("openid4vp://"));
+
+        let keys_args: GetVcPublicKeysArgs = serde_json::from_str(r#"{"which":"issuer"}"#).unwrap();
+        assert_eq!(keys_args.which.as_deref(), Some("issuer"));
+
+        let val = vc_public_keys_json("all").unwrap();
+        assert_eq!(val["ok"], true);
+        let issuer = val["issuer_public_jwk"].as_object().unwrap();
+        let holder = val["holder_public_jwk"].as_object().unwrap();
+        assert!(issuer.get("d").is_none(), "issuer public JWK must not contain private 'd'");
+        assert!(holder.get("d").is_none(), "holder public JWK must not contain private 'd'");
+        assert_eq!(issuer.get("kty").and_then(|v| v.as_str()), Some("EC"));
+        assert_eq!(holder.get("crv").and_then(|v| v.as_str()), Some("P-256"));
+        assert!(vc_public_keys_json("invalid").is_err());
     }
 }
