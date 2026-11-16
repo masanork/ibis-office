@@ -63,14 +63,20 @@ impl PupFonts {
     }
     fn family(&self, c: char) -> Option<SharedString> {
         let cp = c as u32;
-        let face = if (0x101000..=0x104295).contains(&cp) {
-            &self.compatibility
-        } else if (0x100000..=0x10fffd).contains(&cp) {
-            &self.administrative
-        } else {
+        if !(0x100000..=0x10fffd).contains(&cp) {
             return None;
-        };
-        face.as_ref().filter(|f| f.has(c)).map(|f| f.family.clone())
+        }
+        // The compatibility face also holds combining-sequence PUPs outside
+        // the Han range. Give it priority only for entries in its actual cmap.
+        self.compatibility
+            .as_ref()
+            .filter(|f| f.has(c))
+            .or_else(|| {
+                (!(0x101000..=0x104295).contains(&cp))
+                    .then(|| self.administrative.as_ref().filter(|f| f.has(c)))
+                    .flatten()
+            })
+            .map(|f| f.family.clone())
     }
     pub(crate) fn display(&self, text: &str) -> (String, Vec<(Range<usize>, SharedString)>) {
         display(
@@ -197,7 +203,7 @@ fn display(
         let family = if (0x101000..=0x104295).contains(&cp) {
             compat(c)
         } else if pup {
-            admin(c)
+            compat(c).or_else(|| admin(c))
         } else {
             None
         };
@@ -302,5 +308,17 @@ mod tests {
         let (rendered, spans) = display("x\u{101000}y\u{10de92}", |_| None, |_| None);
         assert_eq!(rendered, "x⟦U+101000⟧y⟦U+10DE92⟧");
         assert!(spans.is_empty());
+    }
+    #[test]
+    fn combining_pup_uses_compatibility_face_by_coverage() {
+        let (text, spans) = display(
+            "x\u{10022a}\u{10de92}",
+            |c| (c == '\u{10022a}').then(|| "compat".into()),
+            |c| (c == '\u{10de92}').then(|| "admin".into()),
+        );
+        assert_eq!(text, "x\u{10022a}\u{10de92}");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].1.as_ref(), "compat");
+        assert_eq!(spans[1].1.as_ref(), "admin");
     }
 }

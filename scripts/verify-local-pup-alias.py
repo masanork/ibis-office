@@ -4,6 +4,9 @@
 from fontTools.ttLib import TTFont
 from fontTools.pens.recordingPen import DecomposingRecordingPen
 import csv,sys
+from pup_combined import shaped_aliases
+if len(sys.argv) not in (4,5):
+ raise SystemExit('usage: verify-local-pup-alias.py IPAMJ_TTF ALIAS_TTF PUP_CSV [PUP_COMBINED_CSV]')
 source=TTFont(sys.argv[1]);candidate=TTFont(sys.argv[2]);ivs=next(t for t in source['cmap'].tables if t.format==14).uvsDict;ivs={vs:dict(rows) for vs,rows in ivs.items()};a=source.getGlyphSet();b=candidate.getGlyphSet();src_base=source.getBestCmap();out=candidate.getBestCmap();seen=set();n=0
 for row in csv.reader(open(sys.argv[3],encoding='utf-8-sig')):
  pup=ord(row[0]);cp,vs=map(ord,row[1][:2]);sg=ivs[vs][cp] or src_base[cp];tg=out[pup];key=(sg,tg)
@@ -12,4 +15,10 @@ for row in csv.reader(open(sys.argv[3],encoding='utf-8-sig')):
   if left.value!=right.value:raise ValueError(f'outline mismatch U+{pup:06X} {sg} {tg}')
   seen.add(key)
  n+=1
+if len(sys.argv)==5:
+ for pup,sg in shaped_aliases(sys.argv[1],sys.argv[4],source):
+  tg=out[pup];left=DecomposingRecordingPen(a);right=DecomposingRecordingPen(b);a[sg].draw(left);b[tg].draw(right)
+  if left.value!=right.value or source['hmtx'][sg][0]!=candidate['hmtx'][tg][0]:raise ValueError(f'combined outline or advance mismatch U+{pup:06X}')
+  seen.add((sg,tg))
+  n+=1
 print('checked',n,'mappings;',len(seen),'unique decomposed glyph pairs match')

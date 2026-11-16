@@ -6,9 +6,10 @@ import csv, sys, hashlib
 from pathlib import Path
 from fontTools.ttLib import TTFont
 from fontTools import subset
-if len(sys.argv)!=4:
- raise SystemExit('usage: build_pup_alias_probe.py IPAMJ_TTF PUP_CSV OUTPUT_TTF')
-font_path,csv_path,out=map(Path,sys.argv[1:]);font=TTFont(font_path);cmap14=next((t for t in font['cmap'].tables if t.format==14),None)
+from pup_combined import shaped_aliases
+if len(sys.argv) not in (4,5):
+ raise SystemExit('usage: build-local-pup-alias.py IPAMJ_TTF PUP_CSV OUTPUT_TTF [PUP_COMBINED_CSV]')
+font_path,csv_path,out=map(Path,sys.argv[1:4]);font=TTFont(font_path);cmap14=next((t for t in font['cmap'].tables if t.format==14),None)
 if cmap14 is None:raise SystemExit('font has no cmap14; refusing to substitute base glyph')
 ivs={vs:dict(records) for vs,records in cmap14.uvsDict.items()};base=font.getBestCmap();aliases={}
 for rowno,row in enumerate(csv.reader(csv_path.open(encoding='utf-8-sig')),1):
@@ -21,7 +22,13 @@ for rowno,row in enumerate(csv.reader(csv_path.open(encoding='utf-8-sig')),1):
  if not glyph or glyph=='.notdef':raise ValueError(f'no glyph at row {rowno}')
  if pup in base:raise ValueError(f'PUP collides with source cmap at row {rowno}')
  aliases[pup]=glyph
+if len(sys.argv)==5:
+ for pup,glyph in shaped_aliases(font_path,sys.argv[4],font):
+  if pup in aliases or pup in base:raise ValueError(f'PUP collision U+{pup:X}')
+  aliases[pup]=glyph
 if not aliases:raise ValueError('no mapping rows')
+if len(set(aliases.values())) != len(aliases):
+ raise ValueError('multiple PUPs share a glyph; PDF text could not preserve their distinct codes')
 for table in font['cmap'].tables:
  if table.format==12 and table.isUnicode():table.cmap.update(aliases)
 if not all(font.getBestCmap().get(cp)==name for cp,name in aliases.items()):raise ValueError('alias cmap did not take effect')
@@ -34,5 +41,6 @@ for record in font['name'].names:
   except (LookupError,UnicodeEncodeError):continue
 font.save(out);result=TTFont(out);outmap=result.getBestCmap()
 if set(aliases)!=set(outmap):raise ValueError('subset cmap mismatch')
+if len(set(outmap.values())) != len(outmap):raise ValueError('subset merged PUP glyphs')
 print('source_rows',len(aliases),'output_mappings',len(outmap),'bytes',out.stat().st_size)
 print('input sha256',hashlib.sha256(font_path.read_bytes()).hexdigest(),'csv sha256',hashlib.sha256(csv_path.read_bytes()).hexdigest(),'output sha256',hashlib.sha256(out.read_bytes()).hexdigest())
