@@ -48,77 +48,94 @@ pub struct RawCsvRecord {
     pub terminator: std::ops::Range<usize>,
 }
 
-/// Locate original CSV fields without decoding and re-encoding their bytes.
-/// This is a building block for lossless same-file editing, not a serializer.
-pub fn raw_csv_records(data: &[u8], encoding: OriginalEncoding, delimiter: char) -> Result<Vec<RawCsvRecord>, Error> {
-    if !matches!(delimiter, ',' | ';' | '\t') {
-        return Err(Error::new("CSV の区切り文字に対応していません"));
+/// Validate without retaining a decoded copy of the complete file.
+fn valid_encoded_bytes(data: &[u8], encoding: &'static encoding_rs::Encoding) -> bool {
+    let mut decoder = encoding.new_decoder_without_bom_handling();
+    let mut remaining = data;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let (result, read, _) = decoder.decode_to_utf8_without_replacement(remaining, &mut buffer, true);
+        remaining = &remaining[read..];
+        match result {
+            encoding_rs::DecoderResult::InputEmpty => return remaining.is_empty(),
+            encoding_rs::DecoderResult::OutputFull if read != 0 => {},
+            _ => return false,
+        }
     }
-    let choice = match encoding {
-        OriginalEncoding::Utf8 | OriginalEncoding::Utf8Bom => TextEncoding::Utf8,
-        OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => TextEncoding::Utf16,
-        OriginalEncoding::Cp932 => TextEncoding::ShiftJis,
-        OriginalEncoding::AsciiAmbiguous | OriginalEncoding::Utf8OrCp932 => TextEncoding::Auto,
+}
+
+enum RawCsvEvent {
+    Field(usize, usize, std::ops::Range<usize>),
+    End(std::ops::Range<usize>),
+}
+
+/// Scan fields without allocating one range per field. Byte values used as
+/// separators cannot occur as trail bytes in UTF-8 or CP932.
+fn scan_raw_csv(data: &[u8], encoding: OriginalEncoding, delimiter: char, mut visit: impl FnMut(RawCsvEvent)) -> Result<(), Error> {
+    if !matches!(delimiter, ',' | ';' | '\t') { return Err(Error::new("CSV の区切り文字に対応していません")); }
+    let (start, width, le, valid) = match encoding {
+        OriginalEncoding::Utf8 => (0, 1, true, !data.starts_with(b"\xef\xbb\xbf") && std::str::from_utf8(data).is_ok()),
+        OriginalEncoding::Utf8Bom => (3, 1, true, data.starts_with(b"\xef\xbb\xbf") && std::str::from_utf8(&data[3..]).is_ok()),
+        OriginalEncoding::Utf16LeBom => (2, 2, true, data.starts_with(b"\xff\xfe") && valid_encoded_bytes(&data[2..], encoding_rs::UTF_16LE)),
+        OriginalEncoding::Utf16BeBom => (2, 2, false, data.starts_with(b"\xfe\xff") && valid_encoded_bytes(&data[2..], encoding_rs::UTF_16BE)),
+        OriginalEncoding::Cp932 => (0, 1, true, !data.starts_with(b"\xef\xbb\xbf") && !data.starts_with(b"\xff\xfe") && !data.starts_with(b"\xfe\xff") && valid_encoded_bytes(data, encoding_rs::SHIFT_JIS)),
+        OriginalEncoding::AsciiAmbiguous => (0, 1, true, data.is_ascii()),
+        OriginalEncoding::Utf8OrCp932 => (0, 1, true, !data.is_ascii() && !data.starts_with(b"\xef\xbb\xbf") && std::str::from_utf8(data).is_ok() && valid_encoded_bytes(data, encoding_rs::SHIFT_JIS)),
     };
-    let (_, actual) = decode_with_choice(data, choice)?;
-    if actual != encoding { return Err(Error::new("CSV の文字コードが元の形式と一致しません")); }
-    let (start, width, le) = match encoding {
-        OriginalEncoding::Utf8Bom => (3, 1, true),
-        OriginalEncoding::Utf16LeBom => (2, 2, true),
-        OriginalEncoding::Utf16BeBom => (2, 2, false),
-        _ => (0, 1, true),
-    };
+    if !valid { return Err(Error::new("CSV の文字コードが元の形式と一致しません")); }
     let unit = |pos: usize| -> u16 {
         if width == 1 { data[pos] as u16 }
         else if le { u16::from_le_bytes([data[pos], data[pos + 1]]) }
         else { u16::from_be_bytes([data[pos], data[pos + 1]]) }
     };
-    let mut records = Vec::new();
-    let mut fields = Vec::new();
-    let mut pos = start;
-    let mut field_start = start;
-    let mut empty = true;
-    let mut quoted = false;
+    let (mut pos, mut field_start, mut row, mut column) = (start, start, 0, 0);
+    let (mut empty, mut quoted) = (true, false);
     while pos < data.len() {
         let c = unit(pos);
         if quoted {
             if c == b'"' as u16 {
-                if pos + width < data.len() && unit(pos + width) == c {
-                    empty = false;
-                    pos += 2 * width;
-                    continue;
-                }
+                if pos + width < data.len() && unit(pos + width) == c { empty = false; pos += 2 * width; continue; }
                 quoted = false;
             } else { empty = false; }
             pos += width;
-            continue;
-        }
-        if c == b'"' as u16 && empty {
+        } else if c == b'"' as u16 && empty {
             quoted = true;
             pos += width;
         } else if c == delimiter as u16 {
-            fields.push(field_start..pos);
+            visit(RawCsvEvent::Field(row, column, field_start..pos));
+            column += 1;
             pos += width;
             field_start = pos;
             empty = true;
         } else if c == b'\r' as u16 || c == b'\n' as u16 {
-            fields.push(field_start..pos);
+            visit(RawCsvEvent::Field(row, column, field_start..pos));
             let begin = pos;
             pos += width;
             if c == b'\r' as u16 && pos < data.len() && unit(pos) == b'\n' as u16 { pos += width; }
-            records.push(RawCsvRecord { fields: std::mem::take(&mut fields), terminator: begin..pos });
+            visit(RawCsvEvent::End(begin..pos));
+            row += 1;
+            column = 0;
             field_start = pos;
             empty = true;
-        } else {
-            empty = false;
-            pos += width;
-        }
+        } else { empty = false; pos += width; }
     }
     if quoted { return Err(Error::new("閉じられていない CSV の引用符があります")); }
-    if field_start < data.len() || !fields.is_empty() {
-        fields.push(field_start..data.len());
-        records.push(RawCsvRecord { fields, terminator: data.len()..data.len() });
+    if field_start < data.len() || column != 0 {
+        visit(RawCsvEvent::Field(row, column, field_start..data.len()));
+        visit(RawCsvEvent::End(data.len()..data.len()));
     }
+    Ok(())
+}
+
+/// Locate original CSV fields without decoding and re-encoding their bytes.
+/// This is a building block for lossless same-file editing, not a serializer.
+pub fn raw_csv_records(data: &[u8], encoding: OriginalEncoding, delimiter: char) -> Result<Vec<RawCsvRecord>, Error> {
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    scan_raw_csv(data, encoding, delimiter, |event| match event {
+        RawCsvEvent::Field(_, _, range) => fields.push(range),
+        RawCsvEvent::End(terminator) => records.push(RawCsvRecord { fields: std::mem::take(&mut fields), terminator }),
+    })?;
     Ok(records)
 }
 
@@ -126,23 +143,26 @@ pub fn raw_csv_records(data: &[u8], encoding: OriginalEncoding, delimiter: char)
 /// Coordinates are zero-based. Structural edits require a separate policy and
 /// are deliberately not inferred by this function.
 pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter: char, changes: &[(usize, usize, String)]) -> Result<Vec<u8>, Error> {
-    let records = raw_csv_records(data, encoding, delimiter)?;
-    let mut replacements = Vec::with_capacity(changes.len());
+    let mut pending = std::collections::BTreeMap::new();
     for (row, column, value) in changes {
-        let range = records.get(*row).and_then(|r| r.fields.get(*column))
-            .ok_or_else(|| Error::new("元の CSV にないセルはこの方法で保存できません"))?.clone();
         let field = if value.contains([delimiter, '"', '\r', '\n']) {
             format!("\"{}\"", value.replace('"', "\"\""))
         } else { value.clone() };
         let mut bytes = encode_original(&field, encoding)?;
         let bom_len = match encoding { OriginalEncoding::Utf8Bom => 3, OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => 2, _ => 0 };
         bytes.drain(..bom_len);
-        replacements.push((range, bytes));
+        if pending.insert((*row, *column), bytes).is_some() { return Err(Error::new("同じ CSV セルが複数回指定されました")); }
     }
-    replacements.sort_by_key(|(range, _)| range.start);
-    if replacements.windows(2).any(|pair| pair[0].0.end > pair[1].0.start || pair[0].0 == pair[1].0) {
-        return Err(Error::new("同じ CSV セルが複数回指定されました"));
-    }
+    let mut pending: std::collections::VecDeque<_> = pending.into_iter().collect();
+    let mut replacements = Vec::with_capacity(pending.len());
+    scan_raw_csv(data, encoding, delimiter, |event| {
+        if let RawCsvEvent::Field(row, column, range) = event
+            && pending.front().is_some_and(|(position, _)| *position == (row, column)) {
+            let (_, bytes) = pending.pop_front().expect("checked above");
+            replacements.push((range, bytes));
+        }
+    })?;
+    if !pending.is_empty() { return Err(Error::new("元の CSV にないセルはこの方法で保存できません")); }
     let mut output = Vec::with_capacity(data.len());
     let mut offset = 0;
     for (range, bytes) in replacements {
@@ -299,6 +319,36 @@ pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>
 #[cfg(test)]
 mod original_encoding_tests {
     use super::{decode_with_choice, decode_with_original_encoding, encode_original, raw_csv_records, rewrite_raw_csv_fields, rewrite_tracked_csv, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding, RecordEnding, TextEncoding};
+
+    #[test]
+    fn sparse_rewrites_scan_the_entire_large_source_and_validate_encoding() {
+        let record = encode_original("名,x,\r\n", OriginalEncoding::Cp932).unwrap();
+        let rows = 100_001usize;
+        let input = record.repeat(rows);
+        let changed = rewrite_raw_csv_fields(&input, OriginalEncoding::Cp932, ',', &[(0, 0, "一".into()), (rows - 1, 0, "終".into())]).unwrap();
+        let mut expected = encode_original("一,x,\r\n", OriginalEncoding::Cp932).unwrap();
+        expected.extend_from_slice(&input[record.len()..input.len() - record.len()]);
+        expected.extend_from_slice(&encode_original("終,x,\r\n", OriginalEncoding::Cp932).unwrap());
+        assert_eq!(changed, expected);
+        assert!(rewrite_raw_csv_fields(&input, OriginalEncoding::Cp932, ',', &[(rows, 0, "x".into())]).is_err());
+        let mut invalid = input;
+        invalid.push(0x81);
+        assert!(rewrite_raw_csv_fields(&invalid, OriginalEncoding::Cp932, ',', &[(0, 0, "x".into())]).is_err());
+        assert!(rewrite_raw_csv_fields(b"a,b\n\"unfinished", OriginalEncoding::AsciiAmbiguous, ',', &[(0, 0, "x".into())]).is_err());
+    }
+
+    #[test]
+    fn bounded_decoder_matches_encoding_rs_on_valid_and_invalid_inputs() {
+        for (encoding, original, bom) in [(encoding_rs::SHIFT_JIS, OriginalEncoding::Cp932, 0), (encoding_rs::UTF_16LE, OriginalEncoding::Utf16LeBom, 2), (encoding_rs::UTF_16BE, OriginalEncoding::Utf16BeBom, 2)] {
+            let mut seed = 0x1234_5678u32;
+            for len in 0..128 {
+                let bytes: Vec<u8> = (0..len).map(|_| { seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); (seed >> 24) as u8 }).collect();
+                assert_eq!(super::valid_encoded_bytes(&bytes, encoding), encoding.decode_without_bom_handling_and_without_replacement(&bytes).is_some(), "{encoding:?}, length {len}");
+            }
+            let bytes = encode_original(&"漢A".repeat(10_000), original).unwrap();
+            assert!(super::valid_encoded_bytes(&bytes[bom..], encoding));
+        }
+    }
 
     #[test]
     fn tracked_text_edits_preserve_original_bytes_across_successive_saves() {
