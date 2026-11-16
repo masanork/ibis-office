@@ -154,6 +154,40 @@ pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter
     Ok(output)
 }
 
+/// Apply a tracked set of text-cell edits to the original bytes. Other cell
+/// types and structural changes are refused until their CSV semantics are
+/// defined. `current_disk` is a fresh read used to reject outside changes; the
+/// caller must also handle changes after that read and restart tracking only
+/// after a successful write.
+pub fn rewrite_tracked_csv(data: &[u8], current_disk: &[u8], format: OriginalCsvFormat, document: &ibis_doc_model::Document, slide: ibis_doc_model::SlideId) -> Result<Vec<u8>, Error> {
+    if data != current_disk { return Err(Error::new("CSV が外部で変更されたため上書き保存できません")); }
+    let tracked = document.tracked_csv_cells().ok_or_else(|| Error::new("追跡できない編集があるため CSV を上書き保存できません"))?;
+    let sheet = document.presentation().slide(slide).and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
+        .ok_or_else(|| Error::new("元の CSV シートがありません"))?;
+    let mut changes = Vec::with_capacity(tracked.len());
+    for &(edited_slide, row, column) in tracked {
+        if edited_slide != slide { return Err(Error::new("元の CSV 以外のシートが変更されています")); }
+        let value = match sheet.cell(row, column) {
+            None => String::new(),
+            Some(cell) if cell.formula.is_none() => match &cell.value {
+                CellValue::Text(value) => {
+                    // A CSV quote does not prevent the importer interpreting a
+                    // text constant as a number, formula, or apostrophe escape.
+                    if !matches!(parse_imported(value, false), Typed::Value(CellValue::Text(ref parsed), _) if parsed == value) {
+                        return Err(Error::new("文字列を再読込時に同じ文字列として保持できません"));
+                    }
+                    value.clone()
+                }
+                CellValue::Empty => String::new(),
+                _ => return Err(Error::new("数値などの CSV 書き戻しにはまだ対応していません")),
+            },
+            Some(_) => return Err(Error::new("数式の CSV 書き戻しにはまだ対応していません")),
+        };
+        changes.push((row as usize, column as usize, value));
+    }
+    rewrite_raw_csv_fields(data, format.encoding, format.delimiter, &changes)
+}
+
 /// Determine record separators without mistaking line breaks inside quotes for records.
 pub fn original_csv_format(text: &str, encoding: OriginalEncoding, delimiter: char) -> OriginalCsvFormat {
     let mut iter = CsvRecordIter::new(text, delimiter);
@@ -260,7 +294,68 @@ pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>
 
 #[cfg(test)]
 mod original_encoding_tests {
-    use super::{decode_with_choice, decode_with_original_encoding, encode_original, raw_csv_records, rewrite_raw_csv_fields, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding, RecordEnding, TextEncoding};
+    use super::{decode_with_choice, decode_with_original_encoding, encode_original, raw_csv_records, rewrite_raw_csv_fields, rewrite_tracked_csv, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding, RecordEnding, TextEncoding};
+
+    #[test]
+    fn tracked_text_edits_preserve_original_bytes_across_successive_saves() {
+        use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand};
+        use ibis_doc_model::sheet_command::Axis;
+        let original = b"\xef\xbb\xbf00123,\"a\",\r\nb,c\n";
+        let opened = crate::open(original.to_vec()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        let set = |row, column, input| Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row, column, input }] });
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![set(0, 1, CellInput::Value(CellValue::Text("first".into())))]).unwrap();
+        assert!(rewrite_tracked_csv(original, b"external change", format, &doc, slide).is_err());
+        let first = rewrite_tracked_csv(original, original, format, &doc, slide).unwrap();
+        assert_eq!(first, b"\xef\xbb\xbf00123,first,\r\nb,c\n");
+        // Restart only after the caller has actually saved `first`.
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![set(1, 1, CellInput::Value(CellValue::Text("next,field".into())))]).unwrap();
+        let second = rewrite_tracked_csv(&first, &first, format, &doc, slide).unwrap();
+        assert_eq!(second, b"\xef\xbb\xbf00123,first,\r\nb,\"next,field\"\n");
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![set(0, 1, CellInput::Value(CellValue::Text("=1+1".into())))]).unwrap();
+        assert!(rewrite_tracked_csv(&second, &second, format, &doc, slide).is_err());
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![set(0, 0, CellInput::Value(CellValue::Number(12.0)))]).unwrap();
+        assert!(rewrite_tracked_csv(&second, &second, format, &doc, slide).is_err());
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 0, count: 1 })]).unwrap();
+        assert!(rewrite_tracked_csv(&second, &second, format, &doc, slide).is_err());
+    }
+
+    #[test]
+    fn edit_tracking_rejects_untracked_or_reverted_operations() {
+        use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand, SlideId};
+        use ibis_doc_model::sheet_command::Axis;
+        let opened = crate::open(b"00123,abc\r\n".to_vec()).unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        let set = |slide, row, column| Command::Sheet(SheetCommand::SetCells {
+            slide, edits: vec![CellEdit { row, column, input: CellInput::Value(CellValue::Text("changed".into())) }],
+        });
+        assert!(doc.tracked_csv_cells().is_none());
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![set(slide, 0, 1)]).unwrap();
+        assert_eq!(doc.tracked_csv_cells().unwrap().iter().copied().collect::<Vec<_>>(), vec![(slide, 0, 1)]);
+        // A failed transaction rolls back and does not contaminate the journal.
+        assert!(doc.execute(vec![set(slide, 0, 0), set(SlideId(u64::MAX), 0, 0)]).is_err());
+        assert_eq!(doc.tracked_csv_cells().unwrap().len(), 1);
+        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 0, count: 1 })]).unwrap();
+        assert!(doc.tracked_csv_cells().is_none());
+        assert!(doc.undo());
+        assert!(doc.tracked_csv_cells().is_none());
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![set(slide, 0, 0)]).unwrap();
+        assert!(doc.undo());
+        assert!(doc.tracked_csv_cells().is_none());
+        doc.begin_csv_edit_tracking();
+        let _ = doc.presentation_mut();
+        assert!(doc.tracked_csv_cells().is_none());
+    }
 
     #[test]
     fn raw_field_rewrites_only_selected_bytes() {

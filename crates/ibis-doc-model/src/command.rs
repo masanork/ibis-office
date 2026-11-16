@@ -1102,6 +1102,14 @@ pub struct Document {
     /// The file this document is saved as (its whole path), for what the calculation says of it
     /// (`CELL("filename")`).
     file: Option<String>,
+    /// Opt-in, conservative journal for retaining original CSV field bytes.
+    csv_edits: Option<CsvEditJournal>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CsvEditJournal {
+    valid: bool,
+    cells: std::collections::BTreeSet<(SlideId, u32, u32)>,
 }
 
 impl Default for Document {
@@ -1112,7 +1120,23 @@ impl Default for Document {
 
 impl Document {
     pub fn new(presentation: Presentation) -> Self {
-        Self { presentation, read_only: false, undo: Vec::new(), redo: Vec::new(), repeat_sheet:Vec::new(), repeat_sheet_group:false, clean_undo_len: Some(0), file: None }
+        Self { presentation, read_only: false, undo: Vec::new(), redo: Vec::new(), repeat_sheet:Vec::new(), repeat_sheet_group:false, clean_undo_len: Some(0), file: None, csv_edits: None }
+    }
+
+    /// Start a journal only after the source bytes and model describe the same
+    /// saved state. Restart it after a successful write, never before one.
+    pub fn begin_csv_edit_tracking(&mut self) {
+        self.csv_edits = Some(CsvEditJournal { valid: true, cells: Default::default() });
+    }
+
+    /// Cells touched since tracking started; `None` means tracking is disabled
+    /// or an operation occurred whose effect cannot be safely replayed.
+    pub fn tracked_csv_cells(&self) -> Option<&std::collections::BTreeSet<(SlideId, u32, u32)>> {
+        self.csv_edits.as_ref().filter(|journal| journal.valid).map(|journal| &journal.cells)
+    }
+
+    fn invalidate_csv_edits(&mut self) {
+        if let Some(journal) = &mut self.csv_edits { journal.valid = false; }
     }
 
     /// Prevent document-changing commands for read-only import previews.
@@ -1126,6 +1150,7 @@ impl Document {
     /// Clear all undo/redo history and mark the document as clean.
     /// Used when initializing a newly created document or template instance.
     pub fn reset_history(&mut self) {
+        self.invalidate_csv_edits();
         self.undo.clear();
         self.redo.clear();
         self.repeat_sheet.clear();
@@ -1135,6 +1160,7 @@ impl Document {
 
     /// Mark the document as having unsaved changes.
     pub fn mark_dirty(&mut self) {
+        self.invalidate_csv_edits();
         self.clean_undo_len = None;
     }
 
@@ -1153,11 +1179,13 @@ impl Document {
     }
 
     pub fn presentation_mut(&mut self) -> &mut Presentation {
+        self.invalidate_csv_edits();
         &mut self.presentation
     }
 
     /// For id allocation only; edits must go through [`Document::execute`].
     pub fn ids(&mut self) -> &mut Presentation {
+        self.invalidate_csv_edits();
         &mut self.presentation
     }
 
@@ -1180,12 +1208,28 @@ impl Document {
         if self.read_only && commands.iter().any(|command| !matches!(command, Command::Flow(crate::flow_command::FlowCommand::SetViewMode(_)))) {
             return Err(EditError::ReadOnly);
         }
+        let csv_delta = self.csv_edits.as_ref().filter(|j| j.valid).map(|_| {
+            let mut cells = Vec::new();
+            for command in &commands {
+                match command {
+                    Command::Sheet(crate::SheetCommand::SetCells { slide, edits }) => {
+                        cells.extend(edits.iter().map(|edit| (*slide, edit.row, edit.column)));
+                    }
+                    Command::Sheet(crate::SheetCommand::SetRowHeightFitted { .. }) => {}
+                    _ => return None,
+                }
+            }
+            Some(cells)
+        });
         let repeat:Vec<_> = commands.iter().filter_map(|command|match command {
             Command::Sheet(edit @ (crate::SheetCommand::SetFormat{..}|crate::SheetCommand::Insert{..}|crate::SheetCommand::Delete{..}|crate::SheetCommand::ClearFormats{..}|crate::SheetCommand::ShiftCells{..})) => Some(edit.clone()),
             _ => None,
         }).collect();
         let inverses = self.apply_all(commands)?;
         if !inverses.is_empty() {
+            if let (Some(journal), Some(delta)) = (&mut self.csv_edits, csv_delta) {
+                if let Some(cells) = delta { journal.cells.extend(cells); } else { journal.valid = false; }
+            }
             if self.clean_undo_len.is_some_and(|clean| clean > self.undo.len()) {
                 self.clean_undo_len = None;
             }
@@ -1212,6 +1256,7 @@ impl Document {
         if inverses.is_empty() {
             return Ok(());
         }
+        self.invalidate_csv_edits();
         if self.clean_undo_len.is_some_and(|clean| clean >= self.undo.len()) {
             self.clean_undo_len = None;
         }
@@ -1230,6 +1275,7 @@ impl Document {
     /// user abandoned (such as a new text box left empty).
     pub fn retract_last(&mut self) -> bool {
         let Some(step) = self.undo.pop() else { return false };
+        self.invalidate_csv_edits();
         if self.clean_undo_len.is_some_and(|clean| clean > self.undo.len()) {
             self.clean_undo_len = None;
         }
@@ -1238,6 +1284,7 @@ impl Document {
 
     pub fn undo(&mut self) -> bool {
         let Some(step) = self.undo.pop() else { return false };
+        self.invalidate_csv_edits();
         match self.apply_all(step) {
             Ok(inverses) => {
                 self.redo.push(inverses);
@@ -1249,6 +1296,7 @@ impl Document {
 
     pub fn redo(&mut self) -> bool {
         let Some(step) = self.redo.pop() else { return false };
+        self.invalidate_csv_edits();
         match self.apply_all(step) {
             Ok(inverses) => {
                 self.undo.push(inverses);
