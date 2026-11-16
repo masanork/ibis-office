@@ -1271,6 +1271,27 @@ pub fn is_east_asian_typeface(name: &str) -> bool {
     name.chars().any(|c| c as u32 >= 0x2e80) || HINTS.iter().any(|h| name.contains(h))
 }
 
+/// Built-in Windows/Office Japanese typefaces that are installed on Windows Office itself,
+/// so a recorded `w:charset="80"` (128) or `a:ea/@charset="-128"` in a file does not mean
+/// Windows Office fell back to Yu Gothic for them.
+fn is_office_japanese_face(name: &str) -> bool {
+    let base = strip_weight_suffix(name).map_or(name, |(b, _)| b);
+    matches!(
+        base,
+        "ＭＳ 明朝" | "MS Mincho" | "ＭＳ明朝"
+            | "ＭＳ Ｐ明朝" | "MS PMincho" | "ＭＳＰ明朝"
+            | "ＭＳ ゴシック" | "MS Gothic" | "ＭＳゴシック"
+            | "ＭＳ Ｐゴシック" | "MS PGothic" | "ＭＳＰゴシック"
+            | "游明朝" | "Yu Mincho" | "YuMincho"
+            | "游ゴシック" | "Yu Gothic" | "YuGothic"
+            | "メイリオ" | "Meiryo" | "Meiryo UI"
+            | "BIZ UD明朝" | "BIZ UDMincho" | "BIZ UDP明朝" | "BIZ UDPMincho"
+            | "BIZ UDゴシック" | "BIZ UDGothic" | "BIZ UDPゴシック" | "BIZ UDPGothic"
+            | "HGP明朝B" | "HGS明朝B" | "HG明朝B" | "HGP明朝E" | "HGS明朝E" | "HG明朝E"
+            | "HGPゴシックM" | "HGSゴシックM" | "HGゴシックM" | "HGPゴシックE" | "HGSゴシックE" | "HGゴシックE"
+    ) // i18n-ok（フォント名の判定）
+}
+
 /// Whether an uninstalled Latin typeface name is a serif face (drawn with
 /// Times New Roman / Liberation Serif rather than a sans-serif stand-in).
 fn is_serif_latin_typeface(name: &str) -> bool {
@@ -2344,6 +2365,13 @@ impl Fonts {
         }
     }
 
+    /// Whether `name` should use the file's recorded Office stand-in (`missing_japanese_stand_in`)
+    /// rather than a category stand-in. Built-in Windows/Office Japanese faces are installed on
+    /// Windows Office itself, so a recorded `charset` 128/-128 in a file does not mean Yu Gothic.
+    fn uses_recorded_office_stand_in(&self, name: &str) -> bool {
+        self.recorded_office_face(name) && !is_office_japanese_face(name)
+    }
+
     fn installed_of(&self, names: &[&str]) -> Option<SharedString> {
         first_installed_family(names, &self.installed, Some(&self.embedded_index), true)
     }
@@ -2369,7 +2397,7 @@ impl Fonts {
         if self.available(name).is_some()
             || !is_east_asian_typeface(name)
             || cjk_face_hint(name) != Some(CjkFace::Mincho)
-            || self.recorded_office_face(name)
+            || self.uses_recorded_office_stand_in(name)
             || !self.administrative_mincho_set()
         {
             return None;
@@ -2419,14 +2447,15 @@ impl Fonts {
         if let Some(fallback) = web_font_face_fallback(name) {
             return Self::named_weight(name, fallback, weight);
         }
-        // A missing East Asian face whose file records neither a charset nor an Excel family follows the
-        // category in its name: a system mincho or gothic on Windows, macOS or Linux. Mincho uses IPAmj
-        // Mincho when the additional administrative mincho is installed as well, and that face supplies
-        // the glyphs IPAmj lacks (`mincho_supplement`). The stored name is left as the file wrote it.
-        // A recorded charset or Excel family still decides (`missing_japanese_stand_in`), including
-        // Word's charset 128, which is Yu Gothic even for a mincho name.
+        // A missing East Asian face whose file records neither a charset nor an Excel family (or that
+        // is a built-in Windows/Office Japanese face missing on this OS) follows the category in its
+        // name: a system mincho or gothic on Windows, macOS or Linux. Mincho uses IPAmj Mincho when
+        // the additional administrative mincho is installed as well, and that face supplies the glyphs
+        // IPAmj lacks (`mincho_supplement`). The stored name is left as the file wrote it.
+        // For unknown faces, a recorded charset or Excel family still decides (`missing_japanese_stand_in`),
+        // including Word's charset 128, which is Yu Gothic even for a mincho name.
         if is_east_asian_typeface(name)
-            && !self.recorded_office_face(name)
+            && !self.uses_recorded_office_stand_in(name)
             && let Some(face) = cjk_face_hint(name)
             && let Some(fallback) = self.category_stand_in(face)
         {
@@ -7083,26 +7112,55 @@ mod font_resolution_tests {
         assert_eq!(yu_only.family("ＭＳ ゴシック").0.as_ref(), "YuGothic");
     }
 
-    /// A recorded charset or Excel family still decides, including a mincho name with charset 128.
+    /// A recorded charset or Excel family still decides for unknown faces, including a mincho name with charset 128.
     #[test]
     fn a_recorded_charset_or_excel_family_is_not_replaced_by_the_name() {
         let installed = ["IPAmjMincho", "Add Character_GJMincho", "Hiragino Mincho ProN", "Hiragino Sans"];
         let mut table = std::collections::BTreeMap::new();
-        table.insert("ＭＳ 明朝".into(), ibis_doc_model::FontTableEntry { charset: Some(128), ..Default::default() });
+        table.insert("未知明朝".into(), ibis_doc_model::FontTableEntry { charset: Some(128), ..Default::default() });
         let word = category_fonts(&installed, Some(table), std::collections::BTreeMap::new());
-        assert_eq!(word.family("ＭＳ 明朝").0.as_ref(), "Hiragino Sans");
-        let drawn = word.font(&TextStyle { font: Some("ＭＳ 明朝".into()), ..TextStyle::default() });
+        assert_eq!(word.family("未知明朝").0.as_ref(), "Hiragino Sans");
+        let drawn = word.font(&TextStyle { font: Some("未知明朝".into()), ..TextStyle::default() });
         assert!(drawn.fallbacks.is_none());
 
         let mut traits = std::collections::BTreeMap::new();
-        traits.insert("ＭＳ ゴシック".into(), ibis_doc_model::TypefaceTraits { family: Some(1), charset: None });
+        traits.insert("未知ゴシック".into(), ibis_doc_model::TypefaceTraits { family: Some(1), charset: None });
         let excel = category_fonts(&installed, None, traits);
-        assert_eq!(excel.family("ＭＳ ゴシック").0.as_ref(), "Hiragino Mincho ProN");
+        assert_eq!(excel.family("未知ゴシック").0.as_ref(), "Hiragino Mincho ProN");
+
+        let mut ppt = std::collections::BTreeMap::new();
+        ppt.insert("未知明朝".into(), ibis_doc_model::TypefaceTraits { family: None, charset: Some(-128) });
+        let presentation = category_fonts(&installed, None, ppt);
+        assert_eq!(presentation.family("未知明朝").0.as_ref(), "Hiragino Sans");
+    }
+
+    /// Built-in Windows/Office Japanese faces are never "missing" on Windows Office itself,
+    /// so a recorded charset 128/-128 still resolves to an installed face of the same category.
+    #[test]
+    fn office_japanese_faces_follow_category_even_with_recorded_charset() {
+        let mac_installed = ["Hiragino Mincho ProN", "Hiragino Sans"];
+        let mut table = std::collections::BTreeMap::new();
+        table.insert("ＭＳ 明朝".into(), ibis_doc_model::FontTableEntry { charset: Some(128), ..Default::default() });
+        table.insert("ＭＳ Ｐ明朝".into(), ibis_doc_model::FontTableEntry { charset: Some(128), ..Default::default() });
+        table.insert("ＭＳ ゴシック".into(), ibis_doc_model::FontTableEntry { charset: Some(128), ..Default::default() });
+        let word = category_fonts(&mac_installed, Some(table.clone()), std::collections::BTreeMap::new());
+        assert_eq!(word.family("ＭＳ 明朝").0.as_ref(), "Hiragino Mincho ProN");
+        assert_eq!(word.family("ＭＳ Ｐ明朝").0.as_ref(), "Hiragino Mincho ProN");
+        assert_eq!(word.family("ＭＳ ゴシック").0.as_ref(), "Hiragino Sans");
+
+        let both = ["IPAmjMincho", "Add Character_GJMincho", "Hiragino Mincho ProN", "Hiragino Sans"];
+        let admin = category_fonts(&both, Some(table), std::collections::BTreeMap::new());
+        let drawn = admin.font(&TextStyle { font: Some("ＭＳ 明朝".into()), ..TextStyle::default() });
+        assert_eq!(drawn.family.as_ref(), "IPAmjMincho");
+        assert_eq!(
+            drawn.fallbacks.as_ref().map(|list| list.fallback_list().to_vec()),
+            Some(vec!["Add Character_GJMincho".to_string()])
+        );
 
         let mut ppt = std::collections::BTreeMap::new();
         ppt.insert("ＭＳ 明朝".into(), ibis_doc_model::TypefaceTraits { family: None, charset: Some(-128) });
-        let presentation = category_fonts(&installed, None, ppt);
-        assert_eq!(presentation.family("ＭＳ 明朝").0.as_ref(), "Hiragino Sans");
+        let presentation = category_fonts(&mac_installed, None, ppt);
+        assert_eq!(presentation.family("ＭＳ 明朝").0.as_ref(), "Hiragino Mincho ProN");
     }
 
     #[test]
