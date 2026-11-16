@@ -139,12 +139,13 @@ pub fn raw_csv_records(data: &[u8], encoding: OriginalEncoding, delimiter: char)
     Ok(records)
 }
 
-/// Replace selected existing fields while copying every other byte verbatim.
-/// Coordinates are zero-based. Structural edits require a separate policy and
-/// are deliberately not inferred by this function.
+/// Replace fields or append fields and records, copying every other byte
+/// verbatim. Coordinates are zero-based. Inserting or deleting existing rows
+/// or columns requires a separate policy and is not inferred here.
 pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter: char, changes: &[(usize, usize, String)]) -> Result<Vec<u8>, Error> {
     let mut pending = std::collections::BTreeMap::new();
     for (row, column, value) in changes {
+        if *row >= 1_048_576 || *column >= 16_384 { return Err(Error::new("CSV のセル位置が範囲外です")); }
         let field = if value.contains([delimiter, '"', '\r', '\n']) {
             format!("\"{}\"", value.replace('"', "\"\""))
         } else { value.clone() };
@@ -155,14 +156,70 @@ pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter
     }
     let mut pending: std::collections::VecDeque<_> = pending.into_iter().collect();
     let mut replacements = Vec::with_capacity(pending.len());
+    let bom_len = match encoding { OriginalEncoding::Utf8Bom => 3, OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => 2, _ => 0 };
+    let separator = encode_original(&delimiter.to_string(), encoding)?[bom_len..].to_vec();
+    let (mut current_row, mut field_count, mut record_count) = (0usize, 0usize, 0usize);
+    let mut too_many_columns = false;
+    let mut last_ending = None;
+    let mut trailing_ending = false;
     scan_raw_csv(data, encoding, delimiter, |event| {
-        if let RawCsvEvent::Field(row, column, range) = event
-            && pending.front().is_some_and(|(position, _)| *position == (row, column)) {
-            let (_, bytes) = pending.pop_front().expect("checked above");
-            replacements.push((range, bytes));
+        match event {
+            RawCsvEvent::Field(row, column, range) => {
+                current_row = row;
+                field_count = column + 1;
+                if pending.front().is_some_and(|(position, _)| *position == (row, column)) {
+                    let (_, bytes) = pending.pop_front().expect("checked above");
+                    replacements.push((range, bytes));
+                }
+            }
+            RawCsvEvent::End(terminator) => {
+                record_count += 1;
+                trailing_ending = !terminator.is_empty();
+                if trailing_ending { last_ending = Some(terminator.clone()); }
+                let mut suffix = Vec::new();
+                while pending.front().is_some_and(|((row, _), _)| *row == current_row) {
+                    let ((_, column), bytes) = pending.pop_front().expect("checked above");
+                    if column < field_count || column >= 16_384 { too_many_columns = true; continue; }
+                    // Clearing a cell outside the original record does not add
+                    // trailing empty fields. Gaps before a real value do.
+                    if bytes.is_empty() { continue; }
+                    for _ in field_count..=column { suffix.extend_from_slice(&separator); }
+                    suffix.extend_from_slice(&bytes);
+                    field_count = column + 1;
+                }
+                if !suffix.is_empty() { replacements.push((terminator.start..terminator.start, suffix)); }
+            }
         }
     })?;
-    if !pending.is_empty() { return Err(Error::new("元の CSV にないセルはこの方法で保存できません")); }
+    if too_many_columns { return Err(Error::new("CSV の列数が範囲外です")); }
+    // Cleared cells outside the original data do not create empty records.
+    pending.retain(|(_, bytes)| !bytes.is_empty());
+    if !pending.is_empty() {
+        let last_ending = match last_ending {
+            Some(range) => data[range].to_vec(),
+            None => encode_original("\r\n", encoding)?[bom_len..].to_vec(),
+        };
+        let mut suffix = Vec::new();
+        if record_count != 0 && !trailing_ending { suffix.extend_from_slice(&last_ending); }
+        let mut next_row = record_count;
+        while let Some(((row, _), _)) = pending.front() {
+            let row = *row;
+            if row < next_row || row >= 1_048_576 { return Err(Error::new("CSV の行数が範囲外です")); }
+            while next_row < row { suffix.extend_from_slice(&last_ending); next_row += 1; }
+            let mut next_column = 0usize;
+            while pending.front().is_some_and(|((r, _), _)| *r == row) {
+                let ((_, column), bytes) = pending.pop_front().expect("checked above");
+                if column >= 16_384 || column < next_column { return Err(Error::new("CSV の列数が範囲外です")); }
+                for _ in next_column..column { suffix.extend_from_slice(&separator); }
+                suffix.extend_from_slice(&bytes);
+                next_column = column + 1;
+                if pending.front().is_some_and(|((r, _), _)| *r == row) { suffix.extend_from_slice(&separator); }
+            }
+            next_row = row + 1;
+            if !pending.is_empty() || trailing_ending { suffix.extend_from_slice(&last_ending); }
+        }
+        replacements.push((data.len()..data.len(), suffix));
+    }
     let mut output = Vec::with_capacity(data.len());
     let mut offset = 0;
     for (range, bytes) in replacements {
@@ -174,8 +231,8 @@ pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter
     Ok(output)
 }
 
-/// Apply tracked cell edits when their CSV text re-imports to the same value.
-/// Formulas and structural changes are refused. `current_disk` is a fresh read used to reject outside changes; the
+/// Apply tracked cell edits when their CSV text re-imports to the same value
+/// or formula. Structural changes are refused. `current_disk` is a fresh read used to reject outside changes; the
 /// caller must also handle changes after that read and restart tracking only
 /// after a successful write.
 pub fn rewrite_tracked_csv(data: &[u8], current_disk: &[u8], format: OriginalCsvFormat, document: &ibis_doc_model::Document, slide: ibis_doc_model::SlideId) -> Result<Vec<u8>, Error> {
@@ -205,7 +262,14 @@ pub fn rewrite_tracked_csv(data: &[u8], current_disk: &[u8], format: OriginalCsv
                     cell.text.clone()
                 },
             },
-            Some(_) => return Err(Error::new("数式の CSV 書き戻しにはまだ対応していません")),
+            Some(cell) => {
+                let formula = cell.formula.as_ref().expect("formula checked above");
+                let text = format!("={formula}");
+                if !matches!(parse_imported(&text, false), Typed::Formula(ref parsed) if ibis_calc::formula::from_file(&ibis_calc::formula::to_file(parsed)) == *formula) {
+                    return Err(Error::new("数式を CSV へ正確に書き戻せません"));
+                }
+                text
+            },
         };
         changes.push((row as usize, column as usize, value));
     }
@@ -330,7 +394,7 @@ mod original_encoding_tests {
         expected.extend_from_slice(&input[record.len()..input.len() - record.len()]);
         expected.extend_from_slice(&encode_original("終,x,\r\n", OriginalEncoding::Cp932).unwrap());
         assert_eq!(changed, expected);
-        assert!(rewrite_raw_csv_fields(&input, OriginalEncoding::Cp932, ',', &[(rows, 0, "x".into())]).is_err());
+        assert!(rewrite_raw_csv_fields(&input, OriginalEncoding::Cp932, ',', &[(1_048_576, 0, "x".into())]).is_err());
         let mut invalid = input;
         invalid.push(0x81);
         assert!(rewrite_raw_csv_fields(&invalid, OriginalEncoding::Cp932, ',', &[(0, 0, "x".into())]).is_err());
@@ -407,7 +471,7 @@ mod original_encoding_tests {
         doc.begin_csv_edit_tracking();
         doc.execute(vec![set(slide, 0, 0)]).unwrap();
         assert!(doc.undo());
-        assert!(doc.tracked_csv_cells().is_none());
+        assert!(doc.tracked_csv_cells().unwrap().is_empty());
         doc.begin_csv_edit_tracking();
         let _ = doc.presentation_mut();
         assert!(doc.tracked_csv_cells().is_none());
@@ -429,7 +493,7 @@ mod original_encoding_tests {
         assert!(doc.tracked_csv_cells().unwrap().is_empty());
         assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), original);
         assert!(doc.redo());
-        assert!(doc.tracked_csv_cells().is_none());
+        assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), b"changed,\"text\",\r\n");
         assert!(doc.undo());
         assert!(doc.tracked_csv_cells().unwrap().is_empty());
         // Mutations outside command history cannot be proven undone.
@@ -447,13 +511,149 @@ mod original_encoding_tests {
     }
 
     #[test]
+    fn partial_undo_redo_preserves_original_fields_and_saved_boundary() {
+        use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand};
+        let original = b"00123,\"first\",\"second\",\r\n";
+        let opened = crate::open(original.to_vec()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        let set = |column, text: &str| Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+            row: 0, column, input: CellInput::Value(CellValue::Text(text.into())),
+        }] });
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![set(0, "A")]).unwrap();
+        doc.execute(vec![set(1, "B")]).unwrap();
+        doc.execute(vec![set(1, "C")]).unwrap();
+        assert!(doc.undo());
+        assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), b"A,B,\"second\",\r\n");
+        assert!(doc.undo());
+        assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), b"A,\"first\",\"second\",\r\n");
+        assert!(doc.redo());
+        assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), b"A,B,\"second\",\r\n");
+        assert!(doc.undo());
+        assert!(doc.undo());
+        assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), original);
+        assert!(doc.redo());
+        let saved = rewrite_tracked_csv(original, original, format, &doc, slide).unwrap();
+        doc.begin_csv_edit_tracking();
+        doc.mark_clean();
+        assert!(doc.undo());
+        assert!(rewrite_tracked_csv(&saved, &saved, format, &doc, slide).is_err(), "history from before saving is not relative to the saved bytes");
+    }
+
+    #[test]
+    fn appending_fields_keeps_original_records_and_encodings() {
+        for encoding in [OriginalEncoding::Utf8Bom, OriginalEncoding::Utf16LeBom, OriginalEncoding::Utf16BeBom, OriginalEncoding::Cp932] {
+            let input = encode_original("00123,\"a\",\r\nx\nlast", encoding).unwrap();
+            let changes = [(0, 2, "old-empty".into()), (0, 4, "名,前".into()), (1, 2, "品".into()), (2, 1, "終".into())];
+            let output = rewrite_raw_csv_fields(&input, encoding, ',', &changes).unwrap();
+            let expected = encode_original("00123,\"a\",old-empty,,\"名,前\"\r\nx,,品\nlast,終", encoding).unwrap();
+            assert_eq!(output, expected, "{encoding:?}");
+            assert_eq!(rewrite_raw_csv_fields(&input, encoding, ',', &[(1, 10, String::new())]).unwrap(), input);
+            assert!(rewrite_raw_csv_fields(&input, encoding, ',', &[(0, 16_384, "x".into())]).is_err());
+            assert!(rewrite_raw_csv_fields(&input, encoding, ',', &[(1_048_576, 0, "x".into())]).is_err());
+        }
+    }
+
+    #[test]
+    fn append_records_preserves_final_ending_and_gaps() {
+        for encoding in [OriginalEncoding::Utf8Bom, OriginalEncoding::Utf16LeBom, OriginalEncoding::Utf16BeBom, OriginalEncoding::Cp932] {
+            for (input, expected) in [
+                ("a,b", "a,b\r\n,x"),
+                ("a,b\n", "a,b\n,x\n"),
+                ("a,b\r", "a,b\r,x\r"),
+                ("a,b\r\n", "a,b\r\n,x\r\n"),
+                ("a\nb\r\n", "a\nb\r\n,x\r\n"),
+            ] {
+                let row = if input.starts_with("a\nb") { 2 } else { 1 };
+                let bytes = encode_original(input, encoding).unwrap();
+                assert_eq!(rewrite_raw_csv_fields(&bytes, encoding, ',', &[(row, 1, "x".into())]).unwrap(), encode_original(expected, encoding).unwrap());
+            }
+            let bytes = encode_original("a", encoding).unwrap();
+            let changes = [(0, 2, "z".into()), (3, 0, "x".into()), (3, 2, "y".into())];
+            assert_eq!(rewrite_raw_csv_fields(&bytes, encoding, ',', &changes).unwrap(), encode_original("a,,z\r\n\r\n\r\nx,,y", encoding).unwrap());
+            assert_eq!(rewrite_raw_csv_fields(&bytes, encoding, ',', &[(2, 5, String::new())]).unwrap(), bytes);
+            let empty = encode_original("", encoding).unwrap();
+            assert_eq!(rewrite_raw_csv_fields(&empty, encoding, ',', &[(0, 0, "名".into())]).unwrap(), encode_original("名", encoding).unwrap());
+        }
+    }
+
+    #[test]
+    fn tracked_edit_can_add_a_field_and_undo_it() {
+        use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand};
+        let input = b"00123,\"x\"\r\nlast,field";
+        let opened = crate::open(input.to_vec()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+            row: 0, column: 4, input: CellInput::Value(CellValue::Text("added".into())),
+        }] })]).unwrap();
+        assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), b"00123,\"x\",,,added\r\nlast,field");
+        assert!(doc.undo());
+        assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), input);
+        assert!(doc.redo());
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+            row: 3, column: 1, input: CellInput::Value(CellValue::Text("new".into())),
+        }] })]).unwrap();
+        assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), b"00123,\"x\",,,added\r\nlast,field\r\n\r\n,new");
+        assert!(doc.undo());
+        assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), b"00123,\"x\",,,added\r\nlast,field");
+    }
+
+    #[test]
+    fn tracked_formula_is_quoted_and_reimports_as_the_same_formula() {
+        use ibis_doc_model::{CellEdit, CellInput, Command, Document, SheetCommand};
+        let input = b"00123,old\r\n";
+        let opened = crate::open(input.to_vec()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+            row: 0, column: 1, input: CellInput::Formula("SUM(A1,2)".into()),
+        }] })]).unwrap();
+        let output = rewrite_tracked_csv(input, input, format, &doc, slide).unwrap();
+        assert_eq!(output, b"00123,\"=SUM(A1,2)\"\r\n");
+        let reopened = crate::open(output).unwrap();
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&reopened.presentation.slides[0]).unwrap();
+        assert_eq!(sheet.cell(0, 1).unwrap().formula.as_deref(), Some("SUM(A1,2)"));
+        assert!(doc.undo());
+        assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), input);
+    }
+
+    #[test]
+    fn number_format_in_same_cell_edit_can_round_trip() {
+        use ibis_doc_model::{CellEdit, CellInput, CellRange, CellValue, Command, Document, SheetCommand, StyleChange};
+        let input = b"00123,old\r\n";
+        let opened = crate::open(input.to_vec()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        let range = CellRange { first_row: 0, last_row: 0, first_column: 1, last_column: 1 };
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![
+            Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 0, column: 1, input: CellInput::Value(CellValue::Number(0.5)) }] }),
+            Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![range], change: StyleChange::NumberFormat("0%".into()) }),
+        ]).unwrap();
+        let output = rewrite_tracked_csv(input, input, format, &doc, slide).unwrap();
+        assert_eq!(output, b"00123,50%\r\n");
+        assert!(doc.undo());
+        assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), input);
+        doc.execute(vec![Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![range], change: StyleChange::NumberFormat("0%".into()) })]).unwrap();
+        assert!(doc.tracked_csv_cells().is_none(), "formatting alone may change a field's exported display");
+    }
+
+    #[test]
     fn raw_field_rewrites_only_selected_bytes() {
         let original = b"\x87\x90,00123,\r\n\x81\xe0,\"x\",\n";
         assert_eq!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[]).unwrap(), original);
         let changes = [(1, 1, "a,\"b\"".to_string())];
         assert_eq!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &changes).unwrap(), b"\x87\x90,00123,\r\n\x81\xe0,\"a,\"\"b\"\"\",\n");
         assert!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[(0, 1, "😀".into())]).is_err());
-        assert!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[(3, 0, "x".into())]).is_err());
+        assert!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[(1_048_576, 0, "x".into())]).is_err());
         assert!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[(0, 1, "x".into()), (0, 1, "y".into())]).is_err());
         for encoding in [OriginalEncoding::Utf8Bom, OriginalEncoding::Utf16LeBom, OriginalEncoding::Utf16BeBom] {
             let input = encode_original("00123,\"old\",\r\n", encoding).unwrap();

@@ -20735,6 +20735,23 @@ fn csv_in_place_preserves_cp932() {
     let (decoded, encoding) = ibis_pptx::csv::decode_with_original_encoding(&saved).unwrap();
     assert_eq!(encoding, ibis_pptx::csv::OriginalEncoding::Cp932);
     assert!(decoded.contains("みかん"));
+    s.click_cell("E2");
+    s.enter("追加", "enter");
+    s.key("cmd-z");
+    s.key("cmd-shift-z");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after redo and field addition"));
+    let saved = std::fs::read(&path).unwrap();
+    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n"));
+    s.click_cell("B4");
+    s.enter("新行", "enter");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save appended row"));
+    let saved = std::fs::read(&path).unwrap();
+    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n\r\n,新行\r\n"));
+    s.click_cell("C4");
+    s.enter("50%", "enter");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save percentage"));
+    let saved = std::fs::read(&path).unwrap();
+    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n\r\n,新行,50%\r\n"));
     s.with(|e, _| {
         assert!(e.copy_to(&path).is_err());
         assert!(e.write_csv(&path).is_err());
