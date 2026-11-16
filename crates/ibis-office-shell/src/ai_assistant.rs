@@ -19,7 +19,7 @@ use ibis_doc_model::flow::{Block, FlowParagraph, FlowRunKind};
 use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange};
 use ibis_doc_model::machine_readability::{CandidateKind, candidates as mr_candidates};
 use ibis_doc_model::model::{AutoShape, Shape, ShapeId, ShapeKind, Slide, SlideId};
-use ibis_doc_model::sd_jwt::{Es256KeyPair, SdJwtOptions, issue_sd_jwt};
+use ibis_doc_model::sd_jwt::{Es256KeyPair, Oid4vpRequest, SdJwtOptions, issue_sd_jwt};
 use ibis_doc_model::sd_jwt_binding::{
     BindingSource, ClaimValue, bind_range_as_sd_claim_commands, build_sd_jwt_template_commands,
     extract_sheet_claims,
@@ -37,9 +37,9 @@ use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_c
 use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
-    MAX_READ_CELLS, MoveSlideArgs, ParseVcTokenArgs, ReadParagraphsArgs, ReplaceParagraphArgs,
-    SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs, SetShapeTextArgs,
-    SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
+    MAX_READ_CELLS, MoveSlideArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs,
+    ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
+    SetShapeTextArgs, SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
     build_replace_paragraph_command, build_set_run_format_command, docx_tool_definitions,
     parse_clear_cells_command, parse_create_sheet_arg, parse_delete_axis_command,
     parse_insert_axis_command, parse_merge_cells_command, parse_range_arg,
@@ -308,7 +308,7 @@ impl SlideEditor {
                         "You are an AI spreadsheet assistant inside ibisOffice. \
                          Use the provided tools to inspect the workbook and apply edits or formatting. \
                          Always inspect relevant cells with read_range before modifying existing data. \
-                         For SD-JWT Verifiable Credentials (VC) tasks, use inspect_vc_bindings, apply_vc_template, infer_vc_schema, bind_vc_claim, issue_vc_preview, and parse_vc_token, and clearly explain mandatory claims (claim.*, e.g. vct, iss) vs selective-disclosure claims (sd.* with disclose.* toggles). \
+                         For SD-JWT Verifiable Credentials (VC) tasks, use inspect_vc_bindings, apply_vc_template, infer_vc_schema, bind_vc_claim, issue_vc_preview, parse_vc_token, and prepare_oid4vp_presentation, and clearly explain mandatory claims (claim.*, e.g. vct, iss) vs selective-disclosure claims (sd.* with disclose.* toggles) and OID4VP Key Binding (aud/nonce). \
                          Respond concisely in the user's language."
                     }
                     AiDocKind::Pptx => {
@@ -1519,6 +1519,120 @@ impl SlideEditor {
                         )
                     }
                 }
+            }
+            "prepare_oid4vp_presentation" => {
+                let parsed: Result<PrepareOid4vpArgs, _> = serde_json::from_str(args);
+                let arg = match parsed {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return (
+                            json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                            None,
+                            format!("✗ prepare_oid4vp_presentation: {e}"),
+                        );
+                    }
+                };
+                let Some(req) = Oid4vpRequest::parse(&arg.request) else {
+                    return (
+                        json!({ "error": "invalid OID4VP request (expected openid4vp:// URL or JSON with client_id/nonce)" }).to_string(),
+                        None,
+                        "✗ prepare_oid4vp_presentation: invalid request".to_string(),
+                    );
+                };
+                let slide = match self.resolve_ai_target_slide(args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            json!({ "error": e }).to_string(),
+                            None,
+                            format!("✗ prepare_oid4vp_presentation: {e}"),
+                        );
+                    }
+                };
+                let Some(mut bindings) = extract_sheet_claims(self.presentation(), slide) else {
+                    return (
+                        json!({ "error": "no SD-JWT bindings found on this worksheet" }).to_string(),
+                        None,
+                        "✗ prepare_oid4vp_presentation: no bindings".to_string(),
+                    );
+                };
+
+                let available_paths: std::collections::BTreeSet<String> =
+                    bindings.claims.iter().map(|c| c.path_str.clone()).collect();
+                let mut matched_claims = Vec::new();
+                let mut missing_claims = Vec::new();
+                for req_path in &req.requested_claims {
+                    if available_paths.contains(req_path) {
+                        matched_claims.push(req_path.clone());
+                    } else {
+                        missing_claims.push(req_path.clone());
+                    }
+                }
+
+                let cmd = if arg.apply_to_sheet && !req.requested_claims.is_empty() {
+                    let req_refs: Vec<&str> =
+                        req.requested_claims.iter().map(String::as_str).collect();
+                    let cmds = bindings.set_disclose_commands(self.presentation(), &req_refs, true);
+                    if cmds.is_empty() {
+                        None
+                    } else {
+                        Some(Command::Group(cmds))
+                    }
+                } else {
+                    None
+                };
+
+                if !req.requested_claims.is_empty() {
+                    let wanted: std::collections::BTreeSet<&str> =
+                        req.requested_claims.iter().map(String::as_str).collect();
+                    for claim in &mut bindings.claims {
+                        if claim.selective {
+                            claim.disclose = wanted.contains(claim.path_str.as_str());
+                        }
+                    }
+                }
+
+                let holder_key = Es256KeyPair::demo_holder_key();
+                let mut options = SdJwtOptions::default();
+                options.holder_public_jwk = Some(holder_key.to_public_jwk());
+                let output = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
+                let kb = output.attach_key_binding(&req.client_id, &req.nonce, 1_700_000_000, &holder_key);
+
+                let disclosed_paths: Vec<_> = bindings
+                    .claims
+                    .iter()
+                    .filter(|c| !c.selective || c.disclose)
+                    .map(|c| c.path_str.clone())
+                    .collect();
+                let hidden_paths: Vec<_> = bindings
+                    .claims
+                    .iter()
+                    .filter(|c| c.selective && !c.disclose)
+                    .map(|c| c.path_str.clone())
+                    .collect();
+                let req_count = req.requested_claims.len();
+                (
+                    json!({
+                        "ok": true,
+                        "client_id": req.client_id,
+                        "nonce": req.nonce,
+                        "response_uri": req.response_uri,
+                        "requested_claims": req.requested_claims,
+                        "matched_claims": matched_claims,
+                        "missing_claims": missing_claims,
+                        "disclosed_paths": disclosed_paths,
+                        "hidden_paths": hidden_paths,
+                        "applied_to_sheet": cmd.is_some(),
+                        "sd_hash": kb.sd_hash,
+                        "vp_token": kb.vp_token,
+                    })
+                    .to_string(),
+                    cmd,
+                    format!(
+                        "✓ prepare_oid4vp_presentation (aud={}, {req_count} requested)",
+                        req.client_id
+                    ),
+                )
             }
             other => (
                 json!({ "error": format!("unknown tool: {other}") }).to_string(),

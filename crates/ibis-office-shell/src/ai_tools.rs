@@ -419,6 +419,23 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "prepare_oid4vp_presentation",
+                description: "Parse an OID4VP Authorization Request (openid4vp:// URL or JSON with dcql_query / presentation_definition), match requested claims against the worksheet, and generate a Key Binding JWT vp_token preview.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string" },
+                        "request": { "type": "string", "description": "OID4VP URL (openid4vp://?...) or Authorization Request JSON." },
+                        "apply_to_sheet": { "type": "boolean", "description": "If true, update the worksheet's disclose.* checkboxes to match the requested claims." }
+                    },
+                    "required": ["request"],
+                    "additionalProperties": false
+                }),
+            },
+        },
     ]
 }
 
@@ -1313,6 +1330,13 @@ pub struct ParseVcTokenArgs {
     pub import_to_sheet: bool,
 }
 
+#[derive(Deserialize)]
+pub struct PrepareOid4vpArgs {
+    pub request: String,
+    #[serde(default)]
+    pub apply_to_sheet: bool,
+}
+
 pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command, String> {
     let args: SetParagraphAlignArgs =
         serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
@@ -1507,5 +1531,12 @@ mod tests {
         let parse_args: ParseVcTokenArgs =
             serde_json::from_str(r#"{"token":"eyJ...~disc~","import_to_sheet":true}"#).unwrap();
         assert!(parse_args.import_to_sheet);
+
+        let vp_args: PrepareOid4vpArgs = serde_json::from_str(
+            r#"{"request":"openid4vp://?client_id=https://verifier.example&nonce=abc","apply_to_sheet":true}"#,
+        )
+        .unwrap();
+        assert!(vp_args.apply_to_sheet);
+        assert!(vp_args.request.starts_with("openid4vp://"));
     }
 }
