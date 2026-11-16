@@ -25,6 +25,7 @@ use ibis_doc_model::sd_jwt_binding::{
     extract_sheet_claims,
 };
 use ibis_doc_model::sd_jwt_import::{ParsedCredentialFormat, parse_mdoc_text, parse_sd_jwt};
+use ibis_doc_model::sd_jwt_mdoc::{MdocOptions, issue_mdoc};
 use ibis_doc_model::sd_jwt_schema::SdJwtSchema;
 use ibis_doc_model::sheet_calc::sheet_of_slide;
 use ibis_doc_model::sheet_command::SheetCommand;
@@ -1360,9 +1361,11 @@ impl SlideEditor {
             "issue_vc_preview" => {
                 let parsed: Result<IssueVcPreviewArgs, _> = if args.trim().is_empty() {
                     Ok(IssueVcPreviewArgs {
+                        format: None,
                         disclose_paths: None,
                         vct: None,
                         iss: None,
+                        name_space: None,
                     })
                 } else {
                     serde_json::from_str(args)
@@ -1403,14 +1406,6 @@ impl SlideEditor {
                         }
                     }
                 }
-                let mut options = SdJwtOptions::default();
-                if let Some(vct) = arg.vct.filter(|s| !s.trim().is_empty()) {
-                    options.default_vct = Some(vct);
-                }
-                if let Some(iss) = arg.iss.filter(|s| !s.trim().is_empty()) {
-                    options.default_iss = Some(iss);
-                }
-                let output = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
                 let disclosed_paths: Vec<_> = bindings
                     .claims
                     .iter()
@@ -1423,10 +1418,55 @@ impl SlideEditor {
                     .filter(|c| c.selective && !c.disclose)
                     .map(|c| c.path_str.clone())
                     .collect();
+
+                let format = arg
+                    .format
+                    .as_deref()
+                    .unwrap_or("sd-jwt")
+                    .trim()
+                    .to_ascii_lowercase();
+                if format == "mdoc" {
+                    let mut mdoc_opts = MdocOptions::default();
+                    if let Some(vct) = arg.vct.filter(|s| !s.trim().is_empty()) {
+                        mdoc_opts.doc_type = vct;
+                    }
+                    if let Some(ns) = arg.name_space.filter(|s| !s.trim().is_empty()) {
+                        mdoc_opts.name_space = ns;
+                    }
+                    let mdoc = issue_mdoc(&bindings, &mdoc_opts, &Es256KeyPair::demo_issuer_key());
+                    return (
+                        json!({
+                            "ok": true,
+                            "format": "mdoc",
+                            "doc_type": mdoc.doc_type,
+                            "name_space": mdoc.name_space,
+                            "total_items": mdoc.total_items,
+                            "disclosed_items": mdoc.disclosed_items,
+                            "disclosed_paths": disclosed_paths,
+                            "hidden_paths": hidden_paths,
+                            "mdoc_base64url_presentation": mdoc.base64url_presentation,
+                            "mdoc_hex_presentation": mdoc.hex_presentation,
+                            "mdoc_base64url_all_length": mdoc.base64url_all.len(),
+                        })
+                        .to_string(),
+                        None,
+                        format!("✓ issue_vc_preview (mdoc, {}/{} items)", mdoc.disclosed_items, mdoc.total_items),
+                    );
+                }
+
+                let mut options = SdJwtOptions::default();
+                if let Some(vct) = arg.vct.filter(|s| !s.trim().is_empty()) {
+                    options.default_vct = Some(vct);
+                }
+                if let Some(iss) = arg.iss.filter(|s| !s.trim().is_empty()) {
+                    options.default_iss = Some(iss);
+                }
+                let output = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
                 let disc_count = output.disclosures.len();
                 (
                     json!({
                         "ok": true,
+                        "format": "sd-jwt",
                         "disclosures_total": disc_count,
                         "disclosed_paths": disclosed_paths,
                         "hidden_paths": hidden_paths,

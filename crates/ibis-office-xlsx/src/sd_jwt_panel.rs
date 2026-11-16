@@ -14,10 +14,11 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use ibis_doc_model::{
-    BoundClaim, CellRange, Es256KeyPair, KeyBindingJwtOutput, Oid4vpRequest,
-    ParsedCredentialFormat, SdJwtOptions, SdJwtOutput, SdJwtSchema, SdJwtTemplateKind,
-    SheetClaimBindings, bind_range_as_sd_claim_commands, build_sd_jwt_template_commands,
-    extract_sheet_claims, issue_sd_jwt, parse_mdoc_text, parse_sd_jwt,
+    BoundClaim, CellRange, Es256KeyPair, KeyBindingJwtOutput, MdocOptions, MdocOutput,
+    Oid4vpRequest, ParsedCredentialFormat, SdJwtOptions, SdJwtOutput, SdJwtSchema,
+    SdJwtTemplateKind, SheetClaimBindings, bind_range_as_sd_claim_commands,
+    build_sd_jwt_template_commands, extract_sheet_claims, issue_mdoc, issue_sd_jwt,
+    parse_mdoc_text, parse_sd_jwt,
 };
 
 use crate::ext::*;
@@ -40,6 +41,7 @@ pub(crate) struct SdJwtPanel {
     pub(crate) bindings: SheetClaimBindings,
     pub(crate) output: Option<SdJwtOutput>,
     pub(crate) kb_output: Option<KeyBindingJwtOutput>,
+    pub(crate) mdoc_output: Option<MdocOutput>,
     pub(crate) message: String,
     pub(crate) is_error: bool,
     pub(crate) ui: Rc<RefCell<BTreeMap<String, Bounds<Pixels>>>>,
@@ -93,6 +95,7 @@ impl SlideEditor {
         let mut options = SdJwtOptions::default();
         options.holder_public_jwk = Some(holder_key.to_public_jwk());
         let sd_out = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
+        let mdoc_out = issue_mdoc(&bindings, &MdocOptions::default(), &Es256KeyPair::demo_issuer_key());
         let kb_out = sd_out.attach_key_binding(
             "https://verifier.example.com",
             "n-0S6_WzA2Mj",
@@ -114,6 +117,7 @@ impl SlideEditor {
             bindings,
             output: Some(sd_out),
             kb_output: Some(kb_out),
+            mdoc_output: Some(mdoc_out),
             message: String::new(),
             is_error: false,
             ui: Default::default(),
@@ -185,12 +189,18 @@ impl SlideEditor {
         } else {
             None
         };
+        let mut mdoc_opts = MdocOptions::default();
+        if let Some(ref vct) = options.default_vct {
+            mdoc_opts.doc_type = vct.clone();
+        }
+        let mdoc_output = issue_mdoc(&bindings, &mdoc_opts, &key);
         let output = issue_sd_jwt(&bindings, &options, &key);
         let kb_output = output.attach_key_binding(&aud, &nonce, 1_700_000_000, &holder_key);
         if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
             panel.bindings = bindings;
             panel.output = Some(output);
             panel.kb_output = Some(kb_output);
+            panel.mdoc_output = Some(mdoc_output);
             panel.message.clear();
             panel.is_error = false;
         }
@@ -694,6 +704,26 @@ impl SlideEditor {
                                     .and_then(|p| p.kb_output.as_ref())
                                     .map(|k| k.vp_token.clone())
                                     .unwrap_or_else(|| vp_step3_copy.clone());
+                                cx.write_to_clipboard(ClipboardItem::new_string(token));
+                                if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
+                                    panel.message = text("xlsx.sd-jwt.copied").to_string();
+                                    panel.is_error = false;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        crate::shell::chrome::action_button("sd-jwt-copy-mdoc-step3")
+                            .small()
+                            .label("mDOC コピー")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.regenerate_sd_jwt(cx);
+                                let token = this
+                                    .sheet_state()
+                                    .and_then(|s| s.panels.sd_jwt.as_ref())
+                                    .and_then(|p| p.mdoc_output.as_ref())
+                                    .map(|m| m.base64url_presentation.clone())
+                                    .unwrap_or_default();
                                 cx.write_to_clipboard(ClipboardItem::new_string(token));
                                 if let Some(panel) = this.wb_mut().panels.sd_jwt.as_mut() {
                                     panel.message = text("xlsx.sd-jwt.copied").to_string();

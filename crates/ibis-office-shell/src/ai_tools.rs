@@ -384,18 +384,20 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
             kind: "function",
             function: ToolFunctionDef {
                 name: "issue_vc_preview",
-                description: "Issue an SD-JWT Verifiable Credential preview from the worksheet bindings using the local demo issuer key. Optionally override which selective claims are disclosed.",
+                description: "Issue an SD-JWT or ISO/IEC 18013-5 mDOC Verifiable Credential preview from the worksheet bindings using the local demo issuer key. Optionally override which selective claims are disclosed.",
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "sheet": { "type": "string" },
+                        "format": { "type": "string", "enum": ["sd-jwt", "mdoc"], "description": "Output credential format (default 'sd-jwt')." },
                         "disclose_paths": {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "Optional list of selective claim paths (e.g. ['family_name', 'birthdate']) to disclose in the presentation; omit to use the sheet's disclose.* toggles."
                         },
-                        "vct": { "type": "string", "description": "Optional fallback Verifiable Credential Type URI." },
-                        "iss": { "type": "string", "description": "Optional fallback issuer URI." }
+                        "vct": { "type": "string", "description": "Optional fallback Verifiable Credential Type URI (or docType for mDOC)." },
+                        "iss": { "type": "string", "description": "Optional fallback issuer URI (SD-JWT)." },
+                        "name_space": { "type": "string", "description": "Optional mDOC namespace (default 'org.iso.18013.5.1')." }
                     },
                     "additionalProperties": false
                 }),
@@ -1317,9 +1319,11 @@ pub struct BindVcClaimArgs {
 
 #[derive(Deserialize)]
 pub struct IssueVcPreviewArgs {
+    pub format: Option<String>,
     pub disclose_paths: Option<Vec<String>>,
     pub vct: Option<String>,
     pub iss: Option<String>,
+    pub name_space: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1520,9 +1524,10 @@ mod tests {
         assert_eq!(infer_args.vct.as_deref(), Some("https://example.com/cred"));
 
         let issue_args: IssueVcPreviewArgs = serde_json::from_str(
-            r#"{"disclose_paths":["family_name","birthdate"],"iss":"https://issuer.example"}"#,
+            r#"{"format":"mdoc","disclose_paths":["family_name","birthdate"],"iss":"https://issuer.example","name_space":"org.iso.18013.5.1"}"#,
         )
         .unwrap();
+        assert_eq!(issue_args.format.as_deref(), Some("mdoc"));
         assert_eq!(
             issue_args.disclose_paths.as_deref(),
             Some(&["family_name".to_string(), "birthdate".to_string()][..])
