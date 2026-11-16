@@ -211,11 +211,24 @@ fn is_uncompressed_le_ts(ts_uid: &str) -> bool {
     )
 }
 
+fn is_jpeg2000_ts(ts_uid: &str) -> bool {
+    matches!(
+        ts_uid,
+        "1.2.840.10008.1.2.4.90"
+            | "1.2.840.10008.1.2.4.91"
+            | "1.2.840.10008.1.2.4.92"
+            | "1.2.840.10008.1.2.4.93"
+    )
+}
+
 fn extract_uncompressed_png(
     obj: &dicom_object::DefaultDicomObject,
     ts_uid: &str,
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
+    if is_jpeg2000_ts(ts_uid) {
+        return extract_jpeg2000_png(obj, warnings);
+    }
     if !is_uncompressed_le_ts(ts_uid) {
         warnings.push(format!(
             "転送構文 `{ts_uid}` は圧縮形式のため Wasm/軽量モードでは画像デコードをスキップし、メタデータのみ抽出しました（非圧縮画像またはデスクトップ版での変換をご利用ください）。"
@@ -305,6 +318,56 @@ fn extract_uncompressed_png(
     };
 
     Some(encode_rgba_png(cols, rows, &rgba))
+}
+
+fn extract_jpeg2000_png(
+    obj: &dicom_object::DefaultDicomObject,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<u8>> {
+    let pixel_elem = obj.element(Tag(0x7FE0, 0x0010)).ok()?;
+    let j2k_bytes: Vec<u8> = if let Some(frags) = pixel_elem.fragments() {
+        let mut combined = Vec::new();
+        for frag in frags {
+            combined.extend_from_slice(frag);
+        }
+        combined
+    } else if let Ok(raw) = pixel_elem.to_bytes() {
+        raw.into_owned()
+    } else {
+        warnings.push("JPEG 2000 画素データの読み取りに失敗したため、メタデータのみ抽出しました。".to_string());
+        return None;
+    };
+
+    let decoded = match j2k_rs::decode(&j2k_bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            warnings.push(format!("JPEG 2000 デコードに失敗したため、メタデータのみ抽出しました: {e}"));
+            return None;
+        }
+    };
+    let px_count = (decoded.width as usize).checked_mul(decoded.height as usize)?;
+    let rgba = match decoded.channels {
+        1 => {
+            let mut out = Vec::with_capacity(px_count * 4);
+            for &g in decoded.data.iter().take(px_count) {
+                out.extend_from_slice(&[g, g, g, 255]);
+            }
+            out
+        }
+        3 => {
+            let mut out = Vec::with_capacity(px_count * 4);
+            for chunk in decoded.data.chunks_exact(3).take(px_count) {
+                out.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+            }
+            out
+        }
+        4 => decoded.data,
+        ch => {
+            warnings.push(format!("JPEG 2000 チャンネル数 {ch} は PNG 変換未対応のためメタデータのみ抽出しました。"));
+            return None;
+        }
+    };
+    Some(encode_rgba_png(decoded.width, decoded.height, &rgba))
 }
 
 /// Minimal pure-Rust RGBA PNG encoder using `miniz_oxide` (no extra crate deps).
@@ -471,9 +534,49 @@ mod tests {
     }
 
     #[test]
-    fn compressed_transfer_syntax_falls_back_safely_without_panic() {
-        // JPEG 2000 Lossless (1.2.840.10008.1.2.4.90)
-        let dcm = build_synthetic_dicom("1.2.840.10008.1.2.4.90", false);
+    fn decodes_jpeg2000_dicom_in_pure_rust_and_falls_back_for_unsupported_ts() {
+        // 1. JPEG 2000 Lossless (1.2.840.10008.1.2.4.90) encoded with j2k_rs
+        let pixels: Vec<u8> = (0u8..16).map(|i| i * 16).collect();
+        let j2k = j2k_rs::encode_j2k(
+            &pixels,
+            4,
+            4,
+            j2k_rs::PixelFormat::Gray8,
+            &j2k_rs::EncodeOptions::default(),
+        )
+        .expect("encode_j2k");
+
+        let mut obj = InMemDicomObject::new_empty_with_dict(StandardDataDictionary);
+        obj.put(InMemElement::new(Tag(0x0010, 0x0010), VR::PN, "J2K^PATIENT"));
+        obj.put(InMemElement::new(Tag(0x0008, 0x0060), VR::CS, "CT"));
+        obj.put(InMemElement::new(Tag(0x0028, 0x0002), VR::US, PrimitiveValue::from(1u16)));
+        obj.put(InMemElement::new(Tag(0x0028, 0x0010), VR::US, PrimitiveValue::from(4u16)));
+        obj.put(InMemElement::new(Tag(0x0028, 0x0011), VR::US, PrimitiveValue::from(4u16)));
+        obj.put(InMemElement::new(Tag(0x0028, 0x0100), VR::US, PrimitiveValue::from(8u16)));
+        obj.put(InMemElement::new(
+            Tag(0x7FE0, 0x0010),
+            VR::OB,
+            dicom_core::value::PixelFragmentSequence::new(vec![], vec![j2k]),
+        ));
+        let file_obj = obj
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .transfer_syntax("1.2.840.10008.1.2.4.90")
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.2")
+                    .media_storage_sop_instance_uid("1.2.3.4.5.6.7.8.90"),
+            )
+            .unwrap();
+        let mut j2k_dcm = Vec::new();
+        file_obj.write_all(&mut j2k_dcm).unwrap();
+
+        let asset = anonymize_and_extract(&j2k_dcm, &DicomAnonymizationProfile::default())
+            .expect("should decode JPEG 2000 DICOM");
+        assert!(asset.stripped_tags.contains(&"PatientName".to_string()));
+        let png = asset.png_bytes.expect("should produce PNG from JPEG 2000 DICOM");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        // 2. Unsupported compressed syntax (JPEG-LS Lossless 1.2.840.10008.1.2.4.80)
+        let dcm = build_synthetic_dicom("1.2.840.10008.1.2.4.80", false);
         let asset = anonymize_and_extract(&dcm, &DicomAnonymizationProfile::default())
             .expect("should succeed with metadata fallback");
         assert!(asset.png_bytes.is_none());
