@@ -20701,7 +20701,7 @@ fn csv_in_place_preserves_cp932() {
     std::fs::create_dir_all(&dir).unwrap();
     let source_path = dir.join(format!("csv-encoding-{}.csv", std::process::id()));
     let copy = dir.join(format!("csv-encoding-copy-{}.csv", std::process::id()));
-    let original = ibis_pptx::csv::encode_sjis("名前,数量\r\nりんご,3\r\n");
+    let original = ibis_pptx::csv::encode_sjis("名前,数量,\r\nりんご,00123,\r\n");
     std::fs::write(&source_path, &original).unwrap();
     let relative = format!("target/scenario-input/csv-encoding-{}.csv", std::process::id());
     let mut s = Scenario::open(&relative);
@@ -20712,9 +20712,19 @@ fn csv_in_place_preserves_cp932() {
     s.settle();
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("CP932 save"));
     let saved = std::fs::read(&path).unwrap();
+    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,\r\n"));
     let (decoded, encoding) = ibis_pptx::csv::decode_with_original_encoding(&saved).unwrap();
     assert_eq!(encoding, ibis_pptx::csv::OriginalEncoding::Cp932);
     assert!(decoded.contains("みかん"));
+    s.with(|e, _| {
+        assert!(e.copy_to(&path).is_err());
+        assert!(e.write_csv(&path).is_err());
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    std::fs::write(&path, b"external change").unwrap();
+    s.update(|e, w, _| assert!(e.save_to(path.clone(), w).is_err()));
+    assert_eq!(std::fs::read(&path).unwrap(), b"external change");
+    std::fs::write(&path, &saved).unwrap();
     s.click_cell("A2");
     s.enter("😀", "enter");
     s.settle();

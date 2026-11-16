@@ -1042,11 +1042,9 @@ impl SlideEditor {
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
         #[cfg(not(target_family = "wasm"))]
         if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
-            && let Some(format) = self.current_csv_format
+            && self.current_csv_format.is_some()
         {
-            let bytes = ibis_pptx::csv::sheet_to_original_csv(self.presentation(), index, format)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            return std::fs::write(path, bytes);
+            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
         }
         std::fs::write(path, ibis_pptx::csv::sheet_to_csv(self.presentation(), index))
     }
@@ -1201,11 +1199,9 @@ impl SlideEditor {
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
         #[cfg(not(target_family = "wasm"))]
         if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
-            && let Some(format) = self.current_csv_format
+            && self.current_csv_format.is_some()
         {
-            let bytes = ibis_pptx::csv::sheet_to_original_csv(self.presentation(), index, format)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            return std::fs::write(path, bytes);
+            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
         }
         let bytes = ibis_pptx::csv::sheet_to_csv_sjis_strict(self.presentation(), index)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -1218,11 +1214,9 @@ impl SlideEditor {
         let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
         #[cfg(not(target_family = "wasm"))]
         if self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
-            && let Some(format) = self.current_csv_format
+            && self.current_csv_format.is_some()
         {
-            let bytes = ibis_pptx::csv::sheet_to_original_csv(self.presentation(), index, format)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            return std::fs::write(path, bytes);
+            return Err(std::io::Error::other("元の CSV への書き出しはできません。通常の保存を使用してください"));
         }
         std::fs::write(path, ibis_pptx::csv::sheet_to_tsv(self.presentation(), index))
     }

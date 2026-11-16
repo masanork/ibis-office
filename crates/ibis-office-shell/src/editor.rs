@@ -499,6 +499,9 @@ pub struct SlideEditor {
     pub source: Option<std::sync::Arc<ibis_pptx::Source>>,
     /// Encoding and delimiter of the current CSV for a same-file save.
     pub current_csv_format: Option<ibis_pptx::csv::OriginalCsvFormat>,
+    /// Bytes and sheet corresponding to the last successful CSV read or save.
+    pub current_csv_original: Option<std::sync::Arc<[u8]>>,
+    pub current_csv_slide: Option<SlideId>,
     /// The file's path, for ⌘S (none in the browser, or for a new document).
     #[cfg(not(target_family = "wasm"))]
     pub path: Option<std::path::PathBuf>,
@@ -846,6 +849,8 @@ impl SlideEditor {
             toolbar_bounds: Default::default(),
             source: None,
             current_csv_format: None,
+            current_csv_original: None,
+            current_csv_slide: None,
             opened_from_legacy: false,
             #[cfg(not(target_family = "wasm"))]
             path: None,
@@ -914,6 +919,9 @@ impl SlideEditor {
     /// opens the file and saves it made (`docx::toc017_unupdated_toc_is_made_on_open`), so that stays a change to save.
     pub fn set_loaded_source(&mut self, source: std::sync::Arc<ibis_pptx::Source>) {
         self.current_csv_format = source.original_csv_format();
+        self.current_csv_original = source.original_csv_bytes();
+        self.current_csv_slide = self.current_csv_original.as_ref().map(|_| self.current_slide);
+        if self.current_csv_original.is_some() { self.document.begin_csv_edit_tracking(); }
         let marked_toc = source.baseline().flow.as_ref().is_some_and(|doc| {
             doc.body.iter().any(|b| {
                 matches!(b, ibis_doc_model::Block::Paragraph(p) if (doc.update_fields || p.field_dirty) && p.field_start.as_ref().is_some_and(|f| f.trim_start().to_ascii_uppercase().starts_with("TOC")))
@@ -1140,6 +1148,8 @@ impl SlideEditor {
         self.document_memory = Default::default();
         self.source = None;
         self.current_csv_format = None;
+        self.current_csv_original = None;
+        self.current_csv_slide = None;
         #[cfg(not(target_family = "wasm"))]
         {
             self.path = None;
@@ -1456,6 +1466,8 @@ impl SlideEditor {
                         // A sheet read in chunks is saved as changes from the empty sheet it starts as.
                         if loaded.csv_stream.is_some() {
                             this.current_csv_format = loaded.source.original_csv_format();
+                            this.current_csv_original = loaded.source.original_csv_bytes();
+                            this.current_csv_slide = this.current_csv_original.as_ref().map(|_| this.current_slide);
                             this.source = Some(loaded.source);
                         } else {
                             this.set_loaded_source(loaded.source);
@@ -1523,6 +1535,7 @@ impl SlideEditor {
                                     let formatted = format_commas(current_rows);
                                     if is_last {
                                         this.is_csv_streaming = false;
+                                        if this.current_csv_original.is_some() { this.document.begin_csv_edit_tracking(); }
                                         this.set_status(crate::i18n::format("editor.csv.loaded", &[("rows", &formatted)]), cx);
                                     } else {
                                         this.set_status(crate::i18n::format("editor.csv.loading", &[("rows", &formatted)]), cx);
@@ -2150,6 +2163,8 @@ impl SlideEditor {
             let path = self.file_path();
             let source = self.source.clone();
             let current_csv_format = self.current_csv_format;
+            let current_csv_original = self.current_csv_original.clone();
+            let current_csv_slide = self.current_csv_slide;
             let current = self.current_slide;
             let current_zoom = self.zoom;
             let existing_count = Self::count_matching_windows(file_id, cx) + 1;
@@ -2164,6 +2179,8 @@ impl SlideEditor {
                 editor.set_file_path(path);
                 editor.source = source;
                 editor.current_csv_format = current_csv_format;
+                editor.current_csv_original = current_csv_original;
+                editor.current_csv_slide = current_csv_slide;
                 editor.standard_read_only = standard_read_only;
                 #[cfg(not(target_family = "wasm"))]
                 { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; }

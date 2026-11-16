@@ -108,6 +108,7 @@ pub(crate) enum SourceMap {
 pub struct Source {
     kind: Kind,
     original_csv_format: Option<crate::csv::OriginalCsvFormat>,
+    original_csv_bytes: Option<Arc<[u8]>>,
     package: Package,
     baseline: Presentation,
     map: SourceMap,
@@ -189,6 +190,7 @@ pub fn open_progressive_with_csv_encoding(
 
     let mut csv_records = None;
     let mut original_csv_format = None;
+    let mut original_csv_bytes = None;
     #[allow(unused_mut)]
     let mut csv_rx = None;
 
@@ -217,6 +219,7 @@ pub fn open_progressive_with_csv_encoding(
     }
 
     if crate::csv::is_csv(&data) {
+        original_csv_bytes = Some(data.clone());
         let (decoded, encoding) = crate::csv::decode_with_choice(&data, csv_encoding)?;
         let text: std::sync::Arc<str> = std::sync::Arc::from(decoded);
         crate::progress::fraction(0.02);
@@ -338,7 +341,7 @@ pub fn open_progressive_with_csv_encoding(
         let (presentation, map) = crate::reader::read_with_sources(&data)?;
         (Kind::Presentation, presentation, SourceMap::Presentation(map))
     };
-    let source = Source { kind, original_csv_format, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
+    let source = Source { kind, original_csv_format, original_csv_bytes, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
     crate::progress::fraction(1.0);
     #[cfg(not(target_family = "wasm"))]
     std::thread::spawn(move || drop(csv_records));
@@ -354,6 +357,11 @@ impl Source {
     /// Encoding detected when a CSV file was opened, if it was a CSV.
     pub fn original_csv_format(&self) -> Option<crate::csv::OriginalCsvFormat> {
         self.original_csv_format
+    }
+
+    /// Original CSV bytes, retained separately from the generated workbook.
+    pub fn original_csv_bytes(&self) -> Option<Arc<[u8]>> {
+        self.original_csv_bytes.clone()
     }
 
     /// Whether the original package declares digital signature parts. This is

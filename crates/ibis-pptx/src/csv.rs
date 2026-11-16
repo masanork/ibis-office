@@ -154,9 +154,8 @@ pub fn rewrite_raw_csv_fields(data: &[u8], encoding: OriginalEncoding, delimiter
     Ok(output)
 }
 
-/// Apply a tracked set of text-cell edits to the original bytes. Other cell
-/// types and structural changes are refused until their CSV semantics are
-/// defined. `current_disk` is a fresh read used to reject outside changes; the
+/// Apply tracked cell edits when their CSV text re-imports to the same value.
+/// Formulas and structural changes are refused. `current_disk` is a fresh read used to reject outside changes; the
 /// caller must also handle changes after that read and restart tracking only
 /// after a successful write.
 pub fn rewrite_tracked_csv(data: &[u8], current_disk: &[u8], format: OriginalCsvFormat, document: &ibis_doc_model::Document, slide: ibis_doc_model::SlideId) -> Result<Vec<u8>, Error> {
@@ -173,13 +172,18 @@ pub fn rewrite_tracked_csv(data: &[u8], current_disk: &[u8], format: OriginalCsv
                 CellValue::Text(value) => {
                     // A CSV quote does not prevent the importer interpreting a
                     // text constant as a number, formula, or apostrophe escape.
-                    if !matches!(parse_imported(value, false), Typed::Value(CellValue::Text(ref parsed), _) if parsed == value) {
+                    if value.is_empty() || value.contains('\r') || !matches!(parse_imported(value, false), Typed::Value(CellValue::Text(ref parsed), _) if parsed == value) {
                         return Err(Error::new("文字列を再読込時に同じ文字列として保持できません"));
                     }
                     value.clone()
                 }
                 CellValue::Empty => String::new(),
-                _ => return Err(Error::new("数値などの CSV 書き戻しにはまだ対応していません")),
+                value => {
+                    if !matches!(parse_imported(&cell.text, false), Typed::Value(ref parsed, _) if parsed == value) {
+                        return Err(Error::new("表示された値を CSV へ正確に書き戻せません"));
+                    }
+                    cell.text.clone()
+                },
             },
             Some(_) => return Err(Error::new("数式の CSV 書き戻しにはまだ対応していません")),
         };
@@ -319,12 +323,14 @@ mod original_encoding_tests {
         doc.begin_csv_edit_tracking();
         doc.execute(vec![set(0, 1, CellInput::Value(CellValue::Text("=1+1".into())))]).unwrap();
         assert!(rewrite_tracked_csv(&second, &second, format, &doc, slide).is_err());
+        assert!(doc.undo());
         doc.begin_csv_edit_tracking();
         doc.execute(vec![set(0, 0, CellInput::Value(CellValue::Number(12.0)))]).unwrap();
-        assert!(rewrite_tracked_csv(&second, &second, format, &doc, slide).is_err());
+        let third = rewrite_tracked_csv(&second, &second, format, &doc, slide).unwrap();
+        assert_eq!(third, b"\xef\xbb\xbf12,first,\r\nb,\"next,field\"\n");
         doc.begin_csv_edit_tracking();
         doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 0, count: 1 })]).unwrap();
-        assert!(rewrite_tracked_csv(&second, &second, format, &doc, slide).is_err());
+        assert!(rewrite_tracked_csv(&third, &third, format, &doc, slide).is_err());
     }
 
     #[test]

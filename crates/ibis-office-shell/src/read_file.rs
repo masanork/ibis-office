@@ -33,19 +33,25 @@ pub fn read_file(path: &std::path::Path) -> Result<Loaded, String> {
 /// As `read_file`; `password` opens a protected file (パスワードを使用して暗号化).
 #[cfg(not(target_family = "wasm"))]
 pub fn read_file_with(path: &std::path::Path, password: Option<&str>) -> Result<Loaded, String> {
-    catch_read_panic(path, || read_file_unguarded(path, password, ibis_pptx::csv::TextEncoding::Auto))
+    read_file_with_stack(path, password, ibis_pptx::csv::TextEncoding::Auto)
 }
 
 /// Re-read a CSV after the user has selected its encoding.
 #[cfg(not(target_family = "wasm"))]
 pub fn read_file_with_csv_encoding(path: &std::path::Path, encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
-    // The GPUI worker used after the encoding prompt can have a small stack;
-    // ZIP creation during CSV import needs more than that stack provides.
+    read_file_with_stack(path, None, encoding)
+}
+
+/// ZIP creation during CSV import needs more stack than GPUI workers provide.
+/// Both automatic and explicitly selected reads can run on those workers.
+#[cfg(not(target_family = "wasm"))]
+fn read_file_with_stack(path: &std::path::Path, password: Option<&str>, encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
     let path = path.to_owned();
-    std::thread::Builder::new().name("csv-encoding-read".into()).stack_size(8 * 1024 * 1024)
-        .spawn(move || catch_read_panic(&path, || read_file_unguarded(&path, None, encoding)))
+    let password = password.map(str::to_owned);
+    std::thread::Builder::new().name("file-read".into()).stack_size(8 * 1024 * 1024)
+        .spawn(move || catch_read_panic(&path, || read_file_unguarded(&path, password.as_deref(), encoding)))
         .map_err(|error| error.to_string())?
-        .join().map_err(|_| "CSV reader thread failed".to_string())?
+        .join().map_err(|_| "File reader thread failed".to_string())?
 }
 
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
@@ -59,6 +65,21 @@ pub fn catch_read_panic<T>(path: &std::path::Path, read: impl FnOnce() -> Result
         note_open_failed(path);
         Err(crate::i18n::text("file.read-crashed").to_string())
     })
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod stack_tests {
+    #[test]
+    fn automatic_csv_read_works_from_a_small_stack() {
+        let path = std::env::temp_dir().join(format!("ibis-csv-small-stack-{}-{}.csv", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let bytes = ibis_pptx::csv::encode_sjis("名前,数量\r\nりんご,00123\r\n");
+        std::fs::write(&path, &bytes).unwrap();
+        let read_path = path.clone();
+        let loaded = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || super::read_file(&read_path)).unwrap().join().unwrap().unwrap();
+        assert_eq!(loaded.source.original_csv_bytes().unwrap().as_ref(), bytes);
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
