@@ -1420,13 +1420,13 @@ mod tests {
     fn parses_set_axis_size_json() {
         let cmd = parse_set_axis_size_command(
             SlideId(1),
-            r#"{"axis":"column","first":1,"last":3,"size_pt":120.0}"#,
+            r#"{"axis":"column","from":1,"to":3,"size_pt":120.0}"#,
         )
         .unwrap();
         assert!(matches!(cmd, Command::Sheet(SheetCommand::SetSize { .. })));
         assert!(parse_set_axis_size_command(
             SlideId(1),
-            r#"{"axis":"row","first":0,"last":1,"size_pt":24.0}"#
+            r#"{"axis":"row","from":0,"to":1,"size_pt":24.0}"#
         )
         .is_err());
     }
@@ -1454,15 +1454,15 @@ mod tests {
     fn builds_set_run_format_commands() {
         let args = SetRunFormatArgs {
             paragraph: 0,
-            start: 0,
-            end: 5,
+            start: Some(0),
+            end: Some(5),
             bold: Some(true),
             italic: Some(false),
             underline: None,
-            font_size_pt: Some(14.0),
-            text_color: Some("#1A73E8".to_string()),
+            font_size: Some(14.0),
+            color: Some("#1A73E8".to_string()),
         };
-        let cmd = build_set_run_format_command(&args).unwrap();
+        let cmd = build_set_run_format_command(args, 10).unwrap();
         assert!(matches!(cmd, Command::Group(v) if v.len() == 4));
     }
 
@@ -1479,18 +1479,18 @@ mod tests {
     #[test]
     fn parses_pptx_and_xlsx_tool_arg_structs() {
         let box_args: InsertTextBoxArgs = serde_json::from_str(
-            r#"{"text":"Hello","x_pt":72.0,"y_pt":100.0,"width_pt":300.0,"height_pt":80.0,"font_size_pt":20.0,"bold":true}"#,
+            r#"{"text":"Hello","x_pct":10.0,"y_pct":20.0,"w_pct":80.0,"h_pct":15.0,"font_size":20.0,"bold":true}"#,
         )
         .unwrap();
         assert_eq!(box_args.text, "Hello");
-        assert!(box_args.bold);
+        assert_eq!(box_args.bold, Some(true));
 
         let style_args: SetShapeStyleArgs = serde_json::from_str(
-            r##"{"shape_id":42,"fill_color":"#FFFFFF","line_color":"#000000","line_width_pt":1.5}"##,
+            r##"{"shape_id":42,"fill_color":"#FFFFFF","text_color":"#000000","font_size":16.0}"##,
         )
         .unwrap();
         assert_eq!(style_args.shape_id, 42);
-        assert_eq!(style_args.fill_color.as_deref(), Some("#FFFFFF"));
+        assert_eq!(style_args.fill_color.as_ref().map(Option::as_deref), Some(Some("#FFFFFF")));
 
         let find_args: FindCellsArgs =
             serde_json::from_str(r#"{"query":"SUM","search_formulas":true}"#).unwrap();

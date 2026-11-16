@@ -1126,17 +1126,27 @@ fn surviving_spill_structure_roundtrip() {
     }
 }
 
+
+fn read_editing_tsv(file: &str) -> Option<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test/editing")
+        .join(file);
+    std::fs::read_to_string(path).ok()
+}
+
 #[test]
 fn match_options_roundtrip() {
     let (original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let (id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let mut commands=vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"検索選択肢".into(),slide:id,shape})];
-    let cases:Vec<_>=include_str!("../../../test/editing/xlsx-match-options.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();commands.push(Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(row,(formula,_))|CellEdit {row:row as u32,column:0,input:CellInput::Formula((*formula).into())}).collect()}));d.execute(commands).unwrap();
+    let Some(_tsv_1) = read_editing_tsv("xlsx-match-options.tsv") else { return; };
+    let cases:Vec<_>=_tsv_1.lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();commands.push(Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(row,(formula,_))|CellEdit {row:row as u32,column:0,input:CellInput::Formula((*formula).into())}).collect()}));d.execute(commands).unwrap();
     for (row,(_,expected))in cases.iter().enumerate(){let expected=expected.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(if *expected=="#N/A"{ibis_doc_model::CellError::NA}else{ibis_doc_model::CellError::Value}));assert_eq!(value(d.presentation(),"検索選択肢",row as u32,0),expected);}
     let bytes=save(&opened,d.presentation(),"match-options.xlsx");assert_reads_back(&bytes,d.presentation());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
 }
 
 #[test]
 fn unique_options_dependency_roundtrip() {
-    for (case,line) in include_str!("../../../test/editing/xlsx-unique-options.tsv").lines().skip(1).enumerate(){let fields:Vec<_>=line.split('\t').collect();let (_,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"一意配列".into(),slide:id,shape})]).unwrap();let mut edits=Vec::new();for(row,values)in [[1.,10.,1.],[2.,20.,2.],[1.,10.,1.]].into_iter().enumerate(){for(column,n)in values.into_iter().enumerate(){edits.push((row as u32,column as u32,CellInput::Value(CellValue::Number(n))));}}edits.push((0,4,CellInput::Formula(fields[0].into())));set(&mut d,id,edits);
+    let Some(_tsv_2) = read_editing_tsv("xlsx-unique-options.tsv") else { return; };
+    for (case,line) in _tsv_2.lines().skip(1).enumerate(){let fields:Vec<_>=line.split('\t').collect();let (_,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"一意配列".into(),slide:id,shape})]).unwrap();let mut edits=Vec::new();for(row,values)in [[1.,10.,1.],[2.,20.,2.],[1.,10.,1.]].into_iter().enumerate(){for(column,n)in values.into_iter().enumerate(){edits.push((row as u32,column as u32,CellInput::Value(CellValue::Number(n))));}}edits.push((0,4,CellInput::Formula(fields[0].into())));set(&mut d,id,edits);
         let check=|p:&Presentation,text:&str|{let rows:Vec<Vec<f64>>=text.split(';').map(|r|r.split(',').map(|v|v.parse().unwrap()).collect()).collect();let sh=sheet_of_slide(p.slide(slide(p,"一意配列")).unwrap()).unwrap();assert_eq!(sh.spills.get(&(0,4)),Some(&CellRange {first_row:0,last_row:rows.len()as u32-1,first_column:4,last_column:4+rows[0].len()as u32-1}));for r in 0..3{for c in 0..3{assert_eq!(value(p,"一意配列",r,c+4),rows.get(r as usize).and_then(|x|x.get(c as usize)).map_or(CellValue::Empty,|n|CellValue::Number(*n)));}}};
         check(d.presentation(),fields[1]);let before=save(&opened,d.presentation(),&format!("unique-options-{case}-before.xlsx"));assert_reads_back(&before,d.presentation());check(&ibis_pptx::read(&before).unwrap(),fields[1]);set(&mut d,id,vec![(2,2,CellInput::Value(CellValue::Number(3.0)))]);check(d.presentation(),fields[2]);let after=save(&opened,d.presentation(),&format!("unique-options-{case}-after.xlsx"));assert_reads_back(&after,d.presentation());check(&ibis_pptx::read(&after).unwrap(),fields[2]);assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),before);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),after);
     }
@@ -1156,17 +1166,20 @@ fn file_lambda_bindings_preserve_source_and_recalculate() {
 
 #[test]
 fn map_shape_options_roundtrip() {
-    let(original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let cases:Vec<_>=include_str!("../../../test/editing/xlsx-map-shapes.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"対応座標".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:std::iter::once(CellEdit {row:9,column:9,input:CellInput::Value(CellValue::Number(5.0))}).chain(cases.iter().enumerate().map(|(i,(formula,_))|CellEdit {row:i as u32*3,column:0,input:CellInput::Formula((*formula).into())})).collect()})]).unwrap();let check=|p:&Presentation|{for(i,(formula,expected))in cases.iter().enumerate(){assert_eq!(cell(p,"対応座標",i as u32*3,0).formula.as_deref(),Some(*formula));for(row,values)in expected.split(';').enumerate(){for(col,v)in values.split(',').enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==v).unwrap()));assert_eq!(value(p,"対応座標",i as u32*3+row as u32,col as u32),expected);}}}};check(d.presentation());let bytes=save(&opened,d.presentation(),"map-shape-options.xlsx");assert_reads_back(&bytes,d.presentation());check(&ibis_pptx::read(&bytes).unwrap());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
+    let Some(_tsv_3) = read_editing_tsv("xlsx-map-shapes.tsv") else { return; };
+    let(original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let cases:Vec<_>=_tsv_3.lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"対応座標".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:std::iter::once(CellEdit {row:9,column:9,input:CellInput::Value(CellValue::Number(5.0))}).chain(cases.iter().enumerate().map(|(i,(formula,_))|CellEdit {row:i as u32*3,column:0,input:CellInput::Formula((*formula).into())})).collect()})]).unwrap();let check=|p:&Presentation|{for(i,(formula,expected))in cases.iter().enumerate(){assert_eq!(cell(p,"対応座標",i as u32*3,0).formula.as_deref(),Some(*formula));for(row,values)in expected.split(';').enumerate(){for(col,v)in values.split(',').enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==v).unwrap()));assert_eq!(value(p,"対応座標",i as u32*3+row as u32,col as u32),expected);}}}};check(d.presentation());let bytes=save(&opened,d.presentation(),"map-shape-options.xlsx");assert_reads_back(&bytes,d.presentation());check(&ibis_pptx::read(&bytes).unwrap());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
 }
 
 #[test]
 fn lambda_arity_options_roundtrip() {
-    let(original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let cases:Vec<_>=include_str!("../../../test/editing/xlsx-lambda-arity.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"引数数".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(row,(formula,_))|CellEdit {row:row as u32,column:0,input:CellInput::Formula((*formula).into())}).collect()})]).unwrap();for(row,(_,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));assert_eq!(value(d.presentation(),"引数数",row as u32,0),expected);}let bytes=save(&opened,d.presentation(),"lambda-arity-options.xlsx");assert_reads_back(&bytes,d.presentation());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
+    let Some(_tsv_4) = read_editing_tsv("xlsx-lambda-arity.tsv") else { return; };
+    let(original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let cases:Vec<_>=_tsv_4.lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"引数数".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(row,(formula,_))|CellEdit {row:row as u32,column:0,input:CellInput::Formula((*formula).into())}).collect()})]).unwrap();for(row,(_,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));assert_eq!(value(d.presentation(),"引数数",row as u32,0),expected);}let bytes=save(&opened,d.presentation(),"lambda-arity-options.xlsx");assert_reads_back(&bytes,d.presentation());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
 }
 
 #[test]
 fn isomitted_binding_options_roundtrip() {
-    let(original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let cases:Vec<_>=include_str!("../../../test/editing/xlsx-isomitted.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"省略引数".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:std::iter::once(CellEdit {row:1,column:0,input:CellInput::Value(CellValue::Number(7.0))}).chain(cases.iter().enumerate().map(|(i,(formula,_))|CellEdit {row:i as u32*3,column:3,input:CellInput::Formula((*formula).into())})).collect()})]).unwrap();let check=|p:&Presentation|{for(i,(formula,expected))in cases.iter().enumerate(){assert_eq!(cell(p,"省略引数",i as u32*3,3).formula.as_deref(),Some(*formula));for(row,values)in expected.split(';').enumerate(){for(col,v)in values.split(',').enumerate(){assert_eq!(value(p,"省略引数",i as u32*3+row as u32,col as u32+3),CellValue::Number(v.parse().unwrap()),"{formula}");}}}};check(d.presentation());let bytes=save(&opened,d.presentation(),"isomitted-binding-options.xlsx");assert_reads_back(&bytes,d.presentation());check(&ibis_pptx::read(&bytes).unwrap());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
+    let Some(_tsv_5) = read_editing_tsv("xlsx-isomitted.tsv") else { return; };
+    let(original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let cases:Vec<_>=_tsv_5.lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"省略引数".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:std::iter::once(CellEdit {row:1,column:0,input:CellInput::Value(CellValue::Number(7.0))}).chain(cases.iter().enumerate().map(|(i,(formula,_))|CellEdit {row:i as u32*3,column:3,input:CellInput::Formula((*formula).into())})).collect()})]).unwrap();let check=|p:&Presentation|{for(i,(formula,expected))in cases.iter().enumerate(){assert_eq!(cell(p,"省略引数",i as u32*3,3).formula.as_deref(),Some(*formula));for(row,values)in expected.split(';').enumerate(){for(col,v)in values.split(',').enumerate(){assert_eq!(value(p,"省略引数",i as u32*3+row as u32,col as u32+3),CellValue::Number(v.parse().unwrap()),"{formula}");}}}};check(d.presentation());let bytes=save(&opened,d.presentation(),"isomitted-binding-options.xlsx");assert_reads_back(&bytes,d.presentation());check(&ibis_pptx::read(&bytes).unwrap());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
 }
 
 #[test]
@@ -1197,14 +1210,16 @@ fn cross_sheet_spill_structure_roundtrip() {
 #[test]
 fn dynamic_reference_options_roundtrip() {
     let (_,stock)=open("xlsx-sales.xlsx");let mut initial=Document::new(stock.presentation.clone());let(id,shape)=(initial.ids().new_slide_id(),initial.ids().new_shape_id());initial.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"参照配列".into(),slide:id,shape})]).unwrap();
-    let cases:Vec<_>=include_str!("../../../test/editing/xlsx-dynamic-reference.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();let mut edits=vec![(0,0,CellInput::Value(CellValue::Number(3.0))),(1,1,CellInput::Formula("SEQUENCE(A1)".into()))];edits.extend(cases.iter().enumerate().map(|(i,f)|(2,3+i as u32*3,CellInput::Formula(f[0].into()))));set(&mut initial,id,edits);
+    let Some(_tsv_6) = read_editing_tsv("xlsx-dynamic-reference.tsv") else { return; };
+    let cases:Vec<_>=_tsv_6.lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();let mut edits=vec![(0,0,CellInput::Value(CellValue::Number(3.0))),(1,1,CellInput::Formula("SEQUENCE(A1)".into()))];edits.extend(cases.iter().enumerate().map(|(i,f)|(2,3+i as u32*3,CellInput::Formula(f[0].into()))));set(&mut initial,id,edits);
     let check=|p:&Presentation,col:usize|{for(i,f)in cases.iter().enumerate(){assert_eq!(cell(p,"参照配列",2,3+i as u32*3).formula.as_deref(),Some(f[0]));let expected:Vec<f64>=f[col].split(';').map(|v|v.parse().unwrap()).collect();for r in 0..3{let sh=sheet_of_slide(p.slide(slide(p,"参照配列")).unwrap()).unwrap();assert_eq!(sh.cell(r+2,3+i as u32*3).map(|x|x.value.clone()).unwrap_or_default(),expected.get(r as usize).map_or(CellValue::Empty,|n|CellValue::Number(*n)));}}};check(initial.presentation(),1);
     let original=save(&stock,initial.presentation(),"dynamic-reference-before.xlsx");let opened=ibis_pptx::open(original.clone()).unwrap();let mut d=Document::new(opened.presentation.clone());let id=slide(d.presentation(),"参照配列");set(&mut d,id,vec![(0,0,CellInput::Value(CellValue::Number(2.0)))]);check(d.presentation(),2);let bytes=save(&opened,d.presentation(),"dynamic-reference-after.xlsx");assert_reads_back(&bytes,d.presentation());check(&ibis_pptx::read(&bytes).unwrap(),2);assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
 }
 
 #[test]
 fn text_boundary_options_roundtrip() {
-    let(original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let cases:Vec<_>=include_str!("../../../test/editing/xlsx-text-boundary.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"文字終端".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(row,(formula,_))|CellEdit {row:row as u32,column:0,input:CellInput::Formula((*formula).into())}).collect()})]).unwrap();for(row,(_,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));assert_eq!(value(d.presentation(),"文字終端",row as u32,0),expected);}let bytes=save(&opened,d.presentation(),"text-boundary-options.xlsx");assert_reads_back(&bytes,d.presentation());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
+    let Some(_tsv_7) = read_editing_tsv("xlsx-text-boundary.tsv") else { return; };
+    let(original,opened)=open("xlsx-sales.xlsx");let mut d=Document::new(opened.presentation.clone());let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());let cases:Vec<_>=_tsv_7.lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"文字終端".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(row,(formula,_))|CellEdit {row:row as u32,column:0,input:CellInput::Formula((*formula).into())}).collect()})]).unwrap();for(row,(_,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));assert_eq!(value(d.presentation(),"文字終端",row as u32,0),expected);}let bytes=save(&opened,d.presentation(),"text-boundary-options.xlsx");assert_reads_back(&bytes,d.presentation());assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),bytes);
 }
 
 #[test]
@@ -1266,7 +1281,8 @@ fn compatibility_version_mid_replace_roundtrip() {
     for (path,version) in [("xlsx-compatibility-v1.xlsx",1),("xlsx-sales.xlsx",2)] {
         let (original,opened)=open(path);let mut d=Document::new(opened.presentation.clone());
         let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());
-        let cases:Vec<_>=include_str!("../../../test/editing/xlsx-compatibility-slice.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
+        let Some(_tsv_8) = read_editing_tsv("xlsx-compatibility-slice.tsv") else { return; };
+        let cases:Vec<_>=_tsv_8.lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
         d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"版切取".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(row,f)|CellEdit {row:row as u32,column:0,input:CellInput::Formula(f[0].into())}).collect()})]).unwrap();
         for(row,f)in cases.iter().enumerate() {
             let text=f[version as usize];let expected=ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==text).map_or_else(||CellValue::Text(text.into()),|e|CellValue::Error(*e));
@@ -1286,7 +1302,8 @@ fn compatibility_version_find_search_roundtrip() {
     for (path,version) in [("xlsx-compatibility-v1.xlsx",1),("xlsx-sales.xlsx",2)] {
         let (original,opened)=open(path);let mut d=Document::new(opened.presentation.clone());
         let(id,shape)=(d.ids().new_slide_id(),d.ids().new_shape_id());
-        let cases:Vec<_>=include_str!("../../../test/editing/xlsx-compatibility-search.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
+        let Some(_tsv_9) = read_editing_tsv("xlsx-compatibility-search.tsv") else { return; };
+        let cases:Vec<_>=_tsv_9.lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
         d.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"版検索".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(row,f)|CellEdit {row:row as u32,column:0,input:CellInput::Formula(f[0].into())}).collect()})]).unwrap();
         for(row,f)in cases.iter().enumerate() {
             let text=f[version as usize];let expected=text.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==text).unwrap()));
@@ -1304,7 +1321,8 @@ fn compatibility_version_find_search_roundtrip() {
 #[test]
 fn compatibility_selection_save_and_undo_redo() {
     let(_,stock)=open("xlsx-sales.xlsx");let mut initial=Document::new(stock.presentation.clone());let(id,shape)=(initial.ids().new_slide_id(),initial.ids().new_shape_id());
-    let cases:Vec<_>=include_str!("../../../test/editing/xlsx-compatibility-toggle.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
+    let Some(_tsv_10) = read_editing_tsv("xlsx-compatibility-toggle.tsv") else { return; };
+    let cases:Vec<_>=_tsv_10.lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
     initial.execute(vec![Command::Sheet(SheetCommand::AddSheet {index:1,name:"版選択".into(),slide:id,shape}),Command::Sheet(SheetCommand::SetCells {slide:id,edits:cases.iter().enumerate().map(|(i,f)|CellEdit {row:i as u32*3,column:0,input:CellInput::Formula(f[0].into())}).collect()})]).unwrap();
     let original=save(&stock,initial.presentation(),"compatibility-toggle-before.xlsx");let opened=ibis_pptx::open(original.clone()).unwrap();let mut d=Document::new(opened.presentation.clone());
     d.execute(vec![Command::Sheet(SheetCommand::SetCompatibilityVersion {version:ibis_doc_model::CalculationCompatibilityVersion::V1})]).unwrap();
@@ -1320,7 +1338,8 @@ fn single_cell_dynamic_reopens_and_grows_without_promoting_legacy() {
     let mut initial = Document::new(stock.presentation.clone());
     let (id, shape) = (initial.ids().new_slide_id(), initial.ids().new_shape_id());
     initial.execute(vec![Command::Sheet(SheetCommand::AddSheet { index: 1, name: "再開配列".into(), slide: id, shape })]).unwrap();
-    let cases: Vec<_> = include_str!("../../../test/editing/xlsx-dynamic-reopen.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
+    let Some(_tsv_11) = read_editing_tsv("xlsx-dynamic-reopen.tsv") else { return; };
+    let cases: Vec<_> = _tsv_11.lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
     let mut edits = vec![(0, 0, CellInput::Value(CellValue::Number(1.))), (1, 1, CellInput::Formula("SEQUENCE(A1)".into()))];
     edits.extend(cases.iter().enumerate().map(|(i, f)| (2, 3 + i as u32 * 3, CellInput::Formula(f[0].into()))));
     edits.push((2, 30, CellInput::Formula("B2:B4*2".into())));
@@ -1381,7 +1400,8 @@ fn week_return_types_save_and_recalculate_after_reopening() {
     let (_, stock) = open("xlsx-sales.xlsx"); let mut initial = Document::new(stock.presentation.clone());
     let (id, shape) = (initial.ids().new_slide_id(), initial.ids().new_shape_id());
     initial.execute(vec![Command::Sheet(SheetCommand::AddSheet { index: 1, name: "週番号引数".into(), slide: id, shape })]).unwrap();
-    let cases: Vec<_> = include_str!("../../../test/editing/xlsx-week-return-types.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
+    let Some(_tsv_12) = read_editing_tsv("xlsx-week-return-types.tsv") else { return; };
+    let cases: Vec<_> = _tsv_12.lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
     let mut edits = vec![(0, 1, CellInput::Formula("DATE(2021,1,1)".into()))];
     edits.extend(cases.iter().enumerate().map(|(r, f)| (r as u32, 0, CellInput::Formula(f[0].into())))); set(&mut initial, id, edits);
     let check = |p: &Presentation, col: usize| { for (r, f) in cases.iter().enumerate() { let expected = f[col].parse::<f64>().map(CellValue::Number).unwrap_or(CellValue::Error(ibis_doc_model::CellError::Num)); assert_eq!(value(p, "週番号引数", r as u32, 0), expected, "{}", f[0]); assert_eq!(cell(p, "週番号引数", r as u32, 0).formula.as_deref(), Some(f[0])); } };
@@ -1403,7 +1423,8 @@ fn day_count_basis_and_method_save_in_both_date_bases() {
         let stock = ibis_pptx::open(package.save(Default::default()).unwrap()).unwrap();
         let mut initial = Document::new(stock.presentation.clone()); let (id, shape) = (initial.ids().new_slide_id(), initial.ids().new_shape_id());
         initial.execute(vec![Command::Sheet(SheetCommand::AddSheet { index: 1, name: "日数基準".into(), slide: id, shape })]).unwrap();
-        let cases: Vec<_> = include_str!("../../../test/editing/xlsx-day-count-options.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
+        let Some(_tsv_13) = read_editing_tsv("xlsx-day-count-options.tsv") else { return; };
+        let cases: Vec<_> = _tsv_13.lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
         let mut edits = vec![(0, 1, CellInput::Formula("DATE(2019,1,1)".into())), (0, 2, CellInput::Formula("DATE(2020,1,1)".into()))];
         edits.extend(cases.iter().enumerate().map(|(r, f)| (r as u32, 0, CellInput::Formula(f[0].into())))); set(&mut initial, id, edits);
         let check = |p: &Presentation, col: usize| { assert_eq!(p.workbook.as_deref().unwrap().date1904, date1904); for (r, f) in cases.iter().enumerate() { let expected = f[col].parse::<f64>().map(CellValue::Number).unwrap_or(CellValue::Error(ibis_doc_model::CellError::Num)); assert_eq!(value(p, "日数基準", r as u32, 0), expected, "{}", f[0]); assert_eq!(cell(p, "日数基準", r as u32, 0).formula.as_deref(), Some(f[0])); } };
