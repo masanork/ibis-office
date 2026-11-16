@@ -24,12 +24,10 @@ harfrust = "=0.5.2"
 ttf-parser = "0.25"
 
 # The same declarations as ibis-office-app's (the `export` feature of the app turns this one's on).
-[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 zune-jpeg = { version = "=0.4.21", optional = true }
 zune-core = { version = "=0.4.12", optional = true }
 skrifa = { version = "=0.42.1", optional = true }
-
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

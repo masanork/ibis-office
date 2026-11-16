@@ -123,6 +123,9 @@ export = ["dep:gpui-pre-platform", "dep:gpui-pre-windows", "dep:gpui-pre-wgpu", 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui-pre-wgpu = { version = "=0.3.6", features = ["test-support"], optional = true }
 
+[target.'cfg(target_os = "android")'.dependencies]
+gpui-android = { path = "../gpui-android" }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 # Reading a fetched response's body (the art borders' pictures); the version
 # GPUI already uses.

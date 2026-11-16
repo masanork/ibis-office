@@ -206,10 +206,60 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  android:
+    name: Android arm64
+    needs: validate-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned Rust and Android target
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --target aarch64-linux-android
+          rustup default 1.98.1
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install cargo-ndk and verify Android SDK/NDK
+        run: |
+          set -euo pipefail
+          cargo install cargo-ndk --locked
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_HOME
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+      - name: Record clean source and toolchain
+        run: python3 scripts/desktop-ci-info.py source ci-artifact
+      - name: Build Android release APK
+        run: scripts/build-android.sh --release
+      - name: Verify APK structure
+        run: |
+          set -euo pipefail
+          APK="target/android-apk/ibis-office-android-arm64.apk"
+          test -f "$APK"
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/libibis_office_app.so"
+          unzip -l "$APK" | grep -q "classes.dex"
+          unzip -l "$APK" | grep -q "AndroidManifest.xml"
+          cp "$APK" ci-artifact/desktop-android-arm64-ci.apk
+      - name: Hash deliverables
+        run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ci-android-arm64
+          path: ci-artifact/
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish milestone release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [validate-source, desktop, linux]
+    needs: [validate-source, desktop, linux, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -233,7 +283,7 @@ jobs:
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
           git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/masanork
           mkdir release
-          for platform in linux-x64 macos-arm64 windows-x64; do
+          for platform in linux-x64 macos-arm64 windows-x64 android-arm64; do
             dir="artifacts/desktop-ci-$platform"
             (cd "$dir" && sha256sum -c SHA256SUMS)
             python3 -c 'import json,os,sys; assert json.load(open(sys.argv[1]))["source_sha"] == os.environ["EXPECTED_SOURCE_SHA"]' "$dir/build-info.json"
@@ -241,6 +291,7 @@ jobs:
               linux-x64) package=desktop-linux-x64-ci.AppImage ;;
               macos-arm64) package=desktop-macos-arm64-ci.zip ;;
               windows-x64) package=desktop-windows-x64-ci.zip ;;
+              android-arm64) package=desktop-android-arm64-ci.apk ;;
             esac
             cp "$dir/$package" release/
             cp "$dir/build-info.json" "release/build-info-$platform.json"

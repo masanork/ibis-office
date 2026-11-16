@@ -30,13 +30,13 @@ ttf-parser = "0.25"
 # pdf_picture.rs).
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 gpui-pre-platform = { version = "=0.3.6", features = ["test-support"], optional = true }
-image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"], optional = true }
 miniz_oxide = { version = "0.8", optional = true }
 krilla = { version = "=0.8.2", default-features = false, features = ["raster-images", "rayon"], optional = true }
 usvg = { version = "=0.46.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts"], optional = true }
 
 # Automatic update (update.rs) and another app changing an open file (file_watch.rs): as ibis-office-app's.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"] }
 # The random bytes of a password-protected save (the OS generator on every OS: /dev/urandom is not on Windows).
 getrandom = "0.3"
 same-file = "1"
@@ -58,6 +58,9 @@ gpui-pre-windows = { version = "=0.3.6", features = ["test-support"], optional =
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui-pre-wgpu = { version = "=0.3.6", features = ["test-support"], optional = true }
 
+[target.'cfg(target_os = "android")'.dependencies]
+gpui-android = { path = "../gpui-android" }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 futures = { version = "0.3", default-features = false, features = ["std"] }
 wasm-bindgen = "0.2"
@@ -73,7 +76,7 @@ default = ["export"]
 # turns it on.
 scenarios = ["export", "ibis-office-base/scenarios", "ibis-office-render/scenarios"]
 # The headless drawing (cfg(headless_export), set by build.rs); ibis-office-app's `export` turns it on.
-export = ["dep:gpui-pre-platform", "dep:gpui-pre-windows", "dep:gpui-pre-wgpu", "dep:image", "dep:miniz_oxide", "dep:krilla", "dep:usvg", "dep:gpui-pre-macos", "ibis-office-render/export"]
+export = ["dep:gpui-pre-platform", "dep:gpui-pre-windows", "dep:gpui-pre-wgpu", "dep:miniz_oxide", "dep:krilla", "dep:usvg", "dep:gpui-pre-macos", "ibis-office-render/export"]
 
 [dev-dependencies]
 ibis-office-base = { workspace = true, features = ["test-user-data"] }

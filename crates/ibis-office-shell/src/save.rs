@@ -402,7 +402,11 @@ pub fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let temporary = path.with_file_name(format!(".{name}.ibis-saving"));
     let moved = std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, path));
-    let Err(error) = moved else { return Ok(()) };
+    let Err(error) = moved else {
+        #[cfg(target_os = "android")]
+        gpui_android::sync_saved_file(path);
+        return Ok(());
+    };
     let _ = std::fs::remove_file(&temporary);
     // Only "not found" is met by writing in place: a folder a sync client keeps (OneDrive) can take the new file away
     // before it is moved (os error 2, GitHub issue #144; the cause is a guess, not seen on OneDrive itself). Any other
@@ -410,7 +414,10 @@ pub fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<
     if !falls_back_to_writing_in_place(&error) {
         return Err(error);
     }
-    write_in_place(path, bytes)
+    write_in_place(path, bytes)?;
+    #[cfg(target_os = "android")]
+    gpui_android::sync_saved_file(path);
+    Ok(())
 }
 
 /// Whether a failed save by a new file beside the target is tried again by writing the target itself.

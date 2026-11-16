@@ -625,6 +625,10 @@ impl SlideEditor {
             let (stem, _) = self.name_parts();
             self.ask_path(format!("{stem}.odp"), window, cx, |this, path, _window, cx| {
                 let result = ibis_pptx::write_odp(this.presentation()).map_err(|e| e.to_string()).and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+                #[cfg(target_os = "android")]
+                if result.is_ok() {
+                    gpui_android::sync_saved_file(&path);
+                }
                 this.report(result.map(|()| crate::i18n::format("file.odp-done", &[("path", &path.display())])).map_err(|e| crate::i18n::format("file.odp-failed", &[("error", &e)])), cx);
             });
         }

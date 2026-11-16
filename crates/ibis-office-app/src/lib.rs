@@ -642,7 +642,7 @@ fn url_path(url: &str) -> Option<std::path::PathBuf> {
 
 
 /// Native entry point; see [`Args`] for the command line.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), not(target_os = "android")))]
 pub fn run_native() {
     register_hooks();
     // TODAY, NOW and a date typed without its year read the local time.
@@ -1101,6 +1101,82 @@ mod web {
         });
         APPLICATION.with(|app| *app.borrow_mut() = Some(handle));
         Ok(())
+    }
+}
+
+#[cfg(target_os = "android")]
+mod android_entry {
+    const UI_FONT: &[u8] = include_bytes!("../fonts/IBMPlexSans-Regular.ttf");
+
+    #[unsafe(no_mangle)]
+    pub extern "Rust" fn android_main(android_app: gpui_android::android_activity::AndroidApp) {
+        gpui_android::init_logging();
+        super::register_hooks();
+        ibis_calc::eval::convert::set_clock(super::clock::calc_clock);
+
+        let platform = std::rc::Rc::new(gpui_android::AndroidPlatform::new(android_app));
+        let app = super::Application::with_platform(platform)
+            .with_assets(crate::shell::icons::Assets::new(""));
+        let mut fonts: Vec<std::borrow::Cow<'static, [u8]>> =
+            vec![std::borrow::Cow::Borrowed(UI_FONT)];
+        for path in [
+            "/system/fonts/NotoSansCJK-Regular.ttc",
+            "/system/fonts/NotoSerifCJK-Regular.ttc",
+            "/system/fonts/Roboto-Regular.ttf",
+            "/system/fonts/Roboto-Bold.ttf",
+            "/system/fonts/DroidSansMono.ttf",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                log::info!("Loaded Android system font: {path} ({} bytes)", bytes.len());
+                fonts.push(std::borrow::Cow::Owned(bytes));
+            }
+        }
+        if let Err(err) = app.text_system().add_fonts(fonts) {
+            log::error!("Failed to register fonts on Android: {err}");
+        }
+        let names = app.text_system().all_font_names();
+        let ui_font = ["Noto Sans CJK JP", "Noto Sans JP", "IBM Plex Sans"]
+            .into_iter()
+            .find(|name| names.iter().any(|n| n == name))
+            .unwrap_or("IBM Plex Sans")
+            .to_string();
+        log::info!("Android UI font selected: {ui_font} (total {} families)", names.len());
+
+        let opener: std::rc::Rc<
+            std::cell::RefCell<(Option<super::AsyncApp>, Vec<std::path::PathBuf>)>,
+        > = Default::default();
+        let handed = opener.clone();
+        app.on_open_urls(move |urls| {
+            let paths: Vec<std::path::PathBuf> =
+                urls.iter().filter_map(|u| super::url_path(u)).collect();
+            let mut state = handed.borrow_mut();
+            match state.0.clone() {
+                Some(cx) => {
+                    drop(state);
+                    cx.update(|cx| {
+                        paths
+                            .into_iter()
+                            .for_each(|p| super::open_path_in_app(p, cx))
+                    });
+                }
+                None => state.1.extend(paths),
+            }
+        });
+        app.run(move |cx| {
+            opener.borrow_mut().0 = Some(cx.to_async());
+            let pending: Vec<std::path::PathBuf> = std::mem::take(&mut opener.borrow_mut().1);
+            super::init(cx);
+            super::shell::file_watch::start(cx);
+            gpui_kit::component::Theme::global_mut(cx).font_family = ui_font.into();
+            if let Some((first, rest)) = pending.split_first() {
+                super::open_path_in_app(first.clone(), cx);
+                for p in rest {
+                    super::open_path_in_app(p.clone(), cx);
+                }
+            } else {
+                super::open_editor(None, None, cx);
+            }
+        });
     }
 }
 
