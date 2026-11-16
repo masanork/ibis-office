@@ -124,8 +124,8 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
         vec![MenuItem::tr("file.recent.none").into()]
     };
     let kind = editor.kind();
-    // 新規作成: a line for each format, in the formats' order; ⌘N is the open screen's.
-    let mut new_items: Vec<MenuEntry> = crate::format::infos()
+    // 新規作成: a line for each creatable format, in the formats' order; ⌘N is the open screen's.
+    let mut new_items: Vec<MenuEntry> = crate::format::creatable_infos()
         .into_iter()
         .map(|(format, info)| -> MenuEntry {
             let new = item(info.new_command, info.icon).on(move |this, window, cx| this.new_file(format, window, cx));

@@ -371,7 +371,13 @@ pub fn blank(kind: Kind) -> Presentation {
             presentation.flow = Some(document);
             presentation
         }
-        Kind::Pdf => Presentation::empty(EmuSize::new(595 * ibis_doc_model::EMU_PER_POINT, 842 * ibis_doc_model::EMU_PER_POINT)),
+        Kind::Pdf => {
+            let mut presentation = Presentation::empty(EmuSize::new(595 * ibis_doc_model::EMU_PER_POINT, 842 * ibis_doc_model::EMU_PER_POINT));
+            let slide = Slide::new(presentation.new_slide_id());
+            presentation.slides.push(slide);
+            presentation.pdf_bytes = Some(std::sync::Arc::from([]));
+            presentation
+        }
     }
 }
 

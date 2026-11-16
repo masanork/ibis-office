@@ -1122,7 +1122,7 @@ impl SlideEditor {
         if presentation.flow.is_none() && presentation.workbook.is_none() {
             presentation.refresh_dates(&crate::clock::local_now(), &ibis_pptx::script_pieces);
         }
-        self.current_slide = presentation.slides[0].id;
+        self.current_slide = presentation.slides.first().map(|s| s.id).unwrap_or(ibis_doc_model::SlideId(0));
         self.format = state_for_model(&presentation, window, cx);
         // What was selected, copied or being typed in the file before is not the new file's (the format's own state is new too).
         self.shape_edit = Default::default();
@@ -3738,7 +3738,10 @@ impl Render for SlideEditor {
             .on_action(cx.listener(Self::cancel_tool))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(|_, _: &crate::actions::OpenStartWindow, _, cx| crate::app::open_editor(None, None, cx)))
-            .on_action(cx.listener(|this, _: &crate::actions::NewDocument, window, cx| this.new_file(this.kind(), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::actions::NewDocument, window, cx| {
+                let kind = if this.kind() == ibis_pptx::Kind::Pdf { ibis_pptx::Kind::Document } else { this.kind() };
+                this.new_file(kind, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &crate::actions::NewFromTemplate, window, cx| this.new_from_template(window, cx)))
             // Also on the start view (⌘W closes its window; the menu's ファイル > 閉じる was greyed there, #75).
             .on_action(cx.listener(Self::close_file))

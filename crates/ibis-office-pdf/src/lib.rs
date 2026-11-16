@@ -18,7 +18,7 @@ pub use editor::PdfDocument;
 
 /// Viewer state for an open PDF document (lazy page scene & GPU image cache).
 pub struct PdfViewerState {
-    container: Arc<Mutex<PdfContainer>>,
+    container: Option<Arc<Mutex<PdfContainer>>>,
     pub pages: Vec<PageInfo>,
     pub signatures: Vec<SignatureRecord>,
     scene_cache: HashMap<usize, Arc<PageScene>>,
@@ -28,6 +28,19 @@ pub struct PdfViewerState {
 }
 
 impl PdfViewerState {
+    /// Empty viewer state used as a non-panicking placeholder while loading.
+    pub fn empty() -> Self {
+        Self {
+            container: None,
+            pages: Vec::new(),
+            signatures: Vec::new(),
+            scene_cache: HashMap::new(),
+            image_cache: HashMap::new(),
+            zoom: 1.0,
+            current_page: 0,
+        }
+    }
+
     /// Open a PDF container, resolving the page tree and signature metadata without
     /// eagerly interpreting page content streams.
     pub fn open(bytes: impl Into<Arc<[u8]>>) -> Result<Self> {
@@ -35,7 +48,7 @@ impl PdfViewerState {
         let pages = collect_pages(&mut container)?;
         let signatures = inspect_signatures(&mut container)?;
         Ok(Self {
-            container: Arc::new(Mutex::new(container)),
+            container: Some(Arc::new(Mutex::new(container))),
             pages,
             signatures,
             scene_cache: HashMap::new(),
@@ -54,8 +67,12 @@ impl PdfViewerState {
         if let Some(scene) = self.scene_cache.get(&page_index) {
             return Ok(scene.clone());
         }
+        let container = self
+            .container
+            .as_ref()
+            .ok_or_else(|| ibis_pdf::Error::new("empty pdf viewer"))?;
         let scene = {
-            let mut guard = self.container.lock().expect("pdf container lock poisoned");
+            let mut guard = container.lock().expect("pdf container lock poisoned");
             Arc::new(interpret_page_scene(&mut guard, page_index)?)
         };
         self.scene_cache.insert(page_index, scene.clone());

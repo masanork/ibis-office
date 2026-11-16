@@ -133,7 +133,7 @@ impl SlideEditor {
             .flex()
             .gap_4()
             .ml(px(BADGE_OVERHANG - TILE_PADDING))
-            .children(crate::format::infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)))
+            .children(crate::format::creatable_infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)))
             .child(self.new_markdown_tile(cx));
 
         div()

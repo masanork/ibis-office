@@ -2152,6 +2152,11 @@ pub(crate) fn infos() -> Vec<(Kind, &'static FormatInfo)> {
     all
 }
 
+/// Formats offered for creating a new blank document (excluding read-oriented formats like PDF).
+pub(crate) fn creatable_infos() -> Vec<(Kind, &'static FormatInfo)> {
+    infos().into_iter().filter(|(kind, _)| *kind != Kind::Pdf).collect()
+}
+
 impl SlideEditor {
     /// The kind of the open document.
     pub fn kind(&self) -> Kind {

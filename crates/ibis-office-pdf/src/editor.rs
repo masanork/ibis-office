@@ -118,11 +118,9 @@ impl FormatEditor for PdfDocument {
         let viewer = presentation
             .pdf_bytes
             .as_ref()
+            .filter(|bytes| !bytes.is_empty())
             .and_then(|bytes| PdfViewerState::open(bytes.clone()).ok())
-            .unwrap_or_else(|| {
-                PdfViewerState::open(b"%PDF-1.4\n%%EOF\n".as_slice())
-                    .expect("minimal fallback pdf")
-            });
+            .unwrap_or_else(PdfViewerState::empty);
         Box::new(State {
             viewer: Arc::new(Mutex::new(viewer)),
         })
