@@ -221,6 +221,17 @@ fn is_jpeg2000_ts(ts_uid: &str) -> bool {
     )
 }
 
+fn is_jpegls_ts(ts_uid: &str) -> bool {
+    matches!(ts_uid, "1.2.840.10008.1.2.4.80" | "1.2.840.10008.1.2.4.81")
+}
+
+fn is_jxl_ts(ts_uid: &str) -> bool {
+    matches!(
+        ts_uid,
+        "1.2.840.10008.1.2.4.110" | "1.2.840.10008.1.2.4.111" | "1.2.840.10008.1.2.4.112"
+    )
+}
+
 fn extract_uncompressed_png(
     obj: &dicom_object::DefaultDicomObject,
     ts_uid: &str,
@@ -228,6 +239,12 @@ fn extract_uncompressed_png(
 ) -> Option<Vec<u8>> {
     if is_jpeg2000_ts(ts_uid) {
         return extract_jpeg2000_png(obj, warnings);
+    }
+    if is_jpegls_ts(ts_uid) {
+        return extract_jpegls_png(obj, warnings);
+    }
+    if is_jxl_ts(ts_uid) {
+        return extract_jxl_png(obj, warnings);
     }
     if !is_uncompressed_le_ts(ts_uid) {
         warnings.push(format!(
@@ -324,16 +341,7 @@ fn extract_jpeg2000_png(
     obj: &dicom_object::DefaultDicomObject,
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
-    let pixel_elem = obj.element(Tag(0x7FE0, 0x0010)).ok()?;
-    let j2k_bytes: Vec<u8> = if let Some(frags) = pixel_elem.fragments() {
-        let mut combined = Vec::new();
-        for frag in frags {
-            combined.extend_from_slice(frag);
-        }
-        combined
-    } else if let Ok(raw) = pixel_elem.to_bytes() {
-        raw.into_owned()
-    } else {
+    let Some(j2k_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
         warnings.push("JPEG 2000 画素データの読み取りに失敗したため、メタデータのみ抽出しました。".to_string());
         return None;
     };
@@ -368,6 +376,122 @@ fn extract_jpeg2000_png(
         }
     };
     Some(encode_rgba_png(decoded.width, decoded.height, &rgba))
+}
+
+fn read_encapsulated_or_raw_pixel_bytes(obj: &dicom_object::DefaultDicomObject) -> Option<Vec<u8>> {
+    let pixel_elem = obj.element(Tag(0x7FE0, 0x0010)).ok()?;
+    if let Some(frags) = pixel_elem.fragments() {
+        let mut combined = Vec::new();
+        for frag in frags {
+            combined.extend_from_slice(frag);
+        }
+        Some(combined)
+    } else if let Ok(raw) = pixel_elem.to_bytes() {
+        Some(raw.into_owned())
+    } else {
+        None
+    }
+}
+
+fn extract_jpegls_png(
+    obj: &dicom_object::DefaultDicomObject,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<u8>> {
+    let Some(jls_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
+        warnings.push("JPEG-LS 画素データの読み取りに失敗したため、メタデータのみ抽出しました。".to_string());
+        return None;
+    };
+    let decoded = match jpegls::decode_image(&jls_bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            warnings.push(format!("JPEG-LS デコードに失敗したため、メタデータのみ抽出しました: {e}"));
+            return None;
+        }
+    };
+    let px_count = (decoded.width as usize).checked_mul(decoded.height as usize)?;
+    let shift = decoded.bits_per_sample.saturating_sub(8);
+    let to_u8 = |s: u16| -> u8 { (s >> shift).min(255) as u8 };
+    let rgba = match decoded.components {
+        1 => {
+            let mut out = Vec::with_capacity(px_count * 4);
+            for &s in decoded.samples.iter().take(px_count) {
+                let g = to_u8(s);
+                out.extend_from_slice(&[g, g, g, 255]);
+            }
+            out
+        }
+        3 if decoded.samples.len() >= px_count * 3 => {
+            let mut out = Vec::with_capacity(px_count * 4);
+            let r = &decoded.samples[..px_count];
+            let g = &decoded.samples[px_count..px_count * 2];
+            let b = &decoded.samples[px_count * 2..px_count * 3];
+            for i in 0..px_count {
+                out.extend_from_slice(&[to_u8(r[i]), to_u8(g[i]), to_u8(b[i]), 255]);
+            }
+            out
+        }
+        ch => {
+            warnings.push(format!("JPEG-LS コンポーネント数 {ch} は PNG 変換未対応のためメタデータのみ抽出しました。"));
+            return None;
+        }
+    };
+    Some(encode_rgba_png(decoded.width, decoded.height, &rgba))
+}
+
+fn extract_jxl_png(
+    obj: &dicom_object::DefaultDicomObject,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<u8>> {
+    let Some(jxl_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
+        warnings.push("JPEG-XL 画素データの読み取りに失敗したため、メタデータのみ抽出しました。".to_string());
+        return None;
+    };
+    let image = match jxl_oxide::JxlImage::builder().read(Cursor::new(&jxl_bytes)) {
+        Ok(img) => img,
+        Err(e) => {
+            warnings.push(format!("JPEG-XL ヘッダ解析に失敗したため、メタデータのみ抽出しました: {e}"));
+            return None;
+        }
+    };
+    let render = match image.render_frame(0) {
+        Ok(r) => r,
+        Err(e) => {
+            warnings.push(format!("JPEG-XL フレーム描画に失敗したため、メタデータのみ抽出しました: {e}"));
+            return None;
+        }
+    };
+    let fb = render.image_all_channels();
+    let w = fb.width() as u32;
+    let h = fb.height() as u32;
+    let ch = fb.channels();
+    let buf = fb.buf();
+    let px_count = (w as usize).checked_mul(h as usize)?;
+    let to_u8 = |v: f32| -> u8 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 };
+
+    let mut rgba = Vec::with_capacity(px_count * 4);
+    match ch {
+        1 => {
+            for &v in buf.iter().take(px_count) {
+                let g = to_u8(v);
+                rgba.extend_from_slice(&[g, g, g, 255]);
+            }
+        }
+        3 => {
+            for px in buf.chunks_exact(3).take(px_count) {
+                rgba.extend_from_slice(&[to_u8(px[0]), to_u8(px[1]), to_u8(px[2]), 255]);
+            }
+        }
+        4 => {
+            for px in buf.chunks_exact(4).take(px_count) {
+                rgba.extend_from_slice(&[to_u8(px[0]), to_u8(px[1]), to_u8(px[2]), to_u8(px[3])]);
+            }
+        }
+        other => {
+            warnings.push(format!("JPEG-XL チャンネル数 {other} は PNG 変換未対応のためメタデータのみ抽出しました。"));
+            return None;
+        }
+    }
+    Some(encode_rgba_png(w, h, &rgba))
 }
 
 /// Minimal pure-Rust RGBA PNG encoder using `miniz_oxide` (no extra crate deps).
@@ -575,8 +699,68 @@ mod tests {
         let png = asset.png_bytes.expect("should produce PNG from JPEG 2000 DICOM");
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
 
-        // 2. Unsupported compressed syntax (JPEG-LS Lossless 1.2.840.10008.1.2.4.80)
-        let dcm = build_synthetic_dicom("1.2.840.10008.1.2.4.80", false);
+        // 2. JPEG-LS Lossless (1.2.840.10008.1.2.4.80) encoded with pure_jpegls
+        let jls_samples: Vec<u16> = (0u16..16).map(|i| i * 16).collect();
+        let mut jls = Vec::new();
+        jpegls::encode_image(&jls_samples, 4, 4, 1, &jpegls::EncodeOptions::default(), &mut jls)
+            .expect("encode jpegls");
+        let mut obj_jls = InMemDicomObject::new_empty_with_dict(StandardDataDictionary);
+        obj_jls.put(InMemElement::new(Tag(0x0010, 0x0010), VR::PN, "JLS^PATIENT"));
+        obj_jls.put(InMemElement::new(Tag(0x0008, 0x0060), VR::CS, "CT"));
+        obj_jls.put(InMemElement::new(
+            Tag(0x7FE0, 0x0010),
+            VR::OB,
+            dicom_core::value::PixelFragmentSequence::new(Vec::<u32>::new(), vec![jls]),
+        ));
+        let mut jls_dcm = Vec::new();
+        obj_jls
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .transfer_syntax("1.2.840.10008.1.2.4.80")
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.2")
+                    .media_storage_sop_instance_uid("1.2.3.4.5.6.7.8.80"),
+            )
+            .unwrap()
+            .write_all(&mut jls_dcm)
+            .unwrap();
+        let asset_jls = anonymize_and_extract(&jls_dcm, &DicomAnonymizationProfile::default())
+            .expect("should decode JPEG-LS DICOM");
+        assert!(asset_jls.stripped_tags.contains(&"PatientName".to_string()));
+        assert!(asset_jls.png_bytes.expect("JPEG-LS PNG").starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        // 3. JPEG-XL Lossless (1.2.840.10008.1.2.4.110) decoded with jxl-oxide
+        let minimal_jxl: Vec<u8> = vec![
+            0xff, 0x0a, 0x30, 0x54, 0x10, 0x09, 0x08, 0x06, 0x01, 0x00, 0x78, 0x00,
+            0x4b, 0x38, 0x41, 0x3c, 0xb6, 0x3a, 0x51, 0xfe, 0x00, 0x47, 0x1e, 0xa0,
+            0x85, 0xb8, 0x27, 0x1a, 0x48, 0x45, 0x84, 0x1b, 0x71, 0x4f, 0xa8, 0x3e,
+            0x8e, 0x30, 0x03, 0x92, 0x84, 0x01,
+        ];
+        let mut obj_jxl = InMemDicomObject::new_empty_with_dict(StandardDataDictionary);
+        obj_jxl.put(InMemElement::new(Tag(0x0010, 0x0010), VR::PN, "JXL^PATIENT"));
+        obj_jxl.put(InMemElement::new(Tag(0x0008, 0x0060), VR::CS, "MR"));
+        obj_jxl.put(InMemElement::new(
+            Tag(0x7FE0, 0x0010),
+            VR::OB,
+            dicom_core::value::PixelFragmentSequence::new(Vec::<u32>::new(), vec![minimal_jxl]),
+        ));
+        let mut jxl_dcm = Vec::new();
+        obj_jxl
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .transfer_syntax("1.2.840.10008.1.2.4.110")
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.4")
+                    .media_storage_sop_instance_uid("1.2.3.4.5.6.7.8.110"),
+            )
+            .unwrap()
+            .write_all(&mut jxl_dcm)
+            .unwrap();
+        let asset_jxl = anonymize_and_extract(&jxl_dcm, &DicomAnonymizationProfile::default())
+            .expect("should decode JPEG-XL DICOM");
+        assert!(asset_jxl.stripped_tags.contains(&"PatientName".to_string()));
+        assert!(asset_jxl.png_bytes.expect("JPEG-XL PNG").starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        // 4. Unsupported compressed syntax (MPEG2 1.2.840.10008.1.2.4.100)
+        let dcm = build_synthetic_dicom("1.2.840.10008.1.2.4.100", false);
         let asset = anonymize_and_extract(&dcm, &DicomAnonymizationProfile::default())
             .expect("should succeed with metadata fallback");
         assert!(asset.png_bytes.is_none());
