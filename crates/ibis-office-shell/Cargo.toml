@@ -14,6 +14,7 @@ ibis-doc-model.workspace = true
 ibis-pptx.workspace = true
 ibis-pdf = { path = "../ibis-pdf" }
 ibis-ofd.workspace = true
+ibis-xps.workspace = true
 ibis-emf.workspace = true
 gpui-kit.workspace = true
 log = "0.4"

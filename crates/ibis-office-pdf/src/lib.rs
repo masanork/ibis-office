@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui_kit::{App, Bounds, Pixels, Point, RenderImage, Window, px, size};
 use ibis_ofd::OfdContainer;
+use ibis_xps::XpsContainer;
 use ibis_pdf::interpret::interpret_page_scene;
 use ibis_pdf::scene::{PageInfo, PageScene, collect_pages};
 use ibis_pdf::signature::{SignatureRecord, inspect_signatures};
@@ -21,6 +22,7 @@ enum ViewerSource {
     Empty,
     Pdf(Arc<Mutex<PdfContainer>>),
     Ofd(Arc<OfdContainer>),
+    Xps(Arc<XpsContainer>),
 }
 
 /// Viewer state for an open PDF or OFD document (lazy page scene & GPU image cache).
@@ -60,6 +62,22 @@ impl PdfViewerState {
             let ofd_signature_status = ofd.signature_status_text();
             return Ok(Self {
                 source: ViewerSource::Ofd(Arc::new(ofd)),
+                pages,
+                signatures: Vec::new(),
+                ofd_signature_status,
+                scene_cache: HashMap::new(),
+                image_cache: HashMap::new(),
+                zoom: 1.0,
+                current_page: 0,
+            });
+        }
+        if ibis_xps::is_xps(&raw) {
+            let xps = XpsContainer::from_bytes(raw).map_err(|e| ibis_pdf::Error::new(e.to_string()))?;
+            let pages = xps.page_infos();
+            let sigs = xps.signature_count();
+            let ofd_signature_status = (sigs > 0).then(|| format!("署名: {sigs}件"));
+            return Ok(Self {
+                source: ViewerSource::Xps(Arc::new(xps)),
                 pages,
                 signatures: Vec::new(),
                 ofd_signature_status,
@@ -112,6 +130,10 @@ impl PdfViewerState {
             }
             ViewerSource::Ofd(ofd) => Arc::new(
                 ofd.interpret_page_scene(page_index)
+                    .map_err(|e| ibis_pdf::Error::new(e.to_string()))?,
+            ),
+            ViewerSource::Xps(xps) => Arc::new(
+                xps.interpret_page_scene(page_index)
                     .map_err(|e| ibis_pdf::Error::new(e.to_string()))?,
             ),
         };

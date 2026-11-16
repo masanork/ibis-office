@@ -3779,6 +3779,7 @@ dependencies = [
  "ibis-office-shell",
  "ibis-pdf",
  "ibis-pptx",
+ "ibis-xps",
  "image",
 ]
 
@@ -3852,6 +3853,7 @@ dependencies = [
  "ibis-office-updater",
  "ibis-pdf",
  "ibis-pptx",
+ "ibis-xps",
  "image",
  "js-sys",
  "krilla",
@@ -3938,6 +3940,16 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "roxmltree 0.21.1",
  "serde_json",
+]
+
+[[package]]
+name = "ibis-xps"
+version = "0.8.0"
+dependencies = [
+ "ibis-ooxml",
+ "ibis-pdf",
+ "image",
+ "roxmltree 0.21.1",
 ]
 
 [[package]]
