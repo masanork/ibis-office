@@ -497,6 +497,8 @@ pub struct SlideEditor {
     /// Where the open file came from, for saving it (`shell/save.rs`);
     /// `None` for a new document or one that cannot be saved.
     pub source: Option<std::sync::Arc<ibis_pptx::Source>>,
+    /// Encoding and delimiter of the current CSV for a same-file save.
+    pub current_csv_format: Option<ibis_pptx::csv::OriginalCsvFormat>,
     /// The file's path, for ⌘S (none in the browser, or for a new document).
     #[cfg(not(target_family = "wasm"))]
     pub path: Option<std::path::PathBuf>,
@@ -843,6 +845,7 @@ impl SlideEditor {
             chrome_compact: false,
             toolbar_bounds: Default::default(),
             source: None,
+            current_csv_format: None,
             opened_from_legacy: false,
             #[cfg(not(target_family = "wasm"))]
             path: None,
@@ -910,6 +913,7 @@ impl SlideEditor {
     /// The exception is a table of contents the file marks for making again (`w:dirty`, `w:updateFields`): Word makes it as it
     /// opens the file and saves it made (`docx::toc017_unupdated_toc_is_made_on_open`), so that stays a change to save.
     pub fn set_loaded_source(&mut self, source: std::sync::Arc<ibis_pptx::Source>) {
+        self.current_csv_format = source.original_csv_format();
         let marked_toc = source.baseline().flow.as_ref().is_some_and(|doc| {
             doc.body.iter().any(|b| {
                 matches!(b, ibis_doc_model::Block::Paragraph(p) if (doc.update_fields || p.field_dirty) && p.field_start.as_ref().is_some_and(|f| f.trim_start().to_ascii_uppercase().starts_with("TOC")))
@@ -1135,6 +1139,7 @@ impl SlideEditor {
         self.document.set_read_only(self.read_only);
         self.document_memory = Default::default();
         self.source = None;
+        self.current_csv_format = None;
         #[cfg(not(target_family = "wasm"))]
         {
             self.path = None;
@@ -1416,6 +1421,7 @@ impl SlideEditor {
                         this.load(loaded.presentation, name, window, cx);
                         // A sheet read in chunks is saved as changes from the empty sheet it starts as.
                         if loaded.csv_stream.is_some() {
+                            this.current_csv_format = loaded.source.original_csv_format();
                             this.source = Some(loaded.source);
                         } else {
                             this.set_loaded_source(loaded.source);
@@ -2109,6 +2115,7 @@ impl SlideEditor {
             let name = self.file_name.clone().unwrap_or_else(|| crate::i18n::text(self.format_info().untitled_key).into());
             let path = self.file_path();
             let source = self.source.clone();
+            let current_csv_format = self.current_csv_format;
             let current = self.current_slide;
             let current_zoom = self.zoom;
             let existing_count = Self::count_matching_windows(file_id, cx) + 1;
@@ -2122,6 +2129,7 @@ impl SlideEditor {
                 editor.document_memory=document_memory.clone();
                 editor.set_file_path(path);
                 editor.source = source;
+                editor.current_csv_format = current_csv_format;
                 editor.standard_read_only = standard_read_only;
                 #[cfg(not(target_family = "wasm"))]
                 { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; }

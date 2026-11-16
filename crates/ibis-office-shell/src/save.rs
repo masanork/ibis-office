@@ -327,6 +327,7 @@ impl SlideEditor {
         if self.is_modify_locked() && self.path.as_deref().is_some_and(|own| same_file(own, &path)) {
             return Err(crate::i18n::text("file.modify-locked-no-overwrite").to_string());
         }
+        let saving_original = self.path.as_deref().is_some_and(|old| same_file(old, &path));
         let source = self.source.clone().ok_or(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string())?;
         // The format's own package, or what the format writes under this extension (a workbook saved as .csv is the sheet shown, as
         // Excel's 「CSV UTF-8」).
@@ -345,6 +346,16 @@ impl SlideEditor {
         // Protected with the password the file has (パスワードを使用して暗号化).
         let bytes = if let (Some(password), true) = (&self.protection_password, may_protect) { protect(&bytes, password)? } else { bytes };
         write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)]))?;
+        // A different output path is a new export, whose current serializer is
+        // UTF-8 BOM. A later in-place save must remember that new format.
+        if !saving_original {
+            self.current_csv_format = path.extension().and_then(|x| x.to_str()).and_then(|ext| {
+                let delimiter = if ext.eq_ignore_ascii_case("csv") { ',' }
+                    else if ["tsv", "tab", "txt"].iter().any(|x| ext.eq_ignore_ascii_case(x)) { '\t' }
+                    else { return None };
+                Some(ibis_pptx::csv::OriginalCsvFormat { encoding: ibis_pptx::csv::OriginalEncoding::Utf8Bom, delimiter })
+            });
+        }
         if self.standard_read_only {
             self.standard_read_only = false;
             self.document.set_read_only(self.read_only);
@@ -446,7 +457,7 @@ fn write_in_place(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Whether `a` and `b` are one file (the same path, or one that links to the other).
 #[cfg(not(target_family = "wasm"))]
-pub(crate) fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+pub fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
     a == b || same_file::is_same_file(a, b).unwrap_or(false) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 

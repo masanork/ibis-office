@@ -204,6 +204,14 @@ impl SlideEditor {
         let extension = path.extension()?;
         let is = |names: &[&str]| names.iter().any(|name| extension.eq_ignore_ascii_case(name));
         let plain = |bytes: Vec<u8>| FileBytes { bytes, protect: false, note: None };
+        if is(&["csv", "tsv", "tab", "txt"])
+            && self.path.as_deref().is_some_and(|old| crate::shell::save::same_file(old, path))
+            && let Some(format) = self.current_csv_format
+        {
+            let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
+            return Some(ibis_pptx::csv::sheet_to_original_csv(self.presentation(), index, format)
+                .map(plain).map_err(|e| e.to_string()));
+        }
         if is(&["csv"]) {
             let index = self.presentation().slide_index(self.current_slide).unwrap_or(0);
             return Some(Ok(plain(ibis_pptx::csv::sheet_to_csv(self.presentation(), index))));

@@ -107,6 +107,7 @@ pub(crate) enum SourceMap {
 #[derive(Clone)]
 pub struct Source {
     kind: Kind,
+    original_csv_format: Option<crate::csv::OriginalCsvFormat>,
     package: Package,
     baseline: Presentation,
     map: SourceMap,
@@ -178,6 +179,7 @@ pub fn open_progressive(
     }
 
     let mut csv_records = None;
+    let mut original_csv_format = None;
     #[allow(unused_mut)]
     let mut csv_rx = None;
 
@@ -206,9 +208,11 @@ pub fn open_progressive(
     }
 
     if crate::csv::is_csv(&data) {
-        let text: std::sync::Arc<str> = std::sync::Arc::from(crate::csv::decode(&data)?);
+        let (decoded, encoding) = crate::csv::decode_with_original_encoding(&data)?;
+        let text: std::sync::Arc<str> = std::sync::Arc::from(decoded);
         crate::progress::fraction(0.02);
         let delimiter = crate::csv::detect_delimiter(&text);
+        original_csv_format = Some(crate::csv::OriginalCsvFormat { encoding, delimiter });
         let mut iter = crate::csv::CsvRecordIter::new(&text, delimiter);
 
         let mut first = Vec::new();
@@ -325,7 +329,7 @@ pub fn open_progressive(
         let (presentation, map) = crate::reader::read_with_sources(&data)?;
         (Kind::Presentation, presentation, SourceMap::Presentation(map))
     };
-    let source = Source { kind, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
+    let source = Source { kind, original_csv_format, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
     crate::progress::fraction(1.0);
     #[cfg(not(target_family = "wasm"))]
     std::thread::spawn(move || drop(csv_records));
@@ -338,6 +342,10 @@ pub fn open(data: impl Into<Arc<[u8]>>) -> Result<Opened, Error> {
 }
 
 impl Source {
+    /// Encoding detected when a CSV file was opened, if it was a CSV.
+    pub fn original_csv_format(&self) -> Option<crate::csv::OriginalCsvFormat> {
+        self.original_csv_format
+    }
     /// Whether the original package declares digital signature parts. This is
     /// discovery only and does not assert that any signature is valid.
     pub fn has_package_signatures(&self) -> Result<bool, ibis_ooxml::Error> {

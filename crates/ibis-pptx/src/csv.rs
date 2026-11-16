@@ -13,6 +13,155 @@ use crate::Error;
 
 pub use encoding_rs;
 
+/// The actual encoding observed on opening a delimited text file.
+/// ASCII bytes alone cannot distinguish UTF-8 from CP932 or other ASCII supersets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginalEncoding {
+    AsciiAmbiguous,
+    /// Valid UTF-8 bytes that also decode as CP932; the intended text is unknown.
+    Utf8OrCp932,
+    Utf8,
+    Utf8Bom,
+    Utf16LeBom,
+    Utf16BeBom,
+    Cp932,
+}
+
+/// Properties of the original delimited file retained for same-file saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OriginalCsvFormat {
+    pub encoding: OriginalEncoding,
+    pub delimiter: char,
+}
+
+/// Serialize the current sheet and refuse character loss when restoring its encoding.
+pub fn sheet_to_original_csv(presentation: &Presentation, slide: usize, format: OriginalCsvFormat) -> Result<Vec<u8>, Error> {
+    let bytes = sheet_to_delimited(presentation, slide, CsvOptions { encoding: CsvEncoding::Utf8, delimiter: format.delimiter });
+    let text = std::str::from_utf8(&bytes).expect("UTF-8 serialization");
+    encode_original(text, format.encoding)
+}
+
+/// Decode and keep the encoding necessary for a safe same-file save.
+pub fn decode_with_original_encoding(data: &[u8]) -> Result<(String, OriginalEncoding), Error> {
+    if let Some(rest) = data.strip_prefix(b"\xEF\xBB\xBF") {
+        return String::from_utf8(rest.to_vec()).map(|s| (s, OriginalEncoding::Utf8Bom))
+            .map_err(|_| Error::new("UTF-8 CSV の読み込みに失敗しました"));
+    }
+    for (bom, encoding, kind) in [
+        (&b"\xFF\xFE"[..], encoding_rs::UTF_16LE, OriginalEncoding::Utf16LeBom),
+        (&b"\xFE\xFF"[..], encoding_rs::UTF_16BE, OriginalEncoding::Utf16BeBom),
+    ] {
+        if let Some(rest) = data.strip_prefix(bom) {
+            let (text, _, invalid) = encoding.decode(rest);
+            return if invalid { Err(Error::new("UTF-16 CSV の読み込みに失敗しました")) }
+                else { Ok((text.into_owned(), kind)) };
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        let (_, _, cp932_errors) = encoding_rs::SHIFT_JIS.decode(data);
+        let encoding = if data.is_ascii() { OriginalEncoding::AsciiAmbiguous }
+            else if !cp932_errors { OriginalEncoding::Utf8OrCp932 }
+            else { OriginalEncoding::Utf8 };
+        return Ok((text.to_owned(), encoding));
+    }
+    let (text, _, invalid) = encoding_rs::SHIFT_JIS.decode(data);
+    if invalid { Err(Error::new("CSVの文字コードを判定できませんでした")) }
+    else { Ok((text.into_owned(), OriginalEncoding::Cp932)) }
+}
+
+/// Encode without replacement or HTML numeric character references.
+pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>, Error> {
+    match encoding {
+        OriginalEncoding::AsciiAmbiguous | OriginalEncoding::Utf8OrCp932 if !text.is_ascii() => Err(Error::new("元の文字コードを判別できないため、ASCII 以外の文字を上書き保存できません")),
+        OriginalEncoding::AsciiAmbiguous | OriginalEncoding::Utf8OrCp932 | OriginalEncoding::Utf8 => Ok(text.as_bytes().to_vec()),
+        OriginalEncoding::Utf8Bom => {
+            let mut bytes = b"\xEF\xBB\xBF".to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            Ok(bytes)
+        }
+        OriginalEncoding::Utf16LeBom | OriginalEncoding::Utf16BeBom => {
+            let le = encoding == OriginalEncoding::Utf16LeBom;
+            let mut bytes = if le { b"\xFF\xFE".to_vec() } else { b"\xFE\xFF".to_vec() };
+            for unit in text.encode_utf16() {
+                bytes.extend_from_slice(&if le { unit.to_le_bytes() } else { unit.to_be_bytes() });
+            }
+            Ok(bytes)
+        }
+        OriginalEncoding::Cp932 => {
+            let (bytes, _, invalid) = encoding_rs::SHIFT_JIS.encode(text);
+            let (decoded, _, decode_error) = encoding_rs::SHIFT_JIS.decode(&bytes);
+            if invalid || decode_error || decoded != text {
+                Err(Error::new("Shift_JIS で正確に表現できない文字があるため保存できません"))
+            } else { Ok(bytes.into_owned()) }
+        }
+    }
+}
+
+#[cfg(test)]
+mod original_encoding_tests {
+    use super::{decode_with_original_encoding, encode_original, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding};
+
+    #[test]
+    fn cp932_is_retained_and_unrepresentable_text_is_rejected() {
+        let (bytes, _, errors) = encoding_rs::SHIFT_JIS.encode("名前,数量\r\nりんご,3\r\n");
+        assert!(!errors);
+        let (text, encoding) = decode_with_original_encoding(&bytes).unwrap();
+        assert_eq!(encoding, OriginalEncoding::Cp932);
+        assert_eq!(encode_original(&text, encoding).unwrap(), bytes.as_ref());
+        assert!(encode_original("りんご😀", encoding).is_err());
+        assert!(encode_original("りんご\u{e0101}", encoding).is_err());
+        // Some mappings encode without an error but decode to a different scalar.
+        assert!(encode_original("\u{00a5}", encoding).is_err());
+    }
+
+    #[test]
+    fn bom_and_byte_order_round_trip() {
+        for (bytes, encoding) in [
+            (b"\xEF\xBB\xBFabc".to_vec(), OriginalEncoding::Utf8Bom),
+            (vec![0xff, 0xfe, 0x42, 0x30], OriginalEncoding::Utf16LeBom),
+            (vec![0xfe, 0xff, 0x30, 0x42], OriginalEncoding::Utf16BeBom),
+        ] {
+            let (text, observed) = decode_with_original_encoding(&bytes).unwrap();
+            assert_eq!(observed, encoding);
+            assert_eq!(encode_original(&text, observed).unwrap(), bytes);
+        }
+        assert!(decode_with_original_encoding(&[0xff, 0xfe, 0x42]).is_err());
+    }
+
+    #[test]
+    fn ambiguous_input_cannot_silently_become_utf8() {
+        let (text, encoding) = decode_with_original_encoding(b"a,b\r\n").unwrap();
+        assert_eq!(encoding, OriginalEncoding::AsciiAmbiguous);
+        assert_eq!(encode_original(&text, encoding).unwrap(), b"a,b\r\n");
+        assert!(encode_original("a,名前\r\n", encoding).is_err());
+        // U+00A2's UTF-8 bytes are also a valid CP932 byte sequence.
+        let (_, encoding) = decode_with_original_encoding("¢".as_bytes()).unwrap();
+        assert_eq!(encoding, OriginalEncoding::Utf8OrCp932);
+        assert!(encode_original("¢", encoding).is_err());
+    }
+
+    #[test]
+    fn opened_csv_retains_encoding_and_delimiter_for_save() {
+        let (bytes, _, invalid) = encoding_rs::SHIFT_JIS.encode("名前;数量\r\nりんご;3\r\n");
+        assert!(!invalid);
+        let opened = crate::open(bytes.into_owned()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        assert_eq!(format.encoding, OriginalEncoding::Cp932);
+        assert_eq!(format.delimiter, ';');
+        let saved = sheet_to_original_csv(&opened.presentation, 0, format).unwrap();
+        let (decoded, _, invalid) = encoding_rs::SHIFT_JIS.decode(&saved);
+        assert!(!invalid);
+        assert!(decoded.contains("名前;数量"));
+        assert!(decoded.contains("りんご;3"));
+    }
+
+    #[test]
+    fn explicit_sjis_export_rejects_unrepresentable_characters() {
+        let opened = crate::open("名前,😀\r\n".as_bytes().to_vec()).unwrap();
+        assert!(sheet_to_csv_sjis_strict(&opened.presentation, 0).is_err());
+    }
+}
+
 /// Character encodings supported for CSV / TSV export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CsvEncoding {
@@ -455,6 +604,11 @@ pub fn sheet_to_csv_sjis(presentation: &Presentation, slide: usize) -> Vec<u8> {
             delimiter: ',',
         },
     )
+}
+
+/// Shift_JIS export that never silently substitutes unrepresentable characters.
+pub fn sheet_to_csv_sjis_strict(presentation: &Presentation, slide: usize) -> Result<Vec<u8>, Error> {
+    sheet_to_original_csv(presentation, slide, OriginalCsvFormat { encoding: OriginalEncoding::Cp932, delimiter: ',' })
 }
 
 /// The sheet at slide index `slide` formatted with custom encoding and delimiter options.
