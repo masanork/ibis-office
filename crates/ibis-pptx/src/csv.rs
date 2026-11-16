@@ -364,6 +364,39 @@ mod original_encoding_tests {
     }
 
     #[test]
+    fn undo_to_saved_csv_state_restores_safe_byte_preserving_save() {
+        use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand};
+        let original = b"00123,\"text\",\r\n";
+        let opened = crate::open(original.to_vec()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+            row: 0, column: 0, input: CellInput::Value(CellValue::Text("changed".into())),
+        }] })]).unwrap();
+        assert!(doc.undo());
+        assert!(doc.tracked_csv_cells().unwrap().is_empty());
+        assert_eq!(rewrite_tracked_csv(original, original, format, &doc, slide).unwrap(), original);
+        assert!(doc.redo());
+        assert!(doc.tracked_csv_cells().is_none());
+        assert!(doc.undo());
+        assert!(doc.tracked_csv_cells().unwrap().is_empty());
+        // Mutations outside command history cannot be proven undone.
+        let _ = doc.presentation_mut();
+        assert!(doc.redo());
+        assert!(doc.undo());
+        assert!(doc.tracked_csv_cells().is_none());
+        let opened = crate::open(original.to_vec()).unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        doc.begin_csv_edit_tracking();
+        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: ibis_doc_model::sheet_command::Axis::Rows, at: 0, count: 1 })]).unwrap();
+        assert!(doc.undo());
+        assert!(doc.tracked_csv_cells().is_none(), "unsupported operations stay invalid even after undo");
+    }
+
+    #[test]
     fn raw_field_rewrites_only_selected_bytes() {
         let original = b"\x87\x90,00123,\r\n\x81\xe0,\"x\",\n";
         assert_eq!(rewrite_raw_csv_fields(original, OriginalEncoding::Cp932, ',', &[]).unwrap(), original);

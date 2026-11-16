@@ -20707,6 +20707,25 @@ fn csv_in_place_preserves_cp932() {
     let mut s = Scenario::open(&relative);
     s.settle();
     let path = s.with(|e, _| e.file_path().expect("opened CSV path"));
+    let blocked = dir.join(format!("csv-stream-blocked-{}.csv", std::process::id()));
+    s.update(|e, w, cx| {
+        e.is_csv_streaming = true;
+        assert!(e.save_to(blocked.clone(), w).is_err());
+        assert!(e.copy_to(&blocked).is_err());
+        assert!(e.write_csv(&blocked).is_err());
+        assert!(e.write_pdf(blocked.with_extension("pdf")).is_err());
+        assert!(e.current_bytes().is_err());
+        assert!(e.refuse_as(crate::shell::save::RefusedWay::Print, cx));
+        e.is_csv_streaming = false;
+    });
+    assert!(!blocked.exists());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    s.click_cell("A2");
+    s.enter("みかん", "enter");
+    s.settle();
+    s.key("cmd-z");
+    s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after undo to original"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
     s.click_cell("A2");
     s.enter("みかん", "enter");
     s.settle();

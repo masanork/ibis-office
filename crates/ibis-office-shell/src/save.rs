@@ -32,7 +32,7 @@ impl SlideEditor {
     /// are still the ones that were opened or last saved.
     #[cfg(not(target_family = "wasm"))]
     fn tracked_csv_bytes(&self, path: &std::path::Path) -> Result<Vec<u8>, String> {
-        if self.is_csv_streaming { return Err("CSV の読み込みが完了するまで保存できません".into()); }
+        if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         if metadata.file_type().is_symlink() { return Err("シンボリックリンク経由の CSV は上書き保存できません".into()); }
         if !metadata.is_file() { return Err("CSV が通常のファイルではありません".into()); }
@@ -92,6 +92,9 @@ impl SlideEditor {
     }
 
     pub fn check_standard_output(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if self.is_csv_streaming {
+            return Err(std::io::Error::other(crate::i18n::text("file.csv-loading-blocked").to_string()));
+        }
         #[cfg(not(target_family = "wasm"))]
         if self.standard_source_path.as_deref().is_some_and(|original| same_file(original, path)) {
             return Err(std::io::Error::other(crate::i18n::text("file.standard-source-protected").to_string()));
@@ -127,7 +130,9 @@ impl SlideEditor {
 
     /// `refuse_save`, told in the words of what was asked for (saving, exporting, saving a copy, printing).
     pub fn refuse_as(&mut self, way: RefusedWay, cx: &mut Context<Self>) -> bool {
-        match crate::format::with_format!(self, save_refused(self)) {
+        let refusal = if self.is_csv_streaming { Some(crate::i18n::text("file.csv-loading-blocked").to_string()) }
+            else { crate::format::with_format!(self, save_refused(self)) };
+        match refusal {
             Some(why) => {
                 let key = match way {
                     RefusedWay::Save => "file.save-failed",
@@ -335,6 +340,7 @@ impl SlideEditor {
     /// Save to `path`, and make it the file's path.
     #[cfg(not(target_family = "wasm"))]
     pub fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
+        if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         self.check_standard_copy_format(&path)?;
         if self.standard_source_path.as_deref().is_some_and(|original| same_file(original, &path)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());

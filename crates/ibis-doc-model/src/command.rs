@@ -1110,6 +1110,8 @@ pub struct Document {
 struct CsvEditJournal {
     valid: bool,
     cells: std::collections::BTreeSet<(SlideId, u32, u32)>,
+    baseline_undo_len: usize,
+    recoverable_at_clean: bool,
 }
 
 impl Default for Document {
@@ -1126,7 +1128,7 @@ impl Document {
     /// Start a journal only after the source bytes and model describe the same
     /// saved state. Restart it after a successful write, never before one.
     pub fn begin_csv_edit_tracking(&mut self) {
-        self.csv_edits = Some(CsvEditJournal { valid: true, cells: Default::default() });
+        self.csv_edits = Some(CsvEditJournal { valid: true, cells: Default::default(), baseline_undo_len: self.undo.len(), recoverable_at_clean: true });
     }
 
     /// Cells touched since tracking started; `None` means tracking is disabled
@@ -1136,7 +1138,20 @@ impl Document {
     }
 
     fn invalidate_csv_edits(&mut self) {
-        if let Some(journal) = &mut self.csv_edits { journal.valid = false; }
+        if let Some(journal) = &mut self.csv_edits { journal.valid = false; journal.recoverable_at_clean = false; }
+    }
+
+    /// A successful history transition can restore the saved model exactly.
+    /// Direct model mutations and abandoned/amended steps cannot be recovered
+    /// from history, so they keep tracking invalid until the next read or save.
+    fn csv_after_history_transition(&mut self) {
+        if let Some(journal) = &mut self.csv_edits {
+            journal.valid = false;
+            if journal.recoverable_at_clean && self.clean_undo_len == Some(journal.baseline_undo_len) && self.undo.len() == journal.baseline_undo_len {
+                journal.cells.clear();
+                journal.valid = true;
+            }
+        }
     }
 
     /// Prevent document-changing commands for read-only import previews.
@@ -1215,7 +1230,7 @@ impl Document {
                     Command::Sheet(crate::SheetCommand::SetCells { slide, edits }) => {
                         cells.extend(edits.iter().map(|edit| (*slide, edit.row, edit.column)));
                     }
-                    Command::Sheet(crate::SheetCommand::SetRowHeightFitted { .. }) => {}
+                    Command::Sheet(crate::SheetCommand::SetRowHeightFitted { .. } | crate::SheetCommand::SetColumnWidthAuto { .. }) => {}
                     _ => return None,
                 }
             }
@@ -1228,7 +1243,8 @@ impl Document {
         let inverses = self.apply_all(commands)?;
         if !inverses.is_empty() {
             if let (Some(journal), Some(delta)) = (&mut self.csv_edits, csv_delta) {
-                if let Some(cells) = delta { journal.cells.extend(cells); } else { journal.valid = false; }
+                if let Some(cells) = delta { journal.cells.extend(cells); }
+                else { journal.valid = false; journal.recoverable_at_clean = false; }
             }
             if self.clean_undo_len.is_some_and(|clean| clean > self.undo.len()) {
                 self.clean_undo_len = None;
@@ -1284,25 +1300,25 @@ impl Document {
 
     pub fn undo(&mut self) -> bool {
         let Some(step) = self.undo.pop() else { return false };
-        self.invalidate_csv_edits();
         match self.apply_all(step) {
             Ok(inverses) => {
                 self.redo.push(inverses);
+                self.csv_after_history_transition();
                 true
             }
-            Err(_) => false,
+            Err(_) => { self.invalidate_csv_edits(); false },
         }
     }
 
     pub fn redo(&mut self) -> bool {
         let Some(step) = self.redo.pop() else { return false };
-        self.invalidate_csv_edits();
         match self.apply_all(step) {
             Ok(inverses) => {
                 self.undo.push(inverses);
+                self.csv_after_history_transition();
                 true
             }
-            Err(_) => false,
+            Err(_) => { self.invalidate_csv_edits(); false },
         }
     }
 
