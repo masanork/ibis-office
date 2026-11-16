@@ -212,7 +212,7 @@ pub fn open_progressive(
         let text: std::sync::Arc<str> = std::sync::Arc::from(decoded);
         crate::progress::fraction(0.02);
         let delimiter = crate::csv::detect_delimiter(&text);
-        original_csv_format = Some(crate::csv::OriginalCsvFormat { encoding, delimiter });
+        original_csv_format = Some(crate::csv::original_csv_format(&text, encoding, delimiter));
         let mut iter = crate::csv::CsvRecordIter::new(&text, delimiter);
 
         let mut first = Vec::new();

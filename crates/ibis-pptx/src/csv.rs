@@ -32,13 +32,44 @@ pub enum OriginalEncoding {
 pub struct OriginalCsvFormat {
     pub encoding: OriginalEncoding,
     pub delimiter: char,
+    pub record_ending: RecordEnding,
+    pub final_record_ending: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordEnding { CrLf, Lf, Cr, Mixed, QuotedCarriageReturn }
+
+/// Determine record separators without mistaking line breaks inside quotes for records.
+pub fn original_csv_format(text: &str, encoding: OriginalEncoding, delimiter: char) -> OriginalCsvFormat {
+    let mut iter = CsvRecordIter::new(text, delimiter);
+    let mut ending = None;
+    let mut trailing = false;
+    let mut quoted_cr = false;
+    while let Some(record) = iter.next() {
+        quoted_cr |= record.iter().any(|field| field.contains('\r'));
+        trailing = !iter.finished;
+        if trailing {
+            let end = iter.position();
+            let candidate = if text[..end].ends_with("\r\n") { RecordEnding::CrLf }
+                else if text[..end].ends_with('\n') { RecordEnding::Lf }
+                else { RecordEnding::Cr };
+            ending = Some(match ending { None => candidate, Some(old) if old == candidate => old, _ => RecordEnding::Mixed });
+        }
+    }
+    if iter.quoted { ending = Some(RecordEnding::Mixed); }
+    if quoted_cr { ending = Some(RecordEnding::QuotedCarriageReturn); }
+    OriginalCsvFormat { encoding, delimiter, record_ending: ending.unwrap_or(RecordEnding::CrLf), final_record_ending: trailing }
 }
 
 /// Serialize the current sheet and refuse character loss when restoring its encoding.
 pub fn sheet_to_original_csv(presentation: &Presentation, slide: usize, format: OriginalCsvFormat) -> Result<Vec<u8>, Error> {
-    let bytes = sheet_to_delimited(presentation, slide, CsvOptions { encoding: CsvEncoding::Utf8, delimiter: format.delimiter });
-    let text = std::str::from_utf8(&bytes).expect("UTF-8 serialization");
-    encode_original(text, format.encoding)
+    let ending = match format.record_ending {
+        RecordEnding::CrLf => "\r\n", RecordEnding::Lf => "\n", RecordEnding::Cr => "\r",
+        RecordEnding::Mixed => return Err(Error::new("CSV の改行が混在しているため上書き保存できません")),
+        RecordEnding::QuotedCarriageReturn => return Err(Error::new("CSV のセル内の CR 改行を保持できないため上書き保存できません")),
+    };
+    let text = sheet_to_delimited_text(presentation, slide, format.delimiter, ending, format.final_record_ending);
+    encode_original(&text, format.encoding)
 }
 
 /// Decode and keep the encoding necessary for a safe same-file save.
@@ -99,7 +130,7 @@ pub fn encode_original(text: &str, encoding: OriginalEncoding) -> Result<Vec<u8>
 
 #[cfg(test)]
 mod original_encoding_tests {
-    use super::{decode_with_original_encoding, encode_original, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding};
+    use super::{decode_with_original_encoding, encode_original, sheet_to_csv_sjis_strict, sheet_to_original_csv, OriginalEncoding, RecordEnding};
 
     #[test]
     fn cp932_is_retained_and_unrepresentable_text_is_rejected() {
@@ -159,6 +190,35 @@ mod original_encoding_tests {
     fn explicit_sjis_export_rejects_unrepresentable_characters() {
         let opened = crate::open("名前,😀\r\n".as_bytes().to_vec()).unwrap();
         assert!(sheet_to_csv_sjis_strict(&opened.presentation, 0).is_err());
+    }
+
+    #[test]
+    fn same_file_keeps_record_endings_and_quoted_newlines() {
+        for text in ["a,b\nx,\"hello\nworld\"", "a,b\rx,y\r", "a,b\r\nx,y\r\n", "a,b"] {
+            let opened = crate::open(text.as_bytes().to_vec()).unwrap();
+            let format = opened.source.original_csv_format().unwrap();
+            let saved = sheet_to_original_csv(&opened.presentation, 0, format).unwrap();
+            assert_eq!(saved, text.as_bytes(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn mixed_or_unclosed_records_are_not_overwritten() {
+        for text in ["a,b\nx,y\r\n", "a,\"unfinished\n"] {
+            let opened = crate::open(text.as_bytes().to_vec()).unwrap();
+            let format = opened.source.original_csv_format().unwrap();
+            assert_eq!(format.record_ending, RecordEnding::Mixed);
+            assert!(sheet_to_original_csv(&opened.presentation, 0, format).is_err());
+        }
+    }
+
+    #[test]
+    fn quoted_carriage_returns_cannot_be_silently_lost() {
+        let text = "a,b\nx,\"hello\r\nworld\"";
+        let opened = crate::open(text.as_bytes().to_vec()).unwrap();
+        let format = opened.source.original_csv_format().unwrap();
+        assert_eq!(format.record_ending, RecordEnding::QuotedCarriageReturn);
+        assert!(sheet_to_original_csv(&opened.presentation, 0, format).is_err());
     }
 }
 
@@ -608,30 +668,12 @@ pub fn sheet_to_csv_sjis(presentation: &Presentation, slide: usize) -> Vec<u8> {
 
 /// Shift_JIS export that never silently substitutes unrepresentable characters.
 pub fn sheet_to_csv_sjis_strict(presentation: &Presentation, slide: usize) -> Result<Vec<u8>, Error> {
-    sheet_to_original_csv(presentation, slide, OriginalCsvFormat { encoding: OriginalEncoding::Cp932, delimiter: ',' })
+    sheet_to_original_csv(presentation, slide, OriginalCsvFormat { encoding: OriginalEncoding::Cp932, delimiter: ',', record_ending: RecordEnding::CrLf, final_record_ending: true })
 }
 
 /// The sheet at slide index `slide` formatted with custom encoding and delimiter options.
 pub fn sheet_to_delimited(presentation: &Presentation, slide: usize, options: CsvOptions) -> Vec<u8> {
-    let mut text = String::new();
-    if let Some(sheet) = presentation.slides.get(slide).and_then(ibis_doc_model::sheet_calc::sheet_of_slide) {
-        let (rows, columns) = sheet.cells.iter().filter(|c| !c.text.is_empty()).fold((0, 0), |(r, c), x| (r.max(x.row + 1), c.max(x.column + 1)));
-        let delimiter_str = options.delimiter.to_string();
-        for row in 0..rows {
-            let fields: Vec<String> = (0..columns)
-                .map(|column| {
-                    let cell_text = sheet.cell(row, column).map_or(String::new(), |c| c.text.clone());
-                    if cell_text.contains([options.delimiter, '"', '\n', '\r']) {
-                        format!("\"{}\"", cell_text.replace('"', "\"\""))
-                    } else {
-                        cell_text
-                    }
-                })
-                .collect();
-            text.push_str(&fields.join(&delimiter_str));
-            text.push_str("\r\n");
-        }
-    }
+    let text = sheet_to_delimited_text(presentation, slide, options.delimiter, "\r\n", true);
     match options.encoding {
         CsvEncoding::Utf8Bom => {
             let mut bytes = Vec::with_capacity(3 + text.len());
@@ -645,6 +687,29 @@ pub fn sheet_to_delimited(presentation: &Presentation, slide: usize, options: Cs
             cow.into_owned()
         }
     }
+}
+
+fn sheet_to_delimited_text(presentation: &Presentation, slide: usize, delimiter: char, ending: &str, final_ending: bool) -> String {
+    let mut text = String::new();
+    if let Some(sheet) = presentation.slides.get(slide).and_then(ibis_doc_model::sheet_calc::sheet_of_slide) {
+        let (rows, columns) = sheet.cells.iter().filter(|c| !c.text.is_empty()).fold((0, 0), |(r, c), x| (r.max(x.row + 1), c.max(x.column + 1)));
+        let delimiter_str = delimiter.to_string();
+        for row in 0..rows {
+            let fields: Vec<String> = (0..columns)
+                .map(|column| {
+                    let cell_text = sheet.cell(row, column).map_or(String::new(), |c| c.text.clone());
+                    if cell_text.contains([delimiter, '"', '\n', '\r']) {
+                        format!("\"{}\"", cell_text.replace('"', "\"\""))
+                    } else {
+                        cell_text
+                    }
+                })
+                .collect();
+            text.push_str(&fields.join(&delimiter_str));
+            if row + 1 < rows || final_ending { text.push_str(ending); }
+        }
+    }
+    text
 }
 
 #[cfg(test)]

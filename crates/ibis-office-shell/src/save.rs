@@ -353,7 +353,7 @@ impl SlideEditor {
                 let delimiter = if ext.eq_ignore_ascii_case("csv") { ',' }
                     else if ["tsv", "tab", "txt"].iter().any(|x| ext.eq_ignore_ascii_case(x)) { '\t' }
                     else { return None };
-                Some(ibis_pptx::csv::OriginalCsvFormat { encoding: ibis_pptx::csv::OriginalEncoding::Utf8Bom, delimiter })
+                Some(ibis_pptx::csv::OriginalCsvFormat { encoding: ibis_pptx::csv::OriginalEncoding::Utf8Bom, delimiter, record_ending: ibis_pptx::csv::RecordEnding::CrLf, final_record_ending: true })
             });
         }
         if self.standard_read_only {
