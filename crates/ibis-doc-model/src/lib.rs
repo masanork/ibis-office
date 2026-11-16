@@ -46,6 +46,8 @@ pub mod forecast_sheet;
 pub mod goal_seek;
 pub mod merge;
 pub mod model;
+pub mod pup_compat;
+mod pup_compat_table;
 pub mod pivot;
 pub mod query;
 pub mod shape_geometry;

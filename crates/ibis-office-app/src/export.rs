@@ -1023,6 +1023,12 @@ pub fn export(mut presentation: Presentation, options: &Options) -> Result<(), S
     lap("headless app", &mut lap_at);
     // Picture decoding runs on real threads.
     cx.allow_parking();
+    if options.format == Format::Pdf {
+        let (normalized, _) = ibis_doc_model::pup_compat::normalize_presentation_compat_pup(&presentation);
+        if let std::borrow::Cow::Owned(p) = normalized {
+            presentation = p;
+        }
+    }
     // Sheets come out as Excel prints them, without grid lines.
     let resources = Rc::new(cx.update(|app| {
         let mut resources = Resources::new(&presentation, app);

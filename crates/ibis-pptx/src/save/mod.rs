@@ -403,6 +403,8 @@ impl Source {
     /// With no changes, it is the original file byte for byte (unless
     /// `options.regenerate_xml`).
     pub fn save(&self, current: &Presentation, options: SaveOptions) -> Result<Vec<u8>, Error> {
+        let (normalized, _) = ibis_doc_model::pup_compat::normalize_presentation_compat_pup(current);
+        let current = normalized.as_ref();
         // テーマの色・フォント・効果 changed: the themes written first, and the
         // file read back as the baseline (what the theme gives the shapes
         // the model has not changed).
@@ -1314,3 +1316,32 @@ fn renumbered(slide: &ibis_doc_model::Slide, id: ibis_doc_model::SlideId, ids: &
 }
 
 mod chart_format;
+
+#[cfg(test)]
+mod pup_export_tests {
+    use super::*;
+    use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand};
+
+    #[test]
+    fn ooxml_save_normalizes_compat_pup_to_standard_unicode_and_ivs() {
+        let opened = crate::open(crate::csv::workbook_from("a\r\n", "Sheet1").unwrap()).unwrap();
+        let slide = opened.presentation.slides[0].id;
+        let mut doc = Document::new(opened.presentation);
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells {
+            slide,
+            edits: vec![CellEdit {
+                row: 0,
+                column: 0,
+                input: CellInput::Value(CellValue::Text("\u{101000}\u{10022A}".into())),
+            }],
+        })])
+        .unwrap();
+        let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
+        let reopened = crate::open(saved).unwrap();
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&reopened.presentation.slides[0]).unwrap();
+        assert_eq!(
+            sheet.cell(0, 0).map(|c| &c.value),
+            Some(&CellValue::Text("\u{3404}\u{E0101}\u{00E6}\u{0300}".into()))
+        );
+    }
+}
