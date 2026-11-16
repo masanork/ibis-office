@@ -38,9 +38,10 @@ use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_c
 use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
-    GetVcPublicKeysArgs, GenerateLawtext5SetArgs, MAX_READ_CELLS, MoveSlideArgs, ParseVcTokenArgs,
-    PrepareOid4vpArgs, ReadParagraphsArgs, VerifyLawtextAratameArgs, claim_value_to_json,
-    resolve_vc_holder_key, resolve_vc_issuer_key, vc_public_keys_json,
+    GetVcPublicKeysArgs, GenerateLawtext5SetArgs, MAX_READ_CELLS, MoveSlideArgs,
+    OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs,
+    VerifyLawtextAratameArgs, claim_value_to_json, resolve_vc_holder_key,
+    resolve_vc_issuer_key, vc_public_keys_json,
     ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
     SetShapeTextArgs, SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
     build_replace_paragraph_command, build_set_run_format_command, docx_tool_definitions,
@@ -332,7 +333,7 @@ impl SlideEditor {
                     AiDocKind::Docx => {
                         "You are an AI document assistant inside ibisOffice. \
                          Use the provided tools to inspect paragraphs and edit or format document text. \
-                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, and verify_lawtext_aratame to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame. \
+                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, and verify_lawtext_aratame to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
                          Respond concisely in the user's language."
                     }
                 };
@@ -653,7 +654,7 @@ impl SlideEditor {
         match kind {
             AiDocKind::Xlsx => self.execute_xlsx_tool(call, cx),
             AiDocKind::Pptx => self.execute_pptx_tool(call, cx),
-            AiDocKind::Docx => self.execute_docx_tool(call),
+            AiDocKind::Docx => self.execute_docx_tool(call, cx),
         }
     }
 
@@ -2293,7 +2294,11 @@ impl SlideEditor {
         }
     }
 
-    fn execute_docx_tool(&mut self, call: &ToolCall) -> (String, Option<Command>, String) {
+    fn execute_docx_tool(
+        &mut self,
+        call: &ToolCall,
+        cx: &mut Context<Self>,
+    ) -> (String, Option<Command>, String) {
         let name = call.function.name.as_str();
         let args = call.function.arguments.as_str();
         match name {
@@ -2669,6 +2674,52 @@ impl SlideEditor {
                             json!({ "error": e }).to_string(),
                             None,
                             format!("✗ verify_lawtext_aratame: {e}"),
+                        ),
+                    },
+                }
+            }
+            "open_markdown_document" => {
+                let parsed: Result<OpenMarkdownDocumentArgs, _> = serde_json::from_str(args);
+                match parsed {
+                    Err(e) => (
+                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
+                        None,
+                        format!("✗ open_markdown_document: {e}"),
+                    ),
+                    Ok(a) => match ibis_pptx::markdown::open_markdown(a.markdown.into_bytes()) {
+                        Ok(opened) => {
+                            let title = a.title;
+                            let name: SharedString = title.clone().into();
+                            #[cfg(not(target_family = "wasm"))]
+                            {
+                                crate::app::open_window_with(cx, move |editor, window, cx| {
+                                    editor.show_new(opened, name, window, cx);
+                                });
+                                (
+                                    json!({ "opened": true, "title": title }).to_string(),
+                                    None,
+                                    format!("✓ open_markdown_document ({title})"),
+                                )
+                            }
+                            #[cfg(target_family = "wasm")]
+                            {
+                                let _ = (opened, name, cx);
+                                (
+                                    json!({
+                                        "opened": false,
+                                        "title": title,
+                                        "note": "Opening a separate window is only supported on desktop builds."
+                                    })
+                                    .to_string(),
+                                    None,
+                                    format!("✓ open_markdown_document (wasm noop: {title})"),
+                                )
+                            }
+                        }
+                        Err(e) => (
+                            json!({ "error": e.to_string() }).to_string(),
+                            None,
+                            format!("✗ open_markdown_document: {e}"),
                         ),
                     },
                 }

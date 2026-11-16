@@ -1108,7 +1108,29 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "open_markdown_document",
+                description: "Open a generated Markdown document (such as 新旧対照表, 改め文, 参照条文, 法律案要綱, or 理由) in a new ibisOffice DOCX window.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Document window/file title (e.g. '新旧対照表.md')." },
+                        "markdown": { "type": "string", "description": "Full Markdown content to open as a DOCX document." }
+                    },
+                    "required": ["title", "markdown"],
+                    "additionalProperties": false
+                }),
+            },
+        },
     ]
+}
+
+#[derive(Deserialize)]
+pub struct OpenMarkdownDocumentArgs {
+    pub title: String,
+    pub markdown: String,
 }
 
 #[derive(Deserialize)]
