@@ -119,6 +119,11 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>) -> Result
         e.to_string()
     })? {
         ibis_pptx::markdown::open_markdown_with_base_dir(law_md.into_bytes(), path.parent()).map(|opened| (opened, None))
+    } else if let Some(fhir_md) = ibis_pptx::fhir::input_to_markdown(&data).map_err(|e| {
+        note_open_failed(path);
+        e.to_string()
+    })? {
+        ibis_pptx::markdown::open_markdown_with_base_dir(fhir_md.into_bytes(), path.parent()).map(|opened| (opened, None))
     } else if external_document_format == Some(ibis_pptx::docx_convert::DocxConvertFormat::Markdown) {
         if ibis_pptx::markdown::is_presentation_markdown(&data) {
             ibis_pptx::markdown::open_markdown_presentation_with_base_dir(data, path.parent()).map(|opened| (opened, None))
