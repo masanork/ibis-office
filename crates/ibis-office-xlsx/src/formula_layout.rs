@@ -27,7 +27,7 @@ pub(crate) fn shape_bar_line(text: &str, w: &Window) -> ShapedLine {
         strikethrough: None,
     };
     w.text_system()
-        .shape_line(text.to_owned().into(), w.rem_size() * 0.875, &[run], None)
+        .shape_line(text.to_owned().into(), w.rem_size() * 0.875, &crate::variant_pup_fonts::runs(w.text_system(), text, &[run]), None)
 }
 pub(crate) fn visual_lines(text: &str, width: f32, w: &Window) -> Vec<(usize, String)> {
     let style = w.text_style();
@@ -44,7 +44,7 @@ pub(crate) fn visual_lines(text: &str, width: f32, w: &Window) -> Vec<(usize, St
         };
         let shaped = w
             .text_system()
-            .shape_line(line.to_owned().into(), size, &[run], None);
+            .shape_line(line.to_owned().into(), size, &crate::variant_pup_fonts::runs(w.text_system(), line, &[run]), None);
         let mut begin = 0;
         let mut x = px(0.);
         for (at, ch) in line.char_indices() {

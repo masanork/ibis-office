@@ -486,7 +486,7 @@ impl SlideEditor {
         let style = window.text_style();
         let size = window.rem_size() * 0.875;
         let run = TextRun { len: line.len(), font: super::formula_layout::bar_font(&style), color: style.color, background_color: None, underline: None, strikethrough: None };
-        let shaped = window.text_system().shape_line(SharedString::from(line.to_string()), size, &[run], None);
+        let shaped = window.text_system().shape_line(SharedString::from(line.to_string()), size, &crate::variant_pup_fonts::runs(window.text_system(), line, &[run]), None);
         let byte = shaped.closest_index_for_x(position.x - rect.origin.x - px(8.)).min(line.len());
         let byte = (0..=byte).rev().find(|&b| line.is_char_boundary(b)).unwrap_or(0);
         Some(start + utf16_len(&line[..byte]))
