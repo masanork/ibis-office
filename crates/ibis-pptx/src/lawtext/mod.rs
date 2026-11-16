@@ -11,6 +11,22 @@
 
 use crate::Error;
 
+pub mod aratame;
+pub mod assistant;
+pub mod diff;
+pub mod refs;
+pub use aratame::{
+    AratameClause, AratameDraft, VerifyResult, apply_aratame, generate_aratame_draft,
+    verify_aratame,
+};
+pub use assistant::{Legislation5SetPackage, build_5set_package};
+pub use diff::{
+    AmendmentIr, ArticleChange, ArticleChangeKind, DiffOp, DivisionChange, DivisionChangeKind,
+    ItemChange, NodeChangeKind, ParagraphChange, ShinkyuOptions, SubitemChange, SupplChange,
+    diff_laws, generate_shinkyu_markdown, generate_shinkyu_markdown_with_options,
+};
+pub use refs::{LawReference, extract_references, generate_sansho_markdown};
+
 /// Structural division kind within `MainProvision` or `SupplProvision`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DivisionKind {
@@ -1108,261 +1124,6 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     doc.main_provision = std::mem::take(&mut parsed.main_provision);
     doc.suppl_provisions = std::mem::take(&mut parsed.suppl_provisions);
     Ok(doc)
-}
-
-/// Generate a 新旧対照表 (side-by-side comparison) in Markdown from `old` and `new` [`LawDoc`]s.
-///
-/// Changed/added spans are highlighted with `++...++` (underline / 傍線 in ibisOffice Markdown)
-/// and deleted spans with `~~...~~` inside a 2-column GFM table (`改正後` | `現行`),
-/// ready to open or export as DOCX, PPTX, or XLSX.
-pub fn generate_shinkyu_markdown(old: &LawDoc, new: &LawDoc) -> String {
-    let old_articles = collect_articles(&old.main_provision);
-    let new_articles = collect_articles(&new.main_provision);
-
-    let mut out = String::new();
-    let title = if !new.law_title.is_empty() {
-        &new.law_title
-    } else {
-        &old.law_title
-    };
-    out.push_str(&format!("# {} 新旧対照表\n\n", title));
-    out.push_str("（傍線部分は改正部分）\n\n");
-    out.push_str("| 改正後 | 現行 |\n| :--- | :--- |\n");
-
-    let mut old_idx = 0usize;
-    for new_art in &new_articles {
-        if let Some(pos) = old_articles[old_idx..]
-            .iter()
-            .position(|a| a.num == new_art.num)
-        {
-            for skipped in &old_articles[old_idx..old_idx + pos] {
-                let old_cell = format_article_plain(skipped, Some("~~"));
-                out.push_str(&format!("| （削る） | {} |\n", escape_md_cell(&old_cell)));
-            }
-            let old_art = &old_articles[old_idx + pos];
-            if old_art != new_art {
-                let (new_cell, old_cell) = diff_articles_markdown(old_art, new_art);
-                out.push_str(&format!(
-                    "| {} | {} |\n",
-                    escape_md_cell(&new_cell),
-                    escape_md_cell(&old_cell)
-                ));
-            }
-            old_idx = old_idx + pos + 1;
-        } else {
-            let new_cell = format_article_plain(new_art, Some("++"));
-            out.push_str(&format!("| {} | （新設） |\n", escape_md_cell(&new_cell)));
-        }
-    }
-    for remaining in &old_articles[old_idx..] {
-        let old_cell = format_article_plain(remaining, Some("~~"));
-        out.push_str(&format!("| （削る） | {} |\n", escape_md_cell(&old_cell)));
-    }
-    out
-}
-
-fn collect_articles<'a>(nodes: &'a [LawNode]) -> Vec<&'a LawArticle> {
-    let mut out = Vec::new();
-    for n in nodes {
-        match n {
-            LawNode::Division { children, .. } => out.extend(collect_articles(children)),
-            LawNode::Article(a) => out.push(a),
-            LawNode::Paragraph(_) => {}
-        }
-    }
-    out
-}
-
-fn format_article_plain(art: &LawArticle, wrap: Option<&str>) -> String {
-    let mut parts = Vec::new();
-    if let Some(cap) = art.caption.as_deref().filter(|s| !s.is_empty()) {
-        parts.push(cap.to_string());
-    }
-    for (idx, p) in art.paragraphs.iter().enumerate() {
-        let line = if idx == 0 {
-            format!("{} {}", art.title, p.sentence)
-        } else {
-            format!("{} {}", to_fullwidth_digits(&p.num), p.sentence)
-        };
-        parts.push(match wrap {
-            Some(w) => format!("{w}{line}{w}"),
-            None => line,
-        });
-    }
-    parts.join("<br>")
-}
-
-fn diff_articles_markdown(old: &LawArticle, new: &LawArticle) -> (String, String) {
-    let mut new_parts = Vec::new();
-    let mut old_parts = Vec::new();
-    if let Some(cap) = new.caption.as_deref().or(old.caption.as_deref()) {
-        new_parts.push(cap.to_string());
-        old_parts.push(old.caption.as_deref().unwrap_or(cap).to_string());
-    }
-    let max_p = old.paragraphs.len().max(new.paragraphs.len());
-    for i in 0..max_p {
-        let op = old.paragraphs.get(i);
-        let np = new.paragraphs.get(i);
-        match (op, np) {
-            (Some(o), Some(n)) => {
-                let prefix_n = if i == 0 {
-                    format!("{} ", n.title_prefix(&new.title))
-                } else {
-                    format!("{} ", to_fullwidth_digits(&n.num))
-                };
-                let prefix_o = if i == 0 {
-                    format!("{} ", o.title_prefix(&old.title))
-                } else {
-                    format!("{} ", to_fullwidth_digits(&o.num))
-                };
-                let (dn, do_) = diff_clause_tokens(&o.sentence, &n.sentence);
-                new_parts.push(format!("{prefix_n}{dn}"));
-                old_parts.push(format!("{prefix_o}{do_}"));
-            }
-            (None, Some(n)) => {
-                new_parts.push(format!("++{} {}++", to_fullwidth_digits(&n.num), n.sentence));
-                old_parts.push("（新設）".to_string());
-            }
-            (Some(o), None) => {
-                new_parts.push("（削る）".to_string());
-                old_parts.push(format!("~~{} {}~~", to_fullwidth_digits(&o.num), o.sentence));
-            }
-            (None, None) => {}
-        }
-    }
-    (new_parts.join("<br>"), old_parts.join("<br>"))
-}
-
-impl LawParagraph {
-    fn title_prefix<'a>(&self, art_title: &'a str) -> &'a str {
-        art_title
-    }
-}
-
-/// Tokenize Japanese legal text by script runs (kanji, hiragana, katakana, ASCII, punctuation)
-/// so LCS diff highlights coherent words/clauses rather than stray single characters.
-fn tokenize_legal_clauses(text: &str) -> Vec<&str> {
-    #[derive(PartialEq, Eq, Clone, Copy)]
-    enum Class {
-        Kanji,
-        Hira,
-        Kata,
-        Ascii,
-        Other,
-    }
-    let classify = |c: char| -> Class {
-        match c {
-            '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}' | '々' => Class::Kanji,
-            '\u{3041}'..='\u{309F}' => Class::Hira,
-            '\u{30A1}'..='\u{30FF}' => Class::Kata,
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '０'..='９' => Class::Ascii,
-            _ => Class::Other,
-        }
-    };
-    let mut tokens = Vec::new();
-    let mut start = 0usize;
-    let mut prev: Option<Class> = None;
-    let mut idx = 0usize;
-    while idx < text.len() {
-        let rest = &text[idx..];
-        if let Some(conj) = ["並びに", "若しくは", "及び", "又は"]
-            .into_iter()
-            .find(|c| rest.starts_with(c))
-        {
-            if start < idx {
-                tokens.push(&text[start..idx]);
-            }
-            tokens.push(&text[idx..idx + conj.len()]);
-            idx += conj.len();
-            start = idx;
-            prev = None;
-            continue;
-        }
-        let ch = rest.chars().next().unwrap();
-        let cls = classify(ch);
-        if let Some(p) = prev {
-            if cls != p || cls == Class::Other {
-                tokens.push(&text[start..idx]);
-                start = idx;
-            }
-        }
-        prev = Some(cls);
-        idx += ch.len_utf8();
-    }
-    if start < text.len() {
-        tokens.push(&text[start..]);
-    }
-    tokens
-}
-
-fn diff_clause_tokens(old_text: &str, new_text: &str) -> (String, String) {
-    let a = tokenize_legal_clauses(old_text);
-    let b = tokenize_legal_clauses(new_text);
-    let m = a.len();
-    let n = b.len();
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for i in (0..m).rev() {
-        for j in (0..n).rev() {
-            dp[i][j] = if a[i] == b[j] {
-                dp[i + 1][j + 1] + 1
-            } else {
-                dp[i + 1][j].max(dp[i][j + 1])
-            };
-        }
-    }
-    let mut new_out = String::new();
-    let mut old_out = String::new();
-    let mut i = 0;
-    let mut j = 0;
-    let mut new_buf = String::new();
-    let mut old_buf = String::new();
-    let flush_new = |buf: &mut String, out: &mut String| {
-        if !buf.is_empty() {
-            out.push_str("++");
-            out.push_str(buf);
-            out.push_str("++");
-            buf.clear();
-        }
-    };
-    let flush_old = |buf: &mut String, out: &mut String| {
-        if !buf.is_empty() {
-            out.push_str("~~");
-            out.push_str(buf);
-            out.push_str("~~");
-            buf.clear();
-        }
-    };
-    while i < m && j < n {
-        if a[i] == b[j] {
-            flush_new(&mut new_buf, &mut new_out);
-            flush_old(&mut old_buf, &mut old_out);
-            new_out.push_str(b[j]);
-            old_out.push_str(a[i]);
-            i += 1;
-            j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
-            old_buf.push_str(a[i]);
-            i += 1;
-        } else {
-            new_buf.push_str(b[j]);
-            j += 1;
-        }
-    }
-    while i < m {
-        old_buf.push_str(a[i]);
-        i += 1;
-    }
-    while j < n {
-        new_buf.push_str(b[j]);
-        j += 1;
-    }
-    flush_new(&mut new_buf, &mut new_out);
-    flush_old(&mut old_buf, &mut old_out);
-    (new_out, old_out)
-}
-
-fn escape_md_cell(s: &str) -> String {
-    s.replace('|', "\\|")
 }
 
 fn split_title_and_parens(s: &str) -> Option<(String, String)> {
