@@ -865,6 +865,44 @@ fn glyph_characters(data: &[u8], index: u32) -> HashMap<u32, String> {
         }
     }
     let mut out: HashMap<u32, String> = out.into_iter().map(|(g, (_, c))| (g, c.to_string())).collect();
+    // Variation sequences (cmap format 14) whose non-default glyph is not
+    // reached by cmap 4/12 are copied as the base scalar plus the selector.
+    if let Ok(cmap) = font.cmap() {
+        let mut ivs: HashMap<u32, (u32, u32)> = HashMap::new();
+        for record in cmap.encoding_records() {
+            let Ok(skrifa::raw::tables::cmap::CmapSubtable::Format14(f14)) = record.subtable(cmap.offset_data()) else {
+                continue;
+            };
+            for vs in f14.var_selector() {
+                let selector = vs.var_selector().to_u32();
+                let Some(Ok(non_default)) = vs.non_default_uvs(f14.offset_data()) else {
+                    continue;
+                };
+                for mapping in non_default.uvs_mapping() {
+                    let base = mapping.unicode_value().to_u32();
+                    let glyph = u32::from(mapping.glyph_id());
+                    if out.contains_key(&glyph) || char::from_u32(base).is_none() || char::from_u32(selector).is_none() {
+                        continue;
+                    }
+                    ivs.entry(glyph)
+                        .and_modify(|best| {
+                            if (base, selector) < *best {
+                                *best = (base, selector);
+                            }
+                        })
+                        .or_insert((base, selector));
+                }
+            }
+        }
+        for (glyph, (base, selector)) in ivs {
+            if let (Some(b), Some(s)) = (char::from_u32(base), char::from_u32(selector)) {
+                let mut text = String::with_capacity(8);
+                text.push(b);
+                text.push(s);
+                out.insert(glyph, text);
+            }
+        }
+    }
     // A glyph the font's GSUB makes of several (a ligature, or か + U+309A as か゚: no character of the font's cmap is that glyph) is copied as
     // the characters of the glyphs it replaces, in order (GitHub issue #163: the PDF's text for か゚ and the like was empty).
     if let Ok(gsub) = font.gsub()
@@ -917,6 +955,85 @@ mod tests {
         assert!(copied.contains("ch") && copied.contains("ffb"), "ligatures that no cmap entry reaches (Carlito's lookups 36 and 37) are copied as their letters");
         assert!(characters.values().any(|s| s.chars().count() > 1), "some glyph is copied as several characters");
         assert!(copied.contains("a") && copied.contains("A"), "single glyphs stay as they were");
+    }
+
+    #[test]
+    fn an_ivs_glyph_in_cmap14_is_copied_as_base_and_selector() {
+        // Minimal SFNT with `cmap` (format 12 for U+3404 -> glyph 1, and format 14 for U+3404 + U+E0101 -> glyph 2),
+        // `head` (version/magic), and `maxp` (3 glyphs).
+        fn u24(v: u32) -> [u8; 3] {
+            [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+        }
+        let mut f12 = Vec::new();
+        f12.extend_from_slice(&12u16.to_be_bytes());
+        f12.extend_from_slice(&0u16.to_be_bytes());
+        f12.extend_from_slice(&28u32.to_be_bytes()); // length
+        f12.extend_from_slice(&0u32.to_be_bytes()); // language
+        f12.extend_from_slice(&1u32.to_be_bytes()); // numGroups
+        f12.extend_from_slice(&0x3404u32.to_be_bytes());
+        f12.extend_from_slice(&0x3404u32.to_be_bytes());
+        f12.extend_from_slice(&1u32.to_be_bytes());
+
+        let mut f14 = Vec::new();
+        f14.extend_from_slice(&14u16.to_be_bytes());
+        f14.extend_from_slice(&34u32.to_be_bytes()); // length: 10 + 11 + 13
+        f14.extend_from_slice(&1u32.to_be_bytes()); // numVarSelectorRecords
+        // VarSelectorRecord: varSelector (3), defaultUVSOffset (4), nonDefaultUVSOffset (4)
+        f14.extend_from_slice(&u24(0xE0101));
+        f14.extend_from_slice(&0u32.to_be_bytes());
+        f14.extend_from_slice(&21u32.to_be_bytes()); // 10 + 11
+        // NonDefaultUVS: numUVSMappings (4) + UVSMapping(unicodeValue: 3, glyphID: 2)
+        f14.extend_from_slice(&1u32.to_be_bytes());
+        f14.extend_from_slice(&u24(0x3404));
+        f14.extend_from_slice(&2u16.to_be_bytes());
+
+        let mut cmap = Vec::new();
+        cmap.extend_from_slice(&0u16.to_be_bytes()); // version
+        cmap.extend_from_slice(&2u16.to_be_bytes()); // numTables
+        // Record 0: Unicode BMP/full (platform 3, encoding 10) -> offset 20
+        cmap.extend_from_slice(&3u16.to_be_bytes());
+        cmap.extend_from_slice(&10u16.to_be_bytes());
+        cmap.extend_from_slice(&20u32.to_be_bytes());
+        // Record 1: Unicode Variation Sequences (platform 0, encoding 5) -> offset 20 + f12.len()
+        cmap.extend_from_slice(&0u16.to_be_bytes());
+        cmap.extend_from_slice(&5u16.to_be_bytes());
+        cmap.extend_from_slice(&((20 + f12.len()) as u32).to_be_bytes());
+        cmap.extend_from_slice(&f12);
+        cmap.extend_from_slice(&f14);
+
+        let mut head = vec![0u8; 54];
+        head[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+        head[12..16].copy_from_slice(&0x5F0F3CF5u32.to_be_bytes());
+        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+
+        let mut maxp = Vec::new();
+        maxp.extend_from_slice(&0x00005000u32.to_be_bytes());
+        maxp.extend_from_slice(&3u16.to_be_bytes());
+
+        let mut sfnt = Vec::new();
+        sfnt.extend_from_slice(&0x00010000u32.to_be_bytes());
+        sfnt.extend_from_slice(&3u16.to_be_bytes()); // numTables
+        sfnt.extend_from_slice(&32u16.to_be_bytes());
+        sfnt.extend_from_slice(&1u16.to_be_bytes());
+        sfnt.extend_from_slice(&16u16.to_be_bytes());
+        let mut offset = 12 + 3 * 16;
+        for (tag, table) in [(b"cmap", &cmap), (b"head", &head), (b"maxp", &maxp)] {
+            sfnt.extend_from_slice(tag);
+            sfnt.extend_from_slice(&0u32.to_be_bytes());
+            sfnt.extend_from_slice(&(offset as u32).to_be_bytes());
+            sfnt.extend_from_slice(&(table.len() as u32).to_be_bytes());
+            offset += (table.len() + 3) & !3;
+        }
+        for table in [&cmap, &head, &maxp] {
+            sfnt.extend_from_slice(table);
+            while sfnt.len() % 4 != 0 {
+                sfnt.push(0);
+            }
+        }
+
+        let characters = glyph_characters(&sfnt, 0);
+        assert_eq!(characters.get(&1).map(String::as_str), Some("\u{3404}"));
+        assert_eq!(characters.get(&2).map(String::as_str), Some("\u{3404}\u{E0101}"));
     }
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
