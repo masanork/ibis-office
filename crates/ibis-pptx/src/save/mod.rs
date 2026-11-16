@@ -181,6 +181,12 @@ pub fn open_progressive(
     #[allow(unused_mut)]
     let mut csv_rx = None;
 
+    if crate::uke::is_uke(&data) {
+        let opened = crate::uke::open_uke(&data)?;
+        crate::progress::fraction(1.0);
+        return Ok((opened, None));
+    }
+
     if crate::csv::is_csv(&data) {
         let text: std::sync::Arc<str> = std::sync::Arc::from(crate::csv::decode(&data)?);
         crate::progress::fraction(0.02);
