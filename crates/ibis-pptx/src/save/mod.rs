@@ -181,6 +181,12 @@ pub fn open_progressive(
     #[allow(unused_mut)]
     let mut csv_rx = None;
 
+    if let Some(dicom_md) = crate::dicom::input_to_markdown(&data)? {
+        let opened = crate::markdown::open_markdown(dicom_md.into_bytes())?;
+        crate::progress::fraction(1.0);
+        return Ok((opened, None));
+    }
+
     if let Some(fhir_md) = crate::fhir::input_to_markdown(&data)? {
         let opened = crate::markdown::open_markdown(fhir_md.into_bytes())?;
         crate::progress::fraction(1.0);

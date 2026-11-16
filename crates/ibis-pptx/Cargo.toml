@@ -15,9 +15,11 @@ miniz_oxide = "0.8"
 roxmltree = "0.21"
 encoding_rs = "0.8"
 delharc = { version = "0.8", default-features = false }
+dicom-object = { version = "0.10.1", default-features = false, features = ["deflate"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 
 [dev-dependencies]
+dicom-core = "0.10.1"
 ibis-emf.workspace = true
 
 [[bin]]
