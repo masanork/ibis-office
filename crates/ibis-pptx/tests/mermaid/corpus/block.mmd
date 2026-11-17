@@ -1,0 +1,171 @@
+%%%% case 1 (block.md:11)
+block
+columns 1
+  db(("DB"))
+  blockArrowId6<["&nbsp;&nbsp;&nbsp;"]>(down)
+  block:ID
+    A
+    B["A wide one in the middle"]
+    C
+  end
+  space
+  D
+  ID --> D
+  C --> D
+  style B fill:#969,stroke:#333,stroke-width:4px
+%%%% case 2 (block.md:82)
+block
+  a b c
+%%%% case 3 (block.md:103)
+block
+  columns 3
+  a b c d
+%%%% case 4 (block.md:132)
+block
+  columns 3
+  a["A label"] b:2 c:2 d
+%%%% case 5 (block.md:155)
+block
+    block
+      D
+    end
+    A["A: I am a wide one"]
+%%%% case 6 (block.md:182)
+block
+  columns 3
+  a:3
+  block:group1:2
+    columns 2
+    h i j k
+  end
+  g
+  block:group2:3
+    %% columns auto (default)
+    l m n o p q r
+  end
+%%%% case 7 (block.md:217)
+block
+  block
+    columns 1
+    a["A label"] b c d
+  end
+%%%% case 8 (block.md:249)
+block
+    id1("This is the text in the box")
+%%%% case 9 (block.md:263)
+block
+    id1(["This is the text in the box"])
+%%%% case 10 (block.md:277)
+block
+    id1[["This is the text in the box"]]
+%%%% case 11 (block.md:291)
+block
+    id1[("Database")]
+%%%% case 12 (block.md:305)
+block
+    id1(("This is the text in the circle"))
+%%%% case 13 (block.md:321)
+block
+  id1>"This is the text in the box"]
+%%%% case 14 (block.md:333)
+block
+    id1{"This is the text in the box"}
+%%%% case 15 (block.md:345)
+block
+    id1{{"This is the text in the box"}}
+%%%% case 16 (block.md:359)
+block
+  id1[/"This is the text in the box"/]
+  id2[\"This is the text in the box"\]
+  A[/"Christmas"\]
+  B[\"Go shopping"/]
+%%%% case 17 (block.md:379)
+block
+    id1((("This is the text in the circle")))
+%%%% case 18 (block.md:397)
+block
+  blockArrowId<["Label"]>(right)
+  blockArrowId2<["Label"]>(left)
+  blockArrowId3<["Label"]>(up)
+  blockArrowId4<["Label"]>(down)
+  blockArrowId5<["Label"]>(x)
+  blockArrowId6<["Label"]>(y)
+  blockArrowId7<["Label"]>(x, down)
+%%%% case 19 (block.md:423)
+block
+  columns 3
+  a space b
+  c   d   e
+%%%% case 20 (block.md:439)
+block
+  ida space:3 idb idc
+%%%% case 21 (block.md:469)
+block
+  A space B
+  A-->B
+%%%% case 22 (block.md:492)
+block
+  A space:2 B
+  A-- "X" -->B
+%%%% case 23 (block.md:508)
+block
+columns 1
+  db(("DB"))
+  blockArrowId6<["&nbsp;&nbsp;&nbsp;"]>(down)
+  block:ID
+    A
+    B["A wide one in the middle"]
+    C
+  end
+  space
+  D
+  ID --> D
+  C --> D
+  style B fill:#939,stroke:#333,stroke-width:4px
+%%%% case 24 (block.md:554)
+block
+  id1 space id2
+  id1("Start")-->id2("Stop")
+  style id1 fill:#636,stroke:#333,stroke-width:4px
+  style id2 fill:#bbf,stroke:#f66,stroke-width:2px,color:#fff,stroke-dasharray: 5 5
+%%%% case 25 (block.md:576)
+block
+  A space B
+  A-->B
+  classDef blue fill:#6e6ce6,stroke:#333,stroke-width:4px;
+  class A blue
+  style B fill:#bbf,stroke:#f66,stroke-width:2px,color:#fff,stroke-dasharray: 5 5
+%%%% case 26 (block.md:610)
+block
+  columns 3
+  Frontend blockArrowId6<[" "]>(right) Backend
+  space:2 down<[" "]>(down)
+  Disk left<[" "]>(left) Database[("Database")]
+
+  classDef front fill:#696,stroke:#333;
+  classDef back fill:#969,stroke:#333;
+  class Frontend front
+  class Backend,Database back
+%%%% case 27 (block.md:642)
+block
+  columns 3
+  Start(("Start")) space:2
+  down<[" "]>(down) space:2
+  Decision{{"Make Decision"}} right<["Yes"]>(right) Process1["Process A"]
+  downAgain<["No"]>(down) space r3<["Done"]>(down)
+  Process2["Process B"] r2<["Done"]>(right) End(("End"))
+
+  style Start fill:#969;
+  style End fill:#696;
+%%%% case 28 (block.md:692)
+block
+  A space B
+  A --> B
+%%%% case 29 (block.md:708)
+  block
+    A
+    style A fill#969;
+%%%% case 30 (block.md:723)
+block
+  A
+  style A fill:#969,stroke:#333;

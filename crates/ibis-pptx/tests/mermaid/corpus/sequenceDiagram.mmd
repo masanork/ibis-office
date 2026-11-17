@@ -1,0 +1,302 @@
+%%%% case 1 (sequenceDiagram.md:13)
+sequenceDiagram
+    Alice->>John: Hello John, how are you?
+    John-->>Alice: Great!
+    Alice-)John: See you later!
+%%%% case 2 (sequenceDiagram.md:42)
+sequenceDiagram
+  autonumber
+  actor Customer
+  participant Web as Web app
+  participant API as API gateway
+  participant Bank
+  Customer->>Web: Place order
+  Web->>API: POST /orders
+  activate API
+  API->>Bank: Authorise payment
+  Bank-->>API: Approved
+  API-->>Web: 201 Created
+  deactivate API
+  Web-->>Customer: Order confirmed
+  Note over Customer,Bank: One order, one transaction
+%%%% case 3 (sequenceDiagram.md:83)
+---
+config:
+  theme: default
+  look: classic
+---
+sequenceDiagram
+  autonumber
+  actor Customer
+  participant Web as Web app
+  participant API as API gateway
+  participant Bank
+  Customer->>Web: Place order
+  Web->>API: POST /orders
+  activate API
+  API->>Bank: Authorise payment
+  Bank-->>API: Approved
+  API-->>Web: 201 Created
+  deactivate API
+  Web-->>Customer: Order confirmed
+  Note over Customer,Bank: One order, one transaction
+%%%% case 4 (sequenceDiagram.md:142)
+sequenceDiagram
+    participant Alice
+    participant Bob
+    Bob->>Alice: Hi Alice
+    Alice->>Bob: Hi Bob
+%%%% case 5 (sequenceDiagram.md:162)
+sequenceDiagram
+    actor Alice
+    actor Bob
+    Alice->>Bob: Hi Bob
+    Bob->>Alice: Hi Alice
+%%%% case 6 (sequenceDiagram.md:182)
+sequenceDiagram
+    participant Alice@{ "type" : "boundary" }
+    participant Bob
+    Alice->>Bob: Request from boundary
+    Bob->>Alice: Response to boundary
+%%%% case 7 (sequenceDiagram.md:202)
+sequenceDiagram
+    participant Alice@{ "type" : "control" }
+    participant Bob
+    Alice->>Bob: Control request
+    Bob->>Alice: Control response
+%%%% case 8 (sequenceDiagram.md:222)
+sequenceDiagram
+    participant Alice@{ "type" : "entity" }
+    participant Bob
+    Alice->>Bob: Entity request
+    Bob->>Alice: Entity response
+%%%% case 9 (sequenceDiagram.md:242)
+sequenceDiagram
+    participant Alice@{ "type" : "database" }
+    participant Bob
+    Alice->>Bob: DB query
+    Bob->>Alice: DB result
+%%%% case 10 (sequenceDiagram.md:262)
+sequenceDiagram
+    participant Alice@{ "type" : "collections" }
+    participant Bob
+    Alice->>Bob: Collections request
+    Bob->>Alice: Collections response
+%%%% case 11 (sequenceDiagram.md:282)
+sequenceDiagram
+    participant Alice@{ "type" : "queue" }
+    participant Bob
+    Alice->>Bob: Queue message
+    Bob->>Alice: Queue response
+%%%% case 12 (sequenceDiagram.md:306)
+sequenceDiagram
+    participant A as Alice
+    participant J as John
+    A->>J: Hello John, how are you?
+    J->>A: Great!
+%%%% case 13 (sequenceDiagram.md:324)
+sequenceDiagram
+    participant API@{ "type": "boundary" } as Public API
+    actor DB@{ "type": "database" } as User Database
+    participant Svc@{ "type": "control" } as Auth Service
+    API->>Svc: Authenticate
+    Svc->>DB: Query user
+    DB-->>Svc: User data
+    Svc-->>API: Token
+%%%% case 14 (sequenceDiagram.md:350)
+sequenceDiagram
+    participant API@{ "type": "boundary", "alias": "Public API" }
+    participant Auth@{ "type": "control", "alias": "Auth Service" }
+    participant DB@{ "type": "database", "alias": "User Database" }
+    API->>Auth: Login request
+    Auth->>DB: Query user
+    DB-->>Auth: User data
+    Auth-->>API: Access token
+%%%% case 15 (sequenceDiagram.md:376)
+sequenceDiagram
+    participant API@{ "type": "boundary", "alias": "Internal Name" } as External Name
+    participant DB@{ "type": "database", "alias": "Internal DB" } as External DB
+    API->>DB: Query
+    DB-->>API: Result
+%%%% case 16 (sequenceDiagram.md:405)
+sequenceDiagram
+    Alice->>Bob: Hello Bob, how are you ?
+    Bob->>Alice: Fine, thank you. And you?
+    create participant Carl
+    Alice->>Carl: Hi Carl!
+    create actor D as Donald
+    Carl->>D: Hi!
+    destroy Carl
+    Alice-xCarl: We are too many
+    destroy Bob
+    Bob->>Alice: I agree
+%%%% case 17 (sequenceDiagram.md:473)
+    sequenceDiagram
+    box Purple Alice & John
+    participant A
+    participant J
+    end
+    box Another Group
+    participant B
+    participant C
+    end
+    A->>J: Hello John, how are you?
+    J->>A: Great!
+    A->>B: Hello Bob, how is Charley?
+    B->>C: Hello Charley, how are you?
+%%%% case 18 (sequenceDiagram.md:566)
+sequenceDiagram
+    participant Alice
+    participant John
+    Alice->>()John: Hello John
+    Alice()->>John: How are you?
+    John()->>()Alice: Great!
+%%%% case 19 (sequenceDiagram.md:588)
+sequenceDiagram
+    Alice->>John: Hello John, how are you?
+    activate John
+    John-->>Alice: Great!
+    deactivate John
+%%%% case 20 (sequenceDiagram.md:606)
+sequenceDiagram
+    Alice->>+John: Hello John, how are you?
+    John-->>-Alice: Great!
+%%%% case 21 (sequenceDiagram.md:620)
+sequenceDiagram
+    Alice->>+John: Hello John, how are you?
+    Alice->>+John: John, can you hear me?
+    John-->>-Alice: Hi Alice, I can hear you!
+    John-->>-Alice: I feel great!
+%%%% case 22 (sequenceDiagram.md:643)
+sequenceDiagram
+    participant John
+    Note right of John: Text in note
+%%%% case 23 (sequenceDiagram.md:657)
+sequenceDiagram
+    Alice->John: Hello John, how are you?
+    Note over Alice,John: A typical interaction
+%%%% case 24 (sequenceDiagram.md:673)
+sequenceDiagram
+    Alice->John: Hello John,<br/>how are you?
+    Note over Alice,John: A typical interaction<br/>But now in two lines
+%%%% case 25 (sequenceDiagram.md:687)
+sequenceDiagram
+    participant Alice as Alice<br/>Johnson
+    Alice->John: Hello John,<br/>how are you?
+    Note over Alice,John: A typical interaction<br/>But now in two lines
+%%%% case 26 (sequenceDiagram.md:713)
+sequenceDiagram
+    Alice->John: Hello John, how are you?
+    loop Every minute
+        John-->Alice: Great!
+    end
+%%%% case 27 (sequenceDiagram.md:751)
+sequenceDiagram
+    Alice->>Bob: Hello Bob, how are you?
+    alt is sick
+        Bob->>Alice: Not so good :(
+    else is well
+        Bob->>Alice: Feeling fresh like a daisy
+    end
+    opt Extra response
+        Bob->>Alice: Thanks for asking
+    end
+%%%% case 28 (sequenceDiagram.md:795)
+sequenceDiagram
+    par Alice to Bob
+        Alice->>Bob: Hello guys!
+    and Alice to John
+        Alice->>John: Hello guys!
+    end
+    Bob-->>Alice: Hi Alice!
+    John-->>Alice: Hi Alice!
+%%%% case 29 (sequenceDiagram.md:819)
+sequenceDiagram
+    par Alice to Bob
+        Alice->>Bob: Go help John
+    and Alice to John
+        Alice->>John: I want this done today
+        par John to Charlie
+            John->>Charlie: Can we do this today?
+        and John to Diana
+            John->>Diana: Can you help us today?
+        end
+    end
+%%%% case 30 (sequenceDiagram.md:865)
+sequenceDiagram
+    critical Establish a connection to the DB
+        Service-->DB: connect
+    option Network timeout
+        Service-->Service: Log error
+    option Credentials rejected
+        Service-->Service: Log different error
+    end
+%%%% case 31 (sequenceDiagram.md:889)
+sequenceDiagram
+    critical Establish a connection to the DB
+        Service-->DB: connect
+    end
+%%%% case 32 (sequenceDiagram.md:919)
+sequenceDiagram
+    Consumer-->API: Book something
+    API-->BookingService: Start booking process
+    break when the booking process fails
+        API-->Consumer: show failure
+    end
+    API-->BillingService: Start billing process
+%%%% case 33 (sequenceDiagram.md:965)
+sequenceDiagram
+    participant Alice
+    participant John
+
+    rect rgb(191, 223, 255)
+    note right of Alice: Alice calls John.
+    Alice->>+John: Hello John, how are you?
+    rect rgb(200, 150, 255)
+    Alice->>+John: John, can you hear me?
+    John-->>-Alice: Hi Alice, I can hear you!
+    end
+    John-->>-Alice: I feel great!
+    end
+    Alice ->>+ John: Did you want to go to the game tonight?
+    John -->>- Alice: Yeah! See you there.
+%%%% case 34 (sequenceDiagram.md:1007)
+sequenceDiagram
+    Alice->>John: Hello John, how are you?
+    %% this is a comment
+    John-->>Alice: Great!
+%%%% case 35 (sequenceDiagram.md:1025)
+sequenceDiagram
+    A->>B: I #9829; you!
+    B->>A: I #9829; you #infin; times more!
+%%%% case 36 (sequenceDiagram.md:1053)
+sequenceDiagram
+    autonumber
+    Alice->>John: Hello John, how are you?
+    loop HealthCheck
+        John->>John: Fight against hypochondria
+    end
+    Note right of John: Rational thoughts!
+    John-->>Alice: Great!
+    John->>Bob: How about you?
+    Bob-->>John: Jolly good!
+%%%% case 37 (sequenceDiagram.md:1099)
+sequenceDiagram
+    participant Alice
+    participant John
+    link Alice: Dashboard @ https://dashboard.contoso.com/alice
+    link Alice: Wiki @ https://wiki.contoso.com/alice
+    link John: Dashboard @ https://dashboard.contoso.com/john
+    link John: Wiki @ https://wiki.contoso.com/john
+    Alice->>John: Hello John, how are you?
+    John-->>Alice: Great!
+    Alice-)John: See you later!
+%%%% case 38 (sequenceDiagram.md:1137)
+sequenceDiagram
+    participant Alice
+    participant John
+    links Alice: {"Dashboard": "https://dashboard.contoso.com/alice", "Wiki": "https://wiki.contoso.com/alice"}
+    links John: {"Dashboard": "https://dashboard.contoso.com/john", "Wiki": "https://wiki.contoso.com/john"}
+    Alice->>John: Hello John, how are you?
+    John-->>Alice: Great!
+    Alice-)John: See you later!

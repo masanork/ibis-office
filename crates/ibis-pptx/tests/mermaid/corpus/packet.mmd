@@ -1,0 +1,56 @@
+%%%% case 1 (packet.md:40)
+---
+title: "TCP Packet"
+---
+packet
+0-15: "Source Port"
+16-31: "Destination Port"
+32-63: "Sequence Number"
+64-95: "Acknowledgment Number"
+96-99: "Data Offset"
+100-105: "Reserved"
+106: "URG"
+107: "ACK"
+108: "PSH"
+109: "RST"
+110: "SYN"
+111: "FIN"
+112-127: "Window"
+128-143: "Checksum"
+144-159: "Urgent Pointer"
+160-191: "(Options and Padding)"
+192-255: "Data (variable length)"
+%%%% case 2 (packet.md:88)
+packet
+title UDP Packet
++16: "Source Port"
++16: "Destination Port"
+32-47: "Length"
+48-63: "Checksum"
+64-95: "Data (variable length)"
+%%%% case 3 (packet.md:117)
+---
+config:
+  packet:
+    showBits: true
+    bitOrder: descending
+    bitsPerRow: 16
+---
+packet
+0-7: "DATA"
+8-11: "TYPE"
+12: "EN"
+13-15: "RESERVED"
+%%%% case 4 (packet.md:176)
+---
+config:
+  packet:
+    showBits: true
+  themeVariables:
+    packet:
+      startByteColor: red
+---
+packet
+0-15: "Source Port"
+16-31: "Destination Port"
+32-63: "Sequence Number"

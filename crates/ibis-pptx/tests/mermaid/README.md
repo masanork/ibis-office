@@ -1,0 +1,44 @@
+# Mermaid compatibility corpus
+
+`tests/mermaid_corpus.rs` renders every example of the official Mermaid
+documentation with `ibis_pptx::mermaid::render_mermaid` and reports, per
+diagram document:
+
+- **rendered**: the example produced an SVG or a native chart that passes the
+  structural checks (well-formed SVG, plausible size, something drawn, no
+  non-finite coordinates, chart series present).
+- **clean**: rendered, and the example uses no syntax listed as `gap` in
+  `features.txt`.
+
+`thresholds.json` holds a floor for both numbers per document. CI fails when a
+number drops below its floor, when a renderer panics or emits a broken SVG, or
+when a diagram type without a floor starts rendering (add its floor). Raise the
+floors when support improves.
+
+The feature list doubles as the backlog: the report ranks `gap` features by the
+number of examples that use them.
+
+```sh
+cargo test -p ibis-pptx --test mermaid_corpus -- --nocapture
+# write the report as Markdown, and every rendered SVG for inspection
+MERMAID_CORPUS_REPORT=/tmp/report.md MERMAID_CORPUS_DUMP=/tmp/mermaid-svg \
+  cargo test -p ibis-pptx --test mermaid_corpus
+```
+
+## Corpus
+
+`corpus/*.mmd` are the ```` ```mermaid ```` / ```` ```mermaid-example ```` blocks
+of `docs/syntax/*.md` in mermaid-js/mermaid at a pinned commit (see
+`corpus/SOURCE.json`), de-duplicated per document. Each case starts with a
+`%%%% case <n> (<doc>.md:<line>)` line. Refresh with
+`scripts/mermaid-corpus/fetch.py [--ref <sha> --tag <tag>]`, then re-run the
+test and adjust `thresholds.json`.
+
+The examples are MIT licensed (Copyright (c) 2014 - 2022 Knut Sveidqvist); see
+`corpus/LICENSE`. They are test fixtures and are not shipped.
+
+## Not yet here
+
+A mermaid.js reference render (mermaid-cli in headless Chrome) and an image or
+label diff against it are planned as a separate, non-blocking job; see the
+compatibility plan. Layout is not expected to match mermaid.js pixel for pixel.

@@ -1,0 +1,106 @@
+%%%% case 1 (railroad.md:25)
+railroad-ebnf-beta
+title "Digit Definition"
+
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+%%%% case 2 (railroad.md:61)
+railroad-ebnf-beta
+letter = "a" | "b" | "c" ;
+identifier = letter ;
+%%%% case 3 (railroad.md:80)
+railroad-ebnf-beta
+greeting = "Hello" " " "World" ;
+%%%% case 4 (railroad.md:94)
+railroad-ebnf-beta
+sign = "+" | "-" ;
+%%%% case 5 (railroad.md:111)
+railroad-ebnf-beta
+title "Optional Sign"
+
+sign = "+" | "-" ;
+number = sign? digit+ ;
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+%%%% case 6 (railroad.md:140)
+railroad-ebnf-beta
+title "Identifier with Repetition"
+
+identifier = letter ( letter | digit | "_" )* ;
+letter = "a" | "b" | "c" | "d" | "e" ;
+digit = "0" | "1" | "2" ;
+%%%% case 7 (railroad.md:162)
+railroad-ebnf-beta
+expression = term ( ( "+" | "-" ) term )* ;
+term = "number" ;
+%%%% case 8 (railroad.md:211)
+railroad-ebnf-beta
+title "Arithmetic Expression Grammar"
+
+expression = term ( ( "+" | "-" ) term )* ;
+term = factor ( ( "*" | "/" ) factor )* ;
+factor = number | "(" expression ")" ;
+number = digit+ ;
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+%%%% case 9 (railroad.md:233)
+railroad-ebnf-beta
+title "JSON Grammar"
+
+json = element ;
+element = object | array | string | number | "true" | "false" | "null" ;
+object = "{" [ member ( "," member )* ] "}" ;
+array = "[" [ element ( "," element )* ] "]" ;
+member = string ":" element ;
+%%%% case 10 (railroad.md:267)
+railroad-abnf-beta
+title "Email Address"
+
+address = local-part "@" domain ;
+local-part = 1*( ALPHA / DIGIT / "." / "-" ) ;
+domain = label *( "." label ) ;
+label = 1*( ALPHA / DIGIT / "-" ) ;
+%%%% case 11 (railroad.md:287)
+railroad-abnf-beta
+title "Phone Number"
+
+phone = [ "+" country-code ] subscriber ;
+country-code = 1*DIGIT ;
+subscriber = 1*( DIGIT / "-" / " " ) ;
+%%%% case 12 (railroad.md:318)
+railroad-peg-beta
+title "Calculator Grammar"
+
+Expression <- Term (("+" / "-") Term)* ;
+Term <- Factor (("*" / "/") Factor)* ;
+Factor <- Number / "(" Expression ")" ;
+Number <- Digit+ ;
+Digit <- "0" / "1" / "2" / "3" / "4" / "5" / "6" / "7" / "8" / "9" ;
+%%%% case 13 (railroad.md:340)
+railroad-peg-beta
+title "Identifiers (keywords excluded)"
+
+Identifier <- !Keyword Letter Letter* ;
+Keyword <- "if" / "else" / "while" ;
+Letter <- "a" / "b" / "c" / "_" ;
+%%%% case 14 (railroad.md:373)
+railroad-beta
+title Expression Grammar
+
+expression = sequence(
+    nonterminal("term"),
+    zeroOrMore(sequence(
+        choice(terminal("+"), terminal("-")),
+        nonterminal("term")
+    ))
+) ;
+term = sequence(
+    nonterminal("factor"),
+    zeroOrMore(sequence(
+        choice(terminal("*"), terminal("/")),
+        nonterminal("factor")
+    ))
+) ;
+factor = choice(
+    nonterminal("number"),
+    sequence(terminal("("), nonterminal("expression"), terminal(")"))
+) ;
+number = oneOrMore(nonterminal("digit")) ;
+digit = choice(terminal("0"), terminal("1"), terminal("2"), terminal("3"), terminal("4"), terminal("5"), terminal("6"), terminal("7"), terminal("8"), terminal("9")) ;

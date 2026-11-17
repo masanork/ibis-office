@@ -1,0 +1,125 @@
+%%%% case 1 (treeView.md:48)
+treeView-beta
+├── src/
+│   ├── index.ts
+│   └── utils.ts
+├── package.json
+└── README.md
+%%%% case 2 (treeView.md:68)
+treeView-beta
+├── src/
+│   ├── App.tsx :::highlight icon(logos:react) ## main component
+│   └── index.ts ## entry point
+├── .env ## environment variables
+├── Dockerfile
+└── package.json
+%%%% case 3 (treeView.md:90)
+treeView-beta
+├── packages/
+│   ├── mermaid/
+│   │   ├── src/
+│   │   │   ├── parser.ts
+│   │   │   └── renderer.ts
+│   │   └── package.json
+│   └── parser/
+│       └── src/
+└── README.md
+%%%% case 4 (treeView.md:124)
+treeView-beta
+    src/
+        App.tsx :::highlight
+        index.js
+    package.json
+%%%% case 5 (treeView.md:144)
+treeView-beta
+    src/
+        index.js ## app entry point
+        config.ts ## runtime configuration
+    package.json ## project manifest
+%%%% case 6 (treeView.md:164)
+---
+config:
+  treeView:
+    showIcons: true
+---
+treeView-beta
+    src/
+        index.js
+    package.json
+%%%% case 7 (treeView.md:192)
+---
+config:
+  treeView:
+    showIcons: true
+    defaultIconPack: material-icon-theme
+    filenameIcons:
+      Dockerfile: docker
+    extensionIcons:
+      .ts: typescript
+      .tsx: react-ts
+      .txt: none
+---
+treeView-beta
+    src/
+        App.tsx
+        utils.ts
+    Dockerfile
+    notes.txt
+    README.md
+%%%% case 8 (treeView.md:240)
+treeView-beta
+    src/
+        App.tsx icon(logos:react)
+        index.js
+    package.json
+%%%% case 9 (treeView.md:265)
+---
+config:
+  treeView:
+    showIcons: true
+---
+treeView-beta
+    src/
+        index.js icon(none)
+    package.json
+%%%% case 10 (treeView.md:293)
+treeView-beta
+    my-project/
+        src/
+            App.tsx :::highlight icon(logos:react) ## main component
+            index.js ## entry point
+        .env ## environment variables
+        Dockerfile
+        package.json
+%%%% case 11 (treeView.md:331)
+treeView-beta
+    "packages"
+        "mermaid"
+            "src"
+        "parser"
+%%%% case 12 (treeView.md:351)
+treeView-beta
+    🚀 rocket-app/
+        📦 packages/
+            🎨 ui/
+            🛠️ utils/
+        🧪 tests/
+        📝 README.md
+        ⚙️ config.yaml
+%%%% case 13 (treeView.md:375)
+---
+config:
+    treeView:
+        rowIndent: 80
+        lineThickness: 3
+    themeVariables:
+        treeView:
+            labelFontSize: '20px'
+            labelColor: '#FF0000'
+            lineColor: '#00FF00'
+---
+treeView-beta
+    "packages"
+        "mermaid"
+            "src"
+        "parser"

@@ -1,0 +1,66 @@
+%%%% case 1 (venn.md:24)
+venn-beta
+  title What makes a good feature
+  set Desirable
+  set Feasible
+  set Viable
+  union Desirable,Feasible["Buildable"]
+  union Feasible,Viable["Sustainable"]
+  union Desirable,Viable["Marketable"]
+  union Desirable,Feasible,Viable["Ship it"]
+%%%% case 2 (venn.md:53)
+---
+config:
+  theme: default
+  look: classic
+---
+venn-beta
+  title What makes a good feature
+  set Desirable
+  set Feasible
+  set Viable
+  union Desirable,Feasible["Buildable"]
+  union Feasible,Viable["Sustainable"]
+  union Desirable,Viable["Marketable"]
+  union Desirable,Feasible,Viable["Ship it"]
+%%%% case 3 (venn.md:99)
+venn-beta
+  title "Team overlap"
+  set Frontend
+  set Backend
+  union Frontend,Backend["APIs"]
+%%%% case 4 (venn.md:119)
+venn-beta
+  set A["Alpha"]
+  set B["Beta"]
+  union A,B["AB"]
+%%%% case 5 (venn.md:139)
+venn-beta
+  set Desirable
+  set Feasible
+  set Viable
+  union Desirable,Feasible,Viable["Innovation"]
+%%%% case 6 (venn.md:159)
+venn-beta
+  set A["Alpha"]:20
+  set B["Beta"]:12
+  union A,B["AB"]:3
+%%%% case 7 (venn.md:179)
+venn-beta
+  set A["Frontend"]
+    text A1["React"]
+    text A2["Design Systems"]
+  set B["Backend"]
+    text B1["API"]
+  union A,B["Shared"]
+    text AB1["OpenAPI"]
+%%%% case 8 (venn.md:211)
+venn-beta
+  set A["Alpha"]:20
+    text A1["React"]
+    text A2["Design Systems"]
+  set B["Beta"]:12
+  union A,B["AB"]:3
+  style A fill:#ff6b6b
+  style A,B color:#333
+  style A1 color:red
