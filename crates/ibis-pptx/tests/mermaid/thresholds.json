@@ -32,6 +32,8 @@
   "quadrantChart.clean": 3,
   "radar": 3,
   "radar.clean": 3,
+  "railroad": 14,
+  "railroad.clean": 14,
   "requirementDiagram": 9,
   "requirementDiagram.clean": 9,
   "sankey": 8,

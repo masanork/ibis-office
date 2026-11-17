@@ -323,3 +323,9 @@ agentflow | connectors | ok | prefix | connector
 agentflow | collapsed flows (@{ view: collapsed }) | ok | contains | view:
 agentflow | metadata (protocol, endpoint, connectorRef, params, returns, value, instruction; not drawn) | ok | contains | @{
 agentflow | config: nodeSpacing / rankSpacing (the flowchart layout keeps its spacing) | gap | config | agentflow.
+
+railroad | EBNF rules (alternatives, ? * +, groups, [ ] and { }) | ok | header | railroad-ebnf
+railroad | ABNF rules (/ and n*m repetition) | ok | header | railroad-abnf
+railroad | PEG rules (<- / ! &) | ok | header | railroad-peg
+railroad | function form (sequence / choice / optional / zeroOrMore / oneOrMore / terminal / nonterminal) | ok | header | railroad-beta
+railroad | title | ok | prefix | title
