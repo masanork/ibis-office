@@ -22,6 +22,10 @@ pub struct MermaidChartSpec {
     pub title: Option<String>,
     pub categories: Vec<String>,
     pub series: Vec<(String, Vec<Option<Number>>)>,
+    /// One drawing kind per series. Empty means every series uses [`Self::kind`].
+    pub series_kinds: Vec<NewChartKind>,
+    /// `pie showData`: the slices show their values.
+    pub show_data: bool,
 }
 
 /// Result of converting a Mermaid block.
@@ -77,7 +81,11 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
     if first_line == "pie" || first_line.starts_with("pie ") {
         return parse_pie_chart(trimmed).map(MermaidOutput::Chart);
     }
-    if first_line == "xychart-beta" || first_line.starts_with("xychart-beta ") {
+    if first_line == "xychart-beta"
+        || first_line.starts_with("xychart-beta ")
+        || first_line == "xychart"
+        || first_line.starts_with("xychart ")
+    {
         return parse_xy_chart(trimmed).map(MermaidOutput::Chart);
     }
     if first_line == "sequenceDiagram" || first_line.starts_with("sequenceDiagram ") {
@@ -184,6 +192,10 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
 // ============================================================================
 
 fn parse_pie_chart(source: &str) -> Option<MermaidChartSpec> {
+    let show_data = source
+        .lines()
+        .next()
+        .is_some_and(|line| line.split_whitespace().any(|token| token == "showData"));
     let mut title = None;
     let mut categories = Vec::new();
     let mut values = Vec::new();
@@ -219,6 +231,8 @@ fn parse_pie_chart(source: &str) -> Option<MermaidChartSpec> {
         title,
         categories,
         series: vec![("Series 1".to_string(), values)],
+        series_kinds: vec![NewChartKind::Pie],
+        show_data,
     })
 }
 
@@ -226,6 +240,7 @@ fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
     let mut title = None;
     let mut categories = Vec::new();
     let mut series = Vec::new();
+    let mut series_kinds = Vec::new();
     let mut has_bar = false;
     let mut has_line = false;
     let mut bar_idx = 1usize;
@@ -252,7 +267,9 @@ fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
                     .into_iter()
                     .map(|s| s.trim().parse::<f64>().ok().map(Number))
                     .collect();
-                series.push((format!("Bar {bar_idx}"), vals));
+                let name = xy_series_name(rest, &format!("Bar {bar_idx}"));
+                series.push((name, vals));
+                series_kinds.push(NewChartKind::ClusteredColumn);
                 bar_idx += 1;
             }
         } else if let Some(rest) = l.strip_prefix("line ") {
@@ -262,7 +279,9 @@ fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
                     .into_iter()
                     .map(|s| s.trim().parse::<f64>().ok().map(Number))
                     .collect();
-                series.push((format!("Line {line_idx}"), vals));
+                let name = xy_series_name(rest, &format!("Line {line_idx}"));
+                series.push((name, vals));
+                series_kinds.push(NewChartKind::Line);
                 line_idx += 1;
             }
         }
@@ -287,7 +306,17 @@ fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
         title,
         categories,
         series,
+        series_kinds,
+        show_data: false,
     })
+}
+
+fn xy_series_name(rest: &str, fallback: &str) -> String {
+    let Some(list_at) = rest.find('[') else {
+        return fallback.to_string();
+    };
+    let name = unquote(rest[..list_at].trim());
+    if name.is_empty() { fallback.to_string() } else { name }
 }
 
 fn extract_bracket_list(s: &str) -> Option<Vec<String>> {
@@ -316,6 +345,16 @@ struct SeqParticipant {
     is_actor: bool,
 }
 
+struct SeqBox {
+    title: String,
+    members: Vec<usize>,
+}
+
+enum SeqOpen {
+    Fragment,
+    Box,
+}
+
 #[derive(Debug, Clone)]
 enum SeqItem {
     Message {
@@ -325,6 +364,10 @@ enum SeqItem {
         dashed: bool,
         open_arrow: bool,
         cross_end: bool,
+        activate_from: bool,
+        deactivate_from: bool,
+        activate_to: bool,
+        deactivate_to: bool,
     },
     Note {
         from: usize,
@@ -340,6 +383,8 @@ enum SeqItem {
         label: String,
     },
     BlockEnd,
+    Activate(usize),
+    Deactivate(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,6 +399,8 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let mut part_map: HashMap<String, usize> = HashMap::new();
     let mut items: Vec<SeqItem> = Vec::new();
     let mut autonumber = false;
+    let mut boxes: Vec<SeqBox> = Vec::new();
+    let mut open: Vec<SeqOpen> = Vec::new();
 
     let ensure_participant = |id: &str,
                               label: Option<&str>,
@@ -391,16 +438,40 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         }
         if let Some(rest) = l.strip_prefix("participant ") {
             let (id, lbl) = split_alias(rest);
-            ensure_participant(id, lbl, false, &mut participants, &mut part_map);
+            let idx = ensure_participant(id, lbl, false, &mut participants, &mut part_map);
+            note_seq_box(open.last(), &mut boxes, idx);
             continue;
         }
         if let Some(rest) = l.strip_prefix("actor ") {
             let (id, lbl) = split_alias(rest);
-            ensure_participant(id, lbl, true, &mut participants, &mut part_map);
+            let idx = ensure_participant(id, lbl, true, &mut participants, &mut part_map);
+            note_seq_box(open.last(), &mut boxes, idx);
             continue;
         }
         if l == "end" {
-            items.push(SeqItem::BlockEnd);
+            match open.pop() {
+                Some(SeqOpen::Box) => {}
+                Some(SeqOpen::Fragment) | None => items.push(SeqItem::BlockEnd),
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("box ") {
+            boxes.push(SeqBox { title: seq_box_title(rest), members: Vec::new() });
+            open.push(SeqOpen::Box);
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("activate ") {
+            let id = rest.split_whitespace().next().unwrap_or("");
+            let idx = ensure_participant(id, None, false, &mut participants, &mut part_map);
+            note_seq_box(open.last(), &mut boxes, idx);
+            items.push(SeqItem::Activate(idx));
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("deactivate ") {
+            let id = rest.split_whitespace().next().unwrap_or("");
+            let idx = ensure_participant(id, None, false, &mut participants, &mut part_map);
+            note_seq_box(open.last(), &mut boxes, idx);
+            items.push(SeqItem::Deactivate(idx));
             continue;
         }
         if let Some(rest) = l.strip_prefix("else") {
@@ -415,6 +486,7 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     kind: kw.trim().to_string(),
                     label: rest.trim().to_string(),
                 });
+                open.push(SeqOpen::Fragment);
                 break;
             }
         }
@@ -428,6 +500,10 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             continue;
         }
         if let Some(msg_item) = parse_seq_message(l, &mut participants, &mut part_map, &ensure_participant) {
+            if let SeqItem::Message { from, to, .. } = &msg_item {
+                note_seq_box(open.last(), &mut boxes, *from);
+                note_seq_box(open.last(), &mut boxes, *to);
+            }
             items.push(msg_item);
             continue;
         }
@@ -489,6 +565,10 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 item_y.push(y);
                 y += if from == to { self_step } else { row_step };
             }
+            SeqItem::Activate(_) | SeqItem::Deactivate(_) => {
+                item_y.push(y);
+                y += 8.0;
+            }
             SeqItem::Note { .. } => {
                 item_y.push(y);
                 y += 42.0;
@@ -535,6 +615,30 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     svg.push_str(&format!(
         r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
     ));
+
+    for seq_box in &boxes {
+        if seq_box.members.is_empty() {
+            continue;
+        }
+        let min_i = *seq_box.members.iter().min().unwrap_or(&0);
+        let max_i = *seq_box.members.iter().max().unwrap_or(&0);
+        let x = centers[min_i] - col_widths[min_i] / 2.0 - 10.0;
+        let right = centers[max_i] + col_widths[max_i] / 2.0 + 10.0;
+        let y = (top_y - 22.0).max(4.0);
+        let height = bottom_box_y + box_h - y + 8.0;
+        svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{:.1}" height="{height:.1}" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2" data-shape="seq-box"/>"##,
+            right - x
+        ));
+        if !seq_box.title.is_empty() {
+            svg.push_str(&format!(
+                r##"<text x="{:.1}" y="{:.1}" font-size="11" font-weight="600" fill="#475569">{}</text>"##,
+                x + 8.0,
+                y + 14.0,
+                escape_xml(&seq_box.title)
+            ));
+        }
+    }
 
     // Lifelines
     for &cx in &centers {
@@ -622,6 +726,10 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 dashed,
                 open_arrow,
                 cross_end,
+                activate_from: _,
+                deactivate_from: _,
+                activate_to: _,
+                deactivate_to: _,
             } => {
                 msg_num += 1;
                 let display_label = if autonumber {
@@ -678,8 +786,19 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     ));
                 }
             }
-            SeqItem::BlockStart { .. } | SeqItem::BlockEnd => {}
+            SeqItem::BlockStart { .. } | SeqItem::BlockEnd | SeqItem::Activate(_) | SeqItem::Deactivate(_) => {}
         }
+    }
+
+    // Activation bars sit on the lifeline from `+` / `activate` until `-` / `deactivate`.
+    for (who, y1, y2, depth) in seq_activations(&items, &item_y, bottom_box_y) {
+        let width = 10.0f32;
+        let x = centers[who] - width / 2.0 + depth as f32 * 5.0;
+        let top = y1.min(y2);
+        let height = (y1 - y2).abs().max(12.0);
+        svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{top:.1}" width="{width:.1}" height="{height:.1}" rx="2" fill="#bfdbfe" stroke="#2563eb" stroke-width="1.1" data-shape="activation"/>"##
+        ));
     }
 
     // Participant boxes (top & bottom)
@@ -703,6 +822,96 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 
     svg.push_str("</svg>");
     Some((svg.into_bytes(), total_w, total_h))
+}
+
+fn note_seq_box(open: Option<&SeqOpen>, boxes: &mut [SeqBox], idx: usize) {
+    if !matches!(open, Some(SeqOpen::Box)) {
+        return;
+    }
+    if let Some(seq_box) = boxes.last_mut()
+        && !seq_box.members.contains(&idx)
+    {
+        seq_box.members.push(idx);
+    }
+}
+
+fn seq_box_title(rest: &str) -> String {
+    let rest = rest.trim();
+    if let Some(after) = rest.strip_prefix("rgb(").or_else(|| rest.strip_prefix("rgba("))
+        && let Some(end) = after.find(')')
+    {
+        return after[end + 1..].trim().to_string();
+    }
+    rest.split_once(char::is_whitespace).map(|(_, title)| title.trim().to_string()).filter(|title| !title.is_empty()).unwrap_or_else(|| rest.to_string())
+}
+
+fn seq_actor_token(raw: &str) -> (&str, bool, bool) {
+    let token = raw.trim();
+    let activate = token.starts_with('+') || token.ends_with('+');
+    let deactivate = token.starts_with('-') || token.ends_with('-');
+    (token.trim_matches(['+', '-']).trim(), activate, deactivate)
+}
+
+fn seq_activations(items: &[SeqItem], item_y: &[f32], bottom: f32) -> Vec<(usize, f32, f32, usize)> {
+    let mut open: Vec<(usize, f32, usize)> = Vec::new();
+    let mut bars = Vec::new();
+    let mut depth = vec![0usize; 64];
+    let depth_of = |depth: &mut Vec<usize>, who: usize| -> usize {
+        if who >= depth.len() {
+            depth.resize(who + 1, 0);
+        }
+        depth[who]
+    };
+    for (idx, item) in items.iter().enumerate() {
+        let y = item_y.get(idx).copied().unwrap_or(bottom);
+        let mut turn_on = Vec::new();
+        let mut turn_off = Vec::new();
+        match item {
+            SeqItem::Activate(who) => turn_on.push(*who),
+            SeqItem::Deactivate(who) => turn_off.push(*who),
+            SeqItem::Message {
+                from,
+                to,
+                activate_from,
+                deactivate_from,
+                activate_to,
+                deactivate_to,
+                ..
+            } => {
+                if *deactivate_from {
+                    turn_off.push(*from);
+                }
+                if *deactivate_to {
+                    turn_off.push(*to);
+                }
+                if *activate_from {
+                    turn_on.push(*from);
+                }
+                if *activate_to {
+                    turn_on.push(*to);
+                }
+            }
+            _ => {}
+        }
+        for who in turn_off {
+            if let Some(pos) = open.iter().rposition(|(id, _, _)| *id == who) {
+                let (_, start, level) = open.remove(pos);
+                bars.push((who, start, y, level));
+                if who < depth.len() && depth[who] > 0 {
+                    depth[who] -= 1;
+                }
+            }
+        }
+        for who in turn_on {
+            let level = depth_of(&mut depth, who);
+            open.push((who, y, level));
+            depth[who] += 1;
+        }
+    }
+    for (who, start, level) in open {
+        bars.push((who, start, bottom, level));
+    }
+    bars
 }
 
 fn split_alias(rest: &str) -> (&str, Option<&str>) {
@@ -766,8 +975,8 @@ fn parse_seq_message(
     ];
     for (arrow, dashed, open_arrow, cross_end) in arrows {
         if let Some((from_raw, to_raw)) = lhs.split_once(arrow) {
-            let from_id = from_raw.trim().trim_end_matches(['+', '-']);
-            let to_id = to_raw.trim().trim_start_matches(['+', '-']).trim_end_matches(['+', '-']);
+            let (from_id, activate_from, deactivate_from) = seq_actor_token(from_raw);
+            let (to_id, activate_to, deactivate_to) = seq_actor_token(to_raw);
             if from_id.is_empty() || to_id.is_empty() {
                 return None;
             }
@@ -780,6 +989,10 @@ fn parse_seq_message(
                 dashed,
                 open_arrow,
                 cross_end,
+                activate_from,
+                deactivate_from,
+                activate_to,
+                deactivate_to,
             });
         }
     }
@@ -806,6 +1019,12 @@ enum NodeShape {
     Diamond,
     Circle,
     Subroutine,
+    Cylinder,
+    Hexagon,
+    Trapezoid,
+    InvTrapezoid,
+    Parallelogram,
+    Asymmetric,
 }
 
 #[derive(Debug, Clone)]
@@ -835,6 +1054,7 @@ struct FlowEdge {
 #[derive(Debug, Clone)]
 struct SubgraphInfo {
     title: String,
+    dir: Option<FlowDir>,
 }
 
 fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
@@ -859,70 +1079,49 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let mut sg_stack: Vec<usize> = Vec::new();
 
     for line in lines {
-        let l = line.trim_end_matches(';').trim();
-        if l.is_empty() || l.starts_with("classDef ") || l.starts_with("class ") || l.starts_with("style ") || l.starts_with("linkStyle ") {
-            continue;
+        for stmt in split_flow_statements(line) {
+            let l = stmt.trim();
+            if l.is_empty() || l.starts_with("classDef ") || l.starts_with("class ") || l.starts_with("style ") || l.starts_with("linkStyle ") {
+                continue;
+            }
+            if l == "end" {
+                sg_stack.pop();
+                continue;
+            }
+            if let Some(rest) = l.strip_prefix("subgraph ") {
+                let title = parse_subgraph_title(rest.trim());
+                let sg_idx = subgraphs.len();
+                subgraphs.push(SubgraphInfo { title, dir: None });
+                sg_stack.push(sg_idx);
+                continue;
+            }
+            if let Some(rest) = l.strip_prefix("direction ") {
+                if let Some(&sg) = sg_stack.last() {
+                    subgraphs[sg].dir = Some(parse_flow_dir(rest));
+                }
+                continue;
+            }
+            parse_flowchart_statement(
+                l,
+                sg_stack.last().copied(),
+                &mut nodes,
+                &mut node_map,
+                &mut edges,
+            );
         }
-        if l == "end" {
-            sg_stack.pop();
-            continue;
-        }
-        if let Some(rest) = l.strip_prefix("subgraph ") {
-            let title = parse_subgraph_title(rest.trim());
-            let sg_idx = subgraphs.len();
-            subgraphs.push(SubgraphInfo { title });
-            sg_stack.push(sg_idx);
-            continue;
-        }
-        if l.starts_with("direction ") {
-            continue;
-        }
-        parse_flowchart_statement(
-            l,
-            sg_stack.last().copied(),
-            &mut nodes,
-            &mut node_map,
-            &mut edges,
-        );
     }
 
     if nodes.is_empty() {
         return None;
     }
 
-    // Node dimensions
+    // Node dimensions. Long labels wrap inside a width cap and the box grows taller.
     let node_sizes: Vec<(f32, f32)> = nodes
         .iter()
-        .map(|node| {
-            let tw = estimate_text_width(&node.label, 13.0);
-            match node.shape {
-                NodeShape::Diamond => ((tw + 44.0).max(88.0), 54.0),
-                NodeShape::Circle => {
-                    let d = (tw + 24.0).max(54.0);
-                    (d, d)
-                }
-                _ => ((tw + 32.0).max(84.0), 40.0),
-            }
-        })
+        .map(|node| flow_node_size(node.shape, &node.label))
         .collect();
 
-    let horizontal = matches!(dir, FlowDir::Lr | FlowDir::Rl);
-    let reversed = matches!(dir, FlowDir::Bt | FlowDir::Rl);
-    let margin = if subgraphs.is_empty() { 32.0f32 } else { 44.0f32 };
-    let layer_gap = 64.0f32;
-    let sibling_gap = 34.0f32;
-
-    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
-    let (centers, total_w, total_h) = compute_layered_layout(
-        nodes.len(),
-        &edge_pairs,
-        &node_sizes,
-        horizontal,
-        reversed,
-        margin,
-        layer_gap,
-        sibling_gap,
-    );
+    let (centers, total_w, total_h) = layout_flowchart(&nodes, &edges, &node_sizes, &subgraphs, dir);
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -961,10 +1160,13 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             max_x = max_x.max(cx + w / 2.0);
             max_y = max_y.max(cy + h / 2.0);
         }
-        let sx = (min_x - 14.0).max(4.0);
-        let sy = (min_y - 24.0).max(4.0);
-        let sw = (max_x + 14.0) - sx;
-        let sh = (max_y + 12.0) - sy;
+        // Constant padding. The title band stays above the children.
+        let frame_pad = 16.0f32;
+        let top_inset = if sg.title.is_empty() { frame_pad } else { frame_pad + 22.0 };
+        let sx = min_x - frame_pad;
+        let sy = min_y - top_inset;
+        let sw = (max_x + frame_pad) - sx;
+        let sh = (max_y + frame_pad) - sy;
         svg.push_str(&format!(
             r##"<rect x="{sx:.1}" y="{sy:.1}" width="{sw:.1}" height="{sh:.1}" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="5,3"/>"##
         ));
@@ -972,20 +1174,24 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             svg.push_str(&format!(
                 r##"<text x="{:.1}" y="{:.1}" font-size="11.5" font-weight="600" fill="#475569">{}</text>"##,
                 sx + 10.0,
-                sy + 15.0,
+                sy + 16.0,
                 escape_xml(&sg.title)
             ));
         }
     }
 
-    // Edges
+    // Edges follow the diagram direction. A subgraph's own direction is layout-only.
+    let horizontal = matches!(dir, FlowDir::Lr | FlowDir::Rl);
     for e in &edges {
-        let (x1, y1) = centers[e.from];
-        let (x2, y2) = centers[e.to];
-        let (w1, h1) = node_sizes[e.from];
-        let (w2, h2) = node_sizes[e.to];
-        let (sx, sy) = edge_anchor(x1, y1, w1, h1, x2, y2);
-        let (ex, ey) = edge_anchor(x2, y2, w2, h2, x1, y1);
+        let route = route_layered_edge(
+            e.from,
+            e.to,
+            &centers,
+            &node_sizes,
+            horizontal,
+            true,
+            (total_w as f32, total_h as f32),
+        );
         let stroke_w = match e.style {
             EdgeStyle::Thick => "2.6",
             _ => "1.4",
@@ -999,30 +1205,19 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         } else {
             ""
         };
-        let path_d = if horizontal {
-            let mx = (sx + ex) / 2.0;
-            format!("M {sx:.1} {sy:.1} C {mx:.1} {sy:.1}, {mx:.1} {ey:.1}, {ex:.1} {ey:.1}")
-        } else {
-            let my = (sy + ey) / 2.0;
-            format!("M {sx:.1} {sy:.1} C {sx:.1} {my:.1}, {ex:.1} {my:.1}, {ex:.1} {ey:.1}")
-        };
-        svg.push_str(&format!(
-            r##"<path d="{path_d}" fill="none" stroke="#475569" stroke-width="{stroke_w}"{dash}{marker}/>"##
-        ));
+        let extra = format!("{dash}{marker}");
+        push_routed_edge(&mut svg, &route, "#475569", stroke_w, &extra);
         if let Some(lbl) = &e.label {
-            let lx = (sx + ex) / 2.0;
-            let ly = (sy + ey) / 2.0;
-            let lw = estimate_text_width(lbl, 11.0) + 10.0;
+            let (lx, ly) = route.label_at;
+            let lines = label_lines(lbl, 140.0, 11.0);
+            let lw = lines.iter().map(|line| estimate_text_width(line, 11.0)).fold(0.0f32, f32::max) + 10.0;
+            let lh = lines.len() as f32 * 14.0 + 6.0;
             svg.push_str(&format!(
-                r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="18" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
+                r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="{lh:.1}" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
                 lx - lw / 2.0,
-                ly - 9.0
+                ly - lh / 2.0
             ));
-            svg.push_str(&format!(
-                r##"<text x="{lx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155">{}</text>"##,
-                ly + 3.5,
-                escape_xml(lbl)
-            ));
+            push_centered_label(&mut svg, lx, ly, lbl, 11.0, 140.0, "#334155", "400");
         }
     }
 
@@ -1070,16 +1265,24 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             }
             NodeShape::Circle => {
                 svg.push_str(&format!(
-                    r##"<ellipse cx="{cx:.1}" cy="{cy:.1}" rx="{:.1}" ry="{:.1}" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.4"/>"##,
+                    r##"<ellipse cx="{cx:.1}" cy="{cy:.1}" rx="{:.1}" ry="{:.1}" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.4" data-shape="circle"/>"##,
                     w / 2.0, h / 2.0
                 ));
             }
+            NodeShape::Cylinder => push_flow_cylinder(&mut svg, x, y, w, h),
+            NodeShape::Hexagon => push_flow_polygon(&mut svg, &hexagon_points(x, y, w, h), "#f5f3ff", "#7c3aed", "hexagon"),
+            NodeShape::Trapezoid => push_flow_polygon(&mut svg, &trapezoid_points(x, y, w, h, true), "#eff6ff", "#2563eb", "trapezoid"),
+            NodeShape::InvTrapezoid => push_flow_polygon(&mut svg, &trapezoid_points(x, y, w, h, false), "#eff6ff", "#2563eb", "inv-trapezoid"),
+            NodeShape::Parallelogram => push_flow_polygon(&mut svg, &parallelogram_points(x, y, w, h), "#eff6ff", "#2563eb", "parallelogram"),
+            NodeShape::Asymmetric => push_flow_polygon(&mut svg, &asymmetric_points(x, y, w, h), "#eff6ff", "#2563eb", "asymmetric"),
         }
-        svg.push_str(&format!(
-            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="500" fill="#0f172a">{}</text>"##,
-            cy + 4.5,
-            escape_xml(&node.label)
-        ));
+        let label_width = match node.shape {
+            NodeShape::Diamond | NodeShape::Hexagon | NodeShape::Asymmetric => w * 0.62,
+            NodeShape::Circle => w * 0.72,
+            _ => w - 16.0,
+        };
+        // Size and draw share the 168px cap. A wider box must not reflow the lines.
+        push_centered_label(&mut svg, cx, cy, &node.label, 13.0, label_width.clamp(24.0, 168.0), "#0f172a", "500");
     }
 
     svg.push_str("</svg>");
@@ -1098,6 +1301,543 @@ fn edge_anchor(cx: f32, cy: f32, w: f32, h: f32, tx: f32, ty: f32) -> (f32, f32)
     let sy = if dy.abs() > 1e-3 { ry / dy.abs() } else { f32::MAX };
     let scale = sx.min(sy);
     (cx + dx * scale, cy + dy * scale)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RectF {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+fn node_rect(cx: f32, cy: f32, w: f32, h: f32) -> RectF {
+    RectF { x: cx - w / 2.0, y: cy - h / 2.0, w, h }
+}
+
+fn pad_rect(rect: RectF, pad: f32) -> RectF {
+    RectF {
+        x: rect.x - pad,
+        y: rect.y - pad,
+        w: (rect.w + pad * 2.0).max(0.0),
+        h: (rect.h + pad * 2.0).max(0.0),
+    }
+}
+
+fn point_in_rect(px: f32, py: f32, rect: &RectF) -> bool {
+    px > rect.x + 0.15 && py > rect.y + 0.15 && px < rect.x + rect.w - 0.15 && py < rect.y + rect.h - 0.15
+}
+
+fn orient(ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) -> f32 {
+    (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+}
+
+fn on_segment(ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32) -> bool {
+    px >= ax.min(bx) - 0.05 && px <= ax.max(bx) + 0.05 && py >= ay.min(by) - 0.05 && py <= ay.max(by) + 0.05
+}
+
+fn segments_cross(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, x4: f32, y4: f32) -> bool {
+    let o1 = orient(x1, y1, x2, y2, x3, y3);
+    let o2 = orient(x1, y1, x2, y2, x4, y4);
+    let o3 = orient(x3, y3, x4, y4, x1, y1);
+    let o4 = orient(x3, y3, x4, y4, x2, y2);
+    if o1 * o2 < 0.0 && o3 * o4 < 0.0 {
+        return true;
+    }
+    o1.abs() <= 0.05 && on_segment(x1, y1, x2, y2, x3, y3)
+        || o2.abs() <= 0.05 && on_segment(x1, y1, x2, y2, x4, y4)
+        || o3.abs() <= 0.05 && on_segment(x3, y3, x4, y4, x1, y1)
+        || o4.abs() <= 0.05 && on_segment(x3, y3, x4, y4, x2, y2)
+}
+
+fn segment_hits_rect(x1: f32, y1: f32, x2: f32, y2: f32, rect: &RectF) -> bool {
+    if (x1 - x2).abs() < 0.4 && (y1 - y2).abs() < 0.4 {
+        return point_in_rect(x1, y1, rect);
+    }
+    if point_in_rect(x1, y1, rect) || point_in_rect(x2, y2, rect) {
+        return true;
+    }
+    let left = rect.x;
+    let right = rect.x + rect.w;
+    let top = rect.y;
+    let bottom = rect.y + rect.h;
+    segments_cross(x1, y1, x2, y2, left, top, right, top)
+        || segments_cross(x1, y1, x2, y2, right, top, right, bottom)
+        || segments_cross(x1, y1, x2, y2, right, bottom, left, bottom)
+        || segments_cross(x1, y1, x2, y2, left, bottom, left, top)
+}
+
+fn segment_hits_any(x1: f32, y1: f32, x2: f32, y2: f32, obstacles: &[RectF]) -> bool {
+    obstacles.iter().any(|rect| segment_hits_rect(x1, y1, x2, y2, rect))
+}
+
+fn cubic_point(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), p3: (f32, f32), t: f32) -> (f32, f32) {
+    let u = 1.0 - t;
+    let a = u * u * u;
+    let b = 3.0 * u * u * t;
+    let c = 3.0 * u * t * t;
+    let d = t * t * t;
+    (a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0, a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1)
+}
+
+fn curve_hits(sx: f32, sy: f32, ex: f32, ey: f32, horizontal: bool, obstacles: &[RectF]) -> bool {
+    let (p1, p2) = if horizontal {
+        let mx = (sx + ex) / 2.0;
+        ((mx, sy), (mx, ey))
+    } else {
+        let my = (sy + ey) / 2.0;
+        ((sx, my), (ex, my))
+    };
+    let mut prev = (sx, sy);
+    for step in 1..=24 {
+        let p = cubic_point((sx, sy), p1, p2, (ex, ey), step as f32 / 24.0);
+        if segment_hits_any(prev.0, prev.1, p.0, p.1, obstacles) {
+            return true;
+        }
+        prev = p;
+    }
+    false
+}
+
+fn curve_d(sx: f32, sy: f32, ex: f32, ey: f32, horizontal: bool) -> String {
+    if horizontal {
+        let mx = (sx + ex) / 2.0;
+        format!("M {sx:.1} {sy:.1} C {mx:.1} {sy:.1}, {mx:.1} {ey:.1}, {ex:.1} {ey:.1}")
+    } else {
+        let my = (sy + ey) / 2.0;
+        format!("M {sx:.1} {sy:.1} C {sx:.1} {my:.1}, {ex:.1} {my:.1}, {ex:.1} {ey:.1}")
+    }
+}
+
+fn unit_dir(x1: f32, y1: f32, x2: f32, y2: f32) -> (f32, f32) {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-3 { (0.0, 0.0) } else { (dx / len, dy / len) }
+}
+
+fn point_in_canvas(px: f32, py: f32, canvas: (f32, f32)) -> bool {
+    px >= -0.05 && py >= -0.05 && px <= canvas.0 + 0.05 && py <= canvas.1 + 0.05
+}
+
+/// Free lane coordinates inside `[lo, hi]`, inset from obstacle intervals.
+fn lane_coords(lo: f32, hi: f32, blocked: &[(f32, f32)]) -> Vec<f32> {
+    if hi - lo < 8.0 {
+        return Vec::new();
+    }
+    let mut spans: Vec<(f32, f32)> = blocked.iter().copied().filter(|(a, b)| b - a > 0.5).collect();
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<(f32, f32)> = Vec::new();
+    for (a, b) in spans {
+        if let Some((_, end)) = merged.last_mut()
+            && a <= *end
+        {
+            *end = end.max(b);
+            continue;
+        }
+        merged.push((a, b));
+    }
+    let mut gaps = Vec::new();
+    let mut cursor = lo;
+    for (a, b) in merged {
+        let gap_end = a.min(hi);
+        if gap_end - cursor >= 8.0 {
+            gaps.push((cursor, gap_end));
+        }
+        cursor = cursor.max(b);
+        if cursor >= hi {
+            break;
+        }
+    }
+    if hi - cursor >= 8.0 {
+        gaps.push((cursor, hi));
+    }
+    let mut lanes = Vec::new();
+    for (a, b) in gaps {
+        let inset_a = a + 6.0;
+        let inset_b = b - 6.0;
+        if inset_b >= inset_a {
+            lanes.push((inset_a + inset_b) / 2.0);
+            if inset_b - inset_a > 12.0 {
+                lanes.push(inset_a);
+                lanes.push(inset_b);
+            }
+        }
+    }
+    lanes
+}
+
+fn exit_points(anchor: (f32, f32), center: (f32, f32), own: RectF, obstacles: &[RectF], canvas: (f32, f32)) -> Vec<(f32, f32)> {
+    let own = pad_rect(own, -0.5);
+    let dx = anchor.0 - center.0;
+    let dy = anchor.1 - center.1;
+    let mut dirs = Vec::new();
+    if dx.abs() >= dy.abs() && dx.abs() > 1e-3 {
+        dirs.push((dx.signum(), 0.0));
+        dirs.push((0.0, 1.0));
+        dirs.push((0.0, -1.0));
+    } else if dy.abs() > 1e-3 {
+        dirs.push((0.0, dy.signum()));
+        dirs.push((1.0, 0.0));
+        dirs.push((-1.0, 0.0));
+    }
+    let mut out = Vec::new();
+    for (ux, uy) in dirs {
+        for len in [14.0_f32, 8.0] {
+            let p = (anchor.0 + ux * len, anchor.1 + uy * len);
+            if !point_in_canvas(p.0, p.1, canvas) {
+                continue;
+            }
+            if point_in_rect(p.0, p.1, &own) || segment_hits_rect(anchor.0, anchor.1, p.0, p.1, &own) {
+                continue;
+            }
+            if obstacles.iter().any(|rect| point_in_rect(p.0, p.1, rect) || segment_hits_rect(anchor.0, anchor.1, p.0, p.1, rect)) {
+                continue;
+            }
+            out.push(p);
+            break;
+        }
+    }
+    if out.is_empty() {
+        out.push(anchor);
+    }
+    out
+}
+
+fn simplify_points(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut cleaned = Vec::new();
+    for &p in points {
+        if cleaned.last().is_some_and(|q: &(f32, f32)| (q.0 - p.0).abs() < 0.4 && (q.1 - p.1).abs() < 0.4) {
+            continue;
+        }
+        cleaned.push(p);
+    }
+    if cleaned.len() < 3 {
+        return cleaned;
+    }
+    let mut slim = vec![cleaned[0]];
+    for i in 1..cleaned.len() - 1 {
+        let a = *slim.last().unwrap();
+        let b = cleaned[i];
+        let c = cleaned[i + 1];
+        let cross = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+        if cross.abs() > 0.5 {
+            slim.push(b);
+        }
+    }
+    slim.push(*cleaned.last().unwrap());
+    slim
+}
+
+fn polyline_clear(points: &[(f32, f32)], obstacles: &[RectF], canvas: (f32, f32)) -> bool {
+    if points.iter().any(|p| !point_in_canvas(p.0, p.1, canvas)) {
+        return false;
+    }
+    points.windows(2).all(|w| !segment_hits_any(w[0].0, w[0].1, w[1].0, w[1].1, obstacles))
+}
+
+fn label_on_polyline(points: &[(f32, f32)], obstacles: &[RectF]) -> (f32, f32) {
+    let mut best_len = -1.0f32;
+    let mut best = points[0];
+    for w in points.windows(2) {
+        let dx = w[1].0 - w[0].0;
+        let dy = w[1].1 - w[0].1;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len <= best_len {
+            continue;
+        }
+        let mid = ((w[0].0 + w[1].0) / 2.0, (w[0].1 + w[1].1) / 2.0);
+        if obstacles.iter().any(|rect| point_in_rect(mid.0, mid.1, rect)) {
+            continue;
+        }
+        best_len = len;
+        best = mid;
+    }
+    best
+}
+
+fn path_from_points(points: &[(f32, f32)]) -> String {
+    let mut d = format!("M {:.1} {:.1}", points[0].0, points[0].1);
+    for p in &points[1..] {
+        d.push_str(&format!(" L {:.1} {:.1}", p.0, p.1));
+    }
+    d
+}
+
+fn first_dir(points: &[(f32, f32)]) -> (f32, f32) {
+    for w in points.windows(2) {
+        let d = unit_dir(w[0].0, w[0].1, w[1].0, w[1].1);
+        if d.0 != 0.0 || d.1 != 0.0 {
+            return d;
+        }
+    }
+    (0.0, 0.0)
+}
+
+fn last_dir(points: &[(f32, f32)]) -> (f32, f32) {
+    for i in (1..points.len()).rev() {
+        let d = unit_dir(points[i - 1].0, points[i - 1].1, points[i].0, points[i].1);
+        if d.0 != 0.0 || d.1 != 0.0 {
+            return d;
+        }
+    }
+    (0.0, 0.0)
+}
+
+#[derive(Debug)]
+enum EdgeRouteKind {
+    Line,
+    Path { d: String, detour: bool },
+}
+
+#[derive(Debug)]
+struct EdgeRoute {
+    kind: EdgeRouteKind,
+    label_at: (f32, f32),
+    start: (f32, f32),
+    end: (f32, f32),
+    leave_dir: (f32, f32),
+    arrive_dir: (f32, f32),
+}
+
+fn straight_route(start: (f32, f32), end: (f32, f32)) -> EdgeRoute {
+    let dir = unit_dir(start.0, start.1, end.0, end.1);
+    EdgeRoute {
+        kind: EdgeRouteKind::Line,
+        label_at: ((start.0 + end.0) / 2.0, (start.1 + end.1) / 2.0),
+        start,
+        end,
+        leave_dir: dir,
+        arrive_dir: dir,
+    }
+}
+
+fn path_route(d: String, detour: bool, start: (f32, f32), end: (f32, f32), label_at: (f32, f32), points: &[(f32, f32)]) -> EdgeRoute {
+    let (leave_dir, arrive_dir) = if points.len() >= 2 {
+        (first_dir(points), last_dir(points))
+    } else {
+        let dir = unit_dir(start.0, start.1, end.0, end.1);
+        (dir, dir)
+    };
+    EdgeRoute { kind: EdgeRouteKind::Path { d, detour }, label_at, start, end, leave_dir, arrive_dir }
+}
+
+/// Border-to-border route. A curve or line that enters another node becomes an
+/// orthogonal polyline. When no lane stays outside the nodes, the original curve remains.
+fn route_layered_edge(
+    from: usize,
+    to: usize,
+    centers: &[(f32, f32)],
+    sizes: &[(f32, f32)],
+    horizontal: bool,
+    curved: bool,
+    canvas: (f32, f32),
+) -> EdgeRoute {
+    let (x1, y1) = centers[from];
+    let (x2, y2) = centers[to];
+    let (w1, h1) = sizes[from];
+    let (w2, h2) = sizes[to];
+    let start = edge_anchor(x1, y1, w1, h1, x2, y2);
+    let end = edge_anchor(x2, y2, w2, h2, x1, y1);
+    let fallback = |start: (f32, f32), end: (f32, f32)| -> EdgeRoute {
+        if curved {
+            let d = curve_d(start.0, start.1, end.0, end.1, horizontal);
+            let dir = unit_dir(start.0, start.1, end.0, end.1);
+            EdgeRoute {
+                kind: EdgeRouteKind::Path { d, detour: false },
+                label_at: ((start.0 + end.0) / 2.0, (start.1 + end.1) / 2.0),
+                start,
+                end,
+                leave_dir: dir,
+                arrive_dir: dir,
+            }
+        } else {
+            straight_route(start, end)
+        }
+    };
+    if from == to {
+        return fallback(start, end);
+    }
+    let mut blockers = Vec::new();
+    for idx in 0..centers.len() {
+        if idx == from || idx == to {
+            continue;
+        }
+        blockers.push(node_rect(centers[idx].0, centers[idx].1, sizes[idx].0, sizes[idx].1));
+    }
+    let hits = if curved {
+        curve_hits(start.0, start.1, end.0, end.1, horizontal, &blockers)
+    } else {
+        segment_hits_any(start.0, start.1, end.0, end.1, &blockers)
+    };
+    if !hits {
+        return fallback(start, end);
+    }
+
+    let source = node_rect(x1, y1, w1, h1);
+    let target = node_rect(x2, y2, w2, h2);
+    let mut avoid: Vec<RectF> = blockers.iter().copied().map(|rect| pad_rect(rect, 4.0)).collect();
+    let shrunk_source = pad_rect(source, -0.5);
+    let shrunk_target = pad_rect(target, -0.5);
+    avoid.push(shrunk_source);
+    avoid.push(shrunk_target);
+    let exits_s = exit_points(start, (x1, y1), source, &blockers, canvas);
+    let exits_t = exit_points(end, (x2, y2), target, &blockers, canvas);
+    let pad = 8.0;
+    let y_span = (start.1.min(end.1) - 14.0, start.1.max(end.1) + 14.0);
+    let x_span = (start.0.min(end.0) - 14.0, start.0.max(end.0) + 14.0);
+    let blocked_x: Vec<(f32, f32)> = avoid
+        .iter()
+        .filter(|rect| rect.y < y_span.1 && rect.y + rect.h > y_span.0)
+        .map(|rect| (rect.x, rect.x + rect.w))
+        .collect();
+    let blocked_y: Vec<(f32, f32)> = avoid
+        .iter()
+        .filter(|rect| rect.x < x_span.1 && rect.x + rect.w > x_span.0)
+        .map(|rect| (rect.y, rect.y + rect.h))
+        .collect();
+    // `vertical` lanes are constant-x. Flow-direction gaps are tried first.
+    let axes = if horizontal { [false, true] } else { [true, false] };
+    for vertical_lane in axes {
+        let mut lanes = if vertical_lane {
+            lane_coords(pad, canvas.0 - pad, &blocked_x)
+        } else {
+            lane_coords(pad, canvas.1 - pad, &blocked_y)
+        };
+        let ideal = if vertical_lane { (start.0 + end.0) / 2.0 } else { (start.1 + end.1) / 2.0 };
+        lanes.sort_by(|a, b| {
+            (a - ideal)
+                .abs()
+                .partial_cmp(&(b - ideal).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        lanes.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        for lane in lanes {
+            for &s in &exits_s {
+                for &t in &exits_t {
+                    let raw = if vertical_lane {
+                        vec![start, s, (lane, s.1), (lane, t.1), t, end]
+                    } else {
+                        vec![start, s, (s.0, lane), (t.0, lane), t, end]
+                    };
+                    let points = simplify_points(&raw);
+                    if points.len() < 2 || !polyline_clear(&points, &avoid, canvas) {
+                        continue;
+                    }
+                    let label_at = label_on_polyline(&points, &avoid);
+                    return path_route(path_from_points(&points), true, start, end, label_at, &points);
+                }
+            }
+        }
+    }
+    fallback(start, end)
+}
+
+fn push_routed_edge(svg: &mut String, route: &EdgeRoute, stroke: &str, width: &str, extra: &str) {
+    match &route.kind {
+        EdgeRouteKind::Line => {
+            let (x1, y1) = route.start;
+            let (x2, y2) = route.end;
+            svg.push_str(&format!(
+                r##"<line x1="{x1:.1}" y1="{y1:.1}" x2="{x2:.1}" y2="{y2:.1}" stroke="{stroke}" stroke-width="{width}"{extra}/>"##
+            ));
+        }
+        EdgeRouteKind::Path { d, detour } => {
+            let flag = if *detour { r#" data-route="detour""# } else { "" };
+            svg.push_str(&format!(
+                r##"<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{width}"{extra}{flag}/>"##
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+fn sample_path(d: &str) -> Vec<(f32, f32)> {
+    let mut samples = Vec::new();
+    let mut cx = 0.0f32;
+    let mut cy = 0.0f32;
+    let mut cmd = ' ';
+    let mut number = String::new();
+    let mut nums = Vec::new();
+    let flush_num = |number: &mut String, nums: &mut Vec<f32>| {
+        if !number.is_empty() {
+            if let Ok(value) = number.parse::<f32>() {
+                nums.push(value);
+            }
+            number.clear();
+        }
+    };
+    let apply = |cmd: char, nums: &mut Vec<f32>, cx: &mut f32, cy: &mut f32, samples: &mut Vec<(f32, f32)>| {
+        match cmd {
+            'M' => {
+                if nums.len() >= 2 {
+                    *cx = nums[0];
+                    *cy = nums[1];
+                    samples.push((*cx, *cy));
+                }
+                let mut i = 2;
+                while i + 1 < nums.len() {
+                    let next = (nums[i], nums[i + 1]);
+                    let dist = ((next.0 - *cx).powi(2) + (next.1 - *cy).powi(2)).sqrt();
+                    let steps = ((dist / 4.0).ceil() as i32).max(1);
+                    for step in 1..=steps {
+                        let t = step as f32 / steps as f32;
+                        samples.push((*cx + (next.0 - *cx) * t, *cy + (next.1 - *cy) * t));
+                    }
+                    *cx = next.0;
+                    *cy = next.1;
+                    i += 2;
+                }
+            }
+            'L' => {
+                let mut i = 0;
+                while i + 1 < nums.len() {
+                    let next = (nums[i], nums[i + 1]);
+                    let dist = ((next.0 - *cx).powi(2) + (next.1 - *cy).powi(2)).sqrt();
+                    let steps = ((dist / 4.0).ceil() as i32).max(1);
+                    for step in 1..=steps {
+                        let t = step as f32 / steps as f32;
+                        samples.push((*cx + (next.0 - *cx) * t, *cy + (next.1 - *cy) * t));
+                    }
+                    *cx = next.0;
+                    *cy = next.1;
+                    i += 2;
+                }
+            }
+            'C' => {
+                let mut i = 0;
+                while i + 5 < nums.len() {
+                    let p0 = (*cx, *cy);
+                    let p1 = (nums[i], nums[i + 1]);
+                    let p2 = (nums[i + 2], nums[i + 3]);
+                    let p3 = (nums[i + 4], nums[i + 5]);
+                    for step in 1..=16 {
+                        samples.push(cubic_point(p0, p1, p2, p3, step as f32 / 16.0));
+                    }
+                    *cx = p3.0;
+                    *cy = p3.1;
+                    i += 6;
+                }
+            }
+            _ => {}
+        }
+        nums.clear();
+    };
+    for ch in d.chars() {
+        if ch.is_ascii_alphabetic() {
+            flush_num(&mut number, &mut nums);
+            apply(cmd, &mut nums, &mut cx, &mut cy, &mut samples);
+            cmd = ch;
+        } else if ch == ',' || ch.is_whitespace() {
+            flush_num(&mut number, &mut nums);
+        } else {
+            number.push(ch);
+        }
+    }
+    flush_num(&mut number, &mut nums);
+    apply(cmd, &mut nums, &mut cx, &mut cy, &mut samples);
+    samples
 }
 
 fn parse_subgraph_title(rest: &str) -> String {
@@ -1309,24 +2049,277 @@ fn ensure_node_group(
 
 fn parse_node_token(token: &str) -> (&str, Option<String>, Option<NodeShape>) {
     let t = token.trim();
+    // The shape starts at the first delimiter. A `>` inside `<br/>` is not asymmetric.
+    let Some(open_at) = first_shape_delim(t) else {
+        return (t, None, None);
+    };
+    let tail = &t[open_at..];
     for (open, close, shape) in [
+        ("[(", ")]", NodeShape::Cylinder),
         ("([", "])", NodeShape::Stadium),
         ("[[", "]]", NodeShape::Subroutine),
         ("((", "))", NodeShape::Circle),
+        ("{{", "}}", NodeShape::Hexagon),
+        ("[/", "/]", NodeShape::Trapezoid),
+        ("[/", "\\]", NodeShape::Parallelogram),
+        ("[\\", "\\]", NodeShape::InvTrapezoid),
+        ("[\\", "/]", NodeShape::Parallelogram),
+        (">", "]", NodeShape::Asymmetric),
         ("[", "]", NodeShape::Rect),
         ("(", ")", NodeShape::Round),
         ("{", "}", NodeShape::Diamond),
     ] {
-        if let Some(open_idx) = t.find(open)
-            && t.ends_with(close)
-            && t.len() >= open_idx + open.len() + close.len()
-        {
-            let id = t[..open_idx].trim();
-            let inner = &t[open_idx + open.len()..t.len() - close.len()];
+        if tail.starts_with(open) && t.ends_with(close) && t.len() >= open_at + open.len() + close.len() {
+            let id = t[..open_at].trim();
+            let inner = &t[open_at + open.len()..t.len() - close.len()];
             return (id, Some(unquote(inner.trim())), Some(shape));
         }
     }
     (t, None, None)
+}
+
+fn first_shape_delim(token: &str) -> Option<usize> {
+    let bytes = token.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'<' {
+            if let Some(rel) = token[index + 1..].find('>') {
+                index += 1 + rel + 1;
+                continue;
+            }
+        }
+        if matches!(bytes[index], b'[' | b'(' | b'{' | b'>') {
+            if bytes[index] == b'>' && index > 0 && bytes[index - 1] == b'-' {
+                index += 1;
+                continue;
+            }
+            return Some(index);
+        }
+        index += token[index..].chars().next().map_or(1, char::len_utf8);
+    }
+    None
+}
+
+fn parse_flow_dir(token: &str) -> FlowDir {
+    match token.trim().to_ascii_uppercase().as_str() {
+        "LR" => FlowDir::Lr,
+        "RL" => FlowDir::Rl,
+        "BT" => FlowDir::Bt,
+        _ => FlowDir::Td,
+    }
+}
+
+/// Split a flowchart line on `;` that is outside brackets and quotes.
+fn split_flow_statements(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    for (idx, ch) in line.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '[' | '(' | '{' => depth += 1,
+            ']' | ')' | '}' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => {
+                let stmt = line[start..idx].trim();
+                if !stmt.is_empty() {
+                    out.push(stmt);
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let rest = line[start..].trim().trim_end_matches(';').trim();
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+fn flow_node_size(shape: NodeShape, label: &str) -> (f32, f32) {
+    let max_text = 168.0f32;
+    let lines = label_lines(label, max_text, 13.0);
+    let tw = lines.iter().map(|line| estimate_text_width(line, 13.0)).fold(0.0f32, f32::max);
+    let text_h = lines.len() as f32 * 16.0;
+    match shape {
+        NodeShape::Diamond | NodeShape::Hexagon => ((tw + 56.0).max(96.0), (text_h + 28.0).max(54.0)),
+        NodeShape::Circle => {
+            let d = (tw + 28.0).max(text_h + 24.0).max(54.0);
+            (d, d)
+        }
+        NodeShape::Asymmetric => ((tw + 48.0).max(96.0), (text_h + 20.0).max(40.0)),
+        _ => ((tw + 36.0).max(84.0), (text_h + 18.0).max(40.0)),
+    }
+}
+
+fn layout_flowchart(
+    nodes: &[FlowNode],
+    edges: &[FlowEdge],
+    node_sizes: &[(f32, f32)],
+    subgraphs: &[SubgraphInfo],
+    dir: FlowDir,
+) -> (Vec<(f32, f32)>, u32, u32) {
+    let horizontal = matches!(dir, FlowDir::Lr | FlowDir::Rl);
+    let reversed = matches!(dir, FlowDir::Bt | FlowDir::Rl);
+    let margin = if subgraphs.is_empty() { 32.0f32 } else { 44.0f32 };
+    let directed: Vec<usize> = subgraphs.iter().enumerate().filter_map(|(idx, sg)| sg.dir.map(|_| idx)).collect();
+    if directed.is_empty() {
+        let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|edge| (edge.from, edge.to)).collect();
+        return compute_layered_layout(nodes.len(), &edge_pairs, node_sizes, horizontal, reversed, margin, 64.0, 34.0);
+    }
+
+    struct LocalLayout {
+        members: Vec<usize>,
+        centers: Vec<(f32, f32)>,
+        w: f32,
+        h: f32,
+    }
+    let mut locals: HashMap<usize, LocalLayout> = HashMap::new();
+    for &sg in &directed {
+        let members: Vec<usize> = nodes.iter().enumerate().filter_map(|(idx, node)| (node.subgraph == Some(sg)).then_some(idx)).collect();
+        if members.is_empty() {
+            continue;
+        }
+        let index_of: HashMap<usize, usize> = members.iter().enumerate().map(|(idx, &node)| (node, idx)).collect();
+        let local_edges: Vec<(usize, usize)> = edges
+            .iter()
+            .filter_map(|edge| Some((*index_of.get(&edge.from)?, *index_of.get(&edge.to)?)))
+            .collect();
+        let sizes: Vec<(f32, f32)> = members.iter().map(|&node| node_sizes[node]).collect();
+        let sg_dir = subgraphs[sg].dir.unwrap_or(dir);
+        let (local_centers, w, h) = compute_layered_layout(
+            members.len(),
+            &local_edges,
+            &sizes,
+            matches!(sg_dir, FlowDir::Lr | FlowDir::Rl),
+            matches!(sg_dir, FlowDir::Bt | FlowDir::Rl),
+            28.0,
+            56.0,
+            28.0,
+        );
+        locals.insert(sg, LocalLayout { members, centers: local_centers, w: w as f32, h: h as f32 });
+    }
+
+    enum Slot {
+        Node(usize),
+        Group(usize),
+    }
+    let mut slots: Vec<Slot> = Vec::new();
+    let mut slot_of_node: HashMap<usize, usize> = HashMap::new();
+    let mut slot_of_group: HashMap<usize, usize> = HashMap::new();
+    for (idx, node) in nodes.iter().enumerate() {
+        if let Some(sg) = node.subgraph
+            && locals.contains_key(&sg)
+        {
+            if let Some(&slot) = slot_of_group.get(&sg) {
+                slot_of_node.insert(idx, slot);
+            } else {
+                let slot = slots.len();
+                slots.push(Slot::Group(sg));
+                slot_of_group.insert(sg, slot);
+                slot_of_node.insert(idx, slot);
+            }
+        } else {
+            let slot = slots.len();
+            slots.push(Slot::Node(idx));
+            slot_of_node.insert(idx, slot);
+        }
+    }
+    let mut outer_edges = Vec::new();
+    for edge in edges {
+        if let (Some(&from), Some(&to)) = (slot_of_node.get(&edge.from), slot_of_node.get(&edge.to))
+            && from != to
+        {
+            outer_edges.push((from, to));
+        }
+    }
+    let outer_sizes: Vec<(f32, f32)> = slots
+        .iter()
+        .map(|slot| match slot {
+            Slot::Node(idx) => node_sizes[*idx],
+            Slot::Group(sg) => {
+                let local = &locals[sg];
+                (local.w, local.h)
+            }
+        })
+        .collect();
+    let (outer_centers, total_w, total_h) = compute_layered_layout(slots.len(), &outer_edges, &outer_sizes, horizontal, reversed, margin, 64.0, 34.0);
+    let mut centers = vec![(0.0f32, 0.0f32); nodes.len()];
+    for (idx, slot) in slots.iter().enumerate() {
+        match slot {
+            Slot::Node(node) => centers[*node] = outer_centers[idx],
+            Slot::Group(sg) => {
+                let local = &locals[sg];
+                let (sx, sy) = outer_centers[idx];
+                let ox = sx - local.w / 2.0;
+                let oy = sy - local.h / 2.0;
+                for (member_idx, &node) in local.members.iter().enumerate() {
+                    let (lx, ly) = local.centers[member_idx];
+                    centers[node] = (ox + lx, oy + ly);
+                }
+            }
+        }
+    }
+    (centers, total_w, total_h)
+}
+
+fn push_flow_polygon(svg: &mut String, points: &[(f32, f32)], fill: &str, stroke: &str, shape: &str) {
+    let body: String = points.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect::<Vec<_>>().join(" ");
+    svg.push_str(&format!(
+        r##"<polygon points="{body}" fill="{fill}" stroke="{stroke}" stroke-width="1.4" data-shape="{shape}"/>"##
+    ));
+}
+
+fn push_flow_cylinder(svg: &mut String, x: f32, y: f32, w: f32, h: f32) {
+    let ry = (h * 0.18).clamp(6.0, 14.0);
+    let body_y = y + ry;
+    let body_h = (h - ry * 2.0).max(8.0);
+    svg.push_str(&format!(
+        r##"<rect x="{x:.1}" y="{body_y:.1}" width="{w:.1}" height="{body_h:.1}" fill="#ecfeff" stroke="#0891b2" stroke-width="1.4" data-shape="cylinder"/>"##
+    ));
+    svg.push_str(&format!(
+        r##"<ellipse cx="{:.1}" cy="{:.1}" rx="{:.1}" ry="{ry:.1}" fill="#ecfeff" stroke="#0891b2" stroke-width="1.4"/>"##,
+        x + w / 2.0,
+        y + h - ry,
+        w / 2.0
+    ));
+    svg.push_str(&format!(
+        r##"<ellipse cx="{:.1}" cy="{:.1}" rx="{:.1}" ry="{ry:.1}" fill="#cffafe" stroke="#0891b2" stroke-width="1.4"/>"##,
+        x + w / 2.0,
+        y + ry,
+        w / 2.0
+    ));
+}
+
+fn hexagon_points(x: f32, y: f32, w: f32, h: f32) -> Vec<(f32, f32)> {
+    let inset = w * 0.18;
+    vec![(x + inset, y), (x + w - inset, y), (x + w, y + h / 2.0), (x + w - inset, y + h), (x + inset, y + h), (x, y + h / 2.0)]
+}
+
+fn trapezoid_points(x: f32, y: f32, w: f32, h: f32, narrow_top: bool) -> Vec<(f32, f32)> {
+    let inset = w * 0.16;
+    if narrow_top {
+        vec![(x + inset, y), (x + w - inset, y), (x + w, y + h), (x, y + h)]
+    } else {
+        vec![(x, y), (x + w, y), (x + w - inset, y + h), (x + inset, y + h)]
+    }
+}
+
+fn parallelogram_points(x: f32, y: f32, w: f32, h: f32) -> Vec<(f32, f32)> {
+    let skew = w * 0.16;
+    vec![(x + skew, y), (x + w, y), (x + w - skew, y + h), (x, y + h)]
+}
+
+fn asymmetric_points(x: f32, y: f32, w: f32, h: f32) -> Vec<(f32, f32)> {
+    let inset = w * 0.16;
+    vec![(x, y), (x + w - inset, y), (x + w, y + h / 2.0), (x + w - inset, y + h), (x, y + h)]
 }
 
 // ============================================================================
@@ -1500,6 +2493,9 @@ enum StateKind {
     Start,
     End,
     Normal,
+    Choice,
+    Fork,
+    Join,
 }
 
 struct StateNode {
@@ -1513,6 +2509,40 @@ struct StateEdge {
     from: usize,
     to: usize,
     label: Option<String>,
+}
+
+fn state_stereotype(rest: &str) -> Option<StateKind> {
+    if rest.contains("<<choice>>") {
+        Some(StateKind::Choice)
+    } else if rest.contains("<<fork>>") {
+        Some(StateKind::Fork)
+    } else if rest.contains("<<join>>") {
+        Some(StateKind::Join)
+    } else {
+        None
+    }
+}
+
+/// `[*]` is one start or end node per composite state. The top-level pair stays `__start__` / `__end__`.
+fn state_endpoint(comp: Option<&str>, end: bool, nodes: &mut Vec<StateNode>, map: &mut HashMap<String, usize>) -> usize {
+    let key = match (comp, end) {
+        (Some(name), false) => format!("{name}\0[*]start"),
+        (Some(name), true) => format!("{name}\0[*]end"),
+        (None, false) => "__start__".to_string(),
+        (None, true) => "__end__".to_string(),
+    };
+    if let Some(&idx) = map.get(&key) {
+        return idx;
+    }
+    let idx = nodes.len();
+    nodes.push(StateNode {
+        label: String::new(),
+        description: None,
+        kind: if end { StateKind::End } else { StateKind::Start },
+        composite: comp.map(ToString::to_string),
+    });
+    map.insert(key, idx);
+    idx
 }
 
 fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
@@ -1577,6 +2607,19 @@ fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         }
         let cur_comp = composite_stack.last().map(String::as_str);
         if let Some(rest) = l.strip_prefix("state ") {
+            if let Some(kind) = state_stereotype(rest) {
+                let head = rest.split("<<").next().unwrap_or("").trim();
+                let id = if let Some((_, alias)) = head.split_once(" as ") {
+                    unquote(alias.trim())
+                } else {
+                    unquote(head.split_whitespace().next().unwrap_or(""))
+                };
+                if !id.is_empty() {
+                    let idx = ensure_state(&id, &mut nodes, &mut node_map, cur_comp);
+                    nodes[idx].kind = kind;
+                }
+                continue;
+            }
             if let Some(before_brace) = rest.strip_suffix('{') {
                 let name = unquote(before_brace.trim());
                 composite_stack.push(name);
@@ -1596,36 +2639,12 @@ fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 (rhs_all.trim(), None)
             };
             let from = if lhs == "[*]" {
-                if let Some(&idx) = node_map.get("__start__") {
-                    idx
-                } else {
-                    let idx = nodes.len();
-                    nodes.push(StateNode {
-                        label: String::new(),
-                        description: None,
-                        kind: StateKind::Start,
-                        composite: cur_comp.map(ToString::to_string),
-                    });
-                    node_map.insert("__start__".to_string(), idx);
-                    idx
-                }
+                state_endpoint(cur_comp, false, &mut nodes, &mut node_map)
             } else {
                 ensure_state(lhs, &mut nodes, &mut node_map, cur_comp)
             };
             let to = if rhs_raw == "[*]" {
-                if let Some(&idx) = node_map.get("__end__") {
-                    idx
-                } else {
-                    let idx = nodes.len();
-                    nodes.push(StateNode {
-                        label: String::new(),
-                        description: None,
-                        kind: StateKind::End,
-                        composite: cur_comp.map(ToString::to_string),
-                    });
-                    node_map.insert("__end__".to_string(), idx);
-                    idx
-                }
+                state_endpoint(cur_comp, true, &mut nodes, &mut node_map)
             } else {
                 ensure_state(rhs_raw, &mut nodes, &mut node_map, cur_comp)
             };
@@ -1649,6 +2668,10 @@ fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         .iter()
         .map(|node| match node.kind {
             StateKind::Start | StateKind::End => (26.0, 26.0),
+            StateKind::Choice => (54.0, 54.0),
+            StateKind::Fork | StateKind::Join => {
+                if horizontal { (14.0, 48.0) } else { (48.0, 14.0) }
+            }
             StateKind::Normal => {
                 let title_w = estimate_text_width(&node.label, 13.0);
                 let desc_w = node
@@ -1735,9 +2758,7 @@ fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     // Transitions
     for e in &edges {
         let (x1, y1) = centers[e.from];
-        let (x2, y2) = centers[e.to];
         let (w1, h1) = node_sizes[e.from];
-        let (w2, h2) = node_sizes[e.to];
         if e.from == e.to {
             let lx = x1 + w1 / 2.0;
             let ty = y1 - h1 / 4.0;
@@ -1759,14 +2780,18 @@ fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             }
             continue;
         }
-        let (sx, sy) = edge_anchor(x1, y1, w1, h1, x2, y2);
-        let (ex, ey) = edge_anchor(x2, y2, w2, h2, x1, y1);
-        svg.push_str(&format!(
-            r##"<line x1="{sx:.1}" y1="{sy:.1}" x2="{ex:.1}" y2="{ey:.1}" stroke="#475569" stroke-width="1.4" marker-end="url(#st-arrow)"/>"##
-        ));
+        let route = route_layered_edge(
+            e.from,
+            e.to,
+            &centers,
+            &node_sizes,
+            horizontal,
+            false,
+            (total_w as f32, total_h as f32),
+        );
+        push_routed_edge(&mut svg, &route, "#475569", "1.4", r#" marker-end="url(#st-arrow)""#);
         if let Some(lbl) = &e.label {
-            let mx = (sx + ex) / 2.0;
-            let my = (sy + ey) / 2.0;
+            let (mx, my) = route.label_at;
             let lw = estimate_text_width(lbl, 11.0) + 10.0;
             svg.push_str(&format!(
                 r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="18" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
@@ -1797,6 +2822,25 @@ fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 ));
                 svg.push_str(&format!(
                     r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="6" fill="#1e293b"/>"##
+                ));
+            }
+            StateKind::Choice => {
+                let hw = nw / 2.0;
+                let hh = nh / 2.0;
+                svg.push_str(&format!(
+                    r##"<polygon points="{:.1},{cy:.1} {cx:.1},{:.1} {:.1},{cy:.1} {cx:.1},{:.1}" fill="#fff7ed" stroke="#ea580c" stroke-width="1.4" data-shape="choice"/>"##,
+                    cx - hw,
+                    cy - hh,
+                    cx + hw,
+                    cy + hh
+                ));
+            }
+            StateKind::Fork | StateKind::Join => {
+                let x = cx - nw / 2.0;
+                let y = cy - nh / 2.0;
+                let shape = if node.kind == StateKind::Fork { "fork" } else { "join" };
+                svg.push_str(&format!(
+                    r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" fill="#1e293b" data-shape="{shape}"/>"##
                 ));
             }
             StateKind::Normal => {
@@ -2044,12 +3088,15 @@ fn render_class_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 
     // Relationships
     for e in &edges {
-        let (x1, y1) = centers[e.from];
-        let (x2, y2) = centers[e.to];
-        let (w1, h1) = node_sizes[e.from];
-        let (w2, h2) = node_sizes[e.to];
-        let (sx, sy) = edge_anchor(x1, y1, w1, h1, x2, y2);
-        let (ex, ey) = edge_anchor(x2, y2, w2, h2, x1, y1);
+        let route = route_layered_edge(
+            e.from,
+            e.to,
+            &centers,
+            &node_sizes,
+            horizontal,
+            false,
+            (total_w as f32, total_h as f32),
+        );
         let dash = if e.dashed { r#" stroke-dasharray="5,4""# } else { "" };
         let marker = match e.kind {
             ClassRelKind::Inheritance | ClassRelKind::Realization => r#" marker-end="url(#cls-inherit)""#,
@@ -2058,12 +3105,10 @@ fn render_class_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             ClassRelKind::Association | ClassRelKind::Dependency => r#" marker-end="url(#cls-arrow)""#,
             ClassRelKind::Link => "",
         };
-        svg.push_str(&format!(
-            r##"<line x1="{sx:.1}" y1="{sy:.1}" x2="{ex:.1}" y2="{ey:.1}" stroke="#334155" stroke-width="1.4"{dash}{marker}/>"##
-        ));
+        let extra = format!("{dash}{marker}");
+        push_routed_edge(&mut svg, &route, "#334155", "1.4", &extra);
         if let Some(lbl) = &e.label {
-            let mx = (sx + ex) / 2.0;
-            let my = (sy + ey) / 2.0;
+            let (mx, my) = route.label_at;
             let lw = estimate_text_width(lbl, 11.0) + 10.0;
             svg.push_str(&format!(
                 r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="18" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
@@ -2345,21 +3390,21 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 
     // Edges
     for e in &edges {
-        let (x1, y1) = centers[e.from];
-        let (x2, y2) = centers[e.to];
-        let (w1, h1) = node_sizes[e.from];
-        let (w2, h2) = node_sizes[e.to];
-        let (sx, sy) = edge_anchor(x1, y1, w1, h1, x2, y2);
-        let (ex, ey) = edge_anchor(x2, y2, w2, h2, x1, y1);
+        let route = route_layered_edge(
+            e.from,
+            e.to,
+            &centers,
+            &node_sizes,
+            true,
+            false,
+            (total_w as f32, total_h as f32),
+        );
         let dash = if e.dashed { r#" stroke-dasharray="5,4""# } else { "" };
-        svg.push_str(&format!(
-            r##"<line x1="{sx:.1}" y1="{sy:.1}" x2="{ex:.1}" y2="{ey:.1}" stroke="#475569" stroke-width="1.5"{dash}/>"##
-        ));
-        let dx = ex - sx;
-        let dy = ey - sy;
-        let len = (dx * dx + dy * dy).sqrt().max(1.0);
-        let ux = dx / len;
-        let uy = dy / len;
+        push_routed_edge(&mut svg, &route, "#475569", "1.5", dash);
+        let (sx, sy) = route.start;
+        let (ex, ey) = route.end;
+        let (ux, uy) = route.leave_dir;
+        let (vx, vy) = route.arrive_dir;
         svg.push_str(&format!(
             r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#0f766e">{}</text>"##,
             sx + ux * 16.0,
@@ -2368,13 +3413,12 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         ));
         svg.push_str(&format!(
             r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#0f766e">{}</text>"##,
-            ex - ux * 16.0,
-            ey - uy * 16.0 - 5.0,
+            ex - vx * 16.0,
+            ey - vy * 16.0 - 5.0,
             escape_xml(&e.right_card)
         ));
         if !e.label.is_empty() {
-            let mx = (sx + ex) / 2.0;
-            let my = (sy + ey) / 2.0;
+            let (mx, my) = route.label_at;
             let lw = estimate_text_width(&e.label, 11.0) + 10.0;
             svg.push_str(&format!(
                 r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="18" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
@@ -2479,122 +3523,7 @@ struct GanttTask {
 }
 
 fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
-    let mut title: Option<String> = None;
-    let mut current_section = String::from("Tasks");
-    let mut tasks: Vec<GanttTask> = Vec::new();
-    let mut id_end_day: HashMap<String, i64> = HashMap::new();
-    let mut last_end_day: Option<i64> = None;
-
-    for raw in source.lines().skip(1) {
-        let l = raw.trim();
-        if l.is_empty() || l.starts_with("%%") {
-            continue;
-        }
-        if let Some(rest) = l.strip_prefix("title ") {
-            title = Some(rest.trim().to_string());
-            continue;
-        }
-        if l.starts_with("dateFormat ") || l.starts_with("axisFormat ") || l.starts_with("excludes ") {
-            continue;
-        }
-        if let Some(rest) = l.strip_prefix("section ") {
-            current_section = rest.trim().to_string();
-            continue;
-        }
-        if let Some((name_part, meta_part)) = l.split_once(':') {
-            let task_name = name_part.trim().to_string();
-            let tokens: Vec<&str> = meta_part
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .collect();
-            if tokens.is_empty() {
-                continue;
-            }
-            let mut status = GanttStatus::Normal;
-            let mut idx = 0;
-            while idx < tokens.len() {
-                match tokens[idx] {
-                    "done" => {
-                        status = GanttStatus::Done;
-                        idx += 1;
-                    }
-                    "active" => {
-                        status = GanttStatus::Active;
-                        idx += 1;
-                    }
-                    "crit" => {
-                        status = GanttStatus::Crit;
-                        idx += 1;
-                    }
-                    "milestone" => {
-                        status = GanttStatus::Milestone;
-                        idx += 1;
-                    }
-                    _ => break,
-                }
-            }
-            let rem = &tokens[idx..];
-            if rem.is_empty() {
-                continue;
-            }
-            // Parse remaining tokens: optional `id`, `start_or_after`, `duration_or_end`
-            let (task_id, start_tok, dur_tok) = match rem.len() {
-                1 => (None, None, rem[0]),
-                2 => {
-                    if parse_gantt_date(rem[0]).is_some() || rem[0].starts_with("after ") {
-                        (None, Some(rem[0]), rem[1])
-                    } else {
-                        (Some(rem[0].to_string()), None, rem[1])
-                    }
-                }
-                _ => (Some(rem[0].to_string()), Some(rem[1]), rem[2]),
-            };
-
-            let start_day = if let Some(st) = start_tok {
-                if let Some(dep_id) = st.strip_prefix("after ") {
-                    id_end_day
-                        .get(dep_id.trim())
-                        .copied()
-                        .or(last_end_day)
-                        .unwrap_or_else(|| days_from_civil(2026, 1, 1))
-                } else {
-                    parse_gantt_date(st)
-                        .or(last_end_day)
-                        .unwrap_or_else(|| days_from_civil(2026, 1, 1))
-                }
-            } else {
-                last_end_day.unwrap_or_else(|| days_from_civil(2026, 1, 1))
-            };
-
-            let end_day = if let Some(ed) = parse_gantt_date(dur_tok) {
-                ed.max(start_day + 1)
-            } else {
-                let span = parse_gantt_duration_days(dur_tok);
-                if status == GanttStatus::Milestone {
-                    start_day + 1
-                } else {
-                    start_day + span.max(1)
-                }
-            };
-
-            if let Some(id) = task_id {
-                id_end_day.insert(id, end_day);
-            }
-            last_end_day = Some(end_day);
-            tasks.push(GanttTask {
-                section: current_section.clone(),
-                name: task_name,
-                status,
-                start_day,
-                end_day,
-            });
-        }
-    }
-
-    if tasks.is_empty() {
-        return None;
-    }
+    let (title, tasks, exclude_weekends) = parse_gantt_chart(source)?;
 
     let min_day = tasks.iter().map(|t| t.start_day).min().unwrap_or(0);
     let max_day = tasks.iter().map(|t| t.end_day).max().unwrap_or(min_day + 1).max(min_day + 1);
@@ -2646,7 +3575,7 @@ fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         ));
     }
 
-    // Rows & bars
+    // Rows
     let mut prev_section: Option<&str> = None;
     for (idx, task) in tasks.iter().enumerate() {
         let ry = top_pad + idx as f32 * row_h;
@@ -2666,10 +3595,31 @@ fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             ry + 19.0,
             escape_xml(&label)
         ));
+    }
 
+    // `excludes weekends` shades the axis. It does not change a bar's calendar length.
+    if exclude_weekends && total_days > 0.0 {
+        let mut day = min_day;
+        while day < max_day {
+            let weekday = (day + 4).rem_euclid(7);
+            if weekday == 0 || weekday == 6 {
+                let x = label_col_w + ((day - min_day) as f32 / total_days) * chart_w;
+                let w = chart_w / total_days;
+                let band_h = bottom_y - top_pad;
+                svg.push_str(&format!(
+                    r##"<rect x="{x:.1}" y="{top_pad:.1}" width="{w:.1}" height="{band_h:.1}" fill="#e2e8f0" fill-opacity="0.9" data-nonworking="weekend"/>"##
+                ));
+            }
+            day += 1;
+        }
+    }
+
+    for (idx, task) in tasks.iter().enumerate() {
+        let ry = top_pad + idx as f32 * row_h;
         let x1 = label_col_w + ((task.start_day - min_day) as f32 / total_days) * chart_w;
         let x2 = label_col_w + ((task.end_day - min_day) as f32 / total_days) * chart_w;
         let bw = (x2 - x1).max(6.0);
+        let start_iso = gantt_iso(task.start_day);
         let (fill, stroke) = match task.status {
             GanttStatus::Done => ("#cbd5e1", "#64748b"),
             GanttStatus::Active => ("#93c5fd", "#2563eb"),
@@ -2680,7 +3630,7 @@ fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         if task.status == GanttStatus::Milestone {
             let cy = ry + row_h / 2.0;
             svg.push_str(&format!(
-                r##"<polygon points="{x1:.1},{:.1} {:.1},{cy:.1} {x1:.1},{:.1} {:.1},{cy:.1}" fill="{fill}" stroke="{stroke}" stroke-width="1.3"/>"##,
+                r##"<polygon points="{x1:.1},{:.1} {:.1},{cy:.1} {x1:.1},{:.1} {:.1},{cy:.1}" fill="{fill}" stroke="{stroke}" stroke-width="1.3" data-start="{start_iso}"/>"##,
                 cy - 8.0,
                 x1 + 8.0,
                 cy + 8.0,
@@ -2688,7 +3638,7 @@ fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             ));
         } else {
             svg.push_str(&format!(
-                r##"<rect x="{x1:.1}" y="{:.1}" width="{bw:.1}" height="18" rx="4" fill="{fill}" stroke="{stroke}" stroke-width="1.2"/>"##,
+                r##"<rect x="{x1:.1}" y="{:.1}" width="{bw:.1}" height="18" rx="4" fill="{fill}" stroke="{stroke}" stroke-width="1.2" data-start="{start_iso}"/>"##,
                 ry + 6.0
             ));
         }
@@ -2696,6 +3646,243 @@ fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 
     svg.push_str("</svg>");
     Some((svg.into_bytes(), total_w, total_h))
+}
+
+enum GanttAnchor {
+    Date(i64),
+    After(Vec<String>),
+    Follow,
+}
+
+struct GanttPending {
+    section: String,
+    name: String,
+    status: GanttStatus,
+    id: Option<String>,
+    anchor: GanttAnchor,
+    span_days: i64,
+    end_date: Option<i64>,
+}
+
+fn parse_gantt_chart(source: &str) -> Option<(Option<String>, Vec<GanttTask>, bool)> {
+    let mut title = None;
+    let mut current_section = String::from("Tasks");
+    let mut pending = Vec::new();
+    let mut date_format = String::new();
+    let mut exclude_weekends = false;
+    let mut absolute_ends = Vec::new();
+
+    for raw in source.lines().skip(1) {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("title ") {
+            title = Some(rest.trim().to_string());
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("dateFormat ") {
+            date_format = rest.trim().to_string();
+            continue;
+        }
+        if l.starts_with("axisFormat ") {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("excludes ") {
+            if rest.split_whitespace().any(|word| word.eq_ignore_ascii_case("weekends")) {
+                exclude_weekends = true;
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("section ") {
+            current_section = rest.trim().to_string();
+            continue;
+        }
+        let Some((name_part, meta_part)) = l.split_once(':') else {
+            continue;
+        };
+        let task_name = name_part.trim().to_string();
+        if task_name.is_empty() {
+            continue;
+        }
+        let tokens: Vec<&str> = meta_part.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        let mut status = GanttStatus::Normal;
+        let mut idx = 0;
+        while idx < tokens.len() {
+            match tokens[idx] {
+                "done" => {
+                    status = GanttStatus::Done;
+                    idx += 1;
+                }
+                "active" => {
+                    status = GanttStatus::Active;
+                    idx += 1;
+                }
+                "crit" => {
+                    status = GanttStatus::Crit;
+                    idx += 1;
+                }
+                "milestone" => {
+                    status = GanttStatus::Milestone;
+                    idx += 1;
+                }
+                _ => break,
+            }
+        }
+        let rem = &tokens[idx..];
+        if rem.is_empty() {
+            continue;
+        }
+        let is_date = |tok: &str| parse_gantt_date_formatted(tok, &date_format).is_some();
+        let (task_id, start_tok, dur_tok) = match rem.len() {
+            1 => (None, None, rem[0]),
+            2 => {
+                if is_date(rem[0]) || rem[0].starts_with("after ") {
+                    (None, Some(rem[0]), rem[1])
+                } else {
+                    (Some(rem[0].to_string()), None, rem[1])
+                }
+            }
+            _ => (Some(rem[0].to_string()), Some(rem[1]), rem[2]),
+        };
+        let anchor = if let Some(st) = start_tok {
+            if let Some(rest) = st.strip_prefix("after ") {
+                let ids: Vec<String> = rest.split_whitespace().filter(|id| !id.is_empty()).map(str::to_string).collect();
+                if ids.is_empty() { GanttAnchor::Follow } else { GanttAnchor::After(ids) }
+            } else if let Some(day) = parse_gantt_date_formatted(st, &date_format) {
+                GanttAnchor::Date(day)
+            } else {
+                GanttAnchor::Follow
+            }
+        } else {
+            GanttAnchor::Follow
+        };
+        let end_date = parse_gantt_date_formatted(dur_tok, &date_format);
+        let span_days = if end_date.is_some() { 1 } else { parse_gantt_duration_days(dur_tok) };
+        if let GanttAnchor::Date(start) = anchor {
+            let end = if let Some(ed) = end_date {
+                ed.max(start + 1)
+            } else if status == GanttStatus::Milestone {
+                start + 1
+            } else {
+                start + span_days.max(1)
+            };
+            absolute_ends.push(end);
+        }
+        pending.push(GanttPending {
+            section: current_section.clone(),
+            name: task_name,
+            status,
+            id: task_id,
+            anchor,
+            span_days,
+            end_date,
+        });
+    }
+
+    if pending.is_empty() {
+        return None;
+    }
+    // A chart with no dated task still starts at 2026-01-01. A dated chart
+    // never pulls an unresolved `after` back to that origin.
+    let origin = days_from_civil(2026, 1, 1);
+    let absolute_end = absolute_ends.into_iter().max();
+    let mut id_end: HashMap<String, i64> = HashMap::new();
+    let mut last_end = None;
+    let mut tasks = Vec::new();
+    for task in pending {
+        let start_day = match &task.anchor {
+            GanttAnchor::Date(day) => *day,
+            GanttAnchor::Follow => last_end.unwrap_or(origin),
+            GanttAnchor::After(ids) => {
+                let known: Vec<i64> = ids.iter().filter_map(|id| id_end.get(id).copied()).collect();
+                if !known.is_empty() && known.len() == ids.len() {
+                    known.into_iter().max().unwrap_or(origin)
+                } else if let Some(end) = absolute_end {
+                    end
+                } else {
+                    origin
+                }
+            }
+        };
+        let end_day = if let Some(ed) = task.end_date {
+            ed.max(start_day + 1)
+        } else if task.status == GanttStatus::Milestone {
+            start_day + 1
+        } else {
+            start_day + task.span_days.max(1)
+        };
+        if let Some(id) = task.id.clone() {
+            id_end.insert(id, end_day);
+        }
+        last_end = Some(end_day);
+        tasks.push(GanttTask {
+            section: task.section,
+            name: task.name,
+            status: task.status,
+            start_day,
+            end_day,
+        });
+    }
+    Some((title, tasks, exclude_weekends))
+}
+
+fn gantt_iso(day: i64) -> String {
+    let (y, m, d) = civil_from_days(day);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Read a date with Mermaid `dateFormat` tokens `YYYY`, `MM` and `DD`.
+fn parse_gantt_date_formatted(text: &str, format: &str) -> Option<i64> {
+    let format = format.trim();
+    if format.is_empty() {
+        return parse_gantt_date(text);
+    }
+    let text = text.trim().as_bytes();
+    let format = format.as_bytes();
+    let mut ti = 0usize;
+    let mut fi = 0usize;
+    let mut year = None;
+    let mut month = None;
+    let mut day = None;
+    while fi < format.len() {
+        if format[fi..].len() >= 4 && format[fi..fi + 4].eq_ignore_ascii_case(b"YYYY") {
+            year = Some(take_gantt_digits(text, &mut ti, 4)?);
+            fi += 4;
+        } else if format[fi..].len() >= 2 && format[fi..fi + 2].eq_ignore_ascii_case(b"MM") {
+            month = Some(take_gantt_digits(text, &mut ti, 2)? as u32);
+            fi += 2;
+        } else if format[fi..].len() >= 2 && format[fi..fi + 2].eq_ignore_ascii_case(b"DD") {
+            day = Some(take_gantt_digits(text, &mut ti, 2)? as u32);
+            fi += 2;
+        } else {
+            fi += 1;
+            if ti < text.len() && !text[ti].is_ascii_digit() {
+                ti += 1;
+            }
+        }
+    }
+    let (y, m, d) = (year?, month?, day?);
+    if !(1..=12).contains(&m) || d == 0 || d > 31 {
+        return None;
+    }
+    Some(days_from_civil(y, m, d))
+}
+
+fn take_gantt_digits(text: &[u8], ti: &mut usize, n: usize) -> Option<i64> {
+    if *ti + n > text.len() {
+        return None;
+    }
+    let slice = &text[*ti..*ti + n];
+    if slice.iter().any(|b| !b.is_ascii_digit()) {
+        return None;
+    }
+    let value = std::str::from_utf8(slice).ok()?.parse().ok()?;
+    *ti += n;
+    Some(value)
 }
 
 fn parse_gantt_date(s: &str) -> Option<i64> {
@@ -2914,7 +4101,8 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
 
     for (si, (sname, vals)) in spec.series.iter().enumerate() {
         let color = PALETTE[si % PALETTE.len()];
-        let is_line = spec.kind == NewChartKind::Line || sname.starts_with("Line");
+        let is_line = spec.series_kinds.get(si) == Some(&NewChartKind::Line)
+            || (spec.series_kinds.is_empty() && (spec.kind == NewChartKind::Line || sname.starts_with("Line")));
         if is_line {
             let mut pts = Vec::new();
             for (ci, v_opt) in vals.iter().enumerate() {
@@ -3771,6 +4959,130 @@ fn unquote(s: &str) -> String {
     }
 }
 
+fn push_centered_label(svg: &mut String, cx: f32, cy: f32, text: &str, font_size: f32, max_width: f32, fill: &str, weight: &str) {
+    let lines = label_lines(text, max_width, font_size);
+    let line_h = font_size * 1.25;
+    let block = lines.len() as f32 * line_h;
+    let mut y = cy - block / 2.0 + font_size * 0.8;
+    for line in &lines {
+        svg.push_str(&format!(
+            r##"<text x="{cx:.1}" y="{y:.1}" text-anchor="middle" font-size="{font_size}" font-weight="{weight}" fill="{fill}">{}</text>"##,
+            escape_xml(line)
+        ));
+        y += line_h;
+    }
+}
+
+/// `<br>` becomes a line break. A line wider than `max_width` wraps, using
+/// [`estimate_text_width`] so Japanese characters take a full em.
+fn label_lines(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for piece in break_label(text).split('\n') {
+        if piece.is_empty() {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            continue;
+        }
+        lines.extend(wrap_piece(piece, max_width.max(8.0), font_size));
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn break_label(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let raw = text.as_bytes();
+    let folded = lower.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut idx = 0usize;
+    while idx < raw.len() {
+        if folded[idx..].starts_with(b"<br")
+            && let Some(rel) = folded[idx + 3..].iter().position(|ch| *ch == b'>')
+        {
+            let inside = &folded[idx + 3..idx + 3 + rel];
+            if inside.iter().all(|ch| ch.is_ascii_whitespace() || *ch == b'/') {
+                out.push('\n');
+                idx += 3 + rel + 1;
+                continue;
+            }
+        }
+        let ch = text[idx..].chars().next().unwrap_or('\u{FFFD}');
+        out.push(ch);
+        idx += ch.len_utf8();
+    }
+    out
+}
+
+fn wrap_piece(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
+    if estimate_text_width(text, font_size) <= max_width {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut width = 0.0f32;
+    for token in split_wrap_tokens(text) {
+        let token_width = estimate_text_width(&token, font_size);
+        if current.is_empty() || width + token_width <= max_width {
+            if token_width <= max_width || current.is_empty() && !token.chars().any(|ch| !ch.is_ascii() || ch.is_whitespace()) {
+                if token_width <= max_width {
+                    current.push_str(&token);
+                    width += token_width;
+                    continue;
+                }
+            }
+        } else {
+            lines.push(std::mem::take(&mut current));
+            width = 0.0;
+        }
+        if estimate_text_width(&token, font_size) <= max_width {
+            current = token;
+            width = token_width;
+            continue;
+        }
+        for ch in token.chars() {
+            let ch_width = estimate_text_width(&ch.to_string(), font_size);
+            if !current.is_empty() && width + ch_width > max_width {
+                lines.push(std::mem::take(&mut current));
+                width = 0.0;
+            }
+            current.push(ch);
+            width += ch_width;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() { vec![String::new()] } else { lines }
+}
+
+fn split_wrap_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut ascii_word = false;
+    for ch in text.chars() {
+        let word = ch.is_ascii() && !ch.is_ascii_whitespace();
+        if current.is_empty() {
+            current.push(ch);
+            ascii_word = word;
+            continue;
+        }
+        if ch.is_whitespace() || (ascii_word && word) {
+            current.push(ch);
+            continue;
+        }
+        tokens.push(std::mem::take(&mut current));
+        current.push(ch);
+        ascii_word = word;
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 fn estimate_text_width(s: &str, font_size: f32) -> f32 {
     let mut units = 0.0f32;
     for ch in s.chars() {
@@ -3816,9 +5128,11 @@ mod tests {
             panic!("expected native chart for pie");
         };
         assert_eq!(spec.kind, NewChartKind::Pie);
+        assert!(spec.show_data);
         assert_eq!(spec.title.as_deref(), Some("ブラウザシェア"));
         assert_eq!(spec.categories, vec!["Chrome", "Safari", "Other"]);
         assert_eq!(spec.series[0].1.len(), 3);
+        assert_eq!(spec.series_kinds, vec![NewChartKind::Pie]);
 
         let xy = "xychart-beta\n  title \"月次売上\"\n  x-axis [Jan, Feb, Mar]\n  bar [100, 140, 180]\n  line [90, 120, 170]\n";
         let Some(MermaidOutput::Chart(xy_spec)) = render_mermaid(xy) else {
@@ -3827,6 +5141,7 @@ mod tests {
         assert_eq!(xy_spec.kind, NewChartKind::ClusteredColumn);
         assert_eq!(xy_spec.title.as_deref(), Some("月次売上"));
         assert_eq!(xy_spec.series.len(), 2);
+        assert_eq!(xy_spec.series_kinds, vec![NewChartKind::ClusteredColumn, NewChartKind::Line]);
     }
 
     #[test]
@@ -4108,5 +5423,434 @@ quadrantChart
         assert!(qsvg.contains("Priority Matrix"));
         assert!(qsvg.contains("Quick Wins"));
         assert!(qsvg.contains("Task A"));
+    }
+
+    fn svg_of(source: &str) -> String {
+        let Some(MermaidOutput::Svg { bytes, .. }) = render_mermaid(source) else {
+            panic!("expected svg:\n{source}");
+        };
+        String::from_utf8(bytes).expect("svg utf-8")
+    }
+
+    fn text_x(svg: &str, label: &str) -> f32 {
+        let needle = format!(">{label}<");
+        let at = svg.find(&needle).unwrap_or_else(|| panic!("missing {label}"));
+        let head = &svg[..at];
+        let x_at = head.rfind("x=\"").unwrap_or_else(|| panic!("no x for {label}"));
+        let rest = &head[x_at + 3..];
+        let end = rest.find('"').unwrap();
+        rest[..end].parse().unwrap()
+    }
+
+    #[test]
+    fn flowchart_labels_shapes_statements_and_subgraph_direction() {
+        let labeled = "\
+flowchart TD
+  A[\"上<br/>下\"]
+  B[日本語の長い見出しを折り返して枠を広げる確認]
+";
+        let svg = svg_of(labeled);
+        assert!(svg.contains(">上<") && svg.contains(">下<"));
+        assert!(!svg.contains("<br") && !svg.contains("&lt;br"));
+        let long = "日本語の長い見出しを折り返して枠を広げる確認";
+        let lines = label_lines(long, 168.0, 13.0);
+        assert!(lines.len() >= 2, "{lines:?}");
+        for line in &lines {
+            assert!(svg.contains(line), "missing wrapped line {line}");
+        }
+        assert!(!svg.contains(long));
+
+        let shapes = "\
+flowchart LR
+  A[(筒)] --> B{{六角}}
+  C[/台形/] --> D[\\逆台形\\]
+  E[/平行四辺形\\] --> F>旗]
+";
+        let svg = svg_of(shapes);
+        for shape in ["cylinder", "hexagon", "trapezoid", "inv-trapezoid", "parallelogram", "asymmetric"] {
+            assert!(svg.contains(&format!("data-shape=\"{shape}\"")), "missing {shape}:\n{svg}");
+        }
+        for label in ["筒", "六角", "台形", "逆台形", "平行四辺形", "旗"] {
+            assert!(svg.contains(label), "missing {label}");
+        }
+
+        let split = "flowchart LR\n  A[A]-->B[B]; C[C]-->D[D]\n";
+        let svg = svg_of(split);
+        for label in ["A", "B", "C", "D"] {
+            assert!(svg.contains(&format!(">{label}<")));
+        }
+        assert!(svg.matches("marker-end=\"url(#flow-arrow)\"").count() >= 2);
+
+        let directed = "\
+flowchart TD
+  subgraph side
+    direction LR
+    L[左] --> R[右]
+  end
+";
+        let svg = svg_of(directed);
+        assert!(text_x(&svg, "左") < text_x(&svg, "右"), "subgraph LR should place 左 left of 右:\n{svg}");
+    }
+
+    #[test]
+    fn sequence_activation_and_box() {
+        let src = "\
+sequenceDiagram
+  box rgb(200,220,240) 利用者
+    actor U as ユーザー
+    participant API as API
+  end
+  U->>+API: 依頼
+  API-->>-U: 応答
+";
+        let svg = svg_of(src);
+        assert!(svg.contains("data-shape=\"activation\""), "{svg}");
+        assert!(svg.contains("data-shape=\"seq-box\""), "{svg}");
+        assert!(svg.contains("利用者"));
+        assert!(svg.contains("依頼"));
+    }
+
+    #[test]
+    fn xychart_alias_names_and_mixed_series_kinds() {
+        let src = "\
+xychart
+  title Mix
+  x-axis [Jan, Feb]
+  bar \"売上\" [10, 20]
+  line \"目標\" [8, 18]
+  bar \"再\" [1, 2]
+";
+        let Some(MermaidOutput::Chart(spec)) = render_mermaid(src) else {
+            panic!("expected chart");
+        };
+        assert_eq!(spec.kind, NewChartKind::ClusteredColumn);
+        assert_eq!(spec.series.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), vec!["売上", "目標", "再"]);
+        assert_eq!(
+            spec.series_kinds,
+            vec![NewChartKind::ClusteredColumn, NewChartKind::Line, NewChartKind::ClusteredColumn]
+        );
+    }
+
+    #[test]
+    fn gantt_date_format_weekends_and_dependencies() {
+        let formatted = "\
+gantt
+  dateFormat DD.MM.YYYY
+  section S
+  開始 :a, 15.04.2026, 2d
+";
+        let svg = svg_of(formatted);
+        assert!(svg.contains("data-start=\"2026-04-15\""), "{svg}");
+
+        let weekends = "\
+gantt
+  dateFormat YYYY-MM-DD
+  excludes weekends
+  section S
+  作業 :a, 2026-01-02, 5d
+";
+        let svg = svg_of(weekends);
+        assert!(svg.contains("data-start=\"2026-01-02\""), "{svg}");
+        assert!(svg.contains("data-nonworking=\"weekend\""), "{svg}");
+        assert!(svg.contains("width=\"480.0\" height=\"18\""), "weekend shading must not change the 5-day bar:\n{svg}");
+
+        let after = "\
+gantt
+  dateFormat YYYY-MM-DD
+  section S
+  甲 :a, 2026-03-01, 2d
+  乙 :b, 2026-03-01, 5d
+  丙 :c, after a b, 2d
+";
+        let svg = svg_of(after);
+        assert!(svg.contains("data-start=\"2026-03-06\""), "after a b starts at the later end:\n{svg}");
+
+        let unresolved = "\
+gantt
+  dateFormat YYYY-MM-DD
+  section S
+  既知 :done, k, 2026-03-01, 3d
+  不明 :after nope, 2d
+";
+        let svg = svg_of(unresolved);
+        assert!(svg.contains("不明"));
+        assert!(svg.contains("data-start=\"2026-03-04\""), "{svg}");
+        assert!(!svg.contains("2026-01-01"), "a dated chart must not snap an unresolved after to the origin:\n{svg}");
+
+        let only = "\
+gantt
+  section S
+  のみ :after missing, 3d
+";
+        let svg = svg_of(only);
+        assert!(svg.contains("のみ"));
+        assert!(svg.contains("data-start=\"2026-01-01\""), "with no dated task the origin stays 2026-01-01:\n{svg}");
+    }
+
+    #[test]
+    fn state_composite_endpoints_choice_and_bars() {
+        let src = "\
+stateDiagram-v2
+  state One {
+    [*] --> A
+  }
+  state Two {
+    [*] --> B
+  }
+  state pick <<choice>>
+  A --> pick
+  state split <<fork>>
+  pick --> split
+  state joined <<join>>
+  split --> joined
+";
+        let svg = svg_of(src);
+        assert_eq!(svg.matches("r=\"10\" fill=\"#1e293b\"").count(), 2, "each composite keeps its own start:\n{svg}");
+        assert!(svg.contains("data-shape=\"choice\""), "{svg}");
+        assert!(svg.contains("data-shape=\"fork\""), "{svg}");
+        assert!(svg.contains("data-shape=\"join\""), "{svg}");
+    }
+
+    fn text_y(svg: &str, label: &str) -> f32 {
+        let needle = format!(">{label}<");
+        let at = svg.find(&needle).unwrap_or_else(|| panic!("missing {label}"));
+        let head = &svg[..at];
+        let y_at = head.rfind("y=\"").unwrap_or_else(|| panic!("no y for {label}"));
+        let rest = &head[y_at + 3..];
+        let end = rest.find('"').unwrap();
+        rest[..end].parse().unwrap()
+    }
+
+    fn attr_f32(tag: &str, name: &str) -> Option<f32> {
+        let key = format!("{name}=\"");
+        let at = tag.find(&key)?;
+        let rest = &tag[at + key.len()..];
+        let end = rest.find('"')?;
+        rest[..end].parse().ok()
+    }
+
+    fn painted_rects(svg: &str, fill: &str) -> Vec<(f32, f32, f32, f32)> {
+        let mut out = Vec::new();
+        let mut rest = svg;
+        let needle = format!("fill=\"{fill}\"");
+        while let Some(at) = rest.find("<rect ") {
+            let end = rest[at..].find("/>").map(|i| at + i).unwrap_or(rest.len());
+            let tag = &rest[at..end];
+            if tag.contains(&needle)
+                && let (Some(x), Some(y), Some(w), Some(h)) = (attr_f32(tag, "x"), attr_f32(tag, "y"), attr_f32(tag, "width"), attr_f32(tag, "height"))
+            {
+                out.push((x, y, w, h));
+            }
+            rest = &rest[end..];
+        }
+        out
+    }
+
+    fn view_box(svg: &str) -> (f32, f32) {
+        let at = svg.find("viewBox=\"").expect("viewBox");
+        let rest = &svg[at + 9..];
+        let end = rest.find('"').unwrap();
+        let parts: Vec<f32> = rest[..end].split_whitespace().map(|part| part.parse().unwrap()).collect();
+        (parts[2], parts[3])
+    }
+
+    fn rect_holds(rect: (f32, f32, f32, f32), px: f32, py: f32) -> bool {
+        px >= rect.0 && py >= rect.1 && px <= rect.0 + rect.2 && py <= rect.1 + rect.3
+    }
+
+    fn rects_overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+        a.0 < b.0 + b.2 - 0.5 && a.0 + a.2 > b.0 + 0.5 && a.1 < b.1 + b.3 - 0.5 && a.1 + a.3 > b.1 + 0.5
+    }
+
+    fn fill_none_paths(svg: &str) -> Vec<(String, bool)> {
+        let mut out = Vec::new();
+        let mut rest = svg;
+        while let Some(at) = rest.find("<path ") {
+            let end = rest[at..].find("/>").map(|i| at + i).unwrap_or(rest.len());
+            let tag = &rest[at..end];
+            if tag.contains("fill=\"none\"")
+                && let Some(d_at) = tag.find("d=\"")
+            {
+                let d_rest = &tag[d_at + 3..];
+                let d_end = d_rest.find('"').unwrap();
+                out.push((d_rest[..d_end].to_string(), tag.contains("data-route=\"detour\"")));
+            }
+            rest = &rest[end..];
+        }
+        out
+    }
+
+    fn inside_inset(px: f32, py: f32, rect: (f32, f32, f32, f32)) -> bool {
+        px > rect.0 + 1.0 && py > rect.1 + 1.0 && px < rect.0 + rect.2 - 1.0 && py < rect.1 + rect.3 - 1.0
+    }
+
+    #[test]
+    fn layered_layout_sibling_gap_uses_each_node_width() {
+        let sizes = [(200.0f32, 40.0), (80.0, 40.0)];
+        let (centers, total_w, total_h) = compute_layered_layout(2, &[], &sizes, false, false, 32.0, 64.0, 34.0);
+        let (x0, y0) = centers[0];
+        let (x1, y1) = centers[1];
+        assert!(x0 < x1, "insertion order keeps the wider node on the left");
+        assert!((y0 - y1).abs() < 0.01, "same layer shares a center line");
+        let gap = (x1 - 40.0) - (x0 + 100.0);
+        assert!((gap - 34.0).abs() < 0.01, "gap {gap} should be the sibling gap");
+        assert!(x0 - 100.0 >= 0.0 && x1 + 40.0 <= total_w as f32 + 0.01);
+        assert!(y0 - 20.0 >= 0.0 && y0 + 20.0 <= total_h as f32 + 0.01);
+    }
+
+    #[test]
+    fn flowchart_siblings_keep_wrapped_label_gaps() {
+        let long = "日本語の長い見出しを折り返して枠を広げる確認";
+        let src = format!("flowchart TD\n  T[親] --> A[短い]\n  T --> B[{long}]\n");
+        let svg = svg_of(&src);
+        let (vw, vh) = view_box(&svg);
+        let rects = painted_rects(&svg, "#eff6ff");
+        assert!(rects.len() >= 3, "{svg}");
+        for rect in &rects {
+            assert!(rect.0 >= -0.5 && rect.1 >= -0.5 && rect.0 + rect.2 <= vw + 0.5 && rect.1 + rect.3 <= vh + 0.5, "node outside viewBox {rect:?} {vw}x{vh}");
+        }
+        for i in 0..rects.len() {
+            for j in i + 1..rects.len() {
+                assert!(!rects_overlap(rects[i], rects[j]), "nodes overlap: {:?} {:?}", rects[i], rects[j]);
+            }
+        }
+        let short = rects.iter().copied().find(|rect| rect_holds(*rect, text_x(&svg, "短い"), text_y(&svg, "短い"))).expect("short node");
+        let first = label_lines(long, 168.0, 13.0).into_iter().next().unwrap();
+        let wide = rects.iter().copied().find(|rect| rect_holds(*rect, text_x(&svg, &first), text_y(&svg, &first))).expect("wide node");
+        assert!(wide.2 > short.2 + 50.0, "wrapped label should widen its box: {wide:?} vs {short:?}");
+        let gap = if short.0 + short.2 <= wide.0 {
+            wide.0 - (short.0 + short.2)
+        } else {
+            short.0 - (wide.0 + wide.2)
+        };
+        assert!((gap - 34.0).abs() < 0.6, "sibling gap {gap}");
+        assert!(svg.contains(&first));
+    }
+
+    #[test]
+    fn edges_detour_around_intermediate_nodes() {
+        let sizes = [(84.0f32, 40.0), (114.0, 40.0), (84.0, 40.0)];
+        let pairs = [(0usize, 1usize), (0, 2), (1, 2)];
+        let (centers, total_w, total_h) = compute_layered_layout(3, &pairs, &sizes, false, false, 32.0, 64.0, 34.0);
+        let canvas = (total_w as f32, total_h as f32);
+        let skip = route_layered_edge(0, 2, &centers, &sizes, false, true, canvas);
+        let EdgeRouteKind::Path { d, detour: true } = &skip.kind else {
+            panic!("skip edge should detour: {skip:?}");
+        };
+        let mid = node_rect(centers[1].0, centers[1].1, sizes[1].0, sizes[1].1);
+        for (px, py) in sample_path(d) {
+            assert!(!point_in_rect(px, py, &pad_rect(mid, -1.0)), "detour sample {px},{py} enters the middle node");
+            assert!(px >= -0.5 && py >= -0.5 && px <= canvas.0 + 0.5 && py <= canvas.1 + 0.5);
+        }
+        assert!(!point_in_rect(skip.label_at.0, skip.label_at.1, &mid), "label sits inside the obstacle");
+        let adjacent = route_layered_edge(0, 1, &centers, &sizes, false, true, canvas);
+        assert!(matches!(adjacent.kind, EdgeRouteKind::Path { detour: false, .. }), "a clear edge keeps its curve: {adjacent:?}");
+
+        let blocked = route_layered_edge(
+            0,
+            2,
+            &[(40.0, 12.0), (40.0, 50.0), (40.0, 88.0)],
+            &[(24.0, 16.0), (200.0, 200.0), (24.0, 16.0)],
+            false,
+            true,
+            (80.0, 100.0),
+        );
+        let EdgeRouteKind::Path { d: blocked_d, detour: false } = &blocked.kind else {
+            panic!("an unavoidable crossing keeps the curve: {blocked:?}");
+        };
+        assert!(blocked_d.contains('C'), "{blocked_d}");
+
+        let svg = svg_of("\
+flowchart TD
+  Top[上] --> Mid[中間障害物]
+  Top -->|経由| Bottom[下]
+  Mid --> Bottom
+");
+        let (vw, vh) = view_box(&svg);
+        for label in ["上", "中間障害物", "下", "経由"] {
+            assert!(svg.contains(&format!(">{label}<")), "{label} missing:\n{svg}");
+        }
+        let rects = painted_rects(&svg, "#eff6ff");
+        assert_eq!(rects.len(), 3, "{svg}");
+        for rect in &rects {
+            assert!(rect.0 >= -0.5 && rect.1 >= -0.5 && rect.0 + rect.2 <= vw + 0.5 && rect.1 + rect.3 <= vh + 0.5, "{rect:?} outside {vw}x{vh}");
+        }
+        for i in 0..rects.len() {
+            for j in i + 1..rects.len() {
+                assert!(!rects_overlap(rects[i], rects[j]));
+            }
+        }
+        let mid_rect = rects.iter().copied().find(|rect| rect_holds(*rect, text_x(&svg, "中間障害物"), text_y(&svg, "中間障害物"))).expect("middle");
+        let paths = fill_none_paths(&svg);
+        let detours: Vec<_> = paths.iter().filter(|(_, detour)| *detour).collect();
+        assert_eq!(detours.len(), 1, "only the skip edge detours:\n{svg}");
+        let samples = sample_path(&detours[0].0);
+        assert!(samples.iter().all(|(px, py)| !inside_inset(*px, *py, mid_rect)), "path enters 中間障害物:\n{svg}");
+        let (lx, ly) = (text_x(&svg, "経由"), text_y(&svg, "経由"));
+        assert!(!rect_holds(mid_rect, lx, ly), "edge label is inside the middle node");
+        assert!(samples.iter().any(|(px, py)| (px - lx).hypot(py - ly) < 24.0), "label should sit on the detour");
+        assert!(paths.iter().filter(|(_, detour)| !detour).all(|(d, _)| d.contains('C')));
+
+        let plain = svg_of("flowchart TD\n  A[上] --> B[下]\n");
+        let plain_paths = fill_none_paths(&plain);
+        assert_eq!(plain_paths.len(), 1);
+        assert!(!plain_paths[0].1 && plain_paths[0].0.contains('C'));
+
+        let state = svg_of("\
+stateDiagram-v2
+  A --> B
+  A --> C
+  B --> C
+");
+        assert!(state.contains("data-route=\"detour\""), "{state}");
+        for label in ["A", "B", "C"] {
+            assert!(state.contains(&format!(">{label}<")));
+        }
+        let class = svg_of("\
+classDiagram
+  class A
+  class B
+  class C
+  A --> C
+  A --> B
+  B --> C
+");
+        assert!(class.contains("data-route=\"detour\""), "{class}");
+        assert!(class.contains(">A<") && class.contains(">B<") && class.contains(">C<"));
+        let er = svg_of("\
+erDiagram
+  A ||--|| C : skip
+  A ||--|| B : near
+  B ||--|| C : next
+");
+        assert!(er.contains("data-route=\"detour\""), "{er}");
+        assert!(er.contains("skip") && er.contains(">A<") && er.contains(">B<") && er.contains(">C<"));
+    }
+
+    #[test]
+    fn subgraph_frame_pads_title_away_from_children() {
+        let svg = svg_of("\
+flowchart TD
+  subgraph 外側
+    A[子ノード]
+  end
+");
+        let (vw, vh) = view_box(&svg);
+        let frames = painted_rects(&svg, "#f8fafc");
+        let nodes = painted_rects(&svg, "#eff6ff");
+        assert_eq!(frames.len(), 1, "{svg}");
+        assert_eq!(nodes.len(), 1, "{svg}");
+        let frame = frames[0];
+        let node = nodes[0];
+        assert!((node.0 - frame.0 - 16.0).abs() < 0.2, "left pad {frame:?} {node:?}");
+        assert!(((frame.0 + frame.2) - (node.0 + node.2) - 16.0).abs() < 0.2, "right pad");
+        assert!(((frame.1 + frame.3) - (node.1 + node.3) - 16.0).abs() < 0.2, "bottom pad");
+        assert!((node.1 - frame.1 - 38.0).abs() < 0.2, "title band {frame:?} {node:?}");
+        let title_y = text_y(&svg, "外側");
+        assert!((title_y - (frame.1 + 16.0)).abs() < 0.2, "title baseline {title_y}");
+        assert!(node.1 - title_y >= 16.0, "title overlaps the child");
+        assert!(frame.0 >= -0.5 && frame.1 >= -0.5 && frame.0 + frame.2 <= vw + 0.5 && frame.1 + frame.3 <= vh + 0.5, "frame outside viewBox");
+        assert!(node.0 >= -0.5 && node.1 >= -0.5 && node.0 + node.2 <= vw + 0.5 && node.1 + node.3 <= vh + 0.5);
+        assert!(svg.contains(">子ノード<"));
     }
 }

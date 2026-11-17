@@ -532,6 +532,14 @@ pub(crate) fn write_chart_data(package: &mut Package, chart_part: &str, after: &
         return Err(unsupported("系列の数の合わないグラフのデータ"));
     }
     let doc = package.xml_mut(chart_part)?;
+    let xml_groups = doc
+        .root_element()
+        .and_then(|root| doc.path(root, &["chart", "plotArea"]))
+        .map(|plot| doc.elements(plot).filter(|&group| GROUP_ELEMENTS.contains(&doc.local_name(group))).count())
+        .unwrap_or(0);
+    if xml_groups != after.groups.len() {
+        super::chart_topology::sync_series(doc, after, &data.series)?;
+    }
     let all = resize_series(doc, chart_part, &counts, false)?;
     const AFTER_TX: &[&str] = &["spPr", "invertIfNegative", "pictureOptions", "marker", "dPt", "dLbls", "trendline", "errBars", "explosion", "cat", "val", "smooth", "shape", "extLst"];
     const AFTER_CAT: &[&str] = &["val", "smooth", "shape", "bubble3D", "extLst"];

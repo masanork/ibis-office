@@ -37,10 +37,10 @@ use std::sync::Arc;
 use ibis_doc_model::latex::parse_latex;
 use ibis_doc_model::{
     Block, BorderStyle, CellDirection, Chart, ChartGroup, ChartText, ChartTitle, ChartType,
-    Comment, DocProperties, EmphasisMark, Emu, EmuRect, EmuSize, Fill, FlowAlign, FlowBorder,
+    Comment, DataLabels, DocProperties, EmphasisMark, Emu, EmuRect, EmuSize, Fill, FlowAlign, FlowBorder,
     FlowCell, FlowDocument, FlowParagraph, FlowPos, FlowRow, FlowRun, FlowRunKind, FlowRunStyle,
     FlowStyle, FlowStyles, FlowTable, Grouping, LineHeight, LineNumberRestart, LineNumbers, Link,
-    ListRef, Media, MediaFormat, MediaId, Note, Number, PageSetup, ParaFormat, ParagraphSpacingPreset,
+    LabelPosition, ListRef, Media, MediaFormat, MediaId, Note, Number, PageSetup, ParaFormat, ParagraphSpacingPreset,
     PictureLook, Presentation, Revision, RevisionKind, Rgb, RowHeight, RubyAlign, RunFormat,
     Series, ShapeId, ShapeKind, StyleKind, StyleSetPreset, TableLook, TableStyleRef,
     VerticalMerge, VerticalPosition, Watermark,
@@ -2402,7 +2402,87 @@ fn build_chart_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block,
         }
     }
 
-    build_chart_block_from_spec(kind, title, size, categories, series_list, content, ctx)
+    build_chart_block_from_spec(kind, title, size, categories, series_list, &[], false, content, ctx)
+}
+
+/// `pie showData` labels the slices. A mix of `bar` and `line` becomes one
+/// group per series, in source order, so a later `bar` stays a column.
+fn apply_mermaid_series_layout(chart: &mut Chart, series_kinds: &[NewChartKind], show_data: bool) {
+    if show_data {
+        for group in &mut chart.groups {
+            if matches!(group.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }) {
+                for series in &mut group.series {
+                    series.labels = Some(DataLabels {
+                        show_value: true,
+                        show_percent: true,
+                        position: Some(LabelPosition::BestFit),
+                        ..DataLabels::default()
+                    });
+                }
+            }
+        }
+    }
+    let has_line = series_kinds.iter().any(|kind| *kind == NewChartKind::Line);
+    let has_column = series_kinds.iter().any(|kind| *kind != NewChartKind::Line);
+    if !has_line || !has_column {
+        return;
+    }
+    let flat: Vec<Series> = chart.groups.iter().flat_map(|group| group.series.clone()).collect();
+    if flat.len() != series_kinds.len() {
+        return;
+    }
+    let bar_kind = chart
+        .groups
+        .iter()
+        .find_map(|group| match group.kind {
+            ChartType::Bar { horizontal: false, gap_width, overlap } => {
+                Some(ChartType::Bar { horizontal: false, gap_width, overlap })
+            }
+            _ => None,
+        })
+        .unwrap_or(ChartType::Bar { horizontal: false, gap_width: 219, overlap: -27 });
+    let axes = chart.groups.first().map(|group| group.axes.clone()).unwrap_or_default();
+    let grouping = chart.groups.first().map(|group| group.grouping).unwrap_or_default();
+    chart.groups = flat
+        .into_iter()
+        .enumerate()
+        .map(|(index, series)| ChartGroup {
+            kind: if series_kinds.get(index) == Some(&NewChartKind::Line) { ChartType::Line } else { bar_kind },
+            of_pie: None,
+            grouping,
+            series: vec![series],
+            axes: axes.clone(),
+            three_d: None,
+        })
+        .collect();
+}
+
+/// A slide copy of a combo keeps each source group's kind and series count.
+fn copy_chart_group_topology(chart: &mut Chart, src: &Chart) {
+    if src.groups.len() <= 1 {
+        return;
+    }
+    let flat: Vec<Series> = chart.groups.iter().flat_map(|group| group.series.clone()).collect();
+    let src_count: usize = src.groups.iter().map(|group| group.series.len()).sum();
+    if flat.len() != src_count {
+        return;
+    }
+    let axes = chart.groups.first().map(|group| group.axes.clone()).unwrap_or_default();
+    let mut offset = 0;
+    let mut groups = Vec::new();
+    for src_group in &src.groups {
+        let count = src_group.series.len();
+        groups.push(ChartGroup {
+            kind: src_group.kind,
+            of_pie: src_group.of_pie.clone(),
+            grouping: src_group.grouping,
+            series: flat[offset..offset + count].to_vec(),
+            axes: if axes.is_empty() { src_group.axes.clone() } else { axes.clone() },
+            three_d: src_group.three_d,
+        });
+        offset += count;
+    }
+    chart.groups = groups;
 }
 
 fn build_mermaid_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block, Error> {
@@ -2415,6 +2495,8 @@ fn build_mermaid_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Bloc
                     DEFAULT_CHART_SIZE,
                     spec.categories,
                     spec.series,
+                    &spec.series_kinds,
+                    spec.show_data,
                     content,
                     ctx,
                 )
@@ -2496,6 +2578,8 @@ fn build_chart_block_from_spec(
     size: EmuSize,
     categories: Vec<String>,
     series_list: Vec<(String, Vec<Option<Number>>)>,
+    series_kinds: &[NewChartKind],
+    show_data: bool,
     raw_fallback: &str,
     ctx: &mut ParseContext<'_>,
 ) -> Result<Block, Error> {
@@ -2578,6 +2662,7 @@ fn build_chart_block_from_spec(
                     at: None,
                 });
             }
+            apply_mermaid_series_layout(&mut chart, series_kinds, show_data);
             chart.mermaid_source = ibis_doc_model::MermaidFence::new(raw_fallback);
             source.set_chart_data(shape_id, chart.clone(), chart_data);
         } else if let Some(t) = &title {
@@ -4531,6 +4616,7 @@ pub fn open_markdown_presentation_with_base_dir(
                             &chart_data.series,
                         );
                         chart.title = src_chart.title.clone();
+                        copy_chart_group_topology(&mut chart, src_chart);
                         opened.source.set_chart_data(sid, chart.clone(), chart_data);
                     }
                 }
@@ -5251,6 +5337,20 @@ xychart-beta
             )
         });
         assert!(has_native_chart, "pie diagram should produce a native Office chart");
+        let mut saw_pie_labels = false;
+        for block in &flow.body {
+            let Block::Paragraph(paragraph) = block else { continue };
+            for run in &paragraph.runs {
+                let FlowRunKind::Shape(shape) = &run.kind else { continue };
+                let ShapeKind::Chart(chart) = &shape.kind else { continue };
+                if chart.groups.iter().any(|group| matches!(group.kind, ChartType::Pie { .. })) {
+                    saw_pie_labels = chart.groups.iter().flat_map(|group| &group.series).any(|series| {
+                        series.labels.as_ref().is_some_and(|labels| labels.show_value && labels.show_percent)
+                    });
+                }
+            }
+        }
+        assert!(saw_pie_labels, "pie showData should label the slices");
 
         // Verify .docx save + reread works cleanly
         let saved = opened.source.save(pres, Default::default()).expect("save docx");
@@ -5354,6 +5454,92 @@ xychart-beta
         assert!(exported.contains("```mermaid\nxychart-beta"), "saved pptx should keep the line fence:\n{exported}");
         assert!(!exported.contains("```chart\ntype: pie"));
         assert!(!exported.contains("```chart\ntype: line"));
+    }
+
+    #[test]
+    fn mermaid_phase2_flowchart_fence_and_combo_chart_roundtrip() {
+        let md = "\
+```mermaid
+flowchart TD
+  A[\"一行<br>二行\"] --> B[(筒)]
+```
+
+```mermaid
+xychart-beta
+  title Mix
+  x-axis [Jan, Feb]
+  bar \"売上\" [10, 20]
+  line \"目標\" [8, 18]
+```
+";
+        let opened = open_markdown(md.as_bytes().to_vec()).expect("open_markdown");
+        let pres = &opened.presentation;
+        let flow = pres.flow.as_ref().expect("flow");
+        let exported = export_markdown(flow, &pres.media);
+        assert!(exported.contains("```mermaid\nflowchart TD"), "{exported}");
+        assert!(exported.contains("一行<br>二行"), "{exported}");
+        assert!(exported.contains("[(筒)]"), "{exported}");
+        assert!(exported.contains("```mermaid\nxychart-beta"), "{exported}");
+
+        let mut saw_combo = false;
+        for block in &flow.body {
+            let Block::Paragraph(paragraph) = block else { continue };
+            for run in &paragraph.runs {
+                let FlowRunKind::Shape(shape) = &run.kind else { continue };
+                let ShapeKind::Chart(chart) = &shape.kind else { continue };
+                let kinds: Vec<_> = chart.groups.iter().map(|group| group.kind).collect();
+                assert!(
+                    matches!(kinds.as_slice(), [ChartType::Bar { horizontal: false, .. }, ChartType::Line]),
+                    "combo groups: {kinds:?}"
+                );
+                let names: Vec<_> = chart.groups.iter().flat_map(|group| &group.series).map(|series| series.name.as_str()).collect();
+                assert_eq!(names, vec!["売上", "目標"]);
+                saw_combo = true;
+            }
+        }
+        assert!(saw_combo, "expected a bar+line chart");
+
+        let saved = opened.source.save(pres, Default::default()).expect("save combo docx");
+        let reread = crate::read(&saved).expect("reread combo docx");
+        let reread_flow = reread.flow.as_ref().expect("flow");
+        let reread_md = export_markdown(reread_flow, &reread.media);
+        assert!(reread_md.contains("```mermaid\nxychart-beta"), "saved combo should keep the fence:\n{reread_md}");
+        assert!(reread_md.contains("```mermaid\nflowchart TD"), "{reread_md}");
+        let mut reread_combo = false;
+        for block in &reread_flow.body {
+            let Block::Paragraph(paragraph) = block else { continue };
+            for run in &paragraph.runs {
+                let FlowRunKind::Shape(shape) = &run.kind else { continue };
+                let ShapeKind::Chart(chart) = &shape.kind else { continue };
+                assert!(chart.groups.iter().any(|group| matches!(group.kind, ChartType::Bar { .. })));
+                assert!(chart.groups.iter().any(|group| matches!(group.kind, ChartType::Line)));
+                reread_combo = true;
+            }
+        }
+        assert!(reread_combo, "reread docx should keep the combo groups");
+
+        let slides = "\
+# 複合
+
+```mermaid
+xychart-beta
+  title Mix
+  x-axis [Jan, Feb]
+  bar \"売上\" [10, 20]
+  line \"目標\" [8, 18]
+```
+";
+        let opened = open_markdown_presentation(slides.as_bytes().to_vec()).expect("presentation");
+        let saved = opened.source.save(&opened.presentation, Default::default()).expect("save combo pptx");
+        let reread = crate::read(&saved).expect("reread combo pptx");
+        let exported = export_presentation_markdown(&reread);
+        assert!(exported.contains("```mermaid\nxychart-beta"), "{exported}");
+        let slide_combo = reread.slides.iter().flat_map(|slide| &slide.shapes).any(|shape| {
+            let ShapeKind::Chart(chart) = &shape.kind else { return false };
+            chart.groups.iter().any(|group| matches!(group.kind, ChartType::Bar { .. }))
+                && chart.groups.iter().any(|group| matches!(group.kind, ChartType::Line))
+        });
+        assert!(slide_combo, "slide copy should keep bar and line groups");
     }
 
     #[test]
