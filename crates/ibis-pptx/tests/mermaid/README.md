@@ -18,6 +18,15 @@ floors when support improves.
 The feature list doubles as the backlog: the report ranks `gap` features by the
 number of examples that use them.
 
+Frontmatter `config:` is tracked per option: a `config` line matches a dotted
+key below `config` (`gitGraph.showBranches`, `themeVariables.git0`; a trailing
+`$` asks for the whole key), and the `config | *` line catches every option no
+other line names, so a new or unsupported option shows up as a gap instead of
+passing silently. `wontfix` marks options left out on purpose: `look`
+(hand-drawn), `layout` (ELK; the renderer has its own layout), `themeCSS`
+(arbitrary CSS is not applied to documents) and edge animation (documents are
+static).
+
 ```sh
 cargo test -p ibis-pptx --test mermaid_corpus -- --nocapture
 # write the report as Markdown, and every rendered SVG for inspection

@@ -9,11 +9,24 @@
 #           contains a body line contains the pattern
 #           front    a top-level YAML frontmatter key starts with the pattern
 #           header   the diagram header line contains the pattern
+#           config   a frontmatter `config:` leaf, as a dotted path below `config`, starts with the
+#                    pattern (`gitGraph.showBranches`, `themeVariables.git0`); `*` matches a case
+#                    with any config leaf that no other `config` line for its document covers;
+#                    a trailing `$` matches the whole key only (`theme$` is not `themeVariables.*`)
 # A feature may have several lines (any of them matches). A case is "clean" when it renders and
 # uses no `gap` feature. The heuristics are deliberately simple; they rank work, they do not prove it.
 
 * | frontmatter title | ok | front | title:
-* | frontmatter config (theme, look, layout, options) | gap | front | config:
+* | config: theme (default / base / dark / forest / neutral) | ok | config | theme$
+* | config: generic theme variables (primaryColor, lineColor, background ...) | ok | config | themeVariables.primary
+* | config: generic theme variables (primaryColor, lineColor, background ...) | ok | config | themeVariables.lineColor
+* | config: generic theme variables (primaryColor, lineColor, background ...) | ok | config | themeVariables.background
+* | config: logLevel (no visual effect) | ok | config | logLevel$
+* | config: htmlLabels (labels are always plain SVG text) | ok | config | htmlLabels$
+* | config: look (handDrawn) | wontfix | config | look$
+* | config: layout engine (elk) | wontfix | config | layout$
+* | config: themeCSS (arbitrary CSS is not applied) | wontfix | config | themeCSS$
+* | config: other options | gap | config | *
 * | %%{init}%% directive | gap | contains | %%{
 * | HTML entity codes (#quot; #9829;) | gap | contains | #quot;
 * | HTML entity codes (#quot; #9829;) | gap | contains | #9829;
@@ -28,8 +41,19 @@ flowchart | bidirectional / circle / cross edges | ok | contains | <==
 flowchart | bidirectional / circle / cross edges | ok | contains | --o
 flowchart | bidirectional / circle / cross edges | ok | contains | --x
 flowchart | invisible link ~~~ | ok | contains | ~~~
-flowchart | expanded node shapes @{ shape } | gap | contains | @{
-flowchart | edge ids / animation (e1@-->) | gap | contains | @--
+flowchart | expanded node shapes @{ shape } | ok | contains | @{ shape:
+flowchart | expanded node shapes @{ shape } | ok | contains | @{shape:
+flowchart | node icons / images @{ icon / img } | gap | contains | @{ icon:
+flowchart | node icons / images @{ icon / img } | gap | contains | @{ img:
+flowchart | edge ids (e1@-->) | ok | contains | @--
+flowchart | edge ids (e1@-->) | ok | contains | @==
+flowchart | edge ids (e1@-->) | ok | contains | @-.
+flowchart | edge curve e1@{ curve } | ok | contains | @{ curve:
+flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ animate
+flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ animation
+flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ step:
+flowchart | edge animation (animate, animation, step) | wontfix | config | flowchart.stepDuration
+flowchart | collapsed subgraph @{ view } | gap | contains | @{ view:
 flowchart | markdown strings "`...`" | gap | contains | "`
 flowchart | Font Awesome icons (fa:) | gap | contains | fa:
 flowchart | click / callbacks | wontfix | prefix | click
@@ -55,6 +79,7 @@ classDiagram | relation cardinality "1" --> "*" | gap | contains | " *--
 classDiagram | relation cardinality "1" --> "*" | gap | contains | " o--
 classDiagram | lollipop interfaces ()-- | gap | contains | ()--
 classDiagram | lollipop interfaces ()-- | gap | contains | --()
+classDiagram | config: class.hideEmptyMembersBox | ok | config | class.hideEmptyMembersBox
 classDiagram | click / link / callback | wontfix | prefix | click
 classDiagram | click / link / callback | wontfix | prefix | link
 classDiagram | click / link / callback | wontfix | prefix | callback
@@ -86,12 +111,21 @@ gantt | vert markers | gap | contains | vert
 gantt | until | gap | contains | until
 gantt | click | wontfix | prefix | click
 
-gitgraph | cherry-pick | gap | prefix | cherry-pick
-gitgraph | commit type (HIGHLIGHT / REVERSE) | gap | contains | type:
-gitgraph | branch order | gap | contains | order:
-gitgraph | direction (gitGraph LR: / TB: / BT:) | gap | header | LR
-gitgraph | direction (gitGraph LR: / TB: / BT:) | gap | header | TB
-gitgraph | direction (gitGraph LR: / TB: / BT:) | gap | header | BT
+gitgraph | cherry-pick | ok | prefix | cherry-pick
+gitgraph | commit type (HIGHLIGHT / REVERSE) | ok | contains | type:
+gitgraph | branch order | ok | contains | order:
+gitgraph | direction (gitGraph LR: / TB: / BT:) | ok | header | LR
+gitgraph | direction (gitGraph LR: / TB: / BT:) | ok | header | TB
+gitgraph | direction (gitGraph LR: / TB: / BT:) | ok | header | BT
+gitgraph | config: gitGraph options | ok | config | gitGraph.showBranches
+gitgraph | config: gitGraph options | ok | config | gitGraph.showCommitLabel
+gitgraph | config: gitGraph options | ok | config | gitGraph.rotateCommitLabel
+gitgraph | config: gitGraph options | ok | config | gitGraph.mainBranchName
+gitgraph | config: gitGraph options | ok | config | gitGraph.mainBranchOrder
+gitgraph | config: gitGraph options | ok | config | gitGraph.parallelCommits
+gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit / tag labels) | ok | config | themeVariables.git
+gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit / tag labels) | ok | config | themeVariables.commitLabel
+gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit / tag labels) | ok | config | themeVariables.tagLabel
 
 mindmap | node shapes ((circle)) {{hexagon}} | gap | contains | ((
 mindmap | node shapes ((circle)) {{hexagon}} | gap | contains | {{
@@ -101,6 +135,8 @@ mindmap | classes ::: | gap | contains | :::
 mindmap | markdown strings "`...`" | gap | contains | "`
 
 timeline | section | gap | prefix | section
+timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok | config | themeVariables.cScale
+timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok | config | timeline.disableMulticolor
 
 xyChart | y-axis title / range | ok | prefix | y-axis
 xyChart | horizontal orientation | gap | header | horizontal

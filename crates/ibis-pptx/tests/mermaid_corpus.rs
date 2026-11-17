@@ -173,7 +173,10 @@ fn load_features(path: &Path) -> Vec<Feature> {
             other => panic!("bad status {other} in: {line}"),
         };
         assert!(
-            matches!(parts[3], "prefix" | "contains" | "front" | "header"),
+            matches!(
+                parts[3],
+                "prefix" | "contains" | "front" | "header" | "config"
+            ),
             "bad matcher in: {line}"
         );
         let matcher = (parts[3].to_string(), parts[4].to_string());
@@ -195,6 +198,62 @@ fn load_features(path: &Path) -> Vec<Feature> {
                 status,
                 matchers: vec![matcher],
             }),
+        }
+    }
+    out
+}
+
+/// Leaf keys below the frontmatter `config:` block as dotted paths (`gitGraph.showBranches`,
+/// `themeVariables.git0`). Quoted keys are unquoted; block scalars and multi-line quoted strings are
+/// skipped like YAML does.
+fn config_paths(source: &str) -> Vec<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.first().is_none_or(|l| l.trim() != "---") {
+        return Vec::new();
+    }
+    let unquote = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+    let mut out = Vec::new();
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut i = 1;
+    while i < lines.len() && lines[i].trim() != "---" {
+        let line = lines[i];
+        i += 1;
+        let content = line.trim_start();
+        if content.is_empty() || content.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - content.len();
+        let Some((key, value)) = content.split_once(':') else {
+            continue;
+        };
+        let value = value.split(" #").next().unwrap_or("").trim();
+        while stack.last().is_some_and(|(level, _)| *level >= indent) {
+            stack.pop();
+        }
+        if value.is_empty() {
+            stack.push((indent, unquote(key)));
+            continue;
+        }
+        for q in ['"', '\''] {
+            if value.starts_with(q) && (value.len() == 1 || !value.ends_with(q)) {
+                while i < lines.len() && !lines[i].trim_end().ends_with(q) {
+                    i += 1;
+                }
+                i += 1;
+            }
+        }
+        if value.starts_with('|') || value.starts_with('>') {
+            while i < lines.len()
+                && (lines[i].trim().is_empty()
+                    || lines[i].len() - lines[i].trim_start().len() > indent)
+            {
+                i += 1;
+            }
+        }
+        let mut path: Vec<String> = stack.iter().map(|(_, k)| k.clone()).collect();
+        path.push(unquote(key));
+        if path.first().is_some_and(|k| k == "config") && path.len() > 1 {
+            out.push(path[1..].join("."));
         }
     }
     out
@@ -231,15 +290,37 @@ fn split_case(source: &str) -> (Vec<String>, String, Vec<String>) {
     (front, header, body)
 }
 
-fn uses(feature: &Feature, source: &str, front: &[String], header: &str, body: &[String]) -> bool {
+/// `pattern` is a prefix of the dotted `key`; a trailing `$` asks for the whole key
+/// (`theme$` is the theme name, not `themeVariables.*`).
+fn config_key_matches(key: &str, pattern: &str) -> bool {
+    match pattern.strip_suffix('$') {
+        Some(exact) => key == exact,
+        None => key.starts_with(pattern),
+    }
+}
+
+struct CaseText<'a> {
+    source: &'a str,
+    front: &'a [String],
+    header: &'a str,
+    body: &'a [String],
+    /// Every frontmatter `config` leaf.
+    config: &'a [String],
+    /// The leaves no listed `config` prefix covers (what a `config | *` line matches).
+    config_unlisted: &'a [String],
+}
+
+fn uses(feature: &Feature, case: &CaseText) -> bool {
     feature
         .matchers
         .iter()
         .any(|(kind, pattern)| match kind.as_str() {
-            "prefix" => body.iter().any(|l| l.starts_with(pattern.as_str())),
-            "contains" => source.lines().any(|l| l.contains(pattern.as_str())),
-            "front" => front.iter().any(|k| k.starts_with(pattern.as_str())),
-            "header" => header.contains(pattern.as_str()),
+            "prefix" => case.body.iter().any(|l| l.starts_with(pattern.as_str())),
+            "contains" => case.source.lines().any(|l| l.contains(pattern.as_str())),
+            "front" => case.front.iter().any(|k| k.starts_with(pattern.as_str())),
+            "header" => case.header.contains(pattern.as_str()),
+            "config" if pattern == "*" => !case.config_unlisted.is_empty(),
+            "config" => case.config.iter().any(|k| config_key_matches(k, pattern)),
             _ => false,
         })
 }
@@ -292,11 +373,30 @@ fn mermaid_official_corpus() {
                 continue;
             }
             let (front, header, body) = split_case(&case.source);
+            let config = config_paths(&case.source);
+            let applies = |f: &Feature| f.doc == "*" || f.doc == doc;
+            let config_unlisted: Vec<String> = config
+                .iter()
+                .filter(|path| {
+                    !features.iter().filter(|f| applies(f)).any(|f| {
+                        f.matchers.iter().any(|(kind, pattern)| {
+                            kind == "config" && pattern != "*" && config_key_matches(path, pattern)
+                        })
+                    })
+                })
+                .cloned()
+                .collect();
+            let text = CaseText {
+                source: &case.source,
+                front: &front,
+                header: &header,
+                body: &body,
+                config: &config,
+                config_unlisted: &config_unlisted,
+            };
             let mut has_gap = false;
             for (fi, feature) in features.iter().enumerate() {
-                if (feature.doc == "*" || feature.doc == doc)
-                    && uses(feature, &case.source, &front, &header, &body)
-                {
+                if applies(feature) && uses(feature, &text) {
                     feature_use[fi].0 += 1;
                     if rendered {
                         feature_use[fi].1 += 1;
