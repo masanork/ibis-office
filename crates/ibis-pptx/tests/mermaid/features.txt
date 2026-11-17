@@ -288,7 +288,7 @@ wardley | accelerators / deaccelerators | ok | prefix | deaccelerator
 treeView | box-drawing prefixes (├── └── │) | ok | contains | ──
 treeView | :::class highlight | ok | contains | :::
 treeView | ## comments | ok | contains | ##
-treeView | icon(...) (generic file / folder glyph; icon packs are not bundled) | gap | contains | icon(
+treeView | icon(...) (drawn as the "?" mermaid.js shows for an unregistered pack; icon packs are not bundled) | gap | contains | icon(
 treeView | config: showIcons (generic folder / file glyphs) | ok | config | treeView.showIcons
 treeView | config: rowIndent / lineThickness | ok | config | treeView.rowIndent
 treeView | config: rowIndent / lineThickness | ok | config | treeView.lineThickness
@@ -304,3 +304,22 @@ swimlanes | classDef / class / style | ok | prefix | classDef
 swimlanes | classDef / class / style | ok | prefix | class
 swimlanes | classDef / class / style | ok | prefix | style
 swimlanes | accTitle / accDescr | ok | prefix | acc
+
+eventmodeling | timeframes (tf / timeframe) | ok | prefix | tf
+eventmodeling | timeframes (tf / timeframe) | ok | prefix | timeframe
+eventmodeling | reset frames (rf / resetframe) | ok | prefix | rf
+eventmodeling | reset frames (rf / resetframe) | ok | prefix | resetframe
+eventmodeling | inline payloads { … } | ok | contains | {
+eventmodeling | data blocks and [[references]] | ok | prefix | data
+eventmodeling | data blocks and [[references]] | ok | contains | [[
+eventmodeling | explicit sources (->> NN) | ok | contains | ->>
+eventmodeling | streams (Stream.Event lanes) | ok | contains | .
+
+agentflow | flows (flow id["Agent"] … end, nested) | ok | prefix | flow
+agentflow | global block | ok | prefix | global
+agentflow | node shapes (input / task / tool / decision / refdoc / action) | ok | contains | shape:
+agentflow | links (-->, -.-, --x, -- text -->) | ok | contains | --
+agentflow | connectors | ok | prefix | connector
+agentflow | collapsed flows (@{ view: collapsed }) | ok | contains | view:
+agentflow | metadata (protocol, endpoint, connectorRef, params, returns, value, instruction; not drawn) | ok | contains | @{
+agentflow | config: nodeSpacing / rankSpacing (the flowchart layout keeps its spacing) | gap | config | agentflow.
