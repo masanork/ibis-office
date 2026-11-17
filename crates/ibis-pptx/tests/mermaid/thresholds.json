@@ -40,10 +40,14 @@
   "timeline.clean": 14,
   "treemap": 8,
   "treemap.clean": 8,
+  "usecase": 24,
+  "usecase.clean": 24,
   "userJourney": 1,
   "userJourney.clean": 1,
   "venn": 8,
   "venn.clean": 8,
+  "wardley": 19,
+  "wardley.clean": 19,
   "xyChart": 8,
   "xyChart.clean": 8
 }
