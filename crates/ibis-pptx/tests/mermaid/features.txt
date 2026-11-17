@@ -228,3 +228,23 @@ c4 | UpdateRelStyle colours ($textColor, $lineColor) | ok | prefix | UpdateRelSt
 c4 | UpdateRelStyle label offsets ($offsetX / $offsetY are tuned to mermaid's own layout; labels are placed clear of shapes instead) | wontfix | contains | $offset
 c4 | UpdateLayoutConfig ($c4ShapeInRow, $c4BoundaryInRow) | ok | prefix | UpdateLayoutConfig(
 c4 | element tags ($tags, no visual effect without AddElementTag) | ok | contains | $tags=
+
+treemap | nested sections by indentation | ok | prefix | "
+treemap | classes (:::class, classDef) | ok | contains | :::
+treemap | classes (:::class, classDef) | ok | prefix | classDef
+treemap | config: diagramPadding / width / height | ok | config | treemap.diagramPadding
+treemap | config: valueFormat ($, thousands, .Nf, .N%) | ok | config | treemap.valueFormat
+
+venn | title line | ok | prefix | title
+venn | unions of two or three sets | ok | prefix | union
+venn | set and union sizes (:N) | ok | contains | ]:
+venn | text items in a region | ok | prefix | text
+venn | style (fill, stroke, color) | ok | prefix | style
+
+radar | multiple axis / curve lines | ok | prefix | axis
+radar | max / min | ok | prefix | max
+radar | graticule polygon | ok | prefix | graticule
+radar | title line | ok | prefix | title
+radar | config: axisScaleFactor, axisLabelFactor, curveTension, width, height, margins | ok | config | radar.
+radar | config: curve colours (cScale) | ok | config | themeVariables.cScale
+radar | config: radar theme variables (curveOpacity, curveStrokeWidth, axisColor, graticuleColor, graticuleOpacity) | ok | config | themeVariables.radar
