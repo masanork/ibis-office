@@ -3803,6 +3803,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unsupported_diagram_returns_none() {
+        assert!(render_mermaid("C4Context\n  Person(user, \"User\")\n").is_none());
+        assert!(render_mermaid("").is_none());
+        assert!(render_mermaid("requirementDiagram\n  requirement req1 {\n    id: 1\n    text: hello\n  }\n").is_none());
+    }
+
+    #[test]
     fn parses_pie_and_xychart_to_native_chart_specs() {
         let pie = "pie showData\n  title ブラウザシェア\n  \"Chrome\" : 65\n  \"Safari\" : 20\n  \"Other\" : 15\n";
         let Some(MermaidOutput::Chart(spec)) = render_mermaid(pie) else {

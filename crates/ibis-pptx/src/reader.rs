@@ -24,6 +24,19 @@ use crate::xml::{attr, attr_bool, attr_i64, child, children, elements, path};
 
 type Rels = HashMap<String, Relationship>;
 
+/// A chart drawing marked `__mermaid__` keeps its fence on the chart, so Markdown export can write it back.
+fn keep_mermaid_fences(slide: &mut Slide) {
+    for shape in &mut slide.shapes {
+        let Some(alt) = slide.shape_alt_texts.get(&shape.id) else { continue };
+        if alt.title != "__mermaid__" || alt.description.is_empty() {
+            continue;
+        }
+        if let ShapeKind::Chart(chart) = &mut shape.kind {
+            chart.mermaid_source = ibis_doc_model::MermaidFence::new(alt.description.clone());
+        }
+    }
+}
+
 // Foreign extension elements can share effect names; compare URI, not prefix.
 fn namespace_child<'a, 'i>(node: Node<'a, 'i>, namespace:&str, name: &str) -> Option<Node<'a, 'i>> {
     elements(node).find(|n| n.has_tag_name((namespace, name)))
@@ -1345,6 +1358,7 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         slide.placeholders = std::mem::take(&mut self.slide_placeholders);
         slide.shape_names = std::mem::take(&mut self.slide_names);
         slide.shape_alt_texts = std::mem::take(&mut self.slide_alt_texts);
+        keep_mermaid_fences(&mut slide);
         slide.decorative_shapes = std::mem::take(&mut self.slide_decorative);
         slide.apply_ibis_exts(&std::mem::take(&mut self.slide_ibis));
         slide.shape_return_to_zoom = std::mem::take(&mut self.slide_return_to_zoom);
@@ -3802,6 +3816,7 @@ pub(crate) fn read_xlsx_with_records(data: &[u8], records: Option<&[Vec<String>]
         slide.placeholders = std::mem::take(&mut reader.slide_placeholders);
         slide.shape_names = std::mem::take(&mut reader.slide_names);
         slide.shape_alt_texts = std::mem::take(&mut reader.slide_alt_texts);
+        keep_mermaid_fences(&mut slide);
         slide.decorative_shapes = std::mem::take(&mut reader.slide_decorative);
         slide.shape_return_to_zoom = std::mem::take(&mut reader.slide_return_to_zoom);
         slide.shape_zoom_show_bg = std::mem::take(&mut reader.slide_zoom_show_bg);

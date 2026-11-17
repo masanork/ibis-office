@@ -349,7 +349,13 @@ pub(crate) fn write_slide(
     for shape in slide.shapes.iter().filter(|s| !old_ids.contains(&s.id)) {
         let xml = match chart_rels.get(&shape.id) {
             Some(rel) if new_charts.get(&shape.id).is_some_and(|e| e.kind.is_chart_ex()) => super::pptx_new_chart::frame_ex_xml(&x.p, &x.a, &x.r, next_id, &crate::chart_name(next_id - 1), shape.frame, rel),
-            Some(rel) => super::pptx_new_chart::frame_xml(&x.p, &x.a, &x.r, next_id, &crate::chart_name(next_id - 1), shape.frame, rel),
+            Some(rel) => {
+                let alt = match &shape.kind {
+                    ShapeKind::Chart(chart) => chart.mermaid_source.as_str().map(|source| ("__mermaid__", source)),
+                    _ => None,
+                };
+                super::pptx_new_chart::frame_xml_with_alt(&x.p, &x.a, &x.r, next_id, &crate::chart_name(next_id - 1), shape.frame, rel, alt)
+            }
             // A new placeholder (header, footer, slide number…): as one.
             None => match slide.placeholders.get(&shape.id) {
                 Some(ph) if shape.text_body().is_some() => new::placeholder_shape_xml(&x, shape, ph, next_id)?,

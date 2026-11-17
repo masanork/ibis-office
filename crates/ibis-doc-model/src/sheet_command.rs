@@ -9009,6 +9009,7 @@ mod tests {
             word_layout: false,
             cell_refs: Vec::new(),
             ex_source: None,
+            mermaid_source: crate::chart::MermaidFence::default(),
         };
         let chart_shape = Shape {
             id: c_id,

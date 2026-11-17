@@ -1231,8 +1231,30 @@ pub(crate) fn frame_ex_sheet_xml(xdr: &str, a: &str, r: &str, id: u32, name: &st
 
 /// The slide's `p:graphicFrame` showing chart relationship `rel`.
 pub(crate) fn frame_xml(p: &str, a: &str, r: &str, id: u32, name: &str, frame: ibis_doc_model::EmuRect, rel: &str) -> String {
+    frame_xml_with_alt(p, a, r, id, name, frame, rel, None)
+}
+
+/// `frame_xml` with `cNvPr` title and description. Used to keep a Mermaid fence on the drawing.
+pub(crate) fn frame_xml_with_alt(
+    p: &str,
+    a: &str,
+    r: &str,
+    id: u32,
+    name: &str,
+    frame: ibis_doc_model::EmuRect,
+    rel: &str,
+    alt: Option<(&str, &str)>,
+) -> String {
+    let alt_attrs = match alt {
+        Some((title, descr)) => format!(
+            " title=\"{}\" descr=\"{}\"",
+            super::pptx_new::escape_attr(title),
+            super::pptx_new::escape_attr(descr)
+        ),
+        None => String::new(),
+    };
     format!(
-        "<{p}graphicFrame><{p}nvGraphicFramePr><{p}cNvPr id=\"{id}\" name=\"{}\"/><{p}cNvGraphicFramePr/><{p}nvPr/></{p}nvGraphicFramePr>\
+        "<{p}graphicFrame><{p}nvGraphicFramePr><{p}cNvPr id=\"{id}\" name=\"{}\"{alt_attrs}/><{p}cNvGraphicFramePr/><{p}nvPr/></{p}nvGraphicFramePr>\
 <{p}xfrm><{a}off x=\"{}\" y=\"{}\"/><{a}ext cx=\"{}\" cy=\"{}\"/></{p}xfrm>\
 <{a}graphic><{a}graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" {r}id=\"{rel}\"/></{a}graphicData></{a}graphic></{p}graphicFrame>",
         super::pptx_new::escape(name),

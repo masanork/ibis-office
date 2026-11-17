@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use crate::chart::{
     Axis, AxisKind, AxisSourceKind, Chart, ChartGroup, ChartText, ChartTitle, ChartType, Legend,
-    LegendPosition, Number, Series, Side,
+    LegendPosition, MermaidFence, Number, Series, Side,
 };
 use crate::drawing::{Color, Fill, Stroke};
 use crate::Rgb;
@@ -3063,6 +3063,7 @@ pub fn chart_from_pivot(pivot: &PivotTable, built: &PivotBuilt) -> Chart {
         word_layout: false,
         cell_refs: Vec::new(),
         ex_source: None,
+        mermaid_source: MermaidFence::default(),
     };
     update_chart_from_pivot(&mut chart, pivot, built);
     chart

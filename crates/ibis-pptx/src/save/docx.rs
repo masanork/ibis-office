@@ -4698,6 +4698,21 @@ impl Writer<'_> {
         }
     }
 
+    /// Keep a Mermaid fence on the chart drawing (`wp:docPr/@title` `__mermaid__`, `@descr` the source).
+    /// Markdown export writes that fence back only while the series still match it.
+    fn apply_mermaid_doc_pr(&mut self, drawing: NodeId, chart: &ibis_doc_model::Chart) {
+        let Some(doc_pr) = self.doc.descendants(drawing).into_iter().find(|&n| self.doc.is_element(n) && self.doc.local_name(n) == "docPr") else {
+            return;
+        };
+        if let Some(source) = chart.mermaid_source.as_str() {
+            self.doc.set_attr(doc_pr, "title", "__mermaid__");
+            self.doc.set_attr(doc_pr, "descr", source);
+        } else if self.doc.attr(doc_pr, "title") == Some("__mermaid__") {
+            self.doc.remove_attr(doc_pr, "title");
+            self.doc.remove_attr(doc_pr, "descr");
+        }
+    }
+
     /// A new inline chart (`w:drawing`) showing the chart part related as `rid`.
     fn new_chart_drawing(&mut self, rid: &str, cx: i64, cy: i64) -> NodeId {
         let root = self.doc.root_element().unwrap_or(XmlDocument::ROOT);
@@ -6533,15 +6548,17 @@ impl Writer<'_> {
                         let node = self.doc.deep_clone(n);
                         let end = self.doc.children(run).len();
                         self.doc.insert(run, end, node);
-                    } else if let (ShapeKind::Chart(_), Some(n)) = (&shape.kind, self.shape_nodes.get(&shape.id.0).copied()) {
+                    } else if let (ShapeKind::Chart(chart), Some(n)) = (&shape.kind, self.shape_nodes.get(&shape.id.0).copied()) {
                         // A chart of the file, changed: its drawing as it was (the chart part is written apart).
                         let node = self.doc.deep_clone(n);
+                        self.apply_mermaid_doc_pr(node, chart);
                         let end = self.doc.children(run).len();
                         self.doc.insert(run, end, node);
-                    } else if let ShapeKind::Chart(_) = &shape.kind {
+                    } else if let ShapeKind::Chart(chart) = &shape.kind {
                         // A new chart (an old one was copied above): an inline drawing of its part.
                         let rel = NEW_CHART_RELS.with(|r| r.borrow().get(&shape.id.0).cloned()).ok_or_else(|| unsupported("グラフの挿入"))?;
                         let node = self.new_chart_drawing(&rel, shape.frame.width, shape.frame.height);
+                        self.apply_mermaid_doc_pr(node, chart);
                         let end = self.doc.children(run).len();
                         self.doc.insert(run, end, node);
                     } else if matches!(shape.kind, ShapeKind::Auto(_) | ShapeKind::TextBox(_) | ShapeKind::Line(_)) {

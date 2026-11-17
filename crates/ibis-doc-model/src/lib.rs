@@ -70,7 +70,7 @@ pub mod text;
 pub mod typeset;
 
 pub use chart::{ExFormat, ExLabels, View3D, 
-    Axis, AxisCrosses, AxisKind, AxisSourceKind, BoxStats, Chart, ChartDataTable, ChartEx, TreeNode, ChartGroup, ChartText, ChartTitle, ChartType, DataLabels, DispBlanksAs, FractionRect, Grouping,
+    Axis, AxisCrosses, AxisKind, AxisSourceKind, BoxStats, Chart, ChartDataTable, ChartEx, TreeNode, ChartGroup, ChartText, ChartTitle, ChartType, DataLabels, DispBlanksAs, FractionRect, Grouping, MermaidFence,
     LabelPiece, LabelPosition, Legend, LegendPosition, Marker, MarkerSource, MarkerSourceSymbol, MarkerSymbol, Number, OfPieKind, OfPieSettings, OfPieSplit, PointLabel, RadarStyle, Series, SeriesCells, ChartExOptions, ChartExSource, ExCells, ExSourceRef, BinBy, Side, TimeScale, TimeUnit,
     Trendline, TrendlineType,
     ErrorBarDirection, ErrorBarType, ErrorBarValueType, ErrorBars,

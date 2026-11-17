@@ -820,6 +820,7 @@ impl Source {
             word_layout: false,
             cell_refs: Vec::new(),
             ex_source: None,
+            mermaid_source: ibis_doc_model::MermaidFence::default(),
         };
         let mut changed = current.clone();
         changed.slides[index].shapes.push(ibis_doc_model::Shape { id, frame, rotation: 0, flip_h: false, flip_v: false, kind: ibis_doc_model::ShapeKind::Chart(Box::new(empty)), floating: None });
@@ -938,6 +939,7 @@ impl Source {
             word_layout: false,
             cell_refs: Vec::new(),
             ex_source: None,
+            mermaid_source: ibis_doc_model::MermaidFence::default(),
         };
         let mut changed = current.clone();
         changed.slides[index].shapes.push(ibis_doc_model::Shape { id, frame, rotation: 0, flip_h: false, flip_v: false, kind: ibis_doc_model::ShapeKind::Chart(Box::new(empty)), floating: None });

@@ -679,6 +679,32 @@ impl Default for ChartDataTable {
     }
 }
 
+/// The Mermaid fence a chart was imported from.
+///
+/// Chart equality ignores it. The chart part is the series and the axes; this string is only
+/// the Markdown the chart should be written back as while those still match.
+#[derive(Clone, Debug, Default)]
+pub struct MermaidFence(pub Option<String>);
+
+impl PartialEq for MermaidFence {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for MermaidFence {}
+
+impl MermaidFence {
+    pub fn new(source: impl Into<String>) -> Self {
+        let source = source.into();
+        Self((!source.trim().is_empty()).then_some(source))
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
 impl Chart {
     /// A chart with nothing in it: the placeholder a new chart is written with and read back from.
     pub fn empty() -> Self {
@@ -705,6 +731,7 @@ impl Chart {
             word_layout: false,
             cell_refs: Vec::new(),
             ex_source: None,
+            mermaid_source: MermaidFence::default(),
         }
     }
 }
@@ -754,6 +781,8 @@ pub struct Chart {
     /// For a new kind of chart (chartEx) of a worksheet: what it is made again from when its cells change, and the
     /// settings (totals, bins) written back into its part.
     pub ex_source: Option<ExSourceRef>,
+    /// Mermaid text this chart was read from. See [`MermaidFence`].
+    pub mermaid_source: MermaidFence,
 }
 
 /// The cells a chartEx chart reads: each cell's text, number and number format, by row.

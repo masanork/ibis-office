@@ -66,8 +66,9 @@ pub(crate) fn check_document_accessibility(doc: &FlowDocument) -> Vec<Accessibil
                     for r in &p.runs {
                         match &r.kind {
                             FlowRunKind::Picture { look, .. } => {
-                                // DOCX-ACCESS-002, DOCX-ACCESS-003: Check missing alt text
-                                if !look.decorative && look.alt_text.title.trim().is_empty() && look.alt_text.description.trim().is_empty() {
+                                // DOCX-ACCESS-002, DOCX-ACCESS-003: Check missing alt text.
+                                // `__mermaid__` is the export mark, not a name a reader should hear.
+                                if !look.decorative && !picture_has_alt(&look.alt_text.title, &look.alt_text.description) {
                                     let name = if look.name.is_empty() { crate::shell::i18n::text("docx.common.figure").to_string() } else { look.name.clone() };
                                     issues.push(AccessibilityIssue {
                                         at: FlowPos::new(p.id, offset),
@@ -80,7 +81,7 @@ pub(crate) fn check_document_accessibility(doc: &FlowDocument) -> Vec<Accessibil
                             }
                             FlowRunKind::Shape(shape) => {
                                 if let ShapeKind::Picture(pic) = &shape.kind {
-                                    if !pic.decorative && pic.alt_text.title.trim().is_empty() && pic.alt_text.description.trim().is_empty() {
+                                    if !pic.decorative && !picture_has_alt(&pic.alt_text.title, &pic.alt_text.description) {
                                         let name = if pic.name.is_empty() { crate::shell::i18n::text("docx.common.figure").to_string() } else { pic.name.clone() };
                                         issues.push(AccessibilityIssue {
                                             at: FlowPos::new(p.id, offset),
@@ -322,6 +323,40 @@ pub(crate) struct DocxScreenReaderState {
     pub(crate) last_announcement: String,
 }
 
+/// `__mermaid__` marks a diagram whose source is the description. It is not a name.
+fn picture_has_alt(title: &str, description: &str) -> bool {
+    !description.trim().is_empty() || (!title.trim().is_empty() && title != "__mermaid__")
+}
+
+/// What a reader hears for a picture. A Mermaid diagram uses `accTitle` when the fence has one.
+fn picture_spoken_label(title: &str, description: &str) -> Option<String> {
+    if title == "__mermaid__" {
+        if let Some(acc) = mermaid_acc_title(description) {
+            return Some(acc);
+        }
+    }
+    let description = description.trim();
+    if !description.is_empty() {
+        return Some(description.to_string());
+    }
+    let title = title.trim();
+    ( !title.is_empty() && title != "__mermaid__").then(|| title.to_string())
+}
+
+fn mermaid_acc_title(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("accTitle:").or_else(|| line.strip_prefix("accTitle ")) else {
+            continue;
+        };
+        let title = rest.trim().trim_matches('"');
+        if !title.is_empty() {
+            return Some(title.to_string());
+        }
+    }
+    None
+}
+
 fn collect_screen_reader_landmarks(doc: &FlowDocument, filter: Option<ScreenReaderLandmarkKind>) -> Vec<ScreenReaderLandmark> {
     let mut out = Vec::new();
     let matches_filter = |kind: ScreenReaderLandmarkKind| match filter {
@@ -395,10 +430,8 @@ fn collect_screen_reader_landmarks(doc: &FlowDocument, filter: Option<ScreenRead
                                 if matches_filter(ScreenReaderLandmarkKind::Graphic) {
                                     let alt = if look.decorative {
                                         "Decorative image".to_string() // i18n-ok
-                                    } else if !look.alt_text.description.trim().is_empty() {
-                                        look.alt_text.description.trim().to_string()
-                                    } else if !look.alt_text.title.trim().is_empty() {
-                                        look.alt_text.title.trim().to_string()
+                                    } else if let Some(label) = picture_spoken_label(&look.alt_text.title, &look.alt_text.description) {
+                                        label
                                     } else if !look.name.trim().is_empty() {
                                         look.name.trim().to_string()
                                     } else {
@@ -585,10 +618,8 @@ impl SlideEditor {
                         FlowRunKind::Picture { look, .. } => {
                             if look.decorative {
                                 parts.push("Decorative image".to_string()); // i18n-ok
-                            } else if !look.alt_text.description.trim().is_empty() {
-                                parts.push(format!("Image: {}", look.alt_text.description.trim())); // i18n-ok
-                            } else if !look.alt_text.title.trim().is_empty() {
-                                parts.push(format!("Image: {}", look.alt_text.title.trim())); // i18n-ok
+                            } else if let Some(label) = picture_spoken_label(&look.alt_text.title, &look.alt_text.description) {
+                                parts.push(format!("Image: {label}")); // i18n-ok
                             } else {
                                 parts.push("Image".to_string()); // i18n-ok
                             }
@@ -1259,6 +1290,27 @@ impl SlideEditor {
                         this.close_docx_customize_toolbar_panel(cx);
                     })));
         Some(SidebarPanel::with_footer(crate::shell::i18n::text("docx.customize.title"), body.into_any_element(), panel_terminal_actions))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mermaid_acc_title, picture_has_alt, picture_spoken_label};
+
+    #[test]
+    fn mermaid_marker_is_not_a_name_and_acc_title_is_spoken() {
+        assert!(picture_has_alt("__mermaid__", "pie\n  \"A\" : 1"));
+        assert!(!picture_has_alt("__mermaid__", "  "));
+        assert!(!picture_has_alt("", ""));
+        assert!(picture_has_alt("図", ""));
+
+        let source = "pie\naccTitle: \"売上構成\"\n  \"A\" : 1\n";
+        assert_eq!(mermaid_acc_title(source).as_deref(), Some("売上構成"));
+        assert_eq!(picture_spoken_label("__mermaid__", source).as_deref(), Some("売上構成"));
+        assert_eq!(picture_spoken_label("__mermaid__", "pie\n  \"A\" : 1").as_deref(), Some("pie\n  \"A\" : 1"));
+        assert_eq!(mermaid_acc_title("accTitle Sales mix\npie").as_deref(), Some("Sales mix"));
+        assert_eq!(picture_spoken_label("図", "").as_deref(), Some("図"));
+        assert_eq!(picture_spoken_label("__mermaid__", ""), None);
     }
 }
 

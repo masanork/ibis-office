@@ -2211,6 +2211,12 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         // 10 pt text): Word draws them so (DCHT).
         let mut chart = crate::chart::read(doc.root_element(), &colors)?;
         chart.word_layout = true;
+        let doc_pr = child(holder, "docPr");
+        if doc_pr.and_then(|d| attr(d, "title")) == Some("__mermaid__") {
+            if let Some(source) = doc_pr.and_then(|d| attr(d, "descr")).filter(|s| !s.is_empty()) {
+                chart.mermaid_source = ibis_doc_model::MermaidFence::new(source);
+            }
+        }
         let extent = child(holder, "extent");
         let cx = extent.and_then(|e| e.attribute("cx")).and_then(|v| v.parse().ok()).unwrap_or(0i64);
         let cy = extent.and_then(|e| e.attribute("cy")).and_then(|v| v.parse().ok()).unwrap_or(0i64);

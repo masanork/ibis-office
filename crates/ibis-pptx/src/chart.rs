@@ -539,6 +539,7 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
         word_layout: false,
         cell_refs: cell_refs(plot, &groups_len),
         ex_source: None,
+        mermaid_source: ibis_doc_model::MermaidFence::default(),
     })
 }
 

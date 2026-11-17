@@ -2578,6 +2578,7 @@ fn build_chart_block_from_spec(
                     at: None,
                 });
             }
+            chart.mermaid_source = ibis_doc_model::MermaidFence::new(raw_fallback);
             source.set_chart_data(shape_id, chart.clone(), chart_data);
         } else if let Some(t) = &title {
             chart.title = Some(ChartTitle {
@@ -2586,6 +2587,7 @@ fn build_chart_block_from_spec(
                 at: None,
             });
         }
+        chart.mermaid_source = ibis_doc_model::MermaidFence::new(raw_fallback);
         *chart_box = Box::new(chart);
     }
 
@@ -4010,7 +4012,60 @@ fn serialize_table(
     out.push('\n');
 }
 
+/// The Mermaid fence still describes `chart`: same title, categories, values, and chart kind.
+fn mermaid_source_matches(chart: &Chart, source: &str) -> bool {
+    let Some(crate::mermaid::MermaidOutput::Chart(spec)) = crate::mermaid::render_mermaid(source) else {
+        return false;
+    };
+    let live_title = chart.title.as_ref().map(|t| t.text.trim()).filter(|s| !s.is_empty());
+    let spec_title = spec.title.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if live_title != spec_title {
+        return false;
+    }
+    let live: Vec<_> = chart.groups.iter().flat_map(|g| g.series.iter()).collect();
+    if live.len() != spec.series.len() {
+        return false;
+    }
+    let categories = live.first().map(|s| s.categories.as_slice()).unwrap_or(&[]);
+    if categories != spec.categories.as_slice() {
+        return false;
+    }
+    for (series, (_, values)) in live.iter().zip(&spec.series) {
+        if series.values.len() != values.len() {
+            return false;
+        }
+        for (live_v, spec_v) in series.values.iter().zip(values) {
+            match (live_v, spec_v) {
+                (None, None) => {}
+                (Some(Number(a)), Some(Number(b))) if (a - b).abs() < 1e-6 => {}
+                _ => return false,
+            }
+        }
+    }
+    let pie = chart.groups.iter().any(|g| matches!(g.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }));
+    let line_only = chart.groups.len() == 1 && matches!(chart.groups[0].kind, ChartType::Line);
+    match spec.kind {
+        NewChartKind::Pie => pie,
+        NewChartKind::Line => line_only,
+        NewChartKind::ClusteredColumn => !pie && !line_only,
+        _ => false,
+    }
+}
+
+fn write_mermaid_fence(source: &str, out: &mut String) {
+    out.push_str("```mermaid\n");
+    out.push_str(source);
+    if !source.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("```\n\n");
+}
+
 fn serialize_chart(chart: &Chart, out: &mut String) {
+    if let Some(source) = chart.mermaid_source.as_str().filter(|source| mermaid_source_matches(chart, source)) {
+        write_mermaid_fence(source, out);
+        return;
+    }
     out.push_str("```chart\n");
     let kind_name = match chart.groups.first().map(|g| (&g.kind, g.grouping)) {
         Some((ChartType::Bar { horizontal: false, .. }, Grouping::Standard)) => "column",
@@ -4454,14 +4509,10 @@ pub fn open_markdown_presentation_with_base_dir(
         // Add native charts
         for src_chart in charts {
             let sid = fresh_shape_id();
-            let is_pie = src_chart
-                .groups
-                .first()
-                .is_some_and(|g| matches!(g.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }));
-            let kind = if is_pie {
-                NewChartKind::Pie
-            } else {
-                NewChartKind::ClusteredColumn
+            let kind = match src_chart.groups.as_slice() {
+                [group] if matches!(group.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }) => NewChartKind::Pie,
+                [group] if matches!(group.kind, ChartType::Line) => NewChartKind::Line,
+                _ => NewChartKind::ClusteredColumn,
             };
             let mut chart_shape = opened.source.new_chart_kind(
                 &opened.presentation,
@@ -4483,7 +4534,19 @@ pub fn open_markdown_presentation_with_base_dir(
                         opened.source.set_chart_data(sid, chart.clone(), chart_data);
                     }
                 }
+                chart.mermaid_source = src_chart.mermaid_source.clone();
                 *cbox = Box::new(chart);
+            }
+            if let ShapeKind::Chart(chart) = &chart_shape.kind
+                && let Some(source) = chart.mermaid_source.as_str()
+            {
+                opened.presentation.slides[idx].shape_alt_texts.insert(
+                    sid,
+                    ibis_doc_model::AltText {
+                        title: "__mermaid__".to_string(),
+                        description: source.to_string(),
+                    },
+                );
             }
             opened.presentation.slides[idx].shapes.push(chart_shape);
         }
@@ -4586,7 +4649,17 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                     }
                 }
                 ShapeKind::Chart(chart) => {
-                    serialize_chart(chart, &mut out);
+                    let from_alt = slide
+                        .shape_alt_texts
+                        .get(&shape.id)
+                        .filter(|alt| alt.title == "__mermaid__")
+                        .map(|alt| alt.description.as_str());
+                    let source = from_alt.or_else(|| chart.mermaid_source.as_str());
+                    if let Some(source) = source.filter(|source| mermaid_source_matches(chart, source)) {
+                        write_mermaid_fence(source, &mut out);
+                    } else {
+                        serialize_chart(chart, &mut out);
+                    }
                 }
                 _ => {}
             }
@@ -5097,6 +5170,38 @@ series:
     }
 
     #[test]
+    fn unsupported_and_empty_mermaid_fences_stay_code_blocks() {
+        let md = "\
+```mermaid
+requirementDiagram
+  requirement req1
+```
+
+```mermaid
+```
+
+```mermaid
+C4Context
+```
+";
+        let opened = open_markdown(md.as_bytes().to_vec()).expect("open_markdown");
+        let flow = opened.presentation.flow.as_ref().expect("flow");
+        let has_chart = flow.body.iter().any(|block| {
+            matches!(
+                block,
+                Block::Paragraph(p)
+                    if p.runs.iter().any(|r| matches!(&r.kind, FlowRunKind::Shape(s) if matches!(s.kind, ShapeKind::Chart(_))))
+            )
+        });
+        assert!(!has_chart, "an unsupported fence must not become a chart");
+        assert!(opened.presentation.media.iter().all(|m| m.format != MediaFormat::Svg));
+        let exported = export_markdown(flow, &opened.presentation.media);
+        assert!(exported.contains("requirementDiagram"), "exported:\n{exported}");
+        assert!(exported.contains("C4Context"), "exported:\n{exported}");
+        assert!(!exported.contains("```mermaid"), "unsupported fences stay plain code:\n{exported}");
+    }
+
+    #[test]
     fn mermaid_diagrams_roundtrip_svg_and_native_charts() {
         let md = "\
 # Mermaid
@@ -5118,6 +5223,13 @@ pie showData
   title Share
   \"Chrome\" : 65
   \"Other\" : 35
+```
+
+```mermaid
+xychart-beta
+  title Sales
+  x-axis [Jan, Feb]
+  line [10, 20]
 ```
 ";
         let opened = open_markdown(md.as_bytes().to_vec()).expect("open_markdown");
@@ -5149,7 +5261,38 @@ pie showData
         let exported = export_markdown(flow, &pres.media);
         assert!(exported.contains("```mermaid\nsequenceDiagram"));
         assert!(exported.contains("```mermaid\nflowchart LR"));
-        assert!(exported.contains("```chart\ntype: pie"));
+        assert!(exported.contains("```mermaid\npie showData"));
+        assert!(exported.contains("```mermaid\nxychart-beta"));
+        assert!(!exported.contains("```chart\ntype: pie"));
+        assert!(!exported.contains("```chart\ntype: line"));
+
+        let saved_md = opened.source.save(pres, Default::default()).expect("save docx for mermaid chart");
+        let reread_md = crate::read(&saved_md).expect("reread mermaid chart");
+        let reread_flow = reread_md.flow.as_ref().expect("flow");
+        let reread_exported = export_markdown(reread_flow, &reread_md.media);
+        assert!(reread_exported.contains("```mermaid\npie showData"), "saved docx should keep the pie fence:\n{reread_exported}");
+        assert!(reread_exported.contains("```mermaid\nxychart-beta"), "saved docx should keep the line fence:\n{reread_exported}");
+
+        let mut edited = opened.presentation.clone();
+        let flow = std::sync::Arc::make_mut(edited.flow.as_mut().expect("flow"));
+        let mut changed = false;
+        for block in &mut flow.body {
+            let Block::Paragraph(paragraph) = block else { continue };
+            for run in &mut paragraph.runs {
+                let FlowRunKind::Shape(shape) = &mut run.kind else { continue };
+                let ShapeKind::Chart(chart) = &mut shape.kind else { continue };
+                if let Some(value) = chart.groups.first_mut().and_then(|g| g.series.first_mut()).and_then(|s| s.values.first_mut()) {
+                    *value = Some(Number(1.0));
+                    changed = true;
+                }
+            }
+        }
+        assert!(changed, "pie chart value should be editable");
+        let edited_md = export_markdown(edited.flow.as_ref().unwrap(), &edited.media);
+        assert!(edited_md.contains("```chart\ntype: pie"), "edited pie should leave Mermaid:\n{edited_md}");
+        assert!(edited_md.contains("```chart\ntype: line"), "edited line should leave Mermaid:\n{edited_md}");
+        assert!(!edited_md.contains("```mermaid\npie"));
+        assert!(!edited_md.contains("```mermaid\nxychart-beta"));
     }
 
     #[test]
@@ -5185,6 +5328,13 @@ pie
   title 構成比
   \"Rust\" : 100
 ```
+
+```mermaid
+xychart-beta
+  title 売上
+  x-axis [1月, 2月]
+  line [3, 5]
+```
 ";
         let opened = open_markdown_presentation(md.as_bytes().to_vec()).expect("open_markdown_presentation");
         let pres = &opened.presentation;
@@ -5200,7 +5350,10 @@ pie
         assert!(exported.contains("---"));
         assert!(exported.contains("```mermaid\nflowchart LR"));
         assert!(exported.contains("| DOCX | 対応済み |"));
-        assert!(exported.contains("```chart\ntype: pie"));
+        assert!(exported.contains("```mermaid\npie"), "saved pptx should keep the pie fence:\n{exported}");
+        assert!(exported.contains("```mermaid\nxychart-beta"), "saved pptx should keep the line fence:\n{exported}");
+        assert!(!exported.contains("```chart\ntype: pie"));
+        assert!(!exported.contains("```chart\ntype: line"));
     }
 
     #[test]
