@@ -172,3 +172,31 @@ quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | q
 quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | quadrantChart.chartHeight
 quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | quadrantChart.pointRadius
 quadrantChart | config: quadrant theme variables (quadrantNFill / TextFill, point / axis / title fills) | ok | config | themeVariables.quadrant
+
+requirementDiagram | requirement / element blocks and relationships | ok | contains | - satisfies ->
+requirementDiagram | reverse relationships (<- kind -) | ok | contains | <-
+requirementDiagram | classDef / class / ::: styling | ok | prefix | classDef
+requirementDiagram | classDef / class / ::: styling | ok | prefix | class
+requirementDiagram | classDef / class / ::: styling | ok | contains | :::
+requirementDiagram | style statement | ok | prefix | style
+requirementDiagram | direction | ok | prefix | direction
+requirementDiagram | markdown names and text ("**bold**", "*italic*") | ok | contains | "*
+requirementDiagram | markdown names and text ("**bold**", "*italic*") | ok | contains | "_
+
+kanban | card metadata @{ ticket, assigned, priority } | ok | contains | @{
+kanban | config: ticketBaseUrl (tickets are not links) | wontfix | config | kanban.ticketBaseUrl
+kanban | config: section width | ok | config | kanban.sectionWidth
+
+packet | relative field widths (+N) | ok | prefix | +
+packet | title line | ok | prefix | title
+packet | config: packet options (showBits, bitOrder, bitsPerRow, bitWidth, rowHeight, padding) | ok | config | packet.
+packet | config: packet theme variables (startByteColor, blockFillColor ...) | ok | config | themeVariables.packet
+
+sankey | quoted CSV fields | ok | contains | ""
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.showValues
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.labelStyle
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.nodeWidth
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.nodePadding
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.linkColor
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.nodeAlignment
+sankey | config: node colours (nodeColors) | ok | config | sankey.nodeColors
