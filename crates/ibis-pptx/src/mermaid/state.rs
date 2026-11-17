@@ -716,7 +716,7 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
         let (nw, _) = node_sizes[note.target];
         let (from, to) = if note.left { (cx - nw / 2.0, x + w) } else { (cx + nw / 2.0, *x) };
         svg.push_str(&format!(
-            r##"<line x1="{from:.1}" y1="{cy:.1}" x2="{to:.1}" y2="{cy:.1}" stroke="#ca8a04" stroke-width="1" stroke-dasharray="3,3"/>"##
+            r##"<line x1="{from:.1}" y1="{cy:.1}" x2="{to:.1}" y2="{cy:.1}" stroke="#ca8a04" stroke-width="1" stroke-dasharray="3,3" data-role="edge"/>"##
         ));
         svg.push_str(&format!(
             r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" fill="#fef9c3" stroke="#ca8a04" stroke-width="1" data-role="note"/>"##
@@ -939,5 +939,14 @@ stateDiagram-v2
         let frame = rect_of(tag_with(&svg, r#"data-role="composite""#)[0]);
         let x = attr_f32(desc[0], "x").unwrap();
         assert!(x > text_x(&svg, "NamedComposite") && x + estimate_text_width("Another Composite", 11.0) <= frame.0 + frame.2, "{frame:?} {x}");
+    }
+
+    #[test]
+    fn acc_title_and_description_become_svg_title_and_desc() {
+        let svg = svg_of(
+            "stateDiagram\n   accTitle: This is the accessible title\n   accDescr: This is an accessible description\n   [*]--> Still\n   Still --> [*]\n",
+        );
+        assert!(svg.contains("<title>This is the accessible title</title>"), "{svg}");
+        assert!(svg.contains("<desc>This is an accessible description</desc>"), "{svg}");
     }
 }

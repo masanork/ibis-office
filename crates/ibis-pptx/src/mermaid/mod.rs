@@ -323,11 +323,41 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         (bytes, width_px, height_px) = add_svg_title(bytes, width_px, height_px, &title);
     }
     let bytes = apply_mermaid_theme(bytes, &config);
+    let bytes = inject_acc_meta(bytes, trimmed);
     Some(MermaidOutput::Svg {
         bytes,
         width_px,
         height_px,
     })
+}
+
+/// Put mermaid `accTitle` / `accDescr` on the root SVG for accessibility (and mermaid.js parity).
+fn inject_acc_meta(bytes: Vec<u8>, source: &str) -> Vec<u8> {
+    let (title, descr) = parse_acc_meta(source);
+    if title.is_none() && descr.is_none() {
+        return bytes;
+    }
+    let Ok(svg) = std::str::from_utf8(&bytes) else {
+        return bytes;
+    };
+    let Some(open_end) = svg.find('>') else {
+        return bytes;
+    };
+    if !svg.starts_with("<svg ") || open_end == 0 {
+        return bytes;
+    }
+    let mut insert = String::new();
+    if let Some(t) = &title {
+        insert.push_str(&format!("<title>{}</title>", escape_xml(t)));
+    }
+    if let Some(d) = &descr {
+        insert.push_str(&format!("<desc>{}</desc>", escape_xml(d)));
+    }
+    let mut out = String::with_capacity(svg.len() + insert.len());
+    out.push_str(&svg[..=open_end]);
+    out.push_str(&insert);
+    out.push_str(&svg[open_end + 1..]);
+    out.into_bytes()
 }
 
 /// Put a title band above one of this module's SVGs: the drawing moves down

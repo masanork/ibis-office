@@ -9,6 +9,7 @@ pub(super) struct ErAttr {
     pub(super) ty: String,
     pub(super) name: String,
     pub(super) key: String,
+    pub(super) comment: String,
 }
 
 pub(super) struct ErEntity {
@@ -125,7 +126,12 @@ pub(super) fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)>
                     .copied()
                     .collect::<Vec<_>>()
                     .join(" ");
-                entities[eidx].attrs.push(ErAttr { ty, name, key });
+                let comment = if let Some(at) = l.find('"') {
+                    unquote(&l[at..])
+                } else {
+                    String::new()
+                };
+                entities[eidx].attrs.push(ErAttr { ty, name, key, comment });
             }
             continue;
         }
@@ -245,15 +251,18 @@ pub(super) fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)>
                 let row = if a.key.is_empty() {
                     format!("{}  {}", a.ty, a.name)
                 } else {
-                    format!("{}  {}  [{}]", a.ty, a.name, a.key)
+                    format!("{}  {}  {}", a.ty, a.name, a.key)
                 };
                 max_w = max_w.max(estimate_text_width(&row, 11.5) + 28.0);
+                if !a.comment.is_empty() {
+                    max_w = max_w.max(estimate_text_width(&a.comment, 10.0) + 28.0);
+                }
             }
             let h = 30.0
                 + if e.attrs.is_empty() {
                     8.0
                 } else {
-                    e.attrs.len() as f32 * 20.0 + 10.0
+                    e.attrs.iter().map(|a| if a.comment.is_empty() { 20.0 } else { 32.0 }).sum::<f32>() + 10.0
                 };
             (max_w.max(120.0), h)
         })
@@ -372,12 +381,13 @@ pub(super) fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)>
             // Entity names may use Markdown emphasis (`"This **is** _Markdown_"`).
             label_markup(ent.label.as_deref().unwrap_or(&ent.name), true)
         ));
-        for (i, a) in ent.attrs.iter().enumerate() {
-            let ay = y + 46.0 + i as f32 * 20.0;
+        let mut ay = y + 46.0;
+        for a in &ent.attrs {
             let row = if a.key.is_empty() {
                 format!("{}  {}", a.ty, a.name)
             } else {
-                format!("{}  {}  [{}]", a.ty, a.name, a.key)
+                // mermaid.js shows `PK` / `UK` as their own short labels, not `[PK]`.
+                format!("{}  {}  {}", a.ty, a.name, a.key)
             };
             svg.push_str(&format!(
                 r##"<text x="{:.1}" y="{ay:.1}" font-size="11.5" fill="{}">{}</text>"##,
@@ -385,6 +395,18 @@ pub(super) fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)>
                 ink.clone().unwrap_or_else(|| "#1e293b".to_string()),
                 escape_xml(&row)
             ));
+            if !a.comment.is_empty() {
+                svg.push_str(&format!(
+                    r##"<text x="{:.1}" y="{:.1}" font-size="10" font-style="italic" fill="{}">{}</text>"##,
+                    x + 10.0,
+                    ay + 12.0,
+                    ink.clone().unwrap_or_else(|| "#64748b".to_string()),
+                    escape_xml(&a.comment)
+                ));
+                ay += 32.0;
+            } else {
+                ay += 20.0;
+            }
         }
     }
 
@@ -574,5 +596,22 @@ erDiagram
         let svg = svg_of("erDiagram\n    \"This **is** _Markdown_\"\n    LINE_ITEM_ID ||--o{ ORDER : has\n");
         assert!(svg.contains(r#">This <tspan font-weight="bold">is</tspan> <tspan font-style="italic">Markdown</tspan></text>"#), "{svg}");
         assert!(svg.contains(">LINE_ITEM_ID</text>"), "underscores inside a word stay: {svg}");
+    }
+
+    #[test]
+    fn er_attribute_keys_and_comments() {
+        let svg = svg_of(
+            "erDiagram
+    PERSON {
+        string driversLicense PK \"The license #\"
+        string(99) firstName \"Only 99 characters are allowed\"
+        string phone UK
+        string lastName
+    }
+",
+        );
+        assert!(svg.contains(">string  driversLicense  PK<"), "{svg}");
+        assert!(svg.contains(">string  phone  UK<"), "{svg}");
+        assert!(svg.contains("The license #") && svg.contains("Only 99 characters are allowed"), "{svg}");
     }
 }

@@ -101,12 +101,11 @@ pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(
 
     let origin = days_from_civil(2026, 1, 1) * DAY;
     let times = tasks.iter().flat_map(|t| [t.start, t.end]).chain(chart.verts.iter().map(|v| v.at));
-    let min_t = times.clone().min().unwrap_or(origin);
+    let mut min_t = times.clone().min().unwrap_or(origin);
     let mut max_t = times.max().unwrap_or(origin + 7 * DAY);
     if max_t <= min_t {
         max_t = min_t + if tasks.iter().all(|t| (t.end - t.start) % DAY == 0) { DAY } else { 60 };
     }
-    let span = (max_t - min_t) as f32;
 
     let label_col_w = tasks
         .iter()
@@ -114,9 +113,47 @@ pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(
         .fold(120.0f32, f32::max)
         .min(240.0)
         + 24.0;
-    let right_pad = look.right_padding;
-    // `useWidth` fixes the whole width; the time axis takes what the labels leave.
-    let chart_w = look.use_width.map_or(480.0f32, |w| (w - label_col_w - right_pad).max(120.0));
+    let mut ticks = gantt_ticks(min_t, max_t, chart.tick_interval, chart.week_start);
+    let format = chart.axis_format.as_deref().unwrap_or("%Y-%m-%d");
+    let mut labels: Vec<String> = ticks.iter().map(|&t| gantt_strftime(t, format)).collect();
+    // A date-only axis should not keep two ticks that format to the same day (12h auto steps
+    // on a 5-day chart). Time formats (`%H`, `%s`, …) keep the finer ticks.
+    let date_only = !["%H", "%I", "%M", "%S", "%s", "%X"].iter().any(|t| format.contains(t));
+    if date_only {
+        let mut uniq_t = Vec::new();
+        let mut uniq_l = Vec::new();
+        let mut last = None::<String>;
+        for (t, l) in ticks.into_iter().zip(labels) {
+            if last.as_deref() != Some(l.as_str()) {
+                last = Some(l.clone());
+                uniq_t.push(t);
+                uniq_l.push(l);
+            }
+        }
+        ticks = uniq_t;
+        labels = uniq_l;
+    }
+    if let Some(&first) = ticks.first() {
+        min_t = min_t.min(first);
+    }
+    if let Some(&last) = ticks.last() {
+        max_t = max_t.max(last);
+    }
+    let span = (max_t - min_t) as f32;
+    let widest = labels.iter().map(|l| estimate_text_width(l, 10.5)).fold(0.0f32, f32::max) + 8.0;
+    // Keep the last tick label inside the viewBox, unless the author fixed the width.
+    let right_pad = if look.use_width.is_some() {
+        look.right_padding
+    } else {
+        look.right_padding.max(widest / 2.0 + 4.0)
+    };
+    // `useWidth` fixes the whole width; otherwise grow the axis so date labels do not overlap.
+    let chart_w = if let Some(w) = look.use_width {
+        (w - label_col_w - right_pad).max(120.0)
+    } else {
+        let needed = if ticks.len() > 1 { widest * ticks.len() as f32 } else { 480.0 };
+        needed.max(480.0).min(1100.0)
+    };
     let vert_band = if chart.verts.is_empty() { 0.0 } else { 18.0 };
     let top_axis_band = if look.top_axis { 20.0 } else { 0.0 };
     let top_pad = if chart.title.is_some() { 52.0f32 } else { 28.0f32 } + vert_band + top_axis_band;
@@ -139,16 +176,16 @@ pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(
         ));
     }
 
-    // Grid lines and tick labels: `tickInterval`, or a readable step of about ten ticks (closer to mermaid.js).
+    // Grid lines and tick labels: `tickInterval`, or a readable step of about twenty ticks (closer to mermaid.js).
     let bottom_y = top_pad + tasks.len() as f32 * row_h;
-    let ticks = gantt_ticks(min_t, max_t, chart.tick_interval, chart.week_start);
-    let format = chart.axis_format.as_deref().unwrap_or("%Y-%m-%d");
-    let labels: Vec<String> = ticks.iter().map(|&t| gantt_strftime(t, format)).collect();
-    // Thin the labels (not the grid) so neighbours never overlap.
-    let widest = labels.iter().map(|l| estimate_text_width(l, 10.5)).fold(0.0f32, f32::max) + 8.0;
     let gap = if ticks.len() > 1 { chart_w * ((ticks[1] - ticks[0]) as f32 / span) } else { chart_w };
-    // Only skip labels when they would clearly overlap; mermaid.js keeps weekly %Y-%m-%d ticks.
-    let every = ((widest / (gap * 1.2).max(1.0)).ceil() as usize).max(1);
+    // Only skip labels when they would clearly overlap; mermaid.js keeps weekly %Y-%m-%d ticks
+    // and daily labels on short charts, so do not thin a modest set once the axis is wide enough.
+    let every = if ticks.len() <= 20 && gap >= widest * 0.85 {
+        1
+    } else {
+        ((widest / (gap * 1.2).max(1.0)).ceil() as usize).max(1)
+    };
     for (i, (&t, label)) in ticks.iter().zip(&labels).enumerate() {
         let gx = x_of(t);
         svg.push_str(&format!(
@@ -200,7 +237,7 @@ pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(
         ));
     }
 
-    // `excludes` shades the axis. It does not change a bar's calendar length.
+    // `excludes` shades the axis. Day (and longer) durations skip those days, like mermaid.js.
     let (first_day, last_day) = (min_t.div_euclid(DAY), (max_t - 1).div_euclid(DAY));
     if last_day - first_day < 3660 {
         for day in first_day..=last_day {
@@ -493,7 +530,7 @@ pub(super) fn parse_gantt_chart(source: &str) -> Option<GanttChart> {
             };
             let end = match &task.end {
                 GanttEnd::Date(t) => (*t).max(start),
-                GanttEnd::Duration(d) => start + d,
+                GanttEnd::Duration(d) => gantt_add_duration(start, *d, &chart.excluded_weekdays, &chart.excluded_days),
                 GanttEnd::Until(ids) => ids
                     .iter()
                     .filter_map(|id| id_start.get(id.as_str()).copied())
@@ -528,6 +565,31 @@ pub(super) fn parse_gantt_chart(source: &str) -> Option<GanttChart> {
 }
 
 /// `1day`, `2week`, `30minute` ... (`millisecond` is read as one second).
+/// Add a duration, skipping excluded calendar days when the duration is a whole number of days
+/// (mermaid.js `excludes` stretches day/week/month bars over weekends).
+pub(super) fn gantt_add_duration(start: i64, duration: i64, excluded_weekdays: &[i64], excluded_days: &[i64]) -> i64 {
+    if duration <= 0 {
+        return start;
+    }
+    if duration % DAY != 0 || (excluded_weekdays.is_empty() && excluded_days.is_empty()) {
+        return start + duration;
+    }
+    let is_excluded = |t: i64| {
+        let day = t.div_euclid(DAY);
+        let weekday = (day + 4).rem_euclid(7);
+        excluded_days.contains(&day) || excluded_weekdays.contains(&weekday)
+    };
+    let mut t = start;
+    let mut remaining = duration / DAY;
+    while remaining > 0 {
+        t += DAY;
+        if !is_excluded(t - DAY) {
+            remaining -= 1;
+        }
+    }
+    t
+}
+
 pub(super) fn parse_tick_interval(s: &str) -> Option<(i64, TickUnit)> {
     let digits = s.find(|c: char| !c.is_ascii_digit())?;
     let n: i64 = s[..digits].parse().ok().filter(|n| *n > 0)?;
@@ -572,7 +634,7 @@ pub(super) fn gantt_ticks(min: i64, max: i64, interval: Option<(i64, TickUnit)>,
             (50, TickUnit::Year),
             (100, TickUnit::Year),
         ];
-        *STEPS.iter().find(|&&(n, unit)| span / gantt_unit_secs(n, unit) <= 10).unwrap_or(&(1000, TickUnit::Year))
+        *STEPS.iter().find(|&&(n, unit)| span / gantt_unit_secs(n, unit) <= 20).unwrap_or(&(1000, TickUnit::Year))
     });
     let mut ticks = Vec::new();
     let mut t = gantt_align(min, n, unit, week_start);
@@ -580,7 +642,20 @@ pub(super) fn gantt_ticks(min: i64, max: i64, interval: Option<(i64, TickUnit)>,
         if t >= min {
             ticks.push(t);
         }
-        t = gantt_step(t, n, unit);
+        let next = gantt_step(t, n, unit);
+        if next <= t {
+            break;
+        }
+        t = next;
+    }
+    // mermaid.js / d3 nice the domain for time-of-day axes (e.g. 17:58 → 18:00).
+    // Calendar week/month intervals should not grow an extra period past the last task.
+    if matches!(unit, TickUnit::Second | TickUnit::Minute | TickUnit::Hour)
+        && ticks.last().copied().unwrap_or(min) < max
+        && t > max
+        && ticks.len() <= 400
+    {
+        ticks.push(t);
     }
     ticks
 }
@@ -601,9 +676,20 @@ pub(super) fn gantt_unit_secs(n: i64, unit: TickUnit) -> i64 {
 /// The last unit boundary at or before `t` (weeks start on `week_start`, years on a multiple of `n`).
 pub(super) fn gantt_align(t: i64, n: i64, unit: TickUnit, week_start: i64) -> i64 {
     match unit {
-        TickUnit::Second | TickUnit::Minute | TickUnit::Hour | TickUnit::Day => {
+        TickUnit::Second | TickUnit::Minute | TickUnit::Hour => {
             let size = gantt_unit_secs(n, unit);
             t.div_euclid(size) * size
+        }
+        TickUnit::Day => {
+            if n <= 1 {
+                t.div_euclid(DAY) * DAY
+            } else {
+                // Align multi-day steps to the first of the month (closer to d3 calendar intervals).
+                let (y, m, _) = civil_from_days(t.div_euclid(DAY));
+                let first = days_from_civil(y, m, 1);
+                let off = (t.div_euclid(DAY) - first).div_euclid(n) * n;
+                (first + off) * DAY
+            }
         }
         TickUnit::Week => {
             let day = t.div_euclid(DAY);
@@ -920,7 +1006,9 @@ gantt
         let svg = svg_of(weekends);
         assert!(svg.contains("data-start=\"2026-01-02\""), "{svg}");
         assert!(svg.contains("data-nonworking=\"weekend\""), "{svg}");
-        assert!(svg.contains("width=\"480.0\" height=\"18\""), "weekend shading must not change the 5-day bar:\n{svg}");
+        // mermaid.js skips excluded days in day durations: Fri 2026-01-02 + 5 work days ends 2026-01-09.
+        let chart = parse_gantt_chart(weekends).unwrap();
+        assert_eq!(gantt_iso(chart.tasks[0].end), "2026-01-09");
 
         let after = "\
 gantt
@@ -1001,7 +1089,7 @@ gantt
         // Without an interval: a handful of aligned ticks at any scale.
         for span in [90, 3600 * 5, DAY * 20, DAY * 400, DAY * 365 * 30] {
             let ticks = gantt_ticks(start, start + span, None, 0);
-            assert!((2..=12).contains(&ticks.len()), "{span}: {ticks:?}");
+            assert!((2..=24).contains(&ticks.len()), "{span}: {ticks:?}");
         }
 
         let svg = svg_of("gantt\n  dateFormat YYYY-MM-DD\n  axisFormat %d/%m\n  tickInterval 1day\n  A :a, 2026-03-01, 3d\n");
@@ -1044,6 +1132,22 @@ gantt
         let days = svg_of("gantt\n  dateFormat YYYY-MM-DD\n  excludes 2026-01-07, sunday\n  A :a, 2026-01-05, 7d\n");
         assert_eq!(tag_with(&days, r#"data-nonworking="date""#).len(), 1, "{days}");
         assert_eq!(tag_with(&days, r#"data-nonworking="weekend""#).len(), 1, "{days}");
+
+        // Day durations skip excluded days, so a 30d+20d chart with Fri–Sat weekends reaches March.
+        let long = svg_of("gantt\n    title A Gantt Diagram Excluding Fri - Sat weekends\n    dateFormat YYYY-MM-DD\n    excludes weekends\n    weekend friday\n    section Section\n        A task          :a1, 2024-01-01, 30d\n        Another task    :after a1, 20d\n");
+        for day in ["2024-02-25", "2024-03-03", "2024-03-10"] {
+            assert!(long.contains(&format!(">{day}<")), "{day}: {long}");
+        }
+
+        // Time-of-day axis is nicened to the next 5-minute tick (17:58 → 18:00).
+        let time = svg_of("gantt\n    dateFormat HH:mm\n    axisFormat %H:%M\n    Initial vert : vert, v1, 17:30, 2m\n    Task A : 3m\n    Task B : 8m\n    Final vert : vert, v2, 17:58, 4m\n");
+        assert!(time.contains(">18:00<") && time.contains(">17:35<"), "{time}");
+
+        // Unix-second charts (`dateFormat X`) use 5-second ticks up to the end.
+        let unix = svg_of("gantt\n    title Git Issues\n    dateFormat X\n    axisFormat %s\n    section S\n    71   : 0, 71\n");
+        for tick in ["10", "25", "40", "55", "70"] {
+            assert!(unix.contains(&format!(">{tick}<")), "{tick}: {unix}");
+        }
     }
 
     #[test]
