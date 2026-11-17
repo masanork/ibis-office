@@ -1,43 +1,24 @@
 # Origin and contribution
 
-The subsetting engine was imported from `masanork/gjs`, commit
-`9173a4d90addf8b6c7e3563473c9195e3acbdb5e`,
-`crates/font-subsetter/src/lib.rs` on 2026-11-11.
+Masanori Kusunoki (@masanork) wrote this subsetter for ibisOffice. It is that
+author's own work in this repository. gjs is a separate program by the same
+author. This crate does not include gjs, and building or running it does not
+need a gjs checkout, binary, or service.
 
-Masanori Kusunoki (@masanork) authorized this donation and its distribution
-under the ibisOffice project license (AGPL-3.0-only). The original project
-notice below is retained for provenance. This does not relicense Allsorts,
-Brotli, wasm-bindgen or any input/output font. Their own licenses and notices
-remain applicable. No claim of an upstream CLA acceptance or copyright
-assignment is made by this import.
+The code is AGPL-3.0-only, the license of ibisOffice. The author keeps the
+copyright. It can be submitted as a Contribution under the ibisOffice
+Contributor License Agreement ([CLA.md](../../docs/CLA.md),
+[CLA-ja.md](../../docs/CLA-ja.md)). On an issue or pull request to
+<https://github.com/ibisjp/ibis-office> the author accepts that agreement by
+replying:
 
-The GJS font-merging CLI/module was not imported. The subsetting APIs retain
-IVS handling and font attribution/license records. Generated subsets use the
-independent `IBS Subset` family. No GJS checkout or hosted service is needed.
+    I agree to the ibisOffice CLA.
 
-## Original GJS notice
+Acceptance lets ibis distribute the Contribution under AGPL-3.0-only or the
+project's commercial license. This crate is not a third-party import and is
+not offered under another project's MIT license.
 
-```text
-MIT License
+Allsorts, Brotli, wasm-bindgen, and any input or output font keep their own
+licenses and notices. Subset families are named `IBS Subset`.
 
-Copyright (c) 2026 Digital Agency, Government of Japan / Masanori Kusunoki
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
+このサブセットエンジンは、著作者である Masanori Kusunoki が ibisOffice 向けに書いた自身のコードです。gjs からの取り込みではなく、gjs の MIT 表示の対象でもありません。著作権は著作者に残り、ibisOffice の CLA に基づいて寄贈できます。上流の issue または pull request で `I agree to the ibisOffice CLA.` と返信した時点で、AGPL-3.0-only と商用ライセンスの両方で配る許諾になります。
