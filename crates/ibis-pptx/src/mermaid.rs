@@ -96,6 +96,314 @@ fn mermaid_frontmatter_title(source: &str) -> Option<String> {
     None
 }
 
+/// Colour themes from mermaid's `config.theme`. `base` and `default` keep the built-in palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MermaidTheme {
+    Default,
+    Base,
+    Dark,
+    Forest,
+    Neutral,
+}
+
+/// The parts of a frontmatter `config:` block this renderer reads. Everything is kept as text;
+/// each renderer picks the keys it knows and ignores the rest, so unknown options are harmless.
+#[derive(Debug, Clone, Default)]
+struct MermaidConfig {
+    theme: Option<MermaidTheme>,
+    /// `themeVariables.*` without the prefix (`git0`, `commitLabelColor`, `xyChart.titleColor`).
+    vars: HashMap<String, String>,
+    /// Every other leaf as a dotted path below `config` (`gitGraph.showBranches`, `logLevel`).
+    options: HashMap<String, String>,
+}
+
+impl MermaidConfig {
+    fn option(&self, key: &str) -> Option<&str> {
+        self.options.get(key).map(String::as_str)
+    }
+
+    /// A boolean option; anything other than `true`/`false` falls back to `default`.
+    fn flag(&self, key: &str, default: bool) -> bool {
+        match self.option(key).map(str::to_ascii_lowercase).as_deref() {
+            Some("true") => true,
+            Some("false") => false,
+            _ => default,
+        }
+    }
+
+    /// A theme variable that is safe to put in an SVG attribute (see [`safe_css_value`]).
+    fn color_var(&self, key: &str) -> Option<String> {
+        self.vars.get(key).and_then(|v| safe_css_value(v))
+    }
+}
+
+/// A CSS value made only of characters that cannot break out of an SVG attribute
+/// (`#ff0000`, `rgb(1, 2, 3)`, `lightblue`, `12px`).
+fn safe_css_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '#' | '.' | '%' | '(' | ')' | ',' | ' ' | '-')))
+    .then(|| value.to_string())
+}
+
+/// The lines between the opening and closing `---` of a YAML frontmatter block.
+fn frontmatter_lines(source: &str) -> Option<Vec<&str>> {
+    let after_open = source.trim_start().strip_prefix("---")?;
+    if !(after_open.starts_with('\n') || after_open.starts_with("\r\n")) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for line in after_open.lines().skip(1) {
+        if line.trim() == "---" {
+            return Some(out);
+        }
+        out.push(line);
+    }
+    None
+}
+
+/// Index of the first `ch` outside single or double quotes.
+fn find_unquoted(s: &str, ch: char) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (idx, c) in s.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == ch => return Some(idx),
+            None => {}
+        }
+    }
+    None
+}
+
+/// Leaf `key: value` pairs of a small YAML subset (block mappings, scalars, quoted strings that
+/// may span lines, `#` comments, block scalars skipped), as dotted paths.
+fn yaml_leaves(lines: &[&str]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim_end();
+        i += 1;
+        let content = line.trim_start();
+        if content.is_empty() || content.starts_with('#') || content.starts_with('-') {
+            continue;
+        }
+        let indent = line.len() - content.len();
+        let Some(colon) = find_unquoted(content, ':') else {
+            continue;
+        };
+        let key = unquote(&content[..colon]);
+        let mut value = content[colon + 1..].trim().to_string();
+        if let Some(hash) = find_unquoted(&value, '#')
+            && (hash == 0 || value[..hash].ends_with(char::is_whitespace))
+        {
+            value.truncate(hash);
+            value = value.trim().to_string();
+        }
+        // A quoted string left open continues on the following lines.
+        for q in ['"', '\''] {
+            if value.starts_with(q) && (value.len() == 1 || !value.ends_with(q)) {
+                while i < lines.len() && !value.ends_with(q) {
+                    value.push(' ');
+                    value.push_str(lines[i].trim());
+                    i += 1;
+                }
+            }
+        }
+        while stack.last().is_some_and(|(level, _)| *level >= indent) {
+            stack.pop();
+        }
+        if value.is_empty() {
+            stack.push((indent, key));
+            continue;
+        }
+        if matches!(value.as_str(), "|" | "|-" | "|+" | ">" | ">-" | ">+") {
+            while i < lines.len() {
+                let next = lines[i];
+                let next_content = next.trim_start();
+                if !next_content.is_empty() && next.len() - next_content.len() <= indent {
+                    break;
+                }
+                i += 1;
+            }
+            value.clear();
+        }
+        let mut path: Vec<&str> = stack.iter().map(|(_, k)| k.as_str()).collect();
+        path.push(&key);
+        out.push((path.join("."), unquote(&value)));
+    }
+    out
+}
+
+/// The frontmatter `config:` block, if any.
+fn mermaid_frontmatter_config(source: &str) -> MermaidConfig {
+    let mut config = MermaidConfig::default();
+    let Some(lines) = frontmatter_lines(source) else {
+        return config;
+    };
+    for (path, value) in yaml_leaves(&lines) {
+        let Some(key) = path.strip_prefix("config.") else {
+            continue;
+        };
+        if key == "theme" {
+            config.theme = match value.trim().to_ascii_lowercase().as_str() {
+                "dark" => Some(MermaidTheme::Dark),
+                "forest" => Some(MermaidTheme::Forest),
+                "neutral" => Some(MermaidTheme::Neutral),
+                "base" => Some(MermaidTheme::Base),
+                "default" => Some(MermaidTheme::Default),
+                _ => None,
+            };
+        } else if let Some(var) = key.strip_prefix("themeVariables.") {
+            config.vars.insert(var.to_string(), value);
+        } else {
+            config.options.insert(key.to_string(), value);
+        }
+    }
+    config
+}
+
+// ----------------------------------------------------------------------------
+// Themes. The renderers draw with one built-in palette; a theme maps those colours
+// (and only those, so `style`/`classDef` colours stay as written) to the theme's.
+// ----------------------------------------------------------------------------
+
+fn hex_rgb(hex: &str) -> Option<(f32, f32, f32)> {
+    let h = hex.strip_prefix('#')?;
+    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok().map(|b| b as f32 / 255.0);
+    Some((v(0)?, v(2)?, v(4)?))
+}
+
+fn rgb_hsl((r, g, b): (f32, f32, f32)) -> (f32, f32, f32) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } * 60.0;
+    (h, s, l)
+}
+
+fn hsl_hex(h: f32, s: f32, l: f32) -> String {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp.rem_euclid(2.0) - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", to(r), to(g), to(b))
+}
+
+/// Built-in colours a theme may remap: the shared slate/blue palette and the light fills.
+const THEMED_COLORS: &[&str] = &[
+    "#ffffff", "#f8fafc", "#f1f5f9", "#e2e8f0", "#cbd5e1", "#94a3b8", "#64748b", "#475569", "#334155",
+    "#1e293b", "#0f172a", "#eff6ff", "#bfdbfe", "#93c5fd", "#3b82f6", "#2563eb", "#f5f3ff", "#7c3aed",
+    "#fefce8", "#ca8a04", "#f0fdf4", "#16a34a", "#ecfeff", "#0891b2", "#f0fdfa", "#0f766e", "#fef9c3",
+    "#854d0e", "#dcfce7", "#fee2e2", "#fff7ed", "#fdf2f8", "#cffafe",
+];
+
+fn theme_color(theme: MermaidTheme, hex: &str) -> Option<String> {
+    let (h, s, l) = rgb_hsl(hex_rgb(hex)?);
+    let blue = (195.0..=265.0).contains(&h) && s > 0.25;
+    match theme {
+        MermaidTheme::Default | MermaidTheme::Base => None,
+        MermaidTheme::Dark => {
+            let l2 = if l > 0.75 {
+                0.1 + (1.0 - l) * 2.0
+            } else if l < 0.3 {
+                0.95 - l
+            } else if s < 0.3 {
+                1.0 - l * 0.9
+            } else {
+                (l + 0.08).min(0.75)
+            };
+            Some(hsl_hex(h, s.min(0.6), l2))
+        }
+        // mermaid's forest theme: green nodes and borders.
+        MermaidTheme::Forest => blue.then(|| hsl_hex(95.0, s.min(0.65), l)),
+        // neutral: greys only.
+        MermaidTheme::Neutral => (s > 0.0).then(|| hsl_hex(h, 0.0, l)),
+    }
+}
+
+/// Swap every `="#rrggbb"` attribute value found in `table`.
+fn remap_svg_colors(svg: &str, table: &HashMap<String, String>) -> String {
+    if table.is_empty() {
+        return svg.to_string();
+    }
+    let mut out = String::with_capacity(svg.len());
+    let mut rest = svg;
+    while let Some(at) = rest.find("=\"#") {
+        let value_start = at + 2;
+        out.push_str(&rest[..value_start]);
+        rest = &rest[value_start..];
+        let end = rest[1..].find('"').map_or(rest.len(), |e| e + 1);
+        let value = &rest[..end];
+        match table.get(&value.to_ascii_lowercase()) {
+            Some(new) => out.push_str(new),
+            None => out.push_str(value),
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Apply `config.theme` and the generic `themeVariables` (`primaryColor`, `primaryBorderColor`,
+/// `primaryTextColor`, `lineColor`, `background`) to one of this module's SVGs.
+fn apply_mermaid_theme(bytes: Vec<u8>, config: &MermaidConfig) -> Vec<u8> {
+    let mut table: HashMap<String, String> = HashMap::new();
+    if let Some(theme) = config.theme {
+        for &hex in THEMED_COLORS {
+            if let Some(new) = theme_color(theme, hex) {
+                table.insert(hex.to_string(), new);
+            }
+        }
+    }
+    for (var, hex) in [
+        ("background", "#ffffff"),
+        ("primaryColor", "#eff6ff"),
+        ("primaryBorderColor", "#2563eb"),
+        ("primaryTextColor", "#0f172a"),
+        ("lineColor", "#475569"),
+    ] {
+        if let Some(value) = config.color_var(var) {
+            table.insert(hex.to_string(), value);
+        }
+    }
+    if table.is_empty() {
+        return bytes;
+    }
+    match String::from_utf8(bytes) {
+        Ok(svg) => remap_svg_colors(&svg, &table).into_bytes(),
+        Err(e) => e.into_bytes(),
+    }
+}
+
 /// Diagram families this renderer understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiagramKind {
@@ -164,6 +472,7 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         .skip(1)
         .any(|line| line.trim_start().starts_with("title ") || line.trim() == "title");
     let front_title = mermaid_frontmatter_title(source).filter(|_| !body_title);
+    let config = mermaid_frontmatter_config(source);
 
     let svg = match kind {
         DiagramKind::Pie => {
@@ -181,19 +490,20 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Sequence => render_sequence_svg(trimmed),
         DiagramKind::Flowchart => render_flowchart_svg(trimmed),
         DiagramKind::State => render_state_diagram_svg(trimmed),
-        DiagramKind::Class => render_class_diagram_svg(trimmed),
+        DiagramKind::Class => render_class_diagram_svg(trimmed, &config),
         DiagramKind::Er => render_er_diagram_svg(trimmed),
         DiagramKind::Gantt => render_gantt_svg(trimmed),
         DiagramKind::Mindmap => render_mindmap_svg(trimmed),
-        DiagramKind::GitGraph => render_git_graph_svg(trimmed),
+        DiagramKind::GitGraph => render_git_graph_svg(trimmed, &config),
         DiagramKind::Journey => render_journey_svg(trimmed),
-        DiagramKind::Timeline => render_timeline_svg(trimmed),
+        DiagramKind::Timeline => render_timeline_svg(trimmed, &config),
         DiagramKind::Quadrant => render_quadrant_chart_svg(trimmed),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
     if let Some(title) = front_title {
         (bytes, width_px, height_px) = add_svg_title(bytes, width_px, height_px, &title);
     }
+    let bytes = apply_mermaid_theme(bytes, &config);
     Some(MermaidOutput::Svg {
         bytes,
         width_px,
@@ -1277,6 +1587,476 @@ enum NodeShape {
     InvTrapezoid,
     Parallelogram,
     Asymmetric,
+    /// Expanded `@{ shape: … }` shapes.
+    Ext(ExtShape),
+}
+
+/// Shapes reachable only through mermaid's expanded syntax `A@{ shape: name }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtShape {
+    DoubleCircle,
+    Text,
+    Card,
+    LinedRect,
+    SmallCircle,
+    FramedCircle,
+    FilledCircle,
+    Fork,
+    Hourglass,
+    BraceL,
+    BraceR,
+    Braces,
+    Bolt,
+    Document,
+    LinedDocument,
+    Documents,
+    TaggedDocument,
+    Delay,
+    HCylinder,
+    LinedCylinder,
+    Display,
+    Divided,
+    Triangle,
+    FlipTriangle,
+    WindowPane,
+    LoopLimit,
+    ManualInput,
+    Processes,
+    PaperTape,
+    StoredData,
+    CrossCircle,
+    TaggedRect,
+    DataStore,
+    LeanLeft,
+}
+
+impl ExtShape {
+    /// Markers such as start/stop circles, fork bars and the lightning bolt carry no text in mermaid.
+    fn hides_label(self) -> bool {
+        matches!(
+            self,
+            ExtShape::SmallCircle | ExtShape::FilledCircle | ExtShape::FramedCircle | ExtShape::Fork | ExtShape::Bolt
+        )
+    }
+}
+
+/// `shape:` names and aliases from mermaid's "Expanded Node Shapes" table.
+fn flow_shape_by_name(name: &str) -> Option<NodeShape> {
+    use ExtShape as E;
+    let ext = |e: ExtShape| Some(NodeShape::Ext(e));
+    match name.trim().to_ascii_lowercase().as_str() {
+        "rect" | "rectangle" | "proc" | "process" | "square" => Some(NodeShape::Rect),
+        "rounded" | "event" => Some(NodeShape::Round),
+        "stadium" | "pill" | "terminal" => Some(NodeShape::Stadium),
+        "fr-rect" | "subproc" | "subprocess" | "framed-rectangle" | "subroutine" => Some(NodeShape::Subroutine),
+        "cyl" | "cylinder" | "database" | "db" => Some(NodeShape::Cylinder),
+        "circle" | "circ" => Some(NodeShape::Circle),
+        "odd" => Some(NodeShape::Asymmetric),
+        "diam" | "diamond" | "decision" | "question" => Some(NodeShape::Diamond),
+        "hex" | "hexagon" | "prepare" => Some(NodeShape::Hexagon),
+        "lean-r" | "lean-right" | "in-out" => Some(NodeShape::Parallelogram),
+        "lean-l" | "lean-left" | "out-in" => ext(E::LeanLeft),
+        "trap-b" | "trapezoid-bottom" | "priority" | "trapezoid" => Some(NodeShape::Trapezoid),
+        "trap-t" | "trapezoid-top" | "manual" | "inv-trapezoid" => Some(NodeShape::InvTrapezoid),
+        "dbl-circ" | "double-circle" => ext(E::DoubleCircle),
+        "text" => ext(E::Text),
+        "notch-rect" | "card" | "notched-rectangle" => ext(E::Card),
+        "lin-rect" | "lin-proc" | "lined-rectangle" | "lined-process" | "shaded-process" => ext(E::LinedRect),
+        "sm-circ" | "small-circle" | "start" => ext(E::SmallCircle),
+        "fr-circ" | "framed-circle" | "stop" => ext(E::FramedCircle),
+        "f-circ" | "filled-circle" | "junction" => ext(E::FilledCircle),
+        "fork" | "join" => ext(E::Fork),
+        "hourglass" | "collate" => ext(E::Hourglass),
+        "comment" | "brace" | "brace-l" => ext(E::BraceL),
+        "brace-r" => ext(E::BraceR),
+        "braces" => ext(E::Braces),
+        "bolt" | "com-link" | "lightning-bolt" => ext(E::Bolt),
+        "doc" | "document" => ext(E::Document),
+        "lin-doc" | "lined-document" => ext(E::LinedDocument),
+        "docs" | "documents" | "st-doc" | "stacked-document" => ext(E::Documents),
+        "tag-doc" | "tagged-document" => ext(E::TaggedDocument),
+        "delay" | "half-rounded-rectangle" => ext(E::Delay),
+        "das" | "h-cyl" | "horizontal-cylinder" => ext(E::HCylinder),
+        "lin-cyl" | "disk" | "lined-cylinder" => ext(E::LinedCylinder),
+        "curv-trap" | "curved-trapezoid" | "display" => ext(E::Display),
+        "div-rect" | "div-proc" | "divided-rectangle" | "divided-process" => ext(E::Divided),
+        "tri" | "triangle" | "extract" => ext(E::Triangle),
+        "flip-tri" | "flipped-triangle" | "manual-file" => ext(E::FlipTriangle),
+        "win-pane" | "window-pane" | "internal-storage" => ext(E::WindowPane),
+        "notch-pent" | "notched-pentagon" | "loop-limit" => ext(E::LoopLimit),
+        "sl-rect" | "sloped-rectangle" | "manual-input" => ext(E::ManualInput),
+        "procs" | "processes" | "st-rect" | "stacked-rectangle" => ext(E::Processes),
+        "flag" | "paper-tape" => ext(E::PaperTape),
+        "bow-rect" | "bow-tie-rectangle" | "stored-data" => ext(E::StoredData),
+        "cross-circ" | "crossed-circle" | "summary" => ext(E::CrossCircle),
+        "tag-rect" | "tag-proc" | "tagged-rectangle" | "tagged-process" => ext(E::TaggedRect),
+        "datastore" | "data-store" => ext(E::DataStore),
+        _ => None,
+    }
+}
+
+/// `shape: cyl, label: "Database"` → key/value pairs (commas and colons inside quotes stay).
+fn parse_brace_attrs(inner: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = inner.trim();
+    while !rest.is_empty() {
+        let end = find_unquoted(rest, ',').unwrap_or(rest.len());
+        let piece = &rest[..end];
+        if let Some(colon) = find_unquoted(piece, ':') {
+            let key = unquote(&piece[..colon]);
+            let value = unquote(&piece[colon + 1..]);
+            if !key.is_empty() {
+                out.push((key, value));
+            }
+        }
+        rest = rest[(end + 1).min(rest.len())..].trim_start();
+    }
+    out
+}
+
+/// `ID@{ … }` as a whole statement: (`ID`, attributes).
+fn split_attr_statement(stmt: &str) -> Option<(&str, Vec<(String, String)>)> {
+    let at = stmt.find("@{")?;
+    let id = stmt[..at].trim();
+    if id.is_empty() || !id.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')) || !stmt.ends_with('}') {
+        return None;
+    }
+    Some((id, parse_brace_attrs(&stmt[at + 2..stmt.len() - 1])))
+}
+
+fn flow_ext_size(shape: ExtShape, tw: f32, text_h: f32, horizontal: bool) -> (f32, f32) {
+    use ExtShape as E;
+    let base = ((tw + 36.0).max(84.0), (text_h + 18.0).max(40.0));
+    match shape {
+        E::SmallCircle => (16.0, 16.0),
+        E::FilledCircle => (12.0, 12.0),
+        E::FramedCircle => (22.0, 22.0),
+        E::Fork if horizontal => (10.0, 64.0),
+        E::Fork => (64.0, 10.0),
+        E::Bolt => (28.0, 40.0),
+        E::Text => ((tw + 12.0).max(24.0), text_h + 8.0),
+        E::DoubleCircle | E::CrossCircle => {
+            let d = (tw + 36.0).max(text_h + 30.0).max(60.0);
+            (d, d)
+        }
+        E::Triangle | E::FlipTriangle => (((tw + 24.0) * 2.0).max(96.0), (text_h * 2.0 + 30.0).max(64.0)),
+        E::Hourglass => ((tw + 24.0).max(64.0), (text_h + 40.0).max(64.0)),
+        E::Document | E::LinedDocument | E::TaggedDocument => (base.0, base.1 + 10.0),
+        E::Documents | E::Processes => (base.0 + 10.0, base.1 + 14.0),
+        E::Delay | E::Display | E::StoredData | E::HCylinder => (base.0 + 14.0, base.1),
+        E::LinedCylinder => (base.0, (text_h + 56.0).max(68.0)),
+        E::Divided | E::WindowPane | E::ManualInput | E::LoopLimit | E::PaperTape => (base.0, base.1 + 10.0),
+        E::BraceL | E::BraceR | E::Braces => ((tw + 28.0).max(60.0), base.1),
+        _ => base,
+    }
+}
+
+/// Draw an expanded shape inside the box `x, y, w, h`. Returns how far the label moves down
+/// (triangles put their text in the wide half).
+fn push_ext_shape(svg: &mut String, shape: ExtShape, x: f32, y: f32, w: f32, h: f32) -> f32 {
+    use ExtShape as E;
+    const F: &str = "#eff6ff";
+    const S: &str = "#2563eb";
+    const INK: &str = "#0f172a";
+    let cx = x + w / 2.0;
+    let cy = y + h / 2.0;
+    let rect = |svg: &mut String, x: f32, y: f32, w: f32, h: f32, name: &str| {
+        svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="2" fill="{F}" stroke="{S}" stroke-width="1.4" data-shape="{name}"/>"##
+        ));
+    };
+    let line = |svg: &mut String, x1: f32, y1: f32, x2: f32, y2: f32| {
+        svg.push_str(&format!(
+            r##"<line x1="{x1:.1}" y1="{y1:.1}" x2="{x2:.1}" y2="{y2:.1}" stroke="{S}" stroke-width="1.2"/>"##
+        ));
+    };
+    let path = |svg: &mut String, d: String, fill: &str, name: &str| {
+        svg.push_str(&format!(
+            r##"<path d="{d}" fill="{fill}" stroke="{S}" stroke-width="1.4" data-shape="{name}"/>"##
+        ));
+    };
+    let wave = 6.0f32;
+    let doc_d = |x: f32, y: f32, w: f32, h: f32| {
+        format!(
+            "M {x:.1} {y:.1} L {:.1} {y:.1} L {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {x:.1} {:.1} Z",
+            x + w,
+            x + w,
+            y + h - wave,
+            x + w * 0.7,
+            y + h - wave * 3.0,
+            x + w * 0.3,
+            y + h + wave,
+            y + h - wave
+        )
+    };
+    match shape {
+        E::DoubleCircle => {
+            let r = w.min(h) / 2.0;
+            svg.push_str(&format!(
+                r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{r:.1}" fill="{F}" stroke="{S}" stroke-width="1.4" data-shape="double-circle"/>"##
+            ));
+            svg.push_str(&format!(
+                r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{:.1}" fill="none" stroke="{S}" stroke-width="1.4"/>"##,
+                r - 4.0
+            ));
+        }
+        E::CrossCircle => {
+            let r = w.min(h) / 2.0;
+            let d = r * std::f32::consts::FRAC_1_SQRT_2;
+            svg.push_str(&format!(
+                r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{r:.1}" fill="{F}" stroke="{S}" stroke-width="1.4" data-shape="cross-circle"/>"##
+            ));
+            line(svg, cx - d, cy - d, cx + d, cy + d);
+            line(svg, cx + d, cy - d, cx - d, cy + d);
+        }
+        E::Text => svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" fill="none" stroke="none" data-shape="text"/>"##
+        )),
+        E::Card => push_flow_polygon(
+            svg,
+            &[(x + 12.0, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y + 12.0)],
+            F,
+            S,
+            "card",
+        ),
+        E::LinedRect => {
+            rect(svg, x, y, w, h, "lined-rect");
+            line(svg, x + 8.0, y, x + 8.0, y + h);
+        }
+        E::SmallCircle | E::FilledCircle => svg.push_str(&format!(
+            r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{:.1}" fill="{INK}" stroke="{INK}" stroke-width="1" data-shape="{}"/>"##,
+            w.min(h) / 2.0,
+            if shape == E::SmallCircle { "small-circle" } else { "filled-circle" }
+        )),
+        E::FramedCircle => {
+            let r = w.min(h) / 2.0;
+            svg.push_str(&format!(
+                r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{r:.1}" fill="#ffffff" stroke="{INK}" stroke-width="1.4" data-shape="framed-circle"/>"##
+            ));
+            svg.push_str(&format!(r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{:.1}" fill="{INK}"/>"##, r - 4.0));
+        }
+        E::Fork => svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="2" fill="{INK}" stroke="{INK}" stroke-width="1" data-shape="fork"/>"##
+        )),
+        E::Hourglass => push_flow_polygon(svg, &[(x, y), (x + w, y), (x, y + h), (x + w, y + h)], F, S, "hourglass"),
+        E::BraceL | E::BraceR | E::Braces => {
+            let brace = |left: bool| {
+                let (edge, tip, bend) = if left { (x + 4.0, x - 2.0, x + 10.0) } else { (x + w - 4.0, x + w + 2.0, x + w - 10.0) };
+                format!(
+                    "M {bend:.1} {y:.1} Q {edge:.1} {y:.1} {edge:.1} {:.1} L {edge:.1} {:.1} Q {edge:.1} {cy:.1} {tip:.1} {cy:.1} Q {edge:.1} {cy:.1} {edge:.1} {:.1} L {edge:.1} {:.1} Q {edge:.1} {:.1} {bend:.1} {:.1}",
+                    y + 6.0,
+                    cy - 6.0,
+                    cy + 6.0,
+                    y + h - 6.0,
+                    y + h,
+                    y + h
+                )
+            };
+            if shape != E::BraceR {
+                path(svg, brace(true), "none", "brace-l");
+            }
+            if shape != E::BraceL {
+                path(svg, brace(false), "none", "brace-r");
+            }
+        }
+        E::Bolt => push_flow_polygon(
+            svg,
+            &[
+                (x + w * 0.62, y),
+                (x + w * 0.12, y + h * 0.56),
+                (x + w * 0.46, y + h * 0.56),
+                (x + w * 0.32, y + h),
+                (x + w * 0.88, y + h * 0.4),
+                (x + w * 0.52, y + h * 0.4),
+            ],
+            F,
+            S,
+            "bolt",
+        ),
+        E::Document => path(svg, doc_d(x, y, w, h), F, "document"),
+        E::LinedDocument => {
+            path(svg, doc_d(x, y, w, h), F, "lined-document");
+            line(svg, x + 8.0, y, x + 8.0, y + h - wave);
+        }
+        E::TaggedDocument => {
+            path(svg, doc_d(x, y, w, h), F, "tagged-document");
+            push_flow_polygon(
+                svg,
+                &[(x + w, y + h - wave - 16.0), (x + w, y + h - wave), (x + w - 16.0, y + h - wave + 1.5)],
+                S,
+                S,
+                "tag",
+            );
+        }
+        E::Documents => {
+            for (i, name) in [(2.0f32, "documents-back"), (1.0, "documents-middle"), (0.0, "documents")] {
+                path(svg, doc_d(x + i * 5.0, y + (2.0 - i) * 5.0, w - 10.0, h - 10.0), F, name);
+            }
+        }
+        E::Processes => {
+            for (i, name) in [(2.0f32, "processes-back"), (1.0, "processes-middle"), (0.0, "processes")] {
+                rect(svg, x + i * 5.0, y + (2.0 - i) * 5.0, w - 10.0, h - 10.0, name);
+            }
+        }
+        E::Delay => {
+            let r = (h / 2.0).min(w / 2.0);
+            path(
+                svg,
+                format!(
+                    "M {x:.1} {y:.1} L {:.1} {y:.1} A {r:.1} {r:.1} 0 0 1 {:.1} {:.1} L {x:.1} {:.1} Z",
+                    x + w - r,
+                    x + w - r,
+                    y + h,
+                    y + h
+                ),
+                F,
+                "delay",
+            );
+        }
+        E::HCylinder => {
+            let r = (w / 6.0).clamp(6.0, 12.0);
+            path(
+                svg,
+                format!(
+                    "M {:.1} {y:.1} L {:.1} {y:.1} A {r:.1} {:.1} 0 0 1 {:.1} {:.1} L {:.1} {:.1} A {r:.1} {:.1} 0 0 1 {:.1} {y:.1} Z",
+                    x + r,
+                    x + w - r,
+                    h / 2.0,
+                    x + w - r,
+                    y + h,
+                    x + r,
+                    y + h,
+                    h / 2.0,
+                    x + r
+                ),
+                F,
+                "h-cylinder",
+            );
+            path(
+                svg,
+                format!("M {:.1} {y:.1} A {r:.1} {:.1} 0 0 0 {:.1} {:.1}", x + w - r, h / 2.0, x + w - r, y + h),
+                "none",
+                "h-cylinder-rim",
+            );
+        }
+        E::LinedCylinder => {
+            push_flow_cylinder(svg, x, y, w, h);
+            let ry = (h * 0.18).clamp(6.0, 14.0);
+            path(
+                svg,
+                format!("M {x:.1} {:.1} A {:.1} {ry:.1} 0 0 0 {:.1} {:.1}", y + ry + 7.0, w / 2.0, x + w, y + ry + 7.0),
+                "none",
+                "lined-cylinder",
+            );
+        }
+        E::Display => {
+            let r = (h / 2.0).min(w / 3.0);
+            path(
+                svg,
+                format!(
+                    "M {:.1} {y:.1} L {:.1} {y:.1} A {r:.1} {:.1} 0 0 1 {:.1} {:.1} L {:.1} {:.1} L {x:.1} {cy:.1} Z",
+                    x + w * 0.16,
+                    x + w - r,
+                    h / 2.0,
+                    x + w - r,
+                    y + h,
+                    x + w * 0.16,
+                    y + h
+                ),
+                F,
+                "display",
+            );
+        }
+        E::Divided => {
+            rect(svg, x, y, w, h, "divided-rect");
+            line(svg, x, y + 10.0, x + w, y + 10.0);
+            return 5.0;
+        }
+        E::WindowPane => {
+            rect(svg, x, y, w, h, "window-pane");
+            line(svg, x + 10.0, y, x + 10.0, y + h);
+            line(svg, x, y + 10.0, x + w, y + 10.0);
+            return 5.0;
+        }
+        E::Triangle => {
+            push_flow_polygon(svg, &[(cx, y), (x + w, y + h), (x, y + h)], F, S, "triangle");
+            return h * 0.2;
+        }
+        E::FlipTriangle => {
+            push_flow_polygon(svg, &[(x, y), (x + w, y), (cx, y + h)], F, S, "flipped-triangle");
+            return -h * 0.2;
+        }
+        E::LoopLimit => push_flow_polygon(
+            svg,
+            &[(x + 12.0, y), (x + w - 12.0, y), (x + w, y + 12.0), (x + w, y + h), (x, y + h), (x, y + 12.0)],
+            F,
+            S,
+            "loop-limit",
+        ),
+        E::ManualInput => {
+            push_flow_polygon(svg, &[(x, y + 12.0), (x + w, y), (x + w, y + h), (x, y + h)], F, S, "manual-input");
+            return 5.0;
+        }
+        E::PaperTape => {
+            let a = 5.0f32;
+            path(
+                svg,
+                format!(
+                    "M {x:.1} {:.1} Q {:.1} {:.1} {cx:.1} {:.1} T {:.1} {:.1} L {:.1} {:.1} Q {:.1} {:.1} {cx:.1} {:.1} T {x:.1} {:.1} Z",
+                    y + a,
+                    x + w / 4.0,
+                    y - a,
+                    y + a,
+                    x + w,
+                    y + a,
+                    x + w,
+                    y + h - a,
+                    x + w * 0.75,
+                    y + h + a,
+                    y + h - a,
+                    y + h - a
+                ),
+                F,
+                "paper-tape",
+            );
+        }
+        E::StoredData => {
+            let r = 10.0f32;
+            path(
+                svg,
+                format!(
+                    "M {:.1} {y:.1} L {:.1} {y:.1} Q {:.1} {cy:.1} {:.1} {:.1} L {:.1} {:.1} Q {:.1} {cy:.1} {:.1} {y:.1} Z",
+                    x + r,
+                    x + w,
+                    x + w - r * 1.6,
+                    x + w,
+                    y + h,
+                    x + r,
+                    y + h,
+                    x - r * 0.6,
+                    x + r
+                ),
+                F,
+                "stored-data",
+            );
+        }
+        E::TaggedRect => {
+            rect(svg, x, y, w, h, "tagged-rect");
+            push_flow_polygon(svg, &[(x + w, y + h - 14.0), (x + w, y + h), (x + w - 14.0, y + h)], S, S, "tag");
+        }
+        E::DataStore => {
+            svg.push_str(&format!(
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" fill="{F}" stroke="none" data-shape="datastore"/>"##
+            ));
+            line(svg, x, y, x + w, y);
+            line(svg, x, y + h, x + w, y + h);
+        }
+        E::LeanLeft => {
+            let skew = w * 0.16;
+            push_flow_polygon(svg, &[(x, y), (x + w - skew, y), (x + w, y + h), (x + skew, y + h)], F, S, "lean-left");
+        }
+    }
+    0.0
 }
 
 #[derive(Debug, Clone)]
@@ -1314,6 +2094,8 @@ struct EdgeTok {
     start: EdgeEnd,
     end: EdgeEnd,
     label: Option<String>,
+    /// `A e1@--> B`: the id `e1@{ … }` statements refer to.
+    id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1324,6 +2106,9 @@ struct FlowEdge {
     style: EdgeStyle,
     start: EdgeEnd,
     end: EdgeEnd,
+    id: Option<String>,
+    /// `e1@{ curve: linear }` (also `step*`): drawn straight instead of curved.
+    straight: bool,
 }
 
 /// The subset of CSS properties `classDef`, `class`, `style` and `linkStyle` apply.
@@ -1535,6 +2320,20 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 }
                 continue;
             }
+            // `e1@{ curve: linear }` styles an edge declared as `A e1@--> B`; animation is ignored.
+            if let Some((id, attrs)) = split_attr_statement(l)
+                && edges.iter().any(|e| e.id.as_deref() == Some(id))
+            {
+                for (key, value) in &attrs {
+                    if key == "curve" {
+                        let straight = matches!(value.as_str(), "linear" | "step" | "stepBefore" | "stepAfter");
+                        for e in edges.iter_mut().filter(|e| e.id.as_deref() == Some(id)) {
+                            e.straight = straight;
+                        }
+                    }
+                }
+                continue;
+            }
             parse_flowchart_statement(
                 l,
                 sg_stack.last().copied(),
@@ -1588,7 +2387,7 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     // Node dimensions. Long labels wrap inside a width cap and the box grows taller.
     let node_sizes: Vec<(f32, f32)> = nodes
         .iter()
-        .map(|node| flow_node_size(node.shape, &node.label))
+        .map(|node| flow_node_size(node.shape, &node.label, matches!(dir, FlowDir::Lr | FlowDir::Rl)))
         .collect();
 
     let (centers, total_w, total_h) = layout_flowchart(&nodes, &edges, &node_sizes, &subgraphs, dir);
@@ -1669,7 +2468,7 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             &centers,
             &node_sizes,
             horizontal,
-            true,
+            !e.straight,
             (total_w as f32, total_h as f32),
         );
         let linked = &edge_style[edge_idx];
@@ -1721,6 +2520,7 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         let x = cx - w / 2.0;
         let y = cy - h / 2.0;
         let shape_at = svg.len();
+        let mut label_dy = 0.0f32;
         match node.shape {
             NodeShape::Rect => {
                 svg.push_str(&format!(
@@ -1769,20 +2569,28 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             NodeShape::InvTrapezoid => push_flow_polygon(&mut svg, &trapezoid_points(x, y, w, h, false), "#eff6ff", "#2563eb", "inv-trapezoid"),
             NodeShape::Parallelogram => push_flow_polygon(&mut svg, &parallelogram_points(x, y, w, h), "#eff6ff", "#2563eb", "parallelogram"),
             NodeShape::Asymmetric => push_flow_polygon(&mut svg, &asymmetric_points(x, y, w, h), "#eff6ff", "#2563eb", "asymmetric"),
+            NodeShape::Ext(ext) => label_dy = push_ext_shape(&mut svg, ext, x, y, w, h),
         }
         let style = &node_style[idx];
         if !style.is_empty() {
             let shape_svg = svg.split_off(shape_at);
             svg.push_str(&restyle_svg_fragment(&shape_svg, style));
         }
+        if let NodeShape::Ext(ext) = node.shape
+            && ext.hides_label()
+        {
+            continue;
+        }
         let label_width = match node.shape {
             NodeShape::Diamond | NodeShape::Hexagon | NodeShape::Asymmetric => w * 0.62,
-            NodeShape::Circle => w * 0.72,
+            NodeShape::Circle | NodeShape::Ext(ExtShape::DoubleCircle | ExtShape::CrossCircle) => w * 0.66,
+            NodeShape::Ext(ExtShape::Triangle | ExtShape::FlipTriangle) => w * 0.5,
+            NodeShape::Ext(ExtShape::Text) => w + 4.0,
             _ => w - 16.0,
         };
         let text_fill = style.color.as_deref().map(escape_xml).unwrap_or_else(|| "#0f172a".to_string());
         // Size and draw share the 168px cap. A wider box must not reflow the lines.
-        push_centered_label(&mut svg, cx, cy, &node.label, 13.0, label_width.clamp(24.0, 168.0), &text_fill, "500");
+        push_centered_label(&mut svg, cx, cy + label_dy, &node.label, 13.0, label_width.clamp(24.0, 168.0), &text_fill, "500");
     }
 
     svg.push_str("</svg>");
@@ -2375,6 +3183,8 @@ fn parse_flowchart_statement(
                     style: pending.style,
                     start: pending.start,
                     end: pending.end,
+                    id: pending.id.clone(),
+                    straight: false,
                 });
             }
         }
@@ -2412,11 +3222,13 @@ fn split_next_flowchart_edge(s: &str) -> Option<(&str, EdgeTok, &str)> {
             }
         }
         let word_start = cursor == 0 || bytes[cursor - 1].is_ascii_whitespace();
-        if !quote && let Some((tok, consumed)) = match_flowchart_edge(&s[cursor..], word_start) {
+        if !quote && let Some((mut tok, consumed)) = match_flowchart_edge(&s[cursor..], word_start) {
             let mut lhs = s[..cursor].trim();
             // `A e1@--> B`: an edge id is not part of the node.
             if let Some(before_id) = lhs.strip_suffix('@') {
-                lhs = before_id.rsplit_once(char::is_whitespace).map_or(before_id, |(node, _)| node).trim();
+                let (node, id) = before_id.rsplit_once(char::is_whitespace).unwrap_or((before_id, ""));
+                tok.id = (!id.trim().is_empty()).then(|| id.trim().to_string());
+                lhs = node.trim();
             }
             return Some((lhs, tok, &s[cursor + consumed..]));
         }
@@ -2506,6 +3318,7 @@ fn match_flowchart_edge(s: &str, word_start: bool) -> Option<(EdgeTok, usize)> {
                         start,
                         end,
                         label: (!text.is_empty()).then(|| unquote(text)),
+                        id: None,
                     },
                     i + open.len() + at + len,
                 ));
@@ -2529,7 +3342,7 @@ fn match_flowchart_edge(s: &str, word_start: bool) -> Option<(EdgeTok, usize)> {
         label = (!text.is_empty()).then(|| unquote(text));
         consumed += (after.len() - after_ws.len()) + 1 + close_pipe + 1;
     }
-    Some((EdgeTok { style, start, end, label }, consumed))
+    Some((EdgeTok { style, start, end, label, id: None }, consumed))
 }
 
 fn ensure_node_group(
@@ -2592,6 +3405,16 @@ fn split_node_class(token: &str) -> (&str, Option<&str>) {
 
 fn parse_node_token(token: &str) -> (&str, Option<String>, Option<NodeShape>) {
     let t = token.trim();
+    // `A@{ shape: cyl, label: "Database" }`. Unknown shapes keep the node's current shape.
+    if let Some(at) = t.find("@{")
+        && t.ends_with('}')
+        && !t[..at].contains(['[', '(', '{', '>', '"', ' '])
+    {
+        let attrs = parse_brace_attrs(&t[at + 2..t.len() - 1]);
+        let label = attrs.iter().find(|(k, _)| k == "label").map(|(_, v)| v.clone());
+        let shape = attrs.iter().find(|(k, _)| k == "shape").and_then(|(_, v)| flow_shape_by_name(v));
+        return (t[..at].trim(), label, shape);
+    }
     // The shape starts at the first delimiter. A `>` inside `<br/>` is not asymmetric.
     let Some(open_at) = first_shape_delim(t) else {
         return (t, None, None);
@@ -2686,12 +3509,13 @@ fn split_flow_statements(line: &str) -> Vec<&str> {
     out
 }
 
-fn flow_node_size(shape: NodeShape, label: &str) -> (f32, f32) {
+fn flow_node_size(shape: NodeShape, label: &str, horizontal: bool) -> (f32, f32) {
     let max_text = 168.0f32;
     let lines = label_lines(label, max_text, 13.0);
     let tw = lines.iter().map(|line| estimate_text_width(line, 13.0)).fold(0.0f32, f32::max);
     let text_h = lines.len() as f32 * 16.0;
     match shape {
+        NodeShape::Ext(ext) => flow_ext_size(ext, tw, text_h, horizontal),
         NodeShape::Diamond | NodeShape::Hexagon => ((tw + 56.0).max(96.0), (text_h + 28.0).max(54.0)),
         NodeShape::Circle => {
             let d = (tw + 28.0).max(text_h + 24.0).max(54.0);
@@ -3455,7 +4279,9 @@ struct ClassEdge {
     label: Option<String>,
 }
 
-fn render_class_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
+    // `class.hideEmptyMembersBox`: a class without members is just its name box.
+    let hide_empty = config.flag("class.hideEmptyMembersBox", false);
     let mut horizontal = false;
     let mut reversed = false;
     let mut classes: Vec<ClassNode> = Vec::new();
@@ -3589,7 +4415,8 @@ fn render_class_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             } else {
                 c.methods.len() as f32 * 18.0 + 10.0
             };
-            (max_w.max(110.0), (header_h + fields_h + methods_h).max(36.0))
+            let min_h = if hide_empty { header_h } else { 36.0 };
+            (max_w.max(110.0), (header_h + fields_h + methods_h).max(min_h))
         })
         .collect();
 
@@ -4908,81 +5735,163 @@ fn clean_mindmap_label(s: &str) -> String {
 // Git Graph (gitGraph)
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitCommitType {
+    Normal,
+    Reverse,
+    Highlight,
+    Merge,
+    CherryPick,
+}
+
 struct GitCommit {
     branch: usize,
     id: String,
     tag: Option<String>,
+    kind: GitCommitType,
     parent: Option<usize>,
     merge_parent: Option<usize>,
+    /// The commit a `cherry-pick` copied.
+    picked_from: Option<usize>,
 }
 
-fn render_git_graph_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
-    let mut branches: Vec<String> = vec!["main".to_string()];
-    let mut branch_head: Vec<Option<usize>> = vec![None];
-    let mut current_branch = 0usize;
+struct GitBranch {
+    name: String,
+    /// `branch x order: n`; `None` sorts by definition order between 0 and 1, as mermaid does.
+    order: Option<f32>,
+    head: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitDir {
+    Lr,
+    Tb,
+    Bt,
+}
+
+fn git_commit_type(line: &str) -> Option<GitCommitType> {
+    match extract_git_attr(line, "type:")?.to_ascii_uppercase().as_str() {
+        "REVERSE" => Some(GitCommitType::Reverse),
+        "HIGHLIGHT" => Some(GitCommitType::Highlight),
+        "NORMAL" => Some(GitCommitType::Normal),
+        _ => None,
+    }
+}
+
+fn render_git_graph_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
+    let mut lines = source.lines();
+    let header = lines.next()?.trim();
+    let dir = match header.split_whitespace().nth(1).map(|t| t.trim_end_matches(':').to_ascii_uppercase()).as_deref() {
+        Some("TB") => GitDir::Tb,
+        Some("BT") => GitDir::Bt,
+        _ => GitDir::Lr,
+    };
+    let main_name = config
+        .option("gitGraph.mainBranchName")
+        .map(unquote)
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "main".to_string());
+    let main_order = config.option("gitGraph.mainBranchOrder").and_then(|v| v.trim().parse::<f32>().ok());
+    let show_branches = config.flag("gitGraph.showBranches", true);
+    let show_labels = config.flag("gitGraph.showCommitLabel", true);
+    let rotate_labels = dir == GitDir::Lr && config.flag("gitGraph.rotateCommitLabel", false);
+    let parallel = config.flag("gitGraph.parallelCommits", false);
+
+    let mut branches = vec![GitBranch {
+        name: main_name,
+        order: Some(main_order.unwrap_or(0.0)),
+        head: None,
+    }];
+    let mut current = 0usize;
     let mut commits: Vec<GitCommit> = Vec::new();
     let mut auto_idx = 1usize;
-
-    let ensure_branch = |name: &str, branches: &mut Vec<String>, branch_head: &mut Vec<Option<usize>>, head: Option<usize>| -> usize {
-        if let Some(pos) = branches.iter().position(|b| b == name) {
-            return pos;
-        }
-        let idx = branches.len();
-        branches.push(name.to_string());
-        branch_head.push(head);
-        idx
+    let next_id = |auto_idx: &mut usize| {
+        let s = format!("c{auto_idx}");
+        *auto_idx += 1;
+        s
     };
 
-    for raw in source.lines().skip(1) {
+    for raw in lines {
         let l = raw.trim();
         if l.is_empty() || l.starts_with("%%") {
             continue;
         }
-        if l.starts_with("commit") {
-            let id = extract_git_attr(l, "id:").unwrap_or_else(|| {
-                let s = format!("c{auto_idx}");
-                auto_idx += 1;
-                s
-            });
-            let tag = extract_git_attr(l, "tag:");
-            let parent = branch_head[current_branch];
-            let idx = commits.len();
-            commits.push(GitCommit {
-                branch: current_branch,
-                id,
-                tag,
-                parent,
-                merge_parent: None,
-            });
-            branch_head[current_branch] = Some(idx);
-        } else if let Some(rest) = l.strip_prefix("branch ") {
-            let bname = unquote(rest.split_whitespace().next().unwrap_or(""));
-            if !bname.is_empty() {
-                let head = branch_head[current_branch];
-                current_branch = ensure_branch(&bname, &mut branches, &mut branch_head, head);
-            }
-        } else if let Some(rest) = l.strip_prefix("checkout ").or_else(|| l.strip_prefix("switch ")) {
-            let bname = unquote(rest.split_whitespace().next().unwrap_or(""));
-            if let Some(pos) = branches.iter().position(|b| b == &bname) {
-                current_branch = pos;
-            }
-        } else if let Some(rest) = l.strip_prefix("merge ") {
-            let bname = unquote(rest.split_whitespace().next().unwrap_or(""));
-            if let Some(src_branch) = branches.iter().position(|b| b == &bname) {
-                let parent = branch_head[current_branch];
-                let merge_parent = branch_head[src_branch];
-                let id = extract_git_attr(l, "id:").unwrap_or_else(|| format!("merge {bname}"));
-                let tag = extract_git_attr(l, "tag:");
+        let word = l.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+        match word {
+            "commit" => {
+                let id = extract_git_attr(l, "id:").unwrap_or_else(|| next_id(&mut auto_idx));
                 let idx = commits.len();
                 commits.push(GitCommit {
-                    branch: current_branch,
+                    branch: current,
                     id,
-                    tag,
-                    parent,
-                    merge_parent,
+                    tag: extract_git_attr(l, "tag:"),
+                    kind: git_commit_type(l).unwrap_or(GitCommitType::Normal),
+                    parent: branches[current].head,
+                    merge_parent: None,
+                    picked_from: None,
                 });
-                branch_head[current_branch] = Some(idx);
+                branches[current].head = Some(idx);
             }
+            "branch" => {
+                let rest = l["branch".len()..].trim();
+                let name = unquote(rest.split_whitespace().next().unwrap_or(""));
+                if name.is_empty() {
+                    continue;
+                }
+                let order = extract_git_attr(l, "order:").and_then(|o| o.parse::<f32>().ok());
+                match branches.iter().position(|b| b.name == name) {
+                    Some(pos) => current = pos,
+                    None => {
+                        let head = branches[current].head;
+                        branches.push(GitBranch { name, order, head });
+                        current = branches.len() - 1;
+                    }
+                }
+            }
+            "checkout" | "switch" => {
+                let name = unquote(l[word.len()..].split_whitespace().next().unwrap_or(""));
+                if let Some(pos) = branches.iter().position(|b| b.name == name) {
+                    current = pos;
+                }
+            }
+            "merge" => {
+                let name = unquote(l[word.len()..].split_whitespace().next().unwrap_or(""));
+                let Some(src) = branches.iter().position(|b| b.name == name) else {
+                    continue;
+                };
+                let idx = commits.len();
+                commits.push(GitCommit {
+                    branch: current,
+                    id: extract_git_attr(l, "id:").unwrap_or_else(|| format!("merge {name}")),
+                    tag: extract_git_attr(l, "tag:"),
+                    kind: git_commit_type(l).unwrap_or(GitCommitType::Merge),
+                    parent: branches[current].head,
+                    merge_parent: branches[src].head,
+                    picked_from: None,
+                });
+                branches[current].head = Some(idx);
+            }
+            "cherry-pick" => {
+                let Some(src_id) = extract_git_attr(l, "id:") else {
+                    continue;
+                };
+                let Some(src) = commits.iter().position(|c| c.id == src_id) else {
+                    continue;
+                };
+                let idx = commits.len();
+                let tag = extract_git_attr(l, "tag:").unwrap_or_else(|| format!("cherry-pick:{src_id}"));
+                commits.push(GitCommit {
+                    branch: current,
+                    id: next_id(&mut auto_idx),
+                    tag: Some(tag),
+                    kind: GitCommitType::CherryPick,
+                    parent: branches[current].head,
+                    merge_parent: None,
+                    picked_from: Some(src),
+                });
+                branches[current].head = Some(idx);
+            }
+            _ => {}
         }
     }
 
@@ -4990,91 +5899,279 @@ fn render_git_graph_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         return None;
     }
 
-    const COLORS: &[&str] = &["#2563eb", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444", "#06b6d4"];
-    let label_col = branches
+    // Lanes: explicit `order` first by value; branches without one sit between 0 and 1 in
+    // definition order (mermaid uses `0.<index>`).
+    let mut lane_of_branch: Vec<usize> = (0..branches.len()).collect();
+    {
+        let key = |i: usize| -> f32 {
+            branches[i]
+                .order
+                .unwrap_or_else(|| format!("0.{i}").parse::<f32>().unwrap_or(0.5))
+        };
+        let mut sorted: Vec<usize> = (0..branches.len()).collect();
+        sorted.sort_by(|&a, &b| key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
+        for (lane, &bi) in sorted.iter().enumerate() {
+            lane_of_branch[bi] = lane;
+        }
+    }
+
+    // Position along the time axis: one slot per commit, or (parallelCommits) one past the parents.
+    let mut slot: Vec<usize> = Vec::with_capacity(commits.len());
+    for (idx, c) in commits.iter().enumerate() {
+        let s = if parallel {
+            [c.parent, c.merge_parent, c.picked_from]
+                .into_iter()
+                .flatten()
+                .map(|p| slot[p] + 1)
+                .max()
+                .unwrap_or(0)
+        } else {
+            idx
+        };
+        slot.push(s);
+    }
+    let slots = slot.iter().copied().max().unwrap_or(0) + 1;
+
+    const COLORS: &[&str] = &["#2563eb", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444", "#06b6d4", "#ec4899", "#84cc16"];
+    let lane_color = |lane: usize| -> String {
+        config
+            .color_var(&format!("git{}", lane % 8))
+            .unwrap_or_else(|| COLORS[lane % COLORS.len()].to_string())
+    };
+    let inv_color = |lane: usize| config.color_var(&format!("gitInv{}", lane % 8)).unwrap_or_else(|| "#ffffff".to_string());
+    let px = |key: &str, default: f32| -> f32 {
+        config
+            .vars
+            .get(key)
+            .and_then(|v| v.trim().trim_end_matches("px").trim().parse::<f32>().ok())
+            .filter(|v| (6.0..=40.0).contains(v))
+            .unwrap_or(default)
+    };
+    let label_color = config.color_var("commitLabelColor").unwrap_or_else(|| "#334155".to_string());
+    let label_bg = config.color_var("commitLabelBackground");
+    let label_size = px("commitLabelFontSize", 10.5);
+    let tag_color = config.color_var("tagLabelColor").unwrap_or_else(|| "#854d0e".to_string());
+    let tag_bg = config.color_var("tagLabelBackground").unwrap_or_else(|| "#fef9c3".to_string());
+    let tag_border = config.color_var("tagLabelBorder").unwrap_or_else(|| "#ca8a04".to_string());
+    let tag_size = px("tagLabelFontSize", 10.0);
+
+    let lanes = branches.len() as f32;
+    let name_w = branches
         .iter()
-        .map(|b| estimate_text_width(b, 12.0))
+        .map(|b| estimate_text_width(&b.name, 12.0))
         .fold(64.0f32, f32::max)
         + 28.0;
-    let step_x = 64.0f32;
-    let lane_h = 46.0f32;
-    let top_pad = 28.0f32;
-    let bottom_pad = 36.0f32;
-    let total_w = (label_col + commits.len() as f32 * step_x + 36.0).ceil() as u32;
-    let total_h = (top_pad + branches.len() as f32 * lane_h + bottom_pad).ceil() as u32;
-
-    let commit_pos = |idx: usize| -> (f32, f32) {
-        let x = label_col + (idx as f32 + 0.5) * step_x;
-        let y = top_pad + (commits[idx].branch as f32 + 0.5) * lane_h;
-        (x, y)
+    let step = 64.0f32;
+    let lane_gap = 46.0f32;
+    let widest_label = commits
+        .iter()
+        .map(|c| estimate_text_width(&c.id, label_size))
+        .fold(0.0f32, f32::max);
+    let widest_tag = commits
+        .iter()
+        .filter_map(|c| c.tag.as_deref())
+        .map(|t| estimate_text_width(t, tag_size) + 12.0)
+        .fold(0.0f32, f32::max);
+    // Vertical graphs put tags left of the commit, so the first lane starts after the widest tag.
+    let tb_left = 24.0 + if widest_tag > 0.0 { widest_tag + 14.0 } else { 0.0 };
+    let lane_w = (widest_label + 40.0).max(name_w).max(90.0);
+    // (x, y) of slot `s` on lane `lane`, and the canvas size.
+    let (total_w, total_h, origin) = match dir {
+        GitDir::Lr => {
+            let left = if show_branches { name_w } else { 20.0 };
+            let bottom = if rotate_labels { 24.0 + widest_label * 0.72 } else { 36.0 };
+            (left + slots as f32 * step + 36.0, 28.0 + lanes * lane_gap + bottom, left)
+        }
+        GitDir::Tb | GitDir::Bt => {
+            let top = if show_branches { 40.0 } else { 16.0 };
+            (tb_left + lanes * lane_w + 24.0, top + slots as f32 * step + 40.0, top)
+        }
+    };
+    let pos = |s: usize, lane: usize| -> (f32, f32) {
+        match dir {
+            GitDir::Lr => (origin + (s as f32 + 0.5) * step, 28.0 + (lane as f32 + 0.5) * lane_gap),
+            GitDir::Tb => (tb_left + (lane as f32 + 0.5) * lane_w, origin + (s as f32 + 0.5) * step),
+            GitDir::Bt => (tb_left + (lane as f32 + 0.5) * lane_w, origin + ((slots - 1 - s) as f32 + 0.5) * step),
+        }
+    };
+    let commit_pos = |idx: usize| pos(slot[idx], lane_of_branch[commits[idx].branch]);
+    let total_w = total_w.ceil() as u32;
+    let total_h = total_h.ceil() as u32;
+    let link = |(x1, y1): (f32, f32), (x2, y2): (f32, f32)| -> String {
+        if dir == GitDir::Lr {
+            let mx = (x1 + x2) / 2.0;
+            format!("M {x1:.1} {y1:.1} C {mx:.1} {y1:.1}, {mx:.1} {y2:.1}, {x2:.1} {y2:.1}")
+        } else {
+            let my = (y1 + y2) / 2.0;
+            format!("M {x1:.1} {y1:.1} C {x1:.1} {my:.1}, {x2:.1} {my:.1}, {x2:.1} {y2:.1}")
+        }
     };
 
     let mut svg = String::new();
     svg.push_str(&format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
     ));
-    svg.push_str(&format!(
-        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
-    ));
+    svg.push_str(&format!(r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##));
 
-    // Branch guide lines & labels
-    for (bi, bname) in branches.iter().enumerate() {
-        let ly = top_pad + (bi as f32 + 0.5) * lane_h;
-        let color = COLORS[bi % COLORS.len()];
-        svg.push_str(&format!(
-            r##"<line x1="{label_col:.1}" y1="{ly:.1}" x2="{:.1}" y2="{ly:.1}" stroke="#e2e8f0" stroke-width="1.5" stroke-dasharray="4,4"/>"##,
-            total_w as f32 - 18.0
-        ));
-        svg.push_str(&format!(
-            r##"<text x="14" y="{:.1}" font-size="12" font-weight="bold" fill="{color}">{}</text>"##,
-            ly + 4.0,
-            escape_xml(bname)
-        ));
+    if show_branches {
+        for (bi, branch) in branches.iter().enumerate() {
+            let lane = lane_of_branch[bi];
+            let color = lane_color(lane);
+            let text_fill = config
+                .color_var(&format!("gitBranchLabel{}", lane % 10))
+                .unwrap_or_else(|| "#ffffff".to_string());
+            let (first, last) = (pos(0, lane), pos(slots - 1, lane));
+            let name = escape_xml(&branch.name);
+            // Branch names sit in a pill of the branch colour, text in `gitBranchLabelN` (white by default).
+            let pill_w = estimate_text_width(&branch.name, 12.0) + 16.0;
+            let push_pill = |svg: &mut String, cx: f32, cy: f32| {
+                svg.push_str(&format!(
+                    r##"<rect x="{:.1}" y="{:.1}" width="{pill_w:.1}" height="20" rx="4" fill="{color}" data-role="branch-pill"/>"##,
+                    cx - pill_w / 2.0,
+                    cy - 10.0
+                ));
+                svg.push_str(&format!(
+                    r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="12" font-weight="bold" fill="{text_fill}" data-role="branch-label">{name}</text>"##,
+                    cy + 4.0
+                ));
+            };
+            match dir {
+                GitDir::Lr => {
+                    svg.push_str(&format!(
+                        r##"<line x1="{origin:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#e2e8f0" stroke-width="1.5" stroke-dasharray="4,4"/>"##,
+                        first.1,
+                        total_w as f32 - 18.0,
+                        first.1
+                    ));
+                    push_pill(&mut svg, 10.0 + (name_w - 24.0) / 2.0, first.1);
+                }
+                GitDir::Tb | GitDir::Bt => {
+                    let (y1, y2) = (first.1.min(last.1) - step * 0.4, first.1.max(last.1) + step * 0.4);
+                    svg.push_str(&format!(
+                        r##"<line x1="{:.1}" y1="{y1:.1}" x2="{:.1}" y2="{y2:.1}" stroke="#e2e8f0" stroke-width="1.5" stroke-dasharray="4,4"/>"##,
+                        first.0, first.0
+                    ));
+                    let ty = if dir == GitDir::Tb { 20.0 } else { total_h as f32 - 16.0 };
+                    push_pill(&mut svg, first.0, ty);
+                }
+            }
+        }
     }
 
-    // Commit links
     for (idx, c) in commits.iter().enumerate() {
-        let (x2, y2) = commit_pos(idx);
+        let to = commit_pos(idx);
         if let Some(p) = c.parent {
-            let (x1, y1) = commit_pos(p);
-            let color = COLORS[c.branch % COLORS.len()];
-            let mx = (x1 + x2) / 2.0;
+            let color = lane_color(lane_of_branch[c.branch]);
             svg.push_str(&format!(
-                r##"<path d="M {x1:.1} {y1:.1} C {mx:.1} {y1:.1}, {mx:.1} {y2:.1}, {x2:.1} {y2:.1}" fill="none" stroke="{color}" stroke-width="2.2"/>"##
+                r##"<path d="{}" fill="none" stroke="{color}" stroke-width="2.2"/>"##,
+                link(commit_pos(p), to)
             ));
         }
         if let Some(mp) = c.merge_parent {
-            let (x1, y1) = commit_pos(mp);
-            let color = COLORS[commits[mp].branch % COLORS.len()];
-            let mx = (x1 + x2) / 2.0;
+            let color = lane_color(lane_of_branch[commits[mp].branch]);
             svg.push_str(&format!(
-                r##"<path d="M {x1:.1} {y1:.1} C {mx:.1} {y1:.1}, {mx:.1} {y2:.1}, {x2:.1} {y2:.1}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="4,3"/>"##
+                r##"<path d="{}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="4,3"/>"##,
+                link(commit_pos(mp), to)
+            ));
+        }
+        if let Some(src) = c.picked_from {
+            svg.push_str(&format!(
+                r##"<path d="{}" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="2,3" data-link="cherry-pick"/>"##,
+                link(commit_pos(src), to)
             ));
         }
     }
 
-    // Commits & tags
     for (idx, c) in commits.iter().enumerate() {
         let (cx, cy) = commit_pos(idx);
-        let color = COLORS[c.branch % COLORS.len()];
-        svg.push_str(&format!(
-            r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="7.5" fill="{color}" stroke="#ffffff" stroke-width="2"/>"##
-        ));
-        svg.push_str(&format!(
-            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#334155">{}</text>"##,
-            cy + 20.0,
-            escape_xml(&c.id)
-        ));
-        if let Some(tag) = &c.tag {
-            let tw = estimate_text_width(tag, 10.0) + 12.0;
+        let lane = lane_of_branch[c.branch];
+        let color = lane_color(lane);
+        match c.kind {
+            GitCommitType::Normal => svg.push_str(&format!(
+                r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="7.5" fill="{color}" stroke="#ffffff" stroke-width="2" data-commit-type="normal"/>"##
+            )),
+            GitCommitType::Merge => {
+                svg.push_str(&format!(
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="8.5" fill="{color}" stroke="#ffffff" stroke-width="2" data-commit-type="merge"/>"##
+                ));
+                svg.push_str(&format!(r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="3.5" fill="#ffffff"/>"##));
+            }
+            GitCommitType::Highlight => {
+                svg.push_str(&format!(
+                    r##"<rect x="{:.1}" y="{:.1}" width="18" height="18" fill="{color}" stroke="#ffffff" stroke-width="1.5" data-commit-type="highlight"/>"##,
+                    cx - 9.0,
+                    cy - 9.0
+                ));
+                svg.push_str(&format!(
+                    r##"<rect x="{:.1}" y="{:.1}" width="10" height="10" fill="{}"/>"##,
+                    cx - 5.0,
+                    cy - 5.0,
+                    inv_color(lane)
+                ));
+            }
+            GitCommitType::Reverse => {
+                svg.push_str(&format!(
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="8.5" fill="{color}" stroke="#ffffff" stroke-width="2" data-commit-type="reverse"/>"##
+                ));
+                svg.push_str(&format!(
+                    r##"<path d="M {:.1} {:.1} L {:.1} {:.1} M {:.1} {:.1} L {:.1} {:.1}" stroke="#ffffff" stroke-width="2" fill="none"/>"##,
+                    cx - 4.0, cy - 4.0, cx + 4.0, cy + 4.0, cx + 4.0, cy - 4.0, cx - 4.0, cy + 4.0
+                ));
+            }
+            GitCommitType::CherryPick => {
+                svg.push_str(&format!(
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="8.5" fill="{color}" stroke="#ffffff" stroke-width="2" data-commit-type="cherry-pick"/>"##
+                ));
+                for dx in [-2.6f32, 2.6] {
+                    svg.push_str(&format!(r##"<circle cx="{:.1}" cy="{:.1}" r="2.2" fill="#ffffff"/>"##, cx + dx, cy + 2.0));
+                }
+                svg.push_str(&format!(
+                    r##"<path d="M {:.1} {:.1} Q {cx:.1} {:.1} {:.1} {:.1}" stroke="#ffffff" stroke-width="1" fill="none"/>"##,
+                    cx - 2.6, cy + 0.5, cy - 6.0, cx + 2.6, cy + 0.5
+                ));
+            }
+        }
+        if show_labels {
+            let (lx, ly, anchor) = match dir {
+                GitDir::Lr => (cx, cy + 22.0, "middle"),
+                GitDir::Tb | GitDir::Bt => (cx + 14.0, cy + 4.0, "start"),
+            };
+            if let Some(bg) = &label_bg {
+                let lw = estimate_text_width(&c.id, label_size) + 6.0;
+                let bx = if anchor == "middle" { lx - lw / 2.0 } else { lx - 3.0 };
+                if !rotate_labels {
+                    svg.push_str(&format!(
+                        r##"<rect x="{bx:.1}" y="{:.1}" width="{lw:.1}" height="{:.1}" rx="2" fill="{bg}" opacity="0.85"/>"##,
+                        ly - label_size,
+                        label_size + 4.0
+                    ));
+                }
+            }
+            let rotate = if rotate_labels {
+                format!(r##" transform="rotate(-45 {lx:.1} {ly:.1})""##)
+            } else {
+                String::new()
+            };
+            let anchor = if rotate_labels { "end" } else { anchor };
             svg.push_str(&format!(
-                r##"<rect x="{:.1}" y="{:.1}" width="{tw:.1}" height="16" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-width="1"/>"##,
-                cx - tw / 2.0,
-                cy - 27.0
+                r##"<text x="{lx:.1}" y="{ly:.1}" text-anchor="{anchor}" font-size="{label_size}" fill="{label_color}" data-role="commit-label"{rotate}>{}</text>"##,
+                escape_xml(&c.id)
+            ));
+        }
+        if let Some(tag) = &c.tag {
+            let tw = estimate_text_width(tag, tag_size) + 12.0;
+            let th = tag_size + 6.0;
+            let (tx, ty) = match dir {
+                GitDir::Lr => (cx - tw / 2.0, cy - 13.0 - th),
+                GitDir::Tb | GitDir::Bt => (cx - 14.0 - tw, cy - th / 2.0),
+            };
+            svg.push_str(&format!(
+                r##"<rect x="{tx:.1}" y="{ty:.1}" width="{tw:.1}" height="{th:.1}" rx="4" fill="{tag_bg}" stroke="{tag_border}" stroke-width="1" data-role="tag"/>"##
             ));
             svg.push_str(&format!(
-                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="10" font-weight="bold" fill="#854d0e">{}</text>"##,
-                cy - 15.5,
+                r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="{tag_size}" font-weight="bold" fill="{tag_color}">{}</text>"##,
+                tx + tw / 2.0,
+                ty + th - 4.5,
                 escape_xml(tag)
             ));
         }
@@ -5254,7 +6351,7 @@ struct TimelineEntry {
     events: Vec<String>,
 }
 
-fn render_timeline_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+fn render_timeline_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
     let mut title: Option<String> = None;
     let mut entries: Vec<TimelineEntry> = Vec::new();
 
@@ -5301,6 +6398,7 @@ fn render_timeline_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let axis_y = top_y + 34.0;
 
     const ACCENTS: &[&str] = &["#2563eb", "#059669", "#d97706", "#7c3aed", "#db2777"];
+    let multicolor = !config.flag("timeline.disableMulticolor", false);
     let mut svg = String::new();
     svg.push_str(&format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
@@ -5323,7 +6421,14 @@ fn render_timeline_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 
     for (i, entry) in entries.iter().enumerate() {
         let cx = pad_x + (i as f32 + 0.5) * col_w;
-        let color = ACCENTS[i % ACCENTS.len()];
+        // `themeVariables.cScaleN` recolours period N; `timeline.disableMulticolor` uses one colour.
+        let n = if multicolor { i } else { 0 };
+        let scale = config.color_var(&format!("cScale{}", n % 12));
+        let color = scale.clone().unwrap_or_else(|| ACCENTS[n % ACCENTS.len()].to_string());
+        let (box_fill, text_fill) = match config.color_var(&format!("cScaleLabel{}", n % 12)) {
+            Some(label) => (color.clone(), label),
+            None => ("#f8fafc".to_string(), "#1e293b".to_string()),
+        };
         svg.push_str(&format!(
             r##"<circle cx="{cx:.1}" cy="{axis_y:.1}" r="7" fill="{color}" stroke="#ffffff" stroke-width="2"/>"##
         ));
@@ -5336,11 +6441,11 @@ fn render_timeline_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             let ey = axis_y + 20.0 + ei as f32 * 38.0;
             let bw = col_w - 16.0;
             svg.push_str(&format!(
-                r##"<rect x="{:.1}" y="{ey:.1}" width="{bw:.1}" height="28" rx="6" fill="#f8fafc" stroke="{color}" stroke-width="1.3"/>"##,
+                r##"<rect x="{:.1}" y="{ey:.1}" width="{bw:.1}" height="28" rx="6" fill="{box_fill}" stroke="{color}" stroke-width="1.3"/>"##,
                 cx - bw / 2.0
             ));
             svg.push_str(&format!(
-                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="11.5" fill="#1e293b">{}</text>"##,
+                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="11.5" fill="{text_fill}">{}</text>"##,
                 ey + 18.0,
                 escape_xml(ev)
             ));
@@ -6628,5 +7733,194 @@ flowchart TD
         assert_eq!(parse_xy_axis("Score 1.5 --> 2.5"), (Some("Score".into()), Some((1.5, 2.5))));
         assert_eq!(parse_xy_axis("\"Low --> High\""), (Some("Low --> High".into()), None));
         assert_eq!(parse_xy_axis("10 --> 5"), (Some("10 --> 5".into()), None));
+    }
+
+    fn tag_with<'a>(svg: &'a str, marker: &str) -> Vec<&'a str> {
+        let mut out = Vec::new();
+        let mut rest = svg;
+        while let Some(at) = rest.find(marker) {
+            let start = rest[..at + 1].rfind('<').unwrap_or(0);
+            let end = rest[at..].find('>').map_or(rest.len(), |e| at + e + 1);
+            out.push(&rest[start..end]);
+            rest = &rest[end..];
+        }
+        out
+    }
+
+    #[test]
+    fn flowchart_expanded_shapes_labels_and_edge_attributes() {
+        let svg = svg_of(
+            "flowchart TD\n  A@{ shape: cyl, label: \"Orders, 2026\" } --> B@{ shape: doc }\n  B --> C@{ shape: sm-circ, label: \"hidden\" }\n  C --> D@{ shape: no-such-shape, label: \"Kept\" }\n",
+        );
+        assert!(svg.contains(r#"data-shape="cylinder""#), "{svg}");
+        assert!(svg.contains(r#"data-shape="document""#));
+        assert!(svg.contains(r#"data-shape="small-circle""#));
+        // The label comes from the attributes (comma inside quotes kept); no id or raw attribute text leaks.
+        assert!(svg.contains(">Orders, 2026<"));
+        assert!(svg.contains(">B<") && svg.contains(">Kept<"));
+        assert!(!svg.contains("hidden") && !svg.contains("shape:") && !svg.contains("A@"));
+        // An unknown shape name keeps the default rectangle.
+        assert_eq!(svg.matches(r##"rx="3" fill="#eff6ff""##).count(), 1, "only Kept is a plain box\n{svg}");
+
+        // Every name and alias in the table draws something different from a plain box or falls back to a known shape.
+        for name in [
+            "rect", "rounded", "stadium", "subproc", "cyl", "circle", "odd", "diamond", "hex", "lean-r", "lean-l", "trap-b",
+            "trap-t", "dbl-circ", "text", "notch-rect", "lin-rect", "sm-circ", "framed-circle", "f-circ", "fork", "hourglass",
+            "comment", "brace-r", "braces", "bolt", "doc", "lin-doc", "docs", "tag-doc", "delay", "das", "lin-cyl", "curv-trap",
+            "div-rect", "tri", "flip-tri", "win-pane", "notch-pent", "sl-rect", "procs", "flag", "bow-rect", "cross-circ",
+            "tag-rect", "datastore", "database", "decision", "junction", "manual-input", "stored-data",
+        ] {
+            assert!(flow_shape_by_name(name).is_some(), "{name}");
+            let svg = svg_of(&format!("flowchart LR\n  X@{{ shape: {name}, label: \"L\" }} --> Y\n"));
+            assert!(roxmltree::Document::parse(&svg).is_ok(), "{name}: {svg}");
+        }
+        // Start/stop markers and fork bars are small and carry no text, as in mermaid.
+        let fork = svg_of("flowchart LR\n  A --> J@{ shape: fork, label: \"Join\" } --> B\n");
+        let bar = tag_with(&fork, r#"data-shape="fork""#)[0];
+        assert!(attr_f32(bar, "height").unwrap() > attr_f32(bar, "width").unwrap(), "vertical bar in LR: {bar}");
+        assert!(!fork.contains(">Join<"));
+
+        // `e1@{ ... }` styles the edge declared with that id instead of creating a node.
+        let src = "flowchart LR\n  A e1@--> B\n  A e2@--> C\n  e1@{ curve: linear }\n  e2@{ animate: true }\n";
+        let svg = svg_of(src);
+        assert!(!svg.contains(">e1<") && !svg.contains(">e2<"), "{svg}");
+        let mut nodes = Vec::new();
+        let mut node_map = HashMap::new();
+        let mut edges = Vec::new();
+        parse_flowchart_statement("A e1@--> B", None, &mut nodes, &mut node_map, &mut edges);
+        assert_eq!(edges[0].id.as_deref(), Some("e1"));
+        assert_eq!(split_attr_statement("e1@{ curve: linear }"), Some(("e1", vec![("curve".to_string(), "linear".to_string())])));
+        assert_eq!(split_attr_statement("A[x] --> B"), None);
+        // A node id that happens to be reused after an edge id still parses as a node.
+        let svg = svg_of("flowchart LR\n  n1@{ shape: hex, label: \"Six\" } --> n2\n");
+        assert!(svg.contains(r#"data-shape="hexagon""#) && svg.contains(">Six<"));
+    }
+
+    #[test]
+    fn frontmatter_config_reads_a_small_yaml_subset() {
+        let src = "---\ntitle: T\nconfig:\n  logLevel: 'debug'\n  theme: 'Forest'  # a comment\n  themeVariables:\n    'git0': '#ff0000'\n    commitLabelFontSize: 14px\n  themeCSS: \" .a { fill: red }\n    .b {}\n  \"\n  gantt:\n    topAxis: true  #false\n  notes: |\n    free text: here\n  gitGraph:\n    showBranches: false\n---\ngitGraph\n  commit\n";
+        let config = mermaid_frontmatter_config(src);
+        assert_eq!(config.theme, Some(MermaidTheme::Forest));
+        assert_eq!(config.vars.get("git0").map(String::as_str), Some("#ff0000"));
+        assert_eq!(config.vars.get("commitLabelFontSize").map(String::as_str), Some("14px"));
+        assert_eq!(config.option("logLevel"), Some("debug"));
+        assert_eq!(config.option("gantt.topAxis"), Some("true"));
+        assert!(!config.flag("gitGraph.showBranches", true));
+        assert!(config.option("themeCSS").is_some_and(|css| css.contains(".b")));
+        // Block scalar content is skipped, not read as keys.
+        assert_eq!(config.option("notes"), Some(""));
+        assert!(!config.options.keys().any(|k| k.contains("free text")));
+        // Indented frontmatter keys and no frontmatter at all.
+        let indented = mermaid_frontmatter_config("---\n  config:\n    class:\n      hideEmptyMembersBox: true\n---\nclassDiagram\n  class A\n");
+        assert!(indented.flag("class.hideEmptyMembersBox", false));
+        assert!(mermaid_frontmatter_config("flowchart LR\n  A --> B\n").options.is_empty());
+        // Unknown options are ignored and the diagram still renders.
+        assert!(render_mermaid("---\nconfig:\n  flowchart:\n    curve: stepAfter\n    nonsense: [1, 2]\n---\nflowchart LR\n  A --> B\n").is_some());
+        // Theme variables only reach the SVG when they are plain colour values.
+        let hostile = "---\nconfig:\n  themeVariables:\n    primaryColor: 'red\" onload=\"alert(1)'\n---\nflowchart LR\n  A --> B\n";
+        let svg = svg_of(hostile);
+        assert!(!svg.contains("onload") && !svg.contains("alert"), "{svg}");
+        assert_eq!(safe_css_value("rgb(1, 2, 3)").as_deref(), Some("rgb(1, 2, 3)"));
+        assert_eq!(safe_css_value("url(javascript:x)"), None);
+    }
+
+    #[test]
+    fn themes_remap_the_builtin_palette_but_keep_user_styles() {
+        let body = "flowchart LR\n  A --> B\n  style B fill:#ff99ff\n";
+        let plain = svg_of(body);
+        assert!(plain.contains(r##"fill="#eff6ff""##) && plain.contains(r##"stroke="#2563eb""##));
+        let themed = |theme: &str| svg_of(&format!("---\nconfig:\n  theme: {theme}\n---\n{body}"));
+        assert_eq!(themed("default"), plain);
+        assert_eq!(themed("base"), plain);
+
+        let dark = themed("dark");
+        let bg = tag_with(&dark, "<rect width=")[0];
+        let fill = bg.split("fill=\"").nth(1).unwrap().split('"').next().unwrap();
+        let (_, _, l) = rgb_hsl(hex_rgb(fill).unwrap());
+        assert!(l < 0.2, "dark background {fill}");
+        let label = tag_with(&dark, ">A<")[0];
+        let ink = label.split("fill=\"").nth(1).unwrap().split('"').next().unwrap();
+        assert!(rgb_hsl(hex_rgb(ink).unwrap()).2 > 0.7, "light text {ink}");
+        // A `style` colour is the author's, not the palette's.
+        assert!(dark.contains(r##"fill="#ff99ff""##));
+
+        let forest = themed("forest");
+        assert!(!forest.contains(r##"stroke="#2563eb""##));
+        let stroke = tag_with(&forest, "<rect x=")[0].split("stroke=\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+        let (h, _, _) = rgb_hsl(hex_rgb(&stroke).unwrap());
+        assert!((70.0..140.0).contains(&h), "green border {stroke}");
+
+        let neutral = themed("neutral");
+        let stroke = tag_with(&neutral, "<rect x=")[0].split("stroke=\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+        assert!(rgb_hsl(hex_rgb(&stroke).unwrap()).1 < 0.01, "grey border {stroke}");
+
+        let vars = svg_of(&format!("---\nconfig:\n  themeVariables:\n    primaryColor: '#fde68a'\n    lineColor: darkred\n---\n{body}"));
+        assert!(vars.contains(r##"fill="#fde68a""##) && vars.contains(r#"stroke="darkred""#), "{vars}");
+        // Unknown theme names change nothing.
+        assert_eq!(themed("redux-color"), plain);
+        assert_eq!(hsl_hex(0.0, 0.0, 1.0), "#ffffff");
+        assert_eq!(hsl_hex(120.0, 1.0, 0.5), "#00ff00");
+    }
+
+    #[test]
+    fn git_graph_commit_types_cherry_pick_order_direction_and_config() {
+        let src = "gitGraph\n  commit id: \"A\"\n  commit id: \"R\" type: REVERSE\n  branch hotfix order: 3\n  branch dev order: 1\n  commit id: \"B\" type: HIGHLIGHT\n  checkout main\n  cherry-pick id: \"B\"\n  merge dev tag: \"v1\"\n";
+        let svg = svg_of(src);
+        for kind in ["normal", "reverse", "highlight", "cherry-pick", "merge"] {
+            assert_eq!(svg.matches(&format!(r#"data-commit-type="{kind}""#)).count(), 1, "{kind}\n{svg}");
+        }
+        assert!(svg.contains(">cherry-pick:B<") && svg.contains(r#"data-link="cherry-pick""#));
+        assert!(svg.contains(">v1<"));
+        // `order:` sorts the lanes: main (0), dev (1), hotfix (3), whatever the definition order.
+        let lane_y = |name: &str| text_y(&svg, name);
+        assert!(lane_y("main") < lane_y("dev") && lane_y("dev") < lane_y("hotfix"), "{svg}");
+        // Unordered branches sit between 0 and 1, in definition order.
+        let svg2 = svg_of("gitGraph\n  commit\n  branch late order: 1\n  branch x\n  commit\n  branch y\n  commit\n");
+        assert!(text_y(&svg2, "main") < text_y(&svg2, "x") && text_y(&svg2, "x") < text_y(&svg2, "y"));
+        assert!(text_y(&svg2, "y") < text_y(&svg2, "late"));
+
+        // Orientation: TB runs downwards, BT upwards, LR to the right.
+        let flow = "  commit id: \"one\"\n  commit id: \"two\"\n";
+        let lr = svg_of(&format!("gitGraph\n{flow}"));
+        assert!(text_x(&lr, "two") > text_x(&lr, "one") + 30.0);
+        let tb = svg_of(&format!("gitGraph TB:\n{flow}"));
+        assert!(text_y(&tb, "two") > text_y(&tb, "one") + 30.0, "{tb}");
+        let bt = svg_of(&format!("gitGraph BT:\n{flow}"));
+        assert!(text_y(&bt, "two") + 30.0 < text_y(&bt, "one"), "{bt}");
+
+        // Config: names, visibility, colours, rotation, parallel commits.
+        let cfg = "---\nconfig:\n  gitGraph:\n    mainBranchName: trunk\n    showBranches: false\n    showCommitLabel: false\n---\n";
+        let hidden = svg_of(&format!("{cfg}gitGraph\n{flow}"));
+        assert!(!hidden.contains("data-role=\"branch-label\"") && !hidden.contains("data-role=\"commit-label\""));
+        assert!(!hidden.contains(">trunk<") && !hidden.contains(">main<"));
+        let named = svg_of("---\nconfig:\n  gitGraph:\n    mainBranchName: trunk\n    rotateCommitLabel: true\n  themeVariables:\n    git0: '#123456'\n    gitBranchLabel0: '#fedcba'\n    commitLabelColor: '#abcdef'\n---\ngitGraph\n  commit id: \"one\"\n");
+        assert!(named.contains(">trunk<") && named.contains(r##"fill="#123456""##) && named.contains(r##"fill="#fedcba""##));
+        assert!(named.contains(r##"fill="#abcdef""##) && named.contains("rotate(-45"));
+        let branchy = "gitGraph\n  commit\n  branch a\n  commit\n  commit\n  checkout main\n  commit\n  commit\n";
+        let serial = render_mermaid(branchy);
+        let parallel = render_mermaid(&format!("---\nconfig:\n  gitGraph:\n    parallelCommits: true\n---\n{branchy}"));
+        let width = |out: Option<MermaidOutput>| match out {
+            Some(MermaidOutput::Svg { width_px, .. }) => width_px,
+            _ => panic!("svg"),
+        };
+        assert!(width(parallel) + 100 < width(serial));
+    }
+
+    #[test]
+    fn timeline_period_colours_and_class_empty_members_from_config() {
+        let body = "timeline\n  2001 : A\n  2002 : B\n";
+        let svg = svg_of(&format!("---\nconfig:\n  themeVariables:\n    cScale0: '#ff0000'\n    cScaleLabel0: '#ffffff'\n---\n{body}"));
+        assert!(svg.contains(r##"fill="#ff0000""##) && svg.contains(r##"fill="#ffffff">A<"##), "{svg}");
+        let mono = svg_of(&format!("---\nconfig:\n  timeline:\n    disableMulticolor: true\n---\n{body}"));
+        assert!(!mono.contains("#059669"), "second period uses the first colour");
+        assert!(svg_of(body).contains("#059669"));
+
+        let height = |src: &str| match render_mermaid(src) {
+            Some(MermaidOutput::Svg { height_px, .. }) => height_px,
+            _ => panic!("svg"),
+        };
+        let class = "classDiagram\n  class Duck\n";
+        let hidden = height(&format!("---\nconfig:\n  class:\n    hideEmptyMembersBox: true\n---\n{class}"));
+        assert!(hidden < height(class), "{hidden}");
     }
 }
