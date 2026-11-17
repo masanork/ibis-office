@@ -12,6 +12,8 @@ pub(super) struct SeqParticipant {
     pub(super) is_actor: bool,
     /// `participant A@{ "type": "database" }`.
     pub(super) kind: Option<SeqKind>,
+    /// Titles from `link` / `links` (URLs are not followed).
+    pub(super) links: Vec<String>,
 }
 
 /// mermaid's participant types (`@{ "type": … }`).
@@ -171,6 +173,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             label: label.unwrap_or(id).to_string(),
             is_actor,
             kind: None,
+            links: Vec::new(),
         });
         part_map.insert(id.to_string(), idx);
         idx
@@ -190,7 +193,51 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             title = (!t.is_empty()).then_some(t);
             continue;
         }
-        if l.starts_with("accTitle") || l.starts_with("accDescr") || l.starts_with("link ") || l.starts_with("links ") {
+        if l.starts_with("accTitle") || l.starts_with("accDescr") {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("link ") {
+            if let Some((who, rest)) = rest.split_once(':') {
+                let title = rest.split_once(" @ ").or_else(|| rest.split_once('@')).map(|(t, _)| t).unwrap_or(rest);
+                let idx = ensure_participant(who.trim(), None, false, &mut participants, &mut part_map);
+                let title = unquote(title.trim());
+                if !title.is_empty() {
+                    participants[idx].links.push(title);
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("links ") {
+            if let Some((who, spec)) = rest.split_once(':') {
+                let idx = ensure_participant(who.trim(), None, false, &mut participants, &mut part_map);
+                let body = spec.trim().trim_start_matches('{').trim_end_matches('}');
+                let mut start = 0usize;
+                let mut depth = 0i32;
+                let mut quote = false;
+                let chars: Vec<(usize, char)> = body.char_indices().collect();
+                let mut ends = Vec::new();
+                for (i, ch) in chars {
+                    match ch {
+                        '"' => quote = !quote,
+                        '{' | '[' if !quote => depth += 1,
+                        '}' | ']' if !quote => depth -= 1,
+                        ',' if !quote && depth == 0 => {
+                            ends.push((start, i));
+                            start = i + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                ends.push((start, body.len()));
+                for (a, b) in ends {
+                    let entry = body[a..b].trim();
+                    let Some(colon) = find_unquoted(entry, ':') else { continue };
+                    let title = unquote(entry[..colon].trim());
+                    if !title.is_empty() {
+                        participants[idx].links.push(title);
+                    }
+                }
+            }
             continue;
         }
         if let Some(rest) = l.strip_prefix("create ") {
@@ -704,6 +751,17 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 by + box_h / 2.0 + 4.5,
                 escape_xml(&p.label)
             ));
+            // mermaid.js draws `link` / `links` titles as a menu beside the actor.
+            if row_i == 0 {
+                for (li, title) in p.links.iter().enumerate() {
+                    svg.push_str(&format!(
+                        r##"<text x="{:.1}" y="{:.1}" font-size="11" fill="#2563eb" text-decoration="underline" data-role="seq-link">{}</text>"##,
+                        bx + w + 6.0,
+                        by + 14.0 + li as f32 * 14.0,
+                        escape_xml(title)
+                    ));
+                }
+            }
         }
     }
 
@@ -840,7 +898,48 @@ pub(super) fn seq_box_title(rest: &str) -> String {
     {
         return after[end + 1..].trim().to_string();
     }
-    rest.split_once(char::is_whitespace).map(|(_, title)| title.trim().to_string()).filter(|title| !title.is_empty()).unwrap_or_else(|| rest.to_string())
+    if let Some((first, title)) = rest.split_once(char::is_whitespace) {
+        let title = title.trim();
+        if seq_looks_like_color(first) && !title.is_empty() {
+            return title.to_string();
+        }
+    }
+    rest.to_string()
+}
+
+/// A CSS colour word or hex used as the optional first token of `box <color> Title`.
+fn seq_looks_like_color(s: &str) -> bool {
+    let s = s.trim();
+    if s.len() >= 4 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit()) && matches!(s.len() - 1, 3 | 4 | 6 | 8) {
+        return true;
+    }
+    if s.eq_ignore_ascii_case("transparent") || s.eq_ignore_ascii_case("currentColor") {
+        return true;
+    }
+    // Common CSS colour names (mermaid `box Purple Alice`).
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "aliceblue" | "antiquewhite" | "aqua" | "aquamarine" | "azure" | "beige" | "bisque" | "black"
+            | "blanchedalmond" | "blue" | "blueviolet" | "brown" | "burlywood" | "cadetblue" | "chartreuse"
+            | "chocolate" | "coral" | "cornflowerblue" | "cornsilk" | "crimson" | "cyan" | "darkblue" | "darkcyan"
+            | "darkgoldenrod" | "darkgray" | "darkgreen" | "darkgrey" | "darkkhaki" | "darkmagenta" | "darkolivegreen"
+            | "darkorange" | "darkorchid" | "darkred" | "darksalmon" | "darkseagreen" | "darkslateblue" | "darkslategray"
+            | "darkslategrey" | "darkturquoise" | "darkviolet" | "deeppink" | "deepskyblue" | "dimgray" | "dimgrey"
+            | "dodgerblue" | "firebrick" | "floralwhite" | "forestgreen" | "fuchsia" | "gainsboro" | "ghostwhite"
+            | "gold" | "goldenrod" | "gray" | "green" | "greenyellow" | "grey" | "honeydew" | "hotpink" | "indianred"
+            | "indigo" | "ivory" | "khaki" | "lavender" | "lavenderblush" | "lawngreen" | "lemonchiffon" | "lightblue"
+            | "lightcoral" | "lightcyan" | "lightgoldenrodyellow" | "lightgray" | "lightgreen" | "lightgrey"
+            | "lightpink" | "lightsalmon" | "lightseagreen" | "lightskyblue" | "lightslategray" | "lightslategrey"
+            | "lightsteelblue" | "lightyellow" | "lime" | "limegreen" | "linen" | "magenta" | "maroon"
+            | "mediumaquamarine" | "mediumblue" | "mediumorchid" | "mediumpurple" | "mediumseagreen" | "mediumslateblue"
+            | "mediumspringgreen" | "mediumturquoise" | "mediumvioletred" | "midnightblue" | "mintcream" | "mistyrose"
+            | "moccasin" | "navajowhite" | "navy" | "oldlace" | "olive" | "olivedrab" | "orange" | "orangered"
+            | "orchid" | "palegoldenrod" | "palegreen" | "paleturquoise" | "palevioletred" | "papayawhip" | "peachpuff"
+            | "peru" | "pink" | "plum" | "powderblue" | "purple" | "rebeccapurple" | "red" | "rosybrown" | "royalblue"
+            | "saddlebrown" | "salmon" | "sandybrown" | "seagreen" | "seashell" | "sienna" | "silver" | "skyblue"
+            | "slateblue" | "slategray" | "slategrey" | "snow" | "springgreen" | "steelblue" | "tan" | "teal"
+            | "thistle" | "tomato" | "turquoise" | "violet" | "wheat" | "white" | "whitesmoke" | "yellow" | "yellowgreen"
+    )
 }
 
 pub(super) fn seq_actor_token(raw: &str) -> (&str, bool, bool) {
@@ -1052,6 +1151,34 @@ sequenceDiagram
         assert!(svg.contains("data-shape=\"seq-box\""), "{svg}");
         assert!(svg.contains("利用者"));
         assert!(svg.contains("依頼"));
+        assert_eq!(seq_box_title("Purple Alice & John"), "Alice & John");
+        assert_eq!(seq_box_title("Another Group"), "Another Group");
+        assert_eq!(seq_box_title("rgb(200,220,240) 利用者"), "利用者");
+        let nested = svg_of(
+            "sequenceDiagram
+    box Purple Alice & John
+    participant A
+    participant J
+    end
+    box Another Group
+    participant B
+    participant C
+    end
+    A->>J: Hello John, how are you?
+",
+        );
+        assert!(nested.contains(">Another Group<"), "{nested}");
+        assert!(nested.contains(">Alice &amp; John<") || nested.contains(">Alice & John<"), "{nested}");
+
+        let linked = svg_of(
+            "sequenceDiagram
+    participant Alice
+    link Alice: Dashboard @ https://example.com/dash
+    links Alice: {\"Wiki\": \"https://example.com/wiki\"}
+    Alice->>Alice: hi
+",
+        );
+        assert!(linked.contains(">Dashboard<") && linked.contains(">Wiki<"), "{linked}");
     }
 
     #[test]

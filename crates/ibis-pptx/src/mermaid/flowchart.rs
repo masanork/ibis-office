@@ -592,7 +592,7 @@ pub(super) fn fa_symbol(name: &str) -> &'static str {
     }
 }
 
-/// `fa:fa-ban forbidden` → `⊘ forbidden`; `fab:` / `fas:` / `far:` / `fal:` / `fak:` too.
+/// `fa:fa-ban forbidden` → `forbidden`; `fab:` / `fas:` / `far:` / `fal:` / `fak:` too.
 pub(super) fn replace_fa_icons(text: &str) -> String {
     if !text.contains(":fa-") {
         return text.to_string();
@@ -614,8 +614,12 @@ pub(super) fn replace_fa_icons(text: &str) -> String {
         out.push_str(&head[..head.len() - prefix_len]);
         let name_start = at + 1;
         let name_end = rest[name_start..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).map_or(rest.len(), |e| name_start + e);
-        out.push_str(fa_symbol(&rest[name_start..name_end]));
-        rest = &rest[name_end..];
+        // mermaid.js draws the icon as a graphic and keeps the surrounding words as the label
+        // (`A fa:fa-camera-retro perhaps?` -> `A perhaps?`).
+        rest = &rest[name_end..].trim_start();
+        if !out.is_empty() && !out.ends_with(' ') && !rest.is_empty() {
+            out.push(' ');
+        }
     }
     out.push_str(rest);
     out
@@ -927,7 +931,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         return None;
     }
 
-    // `fa:fa-ban` icons in labels become symbols.
+    // `fa:fa-ban` icons in labels are dropped (the remaining words stay).
     for node in &mut nodes {
         node.label = replace_fa_icons(&node.label);
     }
@@ -1836,7 +1840,12 @@ pub(super) fn push_flow_shape(svg: &mut String, shape: NodeShape, x: f32, y: f32
         NodeShape::InvTrapezoid => push_flow_polygon(svg, &trapezoid_points(x, y, w, h, false), "#eff6ff", "#2563eb", "inv-trapezoid"),
         NodeShape::Parallelogram => push_flow_polygon(svg, &parallelogram_points(x, y, w, h), "#eff6ff", "#2563eb", "parallelogram"),
         NodeShape::Asymmetric => push_flow_polygon(svg, &asymmetric_points(x, y, w, h), "#eff6ff", "#2563eb", "asymmetric"),
-        NodeShape::Ext(ext) => return push_ext_shape(svg, ext, x, y, w, h),
+        NodeShape::Ext(ext) => {
+            svg.push_str(r##"<g data-shape="ext">"##);
+            let dy = push_ext_shape(svg, ext, x, y, w, h);
+            svg.push_str("</g>");
+            return dy;
+        }
     }
     0.0
 }
@@ -2322,12 +2331,12 @@ flowchart TD
 
     #[test]
     fn fa_icons_become_symbols() {
-        assert_eq!(replace_fa_icons("fa:fa-ban forbidden"), "\u{2298} forbidden");
-        assert_eq!(replace_fa_icons("A fa:fa-camera-retro perhaps?"), "A \u{25C9} perhaps?");
-        assert_eq!(replace_fa_icons("fab:fa-truck-bold a custom icon"), "\u{25C6} a custom icon");
+        assert_eq!(replace_fa_icons("fa:fa-ban forbidden"), "forbidden");
+        assert_eq!(replace_fa_icons("A fa:fa-camera-retro perhaps?"), "A perhaps?");
+        assert_eq!(replace_fa_icons("fab:fa-truck-bold a custom icon"), "a custom icon");
         assert_eq!(replace_fa_icons("sofa:fa-x and plain"), "sofa:fa-x and plain");
         let svg = svg_of("flowchart TD\n    B[\"fa:fa-twitter for peace\"]\n    B-->C[fa:fa-ban forbidden]\n");
-        assert!(!svg.contains("fa:") && svg.contains("\u{2298} forbidden"), "{svg}");
+        assert!(!svg.contains("fa:") && svg.contains(">forbidden<") && svg.contains(">for peace<"), "{svg}");
     }
 
     #[test]
