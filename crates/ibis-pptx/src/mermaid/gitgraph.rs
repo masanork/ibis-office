@@ -149,7 +149,10 @@ pub(super) fn render_git_graph_svg(source: &str, config: &MermaidConfig) -> Opti
                     continue;
                 };
                 let idx = commits.len();
-                let tag = extract_git_attr(l, "tag:").unwrap_or_else(|| format!("cherry-pick:{src_id}"));
+                let tag = extract_git_attr(l, "tag:").unwrap_or_else(|| match extract_git_attr(l, "parent:") {
+                    Some(parent) => format!("cherry-pick:{src_id}|parent:{parent}"),
+                    None => format!("cherry-pick:{src_id}"),
+                });
                 commits.push(GitCommit {
                     branch: current,
                     id: next_id(&mut auto_idx),
@@ -475,6 +478,18 @@ mod tests {
             assert_eq!(svg.matches(&format!(r#"data-commit-type="{kind}""#)).count(), 1, "{kind}\n{svg}");
         }
         assert!(svg.contains(">cherry-pick:B<") && svg.contains(r#"data-link="cherry-pick""#));
+        let merge = svg_of(
+            "gitGraph
+        commit id: \"ZERO\"
+        branch develop
+        commit id:\"B\"
+        checkout main
+        merge develop id:\"MERGE\"
+        checkout develop
+        cherry-pick id:\"MERGE\" parent:\"B\"
+",
+        );
+        assert!(merge.contains(">cherry-pick:MERGE|parent:B<"), "{merge}");
         assert!(svg.contains(r#"data-role="edge""#), "{svg}");
         assert!(svg.contains(">v1<"));
         // `order:` sorts the lanes: main (0), dev (1), hotfix (3), whatever the definition order.
