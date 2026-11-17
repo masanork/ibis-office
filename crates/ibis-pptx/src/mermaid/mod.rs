@@ -177,7 +177,7 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Class => render_class_diagram_svg(trimmed, &config),
         DiagramKind::Er => render_er_diagram_svg(trimmed),
         DiagramKind::Gantt => render_gantt_svg(trimmed),
-        DiagramKind::Mindmap => render_mindmap_svg(trimmed),
+        DiagramKind::Mindmap => render_mindmap_svg(trimmed, &config),
         DiagramKind::GitGraph => render_git_graph_svg(trimmed, &config),
         DiagramKind::Journey => render_journey_svg(trimmed),
         DiagramKind::Timeline => render_timeline_svg(trimmed, &config),
