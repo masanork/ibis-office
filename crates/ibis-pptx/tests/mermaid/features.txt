@@ -284,3 +284,23 @@ wardley | notes | ok | prefix | note
 wardley | annotations legend | ok | prefix | annotation
 wardley | accelerators / deaccelerators | ok | prefix | accelerator
 wardley | accelerators / deaccelerators | ok | prefix | deaccelerator
+
+treeView | box-drawing prefixes (├── └── │) | ok | contains | ──
+treeView | :::class highlight | ok | contains | :::
+treeView | ## comments | ok | contains | ##
+treeView | icon(...) (generic file / folder glyph; icon packs are not bundled) | gap | contains | icon(
+treeView | config: showIcons (generic folder / file glyphs) | ok | config | treeView.showIcons
+treeView | config: rowIndent / lineThickness | ok | config | treeView.rowIndent
+treeView | config: rowIndent / lineThickness | ok | config | treeView.lineThickness
+treeView | config: icon packs (defaultIconPack, filenameIcons, extensionIcons) | gap | config | treeView.defaultIconPack
+treeView | config: icon packs (defaultIconPack, filenameIcons, extensionIcons) | gap | config | treeView.filenameIcons
+treeView | config: icon packs (defaultIconPack, filenameIcons, extensionIcons) | gap | config | treeView.extensionIcons
+treeView | config: treeView theme variables (labelFontSize, labelColor, lineColor) | ok | config | themeVariables.treeView
+
+swimlanes | lanes (subgraph id [title] … end) | ok | prefix | subgraph
+swimlanes | links with labels and chains | ok | contains | --
+swimlanes | flowchart node shapes | ok | contains | [
+swimlanes | classDef / class / style | ok | prefix | classDef
+swimlanes | classDef / class / style | ok | prefix | class
+swimlanes | classDef / class / style | ok | prefix | style
+swimlanes | accTitle / accDescr | ok | prefix | acc
