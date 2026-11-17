@@ -1,0 +1,11 @@
+# Markdown の Mermaid 図
+
+Markdown の `mermaid` コードブロックを文書やスライドに読み込むと、対応する図は表示用の SVG または Office グラフに変換されます。対応は Mermaid の構文すべてを網羅しているわけではありません。大切な図は、読み込み後と保存・再読込後に内容を確認してください。
+
+- Flowchart、sequence、ER、state、Gantt などは SVG 図として扱います。図そのものは Office の図形として個々に編集できません。
+- Pie と xychart は通常、編集できる Office グラフになります。取り込み状況によっては SVG になります。グラフを編集した場合、古い Mermaid ソースをそのまま書き戻す代わりに `chart` ブロックとして出力することがあります。
+- 対応する図は Markdown に書き出す際、保存された Mermaid ソースを使います。未対応の図や解釈できない図はコードとして表示され、内容は残りますが、Markdown に再書き出しすると `mermaid` の言語指定が失われます。
+- 対応済みの図種でも、一部の構文や設定が描画されないことがあります。例えば flowchart の画像ノードは画像の代わりに枠を表示し、外部画像を取得しません。リンクやアニメーションなど、静的な文書では動作しない機能もあります。
+- ZenUML、Cynefin、Ishikawa は現在描画しません。アイコンパックが組み込まれていない図では代替表示になることがあります。
+
+テスト対象と既知の構文差は [Mermaid compatibility corpus](../crates/ibis-pptx/tests/mermaid/README.md) と [features.txt](../crates/ibis-pptx/tests/mermaid/features.txt) に記載しています。コーパスで描画できることや参照実装とのラベル一致は、図の意味やレイアウトの完全な一致を保証しません。
