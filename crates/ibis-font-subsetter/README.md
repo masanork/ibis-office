@@ -1,8 +1,9 @@
 # ibisOffice font subsetter
 
-An IVS-aware TTF/CFF OpenType subsetter, built and maintained in this workspace.
-The code is AGPL-3.0-only; see [ORIGIN.md](ORIGIN.md) for its provenance and
-retained original notice. Font and dependency licenses remain independent.
+An IVS-aware TTF/CFF OpenType subsetter, written for ibisOffice in this repository.
+The code is AGPL-3.0-only. [ORIGIN.md](ORIGIN.md) records the author and how the
+crate can be contributed under the ibisOffice CLA. Font and dependency licenses
+remain independent.
 
 `subset_font_raw` produces SFNT, `subset_font` produces WOFF2, and
 `font_has_glyphs` checks coverage. `FontSubsetter` accepts a known-size source
