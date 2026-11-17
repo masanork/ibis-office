@@ -444,6 +444,79 @@ pub(super) fn join_markdown_strings(source: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
+/// `accTitle` / `accDescr` (including the `{ ... }` block form) for SVG `<title>` / `<desc>`.
+pub(super) fn parse_acc_meta(source: &str) -> (Option<String>, Option<String>) {
+    let mut title = None;
+    let mut descr = None;
+    let mut in_block = false;
+    let mut block = String::new();
+    for raw in source.lines() {
+        let line = raw.trim();
+        if in_block {
+            if line == "}" || line.ends_with('}') && line.trim_start().starts_with('}') {
+                in_block = false;
+                let t = block.trim();
+                if !t.is_empty() {
+                    descr = Some(t.to_string());
+                }
+                block.clear();
+            } else {
+                if !block.is_empty() {
+                    block.push('\n');
+                }
+                block.push_str(line);
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("accTitle:") {
+            let t = rest.trim();
+            if !t.is_empty() {
+                title = Some(t.to_string());
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("accTitle ") {
+            let t = rest.trim().trim_start_matches(':').trim();
+            if !t.is_empty() {
+                title = Some(t.to_string());
+            }
+            continue;
+        }
+        if line == "accDescr {" || line.starts_with("accDescr {") {
+            let rest = line["accDescr {".len()..].trim();
+            if let Some(inner) = rest.strip_suffix('}') {
+                let t = inner.trim();
+                if !t.is_empty() {
+                    descr = Some(t.to_string());
+                }
+            } else {
+                in_block = true;
+                if !rest.is_empty() {
+                    block.push_str(rest);
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("accDescr:") {
+            let t = rest.trim();
+            if !t.is_empty() {
+                descr = Some(t.to_string());
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("accDescr ") {
+            let t = rest.trim().trim_start_matches(':').trim();
+            if t == "{" {
+                in_block = true;
+            } else if !t.is_empty() {
+                descr = Some(t.to_string());
+            }
+        }
+    }
+    (title, descr)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,5 +582,15 @@ mod tests {
         let src = "flowchart LR\n  a(\"`The **cat**\n  in the hat`\") --> b[\"x\"]\n  c\n";
         assert_eq!(join_markdown_strings(src), "flowchart LR\n  a(\"`The **cat**<br>in the hat`\") --> b[\"x\"]\n  c\n");
         assert!(matches!(join_markdown_strings("graph\n a --> b\n"), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn acc_title_and_block_description() {
+        let (t, d) = parse_acc_meta("stateDiagram\n  accTitle: This is the accessible title\n  accDescr: This is an accessible description\n  [*] --> Still\n");
+        assert_eq!(t.as_deref(), Some("This is the accessible title"));
+        assert_eq!(d.as_deref(), Some("This is an accessible description"));
+        let (t, d) = parse_acc_meta("usecase-beta\naccTitle: Online ordering use cases\naccDescr {\n  A customer places an order through the storefront.\n  Staff review the order and inspect its data.\n}\nactor Customer\n");
+        assert_eq!(t.as_deref(), Some("Online ordering use cases"));
+        assert_eq!(d.as_deref(), Some("A customer places an order through the storefront.\nStaff review the order and inspect its data."));
     }
 }

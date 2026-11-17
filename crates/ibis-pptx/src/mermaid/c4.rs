@@ -76,6 +76,7 @@ pub(super) enum C4Item {
 
 #[derive(Debug)]
 pub(super) struct C4Diagram {
+    pub(super) dynamic: bool,
     pub(super) title: Option<String>,
     pub(super) elements: Vec<C4Element>,
     pub(super) boundaries: Vec<C4Boundary>,
@@ -156,7 +157,9 @@ fn safe_color(v: &str) -> Option<String> {
 }
 
 pub(super) fn parse_c4(source: &str) -> C4Diagram {
+    let header = source.lines().next().unwrap_or("").trim();
     let mut d = C4Diagram {
+        dynamic: header.starts_with("C4Dynamic"),
         title: None,
         elements: Vec::new(),
         boundaries: Vec::new(),
@@ -303,17 +306,14 @@ fn element_colors(e: &C4Element) -> (&'static str, &'static str, &'static str) {
     }
 }
 
-/// mermaid.js typography: `[Person]`, `[Software System]`, `[Container: Java]`, `[External …]`.
+/// mermaid.js typography: `[Person]`, `[Software System]`, `[Container: Java]`.
+/// External elements use the same type text (grey fill marks them as external).
 fn stereotype(e: &C4Element) -> String {
-    let typ = match (e.kind, e.external) {
-        (C4Kind::Person, false) => "Person",
-        (C4Kind::Person, true) => "External Person",
-        (C4Kind::System, false) => "Software System",
-        (C4Kind::System, true) => "External Software System",
-        (C4Kind::Container, false) => "Container",
-        (C4Kind::Container, true) => "External Container",
-        (C4Kind::Component, false) => "Component",
-        (C4Kind::Component, true) => "External Component",
+    let typ = match e.kind {
+        C4Kind::Person => "Person",
+        C4Kind::System => "Software System",
+        C4Kind::Container => "Container",
+        C4Kind::Component => "Component",
     };
     match e.techn.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => format!("[{typ}: {t}]"),
@@ -538,7 +538,7 @@ pub(super) fn render_c4_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     // Relationship lines under the shapes; their labels on top, nudged apart along the line.
     let mut labels = String::new();
     let mut placed: Vec<RectF> = Vec::new();
-    for rel in &d.rels {
+    for (rel_index, rel) in d.rels.iter().enumerate().map(|(i, r)| (i + 1, r)) {
         let (Some(a), Some(b)) = (rect_of(&rel.from), rect_of(&rel.to)) else { continue };
         let (acx, acy, bcx, bcy) = (a.x + a.w / 2.0, a.y + a.h / 2.0, b.x + b.w / 2.0, b.y + b.h / 2.0);
         let (sx, sy) = edge_anchor(acx, acy, a.w, a.h, bcx, bcy);
@@ -555,7 +555,12 @@ pub(super) fn render_c4_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             escape_attr(&rel.from),
             escape_attr(&rel.to)
         ));
-        let mut text: Vec<(String, f32, bool)> = label_lines(&rel.label, 160.0, 12.0).into_iter().map(|l| (l, 12.0, true)).collect();
+        let rel_label = if d.dynamic && !rel.label.is_empty() {
+            format!("{}: {}", rel_index, rel.label)
+        } else {
+            rel.label.clone()
+        };
+        let mut text: Vec<(String, f32, bool)> = label_lines(&rel_label, 160.0, 12.0).into_iter().map(|l| (l, 12.0, true)).collect();
         if let Some(t) = &rel.techn {
             text.extend(label_lines(&format!("[{t}]"), 160.0, 11.0).into_iter().map(|l| (l, 11.0, false)));
         }
@@ -713,7 +718,7 @@ mod tests {
         let svg = svg_of(
             "C4Container\n  Person(u, \"User\")\n  ContainerDb(db, \"DB\", \"SQL\", \"Stores data\")\n  SystemQueue_Ext(q, \"Queue\")\n  Container_Boundary(c1, \"App\") {\n    Component(api, \"API\", \"Rust\")\n  }\n  Rel(u, api, \"Uses\", \"HTTPS\")\n  BiRel(api, db, \"Reads\")\n  Rel_Back(q, api, \"Feeds\")\n  UpdateRelStyle(u, api, $textColor=\"blue\", $lineColor=\"blue\")",
         );
-        assert!(svg.contains("[Person]") && svg.contains("[Container: SQL]") && svg.contains("[External Software System]") && svg.contains("[Component: Rust]"));
+        assert!(svg.contains("[Person]") && svg.contains("[Container: SQL]") && svg.contains("[Software System]") && svg.contains("[Component: Rust]"));
         assert!(svg.contains(">Stores data<") && svg.contains(">[CONTAINER]<"));
         assert!(svg.contains(r##"fill="#08427B""##) && svg.contains(r##"fill="#85BBF0""##));
         assert!(svg.contains(r#"stroke="blue" stroke-width="1.2" marker-end="url(#c4-arrow-1)" data-rel="u-api""#));
@@ -721,5 +726,15 @@ mod tests {
         assert!(svg.contains(r#"marker-start="url(#c4-arrow)" data-rel="q-api""#));
         assert!(svg.contains(r##"fill="blue">Uses</text>"##) && svg.contains(">[HTTPS]<"));
         assert!(svg.contains(r#"data-boundary="c1""#));
+    }
+
+    #[test]
+    fn c4_dynamic_numbers_relationships() {
+        let svg = svg_of(
+            "C4Dynamic\n  Container(c1, \"App\", \"Java\")\n  Component(c2, \"API\", \"Spring\")\n  Rel(c1, c2, \"Submits credentials to\", \"JSON/HTTPS\")\n  Rel(c2, c1, \"Calls isAuthenticated() on\")\n",
+        );
+        assert!(svg.contains(">1: Submits credentials") && svg.contains("to</text>"), "{svg}");
+        assert!(svg.contains(">2: Calls") && svg.contains("isAuthenticated() on</text>"), "{svg}");
+        assert!(svg.contains("[Container: Java]"));
     }
 }

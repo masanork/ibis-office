@@ -156,6 +156,8 @@ function isNoiseLabel(label) {
   if (/^mermaid[-:]/i.test(l)) return true;
   // mermaid.js invents gitGraph commit ids (e.g. 0-90fec6f) when the source has none.
   if (/^\d+-[0-9a-f]{7}$/i.test(l)) return true;
+  // Font Awesome is not loaded in the comparison page, so mermaid.js falls back to "?".
+  if (l === "?") return true;
   return false;
 }
 

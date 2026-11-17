@@ -29,7 +29,7 @@
       };
 
       window.svgMetrics = (svg, origin) => {
-        const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+        const doc = parseSvgDocument(svg);
         const root = doc.documentElement;
         if (!root || root.tagName.toLowerCase() !== "svg") {
           return {
@@ -95,6 +95,7 @@
         "rect.task.task-type-1",
         "rect.task.task-type-2",
         "g.journey",
+        ".wardley-node",
       ].join(",");
 
       const mermaidEdgeSel = [
@@ -116,6 +117,7 @@
         "g.arrow",
         "[data-edge]",
         "g.link",
+        ".wardley-link",
       ].join(",");
 
       const ourNodeSel = [
@@ -140,6 +142,8 @@
         "[data-role='timeline-event']",
         "[data-role='quadrant-point']",
         "[data-role='journey-task']",
+        "[data-component]",
+        "[data-anchor]",
         "[data-img]",
         "[data-start]:not([data-role='vert'])",
         "[data-shape]:not([data-shape^='seq-']):not([data-shape='activation'])",
@@ -194,6 +198,22 @@
           n += 1;
         }
         return n;
+      }
+
+      // mermaid.js SVGs often use HTML entities (`&nbsp;`, `&infin;`) or
+      // `xlink:href` without an xmlns, which the XML parser rejects. Repair
+      // those so structure counts are not zeroed out on a parse error.
+      function parseSvgDocument(svg) {
+        let text = String(svg);
+        if (text.includes("xlink:") && !text.includes("xmlns:xlink")) {
+          text = text.replace(/<svg\b/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+        }
+        text = text.replace(/&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);)([a-zA-Z][a-zA-Z0-9]+);/g, (ent) => {
+          const t = document.createElement("textarea");
+          t.innerHTML = ent;
+          return t.value || ent;
+        });
+        return new DOMParser().parseFromString(text, "image/svg+xml");
       }
 
             function collectLabels(root) {

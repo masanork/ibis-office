@@ -236,18 +236,95 @@ fn split_top(s: &str) -> Vec<&str> {
     out
 }
 
-/// `{ "a": 1, "b": { … } }` → rows `a: 1`, `b: { … }` (nested values in one line).
+/// `{ "a": 1, "items": [{ "name": "Book" }] }` → rows `a: 1`, `items[0].name: Book`,
+/// matching mermaid.js nested JSON tables.
 pub(super) fn json_rows(body: &str) -> Vec<(String, String)> {
-    split_top(body)
-        .into_iter()
-        .filter_map(|entry| {
-            let colon = find_unquoted(entry, ':')?;
-            let key = unquote(entry[..colon].trim());
-            let value: String = entry[colon + 1..].split_whitespace().collect::<Vec<_>>().join(" ");
-            let value = if value.chars().count() > 34 { format!("{}…", value.chars().take(33).collect::<String>()) } else { value };
-            Some((key, value))
-        })
-        .collect()
+    let wrapped = format!("{{{body}}}");
+    let mut rows = Vec::new();
+    flatten_json(&parse_json_value(&wrapped), "", &mut rows);
+    rows
+}
+
+#[derive(Debug, Clone)]
+enum JsonVal {
+    Null,
+    Bool(bool),
+    Num(String),
+    Str(String),
+    Arr(Vec<JsonVal>),
+    Obj(Vec<(String, JsonVal)>),
+}
+
+fn parse_json_value(s: &str) -> JsonVal {
+    let s = s.trim();
+    if s == "null" {
+        return JsonVal::Null;
+    }
+    if s == "true" || s == "false" {
+        return JsonVal::Bool(s == "true");
+    }
+    if s.starts_with('{') && s.ends_with('}') {
+        let inner = &s[1..s.len() - 1];
+        if inner.trim().is_empty() {
+            return JsonVal::Obj(Vec::new());
+        }
+        return JsonVal::Obj(
+            split_top(inner)
+                .into_iter()
+                .filter_map(|entry| {
+                    let colon = find_unquoted(entry, ':')?;
+                    Some((unquote(entry[..colon].trim()), parse_json_value(entry[colon + 1..].trim())))
+                })
+                .collect(),
+        );
+    }
+    if s.starts_with('[') && s.ends_with(']') {
+        let inner = &s[1..s.len() - 1];
+        if inner.trim().is_empty() {
+            return JsonVal::Arr(Vec::new());
+        }
+        return JsonVal::Arr(split_top(inner).into_iter().map(parse_json_value).collect());
+    }
+    if s.starts_with('"') {
+        return JsonVal::Str(unquote(s));
+    }
+    JsonVal::Num(s.to_string())
+}
+
+fn json_disp(v: &JsonVal) -> String {
+    match v {
+        JsonVal::Null => "null".into(),
+        JsonVal::Bool(b) => b.to_string(),
+        JsonVal::Num(s) | JsonVal::Str(s) => s.clone(),
+        JsonVal::Obj(_) => "{}".into(),
+        JsonVal::Arr(_) => "[]".into(),
+    }
+}
+
+fn flatten_json(v: &JsonVal, prefix: &str, rows: &mut Vec<(String, String)>) {
+    match v {
+        JsonVal::Obj(entries) if entries.is_empty() && !prefix.is_empty() => rows.push((prefix.to_string(), "{}".into())),
+        JsonVal::Obj(entries) => {
+            for (k, val) in entries {
+                let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                flatten_json(val, &path, rows);
+            }
+        }
+        JsonVal::Arr(items) if items.is_empty() && !prefix.is_empty() => rows.push((prefix.to_string(), "[]".into())),
+        JsonVal::Arr(items) if items.iter().all(|i| !matches!(i, JsonVal::Obj(_) | JsonVal::Arr(_))) => {
+            for (i, item) in items.iter().enumerate() {
+                let key = if i == 0 { prefix.to_string() } else { String::new() };
+                rows.push((key, json_disp(item)));
+            }
+        }
+        JsonVal::Arr(items) => {
+            for (i, item) in items.iter().enumerate() {
+                flatten_json(item, &format!("{prefix}[{i}]"), rows);
+            }
+        }
+        _ if !prefix.is_empty() => rows.push((prefix.to_string(), json_disp(v))),
+        _ => {}
+    }
 }
 
 fn brace_depth(s: &str) -> i32 {
@@ -708,6 +785,7 @@ pub(super) fn render_usecase_svg(source: &str, config: &MermaidConfig) -> Option
         let at = svg.len();
         match &n.kind {
             UcKind::Actor { style, icon } => {
+                svg.push_str(r##"<g data-kind="actor">"##);
                 match icon.as_deref().and_then(|i| i.strip_prefix("fa:")) {
                     Some(name) => svg.push_str(&format!(
                         r##"<circle cx="{cx:.1}" cy="{:.1}" r="22" fill="#eff6ff" stroke="#334155" stroke-width="1.6" data-actor="icon"/><text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="24" fill="#334155">{}</text>"##,
@@ -734,6 +812,7 @@ pub(super) fn render_usecase_svg(source: &str, config: &MermaidConfig) -> Option
                 let lines = label_line_widths(&n.label, 140.0, fonts.actor_size).len() as f32;
                 push_centered_label(&mut text, cx, ty + lines * fonts.actor_size * 1.25 / 2.0, &n.label, fonts.actor_size, 140.0, &text_fill, &fonts.actor_weight);
                 group_font(&mut svg, &fonts.actor_family, text);
+                svg.push_str("</g>");
             }
             UcKind::UseCase { rect } => {
                 let (fill, stroke) = if rotate {
@@ -745,12 +824,12 @@ pub(super) fn render_usecase_svg(source: &str, config: &MermaidConfig) -> Option
                 use_case_index += 1;
                 if *rect {
                     svg.push_str(&format!(
-                        r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="6" fill="{fill}" stroke="{stroke}" stroke-width="1.4" data-usecase="{}"/>"##,
+                        r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="6" fill="{fill}" stroke="{stroke}" stroke-width="1.4" data-kind="usecase" data-usecase="{}"/>"##,
                         escape_attr(&n.id)
                     ));
                 } else {
                     svg.push_str(&format!(
-                        r##"<ellipse cx="{cx:.1}" cy="{cy:.1}" rx="{:.1}" ry="{:.1}" fill="{fill}" stroke="{stroke}" stroke-width="1.4" data-usecase="{}"/>"##,
+                        r##"<ellipse cx="{cx:.1}" cy="{cy:.1}" rx="{:.1}" ry="{:.1}" fill="{fill}" stroke="{stroke}" stroke-width="1.4" data-kind="usecase" data-usecase="{}"/>"##,
                         nw / 2.0,
                         nh / 2.0,
                         escape_attr(&n.id)
@@ -787,7 +866,7 @@ pub(super) fn render_usecase_svg(source: &str, config: &MermaidConfig) -> Option
             }
             UcKind::Json(rows) => {
                 svg.push_str(&format!(
-                    r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#fefce8" stroke="#a16207" stroke-width="1.4" data-json="{}"/><line x1="{x:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#a16207" stroke-width="1"/>"##,
+                    r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#fefce8" stroke="#a16207" stroke-width="1.4" data-kind="json" data-json="{}"/><line x1="{x:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#a16207" stroke-width="1"/>"##,
                     escape_attr(&n.id),
                     y + 24.0,
                     x + nw,
@@ -804,7 +883,7 @@ pub(super) fn render_usecase_svg(source: &str, config: &MermaidConfig) -> Option
                 ));
                 for (k, (key, value)) in rows.iter().enumerate() {
                     svg.push_str(&format!(
-                        r##"<text x="{:.1}" y="{:.1}" font-size="11" fill="{text_fill}"><tspan font-weight="bold">{}</tspan>: {}</text>"##,
+                        r##"<text x="{:.1}" y="{:.1}" font-size="11" fill="{text_fill}"><tspan font-weight="bold">{}</tspan> : {}</text>"##,
                         x + 10.0,
                         y + 40.0 + k as f32 * 15.0,
                         escape_attr(key),
@@ -868,9 +947,19 @@ mod tests {
         assert_eq!(n("Review").kind, UcKind::UseCase { rect: true });
         assert_eq!(u.boundaries[0], UcBoundary { id: "ordering".into(), title: "Ordering System".into(), package: true, classes: vec!["system".into()] });
         assert!(u.boundaries[1].package && u.boundaries[1].id == "Payment_service");
-        assert_eq!(n("Data").kind, UcKind::Json(vec![("status".into(), "\"pending\"".into()), ("items".into(), "[{ \"name\": \"Book\" }]".into())]));
+                assert_eq!(n("Data").kind, UcKind::Json(vec![("status".into(), "pending".into()), ("items[0].name".into(), "Book".into())]));
         assert_eq!(n("Data").classes, vec!["data".to_string()]);
         assert!(u.nodes.iter().any(|n| n.kind == UcKind::Note && n.label == "Validates"));
+        let rows = json_rows(r#""2": "second in source", "1": "first after 2", "colors": ["Red", "Green"], "address": { "city": "Oslo" }, "items": [{ "name": "Book", "quantity": 1 }], "emptyObject": {}, "emptyArray": []"#);
+        assert!(rows.contains(&("2".into(), "second in source".into())));
+        assert!(rows.contains(&("1".into(), "first after 2".into())));
+        assert!(rows.contains(&("items[0].name".into(), "Book".into())));
+        assert!(rows.contains(&("items[0].quantity".into(), "1".into())));
+        assert!(rows.contains(&("address.city".into(), "Oslo".into())));
+        assert!(rows.iter().any(|(k, v)| k == "colors" && v == "Red"));
+        assert!(rows.iter().any(|(_, v)| v == "Green"));
+        assert!(rows.contains(&("emptyObject".into(), "{}".into())));
+        assert!(rows.contains(&("emptyArray".into(), "[]".into())));
     }
 
     #[test]
@@ -879,6 +968,7 @@ mod tests {
             "usecase-beta\ndirection LR\nactor Customer\nactor Bot@{ type: awesome }\nsystemBoundary Shop\n  Browse(\"Browse catalogue\")\n  Pay[Pay]\nend\nCustomer --> Browse\nBot --o Pay\nBrowse ..> : include Pay\nPay --|> Browse\nstyle Browse stroke:#c33",
         );
         assert!(svg.contains(r#"data-actor="normal""#) && svg.contains(r#"data-actor="awesome""#));
+        assert!(svg.contains(r#"data-kind="actor""#) && svg.contains(r#"data-kind="usecase""#));
         assert!(svg.contains(r#"<ellipse"#) && svg.contains(r#"data-usecase="Pay""#));
         assert!(svg.contains(r#"data-boundary="Shop""#) && svg.contains(">Shop</text>"));
         assert!(svg.contains(r#"marker-end="url(#uc-arrow)""#) && svg.contains(r#"marker-end="url(#uc-circle)""#) && svg.contains(r#"marker-end="url(#uc-tri)""#));
