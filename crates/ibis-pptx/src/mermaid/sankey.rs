@@ -207,6 +207,28 @@ pub(super) fn layout_sankey(n: usize, links: &[SankeyLink], width: f32, height: 
     SankeyLayout { nodes: (0..n).map(|i| (x_of(depth[i]), y[i], h[i])).collect(), links: ends, depth }
 }
 
+/// Baselines at least `gap` apart, as close to `desired` (sorted) as they can be, within `lo..=hi`.
+pub(super) fn spread_labels(desired: &[f32], gap: f32, lo: f32, hi: f32) -> Vec<f32> {
+    let mut out: Vec<f32> = Vec::with_capacity(desired.len());
+    for &d in desired {
+        let floor = out.last().map_or(lo, |&prev| prev + gap);
+        out.push(d.max(floor));
+    }
+    // Push back up from the bottom when the stack ran past it.
+    let mut ceiling = hi;
+    for y in out.iter_mut().rev() {
+        *y = y.min(ceiling);
+        ceiling = *y - gap;
+    }
+    // A stack taller than the space starts at the top.
+    let mut floor = lo;
+    for y in out.iter_mut() {
+        *y = y.max(floor);
+        floor = *y + gap;
+    }
+    out
+}
+
 pub(super) fn render_sankey_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
     let (names, links) = parse_sankey(source);
     if links.is_empty() {
@@ -227,7 +249,6 @@ pub(super) fn render_sankey_svg(source: &str, config: &MermaidConfig) -> Option<
     let suffix = config.option("sankey.suffix").map(unquote).unwrap_or_default();
 
     let layout = layout_sankey(names.len(), &links, width, height, node_w, padding, &align);
-    let max_depth = layout.depth.iter().copied().max().unwrap_or(0);
     // `sankey.nodeColors.<name>` overrides a node's colour.
     let colors: Vec<String> = names
         .iter()
@@ -284,6 +305,21 @@ pub(super) fn render_sankey_svg(source: &str, config: &MermaidConfig) -> Option<
         let inn: f64 = links.iter().filter(|l| l.target == i).map(|l| l.value).sum();
         out.max(inn)
     };
+    // Labels face the middle: right of the left half's nodes, left of the right half's.
+    let right_side: Vec<bool> = layout.nodes.iter().map(|&(x, _, _)| x > width / 2.0).collect();
+    let mut label_y: Vec<f32> = layout.nodes.iter().map(|&(_, y, h)| y + h / 2.0 + 4.0).collect();
+    // Labels of one column and side keep a line apart, so small neighbouring nodes stay readable.
+    let mut sides: Vec<(usize, bool)> = (0..names.len()).map(|i| (layout.depth[i], right_side[i])).collect();
+    sides.sort();
+    sides.dedup();
+    for side in sides {
+        let mut idxs: Vec<usize> = (0..names.len()).filter(|&i| (layout.depth[i], right_side[i]) == side).collect();
+        idxs.sort_by(|&a, &b| label_y[a].total_cmp(&label_y[b]));
+        let desired: Vec<f32> = idxs.iter().map(|&i| label_y[i]).collect();
+        for (&i, y) in idxs.iter().zip(spread_labels(&desired, 13.0, 10.0, height + 4.0)) {
+            label_y[i] = y;
+        }
+    }
     for (i, name) in names.iter().enumerate() {
         let (x, y, h) = layout.nodes[i];
         svg.push_str(&format!(
@@ -292,14 +328,22 @@ pub(super) fn render_sankey_svg(source: &str, config: &MermaidConfig) -> Option<
         ));
         let value = (value_of(i) * 100.0).round() / 100.0;
         let label = if show_values { format!("{name} {prefix}{value}{suffix}") } else { name.clone() };
-        // Labels face the middle: right of the left half's nodes, left of the right half's.
-        let right_side = max_depth > 0 && layout.depth[i] * 2 >= max_depth + 1 && layout.depth[i] == max_depth
-            || x > width / 2.0;
-        let (lx, anchor) = if right_side { (x - 6.0, "end") } else { (x + node_w + 6.0, "start") };
+        let (edge_x, lx, anchor) =
+            if right_side[i] { (x, x - 6.0, "end") } else { (x + node_w, x + node_w + 6.0, "start") };
+        let ty = label_y[i];
+        let natural = y + h / 2.0 + 4.0;
+        if (ty - natural).abs() > 2.0 {
+            // A moved label points back at its node.
+            let tip = if right_side[i] { lx + 1.0 } else { lx - 1.0 };
+            svg.push_str(&format!(
+                r##"<line x1="{edge_x:.1}" y1="{:.1}" x2="{tip:.1}" y2="{:.1}" stroke="#94a3b8" stroke-width="0.6" data-role="label-leader"/>"##,
+                natural - 4.0,
+                ty - 4.0
+            ));
+        }
         let halo = if outlined { r##" stroke="#ffffff" stroke-width="3" paint-order="stroke""## } else { "" };
         svg.push_str(&format!(
-            r##"<text x="{lx:.1}" y="{:.1}" text-anchor="{anchor}" font-size="11" fill="#0f172a"{halo}>{}</text>"##,
-            y + h / 2.0 + 4.0,
+            r##"<text x="{lx:.1}" y="{ty:.1}" text-anchor="{anchor}" font-size="11" fill="#0f172a"{halo}>{}</text>"##,
             escape_xml(&label)
         ));
     }
@@ -356,5 +400,23 @@ mod tests {
         assert!(!svg.contains("linearGradient") && svg.contains(r##"stroke="#4e79a7" stroke-opacity"##));
         assert!(svg.contains(r#"paint-order="stroke""#));
         assert_eq!(view_box(&svg).0, 816.0);
+    }
+
+    #[test]
+    fn sankey_labels_of_small_nodes_keep_apart() {
+        assert_eq!(spread_labels(&[20.0, 21.0, 22.0], 13.0, 10.0, 400.0), vec![20.0, 33.0, 46.0]);
+        // Past the bottom, the stack moves up.
+        assert_eq!(spread_labels(&[395.0, 398.0], 13.0, 10.0, 400.0), vec![387.0, 400.0]);
+        let mut src = String::from("sankey\nSource,Big,500\n");
+        for k in 0..6 {
+            src.push_str(&format!("Source,Tiny{k},1\n"));
+        }
+        let svg = svg_of(&src);
+        let mut ys: Vec<f32> = (0..6).map(|k| text_y(&svg, &format!("Tiny{k} 1"))).collect();
+        ys.sort_by(f32::total_cmp);
+        assert!(ys.windows(2).all(|w| w[1] - w[0] >= 12.9), "{ys:?}");
+        assert!(svg.contains(r#"data-role="label-leader""#), "{svg}");
+        let (_, h) = view_box(&svg);
+        assert!(ys.iter().all(|&y| y <= h), "{ys:?}");
     }
 }

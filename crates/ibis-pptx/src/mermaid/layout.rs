@@ -743,6 +743,24 @@ pub(super) fn layout_with_groups(
     layer_gap: f32,
     sibling_gap: f32,
 ) -> GroupedLayout {
+    layout_with_group_dirs(sizes, edges, member_of, groups, &[], horizontal, reversed, margin, layer_gap, sibling_gap)
+}
+
+/// [`layout_with_groups`] where a group may have its own direction `(horizontal, reversed)`
+/// (flowchart `subgraph ... direction LR`); a group without one follows its parent.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn layout_with_group_dirs(
+    sizes: &[(f32, f32)],
+    edges: &[(usize, usize)],
+    member_of: &[Option<usize>],
+    groups: &[NodeGroup],
+    dirs: &[Option<(bool, bool)>],
+    horizontal: bool,
+    reversed: bool,
+    margin: f32,
+    layer_gap: f32,
+    sibling_gap: f32,
+) -> GroupedLayout {
     let n = sizes.len();
     // The child of `scope` on the way up from `cur` (`None` when `cur` is outside `scope`).
     let slot_group = |scope: Option<usize>, mut cur: Option<usize>| -> Option<Option<usize>> {
@@ -770,6 +788,7 @@ pub(super) fn layout_with_groups(
         edges: &[(usize, usize)],
         member_of: &[Option<usize>],
         groups: &[NodeGroup],
+        dirs: &[Option<(bool, bool)>],
         slot_group: &dyn Fn(Option<usize>, Option<usize>) -> Option<Option<usize>>,
         opts: (bool, bool, f32, f32, f32),
     ) -> Option<Placed> {
@@ -791,7 +810,9 @@ pub(super) fn layout_with_groups(
                     let slot = match child_slot.get(&child) {
                         Some(&slot) => slot,
                         None => {
-                            let block = place(Some(child), n, sizes, edges, member_of, groups, slot_group, opts)?;
+                            let (h, r) = dirs.get(child).copied().flatten().unwrap_or((horizontal, reversed));
+                            let child_opts = (h, r, margin, layer_gap, sibling_gap);
+                            let block = place(Some(child), n, sizes, edges, member_of, groups, dirs, slot_group, child_opts)?;
                             child_slot.insert(child, slot_sizes.len());
                             slot_sizes.push((block.w, block.h));
                             slot_kind.push(Err(block));
@@ -817,8 +838,17 @@ pub(super) fn layout_with_groups(
         let side = if scope.is_some() { GROUP_SIDE } else { margin };
         let (centers, w, h) =
             compute_layered_layout(slot_sizes.len(), &slot_edges, &slot_sizes, horizontal, reversed, side, layer_gap, sibling_gap);
+        // A group hugs its content: the layout's minimum canvas size is for whole diagrams.
+        let (w, h) = if scope.is_some() {
+            let right = centers.iter().zip(&slot_sizes).map(|(c, s)| c.0 + s.0 / 2.0).fold(0.0f32, f32::max);
+            let bottom = centers.iter().zip(&slot_sizes).map(|(c, s)| c.1 + s.1 / 2.0).fold(0.0f32, f32::max);
+            ((right + side).ceil() as u32, (bottom + side).ceil() as u32)
+        } else {
+            (w, h)
+        };
         // A group's title band sits above its content.
-        let extra_top = if scope.is_some() { GROUP_TOP - GROUP_SIDE } else { 0.0 };
+        // An untitled group (a state's concurrent region) has no band.
+        let extra_top = if scope.is_some_and(|g| !groups[g].title.is_empty()) { GROUP_TOP - GROUP_SIDE } else { 0.0 };
         // A frame is at least as wide as its title.
         let title_w = scope.map_or(0.0, |g| estimate_text_width(&groups[g].title, 11.5) + 24.0);
         let extra_x = ((title_w - w as f32) / 2.0).max(0.0);
@@ -846,7 +876,7 @@ pub(super) fn layout_with_groups(
     }
 
     let opts = (horizontal, reversed, margin, layer_gap, sibling_gap);
-    let Some(placed) = place(None, n, sizes, edges, member_of, groups, &slot_group, opts) else {
+    let Some(placed) = place(None, n, sizes, edges, member_of, groups, dirs, &slot_group, opts) else {
         return (Vec::new(), 0, 0, vec![None; groups.len()]);
     };
     let mut centers = vec![(0.0f32, 0.0f32); n];

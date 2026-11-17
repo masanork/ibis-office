@@ -331,6 +331,20 @@ pub(super) fn markdown_runs(text: &str) -> Vec<StyledRun> {
     runs
 }
 
+/// How much wider bold text is than regular text (measured in Chrome's sans-serif).
+pub(super) const BOLD_WIDTH: f32 = 1.06;
+
+/// The width of each line [`label_lines`] gives; bold runs of a Markdown string count wider.
+pub(super) fn label_line_widths(text: &str, max_width: f32, font_size: f32) -> Vec<f32> {
+    match markdown_string(text) {
+        Some(inner) => rich_lines(inner, max_width, font_size)
+            .iter()
+            .map(|line| line.iter().map(|run| estimate_text_width(&run.text, font_size) * if run.bold { BOLD_WIDTH } else { 1.0 }).sum())
+            .collect(),
+        None => label_lines(text, max_width, font_size).iter().map(|line| estimate_text_width(line, font_size)).collect(),
+    }
+}
+
 /// The lines of a Markdown string (`<br>` and newlines break; long lines wrap at `max_width`),
 /// each a list of styled runs.
 pub(super) fn rich_lines(text: &str, max_width: f32, font_size: f32) -> Vec<Vec<StyledRun>> {
@@ -350,7 +364,7 @@ pub(super) fn rich_lines(text: &str, max_width: f32, font_size: f32) -> Vec<Vec<
         }
         for run in markdown_runs(piece) {
             for token in split_wrap_tokens(&run.text) {
-                let w = estimate_text_width(&token, font_size) * if run.bold { 1.06 } else { 1.0 };
+                let w = estimate_text_width(&token, font_size) * if run.bold { BOLD_WIDTH } else { 1.0 };
                 let line = lines.last_mut().unwrap();
                 if !line.is_empty() && width + w > max_width && !token.trim().is_empty() {
                     // Trailing spaces stay with the line they end.
