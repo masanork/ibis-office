@@ -11,7 +11,58 @@ from pathlib import Path
 CHUNK_SIZE = 20 * 1024 * 1024
 
 
+def read_uleb(data: bytes, offset: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while True:
+        if offset >= len(data):
+            raise ValueError('Truncated Wasm integer')
+        byte = data[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value, offset
+        shift += 7
+        if shift > 63:
+            raise ValueError('Wasm integer is too large')
+
+
+def strip_name_section(data: bytes) -> bytes:
+    """Drop the debug name custom section. Other bytes, including other custom sections, stay."""
+    if len(data) < 8 or data[:4] != b'\0asm':
+        return data
+    out = bytearray(data[:8])
+    offset = 8
+    removed = 0
+    while offset < len(data):
+        start = offset
+        section_id = data[offset]
+        offset += 1
+        size, offset = read_uleb(data, offset)
+        payload_end = offset + size
+        if payload_end > len(data):
+            raise ValueError('Wasm section exceeds file')
+        drop = False
+        if section_id == 0:
+            name_len, name_at = read_uleb(data, offset)
+            if name_at + name_len > payload_end:
+                raise ValueError('Wasm custom section name exceeds section')
+            drop = data[name_at:name_at + name_len] == b'name'
+        if drop:
+            removed += payload_end - start
+        else:
+            out += data[start:payload_end]
+        offset = payload_end
+    if removed:
+        print(f'Removed {removed:,} bytes of Wasm name section')
+    return bytes(out)
+
+
 def split_wasm(path: Path) -> None:
+    original = path.read_bytes()
+    stripped = strip_name_section(original)
+    if stripped != original:
+        path.write_bytes(stripped)
     chunks = []
     digest = hashlib.sha256()
     total = 0
@@ -58,7 +109,9 @@ def split_wasm(path: Path) -> None:
             old.unlink()
     path.unlink()
     path.with_suffix(path.suffix + '.size').unlink(missing_ok=True)
-    print(f'Split {total:,} bytes into {len(chunks)} chunks')
+    single = manifest.get('single')
+    detail = f'; Brotli single is {single["size"]:,} bytes' if single else '; split delivery only'
+    print(f'Split {total:,} bytes into {len(chunks)} chunks{detail}')
 
 
 if __name__ == '__main__':

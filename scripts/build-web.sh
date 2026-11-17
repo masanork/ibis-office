@@ -48,9 +48,13 @@ RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo rustc -p ibis-office-app -
 WASM="target/dist/wasm32-unknown-unknown/$PROFILE/ibis_office_app.wasm"
 wasm-bindgen "$WASM" --out-dir www/pkg --target web
 
-if [[ "$PROFILE" == release ]] && command -v wasm-opt >/dev/null; then
-  wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
-    www/pkg/ibis_office_app_bg.wasm -o www/pkg/ibis_office_app_bg.wasm
+if [[ "$PROFILE" == release ]]; then
+  if command -v wasm-opt >/dev/null; then
+    wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
+      www/pkg/ibis_office_app_bg.wasm -o www/pkg/ibis_office_app_bg.wasm
+  else
+    echo "wasm-opt is not installed; the release module skips wasm-opt -Oz" >&2
+  fi
 fi
 
 # Split the optimized module for static hosts with per-file limits.

@@ -33,7 +33,7 @@ async function singleBytes(response: Response, size: number, progress: (loaded: 
   return bytes;
 }
 
-export async function loadWasm(manifestUrl: URL, progress: (loaded: number, total: number) => void): Promise<Response> {
+export async function loadWasm(manifestUrl: URL, progress: (loaded: number, total: number) => void): Promise<Response | WebAssembly.Module> {
   const response = await fetch(manifestUrl);
   if (!response.ok) throw new Error(`Wasm manifest: HTTP ${response.status}`);
   const manifest: Manifest = await response.json();
@@ -49,9 +49,30 @@ export async function loadWasm(manifestUrl: URL, progress: (loaded: number, tota
     try {
       const result = await fetch(new URL(`br/${single.sha256}.wasm`, manifestUrl));
       if (!result.ok) throw new Error(`Brotli Wasm: HTTP ${result.status}`);
-      const bytes = await singleBytes(result, manifest.size, progress);
-      if (await sha256(bytes) !== manifest.sha256) throw new Error('Invalid Brotli Wasm digest');
-      return new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { 'Content-Type': 'application/wasm' } });
+      if (!result.body) throw new Error('Empty Brotli Wasm response');
+      // Compile while the decoded bytes download. Hash them before the module
+      // is returned, so a mismatch still falls back to the chunks.
+      const hashed = result.clone();
+      const source = new Response(result.body, { headers: { 'Content-Type': 'application/wasm' } });
+      const compiled = WebAssembly.compileStreaming(source).then(
+        (module) => ({ module }),
+        (error: unknown) => ({ error }),
+      );
+      let accepted = false;
+      try {
+        const bytes = await singleBytes(hashed, manifest.size, progress);
+        if (await sha256(bytes) !== manifest.sha256) throw new Error('Invalid Brotli Wasm digest');
+        const outcome = await compiled;
+        accepted = true;
+        if ('module' in outcome) return outcome.module;
+        try {
+          return await WebAssembly.compile(bytes as Uint8Array<ArrayBuffer>);
+        } catch {
+          throw outcome.error;
+        }
+      } finally {
+        if (!accepted) await source.body?.cancel().catch(() => undefined);
+      }
     } catch (error) {
       console.warn('Single Wasm unavailable; falling back to split assets', error);
       progress(0, manifest.size);

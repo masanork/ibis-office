@@ -367,8 +367,8 @@ const statusText = document.getElementById('status-text');
 const progress = document.getElementById('progress');
 const progressFill = progress?.firstElementChild as HTMLElement | null;
 
-/** Download and verify the module before starting wasm-bindgen. */
-async function fetchWasm(): Promise<Response> {
+/** Download and verify the module. The single asset compiles during the download. */
+async function fetchWasm(): Promise<Response | WebAssembly.Module> {
   const response = await loadWasm(new URL('./pkg/ibis_office_app_bg.manifest.json', import.meta.url), (loaded, total) => {
     if (progress) progress.style.display = 'block';
     if (progressFill) progressFill.style.width = `${Math.min(100, (loaded / total) * 100)}%`;

@@ -59,7 +59,7 @@ test('single decoded Wasm is verified, with fallback for unsupported, corrupt or
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;
   try {
-    const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 10, 20, 30]);
+    const bytes = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
     const path = join(dir, 'ibis_office_app_bg.wasm');
     await writeFile(path, bytes);
     execFileSync('python3', ['scripts/split-web-wasm.py', path]);
@@ -83,9 +83,25 @@ test('single decoded Wasm is verified, with fallback for unsupported, corrupt or
     };
     const url = new URL('https://example.test/pkg/ibis_office_app_bg.manifest.json');
     const progress = [];
-    assert.deepEqual(new Uint8Array(await (await loadWasm(url, (a, b) => progress.push([a, b]))).arrayBuffer()), bytes);
-    assert.equal(singleCalls, 1); assert.equal(chunkCalls, 0);
-    assert.deepEqual(progress.at(-1), [bytes.length, bytes.length]);
+    const compileStreaming = WebAssembly.compileStreaming.bind(WebAssembly);
+    let streamed = false;
+    WebAssembly.compileStreaming = async (response) => {
+      const module = await compileStreaming(response);
+      streamed = true;
+      return module;
+    };
+    try {
+      const loaded = await loadWasm(url, (a, b) => progress.push([a, b]));
+      assert.ok(loaded instanceof WebAssembly.Module);
+      const expected = await WebAssembly.compile(bytes);
+      assert.deepEqual(WebAssembly.Module.imports(loaded), WebAssembly.Module.imports(expected));
+      assert.deepEqual(WebAssembly.Module.exports(loaded), WebAssembly.Module.exports(expected));
+      assert.equal(streamed, true);
+      assert.equal(singleCalls, 1); assert.equal(chunkCalls, 0);
+      assert.deepEqual(progress.at(-1), [bytes.length, bytes.length]);
+    } finally {
+      WebAssembly.compileStreaming = compileStreaming;
+    }
     for (failure of ['unsupported', 'network', 'corrupt', 'truncated', 'oversized']) {
       const before = chunkCalls;
       assert.deepEqual(new Uint8Array(await (await loadWasm(url, () => {})).arrayBuffer()), bytes, failure);
@@ -98,6 +114,29 @@ test('single decoded Wasm is verified, with fallback for unsupported, corrupt or
   } finally {
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('the delivered module omits the Wasm name section and keeps other custom sections', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ibis-wasm-name-'));
+  try {
+    const withName = Uint8Array.from([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      0x00, 0x05, 0x04, 0x6b, 0x65, 0x65, 0x70,
+      0x00, 0x0a, 0x04, 0x6e, 0x61, 0x6d, 0x65, 0x00, 0x03, 0x02, 0x61, 0x62,
+    ]);
+    const path = join(dir, 'ibis_office_app_bg.wasm');
+    await writeFile(path, withName);
+    execFileSync('python3', ['scripts/split-web-wasm.py', path], { stdio: 'pipe' });
+    const manifest = JSON.parse(await readFile(join(dir, 'ibis_office_app_bg.manifest.json'), 'utf8'));
+    const parts = [];
+    for (const chunk of manifest.chunks) parts.push(await readFile(join(dir, chunk.file)));
+    const delivered = Buffer.concat(parts);
+    assert.equal(manifest.size, 15);
+    assert.deepEqual(delivered, Buffer.from(withName.subarray(0, 15)));
+    assert.equal(createHash('sha256').update(delivered).digest('hex'), manifest.sha256);
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
