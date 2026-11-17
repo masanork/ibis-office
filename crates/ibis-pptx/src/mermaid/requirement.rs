@@ -218,17 +218,10 @@ pub(super) fn render_requirement_svg(source: &str) -> Option<(Vec<u8>, u32, u32)
     let pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
     let (centers, total_w, total_h) = compute_layered_layout(nodes.len(), &pairs, &sizes, horizontal, reversed, 32.0, 70.0, 40.0);
 
-    let mut svg = String::new();
-    svg.push_str(&format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
-    ));
-    svg.push_str(
-        r##"<defs><marker id="req-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 1 L 10 5 L 0 9" fill="none" stroke="#475569" stroke-width="1.5"/></marker><marker id="req-contains" viewBox="0 0 20 20" refX="1" refY="10" markerWidth="12" markerHeight="12" orient="auto"><circle cx="10" cy="10" r="8.5" fill="#ffffff" stroke="#475569" stroke-width="1.5"/><path d="M 1.5 10 L 18.5 10 M 10 1.5 L 10 18.5" stroke="#475569" stroke-width="1.5"/></marker></defs>"##,
-    );
-    svg.push_str(&format!(r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##));
-
     // Relationships: `contains` is a solid line with a crossed circle at the container,
     // the others dashed with an open arrow at the target. The label is `<<kind>>`.
+    let mut edge_svg = String::new();
+    let mut right = total_w as f32;
     for e in &edges {
         if e.from == e.to {
             continue;
@@ -239,11 +232,13 @@ pub(super) fn render_requirement_svg(source: &str) -> Option<(Vec<u8>, u32, u32)
         } else {
             r#" stroke-dasharray="6,4" marker-end="url(#req-arrow)""#.to_string()
         };
-        push_routed_edge(&mut svg, &route, "#475569", "1.3", &format!(r#"{extra} data-relation="{}""#, escape_attr(&e.kind)));
+        push_routed_edge(&mut edge_svg, &route, "#475569", "1.3", &format!(r#"{extra} data-relation="{}""#, escape_attr(&e.kind)));
         let label = format!("<<{}>>", e.kind);
         let (mx, my) = route.label_at;
         let lw = estimate_text_width(&label, 10.5) + 10.0;
-        svg.push_str(&format!(
+        // A detour around the nodes runs along the edge of the drawing: keep its label inside.
+        right = right.max(mx + lw / 2.0 + 6.0);
+        edge_svg.push_str(&format!(
             r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="17" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/><text x="{mx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#334155">{}</text>"##,
             mx - lw / 2.0,
             my - 8.5,
@@ -251,6 +246,18 @@ pub(super) fn render_requirement_svg(source: &str) -> Option<(Vec<u8>, u32, u32)
             escape_xml(&label)
         ));
     }
+
+    let total_w = right.ceil() as u32;
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
+    ));
+    svg.push_str(
+        r##"<defs><marker id="req-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 1 L 10 5 L 0 9" fill="none" stroke="#475569" stroke-width="1.5"/></marker><marker id="req-contains" viewBox="0 0 20 20" refX="1" refY="10" markerWidth="12" markerHeight="12" orient="auto"><circle cx="10" cy="10" r="8.5" fill="#ffffff" stroke="#475569" stroke-width="1.5"/><path d="M 1.5 10 L 18.5 10 M 10 1.5 L 10 18.5" stroke="#475569" stroke-width="1.5"/></marker></defs>"##,
+    );
+    svg.push_str(&format!(r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##));
+
+    svg.push_str(&edge_svg);
 
     for (idx, n) in nodes.iter().enumerate() {
         let (cx, cy) = centers[idx];
