@@ -1,0 +1,113 @@
+%%%% case 1 (mindmap.md:13)
+mindmap
+  root((mindmap))
+    Origins
+      Long history
+      ::icon(fa fa-book)
+      Popularisation
+        British popular psychology author Tony Buzan
+    Research
+      On effectiveness<br/>and features
+      On Automatic creation
+        Uses
+            Creative techniques
+            Strategic planning
+            Argument mapping
+    Tools
+      Pen and paper
+      Mermaid
+%%%% case 2 (mindmap.md:71)
+mindmap
+Root
+    A
+      B
+      C
+%%%% case 3 (mindmap.md:97)
+mindmap
+    id[I am a square]
+%%%% case 4 (mindmap.md:109)
+mindmap
+    id(I am a rounded square)
+%%%% case 5 (mindmap.md:121)
+mindmap
+    id((I am a circle))
+%%%% case 6 (mindmap.md:133)
+mindmap
+    id))I am a bang((
+%%%% case 7 (mindmap.md:145)
+mindmap
+    id)I am a cloud(
+%%%% case 8 (mindmap.md:157)
+mindmap
+    id{{I am a hexagon}}
+%%%% case 9 (mindmap.md:169)
+mindmap
+    I am the default shape
+%%%% case 10 (mindmap.md:185)
+---
+config:
+  mindmap:
+    colorBy: depth
+---
+mindmap
+  root((mindmap))
+    origins{{Origins}}
+      history[Long history]
+        Popularisation
+        British popular psychology author Tony Buzan
+    research{{Research}}
+      uses[Uses]
+        Creative techniques
+%%%% case 11 (mindmap.md:225)
+---
+config:
+  theme: base
+  mindmap:
+    colorBy: depth
+  themeVariables:
+    git0: '#374151'
+    gitBranchLabel0: '#ffffff'
+    cScaleLabel0: '#ffffff'
+    cScale1: '#bfdbfe'
+    cScaleLabel1: '#172554'
+    cScale2: '#bbf7d0'
+    cScaleLabel2: '#14532d'
+    cScale3: '#fde68a'
+    cScaleLabel3: '#451a03'
+---
+mindmap
+  root((mindmap))
+    origins{{Origins}}
+      history[Long history]
+        Popularisation
+        British popular psychology author Tony Buzan
+    research{{Research}}
+      uses[Uses]
+        Creative techniques
+%%%% case 12 (mindmap.md:296)
+mindmap
+    Root
+        A
+        ::icon(fa fa-book)
+        B(B)
+        ::icon(mdi mdi-skull-outline)
+%%%% case 13 (mindmap.md:318)
+mindmap
+    Root
+        A[A]
+        :::urgent large
+        B(B)
+        C
+%%%% case 14 (mindmap.md:352)
+mindmap
+Root
+    A
+        B
+      C
+%%%% case 15 (mindmap.md:372)
+mindmap
+    id1["`**Root** with
+a second line
+Unicode works too: 🤓`"]
+      id2["`The dog in **the** hog... a *very long text* that wraps to a new line`"]
+      id3[Regular labels still works]

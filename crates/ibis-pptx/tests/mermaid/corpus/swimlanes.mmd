@@ -1,0 +1,224 @@
+%%%% case 1 (swimlanes.md:26)
+swimlane-beta LR
+  subgraph Customer
+    Browse[Browse catalogue]
+    Pay[Pay]
+  end
+  subgraph Warehouse
+    Pick[Pick items]
+    Ship[Ship order]
+  end
+  subgraph Finance
+    Invoice[Raise invoice]
+  end
+  Browse --> Pay
+  Pay --> Pick
+  Pick --> Ship
+  Pay --> Invoice
+%%%% case 2 (swimlanes.md:69)
+---
+config:
+  theme: default
+  look: classic
+---
+swimlane-beta LR
+  subgraph Customer
+    Browse[Browse catalogue]
+    Pay[Pay]
+  end
+  subgraph Warehouse
+    Pick[Pick items]
+    Ship[Ship order]
+  end
+  subgraph Finance
+    Invoice[Raise invoice]
+  end
+  Browse --> Pay
+  Pay --> Pick
+  Pick --> Ship
+  Pay --> Invoice
+%%%% case 3 (swimlanes.md:123)
+swimlane-beta LR
+  subgraph Customer
+    request[Request service]
+    receive[Receive update]
+  end
+
+  subgraph Support
+    triage[Triage request]
+    answer[Send answer]
+  end
+
+  subgraph Engineering
+    investigate[Investigate issue]
+    fix[Prepare fix]
+  end
+
+  request --> triage
+  triage -->|Known issue| answer
+  triage -->|Needs code change| investigate
+  investigate --> fix --> answer
+  answer --> receive
+%%%% case 4 (swimlanes.md:201)
+swimlane-beta
+  subgraph Sales
+    lead[Qualify lead]
+    quote[Prepare quote]
+  end
+%%%% case 5 (swimlanes.md:219)
+swimlane-beta LR
+  subgraph sales [Sales team]
+    lead[Qualify lead]
+    quote[Prepare quote]
+  end
+
+  subgraph finance [Finance team]
+    review[Review terms]
+    approve[Approve quote]
+  end
+
+  lead --> quote --> review --> approve
+%%%% case 6 (swimlanes.md:253)
+swimlane-beta LR
+  subgraph Intake
+    start([Start])
+    task[Do work]
+    fix[Fix issues]
+  end
+
+  subgraph Review
+    decision{Ready?}
+  end
+
+  subgraph Complete
+    done((Done))
+  end
+
+  start --> task --> decision
+  decision -->|Yes| done
+  decision -->|No| fix
+  fix --> task
+%%%% case 7 (swimlanes.md:313)
+swimlane-beta LR
+  subgraph Buyer
+    choose[Choose product]
+    pay[Pay invoice]
+  end
+
+  subgraph Store
+    reserve[Reserve stock]
+    ship[Ship product]
+  end
+
+  choose --> reserve
+  reserve -->|Invoice ready| pay
+  pay --> ship
+%%%% case 8 (swimlanes.md:363)
+swimlane-beta LR
+  accTitle: Support escalation
+  accDescr: A request starts with the customer, is triaged by support, and may be escalated to engineering.
+
+  subgraph Customer
+    request[Open request]
+  end
+
+  subgraph Support
+    triage[Triage]
+  end
+
+  subgraph Engineering
+    resolve[Resolve]
+  end
+
+  request --> triage --> resolve
+%%%% case 9 (swimlanes.md:409)
+swimlane-beta LR
+  subgraph Customer
+    submit[Submit order]
+    confirm[Confirm delivery]
+  end
+
+  subgraph Store
+    check[Check order]
+    pack[Pack items]
+  end
+
+  subgraph Carrier
+    collect[Collect package]
+    deliver[Deliver package]
+  end
+
+  submit --> check --> pack --> collect --> deliver --> confirm
+%%%% case 10 (swimlanes.md:453)
+swimlane-beta LR
+  subgraph Applicant
+    apply[Submit application]
+    sign[Sign agreement]
+  end
+
+  subgraph Reviewer
+    screen[Screen application]
+    decide{Approved?}
+  end
+
+  subgraph System
+    create[Create account]
+    notify[Send welcome email]
+  end
+
+  apply -->|Application received| screen
+  screen --> decide
+  decide -->|Approved| create --> notify --> sign
+  decide -->|Needs changes| apply
+%%%% case 11 (swimlanes.md:503)
+swimlane-beta TB
+  subgraph Intake
+    collect[Collect request]
+    validate[Validate details]
+  end
+
+  subgraph Review
+    review[Review request]
+    decide{Ready?}
+  end
+
+  subgraph Delivery
+    schedule[Schedule work]
+    complete[Complete work]
+  end
+
+  collect --> validate --> review --> decide
+  decide -->|Yes| schedule --> complete
+  decide -->|No| collect
+%%%% case 12 (swimlanes.md:551)
+swimlane-beta LR
+  subgraph ops [Operations]
+    intake[Receive request]
+    plan[Plan work]
+  end
+
+  subgraph legal [Legal]
+    review[Review contract]
+  end
+
+  intake --> plan --> review
+
+  classDef attention fill:#fff2cc,stroke:#d6a500,color:#111;
+  class review attention;
+%%%% case 13 (swimlanes.md:589)
+swimlane-beta LR
+  subgraph Support
+    classify{Can support solve it?}
+    respond[Respond to customer]
+  end
+
+  subgraph Product
+    prioritize[Prioritize fix]
+  end
+
+  subgraph Engineering
+    implement[Implement fix]
+  end
+
+  classify -->|Yes| respond
+  classify -->|No| prioritize --> implement --> respond

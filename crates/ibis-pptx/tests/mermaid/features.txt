@@ -1,0 +1,111 @@
+# Mermaid syntax features tracked by the corpus test (tests/mermaid_corpus.rs).
+#
+# Each line: doc | feature | status | match | pattern
+#   doc     corpus file stem, or * for every supported document
+#   status  ok      = drawn by ibis-pptx
+#           gap     = parsed past or ignored; the diagram renders without it
+#           wontfix = deliberately not supported (scripts, links)
+#   match   prefix   a trimmed body line starts with the pattern
+#           contains a body line contains the pattern
+#           front    a top-level YAML frontmatter key starts with the pattern
+#           header   the diagram header line contains the pattern
+# A feature may have several lines (any of them matches). A case is "clean" when it renders and
+# uses no `gap` feature. The heuristics are deliberately simple; they rank work, they do not prove it.
+
+* | frontmatter title | ok | front | title:
+* | frontmatter config (theme, look, layout, options) | gap | front | config:
+* | %%{init}%% directive | gap | contains | %%{
+* | HTML entity codes (#quot; #9829;) | gap | contains | #quot;
+* | HTML entity codes (#quot; #9829;) | gap | contains | #9829;
+
+flowchart | classDef / class / ::: styling | ok | prefix | classDef
+flowchart | classDef / class / ::: styling | ok | prefix | class
+flowchart | classDef / class / ::: styling | ok | contains | :::
+flowchart | style statement | ok | prefix | style
+flowchart | linkStyle | ok | prefix | linkStyle
+flowchart | bidirectional / circle / cross edges | ok | contains | <--
+flowchart | bidirectional / circle / cross edges | ok | contains | <==
+flowchart | bidirectional / circle / cross edges | ok | contains | --o
+flowchart | bidirectional / circle / cross edges | ok | contains | --x
+flowchart | invisible link ~~~ | ok | contains | ~~~
+flowchart | expanded node shapes @{ shape } | gap | contains | @{
+flowchart | edge ids / animation (e1@-->) | gap | contains | @--
+flowchart | markdown strings "`...`" | gap | contains | "`
+flowchart | Font Awesome icons (fa:) | gap | contains | fa:
+flowchart | click / callbacks | wontfix | prefix | click
+
+sequenceDiagram | rect highlight | ok | prefix | rect
+sequenceDiagram | create / destroy participants | ok | prefix | create
+sequenceDiagram | create / destroy participants | ok | prefix | destroy
+sequenceDiagram | par/and, critical/option dividers | ok | prefix | and
+sequenceDiagram | par/and, critical/option dividers | ok | prefix | option
+sequenceDiagram | lower-case note | ok | prefix | note
+sequenceDiagram | participant types @{ "type" } | gap | contains | @{
+sequenceDiagram | bidirectional arrows <<->> | gap | contains | <<-
+sequenceDiagram | actor menus (link / links) | wontfix | prefix | link
+
+classDiagram | namespace | gap | prefix | namespace
+classDiagram | note | gap | prefix | note
+classDiagram | classDef / style / ::: | gap | prefix | classDef
+classDiagram | classDef / style / ::: | gap | prefix | style
+classDiagram | classDef / style / ::: | gap | contains | :::
+classDiagram | generics ~T~ | gap | contains | ~
+classDiagram | relation cardinality "1" --> "*" | gap | contains | " --
+classDiagram | relation cardinality "1" --> "*" | gap | contains | " *--
+classDiagram | relation cardinality "1" --> "*" | gap | contains | " o--
+classDiagram | lollipop interfaces ()-- | gap | contains | ()--
+classDiagram | lollipop interfaces ()-- | gap | contains | --()
+classDiagram | click / link / callback | wontfix | prefix | click
+classDiagram | click / link / callback | wontfix | prefix | link
+classDiagram | click / link / callback | wontfix | prefix | callback
+
+stateDiagram | note | gap | prefix | note
+stateDiagram | concurrency -- | gap | prefix | --
+stateDiagram | classDef / class / ::: | gap | prefix | classDef
+stateDiagram | classDef / class / ::: | gap | prefix | class
+stateDiagram | classDef / class / ::: | gap | contains | :::
+
+entityRelationshipDiagram | entity alias p[Person] | gap | contains | [
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | one or
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | zero or
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | only one
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | many(
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | 1 to
+entityRelationshipDiagram | subgraph | gap | prefix | subgraph
+entityRelationshipDiagram | direction | gap | prefix | direction
+entityRelationshipDiagram | classDef / style / ::: | gap | prefix | classDef
+entityRelationshipDiagram | classDef / style / ::: | gap | prefix | style
+entityRelationshipDiagram | classDef / style / ::: | gap | contains | :::
+
+gantt | axisFormat | gap | prefix | axisFormat
+gantt | tickInterval | gap | prefix | tickInterval
+gantt | todayMarker | gap | prefix | todayMarker
+gantt | weekday / weekend | gap | prefix | weekday
+gantt | weekday / weekend | gap | prefix | weekend
+gantt | vert markers | gap | contains | vert
+gantt | until | gap | contains | until
+gantt | click | wontfix | prefix | click
+
+gitgraph | cherry-pick | gap | prefix | cherry-pick
+gitgraph | commit type (HIGHLIGHT / REVERSE) | gap | contains | type:
+gitgraph | branch order | gap | contains | order:
+gitgraph | direction (gitGraph LR: / TB: / BT:) | gap | header | LR
+gitgraph | direction (gitGraph LR: / TB: / BT:) | gap | header | TB
+gitgraph | direction (gitGraph LR: / TB: / BT:) | gap | header | BT
+
+mindmap | node shapes ((circle)) {{hexagon}} | gap | contains | ((
+mindmap | node shapes ((circle)) {{hexagon}} | gap | contains | {{
+mindmap | node shapes ((circle)) {{hexagon}} | gap | contains | )(
+mindmap | icons ::icon() | gap | contains | ::icon(
+mindmap | classes ::: | gap | contains | :::
+mindmap | markdown strings "`...`" | gap | contains | "`
+
+timeline | section | gap | prefix | section
+
+xyChart | y-axis title / range | ok | prefix | y-axis
+xyChart | horizontal orientation | gap | header | horizontal
+xyChart | numeric x-axis range | gap | contains | x-axis 0
+
+quadrantChart | point styling (radius, color, :::) | gap | contains | radius:
+quadrantChart | point styling (radius, color, :::) | gap | contains | :::
+quadrantChart | point styling (radius, color, :::) | gap | prefix | classDef

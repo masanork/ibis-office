@@ -1,0 +1,122 @@
+%%%% case 1 (zenuml.md:14)
+zenuml
+    title Demo
+    Alice->John: Hello John, how are you?
+    John->Alice: Great!
+    Alice->John: See you later!
+%%%% case 2 (zenuml.md:39)
+zenuml
+    title Declare participant (optional)
+    Bob
+    Alice
+    Alice->Bob: Hi Bob
+    Bob->Alice: Hi Alice
+%%%% case 3 (zenuml.md:61)
+zenuml
+    title Annotators
+    @Actor Alice
+    @Database Bob
+    Alice->Bob: Hi Bob
+    Bob->Alice: Hi Alice
+%%%% case 4 (zenuml.md:86)
+zenuml
+    title Aliases
+    A as Alice
+    J as John
+    A->J: Hello John, how are you?
+    J->A: Great!
+%%%% case 5 (zenuml.md:117)
+zenuml
+    title Sync message
+    A.SyncMessage
+    A.SyncMessage(with, parameters) {
+      B.nestedSyncMessage()
+    }
+%%%% case 6 (zenuml.md:140)
+zenuml
+    title Async message
+    Alice->Bob: How are you?
+%%%% case 7 (zenuml.md:156)
+zenuml
+    new A1
+    new A2(with, parameters)
+%%%% case 8 (zenuml.md:172)
+zenuml
+    // 1. assign a variable from a sync message.
+    a = A.SyncMessage()
+
+    // 1.1. optionally give the variable a type
+    SomeType a = A.SyncMessage()
+
+    // 2. use return keyword
+    A.SyncMessage() {
+    return result
+    }
+
+    // 3. use @return or @reply annotator on an async message
+    @return
+    A->B: result
+%%%% case 9 (zenuml.md:210)
+zenuml
+    title Reply message
+    Client->A.method() {
+      B.method() {
+        if(condition) {
+          return x1
+          // return early
+          @return
+          A->Client: x11
+        }
+      }
+      return x2
+    }
+%%%% case 10 (zenuml.md:246)
+zenuml
+    A.method() {
+      B.nested_sync_method()
+      B->C: nested async message
+    }
+%%%% case 11 (zenuml.md:270)
+zenuml
+    // a comment on a participant will not be rendered
+    BookService
+    // a comment on a message.
+    // **Markdown** is supported.
+    BookService.getBook()
+%%%% case 12 (zenuml.md:306)
+zenuml
+    Alice->John: Hello John, how are you?
+    while(true) {
+      John->Alice: Great!
+    }
+%%%% case 13 (zenuml.md:338)
+zenuml
+    Alice->Bob: Hello Bob, how are you?
+    if(is_sick) {
+      Bob->Alice: Not so good :(
+    } else {
+      Bob->Alice: Feeling fresh like a daisy
+    }
+%%%% case 14 (zenuml.md:370)
+zenuml
+    Alice->Bob: Hello Bob, how are you?
+    Bob->Alice: Not so good :(
+    opt {
+      Bob->Alice: Thanks for asking
+    }
+%%%% case 15 (zenuml.md:404)
+zenuml
+    par {
+        Alice->Bob: Hello guys!
+        Alice->John: Hello guys!
+    }
+%%%% case 16 (zenuml.md:438)
+zenuml
+    try {
+      Consumer->API: Book something
+      API->BookingService: Start booking process
+    } catch {
+      API->Consumer: show failure
+    } finally {
+      API->BookingService: rollback status
+    }
