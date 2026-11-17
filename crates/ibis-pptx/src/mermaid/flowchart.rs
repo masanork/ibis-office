@@ -559,6 +559,9 @@ pub(super) struct FlowStyle {
     pub(super) stroke_width: Option<String>,
     pub(super) dasharray: Option<String>,
     pub(super) color: Option<String>,
+    /// `font-weight` / `font-style` of the label (used by state diagrams).
+    pub(super) font_weight: Option<String>,
+    pub(super) font_style: Option<String>,
 }
 
 impl FlowStyle {
@@ -577,6 +580,12 @@ impl FlowStyle {
         }
         if other.color.is_some() {
             self.color.clone_from(&other.color);
+        }
+        if other.font_weight.is_some() {
+            self.font_weight.clone_from(&other.font_weight);
+        }
+        if other.font_style.is_some() {
+            self.font_style.clone_from(&other.font_style);
         }
     }
 
@@ -597,7 +606,7 @@ pub(super) fn parse_flow_style(props: &str) -> FlowStyle {
         match ch {
             '(' => depth += 1,
             ')' => depth -= 1,
-            ',' if depth == 0 => {
+            ',' | ';' if depth == 0 => {
                 pieces.push(&props[start..idx]);
                 start = idx + 1;
             }
@@ -622,6 +631,8 @@ pub(super) fn parse_flow_style(props: &str) -> FlowStyle {
             "stroke-width" => out.stroke_width = Some(value.trim_end_matches("px").trim().to_string()),
             "stroke-dasharray" => out.dasharray = Some(value),
             "color" => out.color = Some(value),
+            "font-weight" => out.font_weight = Some(value),
+            "font-style" => out.font_style = Some(value),
             _ => {}
         }
     }

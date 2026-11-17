@@ -18,6 +18,8 @@ pub(super) struct ClassNode {
     pub(super) classes: Vec<String>,
     /// A `note` box (its text is `name`).
     pub(super) note: bool,
+    /// A lollipop interface (`bar ()-- foo`): a small circle named `name`.
+    pub(super) interface: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,6 +98,7 @@ pub(super) fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> 
                     namespace: None,
                     classes: Vec::new(),
                     note: false,
+                    interface: false,
                 });
                 map.insert(key, idx);
                 idx
@@ -130,6 +133,7 @@ pub(super) fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> 
             namespace: None,
             classes: Vec::new(),
             note: true,
+            interface: false,
         });
         classes.len() - 1
     };
@@ -316,6 +320,9 @@ pub(super) fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> 
     let node_sizes: Vec<(f32, f32)> = classes
         .iter()
         .map(|c| {
+            if c.interface {
+                return ((estimate_text_width(&c.name, 11.5) + 8.0).max(24.0), 38.0);
+            }
             if c.note {
                 let lines = note_lines(c);
                 let w = lines.iter().map(|l| estimate_text_width(l, 11.5)).fold(0.0f32, f32::max) + 24.0;
@@ -417,6 +424,18 @@ pub(super) fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> 
         let (nw, nh) = node_sizes[idx];
         let x = cx - nw / 2.0;
         let y = cy - nh / 2.0;
+        if c.interface {
+            svg.push_str(&format!(
+                r##"<circle cx="{cx:.1}" cy="{:.1}" r="7" fill="#ffffff" stroke="#334155" stroke-width="1.4" data-shape="interface"/>"##,
+                y + 8.0
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="11.5" fill="#0f172a">{}</text>"##,
+                y + 32.0,
+                escape_xml(&c.name)
+            ));
+            continue;
+        }
         if c.note {
             svg.push_str(&format!(
                 r##"<path d="M {x:.1} {y:.1} L {:.1} {y:.1} L {:.1} {:.1} L {:.1} {:.1} L {x:.1} {:.1} Z" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.2" data-shape="class-note"/>"##,
@@ -551,6 +570,39 @@ pub(super) fn split_class_relation(
         }
         _ => (line.trim(), None),
     };
+
+    // Lollipop interfaces: `bar ()-- foo` / `foo --() bar`. Each one is its own small node.
+    for (op, iface_lhs) in [("()--", true), ("--()", false)] {
+        let Some(pos) = body.find(op) else { continue };
+        let (lhs, rhs) = (body[..pos].trim(), body[pos + op.len()..].trim());
+        let (iface, class) = if iface_lhs { (lhs, rhs) } else { (rhs, lhs) };
+        let iface = unquote(iface);
+        if iface.is_empty() || class.is_empty() || class.contains(char::is_whitespace) {
+            return false;
+        }
+        let class_idx = ensure_class(class, classes, map);
+        classes.push(ClassNode {
+            name: iface,
+            label: None,
+            stereotype: None,
+            fields: Vec::new(),
+            methods: Vec::new(),
+            namespace: classes[class_idx].namespace,
+            classes: Vec::new(),
+            note: false,
+            interface: true,
+        });
+        edges.push(ClassEdge {
+            from: class_idx,
+            to: classes.len() - 1,
+            kind: ClassRelKind::Link,
+            dashed: false,
+            label,
+            from_card: None,
+            to_card: None,
+        });
+        return true;
+    }
 
     for &(op, target_is_lhs, kind, dashed) in OPS {
         let Some(pos) = body.find(op) else { continue };
@@ -691,5 +743,17 @@ classDiagram
         );
         assert!(styled.contains(r##"fill="#f9f">Animal<"##) && styled.contains(r##"fill="red">Mineral<"##), "{styled}");
         assert!(!painted_rects(&styled, "#f96").is_empty() && !painted_rects(&styled, "#bbf").is_empty(), "{styled}");
+    }
+
+    #[test]
+    fn class_lollipop_interfaces() {
+        let svg = svg_of("classDiagram\n  bar ()-- foo\n  Class01 --() bar\n  Class02 --() bar\n");
+        // One interface per lollipop, even with the same name.
+        assert_eq!(svg.matches(r#"data-shape="interface""#).count(), 3, "{svg}");
+        assert_eq!(svg.matches(">bar</text>").count(), 3);
+        for class in ["foo", "Class01", "Class02"] {
+            assert!(svg.contains(&format!(">{class}</text>")), "{class}");
+        }
+        assert!(!svg.contains("()"), "{svg}");
     }
 }
