@@ -31,4 +31,22 @@ test('legacy domain reads public samples while login uses the canonical origin',
   assert.equal(privateFile.status, 308); assert.equal(privateFile.headers.get('location'), 'https://docs.sorane.dev/api/files/123e4567-e89b-12d3-a456-426614174000/welcome.docx');
   assert.equal((await dispatchSoraneAdmin(new Request('https://ibis.sorane.dev/login',{method:'POST'}), service)).status, 404);
   assert.equal((await dispatchSoraneAdmin(new Request('https://ibis.sorane.dev/api/files',{method:'POST'}), service)).status, 404);
+  assert.equal((await dispatchSoraneAdmin(new Request('https://ibis.sorane.dev/api/ai',{method:'POST'}), service)).status, 404);
+});
+test('the assistant stream is forwarded without being read', async () => {
+  assert.equal(isSoraneAdminRoute('/api/ai'), true);
+  assert.equal(isSoraneAdminRoute('/api/ai/models'), true);
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"a"}}]}\n\n'));
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.close();
+    },
+  });
+  const response = await dispatchSoraneAdmin(new Request('https://docs.sorane.dev/api/ai', { method: 'POST' }), {
+    fetch: async () => new Response(stream, { headers: { 'content-type': 'text/event-stream' } }),
+  });
+  assert.equal(response.headers.get('content-type'), 'text/event-stream');
+  assert.match(await response.text(), /data: \[DONE\]/);
 });

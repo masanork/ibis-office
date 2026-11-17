@@ -4,6 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-30",
   "workers_dev": false,
+  "ai": {
+    "binding": "AI"
+  },
   "vars": {
     "LOCAL_ONLY": "true",
     "ISSUER": "http://localhost:18877",

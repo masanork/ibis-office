@@ -56,6 +56,20 @@ operator enrollment, observability, privacy and content review, and an actual
 end-to-end Mikaki login, authorization, upload, readback and logout check. The
 current tests include a mock issuer and do not establish real Passkey behavior.
 
+## Browser assistant
+
+The editor's Assistant pane on docs.sorane.dev calls `GET /api/ai/models` and
+`POST /api/ai` on this Worker. The Worker calls Workers AI with a fixed
+allowlist (`src/ai.ts`). The browser sends a short model key and plain text.
+It does not send a model id, tools, or an API key. Prompts and completions are
+not written to D1, R2, or application logs. D1 stores only the daily request
+count in `ai_daily_usage`.
+
+Production needs migration `0007_ai_usage.sql` on `sorane-docs-admin`, the `AI`
+binding in `wrangler.production.jsonc`, and a Workers Paid plan or AI Gateway
+credits. Leave AI Gateway request logging and caching off. The front Worker
+forwards `/api/ai` and `/api/ai/*` with `run_worker_first`.
+
 ## Private user files (prototype)
 
 Authenticated Mikaki users can keep their own DOCX/XLSX/PPTX objects in a

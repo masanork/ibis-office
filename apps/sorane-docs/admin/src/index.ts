@@ -3,6 +3,7 @@ import { BROWSER, random, hash, cookieHeader, HttpError, fail, cookie, baseHeade
 import { SAMPLE_MAX_FILE, boundedBody, looksLikeOffice } from './office-file';
 import { FILE_PATH, NEXT, deleteFile, filesHome, filesPage, isUserFilesApi, jsonError, listFiles, nextDestination, readFile, saveFile, uploadFile } from './files';
 import { handleReposRequest, isReposApi, isReposRoute, type RepoEnv } from './repos';
+import { handleAiRequest, isAiApi } from './ai';
 
 type Env = RepoEnv & { SAMPLES: R2Bucket; AUTH_LIMITER: RateLimit };
 function page(env: Env, content: string, status = 200, browser?: string): Response {
@@ -72,12 +73,17 @@ export default {
    if (env.LOCAL_ONLY === 'true' && request.method === 'GET' && url.pathname === '/') return redirect(env, '/admin');
    const writingFiles = isUserFilesApi(url.pathname) && ['POST', 'PUT', 'DELETE'].includes(request.method);
    const writingRepos = isReposApi(url.pathname) && ['POST', 'PUT', 'DELETE'].includes(request.method);
-   if ((request.method === 'POST' && ['/login','/admin/samples','/admin/enroll'].includes(url.pathname)) || writingFiles || writingRepos) {
+   const writingAi = request.method === 'POST' && url.pathname === '/api/ai';
+   if ((request.method === 'POST' && ['/login','/admin/samples','/admin/enroll'].includes(url.pathname)) || writingFiles || writingRepos || writingAi) {
     const key = request.headers.get('cf-connecting-ip') || cookie(request,BROWSER) || 'unknown';
     if (!(await env.AUTH_LIMITER.limit({key:`${url.pathname}:${await hash(key)}`})).success) fail(429,'rate_limited');
    }
    if (isReposRoute(url.pathname)) {
     const res = await handleReposRequest(request, env, url.pathname);
+    if (res) return res;
+   }
+   if (isAiApi(url.pathname)) {
+    const res = await handleAiRequest(request, env, url.pathname);
     if (res) return res;
    }
    if (request.method === 'GET' && url.pathname === '/files') return await filesHome(request, env);
@@ -116,7 +122,7 @@ export default {
     const status=error instanceof HttpError?error.status:503;
     if (!(error instanceof HttpError)) console.error(JSON.stringify({event:'admin_request_failed',error:error instanceof Error?error.name:'unknown'}));
     const message=error instanceof HttpError?error.message:'unavailable';
-    if (isUserFilesApi(path) || isReposApi(path)) return jsonError(env, status, message);
+    if (isUserFilesApi(path) || isReposApi(path) || isAiApi(path)) return jsonError(env, status, message);
     if (path === '/repos' || path.startsWith('/repos/')) return filesPage(env,`<p>操作を完了できませんでした。</p><p><a href="/repos">リポジトリ一覧へ戻る</a></p>`,status);
     if (path === '/files') return filesPage(env,`<p>操作を完了できませんでした。</p><p><a href="/files">保存したファイルへ戻る</a></p>`,status);
     return page(env,`<p>操作を完了できませんでした。</p><p><a href="/admin">管理画面へ戻る</a></p>`,status);
