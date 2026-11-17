@@ -143,6 +143,14 @@ export class DynamicFonts {
   }
 }
 
+/** GJ is assigned in Plane 16. A grapheme may include a selector. */
+export function isAdministrativeCandidate(glyph: string): boolean {
+  return [...glyph].some(char => {
+    const cp = char.codePointAt(0)!;
+    return cp >= 0x100000 && cp <= 0x10fffd;
+  });
+}
+
 /** Fetch independent subsets for each requested face; never let an API
  * fallback silently replace an entire batch in the requested typeface. */
 export class FaceSubsetProvider {
@@ -150,6 +158,7 @@ export class FaceSubsetProvider {
   private readonly resolved = new Set<string>();
   private readonly faceResolved = new Set<string>();
   private readonly adminCovered = new Set<string>();
+  private readonly missingAdministrative = new Set<string>();
   private sequence = 0;
   private running = false;
   private job: Promise<void> = Promise.resolve();
@@ -165,7 +174,7 @@ export class FaceSubsetProvider {
         this.faceResolved.add(`${face}\0${glyph}`);
         if (face === 'acgjm') this.adminCovered.add(glyph);
       }
-      if (this.adminCovered.has(glyph) || ['ipamjm', 'NotoSansCJKJP'].every(face => this.faceResolved.has(`${face}\0${glyph}`))) this.resolved.add(glyph);
+      if (this.adminCovered.has(glyph) || (!isAdministrativeCandidate(glyph) && ['ipamjm', 'NotoSansCJKJP'].every(face => this.faceResolved.has(`${face}\0${glyph}`)))) this.resolved.add(glyph);
       else this.pending.add(glyph);
     }
     if (!this.running && this.pending.size) {
@@ -177,13 +186,14 @@ export class FaceSubsetProvider {
 
   seed(face: string, covers: FontCoverage): void { this.bootstrap.set(face, [...this.bootstrap.get(face) ?? [], covers]); }
 
-  async preload(text: string): Promise<void> {
+  async preload(text: string): Promise<string[]> {
     const glyphs = documentGlyphs(text);
     this.batchSize = 1023;
     try {
       this.request(glyphs);
       await this.job;
       if (glyphs.some(glyph => !this.resolved.has(glyph))) throw new Error('Document fonts could not be loaded; retry opening the file');
+      return glyphs.filter(glyph => this.missingAdministrative.has(glyph));
     } finally { this.batchSize = 127; }
   }
 
@@ -261,9 +271,7 @@ export class FaceSubsetProvider {
         }
         const work = batch.filter(glyph => !this.resolved.has(glyph)).sort();
         if (!work.length) continue;
-        const administrative = work.filter(glyph => [...glyph].some(c => {
-          const cp = c.codePointAt(0)!; return cp >= 0x100000 && cp <= 0x10fffd;
-        }));
+        const administrative = work.filter(isAdministrativeCandidate);
         let complete = false;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
@@ -279,7 +287,12 @@ export class FaceSubsetProvider {
             else await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
           }
         }
-        if (complete) for (const glyph of work) this.resolved.add(glyph);
+        if (complete) {
+          for (const glyph of administrative) {
+            if (!this.adminCovered.has(glyph)) this.missingAdministrative.add(glyph);
+          }
+          for (const glyph of work) this.resolved.add(glyph);
+        }
       }
     } finally { this.running = false; }
   }

@@ -135,7 +135,8 @@ test('partial administrative font coverage falls back only for missing character
     if (face === 'acgjm') Object.assign(headers, { 'X-Font-Missing': '1', 'X-Font-Boundaries': '2,4' });
     return new Response(raw, { headers });
   });
-  await provider.preload(a + b);
+  assert.deepEqual(await provider.preload(a + b), [b]);
+  assert.deepEqual(await provider.preload(b + a), [b]);
   assert.deepEqual(calls, [['acgjm', a + b], ['NotoSansCJKJP', b + 'm'], ['ipamjm', b + 'm']]);
 });
 

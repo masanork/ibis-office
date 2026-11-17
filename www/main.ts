@@ -460,7 +460,15 @@ if (!('gpu' in navigator)) {
         ibisOfficeMissingGlyphs: (glyphs: string[]) => provider.request(glyphs),
         ibisOfficePreloadFonts: async (text: string) => {
           showStatus(ja ? '文書のフォントを読み込んでいます…' : 'Loading document fonts…');
-          await provider.preload(text);
+          const missing = await provider.preload(text);
+          if (missing?.length) {
+            const codes = [...new Set(missing.flatMap(glyph => [...glyph].map(char => char.codePointAt(0)!)
+              .filter(code => code >= 0x100000 && code <= 0x10fffd)
+              .map(code => 'U+' + code.toString(16).toUpperCase())))];
+            const shown = codes.slice(0, 8).join(', ') + (codes.length > 8 ? '…' : '');
+            window.alert(ja ? `追加文字行政事務標準明朝に字形がない私用面の文字があります（${shown}）。`
+              : `The administrative font has no glyph for these private-use characters (${shown}).`);
+          }
         },
       });
       enable_dynamic_fonts();
