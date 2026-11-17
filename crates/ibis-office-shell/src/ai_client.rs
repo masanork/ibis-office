@@ -32,15 +32,21 @@ impl AiConfig {
         let model = crate::settings::get(SETTING_MODEL)
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_MODEL.to_string());
-        let mut api_key = crate::settings::get(SETTING_API_KEY).unwrap_or_default();
-        if api_key.trim().is_empty() {
+        let stored_key = crate::settings::get(SETTING_API_KEY).unwrap_or_default();
+        let api_key = if stored_key.trim().is_empty() {
             #[cfg(not(target_family = "wasm"))]
             {
-                api_key = std::env::var("IBIS_AI_API_KEY")
+                std::env::var("IBIS_AI_API_KEY")
                     .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .unwrap_or_default();
+                    .unwrap_or(stored_key)
             }
-        }
+            #[cfg(target_family = "wasm")]
+            {
+                stored_key
+            }
+        } else {
+            stored_key
+        };
         Self {
             base_url: base_url.trim().trim_end_matches('/').to_string(),
             model: model.trim().to_string(),
@@ -501,14 +507,226 @@ async fn stream_chat_completion_once(
     Ok(parser.into_outcome())
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct BrowserModel {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "maxInputChars")]
+    pub max_input_chars: usize,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(rename = "inputPrice", default)]
+    pub input_price: Option<String>,
+    #[serde(rename = "outputPrice", default)]
+    pub output_price: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BrowserCatalog {
+    pub csrf: String,
+    pub models: Vec<BrowserModel>,
+}
+
+thread_local! {
+    static BROWSER_CSRF: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+pub fn set_browser_csrf(token: &str) {
+    BROWSER_CSRF.with(|slot| *slot.borrow_mut() = token.to_string());
+}
+
+pub fn browser_csrf() -> String {
+    BROWSER_CSRF.with(|slot| slot.borrow().clone())
+}
+
+/// Turn a Worker error code into a sentence for the Assistant pane.
+pub fn explain_ai_error(code: &str) -> String {
+    match code {
+        "login_required" => "ログインが必要です。保存したファイルの画面から Mikaki でログインしてください。".to_string(),
+        "invalid_csrf" => "ログイン情報を確認できませんでした。アシスタントを開き直してください。".to_string(),
+        "invalid_origin" => "このページからはアシスタントを使えません。docs.sorane.dev で開いてください。".to_string(),
+        "invalid_model" => "選んだモデルは使えません。アシスタントを開き直してください。".to_string(),
+        "invalid_message" => "この依頼は送れませんでした。".to_string(),
+        "too_long" => "文書が選んだモデルの上限を超えています。".to_string(),
+        "rate_limited" => "短時間に送りすぎました。少し待ってからもう一度試してください。".to_string(),
+        "quota_exceeded" => "今日の利用回数の上限に達しました。".to_string(),
+        "ai_not_configured" => "アシスタントの準備がまだです。".to_string(),
+        "ai_failed" => "応答を受け取れませんでした。".to_string(),
+        "aborted" => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// UTF-16 code units, matching the Worker's `String.length` cap.
+pub(crate) fn utf16_units(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// Keep a browser request inside the server's message count and character cap.
+/// System and tool messages are dropped. The newest user message stays.
+#[cfg_attr(not(any(target_family = "wasm", test)), allow(dead_code))]
+pub(crate) fn fit_browser_messages(prior: &[ChatMessage], latest: String, budget: usize) -> Result<Vec<ChatMessage>, ()> {
+    const MAX_OUTBOUND: usize = 12;
+    if latest.trim().is_empty() || utf16_units(&latest) > budget {
+        return Err(());
+    }
+    let mut messages: Vec<ChatMessage> = prior
+        .iter()
+        .filter(|message| {
+            matches!(message.role.as_str(), "user" | "assistant")
+                && message.tool_calls.is_none()
+                && message.tool_call_id.is_none()
+                && message.content.as_ref().is_some_and(|content| !content.trim().is_empty())
+        })
+        .cloned()
+        .collect();
+    messages.push(ChatMessage::user(latest));
+    while messages.len() > MAX_OUTBOUND {
+        messages.remove(0);
+    }
+    while messages.len() > 1 && browser_message_units(&messages) > budget {
+        messages.remove(0);
+    }
+    if browser_message_units(&messages) > budget { Err(()) } else { Ok(messages) }
+}
+
+#[cfg_attr(not(any(target_family = "wasm", test)), allow(dead_code))]
+fn browser_message_units(messages: &[ChatMessage]) -> usize {
+    messages.iter().map(|message| utf16_units(message.content.as_deref().unwrap_or(""))).sum()
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn load_browser_catalog() -> Result<BrowserCatalog, String> {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(catch, js_name = ibisOfficeAiModels)]
+        fn ai_models_js() -> Result<js_sys::Promise, JsValue>;
+    }
+    let promise = ai_models_js().map_err(js_error)?;
+    let value = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js_error)?;
+    let text = value.as_string().ok_or_else(|| "モデル一覧を読めませんでした。".to_string())?;
+    serde_json::from_str(&text).map_err(|_| "モデル一覧を読めませんでした。".to_string())
+}
+
+#[cfg(target_family = "wasm")]
+pub fn abort_browser_stream() {
+    use wasm_bindgen::JsCast as _;
+    let Ok(fun) = js_sys::Reflect::get(&js_sys::global(), &wasm_bindgen::JsValue::from_str("ibisOfficeAiAbort")) else {
+        return;
+    };
+    if let Ok(fun) = fun.dyn_into::<js_sys::Function>() {
+        let _ = fun.call0(&wasm_bindgen::JsValue::NULL);
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn js_error(err: wasm_bindgen::JsValue) -> String {
+    err.as_string()
+        .or_else(|| {
+            js_sys::Reflect::get(&err, &wasm_bindgen::JsValue::from_str("message"))
+                .ok()
+                .and_then(|message| message.as_string())
+        })
+        .unwrap_or_else(|| "ai_failed".to_string())
+}
+
+/// Stream a reply from the same-origin Docs Worker. Tools and provider model ids are not sent.
 #[cfg(target_family = "wasm")]
 pub async fn stream_chat_completion(
-    _config: &AiConfig,
-    _messages: &[ChatMessage],
+    config: &AiConfig,
+    messages: &[ChatMessage],
     _tools: Vec<ToolDefinition>,
-    _on_delta: impl FnMut(&str),
+    mut on_delta: impl FnMut(&str),
 ) -> Result<CompletionOutcome, String> {
-    Err("Assistant is not supported in browser builds yet".to_string())
+    use futures::StreamExt as _;
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(catch, js_name = ibisOfficeAiStream)]
+        fn ai_stream_js(body: &str, csrf: &str, on_line: &js_sys::Function) -> Result<js_sys::Promise, JsValue>;
+    }
+    let csrf = browser_csrf();
+    if csrf.is_empty() {
+        return Err("login_required".to_string());
+    }
+    let outbound: Vec<ChatMessage> = messages
+        .iter()
+        .filter(|message| {
+            matches!(message.role.as_str(), "user" | "assistant")
+                && message.tool_calls.is_none()
+                && message.tool_call_id.is_none()
+        })
+        .cloned()
+        .collect();
+    let body = serde_json::to_string(&serde_json::json!({
+        "model": config.model,
+        "messages": outbound,
+    }))
+    .map_err(|_| "invalid_message".to_string())?;
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<String>();
+    // The closure has to stay alive until the page promise settles. Dropping it
+    // earlier unregisters the callback while JavaScript can still call it.
+    let mut closure = Some(wasm_bindgen::closure::Closure::wrap(Box::new(move |line: String| {
+        let _ = tx.unbounded_send(line);
+    }) as Box<dyn FnMut(String)>));
+    let promise = ai_stream_js(
+        &body,
+        &csrf,
+        closure.as_ref().expect("closure").as_ref().unchecked_ref(),
+    )
+    .map_err(js_error)?;
+    let mut request = wasm_bindgen_futures::JsFuture::from(promise);
+    let mut parser = SseStreamParser::default();
+    let mut failed: Option<String> = None;
+    loop {
+        match futures::future::select(request, rx.next()).await {
+            futures::future::Either::Left((result, _)) => {
+                if let Err(err) = result
+                    && failed.is_none()
+                {
+                    failed = Some(js_error(err));
+                }
+                drop(closure.take());
+                while let Some(line) = rx.next().await {
+                    if failed.is_some() {
+                        continue;
+                    }
+                    if let Err(err) = accept_sse_line(&mut parser, &line, &mut on_delta) {
+                        failed = Some(err);
+                    }
+                }
+                break;
+            }
+            futures::future::Either::Right((line, next_request)) => {
+                request = next_request;
+                let Some(line) = line else { break };
+                if failed.is_none()
+                    && let Err(err) = accept_sse_line(&mut parser, &line, &mut on_delta)
+                {
+                    failed = Some(err);
+                    abort_browser_stream();
+                }
+            }
+        }
+    }
+    drop(closure.take());
+    if let Some(err) = failed {
+        return Err(err);
+    }
+    let mut outcome = parser.into_outcome();
+    // The browser pane does not run tools. A tool call in the stream is ignored.
+    outcome.tool_calls.clear();
+    Ok(outcome)
+}
+
+#[cfg(target_family = "wasm")]
+fn accept_sse_line(parser: &mut SseStreamParser, line: &str, on_delta: &mut impl FnMut(&str)) -> Result<(), String> {
+    match parser.feed_line(line)? {
+        Some(SseEvent::TextDelta(delta)) => on_delta(&delta),
+        Some(SseEvent::Done) | None => {}
+    }
+    Ok(())
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -652,6 +870,21 @@ mod tests {
         assert_eq!(outcome.tool_calls[0].id, "call_1");
         assert_eq!(outcome.tool_calls[0].function.name, "set_cells");
         assert_eq!(outcome.tool_calls[0].function.arguments, r#"{"edits":[]}"#);
+    }
+
+    #[test]
+    fn browser_messages_drop_old_history_before_the_newest_prompt() {
+        let mut prior = vec![ChatMessage::system("ignore")];
+        for index in 0..14 {
+            prior.push(ChatMessage::user(format!("old {index}")));
+            prior.push(ChatMessage::assistant(Some(format!("reply {index}")), Vec::new()));
+        }
+        prior.push(ChatMessage::tool_result("call", "tool output"));
+        let fitted = fit_browser_messages(&prior, "latest".to_string(), 10_000).unwrap();
+        assert_eq!(fitted.len(), 12);
+        assert_eq!(fitted.last().and_then(|message| message.content.as_deref()), Some("latest"));
+        assert!(fitted.iter().all(|message| message.role != "system" && message.role != "tool"));
+        assert!(fit_browser_messages(&[], "あ".repeat(9), 8).is_err());
     }
 
     #[test]

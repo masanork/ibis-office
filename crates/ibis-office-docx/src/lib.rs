@@ -370,6 +370,11 @@ impl FormatEditor for Document {
         editor.doc_state().and_then(|s| s.caret).map(|p| p.para)
     }
 
+    fn ai_selection_plain_text(editor: &crate::shell::editor::SlideEditor) -> Option<String> {
+        let text = editor.selected_text();
+        if text.trim().is_empty() { None } else { Some(text) }
+    }
+
     fn note_open_failed(path: &std::path::Path) {
         repair::note_open_failed(path);
     }
