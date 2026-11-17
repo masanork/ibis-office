@@ -40,6 +40,7 @@ mod thesaurus_panel;
 mod word_count;
 mod date_review;
 mod variant_review;
+mod variant_pup_fonts;
 mod quick_analysis;
 pub(crate) mod paste_placement;
 pub mod paste_special_dialog;

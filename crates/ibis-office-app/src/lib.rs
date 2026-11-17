@@ -110,6 +110,23 @@ use xlsx::sheet_ui;
 use gpui_kit::*;
 
 
+/// Register the optional local PUP alias in both interactive and export text systems.
+#[cfg(not(target_family = "wasm"))]
+fn register_local_pup_font(ts: &TextSystem) {
+    if let Some(path) = std::env::var_os("IBIS_PUP_ALIAS_FONT") {
+        match std::fs::read(&path) {
+            Ok(data) => {
+                if let Err(err) = ts.add_fonts(vec![std::borrow::Cow::Owned(data)]) {
+                    log::warn!("Could not register local PUP alias font: {err}");
+                }
+            }
+            Err(err) => log::warn!("Could not read local PUP alias font: {err}"),
+        }
+    }
+}
+#[cfg(target_family = "wasm")]
+fn register_local_pup_font(_: &TextSystem) {}
+
 /// Register components, theme and key bindings. Call once, before opening a window.
 pub fn init(cx: &mut App) {
     register_hooks();
@@ -117,6 +134,7 @@ pub fn init(cx: &mut App) {
     // The window knows the system's fonts; the words (ibis-office-base) ask it for their English names.
     ibis_office_base::i18n::set_english_font_name(shell::font_list::english_name);
     gpui_kit::init(cx);
+    register_local_pup_font(cx.text_system());
     shell::dialog::init(cx);
     // Questions drawn as ibisOffice's dialogs where the system has none (Linux).
     linux_desktop::install_prompts(cx);
