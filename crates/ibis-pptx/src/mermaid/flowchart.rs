@@ -507,6 +507,118 @@ pub(super) struct FlowNode {
     pub(super) subgraph: Option<usize>,
     /// `class id name` / `id:::name`, in order.
     pub(super) classes: Vec<String>,
+    /// `@{ icon: … }` / `@{ img: … }`.
+    pub(super) media: Option<FlowMedia>,
+    /// A subgraph drawn closed (`id@{ view: collapsed }`).
+    pub(super) collapsed: bool,
+}
+
+/// What an `@{ icon }` / `@{ img }` node shows above (or below) its label.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum FlowMediaKind {
+    /// `fa:user` and the like: a symbol (there is no icon font).
+    Icon(String),
+    /// An image URL. Nothing is fetched: a placeholder frame keeps the place.
+    Image(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct FlowMedia {
+    pub(super) kind: FlowMediaKind,
+    /// `pos: t`: the label above the picture (default below).
+    pub(super) label_on_top: bool,
+    pub(super) w: f32,
+    pub(super) h: f32,
+    /// `form: square / circle / rounded` (icons).
+    pub(super) form: String,
+}
+
+/// `A@{ icon: "fa:user", form: "square", label: "User", pos: "t", h: 60 }`.
+pub(super) fn parse_node_media(token: &str) -> Option<FlowMedia> {
+    let t = token.trim();
+    let at = t.find("@{")?;
+    if !t.ends_with('}') {
+        return None;
+    }
+    let attrs = parse_brace_attrs(&t[at + 2..t.len() - 1]);
+    let get = |key: &str| attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    let kind = if let Some(icon) = get("icon") {
+        FlowMediaKind::Icon(icon.to_string())
+    } else {
+        FlowMediaKind::Image(get("img")?.to_string())
+    };
+    let num = |key: &str| get(key).and_then(|v| v.trim_end_matches("px").parse::<f32>().ok()).map(|v| v.clamp(16.0, 400.0));
+    let h = num("h").unwrap_or(48.0);
+    let w = num("w").unwrap_or(h);
+    Some(FlowMedia {
+        kind,
+        label_on_top: get("pos").is_some_and(|p| p.eq_ignore_ascii_case("t")),
+        w,
+        h,
+        form: get("form").unwrap_or("").to_ascii_lowercase(),
+    })
+}
+
+/// A Font Awesome name as a Unicode symbol most fonts have; unknown names get a diamond.
+pub(super) fn fa_symbol(name: &str) -> &'static str {
+    let name = name.trim_start_matches("fa-");
+    let name = name.strip_suffix("-bold").unwrap_or(name);
+    match name {
+        "ban" | "circle-xmark" => "\u{2298}",
+        "spinner" | "rotate" | "sync" | "refresh" => "\u{21BB}",
+        "camera" | "camera-retro" => "\u{25C9}",
+        "user" | "person" | "user-circle" => "\u{263A}",
+        "users" => "\u{263A}\u{263A}",
+        "home" | "house" => "\u{2302}",
+        "envelope" | "mail" => "\u{2709}",
+        "phone" => "\u{260E}",
+        "star" => "\u{2605}",
+        "heart" => "\u{2665}",
+        "cog" | "gear" | "gears" | "cogs" => "\u{2699}",
+        "check" | "circle-check" => "\u{2714}",
+        "times" | "xmark" | "close" => "\u{2716}",
+        "plane" => "\u{2708}",
+        "cloud" => "\u{2601}",
+        "warning" | "exclamation-triangle" | "triangle-exclamation" => "\u{26A0}",
+        "info" | "info-circle" | "circle-info" => "\u{2139}",
+        "bolt" => "\u{26A1}",
+        "clock" => "\u{25F7}",
+        "music" => "\u{266B}",
+        "flag" => "\u{2691}",
+        "search" | "magnifying-glass" => "\u{2315}",
+        "pencil" | "edit" | "pen" => "\u{270E}",
+        "twitter" | "x-twitter" => "\u{2726}",
+        _ => "\u{25C6}",
+    }
+}
+
+/// `fa:fa-ban forbidden` → `⊘ forbidden`; `fab:` / `fas:` / `far:` / `fal:` / `fak:` too.
+pub(super) fn replace_fa_icons(text: &str) -> String {
+    if !text.contains(":fa-") {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(":fa-") {
+        // The prefix is `fa` plus at most one letter, starting a word.
+        let head = &rest[..at];
+        let prefix_len = ["fab", "fas", "far", "fal", "fak", "fa"].iter().find(|p| head.ends_with(**p)).map(|p| p.len());
+        let Some(prefix_len) = prefix_len.filter(|&n| {
+            let before = &head[..head.len() - n];
+            before.is_empty() || before.ends_with(|c: char| !c.is_alphanumeric())
+        }) else {
+            out.push_str(&rest[..at + 4]);
+            rest = &rest[at + 4..];
+            continue;
+        };
+        out.push_str(&head[..head.len() - prefix_len]);
+        let name_start = at + 1;
+        let name_end = rest[name_start..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).map_or(rest.len(), |e| name_start + e);
+        out.push_str(fa_symbol(&rest[name_start..name_end]));
+        rest = &rest[name_end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -679,6 +791,8 @@ pub(super) fn restyle_svg_fragment(fragment: &str, style: &FlowStyle) -> String 
 
 #[derive(Debug, Clone)]
 pub(super) struct SubgraphInfo {
+    /// The id edges use (`subgraph one [My Group]` → `one`).
+    pub(super) id: String,
     pub(super) title: String,
     pub(super) dir: Option<FlowDir>,
     /// The enclosing subgraph.
@@ -706,6 +820,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
     let mut edges: Vec<FlowEdge> = Vec::new();
     let mut subgraphs: Vec<SubgraphInfo> = Vec::new();
     let mut sg_stack: Vec<usize> = Vec::new();
+    let mut collapsed_ids: Vec<String> = Vec::new();
     let mut class_defs: HashMap<String, FlowStyle> = HashMap::new();
     let mut class_assign: Vec<(String, String)> = Vec::new();
     let mut node_styles: Vec<(String, FlowStyle)> = Vec::new();
@@ -762,14 +877,25 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
             }
             if let Some(rest) = l.strip_prefix("subgraph ") {
                 let title = parse_subgraph_title(rest.trim());
+                let id = parse_subgraph_id(rest.trim());
                 let sg_idx = subgraphs.len();
-                subgraphs.push(SubgraphInfo { title, dir: None, parent: sg_stack.last().copied() });
+                subgraphs.push(SubgraphInfo { id, title, dir: None, parent: sg_stack.last().copied() });
                 sg_stack.push(sg_idx);
                 continue;
             }
             if let Some(rest) = l.strip_prefix("direction ") {
                 if let Some(&sg) = sg_stack.last() {
                     subgraphs[sg].dir = Some(parse_flow_dir(rest));
+                }
+                continue;
+            }
+            // `one@{ view: collapsed }` closes the subgraph `one`.
+            if let Some((id, attrs)) = split_attr_statement(l)
+                && subgraphs.iter().any(|sg| sg.id == id)
+                && attrs.iter().all(|(k, _)| k == "view")
+            {
+                if attrs.iter().any(|(_, v)| v.eq_ignore_ascii_case("collapsed")) {
+                    collapsed_ids.push(id.to_string());
                 }
                 continue;
             }
@@ -800,6 +926,17 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
     if nodes.is_empty() {
         return None;
     }
+
+    // `fa:fa-ban` icons in labels become symbols.
+    for node in &mut nodes {
+        node.label = replace_fa_icons(&node.label);
+    }
+    for e in &mut edges {
+        if let Some(label) = &mut e.label {
+            *label = replace_fa_icons(label);
+        }
+    }
+    let ends = resolve_subgraph_ends(&mut nodes, &mut node_map, &mut edges, &subgraphs, &collapsed_ids);
 
     for (id, class) in class_assign {
         if let Some(&idx) = node_map.get(&id) {
@@ -838,9 +975,12 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         .collect();
 
     // Node dimensions. Long labels wrap inside a width cap and the box grows taller.
-    let node_sizes: Vec<(f32, f32)> = nodes
+    let mut node_sizes: Vec<(f32, f32)> = nodes
         .iter()
-        .map(|node| flow_node_size(node.shape, &node.label, matches!(dir, FlowDir::Lr | FlowDir::Rl)))
+        .map(|node| match &node.media {
+            Some(media) => flow_media_size(media, &node.label),
+            None => flow_node_size(node.shape, &node.label, matches!(dir, FlowDir::Lr | FlowDir::Rl)),
+        })
         .collect();
 
     // Layers sit far enough apart for the widest edge label (the tallest one top to bottom).
@@ -853,7 +993,52 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         })
         .fold(0.0f32, f32::max);
     let layer_gap = (label_span + 24.0).max(64.0);
-    let (centers, total_w, total_h, frames) = layout_flowchart(&nodes, &edges, &node_sizes, &subgraphs, dir, layer_gap);
+    // Hidden nodes and subgraph aliases are not laid out; an alias's edges go through a node
+    // inside its subgraph, then end on the frame.
+    let in_subgraph = |j: usize, sg: usize| {
+        let mut g = nodes[j].subgraph;
+        while let Some(cur) = g {
+            if cur == sg {
+                return true;
+            }
+            g = subgraphs[cur].parent;
+        }
+        false
+    };
+    let laid: Vec<usize> = (0..nodes.len()).filter(|&i| ends.alias[i].is_none() && !ends.hidden[i]).collect();
+    let mut slot = vec![usize::MAX; nodes.len()];
+    for (k, &i) in laid.iter().enumerate() {
+        slot[i] = k;
+    }
+    let through = |i: usize| match ends.alias[i] {
+        Some(sg) => laid.iter().copied().find(|&j| in_subgraph(j, sg)).map_or(usize::MAX, |j| slot[j]),
+        None => slot[i],
+    };
+    let edge_pairs: Vec<(usize, usize)> = edges
+        .iter()
+        .map(|e| (through(e.from), through(e.to)))
+        .filter(|&(a, b)| a != usize::MAX && b != usize::MAX)
+        .collect();
+    let member_of: Vec<Option<usize>> = laid.iter().map(|&i| nodes[i].subgraph).collect();
+    let laid_sizes: Vec<(f32, f32)> = laid.iter().map(|&i| node_sizes[i]).collect();
+    let (laid_centers, total_w, total_h, frames) = layout_flowchart(&member_of, &edge_pairs, &laid_sizes, &subgraphs, dir, layer_gap);
+    let mut centers = vec![(-1.0e4f32, -1.0e4f32); nodes.len()];
+    for (k, &i) in laid.iter().enumerate() {
+        centers[i] = laid_centers[k];
+    }
+    for (i, alias) in ends.alias.iter().enumerate() {
+        if let Some(sg) = alias
+            && let Some((fx, fy, fw, fh)) = frames.get(*sg).copied().flatten()
+        {
+            centers[i] = (fx + fw / 2.0, fy + fh / 2.0);
+            node_sizes[i] = (fw, fh);
+        }
+    }
+    for (i, hidden) in ends.hidden.iter().enumerate() {
+        if *hidden {
+            node_sizes[i] = (0.0, 0.0);
+        }
+    }
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -899,10 +1084,25 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         if e.style == EdgeStyle::Invisible {
             continue;
         }
+        // A subgraph frame around either end is not in the way.
+        let mut route_centers = centers.clone();
+        for (i, alias) in ends.alias.iter().enumerate() {
+            if let Some(sg) = alias
+                && i != e.from
+                && i != e.to
+                && let Some((fx, fy, fw, fh)) = frames.get(*sg).copied().flatten()
+                && [e.from, e.to].iter().any(|&j| {
+                    let (jx, jy) = centers[j];
+                    jx > fx && jx < fx + fw && jy > fy && jy < fy + fh
+                })
+            {
+                route_centers[i] = (-1.0e4, -1.0e4);
+            }
+        }
         let route = route_layered_edge(
             e.from,
             e.to,
-            &centers,
+            &route_centers,
             &node_sizes,
             horizontal,
             !e.straight,
@@ -950,10 +1150,17 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
 
     // Nodes
     for (idx, node) in nodes.iter().enumerate() {
+        if ends.alias[idx].is_some() || ends.hidden[idx] {
+            continue;
+        }
         let (cx, cy) = centers[idx];
         let (w, h) = node_sizes[idx];
         let x = cx - w / 2.0;
         let y = cy - h / 2.0;
+        if let Some(media) = &node.media {
+            push_flow_media(&mut svg, media, &node.label, x, y, w, h, &node_style[idx]);
+            continue;
+        }
         let shape_at = svg.len();
         let mut label_dy = 0.0f32;
         match node.shape {
@@ -1026,10 +1233,34 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         let text_fill = style.color.as_deref().map(escape_attr).unwrap_or_else(|| "#0f172a".to_string());
         // Size and draw share the 168px cap. A wider box must not reflow the lines.
         push_centered_label(&mut svg, cx, cy + label_dy, &node.label, 13.0, label_width.clamp(24.0, 168.0), &text_fill, "500");
+        if node.collapsed {
+            // A closed subgraph: a dashed outline and a `+` badge.
+            svg.push_str(&format!(
+                r##"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" rx="12" fill="none" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,3" data-role="collapsed-subgraph"/><rect x="{:.1}" y="{:.1}" width="12" height="12" rx="2" fill="#ffffff" stroke="#64748b" stroke-width="1"/><path d="M {:.1} {:.1} h 6 M {:.1} {:.1} v 6" stroke="#334155" stroke-width="1.2"/>"##,
+                x - 4.0,
+                y - 4.0,
+                w + 8.0,
+                h + 8.0,
+                x + w - 14.0,
+                y + 2.0,
+                x + w - 11.0,
+                y + 8.0,
+                x + w - 8.0,
+                y + 5.0
+            ));
+        }
     }
 
     svg.push_str("</svg>");
     Some((svg.into_bytes(), total_w, total_h))
+}
+
+/// `one [My Group]` → `one`; `"One"` → `One`; `TOP` → `TOP`.
+pub(super) fn parse_subgraph_id(rest: &str) -> String {
+    match rest.find('[') {
+        Some(open) if open > 0 => rest[..open].trim().to_string(),
+        _ => unquote(rest),
+    }
 }
 
 pub(super) fn parse_subgraph_title(rest: &str) -> String {
@@ -1256,6 +1487,9 @@ pub(super) fn ensure_node_group(
             if let Some(sh) = shape_opt {
                 nodes[idx].shape = sh;
             }
+            if let Some(media) = parse_node_media(p) {
+                nodes[idx].media = Some(media);
+            }
             if nodes[idx].subgraph.is_none() {
                 nodes[idx].subgraph = subgraph;
             }
@@ -1268,6 +1502,8 @@ pub(super) fn ensure_node_group(
                 shape: shape_opt.unwrap_or(NodeShape::Rect),
                 subgraph,
                 classes: class.map(|c| vec![c.to_string()]).unwrap_or_default(),
+                media: parse_node_media(p),
+                collapsed: false,
             });
             node_map.insert(id.to_string(), idx);
             ids.push(idx);
@@ -1419,8 +1655,8 @@ pub(super) fn flow_node_size(shape: NodeShape, label: &str, horizontal: bool) ->
 /// Node centers, canvas size and each subgraph's frame. Every subgraph is laid out as one
 /// block (nested ones inside their parent), so frames of different subgraphs never overlap.
 pub(super) fn layout_flowchart(
-    nodes: &[FlowNode],
-    edges: &[FlowEdge],
+    member_of: &[Option<usize>],
+    edge_pairs: &[(usize, usize)],
     node_sizes: &[(f32, f32)],
     subgraphs: &[SubgraphInfo],
     dir: FlowDir,
@@ -1429,15 +1665,173 @@ pub(super) fn layout_flowchart(
     let flags = |d: FlowDir| (matches!(d, FlowDir::Lr | FlowDir::Rl), matches!(d, FlowDir::Bt | FlowDir::Rl));
     let (horizontal, reversed) = flags(dir);
     let margin = if subgraphs.is_empty() { 32.0f32 } else { 44.0f32 };
-    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|edge| (edge.from, edge.to)).collect();
     if subgraphs.is_empty() {
-        let (centers, w, h) = compute_layered_layout(nodes.len(), &edge_pairs, node_sizes, horizontal, reversed, margin, layer_gap, 34.0);
+        let (centers, w, h) = compute_layered_layout(node_sizes.len(), edge_pairs, node_sizes, horizontal, reversed, margin, layer_gap, 34.0);
         return (centers, w, h, Vec::new());
     }
     let groups: Vec<NodeGroup> = subgraphs.iter().map(|sg| NodeGroup { title: sg.title.clone(), parent: sg.parent }).collect();
     let dirs: Vec<Option<(bool, bool)>> = subgraphs.iter().map(|sg| sg.dir.map(flags)).collect();
-    let member_of: Vec<Option<usize>> = nodes.iter().map(|node| node.subgraph).collect();
-    layout_with_group_dirs(node_sizes, &edge_pairs, &member_of, &groups, &dirs, horizontal, reversed, margin, layer_gap, 34.0)
+    layout_with_group_dirs(node_sizes, edge_pairs, member_of, &groups, &dirs, horizontal, reversed, margin, layer_gap, 34.0)
+}
+
+/// Which nodes stand for a subgraph and which are hidden in a closed one.
+pub(super) struct SubgraphEnds {
+    /// A node whose id is a subgraph's (`A --> TOP`): drawn as that subgraph's frame.
+    pub(super) alias: Vec<Option<usize>>,
+    /// Inside a `view: collapsed` subgraph: not drawn; its edges go to the closed box.
+    pub(super) hidden: Vec<bool>,
+}
+
+/// Resolves subgraph ids used as edge ends, and closes `view: collapsed` subgraphs: their
+/// node becomes a box titled like the subgraph, and edges to anything inside it go to the box.
+pub(super) fn resolve_subgraph_ends(
+    nodes: &mut Vec<FlowNode>,
+    node_map: &mut HashMap<String, usize>,
+    edges: &mut [FlowEdge],
+    subgraphs: &[SubgraphInfo],
+    collapsed_ids: &[String],
+) -> SubgraphEnds {
+    let within = |mut g: Option<usize>, target: usize| {
+        while let Some(cur) = g {
+            if cur == target {
+                return true;
+            }
+            g = subgraphs[cur].parent;
+        }
+        false
+    };
+    let mut hidden = vec![false; nodes.len()];
+    // Outermost closed subgraphs first: (subgraph, its box).
+    let mut closed: Vec<(usize, usize)> = Vec::new();
+    for (sg, info) in subgraphs.iter().enumerate() {
+        if !collapsed_ids.contains(&info.id) || closed.iter().any(|&(outer, _)| within(Some(sg), outer)) {
+            continue;
+        }
+        let idx = match node_map.get(&info.id) {
+            Some(&idx) => idx,
+            None => {
+                nodes.push(FlowNode {
+                    _id: info.id.clone(),
+                    label: String::new(),
+                    shape: NodeShape::Round,
+                    subgraph: info.parent,
+                    classes: Vec::new(),
+                    media: None,
+                    collapsed: false,
+                });
+                hidden.push(false);
+                node_map.insert(info.id.clone(), nodes.len() - 1);
+                nodes.len() - 1
+            }
+        };
+        if within(nodes[idx].subgraph, sg) {
+            nodes[idx].subgraph = info.parent;
+        }
+        nodes[idx].label = info.title.clone();
+        nodes[idx].collapsed = true;
+        closed.push((sg, idx));
+    }
+    let mut redirect: Vec<usize> = (0..nodes.len()).collect();
+    for &(sg, boxed) in &closed {
+        for j in 0..nodes.len() {
+            if j != boxed && within(nodes[j].subgraph, sg) {
+                hidden[j] = true;
+                redirect[j] = boxed;
+            }
+        }
+    }
+    for e in edges.iter_mut() {
+        e.from = redirect[e.from];
+        e.to = redirect[e.to];
+        if e.from == e.to && (hidden[e.from] || nodes[e.from].collapsed) {
+            // Both ends were inside the closed subgraph.
+            e.style = EdgeStyle::Invisible;
+        }
+    }
+    let mut alias = vec![None; nodes.len()];
+    for (sg, info) in subgraphs.iter().enumerate() {
+        if closed.iter().any(|&(c, _)| c == sg) {
+            continue;
+        }
+        if let Some(&i) = node_map.get(&info.id)
+            && !hidden[i]
+            && !nodes[i].collapsed
+            && !within(nodes[i].subgraph, sg)
+            && (0..nodes.len()).any(|j| j != i && !hidden[j] && within(nodes[j].subgraph, sg))
+        {
+            alias[i] = Some(sg);
+        }
+    }
+    // An alias that sits inside another alias's subgraph is still a frame, not a member.
+    SubgraphEnds { alias, hidden }
+}
+
+/// An `@{ icon }` / `@{ img }` node: the picture plus a label line above or below it.
+pub(super) fn flow_media_size(media: &FlowMedia, label: &str) -> (f32, f32) {
+    let label_w = label_line_widths(label, 168.0, 12.0).into_iter().fold(0.0f32, f32::max);
+    let lines = if label.is_empty() { 0 } else { label_lines(label, 168.0, 12.0).len() };
+    ((media.w.max(label_w + 8.0)).max(24.0), media.h + lines as f32 * 15.0 + 6.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn push_flow_media(svg: &mut String, media: &FlowMedia, label: &str, x: f32, y: f32, w: f32, h: f32, style: &FlowStyle) {
+    let text_h = h - media.h - 6.0;
+    let (py, ly) = if media.label_on_top { (y + text_h + 6.0, y) } else { (y, y + media.h + 6.0) };
+    let px = x + (w - media.w) / 2.0;
+    let (pw, ph) = (media.w, media.h);
+    let shape_at = svg.len();
+    match &media.kind {
+        FlowMediaKind::Icon(name) => {
+            let rx = match media.form.as_str() {
+                "circle" => pw.min(ph) / 2.0,
+                "rounded" => 8.0,
+                "square" => 2.0,
+                _ => 4.0,
+            };
+            svg.push_str(&format!(
+                r##"<rect x="{px:.1}" y="{py:.1}" width="{pw:.1}" height="{ph:.1}" rx="{rx:.1}" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4" data-icon="{}"/>"##,
+                escape_attr(name)
+            ));
+            let glyph = name.split_once(':').map_or("\u{25C6}", |(_, n)| fa_symbol(n));
+            svg.push_str(&format!(
+                r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="{:.1}" fill="#1e3a8a">{glyph}</text>"##,
+                px + pw / 2.0,
+                py + ph / 2.0 + ph * 0.18,
+                ph * 0.5
+            ));
+        }
+        FlowMediaKind::Image(url) => {
+            // No fetching: a frame with a picture symbol keeps the image's place.
+            svg.push_str(&format!(
+                r##"<rect x="{px:.1}" y="{py:.1}" width="{pw:.1}" height="{ph:.1}" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1" data-img="{}"/>"##,
+                escape_attr(url)
+            ));
+            let (ix, iy, iw, ih) = (px + pw * 0.2, py + ph * 0.2, pw * 0.6, ph * 0.6);
+            svg.push_str(&format!(
+                r##"<path d="M {ix:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} Z" fill="#cbd5e1"/><circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="#cbd5e1"/>"##,
+                iy + ih,
+                ix + iw * 0.35,
+                iy + ih * 0.35,
+                ix + iw * 0.6,
+                iy + ih * 0.7,
+                ix + iw * 0.75,
+                iy + ih * 0.5,
+                ix + iw,
+                iy + ih,
+                ix + iw * 0.78,
+                iy + ih * 0.18,
+                (iw * 0.1).max(2.0)
+            ));
+        }
+    }
+    if !style.is_empty() {
+        let shape_svg = svg.split_off(shape_at);
+        svg.push_str(&restyle_svg_fragment(&shape_svg, style));
+    }
+    if !label.is_empty() {
+        let fill = style.color.as_deref().map(escape_attr).unwrap_or_else(|| "#0f172a".to_string());
+        push_centered_label(svg, x + w / 2.0, ly + text_h / 2.0, label, 12.0, 168.0, &fill, "500");
+    }
 }
 
 pub(super) fn push_flow_polygon(svg: &mut String, points: &[(f32, f32)], fill: &str, stroke: &str, shape: &str) {
@@ -1911,5 +2305,67 @@ flowchart TD
         assert!(nodes.iter().all(|&n| !rects_overlap(n, label)), "{nodes:?} {label:?}");
         let widths = label_line_widths("`a **bbbbbbbb**`", 200.0, 11.0);
         assert!((widths[0] - (estimate_text_width("a ", 11.0) + estimate_text_width("bbbbbbbb", 11.0) * BOLD_WIDTH)).abs() < 0.01);
+    }
+
+    #[test]
+    fn fa_icons_become_symbols() {
+        assert_eq!(replace_fa_icons("fa:fa-ban forbidden"), "\u{2298} forbidden");
+        assert_eq!(replace_fa_icons("A fa:fa-camera-retro perhaps?"), "A \u{25C9} perhaps?");
+        assert_eq!(replace_fa_icons("fab:fa-truck-bold a custom icon"), "\u{25C6} a custom icon");
+        assert_eq!(replace_fa_icons("sofa:fa-x and plain"), "sofa:fa-x and plain");
+        let svg = svg_of("flowchart TD\n    B[\"fa:fa-twitter for peace\"]\n    B-->C[fa:fa-ban forbidden]\n");
+        assert!(!svg.contains("fa:") && svg.contains("\u{2298} forbidden"), "{svg}");
+    }
+
+    #[test]
+    fn edges_to_a_subgraph_id_end_on_its_frame() {
+        let svg = svg_of("flowchart LR\n  A --> TOP --> B\n  subgraph TOP\n    i1 --> f1\n  end\n");
+        // `TOP` is the frame's title only, not a box of its own.
+        assert!(svg.contains(r##"fill="#475569">TOP</text>"##), "{svg}");
+        assert!(!svg.contains(r##"fill="#0f172a">TOP</text>"##), "{svg}");
+        let frame = painted_rects(&svg, "#f8fafc")[0];
+        let nodes = painted_rects(&svg, "#eff6ff");
+        assert_eq!(nodes.len(), 4, "A, B, i1, f1: {svg}");
+        // The edges from A and to B touch the frame's left and right sides.
+        let ends: Vec<(f32, f32)> = fill_none_paths(&svg)
+            .iter()
+            .flat_map(|(d, _)| {
+                let nums: Vec<f32> = d.split(|c: char| c.is_whitespace() || c == ',').filter_map(|t| t.parse().ok()).collect();
+                [(nums[0], nums[1]), (nums[nums.len() - 2], nums[nums.len() - 1])]
+            })
+            .collect();
+        assert!(ends.iter().any(|&(x, _)| (x - frame.0).abs() < 1.5), "{frame:?} {ends:?}");
+        assert!(ends.iter().any(|&(x, _)| (x - (frame.0 + frame.2)).abs() < 1.5), "{frame:?} {ends:?}");
+        assert!(text_x(&svg, "A") < frame.0 && text_x(&svg, "B") > frame.0 + frame.2);
+    }
+
+    #[test]
+    fn collapsed_subgraph_is_one_box() {
+        let svg = svg_of("flowchart TD\n    Start --> one\n    subgraph one [My Group]\n        A --> B\n        B --> C\n    end\n    one --> End\n    one@{ view: collapsed }\n");
+        assert!(svg.contains(">My Group</text>") && svg.contains(r#"data-role="collapsed-subgraph""#), "{svg}");
+        for hidden in [">A</text>", ">B</text>", ">C</text>"] {
+            assert!(!svg.contains(hidden), "{hidden}: {svg}");
+        }
+        assert!(painted_rects(&svg, "#f8fafc").is_empty(), "no frame: {svg}");
+        assert!(text_y(&svg, "Start") < text_y(&svg, "My Group") && text_y(&svg, "My Group") < text_y(&svg, "End"));
+        // Edges into the closed subgraph go to the box.
+        let svg = svg_of("flowchart TD\n    X --> A\n    subgraph one\n        A --> B\n    end\n    one@{ view: collapsed }\n");
+        assert_eq!(fill_none_paths(&svg).len(), 1, "{svg}");
+        assert!(!svg.contains(">A</text>") && svg.contains(">one</text>"), "{svg}");
+    }
+
+    #[test]
+    fn icon_and_image_nodes() {
+        let media = parse_node_media(r#"A@{ icon: "fa:user", form: "square", label: "User Icon", pos: "t", h: 60 }"#).unwrap();
+        assert_eq!(media.kind, FlowMediaKind::Icon("fa:user".into()));
+        assert!(media.label_on_top && media.h == 60.0 && media.w == 60.0 && media.form == "square");
+        let svg = svg_of("flowchart TD\n    A@{ icon: \"fa:user\", form: \"square\", label: \"User Icon\", pos: \"t\", h: 60 }\n");
+        let icon = tag_with(&svg, "data-icon=")[0];
+        assert!(icon.contains(r#"data-icon="fa:user""#) && svg.contains("\u{263A}</text>"), "{svg}");
+        assert!(text_y(&svg, "User Icon") < attr_f32(icon, "y").unwrap(), "label on top: {svg}");
+        assert_eq!(attr_f32(icon, "height"), Some(60.0));
+        let svg = svg_of("flowchart TD\n  A@{ img: \"https://mermaid.js.org/favicon.svg\", label: \"My image\", pos: \"b\", h: 60, constraint: \"on\" }\n");
+        let img = tag_with(&svg, "data-img=")[0];
+        assert!(img.contains("favicon.svg") && text_y(&svg, "My image") > attr_f32(img, "y").unwrap() + 60.0, "{svg}");
     }
 }
