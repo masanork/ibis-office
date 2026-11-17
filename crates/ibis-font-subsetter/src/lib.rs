@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 masanork
-//! IVS-aware font subsetting, donated from GJS; see ORIGIN.md.
+//! IVS-aware font subsetting for ibisOffice. The author contributes it under the project CLA; see ORIGIN.md.
 use wasm_bindgen::prelude::*;
 use std::collections::BTreeMap;
 

@@ -31,6 +31,9 @@ export function namespaceSubset(input: Uint8Array, sequence: number): Uint8Array
       }
     }
   };
+  // Rename the family this repository writes (`IBS Subset`) and the same
+  // label on earlier subset files from the author (`GJS Subset`). This module
+  // does not call gjs.
   for (const wide of [true, false]) {
     for (const prefix of ['IBS', 'GJS']) {
       replace(`${prefix} Subset`, `IBS ${id}`, wide);

@@ -2,8 +2,7 @@
 
 The editor loads TTF/OTF into GPUI before opening documents. GPUI shapes and
 rasterizes them itself and uses their metrics for layout. CSS `@font-face`
-is not used. The subset engine and serving code live in this repo; no GJS
-checkout, generated binary or hosted GJS API is required.
+is not used. The subset engine and serving code live in this repo.
 
 ## Build
 
@@ -21,7 +20,8 @@ The script installs its pinned Rust toolchain if missing. `fonts/sources.json`
 pins source URLs, extracted font SHA-256, object keys and attribution. The fetcher
 checks hashes before writing ignored `data/fonts/`. Original license texts are
 in `fonts/licenses/`. Fonts retain their own licenses; the engine is
-AGPL-3.0-only. Its provenance is in `crates/ibis-font-subsetter/ORIGIN.md`.
+AGPL-3.0-only. The author and the CLA contribution are recorded in
+`crates/ibis-font-subsetter/ORIGIN.md`.
 
 The build compiles the engine, then creates `www/fonts.json` and
 content-addressed font/license assets. Alternatively run `npm run build:font-engine`
@@ -126,9 +126,9 @@ are pinned in `bootstrapFonts` in the catalog and do not require R2 upload or
 expand the font API allowlist.
 Administrative Plane 16 characters request `acgjm` without Latin padding.
 Current reporting does not detect every absent variation sequence when its
-base glyph is available. This migration does not expand the three source fonts'
-coverage or import GJS's other fonts/fallbacks. `/font-notices.html` has font
-terms and attribution.
+base glyph is available. This deployment does not expand those three source
+fonts' coverage or add other faces to the font API. `/font-notices.html` has
+font terms and attribution.
 
 ## Whole-document prefetch
 

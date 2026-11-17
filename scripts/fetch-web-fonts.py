@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Fetch licensed source fonts independently of GJS; verify before publishing."""
+"""Fetch licensed source fonts for this repository and verify them before publishing."""
 from pathlib import Path
 import concurrent.futures
 import hashlib

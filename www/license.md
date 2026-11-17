@@ -833,13 +833,6 @@ SOFTWARE.
 Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本文」の Apache-2.0）。 出典：Google 公式のリポジトリ https://github.com/google/material-design-icons のコミット `bd8cb85bd4bad964fe6918f79665bb40c3a8efef`（2026-09-25）。
 ファイル名から寸法の接尾辞（`_20px`）を除き、塗りつぶし版は `_fill` と名付けた。図形は変えていない。
 
-### ibisOffice font subset engine
-
-Imported from masanork/gjs (9173a4d90addf8b6c7e3563473c9195e3acbdb5e).
-Copyright (c) 2026 Digital Agency, Government of Japan / Masanori Kusunoki.
-The donation is distributed under AGPL-3.0-only. The original MIT notice is retained in
-[ORIGIN.md](https://github.com/masanork/ibis-office/blob/masanork/crates/ibis-font-subsetter/ORIGIN.md); the MIT license text appears below.
-
 ### Rust の部品
 
 各部品のライセンス ファイルにある著作権表示です（ライセンス ファイルに表示がない部品は、上の一覧のライセンスと入手先に従います）。

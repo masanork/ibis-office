@@ -1,5 +1,6 @@
-`gjs-plex-abm.otf` is a raw subset of the repository's bundled
-`crates/ibis-office-app/fonts/IBMPlexSans-Regular.ttf`, generated for `ABm`
-with gjs font-subsetter at commit `9173a4d90addf8b6c7e3563473c9195e3acbdb5e`.
-It retains the source font's license and copyright records. The subset is a
-fixture for the dynamic fallback tests; it is not distributed as an app font.
+`gjs-plex-abm.otf` is a test fixture, not an application font. Its name table
+uses the family `GJS Subset`, so the loader can rename that historical label.
+The outlines are a subset of the bundled
+`crates/ibis-office-app/fonts/IBMPlexSans-Regular.ttf` for `ABm` and keep that
+font's license and copyright records. The subsetter in this repository writes
+`IBS Subset` and does not load this file at runtime.
