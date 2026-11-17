@@ -34,7 +34,14 @@ use serde_json::json;
 
 use crate::with_format;
 
-use crate::ai_client::{AiConfig, ChatMessage, ToolCall, ToolDefinition, stream_chat_completion};
+use crate::ai_client::{AiConfig, BrowserModel, ChatMessage, ToolCall, stream_chat_completion};
+#[cfg(not(target_family = "wasm"))]
+use crate::ai_client::ToolDefinition;
+#[cfg(target_family = "wasm")]
+use crate::ai_client::{
+    abort_browser_stream, browser_csrf, explain_ai_error, fit_browser_messages, load_browser_catalog, set_browser_csrf,
+    utf16_units,
+};
 use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
@@ -44,14 +51,15 @@ use crate::ai_tools::{
     resolve_vc_issuer_key, vc_public_keys_json,
     ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
     SetShapeTextArgs, SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
-    build_replace_paragraph_command, build_set_run_format_command, docx_tool_definitions,
+    build_replace_paragraph_command, build_set_run_format_command,
     parse_clear_cells_command, parse_create_sheet_arg, parse_delete_axis_command,
     parse_insert_axis_command, parse_merge_cells_command, parse_range_arg,
     parse_set_axis_size_command, parse_set_cell_comment_command, parse_set_cells_command,
     parse_set_format_command, parse_set_paragraph_align_command, parse_sheet_arg,
-    parse_switch_sheet_arg, parse_vc_template_kind, pptx_tool_definitions,
-    spreadsheet_tool_definitions,
+    parse_switch_sheet_arg, parse_vc_template_kind,
 };
+#[cfg(not(target_family = "wasm"))]
+use crate::ai_tools::{docx_tool_definitions, pptx_tool_definitions, spreadsheet_tool_definitions};
 use crate::chrome::SidebarPanel;
 use crate::editor::SlideEditor;
 
@@ -104,6 +112,26 @@ pub struct AiAssistantState {
     pub scroll_handle: ScrollHandle,
     pub pending_old_lawtext: Option<(String, String)>,
     pub _prompt_subscription: Subscription,
+    /// Allowlist from `GET /api/ai/models`. Desktop leaves this empty.
+    #[allow(dead_code)]
+    pub browser_models: Vec<BrowserModel>,
+    /// Login or catalog error for the browser pane. Desktop leaves this empty.
+    #[allow(dead_code)]
+    pub browser_status: String,
+    /// The open document is over the selected model's cap, and the user has not chosen a range.
+    #[allow(dead_code)]
+    browser_pending: Option<BrowserPendingSend>,
+}
+
+/// A browser send that is waiting for the user to choose which text to include.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+struct BrowserPendingSend {
+    prompt: String,
+    budget: usize,
+    prefix_ok: bool,
+    selection_fits: bool,
+    selection_over: bool,
 }
 
 fn column_letters(mut col: u32) -> String {
@@ -146,6 +174,163 @@ fn shape_text(shape: &Shape) -> Option<String> {
         ShapeKind::Auto(auto) => auto.text.as_ref().map(|tb| tb.text()),
         _ => None,
     }
+}
+
+#[cfg(target_family = "wasm")]
+const BROWSER_DOCUMENT_MARKER: &str = "\n\n[文書]\n";
+
+#[cfg(target_family = "wasm")]
+enum BrowserScope {
+    Document,
+    Selection,
+}
+
+#[cfg(target_family = "wasm")]
+struct TextBudget {
+    text: String,
+    units: usize,
+    limit: usize,
+    overflow: bool,
+}
+
+#[cfg(target_family = "wasm")]
+impl TextBudget {
+    fn new(limit: usize) -> Self {
+        Self { text: String::new(), units: 0, limit, overflow: false }
+    }
+
+    fn push_char(&mut self, ch: char) {
+        if self.overflow {
+            return;
+        }
+        let next = self.units.saturating_add(ch.len_utf16());
+        if next > self.limit {
+            self.overflow = true;
+            return;
+        }
+        self.text.push(ch);
+        self.units = next;
+    }
+
+    fn push_str(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.push_char(ch);
+            if self.overflow {
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn push_flow_table(table: &ibis_doc_model::flow::FlowTable, depth: usize, out: &mut TextBudget) {
+    if depth > 8 || out.overflow {
+        return;
+    }
+    for row in &table.rows {
+        if out.overflow {
+            return;
+        }
+        for (index, cell) in row.cells.iter().enumerate() {
+            if index > 0 {
+                out.push_char('\t');
+            }
+            push_cell_text(&cell.blocks, depth + 1, out);
+        }
+        out.push_char('\n');
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn push_cell_text(blocks: &[Block], depth: usize, out: &mut TextBudget) {
+    if depth > 8 || out.overflow {
+        return;
+    }
+    let mut first = true;
+    for block in blocks {
+        if out.overflow {
+            return;
+        }
+        match block {
+            Block::Paragraph(paragraph) => {
+                if !first {
+                    out.push_char(' ');
+                }
+                first = false;
+                out.push_str(&paragraph_plain_text(paragraph));
+            }
+            Block::Table(table) => {
+                out.push_char('\n');
+                push_flow_table(table, depth + 1, out);
+            }
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn push_flow_blocks(blocks: &[Block], depth: usize, out: &mut TextBudget) {
+    if depth > 8 || out.overflow {
+        return;
+    }
+    for block in blocks {
+        if out.overflow {
+            return;
+        }
+        match block {
+            Block::Paragraph(paragraph) => {
+                out.push_str(&paragraph_plain_text(paragraph));
+                out.push_char('\n');
+            }
+            Block::Table(table) => push_flow_table(table, depth + 1, out),
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn push_shape_body(shape: &Shape, out: &mut TextBudget) {
+    let Some(body) = shape.text_body() else { return };
+    for paragraph in &body.paragraphs {
+        if out.overflow {
+            return;
+        }
+        let text = paragraph.text();
+        if text.is_empty() {
+            continue;
+        }
+        out.push_str(&text);
+        out.push_char('\n');
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn document_room(prompt: &str, budget: usize) -> usize {
+    let overhead = utf16_units(prompt) + utf16_units(BROWSER_DOCUMENT_MARKER) + utf16_units("\n…");
+    budget.saturating_sub(overhead)
+}
+
+#[cfg(target_family = "wasm")]
+fn wrap_browser_user(prompt: &str, document: &str, truncated: bool) -> String {
+    if document.is_empty() {
+        return prompt.to_string();
+    }
+    let mut out = String::with_capacity(prompt.len() + document.len() + BROWSER_DOCUMENT_MARKER.len() + 2);
+    out.push_str(prompt);
+    out.push_str(BROWSER_DOCUMENT_MARKER);
+    out.push_str(document);
+    if truncated {
+        out.push_str("\n…");
+    }
+    out
+}
+
+#[cfg(target_family = "wasm")]
+fn open_browser_login() {
+    use wasm_bindgen::JsCast as _;
+    let global = js_sys::global();
+    let Ok(location) = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("location")) else { return };
+    let Ok(assign) = js_sys::Reflect::get(&location, &wasm_bindgen::JsValue::from_str("assign")) else { return };
+    let Ok(assign) = assign.dyn_into::<js_sys::Function>() else { return };
+    let _ = assign.call1(&location, &wasm_bindgen::JsValue::from_str("/files"));
 }
 
 fn shape_kind_label(kind: &ShapeKind) -> &'static str {
@@ -215,14 +400,23 @@ impl SlideEditor {
                 scroll_handle: ScrollHandle::new(),
                 pending_old_lawtext: None,
                 _prompt_subscription,
+                browser_models: Vec::new(),
+                browser_status: String::new(),
+                browser_pending: None,
             });
             prompt_input.update(cx, |input, cx| input.focus(window, cx));
+        }
+        #[cfg(target_family = "wasm")]
+        if browser_csrf().is_empty() {
+            self.load_ai_browser_catalog(cx);
         }
         self.sidebar_open = true;
         cx.notify();
     }
 
     pub fn close_ai_assistant_panel(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        abort_browser_stream();
         if let Some(p) = self.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
@@ -320,6 +514,8 @@ impl SlideEditor {
     }
 
     fn stop_ai_assistant(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        abort_browser_stream();
         if let Some(p) = self.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
@@ -332,12 +528,15 @@ impl SlideEditor {
     }
 
     fn clear_ai_assistant_history(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        abort_browser_stream();
         if let Some(p) = self.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
             p.streaming_text.clear();
             p.messages.clear();
             p.history.clear();
+            p.browser_pending = None;
         }
         cx.notify();
     }
@@ -362,6 +561,14 @@ impl SlideEditor {
     }
 
     fn submit_ai_assistant_text(&mut self, prompt: String, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        self.submit_browser_assistant(prompt, cx);
+        #[cfg(not(target_family = "wasm"))]
+        self.submit_desktop_assistant(prompt, cx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn submit_desktop_assistant(&mut self, prompt: String, cx: &mut Context<Self>) {
         let kind = self.ai_doc_kind();
         let (run_id, mut messages_to_send) = {
             let Some(p) = self.ai_assistant.as_mut() else {
@@ -580,6 +787,371 @@ impl SlideEditor {
         })
         .detach();
         cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn load_ai_browser_catalog(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let catalog = load_browser_catalog().await;
+            let _ = this.update(cx, |editor, cx| editor.apply_browser_catalog(catalog, cx));
+        })
+        .detach();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn apply_browser_catalog(&mut self, catalog: Result<crate::ai_client::BrowserCatalog, String>, cx: &mut Context<Self>) {
+        let Some(panel) = self.ai_assistant.as_mut() else { return };
+        match catalog {
+            Ok(catalog) => {
+                set_browser_csrf(&catalog.csrf);
+                panel.browser_status.clear();
+                panel.browser_models = catalog.models;
+                let current = AiConfig::load().model;
+                let known = panel.browser_models.iter().any(|model| model.key == current);
+                if !known {
+                    let fallback = panel
+                        .browser_models
+                        .iter()
+                        .find(|model| model.key == "deepseek-flash")
+                        .or_else(|| panel.browser_models.first());
+                    if let Some(model) = fallback {
+                        crate::settings::set(crate::ai_client::SETTING_MODEL, &model.key);
+                    }
+                }
+            }
+            Err(err) => {
+                set_browser_csrf("");
+                let message = explain_ai_error(&err);
+                panel.browser_status = if message.is_empty() { err } else { message };
+            }
+        }
+        cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn select_browser_model(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        let allowed = self
+            .ai_assistant
+            .as_ref()
+            .is_some_and(|panel| panel.browser_models.iter().any(|model| model.key == key));
+        if !allowed {
+            return;
+        }
+        crate::settings::set(crate::ai_client::SETTING_MODEL, &key);
+        let prompt = self.ai_assistant.as_mut().and_then(|panel| panel.browser_pending.take()).map(|pending| pending.prompt);
+        if let Some(panel) = self.ai_assistant.as_ref() {
+            panel.model_input.update(cx, |input, cx| input.set_value(key, window, cx));
+            if let Some(prompt) = prompt {
+                panel.prompt_input.update(cx, |input, cx| input.set_value(prompt, window, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn browser_char_budget(&self) -> usize {
+        let key = AiConfig::load().model;
+        self.ai_assistant
+            .as_ref()
+            .and_then(|panel| panel.browser_models.iter().find(|model| model.key == key))
+            .map(|model| model.max_input_chars)
+            .unwrap_or(8_000)
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn push_ai_error(&mut self, message: String, cx: &mut Context<Self>) {
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.messages.push(UiMessage::new(UiMessageKind::Error, message));
+            panel.scroll_handle.scroll_to_bottom();
+        }
+        cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn submit_browser_assistant(&mut self, prompt: String, cx: &mut Context<Self>) {
+        let Some(panel) = self.ai_assistant.as_ref() else { return };
+        if panel.streaming {
+            return;
+        }
+        if browser_csrf().is_empty() {
+            let message = if panel.browser_status.is_empty() {
+                "ログイン状態を確認しています。少し待ってからもう一度試してください。".to_string()
+            } else {
+                panel.browser_status.clone()
+            };
+            self.push_ai_error(message, cx);
+            return;
+        }
+        let model_known = panel.browser_models.iter().any(|model| model.key == AiConfig::load().model);
+        if !model_known {
+            self.push_ai_error(explain_ai_error("invalid_model"), cx);
+            return;
+        }
+        let budget = self.browser_char_budget();
+        if utf16_units(&prompt) > budget {
+            if let Some(panel) = self.ai_assistant.as_mut() {
+                panel.browser_pending = Some(BrowserPendingSend {
+                    prompt,
+                    budget,
+                    prefix_ok: false,
+                    selection_fits: false,
+                    selection_over: false,
+                });
+            }
+            cx.notify();
+            return;
+        }
+        let room = document_room(&prompt, budget);
+        let document = self.browser_extract(BrowserScope::Document, room);
+        if document.overflow {
+            let selection = self.browser_extract(BrowserScope::Selection, room);
+            let pending = BrowserPendingSend {
+                prompt,
+                budget,
+                prefix_ok: room >= 32,
+                selection_fits: !selection.overflow && !selection.text.is_empty(),
+                selection_over: selection.overflow,
+            };
+            if let Some(panel) = self.ai_assistant.as_mut() {
+                panel.browser_pending = Some(pending);
+            }
+            cx.notify();
+            return;
+        }
+        self.begin_browser_turn(prompt, document.text, false, false, budget, cx);
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn confirm_browser_prefix(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.ai_assistant.as_ref().and_then(|panel| panel.browser_pending.clone()) else { return };
+        if !pending.prefix_ok {
+            return;
+        }
+        let room = document_room(&pending.prompt, pending.budget);
+        let document = self.browser_extract(BrowserScope::Document, room);
+        self.begin_browser_turn(pending.prompt, document.text, document.overflow, false, pending.budget, cx);
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn confirm_browser_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.ai_assistant.as_ref().and_then(|panel| panel.browser_pending.clone()) else { return };
+        let room = document_room(&pending.prompt, pending.budget);
+        let selection = self.browser_extract(BrowserScope::Selection, room);
+        if selection.overflow || selection.text.is_empty() {
+            if let Some(panel) = self.ai_assistant.as_mut()
+                && let Some(stored) = panel.browser_pending.as_mut()
+            {
+                stored.selection_fits = false;
+                stored.selection_over = selection.overflow;
+            }
+            cx.notify();
+            return;
+        }
+        self.begin_browser_turn(pending.prompt, selection.text, false, true, pending.budget, cx);
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn restore_browser_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.ai_assistant.as_mut().and_then(|panel| panel.browser_pending.take()).map(|pending| pending.prompt) else {
+            return;
+        };
+        if let Some(panel) = self.ai_assistant.as_ref() {
+            panel.prompt_input.update(cx, |input, cx| input.set_value(prompt, window, cx));
+        }
+        cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn begin_browser_turn(
+        &mut self,
+        prompt: String,
+        document: String,
+        truncated: bool,
+        selection: bool,
+        budget: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let latest = wrap_browser_user(&prompt, &document, truncated);
+        let prior = self.ai_assistant.as_ref().map(|panel| panel.history.clone()).unwrap_or_default();
+        let Ok(outbound) = fit_browser_messages(&prior, latest, budget) else {
+            self.push_ai_error(explain_ai_error("too_long"), cx);
+            return;
+        };
+        let note = if truncated {
+            "\n\n（文書の先頭から、上限に収まる範囲を送りました）"
+        } else if selection {
+            "\n\n（選択範囲を送りました）"
+        } else {
+            ""
+        };
+        let shown = format!("{prompt}{note}");
+        let cfg = AiConfig::load();
+        let run_id = {
+            let Some(panel) = self.ai_assistant.as_mut() else { return };
+            panel.browser_pending = None;
+            panel.run_id = panel.run_id.wrapping_add(1);
+            panel.streaming = true;
+            panel.streaming_text.clear();
+            panel.messages.push(UiMessage::new(UiMessageKind::User, shown));
+            panel.history.push(ChatMessage::user(prompt));
+            panel.scroll_handle.scroll_to_bottom();
+            panel.run_id
+        };
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let outcome = stream_chat_completion(&cfg, &outbound, Vec::new(), |delta| {
+                let delta_owned = delta.to_string();
+                let _ = this.update(cx, |editor, cx| {
+                    if let Some(panel) = editor.ai_assistant.as_mut()
+                        && panel.streaming
+                        && panel.run_id == run_id
+                    {
+                        panel.streaming_text.push_str(&delta_owned);
+                        panel.scroll_handle.scroll_to_bottom();
+                        cx.notify();
+                    }
+                });
+            })
+            .await;
+            match outcome {
+                Err(err) => {
+                    let message = explain_ai_error(&err);
+                    let _ = this.update(cx, |editor, cx| {
+                        let Some(panel) = editor.ai_assistant.as_mut() else { return };
+                        if panel.run_id != run_id {
+                            return;
+                        }
+                        panel.streaming = false;
+                        if !panel.streaming_text.is_empty() {
+                            let text = std::mem::take(&mut panel.streaming_text);
+                            panel.messages.push(UiMessage::new(UiMessageKind::Assistant, text));
+                        }
+                        if !message.is_empty() {
+                            panel.messages.push(UiMessage::new(UiMessageKind::Error, message));
+                        }
+                        panel.scroll_handle.scroll_to_bottom();
+                        cx.notify();
+                    });
+                }
+                Ok(out) => {
+                    let _ = this.update(cx, |editor, cx| {
+                        let Some(panel) = editor.ai_assistant.as_mut() else { return };
+                        if !panel.streaming || panel.run_id != run_id {
+                            return;
+                        }
+                        panel.streaming = false;
+                        panel.streaming_text.clear();
+                        let text = if out.content.is_empty() {
+                            "応答に文章がありませんでした。".to_string()
+                        } else {
+                            out.content
+                        };
+                        panel.history.push(ChatMessage::assistant(Some(text.clone()), Vec::new()));
+                        panel.messages.push(UiMessage::new(UiMessageKind::Assistant, text));
+                        panel.scroll_handle.scroll_to_bottom();
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn browser_extract(&self, scope: BrowserScope, limit: usize) -> TextBudget {
+        let mut out = TextBudget::new(limit);
+        match (scope, self.ai_doc_kind()) {
+            (BrowserScope::Selection, AiDocKind::Docx) => {
+                if let Some(text) = with_format!(self, ai_selection_plain_text(self)) {
+                    out.push_str(&text);
+                }
+            }
+            (BrowserScope::Selection, AiDocKind::Pptx) => {
+                for shape in self.selected_shapes() {
+                    push_shape_body(shape, &mut out);
+                }
+            }
+            (BrowserScope::Selection, AiDocKind::Xlsx) => {
+                let range = with_format!(self, ai_sheet_selection(self, self.current_slide));
+                if let Some(range) = range {
+                    self.push_sheet_text(Some(range), &mut out);
+                }
+            }
+            (BrowserScope::Document, AiDocKind::Docx) => {
+                if let Some(flow) = self.presentation().flow.as_ref() {
+                    push_flow_blocks(&flow.body, 0, &mut out);
+                }
+            }
+            (BrowserScope::Document, AiDocKind::Pptx) => self.push_slide_text(&mut out),
+            (BrowserScope::Document, AiDocKind::Xlsx) => self.push_sheet_text(None, &mut out),
+        }
+        out
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn push_slide_text(&self, out: &mut TextBudget) {
+        let current = self.current_slide;
+        let presentation = self.presentation();
+        let mut ordered: Vec<(usize, &ibis_doc_model::model::Slide)> =
+            presentation.slides.iter().enumerate().map(|(index, slide)| (index + 1, slide)).collect();
+        ordered.sort_by_key(|(index, slide)| (slide.id != current, *index));
+        for (index, slide) in ordered {
+            if out.overflow {
+                return;
+            }
+            out.push_str(&format!("スライド {index}\n"));
+            for shape in &slide.shapes {
+                push_shape_body(shape, out);
+            }
+            let notes = slide.notes.trim();
+            if !notes.is_empty() {
+                out.push_str("ノート\n");
+                out.push_str(notes);
+                out.push_char('\n');
+            }
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn push_sheet_text(&self, only: Option<ibis_doc_model::sheet::CellRange>, out: &mut TextBudget) {
+        let current = self.current_slide;
+        let presentation = self.presentation();
+        let mut ordered: Vec<(usize, &ibis_doc_model::model::Slide)> =
+            presentation.slides.iter().enumerate().map(|(index, slide)| (index + 1, slide)).collect();
+        if only.is_some() {
+            ordered.retain(|(_, slide)| slide.id == current);
+        } else {
+            ordered.sort_by_key(|(index, slide)| (slide.id != current, *index));
+        }
+        for (index, slide) in ordered {
+            if out.overflow {
+                return;
+            }
+            let Some(sheet) = sheet_of_slide(slide) else { continue };
+            let name = slide.name.clone().unwrap_or_else(|| format!("Sheet {index}"));
+            out.push_str(&name);
+            out.push_char('\n');
+            for cell in sheet.cells_in_rows(0, u32::MAX) {
+                if out.overflow {
+                    return;
+                }
+                if let Some(range) = only
+                    && (cell.row < range.first_row
+                        || cell.row > range.last_row
+                        || cell.column < range.first_column
+                        || cell.column > range.last_column)
+                {
+                    continue;
+                }
+                if cell.text.trim().is_empty() {
+                    continue;
+                }
+                out.push_str(&ibis_doc_model::sheet::cell_name(cell.column, cell.row));
+                out.push_char('\t');
+                out.push_str(&cell.text);
+                out.push_char('\n');
+            }
+        }
     }
 
     fn ai_overview_json(&self, kind: AiDocKind) -> String {
@@ -2954,9 +3526,29 @@ impl SlideEditor {
             .count();
         let scroll_handle = panel.scroll_handle.clone();
         let prompt_input = panel.prompt_input.clone();
+        #[cfg(not(target_family = "wasm"))]
         let base_url_input = panel.base_url_input.clone();
+        #[cfg(not(target_family = "wasm"))]
         let model_input = panel.model_input.clone();
+        #[cfg(not(target_family = "wasm"))]
         let api_key_input = panel.api_key_input.clone();
+        #[cfg(target_family = "wasm")]
+        let browser_models = panel.browser_models.clone();
+        #[cfg(target_family = "wasm")]
+        let browser_status = panel.browser_status.clone();
+        #[cfg(target_family = "wasm")]
+        let browser_pending = panel.browser_pending.clone();
+        #[cfg(not(target_family = "wasm"))]
+        let model_caption = format!("Model: {}", cfg.model);
+        #[cfg(target_family = "wasm")]
+        let model_caption = {
+            let label = browser_models
+                .iter()
+                .find(|model| model.key == cfg.model)
+                .map(|model| model.label.clone())
+                .unwrap_or_else(|| cfg.model.clone());
+            format!("モデル: {label}")
+        };
 
         let header = h_flex()
             .w_full()
@@ -2966,7 +3558,7 @@ impl SlideEditor {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!("Model: {}", cfg.model)),
+                    .child(model_caption),
             )
             .child(
                 h_flex()
@@ -3006,6 +3598,7 @@ impl SlideEditor {
                     ),
             );
 
+        #[cfg(not(target_family = "wasm"))]
         let settings_box = show_settings.then(|| {
             v_flex()
                 .gap_2()
@@ -3033,7 +3626,132 @@ impl SlideEditor {
                         })),
                 )
         });
+        #[cfg(target_family = "wasm")]
+        let settings_box = show_settings.then(|| {
+            v_flex()
+                .gap_2()
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().secondary.opacity(0.4))
+                .child(
+                    div()
+                        .text_xs()
+                        .child("ブラウザでは、ログイン中の Docs から選んだモデルを使います。APIキーはこの画面には置きません。返答は提案です。文書は変わりません。"),
+                )
+        });
+        #[cfg(target_family = "wasm")]
+        let browser_box = {
+            let selected = browser_models.iter().find(|model| model.key == cfg.model);
+            let editor = cx.weak_entity();
+            let items = browser_models
+                .iter()
+                .map(|model| {
+                    let key = model.key.clone();
+                    crate::chrome::DropdownItem::new(model.label.clone())
+                        .checked(model.key == cfg.model)
+                        .on_select(std::rc::Rc::new(move |editor, window, cx| {
+                            editor.select_browser_model(key.clone(), window, cx);
+                        }))
+                })
+                .collect();
+            let label = selected.map(|model| model.label.clone()).unwrap_or_else(|| "モデル".to_string());
+            let mut column = v_flex().gap_1().child(
+                crate::chrome::Dropdown::new("ai-browser-model", label, items, &editor)
+                    .searchable(false)
+                    .fill_width(),
+            );
+            if let Some(model) = selected {
+                if let (Some(input), Some(output)) = (&model.input_price, &model.output_price) {
+                    column = column.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("100万トークンあたり入力 {input}、出力 {output}")),
+                    );
+                }
+                if let Some(note) = &model.note {
+                    column = column.child(div().text_xs().child(note.clone()));
+                }
+            }
+            if !browser_status.is_empty() {
+                column = column.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(browser_status.clone()),
+                );
+            }
+            if browser_status.contains("ログイン") {
+                column = column.child(
+                    Button::new("ai-browser-login")
+                        .outline()
+                        .xsmall()
+                        .label("ログイン画面へ")
+                        .on_click(cx.listener(|_, _, _, _| open_browser_login())),
+                );
+            }
+            Some(column.into_any_element())
+        };
+        #[cfg(not(target_family = "wasm"))]
+        let browser_box: Option<gpui::AnyElement> = None;
+        #[cfg(target_family = "wasm")]
+        let pending_box = browser_pending.as_ref().map(|pending| {
+            v_flex()
+                .gap_1()
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(div().text_xs().child(if !pending.prefix_ok && !pending.selection_fits {
+                    if pending.selection_over {
+                        "選択範囲も、開いている文書も、このモデルの上限を超えています。範囲を狭めるか、指示を短くしてから、入力に戻してください。"
+                    } else {
+                        "指示が長いため、文書を添えられません。指示を短くしてから、もう一度送ってください。"
+                    }
+                } else {
+                    "開いている文書は、このモデルに一度に送れる文字数を超えています。送る範囲を選んでください。"
+                }))
+                .when(pending.selection_over && pending.prefix_ok, |column| {
+                    column.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("選択範囲も上限を超えています。"),
+                    )
+                })
+                .when(pending.prefix_ok, |column| {
+                    column.child(
+                        Button::new("ai-browser-prefix")
+                            .outline()
+                            .xsmall()
+                            .label("収まる先頭から送る")
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_browser_prefix(cx))),
+                    )
+                })
+                .when(pending.selection_fits, |column| {
+                    column.child(
+                        Button::new("ai-browser-selection")
+                            .outline()
+                            .xsmall()
+                            .label("選択範囲だけ送る")
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_browser_selection(cx))),
+                    )
+                })
+                .child(
+                    Button::new("ai-browser-restore")
+                        .ghost()
+                        .xsmall()
+                        .label("やめて入力に戻す")
+                        .on_click(cx.listener(|this, _, window, cx| this.restore_browser_prompt(window, cx))),
+                )
+                .into_any_element()
+        });
+        #[cfg(not(target_family = "wasm"))]
+        let pending_box: Option<gpui::AnyElement> = None;
 
+        #[cfg(not(target_family = "wasm"))]
         let (intro, quick_actions): (&str, Vec<(&'static str, &'static str, &'static str)>) =
             match kind {
                 AiDocKind::Xlsx => (
@@ -3102,6 +3820,33 @@ impl SlideEditor {
                     ],
                 ),
             };
+        #[cfg(target_family = "wasm")]
+        let (intro, quick_actions): (&str, Vec<(&'static str, &'static str, &'static str)>) = match kind {
+            AiDocKind::Xlsx => (
+                "表の要約や読み方の案を文章で受け取れます。返答は提案です。表は変わりません。コピーしてから貼り付けてください。",
+                vec![
+                    ("ai-quick-1", "選択範囲を要約", "選択範囲の内容を要約してください。選択がなければ、開いている表を要約してください。表は変えず、文章で答えてください。"),
+                    ("ai-quick-2", "読みやすさの案", "表を読みやすくする案を文章で提案してください。表は変えず、文章で答えてください。"),
+                    ("ai-quick-3", "気になる点", "表の内容で気になる点を文章で挙げてください。"),
+                ],
+            ),
+            AiDocKind::Pptx => (
+                "スライドの要約や言い換え案を文章で受け取れます。返答は提案です。スライドは変わりません。コピーしてから貼り付けてください。",
+                vec![
+                    ("ai-quick-1", "全体を要約", "プレゼンテーション全体の要点を要約してください。スライドは変えず、文章で答えてください。"),
+                    ("ai-quick-2", "このスライドの案", "いま開いているスライドの文章を、より分かりやすい案として書いてください。"),
+                    ("ai-quick-3", "ノートの案", "いま開いているスライドの発表用ノートの案を文章で書いてください。"),
+                ],
+            ),
+            AiDocKind::Docx => (
+                "文書の要約や校正案を文章で受け取れます。返答は提案です。文書は変わりません。コピーしてから貼り付けてください。",
+                vec![
+                    ("ai-quick-1", "文書を要約", "文書の要点を要約してください。文書は変えず、文章で答えてください。"),
+                    ("ai-quick-2", "校正の案", "誤字や読みにくさの改善案を文章で提案してください。"),
+                    ("ai-quick-3", "見出しの案", "見出しや章立ての案を文章で提案してください。"),
+                ],
+            ),
+        };
 
         let mut msg_list = v_flex().gap_2();
         if messages.is_empty() && streaming_text.is_empty() {
@@ -3220,7 +3965,9 @@ impl SlideEditor {
         let content = v_flex()
             .gap_2()
             .child(header)
+            .children(browser_box)
             .children(settings_box)
+            .children(pending_box)
             .child(scrollable_msgs);
 
         let footer = v_flex()

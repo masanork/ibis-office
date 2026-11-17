@@ -317,6 +317,11 @@ pub trait FormatEditor {
         None
     }
 
+    /// Plain text of the user's selection (docx). Empty when nothing is selected.
+    fn ai_selection_plain_text(_editor: &SlideEditor) -> Option<String> {
+        None
+    }
+
     /// Show page `slide`: whether the format handled it (else it is shown
     /// as a presentation shows a slide).
     fn show_page(_editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
@@ -1299,6 +1304,7 @@ pub trait FormatDriver: Sync {
     fn ai_sheet_selection(&self, _editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange>;
     fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange);
     fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32>;
+    fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String>;
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn page_changed(&self, _editor: &mut SlideEditor, _from: SlideId, _to: SlideId);
     fn before_render(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
@@ -1554,6 +1560,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32> {
         F::ai_docx_cursor_paragraph(_editor)
+    }
+    fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String> {
+        F::ai_selection_plain_text(_editor)
     }
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
         F::show_page(_editor, _slide, _window, _cx)
