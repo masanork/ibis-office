@@ -45,6 +45,8 @@ mod c4;
 mod treemap;
 mod venn;
 mod radar;
+mod usecase;
+mod wardley;
 mod text;
 #[cfg(test)]
 mod test_support;
@@ -72,6 +74,8 @@ use c4::*;
 use treemap::*;
 use venn::*;
 use radar::*;
+use usecase::*;
+use wardley::*;
 use sankey::*;
 use text::*;
 
@@ -162,6 +166,8 @@ enum DiagramKind {
     Treemap,
     Venn,
     Radar,
+    Usecase,
+    Wardley,
 }
 
 /// Header keywords, including the aliases current mermaid still accepts
@@ -209,6 +215,10 @@ const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
     ("venn-beta", DiagramKind::Venn),
     ("radar", DiagramKind::Radar),
     ("radar-beta", DiagramKind::Radar),
+    ("usecase", DiagramKind::Usecase),
+    ("usecase-beta", DiagramKind::Usecase),
+    ("wardley", DiagramKind::Wardley),
+    ("wardley-beta", DiagramKind::Wardley),
 ];
 
 fn diagram_kind(header: &str) -> Option<DiagramKind> {
@@ -274,6 +284,8 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Treemap => render_treemap_svg(trimmed, &config),
         DiagramKind::Venn => render_venn_svg(trimmed),
         DiagramKind::Radar => render_radar_svg(trimmed, &config),
+        DiagramKind::Usecase => render_usecase_svg(trimmed, &config),
+        DiagramKind::Wardley => render_wardley_svg(trimmed),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
     if let Some(title) = front_title {
@@ -329,7 +341,7 @@ mod tests {
     fn unsupported_diagram_returns_none() {
         assert!(render_mermaid("zenuml\n  A.method()\n").is_none());
         assert!(render_mermaid("").is_none());
-        assert!(render_mermaid("wardley-beta\n  title x\n").is_none());
+        assert!(render_mermaid("railroad-beta\n  title x\n").is_none());
     }
 
     #[test]

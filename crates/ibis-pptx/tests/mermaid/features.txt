@@ -248,3 +248,39 @@ radar | title line | ok | prefix | title
 radar | config: axisScaleFactor, axisLabelFactor, curveTension, width, height, margins | ok | config | radar.
 radar | config: curve colours (cScale) | ok | config | themeVariables.cScale
 radar | config: radar theme variables (curveOpacity, curveStrokeWidth, axisColor, graticuleColor, graticuleOpacity) | ok | config | themeVariables.radar
+
+usecase | actors (normal / hollow / awesome / fa: icon) | ok | prefix | actor
+usecase | use cases (ellipse / rect, business, «stereotype») | ok | contains | (
+usecase | system boundaries and packages | ok | prefix | systemBoundary
+usecase | direction | ok | prefix | direction
+usecase | links (-->, <--, --, o / x / triangle ends, labels) | ok | contains | --
+usecase | include / extend links (..> : include) | ok | contains | ..>
+usecase | edge ids (A id@--> B) and edge styles | ok | contains | @--
+usecase | notes (note for X) | ok | prefix | note
+usecase | json boxes | ok | prefix | json
+usecase | classDef / class / style / :::class | ok | prefix | classDef
+usecase | classDef / class / style / :::class | ok | prefix | class
+usecase | classDef / class / style / :::class | ok | prefix | style
+usecase | accTitle / accDescr | ok | prefix | acc
+usecase | config: actor / usecase fonts | ok | config | usecase.actorFont
+usecase | config: actor / usecase fonts | ok | config | usecase.usecaseFont
+usecase | config: nodeSpacing / rankSpacing / diagramPadding | ok | config | usecase.nodeSpacing
+usecase | config: nodeSpacing / rankSpacing / diagramPadding | ok | config | usecase.rankSpacing
+usecase | config: nodeSpacing / rankSpacing / diagramPadding | ok | config | usecase.diagramPadding
+usecase | config: colorScheme (rotate palette; role draws the default colours) | ok | config | usecase.colorScheme
+usecase | config: useMaxWidth (no effect; the SVG has a fixed size) | ok | config | usecase.useMaxWidth
+
+wardley | components and anchors at [visibility, evolution] | ok | prefix | component
+wardley | components and anchors at [visibility, evolution] | ok | prefix | anchor
+wardley | component label offsets, (inertia), (build/buy/outsource/market) | ok | contains | (
+wardley | dependency links (->) | ok | contains | ->
+wardley | flows (+>, +<, +<>, +'label'>) | ok | contains | +
+wardley | evolve | ok | prefix | evolve
+wardley | custom evolution stages (@ widths, dual labels) | ok | prefix | evolution
+wardley | size | ok | prefix | size
+wardley | title | ok | prefix | title
+wardley | pipelines | ok | prefix | pipeline
+wardley | notes | ok | prefix | note
+wardley | annotations legend | ok | prefix | annotation
+wardley | accelerators / deaccelerators | ok | prefix | accelerator
+wardley | accelerators / deaccelerators | ok | prefix | deaccelerator
