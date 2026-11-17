@@ -98,8 +98,27 @@ cat > "$APP/Contents/Info.plist" <<EOF
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>ファイル &gt; 印刷… で、プレビューの印刷のダイアログを開くために使います。 / Used to open Preview's print dialog for File &gt; Print.</string>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key><string>net.daringfireball.markdown</string>
+			<key>UTTypeConformsTo</key><array><string>public.plain-text</string></array>
+			<key>UTTypeDescription</key><string>Markdown document</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key><array><string>md</string><string>markdown</string></array>
+				<key>public.mime-type</key><string>text/markdown</string>
+			</dict>
+		</dict>
+	</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
+		<dict>
+			<key>CFBundleTypeName</key><string>Markdown document</string>
+			<key>CFBundleTypeRole</key><string>Editor</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>LSItemContentTypes</key><array><string>net.daringfireball.markdown</string></array>
+		</dict>
 		<dict>
 			<key>CFBundleTypeName</key><string>Ichitaro document</string>
 			<key>CFBundleTypeRole</key><string>Viewer</string>
