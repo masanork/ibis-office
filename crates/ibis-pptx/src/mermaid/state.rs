@@ -49,57 +49,116 @@ pub(super) fn split_lone_colon(s: &str) -> Option<(&str, &str)> {
         .map(|i| (&s[..i], &s[i + 1..]))
 }
 
-/// Moves the concurrent regions of each composite apart along the cross axis (x for TB, y for
-/// LR), in source order, and everything beyond them along with them. Returns how much the
-/// drawing grew.
-pub(super) fn separate_state_regions(nodes: &[StateNode], sizes: &[(f32, f32)], centers: &mut [(f32, f32)], horizontal: bool) -> f32 {
-    const GAP: f32 = 36.0;
-    let mut grown = 0.0f32;
-    let mut comps: Vec<&str> = Vec::new();
+/// The layout of a state diagram with composites: each composite (and each of its concurrent
+/// regions) is laid out as a block, see [`layout_with_groups`].
+pub(super) struct StateLayout {
+    pub(super) centers: Vec<(f32, f32)>,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    /// Frames by group; composites and their regions.
+    pub(super) frames: Vec<Option<(f32, f32, f32, f32)>>,
+    /// The group of each composite, and of each of its regions (empty without regions).
+    pub(super) comp_group: Vec<usize>,
+    pub(super) region_groups: Vec<Vec<usize>>,
+    /// A state that names a composite with content (`[*] --> Active` and `state Active { }`):
+    /// the composite's index. It is drawn as the composite's frame, not as a box of its own.
+    pub(super) alias: Vec<Option<usize>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn layout_state_composites(
+    nodes: &[StateNode],
+    node_map: &HashMap<String, usize>,
+    composites: &[(String, Option<(usize, usize)>)],
+    edges: &[StateEdge],
+    sizes: &[(f32, f32)],
+    horizontal: bool,
+    reversed: bool,
+    margin: f32,
+) -> StateLayout {
+    // Regions per composite: from its states and from its child composites.
+    let mut regions = vec![0usize; composites.len()];
     for n in nodes {
-        if n.region > 0
-            && let Some(c) = n.composite.as_deref()
-            && !comps.contains(&c)
-        {
-            comps.push(c);
+        if let Some(c) = n.composite.as_deref().and_then(|c| composites.iter().position(|(name, _)| name == c)) {
+            regions[c] = regions[c].max(n.region);
         }
     }
-    let cross = |i: usize, centers: &[(f32, f32)]| {
-        let (c, half) = if horizontal { (centers[i].1, sizes[i].1 / 2.0) } else { (centers[i].0, sizes[i].0 / 2.0) };
-        (c - half, c + half)
+    for (_, parent) in composites {
+        if let Some((p, r)) = parent {
+            regions[*p] = regions[*p].max(*r);
+        }
+    }
+    let mut groups: Vec<NodeGroup> = Vec::new();
+    let mut comp_group = Vec::with_capacity(composites.len());
+    let mut region_groups: Vec<Vec<usize>> = Vec::with_capacity(composites.len());
+    let slot = |c: usize, r: usize, comp_group: &[usize], region_groups: &[Vec<usize>]| {
+        region_groups[c].get(r).copied().unwrap_or(comp_group[c])
     };
-    for comp in comps {
-        let members: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].composite.as_deref() == Some(comp)).collect();
-        let regions = members.iter().map(|&i| nodes[i].region).max().unwrap_or(0);
-        let span = |idxs: &[usize], centers: &[(f32, f32)]| {
-            idxs.iter().map(|&i| cross(i, centers)).fold((f32::MAX, f32::MIN), |a, b| (a.0.min(b.0), a.1.max(b.1)))
-        };
-        let (lo, hi) = span(&members, centers);
-        let mut cursor = lo;
-        for region in 0..=regions {
-            let idxs: Vec<usize> = members.iter().copied().filter(|&i| nodes[i].region == region).collect();
-            if idxs.is_empty() {
-                continue;
+    for (c, (name, parent)) in composites.iter().enumerate() {
+        let parent = parent.map(|(p, r)| slot(p, r, &comp_group, &region_groups));
+        comp_group.push(groups.len());
+        groups.push(NodeGroup { title: name.clone(), parent });
+        let mut own = Vec::new();
+        if regions[c] > 0 {
+            for _ in 0..=regions[c] {
+                own.push(groups.len());
+                groups.push(NodeGroup { title: String::new(), parent: Some(comp_group[c]) });
             }
-            let (r_lo, r_hi) = span(&idxs, centers);
-            let d = cursor - r_lo;
-            for &i in &idxs {
-                if horizontal { centers[i].1 += d } else { centers[i].0 += d }
-            }
-            cursor = r_hi + d + GAP;
         }
-        let growth = (cursor - GAP - hi).max(0.0);
-        if growth > 0.0 {
-            // Whatever lay beyond the composite moves on by as much.
-            for i in 0..nodes.len() {
-                if nodes[i].composite.as_deref() != Some(comp) && cross(i, centers).0 >= hi {
-                    if horizontal { centers[i].1 += growth } else { centers[i].0 += growth }
-                }
+        region_groups.push(own);
+    }
+    let comp_of = |name: &str| composites.iter().position(|(n, _)| n == name);
+    let group_of = |i: usize| -> Option<usize> {
+        let c = comp_of(nodes[i].composite.as_deref()?)?;
+        Some(slot(c, nodes[i].region, &comp_group, &region_groups))
+    };
+    let within = |mut g: Option<usize>, target: usize| {
+        while let Some(cur) = g {
+            if cur == target {
+                return true;
             }
-            grown += growth;
+            g = groups[cur].parent;
+        }
+        false
+    };
+    // Aliases: a state named like a composite that holds at least one other state.
+    let mut alias: Vec<Option<usize>> = vec![None; nodes.len()];
+    for (c, (name, _)) in composites.iter().enumerate() {
+        if let Some(&i) = node_map.get(name.as_str())
+            && nodes[i].kind == StateKind::Normal
+            && (0..nodes.len()).any(|j| j != i && within(group_of(j), comp_group[c]))
+        {
+            alias[i] = Some(c);
         }
     }
-    grown
+    // An alias's transitions are laid out through one state inside it.
+    let rep = |i: usize| -> usize {
+        match alias[i] {
+            None => i,
+            Some(c) => (0..nodes.len()).find(|&j| alias[j].is_none() && within(group_of(j), comp_group[c])).unwrap_or(i),
+        }
+    };
+    let leaves: Vec<usize> = (0..nodes.len()).filter(|&i| alias[i].is_none()).collect();
+    let mut pos = vec![usize::MAX; nodes.len()];
+    for (k, &i) in leaves.iter().enumerate() {
+        pos[i] = k;
+    }
+    let leaf_sizes: Vec<(f32, f32)> = leaves.iter().map(|&i| sizes[i]).collect();
+    let member_of: Vec<Option<usize>> = leaves.iter().map(|&i| group_of(i)).collect();
+    let mut leaf_edges: Vec<(usize, usize)> = Vec::new();
+    for e in edges {
+        let (a, b) = (pos[rep(e.from)], pos[rep(e.to)]);
+        if a != usize::MAX && b != usize::MAX {
+            leaf_edges.push((a, b));
+        }
+    }
+    let (leaf_centers, width, height, frames) =
+        layout_with_groups(&leaf_sizes, &leaf_edges, &member_of, &groups, horizontal, reversed, margin, 62.0, 36.0);
+    let mut centers = vec![(0.0f32, 0.0f32); nodes.len()];
+    for (k, &i) in leaves.iter().enumerate() {
+        centers[i] = leaf_centers[k];
+    }
+    StateLayout { centers, width, height, frames, comp_group, region_groups, alias }
 }
 
 pub(super) struct StateEdge {
@@ -153,6 +212,9 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
     let mut edges: Vec<StateEdge> = Vec::new();
     // (composite name, current concurrent region)
     let mut composite_stack: Vec<(String, usize)> = Vec::new();
+    // Every `state X {` in opening order (parents first), with its parent and that parent's region.
+    let mut composites: Vec<(String, Option<(usize, usize)>)> = Vec::new();
+    let mut composite_index: HashMap<String, usize> = HashMap::new();
     let mut class_defs: HashMap<String, FlowStyle> = HashMap::new();
     let mut notes: Vec<StateNote> = Vec::new();
     // An open `note left|right of X` block: (target, left, lines).
@@ -216,6 +278,10 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
             continue;
         }
         if let Some(rest) = l.strip_prefix("direction ") {
+            // Only the top level sets the drawing's direction.
+            if !composite_stack.is_empty() {
+                continue;
+            }
             match rest.trim().to_ascii_uppercase().as_str() {
                 "LR" => {
                     horizontal = true;
@@ -298,6 +364,11 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
             }
             if let Some(before_brace) = rest.strip_suffix('{') {
                 let name = unquote(before_brace.trim());
+                if !composite_index.contains_key(&name) {
+                    let parent = composite_stack.last().and_then(|(p, r)| composite_index.get(p).map(|&pi| (pi, *r)));
+                    composite_index.insert(name.clone(), composites.len());
+                    composites.push((name.clone(), parent));
+                }
                 composite_stack.push((name, 0));
                 continue;
             }
@@ -345,7 +416,7 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
         return None;
     }
 
-    let node_sizes: Vec<(f32, f32)> = nodes
+    let mut node_sizes: Vec<(f32, f32)> = nodes
         .iter()
         .map(|node| match node.kind {
             StateKind::Start | StateKind::End => (26.0, 26.0),
@@ -369,24 +440,17 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
 
     let has_comp = nodes.iter().any(|n| n.composite.is_some());
     let margin = if has_comp { 44.0 } else { 32.0 };
-    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
-    let (mut centers, mut total_w, mut total_h) = compute_layered_layout(
-        nodes.len(),
-        &edge_pairs,
-        &node_sizes,
-        horizontal,
-        reversed,
-        margin,
-        62.0,
-        36.0,
-    );
-
-    // Concurrent regions side by side (stacked in LR), each in its own band.
-    let grown = separate_state_regions(&nodes, &node_sizes, &mut centers, horizontal);
-    if horizontal {
-        total_h += grown.ceil() as u32;
-    } else {
-        total_w += grown.ceil() as u32;
+    let layout = layout_state_composites(&nodes, &node_map, &composites, &edges, &node_sizes, horizontal, reversed, margin);
+    let (total_w, total_h) = (layout.width, layout.height);
+    let mut centers = layout.centers;
+    // A composite used as a transition end is its frame.
+    for (i, alias) in layout.alias.iter().enumerate() {
+        if let Some(c) = alias
+            && let Some((fx, fy, fw, fh)) = layout.frames[layout.comp_group[*c]]
+        {
+            centers[i] = (fx + fw / 2.0, fy + fh / 2.0);
+            node_sizes[i] = (fw, fh);
+        }
     }
 
     // `classDef` styles: `default` first, then each class in order.
@@ -444,64 +508,28 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
         svg.push_str(&format!(r#"<g transform="translate({shift_x:.1} {shift_y:.1})">"#));
     }
 
-    // Composite state containers
-    let mut comp_groups: HashMap<&str, Vec<usize>> = HashMap::new();
-    let mut comp_order: Vec<&str> = Vec::new();
-    for (idx, node) in nodes.iter().enumerate() {
-        if let Some(c) = node.composite.as_deref() {
-            if !comp_groups.contains_key(c) {
-                comp_order.push(c);
-            }
-            comp_groups.entry(c).or_default().push(idx);
-        }
-    }
-    for comp in comp_order {
-        let idxs = &comp_groups[comp];
-        let mut min_x = f32::MAX;
-        let mut min_y = f32::MAX;
-        let mut max_x = f32::MIN;
-        let mut max_y = f32::MIN;
-        for &i in idxs {
-            let (cx, cy) = centers[i];
-            let (nw, nh) = node_sizes[i];
-            min_x = min_x.min(cx - nw / 2.0);
-            min_y = min_y.min(cy - nh / 2.0);
-            max_x = max_x.max(cx + nw / 2.0);
-            max_y = max_y.max(cy + nh / 2.0);
-        }
-        let sx = min_x - 14.0;
-        let sy = min_y - 32.0;
-        let sw = (max_x - min_x) + 28.0;
-        let sh = (max_y - min_y) + 46.0;
+    // Composite state containers, outermost first (composites open parents first).
+    for (c, (name, _)) in composites.iter().enumerate() {
+        let Some((sx, sy, sw, sh)) = layout.frames[layout.comp_group[c]] else { continue };
         svg.push_str(&format!(
-            r##"<rect x="{sx:.1}" y="{sy:.1}" width="{sw:.1}" height="{sh:.1}" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>"##
+            r##"<rect x="{sx:.1}" y="{sy:.1}" width="{sw:.1}" height="{sh:.1}" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2" data-role="composite"/>"##
         ));
         svg.push_str(&format!(
             r##"<text x="{:.1}" y="{:.1}" font-size="11.5" font-weight="bold" fill="#334155">{}</text>"##,
             sx + 10.0,
             sy + 18.0,
-            escape_xml(comp)
+            escape_xml(name)
         ));
         // Concurrent regions (`--`) are divided by dashed lines.
-        let regions = idxs.iter().map(|&i| nodes[i].region).max().unwrap_or(0);
-        let bounds = |region: usize| {
-            idxs.iter().filter(|&&i| nodes[i].region == region).fold(None, |acc: Option<(f32, f32, f32, f32)>, &i| {
-                let (cx, cy) = centers[i];
-                let (nw, nh) = node_sizes[i];
-                let b = (cx - nw / 2.0, cy - nh / 2.0, cx + nw / 2.0, cy + nh / 2.0);
-                Some(acc.map_or(b, |a| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))))
-            })
-        };
-        for region in 1..=regions {
-            let (Some(a), Some(b)) = (bounds(region - 1), bounds(region)) else { continue };
-            let (x1, y1, x2, y2) = if a.2 <= b.0 || b.2 <= a.0 {
-                let x = if a.2 <= b.0 { (a.2 + b.0) / 2.0 } else { (b.2 + a.0) / 2.0 };
+        let region_frames: Vec<(f32, f32, f32, f32)> = layout.region_groups[c].iter().filter_map(|&g| layout.frames[g]).collect();
+        for pair in region_frames.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (x1, y1, x2, y2) = if a.0 + a.2 <= b.0 + 0.5 || b.0 + b.2 <= a.0 + 0.5 {
+                let x = if a.0 + a.2 <= b.0 + 0.5 { (a.0 + a.2 + b.0) / 2.0 } else { (b.0 + b.2 + a.0) / 2.0 };
                 (x, sy + 24.0, x, sy + sh - 4.0)
-            } else if a.3 <= b.1 || b.3 <= a.1 {
-                let y = if a.3 <= b.1 { (a.3 + b.1) / 2.0 } else { (b.3 + a.1) / 2.0 };
-                (sx + 4.0, y, sx + sw - 4.0, y)
             } else {
-                continue;
+                let y = if a.1 + a.3 <= b.1 + 0.5 { (a.1 + a.3 + b.1) / 2.0 } else { (b.1 + b.3 + a.1) / 2.0 };
+                (sx + 4.0, y, sx + sw - 4.0, y)
             };
             svg.push_str(&format!(
                 r##"<line x1="{x1:.1}" y1="{y1:.1}" x2="{x2:.1}" y2="{y2:.1}" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="6,4" data-role="region-divider"/>"##
@@ -534,10 +562,25 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
             }
             continue;
         }
+        // A frame around either end is not in the way.
+        let mut route_centers = centers.clone();
+        for (i, alias) in layout.alias.iter().enumerate() {
+            if let Some(c) = alias
+                && i != e.from
+                && i != e.to
+                && let Some(frame) = layout.frames[layout.comp_group[*c]]
+                && [e.from, e.to].iter().any(|&j| {
+                    let (jx, jy) = centers[j];
+                    jx > frame.0 && jx < frame.0 + frame.2 && jy > frame.1 && jy < frame.1 + frame.3
+                })
+            {
+                route_centers[i] = (-1.0e4, -1.0e4);
+            }
+        }
         let route = route_layered_edge(
             e.from,
             e.to,
-            &centers,
+            &route_centers,
             &node_sizes,
             horizontal,
             false,
@@ -562,6 +605,9 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
 
     // State nodes
     for (idx, node) in nodes.iter().enumerate() {
+        if layout.alias[idx].is_some() {
+            continue;
+        }
         let (cx, cy) = centers[idx];
         let (nw, nh) = node_sizes[idx];
         match node.kind {
@@ -799,5 +845,64 @@ stateDiagram-v2
     fn state_lone_id_declares_a_state() {
         let svg = svg_of("stateDiagram-v2\n    stateId\n");
         assert!(svg.contains(">stateId</text>"), "{svg}");
+    }
+
+    fn rect_of(tag: &str) -> (f32, f32, f32, f32) {
+        (attr_f32(tag, "x").unwrap(), attr_f32(tag, "y").unwrap(), attr_f32(tag, "width").unwrap(), attr_f32(tag, "height").unwrap())
+    }
+
+    /// Where each transition arrow ends.
+    fn arrow_ends(svg: &str) -> Vec<(f32, f32)> {
+        tag_with(svg, "url(#st-arrow)")
+            .into_iter()
+            .filter(|tag| !tag.starts_with("<marker"))
+            .map(|tag| {
+                if tag.starts_with("<line") {
+                    return (attr_f32(tag, "x2").unwrap(), attr_f32(tag, "y2").unwrap());
+                }
+                let d = &tag[tag.find(" d=\"").unwrap() + 4..];
+                let d = &d[..d.find('"').unwrap()];
+                let nums: Vec<f32> = d.split(|c: char| c.is_whitespace() || c == ',').filter_map(|t| t.parse().ok()).collect();
+                (nums[nums.len() - 2], nums[nums.len() - 1])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn state_composite_as_transition_end_is_its_frame() {
+        let svg = svg_of("stateDiagram-v2\n    [*] --> First\n    state First {\n        [*] --> second\n        second --> [*]\n    }\n    First --> Done\n");
+        // No separate `First` box: the name is only the frame's title.
+        assert!(!svg.contains(r##"font-size="13" fill="#0f172a">First</text>"##), "{svg}");
+        assert_eq!(svg.matches(">First</text>").count(), 1, "{svg}");
+        let frame = rect_of(tag_with(&svg, r#"data-role="composite""#)[0]);
+        // The transition from the top-level start ends on the frame's top edge.
+        let ends = arrow_ends(&svg);
+        assert!(
+            ends.iter().any(|&(x, y)| (y - frame.1).abs() < 1.5 && x > frame.0 && x < frame.0 + frame.2),
+            "{frame:?} {ends:?}"
+        );
+        // `Done` is outside the frame, below it.
+        assert!(text_y(&svg, "Done") > frame.1 + frame.3, "{svg}");
+    }
+
+    #[test]
+    fn state_nested_and_sibling_composites_do_not_overlap() {
+        let nested = svg_of("stateDiagram-v2\n    [*] --> First\n    state First {\n        [*] --> Second\n        state Second {\n            [*] --> second\n            second --> Third\n            state Third {\n                [*] --> third\n                third --> [*]\n            }\n        }\n    }\n");
+        let frames: Vec<_> = tag_with(&nested, r#"data-role="composite""#).into_iter().map(rect_of).collect();
+        assert_eq!(frames.len(), 3, "{nested}");
+        let inside = |a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)| a.0 > b.0 && a.1 > b.1 && a.0 + a.2 < b.0 + b.2 && a.1 + a.3 < b.1 + b.3;
+        assert!(inside(frames[1], frames[0]) && inside(frames[2], frames[1]), "{frames:?}");
+        let siblings = svg_of("stateDiagram-v2\n    [*] --> First\n    First --> Second\n    First --> Third\n    state First {\n        [*] --> fir\n        fir --> [*]\n    }\n    state Second {\n        [*] --> sec\n        sec --> [*]\n    }\n    state Third {\n        [*] --> thi\n        thi --> [*]\n    }\n");
+        let frames: Vec<_> = tag_with(&siblings, r#"data-role="composite""#).into_iter().map(rect_of).collect();
+        assert_eq!(frames.len(), 3, "{siblings}");
+        for i in 0..3 {
+            for j in i + 1..3 {
+                assert!(!rects_overlap(frames[i], frames[j]), "{frames:?}");
+            }
+        }
+        // Each composite's states are inside its own frame.
+        for (name, frame) in [("fir", frames[0]), ("sec", frames[1]), ("thi", frames[2])] {
+            assert!(rect_holds(frame, text_x(&siblings, name), text_y(&siblings, name)), "{name}");
+        }
     }
 }

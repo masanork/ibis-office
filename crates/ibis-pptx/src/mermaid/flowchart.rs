@@ -681,6 +681,8 @@ pub(super) fn restyle_svg_fragment(fragment: &str, style: &FlowStyle) -> String 
 pub(super) struct SubgraphInfo {
     pub(super) title: String,
     pub(super) dir: Option<FlowDir>,
+    /// The enclosing subgraph.
+    pub(super) parent: Option<usize>,
 }
 
 pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
@@ -761,7 +763,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
             if let Some(rest) = l.strip_prefix("subgraph ") {
                 let title = parse_subgraph_title(rest.trim());
                 let sg_idx = subgraphs.len();
-                subgraphs.push(SubgraphInfo { title, dir: None });
+                subgraphs.push(SubgraphInfo { title, dir: None, parent: sg_stack.last().copied() });
                 sg_stack.push(sg_idx);
                 continue;
             }
@@ -841,7 +843,17 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         .map(|node| flow_node_size(node.shape, &node.label, matches!(dir, FlowDir::Lr | FlowDir::Rl)))
         .collect();
 
-    let (centers, total_w, total_h) = layout_flowchart(&nodes, &edges, &node_sizes, &subgraphs, dir);
+    // Layers sit far enough apart for the widest edge label (the tallest one top to bottom).
+    let label_span = edges
+        .iter()
+        .filter_map(|e| e.label.as_deref())
+        .map(|l| {
+            let (w, h) = flow_edge_label_size(l);
+            if matches!(dir, FlowDir::Lr | FlowDir::Rl) { w } else { h }
+        })
+        .fold(0.0f32, f32::max);
+    let layer_gap = (label_span + 24.0).max(64.0);
+    let (centers, total_w, total_h, frames) = layout_flowchart(&nodes, &edges, &node_sizes, &subgraphs, dir, layer_gap);
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -865,35 +877,9 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
     ));
 
-    // Subgraph bounding boxes
-    for (sg_idx, sg) in subgraphs.iter().enumerate() {
-        let members: Vec<usize> = nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, node)| (node.subgraph == Some(sg_idx)).then_some(i))
-            .collect();
-        if members.is_empty() {
-            continue;
-        }
-        let mut min_x = f32::MAX;
-        let mut min_y = f32::MAX;
-        let mut max_x = f32::MIN;
-        let mut max_y = f32::MIN;
-        for u in members {
-            let (cx, cy) = centers[u];
-            let (w, h) = node_sizes[u];
-            min_x = min_x.min(cx - w / 2.0);
-            min_y = min_y.min(cy - h / 2.0);
-            max_x = max_x.max(cx + w / 2.0);
-            max_y = max_y.max(cy + h / 2.0);
-        }
-        // Constant padding. The title band stays above the children.
-        let frame_pad = 16.0f32;
-        let top_inset = if sg.title.is_empty() { frame_pad } else { frame_pad + 22.0 };
-        let sx = min_x - frame_pad;
-        let sy = min_y - top_inset;
-        let sw = (max_x + frame_pad) - sx;
-        let sh = (max_y + frame_pad) - sy;
+    // Subgraph frames, outermost first (a subgraph opens before the ones inside it).
+    for (sg, frame) in subgraphs.iter().zip(&frames) {
+        let Some((sx, sy, sw, sh)) = *frame else { continue };
         svg.push_str(&format!(
             r##"<rect x="{sx:.1}" y="{sy:.1}" width="{sw:.1}" height="{sh:.1}" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="5,3"/>"##
         ));
@@ -952,9 +938,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         push_routed_edge(&mut svg, &route, &stroke, &escape_attr(&stroke_w), &extra);
         if let Some(lbl) = &e.label {
             let (lx, ly) = route.label_at;
-            let lines = label_lines(lbl, 140.0, 11.0);
-            let lw = lines.iter().map(|line| estimate_text_width(line, 11.0)).fold(0.0f32, f32::max) + 10.0;
-            let lh = lines.len() as f32 * 14.0 + 6.0;
+            let (lw, lh) = flow_edge_label_size(lbl);
             svg.push_str(&format!(
                 r##"<rect x="{:.1}" y="{:.1}" width="{lw:.1}" height="{lh:.1}" rx="3" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>"##,
                 lx - lw / 2.0,
@@ -1409,11 +1393,17 @@ pub(super) fn split_flow_statements(line: &str) -> Vec<&str> {
     out
 }
 
+/// The white box behind an edge label: `(width, height)`.
+pub(super) fn flow_edge_label_size(label: &str) -> (f32, f32) {
+    let widths = label_line_widths(label, 140.0, 11.0);
+    (widths.iter().copied().fold(0.0f32, f32::max) + 10.0, widths.len() as f32 * 14.0 + 6.0)
+}
+
 pub(super) fn flow_node_size(shape: NodeShape, label: &str, horizontal: bool) -> (f32, f32) {
     let max_text = 168.0f32;
-    let lines = label_lines(label, max_text, 13.0);
-    let tw = lines.iter().map(|line| estimate_text_width(line, 13.0)).fold(0.0f32, f32::max);
-    let text_h = lines.len() as f32 * 16.0;
+    let widths = label_line_widths(label, max_text, 13.0);
+    let tw = widths.iter().copied().fold(0.0f32, f32::max);
+    let text_h = widths.len() as f32 * 16.0;
     match shape {
         NodeShape::Ext(ext) => flow_ext_size(ext, tw, text_h, horizontal),
         NodeShape::Diamond | NodeShape::Hexagon => ((tw + 56.0).max(96.0), (text_h + 28.0).max(54.0)),
@@ -1426,115 +1416,28 @@ pub(super) fn flow_node_size(shape: NodeShape, label: &str, horizontal: bool) ->
     }
 }
 
+/// Node centers, canvas size and each subgraph's frame. Every subgraph is laid out as one
+/// block (nested ones inside their parent), so frames of different subgraphs never overlap.
 pub(super) fn layout_flowchart(
     nodes: &[FlowNode],
     edges: &[FlowEdge],
     node_sizes: &[(f32, f32)],
     subgraphs: &[SubgraphInfo],
     dir: FlowDir,
-) -> (Vec<(f32, f32)>, u32, u32) {
-    let horizontal = matches!(dir, FlowDir::Lr | FlowDir::Rl);
-    let reversed = matches!(dir, FlowDir::Bt | FlowDir::Rl);
+    layer_gap: f32,
+) -> GroupedLayout {
+    let flags = |d: FlowDir| (matches!(d, FlowDir::Lr | FlowDir::Rl), matches!(d, FlowDir::Bt | FlowDir::Rl));
+    let (horizontal, reversed) = flags(dir);
     let margin = if subgraphs.is_empty() { 32.0f32 } else { 44.0f32 };
-    let directed: Vec<usize> = subgraphs.iter().enumerate().filter_map(|(idx, sg)| sg.dir.map(|_| idx)).collect();
-    if directed.is_empty() {
-        let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|edge| (edge.from, edge.to)).collect();
-        return compute_layered_layout(nodes.len(), &edge_pairs, node_sizes, horizontal, reversed, margin, 64.0, 34.0);
+    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|edge| (edge.from, edge.to)).collect();
+    if subgraphs.is_empty() {
+        let (centers, w, h) = compute_layered_layout(nodes.len(), &edge_pairs, node_sizes, horizontal, reversed, margin, layer_gap, 34.0);
+        return (centers, w, h, Vec::new());
     }
-
-    struct LocalLayout {
-        members: Vec<usize>,
-        centers: Vec<(f32, f32)>,
-        w: f32,
-        h: f32,
-    }
-    let mut locals: HashMap<usize, LocalLayout> = HashMap::new();
-    for &sg in &directed {
-        let members: Vec<usize> = nodes.iter().enumerate().filter_map(|(idx, node)| (node.subgraph == Some(sg)).then_some(idx)).collect();
-        if members.is_empty() {
-            continue;
-        }
-        let index_of: HashMap<usize, usize> = members.iter().enumerate().map(|(idx, &node)| (node, idx)).collect();
-        let local_edges: Vec<(usize, usize)> = edges
-            .iter()
-            .filter_map(|edge| Some((*index_of.get(&edge.from)?, *index_of.get(&edge.to)?)))
-            .collect();
-        let sizes: Vec<(f32, f32)> = members.iter().map(|&node| node_sizes[node]).collect();
-        let sg_dir = subgraphs[sg].dir.unwrap_or(dir);
-        let (local_centers, w, h) = compute_layered_layout(
-            members.len(),
-            &local_edges,
-            &sizes,
-            matches!(sg_dir, FlowDir::Lr | FlowDir::Rl),
-            matches!(sg_dir, FlowDir::Bt | FlowDir::Rl),
-            28.0,
-            56.0,
-            28.0,
-        );
-        locals.insert(sg, LocalLayout { members, centers: local_centers, w: w as f32, h: h as f32 });
-    }
-
-    enum Slot {
-        Node(usize),
-        Group(usize),
-    }
-    let mut slots: Vec<Slot> = Vec::new();
-    let mut slot_of_node: HashMap<usize, usize> = HashMap::new();
-    let mut slot_of_group: HashMap<usize, usize> = HashMap::new();
-    for (idx, node) in nodes.iter().enumerate() {
-        if let Some(sg) = node.subgraph
-            && locals.contains_key(&sg)
-        {
-            if let Some(&slot) = slot_of_group.get(&sg) {
-                slot_of_node.insert(idx, slot);
-            } else {
-                let slot = slots.len();
-                slots.push(Slot::Group(sg));
-                slot_of_group.insert(sg, slot);
-                slot_of_node.insert(idx, slot);
-            }
-        } else {
-            let slot = slots.len();
-            slots.push(Slot::Node(idx));
-            slot_of_node.insert(idx, slot);
-        }
-    }
-    let mut outer_edges = Vec::new();
-    for edge in edges {
-        if let (Some(&from), Some(&to)) = (slot_of_node.get(&edge.from), slot_of_node.get(&edge.to))
-            && from != to
-        {
-            outer_edges.push((from, to));
-        }
-    }
-    let outer_sizes: Vec<(f32, f32)> = slots
-        .iter()
-        .map(|slot| match slot {
-            Slot::Node(idx) => node_sizes[*idx],
-            Slot::Group(sg) => {
-                let local = &locals[sg];
-                (local.w, local.h)
-            }
-        })
-        .collect();
-    let (outer_centers, total_w, total_h) = compute_layered_layout(slots.len(), &outer_edges, &outer_sizes, horizontal, reversed, margin, 64.0, 34.0);
-    let mut centers = vec![(0.0f32, 0.0f32); nodes.len()];
-    for (idx, slot) in slots.iter().enumerate() {
-        match slot {
-            Slot::Node(node) => centers[*node] = outer_centers[idx],
-            Slot::Group(sg) => {
-                let local = &locals[sg];
-                let (sx, sy) = outer_centers[idx];
-                let ox = sx - local.w / 2.0;
-                let oy = sy - local.h / 2.0;
-                for (member_idx, &node) in local.members.iter().enumerate() {
-                    let (lx, ly) = local.centers[member_idx];
-                    centers[node] = (ox + lx, oy + ly);
-                }
-            }
-        }
-    }
-    (centers, total_w, total_h)
+    let groups: Vec<NodeGroup> = subgraphs.iter().map(|sg| NodeGroup { title: sg.title.clone(), parent: sg.parent }).collect();
+    let dirs: Vec<Option<(bool, bool)>> = subgraphs.iter().map(|sg| sg.dir.map(flags)).collect();
+    let member_of: Vec<Option<usize>> = nodes.iter().map(|node| node.subgraph).collect();
+    layout_with_group_dirs(node_sizes, &edge_pairs, &member_of, &groups, &dirs, horizontal, reversed, margin, layer_gap, 34.0)
 }
 
 pub(super) fn push_flow_polygon(svg: &mut String, points: &[(f32, f32)], fill: &str, stroke: &str, shape: &str) {
@@ -1820,7 +1723,7 @@ flowchart TD
         assert!((node.0 - frame.0 - 16.0).abs() < 0.2, "left pad {frame:?} {node:?}");
         assert!(((frame.0 + frame.2) - (node.0 + node.2) - 16.0).abs() < 0.2, "right pad");
         assert!(((frame.1 + frame.3) - (node.1 + node.3) - 16.0).abs() < 0.2, "bottom pad");
-        assert!((node.1 - frame.1 - 38.0).abs() < 0.2, "title band {frame:?} {node:?}");
+        assert!((node.1 - frame.1 - GROUP_TOP).abs() < 0.2, "title band {frame:?} {node:?}");
         let title_y = text_y(&svg, "外側");
         assert!((title_y - (frame.1 + 16.0)).abs() < 0.2, "title baseline {title_y}");
         assert!(node.1 - title_y >= 16.0, "title overlaps the child");
@@ -1971,5 +1874,42 @@ flowchart TD
         assert!(ent.contains(">A double quote:&quot;</text>") && ent.contains(">A dec char:♥</text>"), "{ent}");
         // A plain label with asterisks is not Markdown.
         assert!(svg_of("flowchart LR\n  a[\"2 ** 3\"]\n").contains(">2 ** 3</text>"));
+    }
+
+    #[test]
+    fn subgraph_frames_never_overlap_and_nest() {
+        let svg = svg_of("flowchart LR\nsubgraph One\n  a(\"cat\") --> b(\"dog\")\nend\nsubgraph Two\n  c(\"cat\") --> d(\"dog\")\nend\n");
+        let frames = painted_rects(&svg, "#f8fafc");
+        assert_eq!(frames.len(), 2, "{svg}");
+        assert!(!rects_overlap(frames[0], frames[1]), "{frames:?}");
+        // Nodes stay inside their own subgraph.
+        let nodes = painted_rects(&svg, "#eff6ff");
+        assert_eq!(nodes.len(), 4);
+        for (k, node) in nodes.iter().enumerate() {
+            let frame = frames[k / 2];
+            assert!(rect_holds(frame, node.0, node.1) && rect_holds(frame, node.0 + node.2, node.1 + node.3), "{node:?} {frame:?}");
+        }
+        let nested = svg_of("flowchart TB\n  c1-->a2\n  subgraph TOP\n    subgraph B1\n      i1 --> f1\n    end\n    subgraph B2\n      i2 --> f2\n    end\n  end\n");
+        let frames = painted_rects(&nested, "#f8fafc");
+        assert_eq!(frames.len(), 3, "{nested}");
+        let inside = |a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)| a.0 > b.0 && a.1 > b.1 && a.0 + a.2 < b.0 + b.2 && a.1 + a.3 < b.1 + b.3;
+        assert!(inside(frames[1], frames[0]) && inside(frames[2], frames[0]), "{frames:?}");
+        assert!(!rects_overlap(frames[1], frames[2]));
+        // `c1` is not in TOP.
+        assert!(!rect_holds(frames[0], text_x(&nested, "c1"), text_y(&nested, "c1")), "{nested}");
+    }
+
+    #[test]
+    fn markdown_edge_label_box_fits_bold_text_between_its_nodes() {
+        let svg = svg_of("flowchart LR\n  c(\"x\") -- \"`Bold **edge label**`\" --> d(\"y\")\n");
+        let label = painted_rects(&svg, "#ffffff").into_iter().find(|r| r.2 < 400.0).expect("label box");
+        let bold = estimate_text_width("Bold ", 11.0) + estimate_text_width("edge label", 11.0) * BOLD_WIDTH;
+        assert!(label.2 >= bold + 9.9, "{label:?} {bold}");
+        // The label box sits in the gap between the two nodes.
+        let nodes = painted_rects(&svg, "#eff6ff");
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().all(|&n| !rects_overlap(n, label)), "{nodes:?} {label:?}");
+        let widths = label_line_widths("`a **bbbbbbbb**`", 200.0, 11.0);
+        assert!((widths[0] - (estimate_text_width("a ", 11.0) + estimate_text_width("bbbbbbbb", 11.0) * BOLD_WIDTH)).abs() < 0.01);
     }
 }
