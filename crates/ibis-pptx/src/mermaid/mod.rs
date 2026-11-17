@@ -35,6 +35,10 @@ mod gitgraph;
 mod journey;
 mod timeline;
 mod quadrant;
+mod requirement;
+mod kanban;
+mod packet;
+mod sankey;
 mod text;
 #[cfg(test)]
 mod test_support;
@@ -53,6 +57,10 @@ use gitgraph::*;
 use journey::*;
 use timeline::*;
 use quadrant::*;
+use requirement::*;
+use kanban::*;
+use packet::*;
+use sankey::*;
 use text::*;
 
 pub use chart::render_chart_spec_svg;
@@ -132,6 +140,10 @@ enum DiagramKind {
     Journey,
     Timeline,
     Quadrant,
+    Requirement,
+    Kanban,
+    Packet,
+    Sankey,
 }
 
 /// Header keywords, including the aliases current mermaid still accepts
@@ -158,6 +170,12 @@ const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
     ("journey", DiagramKind::Journey),
     ("timeline", DiagramKind::Timeline),
     ("quadrantChart", DiagramKind::Quadrant),
+    ("requirementDiagram", DiagramKind::Requirement),
+    ("kanban", DiagramKind::Kanban),
+    ("packet", DiagramKind::Packet),
+    ("packet-beta", DiagramKind::Packet),
+    ("sankey", DiagramKind::Sankey),
+    ("sankey-beta", DiagramKind::Sankey),
 ];
 
 fn diagram_kind(header: &str) -> Option<DiagramKind> {
@@ -213,6 +231,10 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Journey => render_journey_svg(trimmed),
         DiagramKind::Timeline => render_timeline_svg(trimmed, &config),
         DiagramKind::Quadrant => render_quadrant_chart_svg(trimmed, &config),
+        DiagramKind::Requirement => render_requirement_svg(trimmed),
+        DiagramKind::Kanban => render_kanban_svg(trimmed, &config),
+        DiagramKind::Packet => render_packet_svg(trimmed, &config),
+        DiagramKind::Sankey => render_sankey_svg(trimmed, &config),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
     if let Some(title) = front_title {
@@ -268,7 +290,7 @@ mod tests {
     fn unsupported_diagram_returns_none() {
         assert!(render_mermaid("C4Context\n  Person(user, \"User\")\n").is_none());
         assert!(render_mermaid("").is_none());
-        assert!(render_mermaid("requirementDiagram\n  requirement req1 {\n    id: 1\n    text: hello\n  }\n").is_none());
+        assert!(render_mermaid("block-beta\n  a b c\n").is_none());
     }
 
     #[test]
@@ -393,7 +415,9 @@ quadrantChart
         // Only whole words count as headers.
         assert!(render_mermaid("graphql\n  A --> B\n").is_none());
         assert!(render_mermaid("classDiagramX\n  class A\n").is_none());
-        assert!(render_mermaid("sankey-beta\n  A,B,10\n").is_none());
+        assert!(render_mermaid("sankeyX\n  A,B,10\n").is_none());
+        assert_eq!(render_mermaid("sankey-beta\n  A,B,10\n"), render_mermaid("sankey\n  A,B,10\n"));
+        assert_eq!(render_mermaid("packet-beta\n  0-7: \"A\"\n"), render_mermaid("packet\n  0-7: \"A\"\n"));
         assert_eq!(diagram_kind("xychart horizontal"), Some(DiagramKind::XyChart));
         assert_eq!(diagram_kind("sequenceDiagram"), Some(DiagramKind::Sequence));
     }
