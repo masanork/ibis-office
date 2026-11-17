@@ -64,22 +64,23 @@ sequenceDiagram | create / destroy participants | ok | prefix | destroy
 sequenceDiagram | par/and, critical/option dividers | ok | prefix | and
 sequenceDiagram | par/and, critical/option dividers | ok | prefix | option
 sequenceDiagram | lower-case note | ok | prefix | note
-sequenceDiagram | participant types @{ "type" } | gap | contains | @{
+sequenceDiagram | participant types @{ "type" } | ok | contains | @{
 sequenceDiagram | bidirectional arrows <<->> | gap | contains | <<-
 sequenceDiagram | actor menus (link / links) | wontfix | prefix | link
 
-classDiagram | namespace | gap | prefix | namespace
-classDiagram | note | gap | prefix | note
-classDiagram | classDef / style / ::: | gap | prefix | classDef
-classDiagram | classDef / style / ::: | gap | prefix | style
-classDiagram | classDef / style / ::: | gap | contains | :::
-classDiagram | generics ~T~ | gap | contains | ~
-classDiagram | relation cardinality "1" --> "*" | gap | contains | " --
-classDiagram | relation cardinality "1" --> "*" | gap | contains | " *--
-classDiagram | relation cardinality "1" --> "*" | gap | contains | " o--
+classDiagram | namespace | ok | prefix | namespace
+classDiagram | note | ok | prefix | note
+classDiagram | classDef / style / ::: | ok | prefix | classDef
+classDiagram | classDef / style / ::: | ok | prefix | style
+classDiagram | classDef / style / ::: | ok | contains | :::
+classDiagram | generics ~T~ | ok | contains | ~
+classDiagram | relation cardinality "1" --> "*" | ok | contains | " --
+classDiagram | relation cardinality "1" --> "*" | ok | contains | " *--
+classDiagram | relation cardinality "1" --> "*" | ok | contains | " o--
 classDiagram | lollipop interfaces ()-- | gap | contains | ()--
 classDiagram | lollipop interfaces ()-- | gap | contains | --()
 classDiagram | config: class.hideEmptyMembersBox | ok | config | class.hideEmptyMembersBox
+classDiagram | config: class.hierarchicalNamespaces (dotted namespaces nest) | ok | config | class.hierarchicalNamespaces
 classDiagram | click / link / callback | wontfix | prefix | click
 classDiagram | click / link / callback | wontfix | prefix | link
 classDiagram | click / link / callback | wontfix | prefix | callback
@@ -90,17 +91,18 @@ stateDiagram | classDef / class / ::: | gap | prefix | classDef
 stateDiagram | classDef / class / ::: | gap | prefix | class
 stateDiagram | classDef / class / ::: | gap | contains | :::
 
-entityRelationshipDiagram | entity alias p[Person] | gap | contains | [
-entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | one or
-entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | zero or
-entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | only one
-entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | many(
-entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | gap | contains | 1 to
-entityRelationshipDiagram | subgraph | gap | prefix | subgraph
-entityRelationshipDiagram | direction | gap | prefix | direction
-entityRelationshipDiagram | classDef / style / ::: | gap | prefix | classDef
-entityRelationshipDiagram | classDef / style / ::: | gap | prefix | style
-entityRelationshipDiagram | classDef / style / ::: | gap | contains | :::
+entityRelationshipDiagram | entity alias p[Person] | ok | contains | [
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | one or
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | zero or
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | only one
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | many(
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | 1 to
+entityRelationshipDiagram | subgraph | ok | prefix | subgraph
+entityRelationshipDiagram | direction | ok | prefix | direction
+entityRelationshipDiagram | classDef / style / ::: | ok | prefix | classDef
+entityRelationshipDiagram | classDef / style / ::: | ok | prefix | style
+entityRelationshipDiagram | classDef / style / ::: | ok | contains | :::
+entityRelationshipDiagram | markdown in entity names (**bold** _italic_) | gap | contains | **
 
 gantt | axisFormat | gap | prefix | axisFormat
 gantt | tickInterval | gap | prefix | tickInterval
