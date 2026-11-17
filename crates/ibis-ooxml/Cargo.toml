@@ -22,12 +22,15 @@ aes = "0.8"
 cbc = "0.1"
 sha2 = { version = "0.10", features = ["oid"] }
 hmac = "0.12"
-sha1 = "0.10"
+sha1 = { version = "0.10", features = ["oid"] }
 md-5 = "0.10"
 # Independent XML canonicalization implementation (MIT), used as a dependency.
 ua-cryptography-xml-c14n = "=0.1.6"
 rsa = { version = "0.9.8", default-features = false, features = ["std", "sha2", "u64_digit"] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
+p384 = { version = "0.13.1", default-features = false, features = ["ecdsa"] }
 x509-cert = { version = "0.2.5", default-features = false, features = ["std"] }
+x509-ocsp = { version = "0.2.1", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # RSA's dependency graph includes getrandom even for verification-only builds.

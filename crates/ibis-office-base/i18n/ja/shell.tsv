@@ -979,7 +979,7 @@ file.signature-inspect.failed	署名情報を調べられないか、未対応�
 file.signature-inspect.matches	一致
 file.signature-inspect.differs	不一致または欠落
 file.signature-inspect.unknown	未確認
-file.signature-inspect.entry	署名 {number}: 署名値 {value}、パッケージ情報のダイジェスト {object}。参照先は一致 {matching} 件、不一致・欠落 {differing} 件、未確認 {unknown} 件。
+file.signature-inspect.entry	署名 {number}: 署名値 {value}、パッケージ情報のダイジェスト {object}。参照先は一致 {matching} 件、弱い SHA-1 で一致 {legacy} 件・不一致 {legacy_differing} 件、不一致・欠落 {differing} 件、未確認 {unknown} 件。
 file.signature-inspect.truncated	これ以外の署名は表示していません。
 shell.file-name-menu.tooltip	ファイル名のメニュー
 shell.file-name-menu.copy-name	ファイル名をコピー
@@ -1265,3 +1265,29 @@ file.csv-error.export-original	元の CSV への書き出しはできません�
 file.csv-error.copy-original	元の CSV へのコピーはできません。通常の保存を使用してください。
 file.csv-error.no-filename	CSV のファイル名がありません。
 file.csv-error.type-changed	CSV のファイル種別が変更されました。
+
+file.signature-inspect.legacy-match	一致（弱い SHA-1）
+file.signature-inspect.legacy-differs	不一致（弱い SHA-1）
+file.signature-inspect.legacy-signature-match	一致（弱い RSA-SHA1、{bits} bit）
+file.signature-inspect.legacy-signature-differs	不一致（弱い RSA-SHA1、{bits} bit）
+file.signature-inspect.additional-refs	SignedInfo の追加参照: 一致 {matching} 件、不一致 {differing} 件、弱い SHA-1 で一致 {legacy} 件・不一致 {legacy_differing} 件、未確認 {unknown} 件。
+file.signature-inspect.xades-cert	XAdES の証明書ダイジェスト（未認証）: 一致 {matching} 件、不一致 {differing} 件、弱い SHA-1 で一致 {weak} 件・不一致 {weak_differing} 件、未確認 {unknown} 件。
+file.signature-inspect.ecdsa-match	一致（ECDSA P-256 SHA-256）
+file.signature-inspect.ecdsa-differs	不一致（ECDSA P-256 SHA-256）
+file.signature-inspect.xades-issuer	XAdES の発行者・シリアル（未認証）: 完全一致 {exact} 件、発行者の DER が異なる {name_diff} 件、発行者 DER は同一でシリアルが異なる {serial_diff} 件、属性なし {absent} 件、未確認 {unsupported} 件。発行者名の意味上の一致は未確認。
+file.signature-inspect.pss-match	一致（RSA-PSS SHA-256）
+file.signature-inspect.pss-differs	不一致（RSA-PSS SHA-256）
+file.signature-inspect.ecdsa384-match	一致（ECDSA P-384 SHA-384）
+file.signature-inspect.ecdsa384-differs	不一致（ECDSA P-384 SHA-384）
+file.signature-inspect.inventory	マニフェストの一覧: パッケージ内 {entries} 件中、文字どおりの参照がない項目 {unlisted} 件、名前が曖昧な項目 {ambiguous} 件、解釈できない参照 URI {unresolved} 件。管理情報と関係情報を含み、署名範囲や署名対象外かどうかの判定ではありません。
+file.signature-inspect.relationships	関係情報の参照（未認証、参照ごとの合計で重複あり）: フィルター付き {filtered} 件、現在の関係の選択 {selected} 件・非選択 {unselected} 件、一致する関係が現在ない重複除外後の選択条件 {unmatched} 件。無変換の部品参照 {whole} 件、未確認 {unavailable} 件。署名範囲の確定ではありません。
+file.signature-inspect.extension-absent	なし
+file.signature-inspect.extension-parsed	読取
+file.signature-inspect.extension-critical	読取（critical）
+file.signature-inspect.locations	証明書の参照先（未認証・未取得）: AIA {aia}、CRL 配布点 {crldp}。URI の手掛かりは OCSP {ocsp} 件、CA 発行者 {issuer} 件、CRL {crl} 件。表示上限などで省略 {omitted} 件、その他の形式 {other} 件。理由の制限がある CRL 配布点 {scoped} 件、別発行者を指定する配布点 {alternate} 件。失効状態と適用性は未確認。
+file.signature-inspect.locations-unavailable	証明書の参照先は未確認・未取得です。
+file.signature-inspect.policies	証明書ポリシーの記載（未認証）: {status}、OID {total} 件。検査した範囲で重複 {repeated} 件、修飾子付き {qualifiers} 件。例: {examples}。{limit} 証明書パスとポリシー適合性は未検証。
+file.signature-inspect.policies-absent	埋め込み証明書に証明書ポリシー拡張はありません。ポリシーと信頼性は未検証。
+file.signature-inspect.policies-unavailable	証明書ポリシーの記載を検査できません。ポリシーと信頼性は未検証。
+file.signature-inspect.policy-truncated	先頭 64 件のみ検査し、例を最大 8 件表示。
+file.signature-inspect.policy-complete	例を最大 8 件表示。
