@@ -200,3 +200,31 @@ sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding,
 sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.linkColor
 sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.nodeAlignment
 sankey | config: node colours (nodeColors) | ok | config | sankey.nodeColors
+
+block | columns (N / auto) | ok | prefix | columns
+block | nested blocks (block:id:span ... end) | ok | prefix | block
+block | widths (id:N) and space / space:N | ok | contains | space
+block | block arrows <["label"]>(right, left, up, down, x, y) | ok | contains | <[
+block | edges with labels (A-- "X" -->B) | ok | contains | -->
+block | style / classDef / class | ok | prefix | style
+block | style / classDef / class | ok | prefix | classDef
+block | style / classDef / class | ok | prefix | class
+
+architecture | groups (group id(icon)[title] in parent) | ok | prefix | group
+architecture | junctions | ok | prefix | junction
+architecture | edge sides and arrows (a:R --> L:b) | ok | contains | --
+architecture | align row / column | ok | prefix | align
+architecture | built-in icons (cloud, database, disk, internet, server) | ok | contains | (server)
+architecture | icon packs (logos:...) are not bundled; drawn as mermaid's "?" icon | gap | contains | (logos:
+
+c4 | title line | ok | prefix | title
+c4 | boundaries (Enterprise_ / System_ / Container_Boundary, Boundary) | ok | contains | Boundary(
+c4 | deployment nodes | ok | prefix | Deployment_Node(
+c4 | Db / Queue / _Ext element variants | ok | contains | _Ext(
+c4 | BiRel / Rel_Back / Rel_U, _D, _L, _R | ok | prefix | BiRel(
+c4 | BiRel / Rel_Back / Rel_U, _D, _L, _R | ok | prefix | Rel_
+c4 | UpdateElementStyle ($bgColor, $fontColor, $borderColor) | ok | prefix | UpdateElementStyle(
+c4 | UpdateRelStyle colours ($textColor, $lineColor) | ok | prefix | UpdateRelStyle(
+c4 | UpdateRelStyle label offsets ($offsetX / $offsetY are tuned to mermaid's own layout; labels are placed clear of shapes instead) | wontfix | contains | $offset
+c4 | UpdateLayoutConfig ($c4ShapeInRow, $c4BoundaryInRow) | ok | prefix | UpdateLayoutConfig(
+c4 | element tags ($tags, no visual effect without AddElementTag) | ok | contains | $tags=

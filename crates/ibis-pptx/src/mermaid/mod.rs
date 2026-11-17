@@ -39,6 +39,9 @@ mod requirement;
 mod kanban;
 mod packet;
 mod sankey;
+mod block;
+mod architecture;
+mod c4;
 mod text;
 #[cfg(test)]
 mod test_support;
@@ -60,6 +63,9 @@ use quadrant::*;
 use requirement::*;
 use kanban::*;
 use packet::*;
+use block::*;
+use architecture::*;
+use c4::*;
 use sankey::*;
 use text::*;
 
@@ -144,6 +150,9 @@ enum DiagramKind {
     Kanban,
     Packet,
     Sankey,
+    Block,
+    Architecture,
+    C4,
 }
 
 /// Header keywords, including the aliases current mermaid still accepts
@@ -176,6 +185,15 @@ const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
     ("packet-beta", DiagramKind::Packet),
     ("sankey", DiagramKind::Sankey),
     ("sankey-beta", DiagramKind::Sankey),
+    ("block", DiagramKind::Block),
+    ("block-beta", DiagramKind::Block),
+    ("architecture-beta", DiagramKind::Architecture),
+    ("architecture", DiagramKind::Architecture),
+    ("C4Context", DiagramKind::C4),
+    ("C4Container", DiagramKind::C4),
+    ("C4Component", DiagramKind::C4),
+    ("C4Dynamic", DiagramKind::C4),
+    ("C4Deployment", DiagramKind::C4),
 ];
 
 fn diagram_kind(header: &str) -> Option<DiagramKind> {
@@ -235,6 +253,9 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Kanban => render_kanban_svg(trimmed, &config),
         DiagramKind::Packet => render_packet_svg(trimmed, &config),
         DiagramKind::Sankey => render_sankey_svg(trimmed, &config),
+        DiagramKind::Block => render_block_svg(trimmed),
+        DiagramKind::Architecture => render_architecture_svg(trimmed),
+        DiagramKind::C4 => render_c4_svg(trimmed),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
     if let Some(title) = front_title {
@@ -288,9 +309,9 @@ mod tests {
 
     #[test]
     fn unsupported_diagram_returns_none() {
-        assert!(render_mermaid("C4Context\n  Person(user, \"User\")\n").is_none());
+        assert!(render_mermaid("zenuml\n  A.method()\n").is_none());
         assert!(render_mermaid("").is_none());
-        assert!(render_mermaid("block-beta\n  a b c\n").is_none());
+        assert!(render_mermaid("radar-beta\n  axis a, b, c\n").is_none());
     }
 
     #[test]
