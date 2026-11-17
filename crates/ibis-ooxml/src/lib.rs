@@ -22,6 +22,7 @@ pub mod cfb;
 pub mod encryption;
 pub mod legacy_crypt;
 pub mod modify_password;
+pub mod ocsp;
 pub mod package;
 pub mod signatures;
 pub mod xml;

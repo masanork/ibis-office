@@ -981,7 +981,7 @@ file.signature-inspect.failed	Signature information could not be inspected or us
 file.signature-inspect.matches	matches
 file.signature-inspect.differs	differs or is missing
 file.signature-inspect.unknown	not checked
-file.signature-inspect.entry	Signature {number}: signature value {value}; package-object digest {object}. Referenced parts: {matching} match, {differing} differ or are missing, {unknown} not checked.
+file.signature-inspect.entry	Signature {number}: signature value {value}; package-object digest {object}. Referenced parts: {matching} match, {legacy} match and {legacy_differing} differ using weak SHA-1, {differing} differ or are missing, {unknown} not checked.
 file.signature-inspect.truncated	Additional signatures are not shown.
 shell.file-name-menu.tooltip	File name menu
 shell.file-name-menu.copy-name	Copy File Name
@@ -1267,3 +1267,29 @@ file.csv-error.export-original	Cannot export over the original CSV. Use Save ins
 file.csv-error.copy-original	Cannot save a copy over the original CSV. Use Save instead.
 file.csv-error.no-filename	The CSV path has no file name.
 file.csv-error.type-changed	The CSV target file type changed.
+
+file.signature-inspect.legacy-match	matches (weak SHA-1)
+file.signature-inspect.legacy-differs	differs (weak SHA-1)
+file.signature-inspect.legacy-signature-match	matches using weak RSA-SHA1 ({bits} bits)
+file.signature-inspect.legacy-signature-differs	differs using weak RSA-SHA1 ({bits} bits)
+file.signature-inspect.additional-refs	Additional SignedInfo references: {matching} match, {differing} differ, {legacy} match and {legacy_differing} differ using weak SHA-1, {unknown} not checked.
+file.signature-inspect.xades-cert	XAdES certificate digests (unauthenticated): {matching} match, {differing} differ, {weak} match and {weak_differing} differ using weak SHA-1, {unknown} not checked.
+file.signature-inspect.ecdsa-match	matches (ECDSA P-256 SHA-256)
+file.signature-inspect.ecdsa-differs	differs (ECDSA P-256 SHA-256)
+file.signature-inspect.xades-issuer	XAdES issuer/serial (unauthenticated): {exact} exact, {name_diff} different issuer DER, {serial_diff} different serial with identical issuer DER, {absent} absent, {unsupported} not checked. Semantic name matching is not checked.
+file.signature-inspect.pss-match	matches (RSA-PSS SHA-256)
+file.signature-inspect.pss-differs	differs (RSA-PSS SHA-256)
+file.signature-inspect.ecdsa384-match	matches (ECDSA P-384 SHA-384)
+file.signature-inspect.ecdsa384-differs	differs (ECDSA P-384 SHA-384)
+file.signature-inspect.inventory	Manifest inventory: {entries} package entries; {unlisted} not literally listed, {ambiguous} entry names ambiguous, {unresolved} reference URIs unresolved. Includes metadata and relationships; this does not establish coverage or whether a part is unsigned.
+file.signature-inspect.relationships	Relationship references (unauthenticated, per-reference totals may repeat): {filtered} filtered references, with {selected} current relationships selected and {unselected} not selected; {unmatched} distinct selectors have no current match. {whole} raw-part references, {unavailable} not checked. This does not establish coverage.
+file.signature-inspect.extension-absent	absent
+file.signature-inspect.extension-parsed	read
+file.signature-inspect.extension-critical	read (critical)
+file.signature-inspect.locations	Certificate location hints (untrusted, not fetched): AIA {aia}, CRL distribution points {crldp}; OCSP {ocsp}, CA issuer {issuer}, CRL {crl} URI hints; {omitted} omitted, {other} other forms. CRL points: {scoped} with reason restrictions, {alternate} with alternate issuers. Revocation and applicability are not evaluated.
+file.signature-inspect.locations-unavailable	Certificate location hints were not checked or fetched.
+file.signature-inspect.policies	Certificate policy claims (untrusted): {status}, {total} OIDs; repeated among inspected entries {repeated}, entries with qualifiers {qualifiers}. Examples: {examples}. {limit} Certificate path and policy compliance are not evaluated.
+file.signature-inspect.policies-absent	The embedded certificate has no certificate policies extension. Policy and trust are not evaluated.
+file.signature-inspect.policies-unavailable	Certificate policy claims could not be inspected. Policy and trust are not evaluated.
+file.signature-inspect.policy-truncated	Only the first 64 entries were inspected and up to eight examples are shown.
+file.signature-inspect.policy-complete	Up to eight examples are shown.
