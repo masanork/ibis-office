@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Mermaid renderer unit tests and the official-docs compatibility corpus.
-# The corpus report (rendered / clean rates per diagram type, gaps ranked by use)
-# is written to the job summary.
+# Mermaid renderer unit tests, the official-docs compatibility corpus, and a
+# non-blocking mermaid.js 12.3.0 reference comparison (node / edge counts and
+# label presence). The corpus report and the comparison report are written to
+# the job summary and uploaded as artifacts.
 name: Mermaid compatibility
 on:
   push:
@@ -27,6 +28,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   mermaid:
+    name: unit tests and corpus
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -37,11 +39,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-10-28
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: mermaid-compat
+          save-if: ${{ github.ref == 'refs/heads/masanork' }}
       - name: Mermaid unit tests (renderer and Markdown round trip)
         run: cargo test --locked -p ibis-pptx --lib mermaid
       - name: Official docs corpus
+        if: success() || failure()
         env:
           MERMAID_CORPUS_REPORT: ${{ runner.temp }}/mermaid-corpus.md
+          MERMAID_CORPUS_DUMP: ${{ runner.temp }}/mermaid-svg
         run: cargo test --locked -p ibis-pptx --test mermaid_corpus -- --nocapture
       - name: Publish corpus report
         if: always()
@@ -55,4 +63,59 @@ jobs:
         with:
           name: mermaid-corpus-report
           path: ${{ runner.temp }}/mermaid-corpus.md
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mermaid-corpus-svgs
+          path: ${{ runner.temp }}/mermaid-svg
+          if-no-files-found: ignore
+
+  mermaid-js-compare:
+    name: mermaid.js reference compare
+    needs: mermaid
+    if: ${{ !cancelled() }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: scripts/mermaid-corpus/package-lock.json
+      - name: Install mermaid@12.3.0
+        working-directory: scripts/mermaid-corpus
+        run: npm ci
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: mermaid-corpus-svgs
+          path: ${{ runner.temp }}/mermaid-svg
+      - name: Compare with mermaid.js 12.3.0
+        run: |
+          mkdir -p "$RUNNER_TEMP/mermaid-js-compare"
+          chrome="$(command -v google-chrome || command -v google-chrome-stable)"
+          node scripts/mermaid-corpus/compare-ref.mjs \
+            --corpus crates/ibis-pptx/tests/mermaid/corpus \
+            --ours "$RUNNER_TEMP/mermaid-svg" \
+            --out "$RUNNER_TEMP/mermaid-js-compare" \
+            --chrome "$chrome"
+      - name: Publish comparison report
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/mermaid-js-compare/report.md" ]; then
+            cat "$RUNNER_TEMP/mermaid-js-compare/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mermaid-js-compare
+          path: |
+            ${{ runner.temp }}/mermaid-js-compare/report.md
+            ${{ runner.temp }}/mermaid-js-compare/report.json
           if-no-files-found: ignore

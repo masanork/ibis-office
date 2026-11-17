@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mermaid.js corpus reference renderer</title>
+  </head>
+  <body>
+    <div id="host"></div>
+    <script type="module">
+      import mermaid from "./node_modules/mermaid/dist/mermaid.esm.min.mjs";
+
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "loose",
+        theme: "default",
+        fontFamily: "sans-serif",
+        logLevel: "error",
+      });
+
+      window.renderMermaid = async (id, source) => {
+        try {
+          const { svg } = await mermaid.render(id, source);
+          return { ok: true, svg };
+        } catch (err) {
+          const message =
+            (err && (err.message || err.str || err.error)) || String(err);
+          return { ok: false, error: String(message) };
+        }
+      };
+
+      window.svgMetrics = (svg, origin) => {
+        const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+        const root = doc.documentElement;
+        if (!root || root.tagName.toLowerCase() !== "svg") {
+          return {
+            ok: false,
+            error: "not an SVG document",
+            labels: [],
+            nodes: 0,
+            edges: 0,
+          };
+        }
+        const parseError = root.querySelector("parsererror");
+        if (parseError) {
+          return {
+            ok: false,
+            error: parseError.textContent.trim(),
+            labels: [],
+            nodes: 0,
+            edges: 0,
+          };
+        }
+        return {
+          ok: true,
+          labels: collectLabels(root),
+          nodes: countUnique(root, origin === "mermaid" ? mermaidNodeSel : ourNodeSel, () =>
+            fallbackShapes(root, "node")
+          ),
+          edges: countUnique(root, origin === "mermaid" ? mermaidEdgeSel : ourEdgeSel, () =>
+            fallbackShapes(root, "edge")
+          ),
+        };
+      };
+
+      const mermaidNodeSel = [
+        "g.node",
+        "g.actor",
+        "g.statediagram-state",
+        "g.stateGroup > g.state",
+        "g.classGroup",
+        ".entityBox",
+        "g.er.entityBox",
+        "g.task",
+        "rect.task",
+        "circle.commit",
+        "g.commit",
+        ".mindmap-node",
+        ".quadrant-point",
+        ".pieCircle",
+        "path.slice",
+        ".sankeyNode",
+        ".sankey-node",
+        ".kanban-item",
+        ".architecture-node",
+        ".requirement",
+        ".c4-node",
+        "g.person",
+        "g.system",
+        "g.container",
+        "g.component",
+        "g.block",
+        ".packet-block",
+        ".timeline-event",
+        "g.journey",
+      ].join(",");
+
+      const mermaidEdgeSel = [
+        "g.edgePath",
+        "path.flowchart-link",
+        "path.edge-thickness-normal",
+        ".messageLine0",
+        ".messageLine1",
+        "path.transition",
+        "path.relation",
+        "path.relationshipLine",
+        "path.sankeyLink",
+        ".sankey-link",
+        "path.edge",
+      ].join(",");
+
+      const ourNodeSel = [
+        "[data-shape]",
+        "[data-kind]",
+        "[data-block]",
+        "[data-commit-type]",
+        "[data-c4]",
+        "[data-junction]",
+        "[data-bits]",
+        "[data-quadrant]",
+        '[data-role="sankey-node"]',
+        '[data-role="kanban-card"]',
+        '[data-role="kanban-column"]',
+        '[data-role="collapsed-subgraph"]',
+        '[data-role="composite"]',
+        '[data-role="bit"]',
+        '[data-role="note"]',
+        "[data-start]:not([data-role='vert']):not([data-role='tick'])",
+      ].join(",");
+
+      const ourEdgeSel = [
+        "[data-edge]",
+        "[data-rel]",
+        "[data-relation]",
+        "[data-link]",
+        "[data-route]",
+        '[data-role="sankey-link"]',
+        "path[marker-end]",
+        "path[marker-start]",
+        "line[marker-end]",
+        "line[marker-start]",
+      ].join(",");
+
+      function inDefs(el) {
+        for (let n = el; n; n = n.parentElement) {
+          const tag = (n.tagName || "").toLowerCase();
+          if (tag === "defs" || tag === "marker" || tag === "clippath" || tag === "style" || tag === "script") {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function countUnique(root, selector, fallback) {
+        const seen = new Set();
+        for (const el of root.querySelectorAll(selector)) {
+          if (inDefs(el)) continue;
+          seen.add(el);
+        }
+        if (seen.size > 0) return seen.size;
+        return fallback();
+      }
+
+      function fallbackShapes(root, kind) {
+        let n = 0;
+        const tags =
+          kind === "edge"
+            ? new Set(["path", "line", "polyline"])
+            : new Set(["rect", "circle", "ellipse", "polygon", "path"]);
+        for (const el of root.querySelectorAll("*")) {
+          if (inDefs(el)) continue;
+          const tag = el.tagName.toLowerCase();
+          if (!tags.has(tag)) continue;
+          const fill = (el.getAttribute("fill") || "").toLowerCase();
+          const stroke = el.getAttribute("stroke");
+          if (kind === "edge") {
+            if (fill && fill !== "none" && fill !== "transparent") continue;
+            if (!stroke) continue;
+            n += 1;
+          } else {
+            const width = Number(el.getAttribute("width"));
+            const height = Number(el.getAttribute("height"));
+            // Skip the full-canvas background rectangle.
+            if (tag === "rect" && el.parentElement === root && width > 0 && height > 0) {
+              const vb = (root.getAttribute("viewBox") || "").split(/\s+/);
+              const vw = Number(root.getAttribute("width") || vb[2]);
+              const vh = Number(root.getAttribute("height") || vb[3]);
+              if (Math.abs(width - vw) < 1 && Math.abs(height - vh) < 1) continue;
+            }
+            if (fill === "none") continue;
+            n += 1;
+          }
+        }
+        return n;
+      }
+
+      function collectLabels(root) {
+        const labels = [];
+        const walk = (el) => {
+          if (!el || el.nodeType !== 1) return;
+          const tag = el.tagName.toLowerCase();
+          if (tag === "defs" || tag === "marker" || tag === "clippath" || tag === "style" || tag === "script") {
+            return;
+          }
+          if (tag === "text") {
+            const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+            if (text) labels.push(text);
+            return;
+          }
+          if (tag === "foreignobject") {
+            const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+            if (text) labels.push(text);
+            return;
+          }
+          if (tag === "title" || tag === "desc") {
+            const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+            if (text) labels.push(text);
+            return;
+          }
+          for (const child of el.children) walk(child);
+        };
+        walk(root);
+        return labels;
+      }
+
+      window.__ready = true;
+    </script>
+  </body>
+</html>

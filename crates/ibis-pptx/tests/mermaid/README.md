@@ -46,8 +46,18 @@ test and adjust `thresholds.json`.
 The examples are MIT licensed (Copyright (c) 2014 - 2022 Knut Sveidqvist); see
 `corpus/LICENSE`. They are test fixtures and are not shipped.
 
-## Not yet here
+## mermaid.js reference comparison
 
-A mermaid.js reference render (mermaid-cli in headless Chrome) and an image or
-label diff against it are planned as a separate, non-blocking job; see the
-compatibility plan. Layout is not expected to match mermaid.js pixel for pixel.
+`.github/workflows/mermaid-compat.yml` also runs a non-blocking job that
+renders the same corpus with mermaid@12.3.0 (the version pinned in
+`corpus/SOURCE.json`) in headless Chrome and compares structural metrics with
+the ibisOffice SVGs: node and edge counts, and whether each mermaid.js label
+is present in our output. Layout is not expected to match mermaid.js pixel for
+pixel. The report is written to the job summary and uploaded as the
+`mermaid-js-compare` artifact.
+
+```sh
+MERMAID_CORPUS_DUMP=/tmp/mermaid-svg cargo test -p ibis-pptx --test mermaid_corpus
+(cd scripts/mermaid-corpus && npm ci)
+node scripts/mermaid-corpus/compare-ref.mjs   --corpus crates/ibis-pptx/tests/mermaid/corpus   --ours /tmp/mermaid-svg   --out /tmp/mermaid-js-compare
+```
