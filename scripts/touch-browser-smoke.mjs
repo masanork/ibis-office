@@ -308,6 +308,17 @@ try {
   await editing.waitForTimeout(500);
   const mirror = editing.locator('textarea');
   assert.equal(await mirror.getAttribute('inputmode'), 'none', 'a pan must not summon the virtual keyboard');
+  // Multi-contact sequences must not summon the keyboard, regardless of
+  // which finger is lifted first. The following single tap still may do so.
+  for (const [first, second, releaseFirst] of [[40, 41, true], [50, 51, false]]) {
+    await editingTouch('touchStart', [pt(first, 110, 200)]);
+    await editingTouch('touchStart', [pt(first, 110, 200), pt(second, 170, 200)]);
+    await editingTouch('touchMove', [pt(first, 100, 200), pt(second, 180, 200)]);
+    await editingTouch('touchEnd', [releaseFirst ? pt(second, 180, 200) : pt(first, 100, 200)]);
+    await editingTouch('touchEnd', []);
+    await editing.waitForTimeout(300);
+    assert.equal(await mirror.getAttribute('inputmode'), 'none', 'a pinch must not summon the virtual keyboard');
+  }
   await editingTap(13, 120, 200);
   await editing.waitForTimeout(500);
   assert.equal(await mirror.getAttribute('inputmode'), 'text', 'an editable tap must enable the virtual keyboard');

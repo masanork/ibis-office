@@ -6,7 +6,7 @@
 	url = https://github.com/masanork/gpui-base.git
 [submodule "forks/gpui-pre"]
 	path = forks/gpui-pre
-	url = https://github.com/ibisjp/gpui-pre.git
+	url = https://github.com/masanork/gpui-pre.git
 [submodule "forks/gpui-pre-apple"]
 	path = forks/gpui-pre-apple
 	url = https://github.com/ibisjp/gpui-pre-apple.git
