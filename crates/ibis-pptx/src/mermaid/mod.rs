@@ -1,0 +1,405 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc.
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
+//! Pure-Rust Mermaid diagram parser and SVG / native-chart renderer.
+//!
+//! Zero external dependencies: converts Mermaid code blocks into either:
+//! - Native Office charts (`pie`, `xychart-beta`) via [`MermaidChartSpec`], or
+//! - Clean, self-contained SVG vector graphics (`sequenceDiagram`, `flowchart` / `graph`)
+//!   embedded as `MediaFormat::Svg` with the original Mermaid source preserved in `PictureLook::alt_text`
+//!   for lossless `.md` round-tripping.
+//!
+//! This file detects the diagram type and dispatches; each diagram type has its own module
+//! (`flowchart`, `sequence`, `class`, `er`, `state`, `gantt`, `mindmap`, `gitgraph`, `journey`,
+//! `timeline`, `quadrant`, `chart`), with shared code in `config` (frontmatter and themes),
+//! `layout` (layered layout, edge routing, grouped frames) and `text` (labels and wrapping).
+//! The modules share one namespace: each starts with `use super::*;`.
+
+use std::collections::HashMap;
+
+use ibis_doc_model::Number;
+
+use crate::save::pptx_new_chart::NewChartKind;
+
+mod config;
+mod chart;
+mod sequence;
+mod flowchart;
+mod layout;
+mod state;
+mod class;
+mod er;
+mod gantt;
+mod mindmap;
+mod gitgraph;
+mod journey;
+mod timeline;
+mod quadrant;
+mod text;
+#[cfg(test)]
+mod test_support;
+
+use config::*;
+use chart::*;
+use sequence::*;
+use flowchart::*;
+use layout::*;
+use state::*;
+use class::*;
+use er::*;
+use gantt::*;
+use mindmap::*;
+use gitgraph::*;
+use journey::*;
+use timeline::*;
+use quadrant::*;
+use text::*;
+
+pub use chart::render_chart_spec_svg;
+
+/// Parsed native chart specification from Mermaid `pie` or `xychart-beta`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MermaidChartSpec {
+    pub kind: NewChartKind,
+    pub title: Option<String>,
+    pub categories: Vec<String>,
+    pub series: Vec<(String, Vec<Option<Number>>)>,
+    /// One drawing kind per series. Empty means every series uses [`Self::kind`].
+    pub series_kinds: Vec<NewChartKind>,
+    /// `pie showData`: the slices show their values.
+    pub show_data: bool,
+    /// `xychart` axis titles (`x-axis "Month" [...]`, `y-axis "Revenue" 0 --> 100`).
+    pub x_axis_title: Option<String>,
+    pub y_axis_title: Option<String>,
+    /// `xychart` value-axis range (`y-axis 4000 --> 11000`); `None` is automatic.
+    pub y_range: Option<(f64, f64)>,
+}
+
+/// Result of converting a Mermaid block.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MermaidOutput {
+    /// Native Office chart (`pie`, `xychart-beta`).
+    Chart(MermaidChartSpec),
+    /// Self-contained SVG vector graphic (`svg_bytes`, `width_px`, `height_px`).
+    Svg {
+        bytes: Vec<u8>,
+        width_px: u32,
+        height_px: u32,
+    },
+}
+
+/// Diagram families this renderer understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagramKind {
+    Pie,
+    XyChart,
+    Sequence,
+    Flowchart,
+    State,
+    Class,
+    Er,
+    Gantt,
+    Mindmap,
+    GitGraph,
+    Journey,
+    Timeline,
+    Quadrant,
+}
+
+/// Header keywords, including the aliases current mermaid still accepts
+/// (`graph`, `flowchart-elk`, `classDiagram-v2`, `stateDiagram-v2`, `xychart-beta`).
+/// Matching is on the first word, so `gitGraph:`, `graph LR;` and
+/// `xychart horizontal` are recognised too.
+const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
+    ("pie", DiagramKind::Pie),
+    ("xychart", DiagramKind::XyChart),
+    ("xychart-beta", DiagramKind::XyChart),
+    ("sequenceDiagram", DiagramKind::Sequence),
+    ("flowchart", DiagramKind::Flowchart),
+    ("flowchart-v2", DiagramKind::Flowchart),
+    ("flowchart-elk", DiagramKind::Flowchart),
+    ("graph", DiagramKind::Flowchart),
+    ("stateDiagram", DiagramKind::State),
+    ("stateDiagram-v2", DiagramKind::State),
+    ("classDiagram", DiagramKind::Class),
+    ("classDiagram-v2", DiagramKind::Class),
+    ("erDiagram", DiagramKind::Er),
+    ("gantt", DiagramKind::Gantt),
+    ("mindmap", DiagramKind::Mindmap),
+    ("gitGraph", DiagramKind::GitGraph),
+    ("journey", DiagramKind::Journey),
+    ("timeline", DiagramKind::Timeline),
+    ("quadrantChart", DiagramKind::Quadrant),
+];
+
+fn diagram_kind(header: &str) -> Option<DiagramKind> {
+    let header = header.trim();
+    let word_end = header
+        .find(|c: char| c.is_whitespace() || c == ':' || c == ';')
+        .unwrap_or(header.len());
+    let word = &header[..word_end];
+    DIAGRAM_HEADERS.iter().find(|(name, _)| *name == word).map(|(_, kind)| *kind)
+}
+
+/// Parse and render a Mermaid diagram into either a native chart or an SVG.
+/// Returns `None` if the diagram type is unsupported (caller falls back to a fenced code block).
+pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
+    let trimmed = strip_mermaid_frontmatter(source);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let first_line = trimmed.lines().next()?.trim();
+    let kind = diagram_kind(first_line)?;
+    // A `title` statement in the body wins over the frontmatter title, so the title is drawn once.
+    let body_title = trimmed
+        .lines()
+        .skip(1)
+        .any(|line| line.trim_start().starts_with("title ") || line.trim() == "title");
+    let front_title = mermaid_frontmatter_title(source).filter(|_| !body_title);
+    let config = mermaid_frontmatter_config(source);
+
+    let svg = match kind {
+        DiagramKind::Pie => {
+            return parse_pie_chart(trimmed).map(|mut spec| {
+                spec.title = spec.title.or(front_title);
+                MermaidOutput::Chart(spec)
+            });
+        }
+        DiagramKind::XyChart => {
+            return parse_xy_chart(trimmed).map(|mut spec| {
+                spec.title = spec.title.or(front_title);
+                MermaidOutput::Chart(spec)
+            });
+        }
+        DiagramKind::Sequence => render_sequence_svg(trimmed),
+        DiagramKind::Flowchart => render_flowchart_svg(trimmed),
+        DiagramKind::State => render_state_diagram_svg(trimmed),
+        DiagramKind::Class => render_class_diagram_svg(trimmed, &config),
+        DiagramKind::Er => render_er_diagram_svg(trimmed),
+        DiagramKind::Gantt => render_gantt_svg(trimmed),
+        DiagramKind::Mindmap => render_mindmap_svg(trimmed),
+        DiagramKind::GitGraph => render_git_graph_svg(trimmed, &config),
+        DiagramKind::Journey => render_journey_svg(trimmed),
+        DiagramKind::Timeline => render_timeline_svg(trimmed, &config),
+        DiagramKind::Quadrant => render_quadrant_chart_svg(trimmed),
+    };
+    let (mut bytes, mut width_px, mut height_px) = svg?;
+    if let Some(title) = front_title {
+        (bytes, width_px, height_px) = add_svg_title(bytes, width_px, height_px, &title);
+    }
+    let bytes = apply_mermaid_theme(bytes, &config);
+    Some(MermaidOutput::Svg {
+        bytes,
+        width_px,
+        height_px,
+    })
+}
+
+/// Put a title band above one of this module's SVGs: the drawing moves down
+/// (and is centred when the title is wider than it).
+fn add_svg_title(bytes: Vec<u8>, width: u32, height: u32, title: &str) -> (Vec<u8>, u32, u32) {
+    let Ok(svg) = std::str::from_utf8(&bytes) else {
+        return (bytes, width, height);
+    };
+    let (Some(open_end), Some(close)) = (svg.find('>'), svg.rfind("</svg>")) else {
+        return (bytes, width, height);
+    };
+    if !svg.starts_with("<svg ") || close <= open_end {
+        return (bytes, width, height);
+    }
+    let band = 40u32;
+    let title_w = (estimate_text_width(title, 16.0) + 32.0).ceil() as u32;
+    let new_w = width.max(title_w);
+    let new_h = height + band;
+    let dx = (new_w - width) as f32 / 2.0;
+    let mut out = String::with_capacity(svg.len() + 400);
+    out.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{new_w}" height="{new_h}" viewBox="0 0 {new_w} {new_h}" font-family="sans-serif">"##
+    ));
+    out.push_str(&format!(r##"<rect width="{new_w}" height="{new_h}" fill="#ffffff"/>"##));
+    out.push_str(&format!(
+        r##"<text x="{:.1}" y="27" text-anchor="middle" font-size="16" font-weight="bold" fill="#0f172a" data-role="diagram-title">{}</text>"##,
+        new_w as f32 / 2.0,
+        escape_xml(title)
+    ));
+    out.push_str(&format!(r##"<g transform="translate({dx:.1},{band})">"##));
+    out.push_str(&svg[open_end + 1..close]);
+    out.push_str("</g></svg>");
+    (out.into_bytes(), new_w, new_h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mermaid::test_support::*;
+
+    #[test]
+    fn unsupported_diagram_returns_none() {
+        assert!(render_mermaid("C4Context\n  Person(user, \"User\")\n").is_none());
+        assert!(render_mermaid("").is_none());
+        assert!(render_mermaid("requirementDiagram\n  requirement req1 {\n    id: 1\n    text: hello\n  }\n").is_none());
+    }
+
+    #[test]
+    fn renders_mindmap_and_gitgraph_and_chart_svg_fallback() {
+        let mm = "\
+mindmap
+  root((ibis-office))
+    Markdown
+      Mermaid
+      Math
+    Formats
+      DOCX
+      PPTX
+";
+        let Some(MermaidOutput::Svg { bytes, width_px, height_px }) = render_mermaid(mm) else {
+            panic!("expected svg for mindmap");
+        };
+        assert!(width_px > 200 && height_px > 120);
+        let mm_svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(mm_svg.contains("ibis-office"));
+        assert!(mm_svg.contains("Mermaid"));
+
+        let git = "\
+gitGraph
+  commit id: \"init\"
+  branch feat
+  checkout feat
+  commit id: \"wip\"
+  checkout main
+  merge feat tag: \"v1.0\"
+";
+        let Some(MermaidOutput::Svg { bytes: gbytes, width_px: gw, height_px: gh }) = render_mermaid(git) else {
+            panic!("expected svg for gitGraph");
+        };
+        assert!(gw > 250 && gh > 80);
+        let git_svg = std::str::from_utf8(&gbytes).unwrap();
+        assert!(git_svg.contains("main"));
+        assert!(git_svg.contains("feat"));
+        assert!(git_svg.contains("v1.0"));
+
+        let pie = "pie\n  title Share\n  \"A\" : 60\n  \"B\" : 40\n";
+        let Some(MermaidOutput::Chart(spec)) = render_mermaid(pie) else {
+            panic!("expected chart spec");
+        };
+        let (svg_bytes, pw, ph) = render_chart_spec_svg(&spec).expect("svg fallback");
+        assert!(pw > 300 && ph > 200);
+        let pie_svg = std::str::from_utf8(&svg_bytes).unwrap();
+        assert!(pie_svg.contains("Share"));
+        assert!(pie_svg.contains("60.0%"));
+    }
+
+    #[test]
+    fn renders_journey_timeline_quadrant_and_frontmatter() {
+        let journey = "\
+---
+title: User Onboarding
+---
+journey
+  title My Day
+  section Morning
+    Coffee: 5: Me
+    Commute: 2: Me, Train
+";
+        let Some(MermaidOutput::Svg { bytes: jbytes, width_px: jw, height_px: jh }) = render_mermaid(journey) else {
+            panic!("expected svg for journey with YAML frontmatter");
+        };
+        assert!(jw > 200 && jh > 180);
+        let jsvg = std::str::from_utf8(&jbytes).unwrap();
+        assert!(jsvg.contains("Coffee"));
+        assert!(jsvg.contains("Commute"));
+
+        let tl = "\
+timeline
+  title History
+  2024 : Alpha
+  2025 : Beta : GA
+";
+        let Some(MermaidOutput::Svg { bytes: tbytes, .. }) = render_mermaid(tl) else {
+            panic!("expected svg for timeline");
+        };
+        let tsvg = std::str::from_utf8(&tbytes).unwrap();
+        assert!(tsvg.contains("2024"));
+        assert!(tsvg.contains("Alpha"));
+        assert!(tsvg.contains("GA"));
+
+        let qc = "\
+quadrantChart
+  title Priority Matrix
+  x-axis Low Effort --> High Effort
+  y-axis Low Impact --> High Impact
+  quadrant-1 Strategic
+  quadrant-2 Quick Wins
+  Task A: [0.2, 0.8]
+  Task B: [0.75, 0.3]
+";
+        let Some(MermaidOutput::Svg { bytes: qbytes, .. }) = render_mermaid(qc) else {
+            panic!("expected svg for quadrantChart");
+        };
+        let qsvg = std::str::from_utf8(&qbytes).unwrap();
+        assert!(qsvg.contains("Priority Matrix"));
+        assert!(qsvg.contains("Quick Wins"));
+        assert!(qsvg.contains("Task A"));
+    }
+
+    #[test]
+    fn header_aliases_reach_the_same_renderers() {
+        for (alias, canonical) in [
+            ("classDiagram-v2\n  class Animal\n  Animal <|-- Duck\n", "classDiagram\n  class Animal\n  Animal <|-- Duck\n"),
+            ("stateDiagram-v2\n  [*] --> Still\n", "stateDiagram\n  [*] --> Still\n"),
+            ("graph LR\n  A --> B\n", "flowchart LR\n  A --> B\n"),
+            ("flowchart-elk LR\n  A --> B\n", "flowchart LR\n  A --> B\n"),
+            ("flowchart-v2 LR\n  A --> B\n", "flowchart LR\n  A --> B\n"),
+            ("gitGraph:\n  commit\n  branch dev\n  commit\n", "gitGraph\n  commit\n  branch dev\n  commit\n"),
+        ] {
+            assert_eq!(render_mermaid(alias), render_mermaid(canonical), "{alias}");
+            assert!(render_mermaid(alias).is_some(), "{alias}");
+        }
+        // `graph LR;` keeps its direction: the two nodes sit side by side.
+        let svg = svg_of("graph LR;\n  A-->B;\n");
+        assert!((text_y(&svg, "A") - text_y(&svg, "B")).abs() < 1.0, "{svg}");
+        assert!(text_x(&svg, "B") > text_x(&svg, "A") + 40.0);
+        // Only whole words count as headers.
+        assert!(render_mermaid("graphql\n  A --> B\n").is_none());
+        assert!(render_mermaid("classDiagramX\n  class A\n").is_none());
+        assert!(render_mermaid("sankey-beta\n  A,B,10\n").is_none());
+        assert_eq!(diagram_kind("xychart horizontal"), Some(DiagramKind::XyChart));
+        assert_eq!(diagram_kind("sequenceDiagram"), Some(DiagramKind::Sequence));
+    }
+
+    #[test]
+    fn frontmatter_title_is_drawn_above_svg_diagrams() {
+        let plain = svg_of("flowchart LR\n  A --> B\n");
+        let titled_src = "---\ntitle: \"受注の流れ\"\nconfig:\n  title: nested is ignored\n---\nflowchart LR\n  A --> B\n";
+        let Some(MermaidOutput::Svg { bytes, width_px, height_px }) = render_mermaid(titled_src) else {
+            panic!("svg");
+        };
+        let titled = String::from_utf8(bytes).unwrap();
+        assert!(titled.contains(r#"data-role="diagram-title">受注の流れ</text>"#), "{titled}");
+        assert!(!titled.contains("nested is ignored"));
+        let (pw, ph) = view_box(&plain);
+        assert_eq!(width_px as f32, pw.max(width_px as f32));
+        assert_eq!(height_px as f32, ph + 40.0);
+        assert!(titled.contains(r#"<g transform="translate("#));
+        assert!(roxmltree::Document::parse(&titled).is_ok());
+        // A long title widens the canvas and centres the drawing.
+        let long = svg_of("---\ntitle: A very long diagram title that is wider than the single node below\n---\nflowchart LR\n  A\n");
+        let (lw, _) = view_box(&long);
+        assert!(lw > view_box(&svg_of("flowchart LR\n  A\n")).0);
+        // Charts take it as their title unless the body has one.
+        let Some(MermaidOutput::Chart(pie)) = render_mermaid("---\ntitle: Pets\n---\npie\n  \"Dogs\" : 3\n  \"Cats\" : 2\n") else {
+            panic!("pie");
+        };
+        assert_eq!(pie.title.as_deref(), Some("Pets"));
+        let Some(MermaidOutput::Chart(pie)) = render_mermaid("---\ntitle: Pets\n---\npie title Body\n  title Body\n  \"Dogs\" : 3\n") else {
+            panic!("pie");
+        };
+        assert_eq!(pie.title.as_deref(), Some("Body"));
+        // A diagram with its own title statement is not titled twice.
+        let seq = svg_of("---\ntitle: Front\n---\nsequenceDiagram\n  title Body title\n  A->>B: hi\n");
+        assert!(seq.contains(">Body title<"));
+        assert!(!seq.contains(">Front<"));
+        assert_eq!(mermaid_frontmatter_title("---\ntitle: 'Quoted'\n---\ngraph\n"), Some("Quoted".to_string()));
+        assert_eq!(mermaid_frontmatter_title("graph\n  A\n"), None);
+    }
+}
