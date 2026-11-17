@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use ibis_doc_model::latex::parse_latex;
 use ibis_doc_model::{
-    Block, BorderStyle, CellDirection, Chart, ChartGroup, ChartText, ChartTitle, ChartType,
+    AxisKind, Block, BorderStyle, CellDirection, Chart, ChartGroup, ChartText, ChartTitle, ChartType,
     Comment, DataLabels, DocProperties, EmphasisMark, Emu, EmuRect, EmuSize, Fill, FlowAlign, FlowBorder,
     FlowCell, FlowDocument, FlowParagraph, FlowPos, FlowRow, FlowRun, FlowRunKind, FlowRunStyle,
     FlowStyle, FlowStyles, FlowTable, Grouping, LineHeight, LineNumberRestart, LineNumbers, Link,
@@ -2402,7 +2402,7 @@ fn build_chart_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block,
         }
     }
 
-    build_chart_block_from_spec(kind, title, size, categories, series_list, &[], false, content, ctx)
+    build_chart_block_from_spec(kind, title, size, categories, series_list, &[], false, None, content, ctx)
 }
 
 /// `pie showData` labels the slices. A mix of `bar` and `line` becomes one
@@ -2457,6 +2457,21 @@ fn apply_mermaid_series_layout(chart: &mut Chart, series_kinds: &[NewChartKind],
         .collect();
 }
 
+/// `xychart` `y-axis min --> max` fixes the value axis' scale.
+fn apply_mermaid_value_range(chart: &mut Chart, y_range: Option<(f64, f64)>) {
+    let Some((min, max)) = y_range else { return };
+    for axis in chart.axes.iter_mut().filter(|axis| axis.kind == AxisKind::Value) {
+        axis.min = Some(Number(min));
+        axis.max = Some(Number(max));
+    }
+}
+
+/// The value axis' fixed range, when the chart has one.
+fn chart_value_range(chart: &Chart) -> Option<(f64, f64)> {
+    let axis = chart.axes.iter().find(|axis| axis.kind == AxisKind::Value)?;
+    Some((axis.min?.0, axis.max?.0))
+}
+
 /// A slide copy of a combo keeps each source group's kind and series count.
 fn copy_chart_group_topology(chart: &mut Chart, src: &Chart) {
     if src.groups.len() <= 1 {
@@ -2497,6 +2512,7 @@ fn build_mermaid_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Bloc
                     spec.series,
                     &spec.series_kinds,
                     spec.show_data,
+                    spec.y_range,
                     content,
                     ctx,
                 )
@@ -2580,6 +2596,7 @@ fn build_chart_block_from_spec(
     series_list: Vec<(String, Vec<Option<Number>>)>,
     series_kinds: &[NewChartKind],
     show_data: bool,
+    y_range: Option<(f64, f64)>,
     raw_fallback: &str,
     ctx: &mut ParseContext<'_>,
 ) -> Result<Block, Error> {
@@ -2663,6 +2680,7 @@ fn build_chart_block_from_spec(
                 });
             }
             apply_mermaid_series_layout(&mut chart, series_kinds, show_data);
+            apply_mermaid_value_range(&mut chart, y_range);
             chart.mermaid_source = ibis_doc_model::MermaidFence::new(raw_fallback);
             source.set_chart_data(shape_id, chart.clone(), chart_data);
         } else if let Some(t) = &title {
@@ -4127,6 +4145,9 @@ fn mermaid_source_matches(chart: &Chart, source: &str) -> bool {
             }
         }
     }
+    if spec.y_range.is_some() && chart_value_range(chart) != spec.y_range {
+        return false;
+    }
     let pie = chart.groups.iter().any(|g| matches!(g.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }));
     let line_only = chart.groups.len() == 1 && matches!(chart.groups[0].kind, ChartType::Line);
     match spec.kind {
@@ -5454,6 +5475,63 @@ xychart-beta
         assert!(exported.contains("```mermaid\nxychart-beta"), "saved pptx should keep the line fence:\n{exported}");
         assert!(!exported.contains("```chart\ntype: pie"));
         assert!(!exported.contains("```chart\ntype: line"));
+    }
+
+    #[test]
+    fn mermaid_xychart_y_axis_range_reaches_native_chart_and_survives_docx() {
+        let md = "\
+```mermaid
+xychart
+  title Revenue
+  x-axis [Jan, Feb, Mar]
+  y-axis \"円\" 4000 --> 11000
+  bar [5000, 6000, 7500]
+```
+";
+        let value_range = |flow: &FlowDocument| -> Vec<(Option<f64>, Option<f64>)> {
+            let mut out = Vec::new();
+            for block in &flow.body {
+                let Block::Paragraph(paragraph) = block else { continue };
+                for run in &paragraph.runs {
+                    let FlowRunKind::Shape(shape) = &run.kind else { continue };
+                    let ShapeKind::Chart(chart) = &shape.kind else { continue };
+                    for axis in chart.axes.iter().filter(|axis| axis.kind == AxisKind::Value) {
+                        out.push((axis.min.map(|n| n.0), axis.max.map(|n| n.0)));
+                    }
+                }
+            }
+            out
+        };
+        let opened = open_markdown(md.as_bytes().to_vec()).expect("open_markdown");
+        let pres = &opened.presentation;
+        let flow = pres.flow.as_ref().expect("flow");
+        assert_eq!(value_range(flow), vec![(Some(4000.0), Some(11000.0))]);
+        let exported = export_markdown(flow, &pres.media);
+        assert!(exported.contains("```mermaid\nxychart\n"), "{exported}");
+        assert!(exported.contains("4000 --> 11000"), "{exported}");
+
+        let saved = opened.source.save(pres, Default::default()).expect("save docx");
+        let reread = crate::read(&saved).expect("reread docx");
+        let reread_flow = reread.flow.as_ref().expect("flow");
+        assert_eq!(value_range(reread_flow), vec![(Some(4000.0), Some(11000.0))]);
+        let reread_md = export_markdown(reread_flow, &reread.media);
+        assert!(reread_md.contains("4000 --> 11000"), "saved docx keeps the fence:\n{reread_md}");
+
+        // Editing the axis range makes the fence stale, so the chart is written as a ```chart block.
+        let mut edited = opened.presentation.clone();
+        let flow = std::sync::Arc::make_mut(edited.flow.as_mut().expect("flow"));
+        for block in &mut flow.body {
+            let Block::Paragraph(paragraph) = block else { continue };
+            for run in &mut paragraph.runs {
+                let FlowRunKind::Shape(shape) = &mut run.kind else { continue };
+                let ShapeKind::Chart(chart) = &mut shape.kind else { continue };
+                for axis in chart.axes.iter_mut().filter(|axis| axis.kind == AxisKind::Value) {
+                    axis.max = Some(Number(20000.0));
+                }
+            }
+        }
+        let edited_md = export_markdown(edited.flow.as_ref().unwrap(), &edited.media);
+        assert!(!edited_md.contains("4000 --> 11000"), "{edited_md}");
     }
 
     #[test]

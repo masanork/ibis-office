@@ -26,6 +26,11 @@ pub struct MermaidChartSpec {
     pub series_kinds: Vec<NewChartKind>,
     /// `pie showData`: the slices show their values.
     pub show_data: bool,
+    /// `xychart` axis titles (`x-axis "Month" [...]`, `y-axis "Revenue" 0 --> 100`).
+    pub x_axis_title: Option<String>,
+    pub y_axis_title: Option<String>,
+    /// `xychart` value-axis range (`y-axis 4000 --> 11000`); `None` is automatic.
+    pub y_range: Option<(f64, f64)>,
 }
 
 /// Result of converting a Mermaid block.
@@ -69,6 +74,81 @@ fn strip_mermaid_frontmatter(source: &str) -> &str {
     }
 }
 
+/// The top-level `title:` of a YAML frontmatter block (`---` … `---`), unquoted.
+/// Nested keys (such as `config:` children) are ignored.
+fn mermaid_frontmatter_title(source: &str) -> Option<String> {
+    let after_open = source.trim_start().strip_prefix("---")?;
+    if !(after_open.starts_with('\n') || after_open.starts_with("\r\n")) {
+        return None;
+    }
+    for line in after_open.lines().skip(1) {
+        if line.trim() == "---" {
+            break;
+        }
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("title:") {
+            let title = unquote(rest.trim());
+            return (!title.is_empty()).then_some(title);
+        }
+    }
+    None
+}
+
+/// Diagram families this renderer understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagramKind {
+    Pie,
+    XyChart,
+    Sequence,
+    Flowchart,
+    State,
+    Class,
+    Er,
+    Gantt,
+    Mindmap,
+    GitGraph,
+    Journey,
+    Timeline,
+    Quadrant,
+}
+
+/// Header keywords, including the aliases current mermaid still accepts
+/// (`graph`, `flowchart-elk`, `classDiagram-v2`, `stateDiagram-v2`, `xychart-beta`).
+/// Matching is on the first word, so `gitGraph:`, `graph LR;` and
+/// `xychart horizontal` are recognised too.
+const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
+    ("pie", DiagramKind::Pie),
+    ("xychart", DiagramKind::XyChart),
+    ("xychart-beta", DiagramKind::XyChart),
+    ("sequenceDiagram", DiagramKind::Sequence),
+    ("flowchart", DiagramKind::Flowchart),
+    ("flowchart-v2", DiagramKind::Flowchart),
+    ("flowchart-elk", DiagramKind::Flowchart),
+    ("graph", DiagramKind::Flowchart),
+    ("stateDiagram", DiagramKind::State),
+    ("stateDiagram-v2", DiagramKind::State),
+    ("classDiagram", DiagramKind::Class),
+    ("classDiagram-v2", DiagramKind::Class),
+    ("erDiagram", DiagramKind::Er),
+    ("gantt", DiagramKind::Gantt),
+    ("mindmap", DiagramKind::Mindmap),
+    ("gitGraph", DiagramKind::GitGraph),
+    ("journey", DiagramKind::Journey),
+    ("timeline", DiagramKind::Timeline),
+    ("quadrantChart", DiagramKind::Quadrant),
+];
+
+fn diagram_kind(header: &str) -> Option<DiagramKind> {
+    let header = header.trim();
+    let word_end = header
+        .find(|c: char| c.is_whitespace() || c == ':' || c == ';')
+        .unwrap_or(header.len());
+    let word = &header[..word_end];
+    DIAGRAM_HEADERS.iter().find(|(name, _)| *name == word).map(|(_, kind)| *kind)
+}
+
 /// Parse and render a Mermaid diagram into either a native chart or an SVG.
 /// Returns `None` if the diagram type is unsupported (caller falls back to a fenced code block).
 pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
@@ -77,114 +157,81 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         return None;
     }
     let first_line = trimmed.lines().next()?.trim();
+    let kind = diagram_kind(first_line)?;
+    // A `title` statement in the body wins over the frontmatter title, so the title is drawn once.
+    let body_title = trimmed
+        .lines()
+        .skip(1)
+        .any(|line| line.trim_start().starts_with("title ") || line.trim() == "title");
+    let front_title = mermaid_frontmatter_title(source).filter(|_| !body_title);
 
-    if first_line == "pie" || first_line.starts_with("pie ") {
-        return parse_pie_chart(trimmed).map(MermaidOutput::Chart);
+    let svg = match kind {
+        DiagramKind::Pie => {
+            return parse_pie_chart(trimmed).map(|mut spec| {
+                spec.title = spec.title.or(front_title);
+                MermaidOutput::Chart(spec)
+            });
+        }
+        DiagramKind::XyChart => {
+            return parse_xy_chart(trimmed).map(|mut spec| {
+                spec.title = spec.title.or(front_title);
+                MermaidOutput::Chart(spec)
+            });
+        }
+        DiagramKind::Sequence => render_sequence_svg(trimmed),
+        DiagramKind::Flowchart => render_flowchart_svg(trimmed),
+        DiagramKind::State => render_state_diagram_svg(trimmed),
+        DiagramKind::Class => render_class_diagram_svg(trimmed),
+        DiagramKind::Er => render_er_diagram_svg(trimmed),
+        DiagramKind::Gantt => render_gantt_svg(trimmed),
+        DiagramKind::Mindmap => render_mindmap_svg(trimmed),
+        DiagramKind::GitGraph => render_git_graph_svg(trimmed),
+        DiagramKind::Journey => render_journey_svg(trimmed),
+        DiagramKind::Timeline => render_timeline_svg(trimmed),
+        DiagramKind::Quadrant => render_quadrant_chart_svg(trimmed),
+    };
+    let (mut bytes, mut width_px, mut height_px) = svg?;
+    if let Some(title) = front_title {
+        (bytes, width_px, height_px) = add_svg_title(bytes, width_px, height_px, &title);
     }
-    if first_line == "xychart-beta"
-        || first_line.starts_with("xychart-beta ")
-        || first_line == "xychart"
-        || first_line.starts_with("xychart ")
-    {
-        return parse_xy_chart(trimmed).map(MermaidOutput::Chart);
+    Some(MermaidOutput::Svg {
+        bytes,
+        width_px,
+        height_px,
+    })
+}
+
+/// Put a title band above one of this module's SVGs: the drawing moves down
+/// (and is centred when the title is wider than it).
+fn add_svg_title(bytes: Vec<u8>, width: u32, height: u32, title: &str) -> (Vec<u8>, u32, u32) {
+    let Ok(svg) = std::str::from_utf8(&bytes) else {
+        return (bytes, width, height);
+    };
+    let (Some(open_end), Some(close)) = (svg.find('>'), svg.rfind("</svg>")) else {
+        return (bytes, width, height);
+    };
+    if !svg.starts_with("<svg ") || close <= open_end {
+        return (bytes, width, height);
     }
-    if first_line == "sequenceDiagram" || first_line.starts_with("sequenceDiagram ") {
-        let (bytes, width_px, height_px) = render_sequence_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line.starts_with("flowchart ")
-        || first_line == "flowchart"
-        || first_line.starts_with("graph ")
-        || first_line == "graph"
-    {
-        let (bytes, width_px, height_px) = render_flowchart_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "stateDiagram"
-        || first_line == "stateDiagram-v2"
-        || first_line.starts_with("stateDiagram ")
-        || first_line.starts_with("stateDiagram-v2 ")
-    {
-        let (bytes, width_px, height_px) = render_state_diagram_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "classDiagram" || first_line.starts_with("classDiagram ") {
-        let (bytes, width_px, height_px) = render_class_diagram_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "erDiagram" || first_line.starts_with("erDiagram ") {
-        let (bytes, width_px, height_px) = render_er_diagram_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "gantt" || first_line.starts_with("gantt ") {
-        let (bytes, width_px, height_px) = render_gantt_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "mindmap" || first_line.starts_with("mindmap ") {
-        let (bytes, width_px, height_px) = render_mindmap_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "gitGraph" || first_line.starts_with("gitGraph ") {
-        let (bytes, width_px, height_px) = render_git_graph_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "journey" || first_line.starts_with("journey ") {
-        let (bytes, width_px, height_px) = render_journey_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "timeline" || first_line.starts_with("timeline ") {
-        let (bytes, width_px, height_px) = render_timeline_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    if first_line == "quadrantChart" || first_line.starts_with("quadrantChart ") {
-        let (bytes, width_px, height_px) = render_quadrant_chart_svg(trimmed)?;
-        return Some(MermaidOutput::Svg {
-            bytes,
-            width_px,
-            height_px,
-        });
-    }
-    None
+    let band = 40u32;
+    let title_w = (estimate_text_width(title, 16.0) + 32.0).ceil() as u32;
+    let new_w = width.max(title_w);
+    let new_h = height + band;
+    let dx = (new_w - width) as f32 / 2.0;
+    let mut out = String::with_capacity(svg.len() + 400);
+    out.push_str(&format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{new_w}" height="{new_h}" viewBox="0 0 {new_w} {new_h}" font-family="sans-serif">"##
+    ));
+    out.push_str(&format!(r##"<rect width="{new_w}" height="{new_h}" fill="#ffffff"/>"##));
+    out.push_str(&format!(
+        r##"<text x="{:.1}" y="27" text-anchor="middle" font-size="16" font-weight="bold" fill="#0f172a" data-role="diagram-title">{}</text>"##,
+        new_w as f32 / 2.0,
+        escape_xml(title)
+    ));
+    out.push_str(&format!(r##"<g transform="translate({dx:.1},{band})">"##));
+    out.push_str(&svg[open_end + 1..close]);
+    out.push_str("</g></svg>");
+    (out.into_bytes(), new_w, new_h)
 }
 
 // ============================================================================
@@ -233,6 +280,9 @@ fn parse_pie_chart(source: &str) -> Option<MermaidChartSpec> {
         series: vec![("Series 1".to_string(), values)],
         series_kinds: vec![NewChartKind::Pie],
         show_data,
+        x_axis_title: None,
+        y_axis_title: None,
+        y_range: None,
     })
 }
 
@@ -245,6 +295,9 @@ fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
     let mut has_line = false;
     let mut bar_idx = 1usize;
     let mut line_idx = 1usize;
+    let mut x_axis_title = None;
+    let mut y_axis_title = None;
+    let mut y_range = None;
 
     for line in source.lines().skip(1) {
         let l = line.trim();
@@ -259,7 +312,13 @@ fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
         } else if let Some(rest) = l.strip_prefix("x-axis ") {
             if let Some(list) = extract_bracket_list(rest) {
                 categories = list.into_iter().map(|s| unquote(&s)).collect();
+                let title = unquote(rest[..rest.find('[').unwrap_or(0)].trim());
+                x_axis_title = (!title.is_empty()).then_some(title);
+            } else {
+                (x_axis_title, _) = parse_xy_axis(rest);
             }
+        } else if let Some(rest) = l.strip_prefix("y-axis ") {
+            (y_axis_title, y_range) = parse_xy_axis(rest);
         } else if let Some(rest) = l.strip_prefix("bar ") {
             if let Some(list) = extract_bracket_list(rest) {
                 has_bar = true;
@@ -308,7 +367,31 @@ fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
         series,
         series_kinds,
         show_data: false,
+        x_axis_title,
+        y_axis_title,
+        y_range,
     })
+}
+
+/// `"title" min --> max`, `title`, or `min --> max` of an `xychart` axis line.
+fn parse_xy_axis(rest: &str) -> (Option<String>, Option<(f64, f64)>) {
+    let rest = rest.trim();
+    let (head, range) = match rest.split_once("-->") {
+        Some((left, right)) => {
+            let left = left.trim();
+            let (title_part, min_token) = match left.rfind(char::is_whitespace) {
+                Some(at) => (&left[..at], left[at..].trim()),
+                None => ("", left),
+            };
+            match (min_token.parse::<f64>(), right.trim().parse::<f64>()) {
+                (Ok(min), Ok(max)) if min.is_finite() && max.is_finite() && max > min => (title_part, Some((min, max))),
+                _ => (rest, None),
+            }
+        }
+        None => (rest, None),
+    };
+    let title = unquote(head.trim());
+    ((!title.is_empty()).then_some(title), range)
 }
 
 fn xy_series_name(rest: &str, fallback: &str) -> String {
@@ -353,6 +436,8 @@ struct SeqBox {
 enum SeqOpen {
     Fragment,
     Box,
+    /// `rect rgb(...)` background highlight.
+    Rect,
 }
 
 #[derive(Debug, Clone)]
@@ -385,6 +470,11 @@ enum SeqItem {
     BlockEnd,
     Activate(usize),
     Deactivate(usize),
+    /// `rect <color>` opens a highlighted background band.
+    RectStart {
+        color: String,
+    },
+    RectEnd,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -401,6 +491,12 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let mut autonumber = false;
     let mut boxes: Vec<SeqBox> = Vec::new();
     let mut open: Vec<SeqOpen> = Vec::new();
+    let mut title: Option<String> = None;
+    // `create` / `destroy` wait for the next message that involves the participant.
+    let mut pending_create: Vec<usize> = Vec::new();
+    let mut pending_destroy: Vec<usize> = Vec::new();
+    let mut created_at: HashMap<usize, usize> = HashMap::new();
+    let mut destroyed_at: HashMap<usize, usize> = HashMap::new();
 
     let ensure_participant = |id: &str,
                               label: Option<&str>,
@@ -432,8 +528,46 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         if l.is_empty() || l.starts_with("%%") {
             continue;
         }
-        if l == "autonumber" {
+        if l == "autonumber" || l.starts_with("autonumber ") {
             autonumber = true;
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("title ").or_else(|| l.strip_prefix("title:")) {
+            let t = unquote(rest.trim());
+            title = (!t.is_empty()).then_some(t);
+            continue;
+        }
+        if l.starts_with("accTitle") || l.starts_with("accDescr") || l.starts_with("link ") || l.starts_with("links ") {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("create ") {
+            let rest = rest.trim();
+            let (is_actor, decl) = match (rest.strip_prefix("actor "), rest.strip_prefix("participant ")) {
+                (Some(decl), _) => (true, decl),
+                (None, Some(decl)) => (false, decl),
+                (None, None) => (false, rest),
+            };
+            let (id, lbl) = split_alias(decl);
+            let idx = ensure_participant(id, lbl, is_actor, &mut participants, &mut part_map);
+            note_seq_box(open.last(), &mut boxes, idx);
+            pending_create.push(idx);
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("destroy ") {
+            let id = rest.trim();
+            let idx = ensure_participant(id, None, false, &mut participants, &mut part_map);
+            pending_destroy.push(idx);
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("rect ") {
+            items.push(SeqItem::RectStart { color: rest.trim().to_string() });
+            open.push(SeqOpen::Rect);
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("and ").or_else(|| l.strip_prefix("option ")).or(if l == "and" { Some("") } else { None })
+            && matches!(open.last(), Some(SeqOpen::Fragment))
+        {
+            items.push(SeqItem::BlockElse { label: rest.trim().to_string() });
             continue;
         }
         if let Some(rest) = l.strip_prefix("participant ") {
@@ -451,6 +585,7 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         if l == "end" {
             match open.pop() {
                 Some(SeqOpen::Box) => {}
+                Some(SeqOpen::Rect) => items.push(SeqItem::RectEnd),
                 Some(SeqOpen::Fragment) | None => items.push(SeqItem::BlockEnd),
             }
             continue;
@@ -503,6 +638,19 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             if let SeqItem::Message { from, to, .. } = &msg_item {
                 note_seq_box(open.last(), &mut boxes, *from);
                 note_seq_box(open.last(), &mut boxes, *to);
+                for who in [*to, *from] {
+                    if let Some(pos) = pending_create.iter().position(|p| *p == who) {
+                        pending_create.remove(pos);
+                        created_at.insert(who, items.len());
+                        break;
+                    }
+                }
+                for who in [*from, *to] {
+                    if let Some(pos) = pending_destroy.iter().position(|p| *p == who) {
+                        pending_destroy.remove(pos);
+                        destroyed_at.insert(who, items.len());
+                    }
+                }
             }
             items.push(msg_item);
             continue;
@@ -558,12 +706,38 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let mut item_y = Vec::with_capacity(items.len());
     let mut block_stack: Vec<(usize, f32)> = Vec::new();
     let mut block_boxes: Vec<(String, String, f32, f32, usize)> = Vec::new();
+    let mut rect_stack: Vec<(usize, f32)> = Vec::new();
+    // (color, first item, last item, top, bottom, depth)
+    let mut rect_boxes: Vec<(String, usize, usize, f32, f32, usize)> = Vec::new();
+    let creating: Vec<usize> = created_at.values().copied().collect();
 
     for (idx, item) in items.iter().enumerate() {
         match item {
             SeqItem::Message { from, to, .. } => {
+                // A message that creates its participant draws the participant's box on the arrow.
+                let creates = creating.contains(&idx);
+                if creates {
+                    y += box_h / 2.0;
+                }
                 item_y.push(y);
                 y += if from == to { self_step } else { row_step };
+                if creates {
+                    y += box_h / 2.0;
+                }
+            }
+            SeqItem::RectStart { .. } => {
+                item_y.push(y);
+                rect_stack.push((idx, y - 22.0));
+                y += 4.0;
+            }
+            SeqItem::RectEnd => {
+                item_y.push(y);
+                if let Some((start_idx, start_y)) = rect_stack.pop()
+                    && let SeqItem::RectStart { color } = &items[start_idx]
+                {
+                    rect_boxes.push((color.clone(), start_idx, idx, start_y, y - 4.0, rect_stack.len()));
+                }
+                y += 24.0;
             }
             SeqItem::Activate(_) | SeqItem::Deactivate(_) => {
                 item_y.push(y);
@@ -640,11 +814,41 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         }
     }
 
-    // Lifelines
-    for &cx in &centers {
+    // `rect` highlights: behind everything else, across the participants they involve.
+    // Outer bands first, so a nested band stays visible on top of its parent.
+    rect_boxes.sort_by_key(|band| band.5);
+    for (color, first, last, sy, ey, depth) in &rect_boxes {
+        let mut lo = usize::MAX;
+        let mut hi = 0usize;
+        for item in &items[*first..=*last] {
+            let (a, b) = match item {
+                SeqItem::Message { from, to, .. } | SeqItem::Note { from, to, .. } => (*from, *to),
+                SeqItem::Activate(who) | SeqItem::Deactivate(who) => (*who, *who),
+                _ => continue,
+            };
+            lo = lo.min(a.min(b));
+            hi = hi.max(a.max(b));
+        }
+        let inset = *depth as f32 * 6.0;
+        let (x, right) = if lo <= hi {
+            (centers[lo] - col_widths[lo] / 2.0 - 6.0 + inset, centers[hi] + col_widths[hi] / 2.0 + 6.0 - inset)
+        } else {
+            (10.0 + inset, total_w as f32 - 10.0 - inset)
+        };
+        let (fill, opacity) = seq_rect_paint(color);
         svg.push_str(&format!(
-            r##"<line x1="{cx:.1}" y1="{:.1}" x2="{cx:.1}" y2="{bottom_box_y:.1}" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="5,4"/>"##,
-            top_y + box_h
+            r##"<rect x="{x:.1}" y="{sy:.1}" width="{:.1}" height="{:.1}" fill="{fill}" fill-opacity="{opacity:.2}" data-shape="seq-rect"/>"##,
+            (right - x).max(4.0),
+            (ey - sy).max(8.0)
+        ));
+    }
+
+    // Lifelines: a created participant's starts at its box, a destroyed one's ends at its cross.
+    for (idx, &cx) in centers.iter().enumerate() {
+        let start = created_at.get(&idx).map_or(top_y + box_h, |&item| item_y[item] + box_h / 2.0);
+        let end = destroyed_at.get(&idx).map_or(bottom_box_y, |&item| item_y[item]);
+        svg.push_str(&format!(
+            r##"<line x1="{cx:.1}" y1="{start:.1}" x2="{cx:.1}" y2="{end:.1}" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="5,4"/>"##
         ));
     }
 
@@ -738,7 +942,11 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     label.clone()
                 };
                 let x1 = centers[*from];
-                let x2 = centers[*to];
+                let mut x2 = centers[*to];
+                // The creating message ends at the new participant's box.
+                if created_at.get(to) == Some(&idx) && from != to {
+                    x2 += if x2 > x1 { -col_widths[*to] / 2.0 } else { col_widths[*to] / 2.0 };
+                }
                 let dash_attr = if *dashed { r##" stroke-dasharray="6,4""## } else { "" };
                 let marker_attr = if *cross_end {
                     ""
@@ -786,7 +994,12 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     ));
                 }
             }
-            SeqItem::BlockStart { .. } | SeqItem::BlockEnd | SeqItem::Activate(_) | SeqItem::Deactivate(_) => {}
+            SeqItem::BlockStart { .. }
+            | SeqItem::BlockEnd
+            | SeqItem::Activate(_)
+            | SeqItem::Deactivate(_)
+            | SeqItem::RectStart { .. }
+            | SeqItem::RectEnd => {}
         }
     }
 
@@ -801,11 +1014,23 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         ));
     }
 
-    // Participant boxes (top & bottom)
+    // Participant boxes (top & bottom). A created participant's top box sits on its creating
+    // message; a destroyed one has a cross where its lifeline ends and no bottom box.
     for (idx, p) in participants.iter().enumerate() {
         let cx = centers[idx];
         let w = col_widths[idx];
-        for by in [top_y, bottom_box_y] {
+        let top = created_at.get(&idx).map_or(top_y, |&item| item_y[item] - box_h / 2.0);
+        let mut rows = vec![top];
+        if let Some(&item) = destroyed_at.get(&idx) {
+            let dy = item_y[item];
+            svg.push_str(&format!(
+                r##"<path d="M {:.1} {:.1} L {:.1} {:.1} M {:.1} {:.1} L {:.1} {:.1}" stroke="#dc2626" stroke-width="2" data-shape="seq-destroy"/>"##,
+                cx - 8.0, dy - 8.0, cx + 8.0, dy + 8.0, cx + 8.0, dy - 8.0, cx - 8.0, dy + 8.0
+            ));
+        } else {
+            rows.push(bottom_box_y);
+        }
+        for by in rows {
             let bx = cx - w / 2.0;
             let fill = if p.is_actor { "#eff6ff" } else { "#f1f5f9" };
             let stroke = if p.is_actor { "#2563eb" } else { "#475569" };
@@ -821,7 +1046,34 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     }
 
     svg.push_str("</svg>");
-    Some((svg.into_bytes(), total_w, total_h))
+    match title {
+        Some(title) => Some(add_svg_title(svg.into_bytes(), total_w, total_h, &title)),
+        None => Some((svg.into_bytes(), total_w, total_h)),
+    }
+}
+
+/// `rect` colour: `rgb(r, g, b)`, `rgba(r, g, b, a)`, `#hex` or a CSS name, as an SVG fill and opacity.
+/// Anything else falls back to mermaid's default pale highlight.
+fn seq_rect_paint(color: &str) -> (String, f32) {
+    let color = color.trim();
+    let nums = |inner: &str| -> Vec<f32> { inner.split(',').filter_map(|n| n.trim().parse::<f32>().ok()).collect() };
+    if let Some(inner) = color.strip_prefix("rgba(").and_then(|r| r.strip_suffix(')')) {
+        let v = nums(inner);
+        if v.len() == 4 {
+            return (format!("rgb({},{},{})", v[0].clamp(0.0, 255.0), v[1].clamp(0.0, 255.0), v[2].clamp(0.0, 255.0)), v[3].clamp(0.0, 1.0));
+        }
+    }
+    if let Some(inner) = color.strip_prefix("rgb(").and_then(|r| r.strip_suffix(')')) {
+        let v = nums(inner);
+        if v.len() == 3 {
+            return (format!("rgb({},{},{})", v[0].clamp(0.0, 255.0), v[1].clamp(0.0, 255.0), v[2].clamp(0.0, 255.0)), 1.0);
+        }
+    }
+    let hex = color.strip_prefix('#').is_some_and(|h| matches!(h.len(), 3 | 6) && h.chars().all(|c| c.is_ascii_hexdigit()));
+    if hex || (!color.is_empty() && color.len() <= 20 && color.chars().all(|c| c.is_ascii_alphabetic())) {
+        return (color.to_string(), 1.0);
+    }
+    ("rgb(200,200,255)".to_string(), 0.35)
 }
 
 fn note_seq_box(open: Option<&SeqOpen>, boxes: &mut [SeqBox], idx: usize) {
@@ -928,7 +1180,7 @@ fn parse_seq_note(
     part_map: &mut HashMap<String, usize>,
     ensure: &impl Fn(&str, Option<&str>, bool, &mut Vec<SeqParticipant>, &mut HashMap<String, usize>) -> usize,
 ) -> Option<SeqItem> {
-    let rest = l.strip_prefix("Note ")?.trim();
+    let rest = l.strip_prefix("Note ").or_else(|| l.strip_prefix("note "))?.trim();
     let (target_part, text) = rest.split_once(':')?;
     let text = text.trim().to_string();
     let target_part = target_part.trim();
@@ -1033,6 +1285,8 @@ struct FlowNode {
     label: String,
     shape: NodeShape,
     subgraph: Option<usize>,
+    /// `class id name` / `id:::name`, in order.
+    classes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1040,6 +1294,26 @@ enum EdgeStyle {
     Solid,
     Dashed,
     Thick,
+    /// `~~~`: takes part in the layout but is not drawn.
+    Invisible,
+}
+
+/// What an edge ends in: `-->` (arrow), `--o` (circle), `--x` (cross) or nothing (`---`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeEnd {
+    None,
+    Arrow,
+    Circle,
+    Cross,
+}
+
+/// One parsed link token between two node groups.
+#[derive(Debug, Clone, PartialEq)]
+struct EdgeTok {
+    style: EdgeStyle,
+    start: EdgeEnd,
+    end: EdgeEnd,
+    label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1048,7 +1322,123 @@ struct FlowEdge {
     to: usize,
     label: Option<String>,
     style: EdgeStyle,
-    arrow: bool,
+    start: EdgeEnd,
+    end: EdgeEnd,
+}
+
+/// The subset of CSS properties `classDef`, `class`, `style` and `linkStyle` apply.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct FlowStyle {
+    fill: Option<String>,
+    stroke: Option<String>,
+    stroke_width: Option<String>,
+    dasharray: Option<String>,
+    color: Option<String>,
+}
+
+impl FlowStyle {
+    fn merge(&mut self, other: &FlowStyle) {
+        if other.fill.is_some() {
+            self.fill.clone_from(&other.fill);
+        }
+        if other.stroke.is_some() {
+            self.stroke.clone_from(&other.stroke);
+        }
+        if other.stroke_width.is_some() {
+            self.stroke_width.clone_from(&other.stroke_width);
+        }
+        if other.dasharray.is_some() {
+            self.dasharray.clone_from(&other.dasharray);
+        }
+        if other.color.is_some() {
+            self.color.clone_from(&other.color);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        *self == FlowStyle::default()
+    }
+}
+
+/// `fill:#f9f,stroke:#333,stroke-width:4px` (commas inside `rgb(...)` stay). Unknown keys and
+/// values with characters outside a conservative CSS set are dropped, so nothing reaches the SVG unescaped.
+fn parse_flow_style(props: &str) -> FlowStyle {
+    let mut out = FlowStyle::default();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let props = props.trim().trim_end_matches(';');
+    let mut pieces = Vec::new();
+    for (idx, ch) in props.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                pieces.push(&props[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    pieces.push(&props[start..]);
+    for piece in pieces {
+        let Some((key, value)) = piece.split_once(':') else { continue };
+        let value = value.trim().trim_end_matches("!important").trim();
+        if value.is_empty()
+            || !value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '#' | '.' | '%' | '(' | ')' | ',' | ' ' | '-'))
+        {
+            continue;
+        }
+        let value = value.to_string();
+        match key.trim() {
+            "fill" | "background" | "background-color" => out.fill = Some(value),
+            "stroke" => out.stroke = Some(value),
+            "stroke-width" => out.stroke_width = Some(value.trim_end_matches("px").trim().to_string()),
+            "stroke-dasharray" => out.dasharray = Some(value),
+            "color" => out.color = Some(value),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Rewrite the paint attributes of a fragment drawn by this module: every `fill` that is not
+/// `none`, every `stroke` and `stroke-width`, and a dash pattern on every element.
+fn restyle_svg_fragment(fragment: &str, style: &FlowStyle) -> String {
+    fn replace_attr(input: &str, name: &str, value: &str, skip_none: bool) -> String {
+        let needle = format!(" {name}=\"");
+        let mut out = String::with_capacity(input.len());
+        let mut rest = input;
+        while let Some(at) = rest.find(&needle) {
+            let value_start = at + needle.len();
+            let Some(len) = rest[value_start..].find('"') else { break };
+            let old = &rest[value_start..value_start + len];
+            out.push_str(&rest[..value_start]);
+            if skip_none && old == "none" {
+                out.push_str(old);
+            } else {
+                out.push_str(&escape_xml(value));
+            }
+            rest = &rest[value_start + len..];
+        }
+        out.push_str(rest);
+        out
+    }
+    let mut out = fragment.to_string();
+    if let Some(fill) = &style.fill {
+        out = replace_attr(&out, "fill", fill, true);
+    }
+    if let Some(stroke) = &style.stroke {
+        out = replace_attr(&out, "stroke", stroke, true);
+    }
+    if let Some(width) = &style.stroke_width {
+        out = replace_attr(&out, "stroke-width", width, false);
+    }
+    if let Some(dash) = &style.dasharray {
+        out = out.replace("/>", &format!(r#" stroke-dasharray="{}"/>"#, escape_xml(dash)));
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -1064,6 +1454,7 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         .split_whitespace()
         .nth(1)
         .unwrap_or("TD")
+        .trim_end_matches(';')
         .to_ascii_uppercase();
     let dir = match dir_token.as_str() {
         "LR" => FlowDir::Lr,
@@ -1077,11 +1468,54 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let mut edges: Vec<FlowEdge> = Vec::new();
     let mut subgraphs: Vec<SubgraphInfo> = Vec::new();
     let mut sg_stack: Vec<usize> = Vec::new();
+    let mut class_defs: HashMap<String, FlowStyle> = HashMap::new();
+    let mut class_assign: Vec<(String, String)> = Vec::new();
+    let mut node_styles: Vec<(String, FlowStyle)> = Vec::new();
+    let mut link_styles: Vec<(Option<usize>, FlowStyle)> = Vec::new();
 
     for line in lines {
         for stmt in split_flow_statements(line) {
             let l = stmt.trim();
-            if l.is_empty() || l.starts_with("classDef ") || l.starts_with("class ") || l.starts_with("style ") || l.starts_with("linkStyle ") {
+            if l.is_empty() || l.starts_with("click ") || l.starts_with("accTitle") || l.starts_with("accDescr") {
+                continue;
+            }
+            if let Some(rest) = l.strip_prefix("classDef ") {
+                let rest = rest.trim();
+                let (names, props) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let style = parse_flow_style(props);
+                for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                    class_defs.entry(name.to_string()).or_default().merge(&style);
+                }
+                continue;
+            }
+            if let Some(rest) = l.strip_prefix("class ") {
+                let rest = rest.trim();
+                if let Some((ids, class)) = rest.rsplit_once(char::is_whitespace) {
+                    for id in ids.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+                        class_assign.push((id.to_string(), class.trim().to_string()));
+                    }
+                }
+                continue;
+            }
+            if let Some(rest) = l.strip_prefix("style ") {
+                let rest = rest.trim();
+                if let Some((id, props)) = rest.split_once(char::is_whitespace) {
+                    node_styles.push((id.to_string(), parse_flow_style(props)));
+                }
+                continue;
+            }
+            if let Some(rest) = l.strip_prefix("linkStyle ") {
+                let rest = rest.trim();
+                if let Some((which, props)) = rest.split_once(char::is_whitespace) {
+                    let style = parse_flow_style(props);
+                    if which == "default" {
+                        link_styles.push((None, style));
+                    } else {
+                        for index in which.split(',').filter_map(|n| n.trim().parse::<usize>().ok()) {
+                            link_styles.push((Some(index), style.clone()));
+                        }
+                    }
+                }
                 continue;
             }
             if l == "end" {
@@ -1115,6 +1549,42 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         return None;
     }
 
+    for (id, class) in class_assign {
+        if let Some(&idx) = node_map.get(&id) {
+            nodes[idx].classes.push(class);
+        }
+    }
+    let mut node_style: Vec<FlowStyle> = nodes
+        .iter()
+        .map(|node| {
+            let mut style = class_defs.get("default").cloned().unwrap_or_default();
+            for class in &node.classes {
+                if let Some(def) = class_defs.get(class) {
+                    style.merge(def);
+                }
+            }
+            style
+        })
+        .collect();
+    for (id, style) in &node_styles {
+        if let Some(&idx) = node_map.get(id) {
+            node_style[idx].merge(style);
+        }
+    }
+    let edge_style: Vec<FlowStyle> = (0..edges.len())
+        .map(|index| {
+            // `linkStyle default` is the base; numbered statements override it.
+            let mut style = FlowStyle::default();
+            for (_, s) in link_styles.iter().filter(|(which, _)| which.is_none()) {
+                style.merge(s);
+            }
+            for (_, s) in link_styles.iter().filter(|(which, _)| *which == Some(index)) {
+                style.merge(s);
+            }
+            style
+        })
+        .collect();
+
     // Node dimensions. Long labels wrap inside a width cap and the box grows taller.
     let node_sizes: Vec<(f32, f32)> = nodes
         .iter()
@@ -1131,6 +1601,13 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         r##"<defs>
   <marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
     <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569"/>
+  </marker>
+  <marker id="flow-circle" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <circle cx="5" cy="5" r="4" fill="#ffffff" stroke="#475569" stroke-width="1.5"/>
+  </marker>
+  <marker id="flow-cross" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+    <line x1="1" y1="1" x2="9" y2="9" stroke="#475569" stroke-width="1.8"/>
+    <line x1="9" y1="1" x2="1" y2="9" stroke="#475569" stroke-width="1.8"/>
   </marker>
 </defs>"##,
     );
@@ -1182,7 +1659,10 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 
     // Edges follow the diagram direction. A subgraph's own direction is layout-only.
     let horizontal = matches!(dir, FlowDir::Lr | FlowDir::Rl);
-    for e in &edges {
+    for (edge_idx, e) in edges.iter().enumerate() {
+        if e.style == EdgeStyle::Invisible {
+            continue;
+        }
         let route = route_layered_edge(
             e.from,
             e.to,
@@ -1192,21 +1672,34 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             true,
             (total_w as f32, total_h as f32),
         );
-        let stroke_w = match e.style {
-            EdgeStyle::Thick => "2.6",
-            _ => "1.4",
+        let linked = &edge_style[edge_idx];
+        let stroke_w = linked.stroke_width.clone().unwrap_or_else(|| {
+            match e.style {
+                EdgeStyle::Thick => "2.6",
+                _ => "1.4",
+            }
+            .to_string()
+        });
+        let dash = match (&linked.dasharray, e.style) {
+            (Some(dash), _) => format!(r##" stroke-dasharray="{}""##, escape_xml(dash)),
+            (None, EdgeStyle::Dashed) => r##" stroke-dasharray="5,4""##.to_string(),
+            _ => String::new(),
         };
-        let dash = match e.style {
-            EdgeStyle::Dashed => r##" stroke-dasharray="5,4""##,
-            _ => "",
+        let marker_id = |end: EdgeEnd| match end {
+            EdgeEnd::Arrow => Some("flow-arrow"),
+            EdgeEnd::Circle => Some("flow-circle"),
+            EdgeEnd::Cross => Some("flow-cross"),
+            EdgeEnd::None => None,
         };
-        let marker = if e.arrow {
-            r##" marker-end="url(#flow-arrow)""##
-        } else {
-            ""
-        };
-        let extra = format!("{dash}{marker}");
-        push_routed_edge(&mut svg, &route, "#475569", stroke_w, &extra);
+        let mut extra = dash;
+        if let Some(id) = marker_id(e.start) {
+            extra.push_str(&format!(r##" marker-start="url(#{id})""##));
+        }
+        if let Some(id) = marker_id(e.end) {
+            extra.push_str(&format!(r##" marker-end="url(#{id})""##));
+        }
+        let stroke = linked.stroke.as_deref().map(escape_xml).unwrap_or_else(|| "#475569".to_string());
+        push_routed_edge(&mut svg, &route, &stroke, &escape_xml(&stroke_w), &extra);
         if let Some(lbl) = &e.label {
             let (lx, ly) = route.label_at;
             let lines = label_lines(lbl, 140.0, 11.0);
@@ -1227,6 +1720,7 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         let (w, h) = node_sizes[idx];
         let x = cx - w / 2.0;
         let y = cy - h / 2.0;
+        let shape_at = svg.len();
         match node.shape {
             NodeShape::Rect => {
                 svg.push_str(&format!(
@@ -1276,13 +1770,19 @@ fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             NodeShape::Parallelogram => push_flow_polygon(&mut svg, &parallelogram_points(x, y, w, h), "#eff6ff", "#2563eb", "parallelogram"),
             NodeShape::Asymmetric => push_flow_polygon(&mut svg, &asymmetric_points(x, y, w, h), "#eff6ff", "#2563eb", "asymmetric"),
         }
+        let style = &node_style[idx];
+        if !style.is_empty() {
+            let shape_svg = svg.split_off(shape_at);
+            svg.push_str(&restyle_svg_fragment(&shape_svg, style));
+        }
         let label_width = match node.shape {
             NodeShape::Diamond | NodeShape::Hexagon | NodeShape::Asymmetric => w * 0.62,
             NodeShape::Circle => w * 0.72,
             _ => w - 16.0,
         };
+        let text_fill = style.color.as_deref().map(escape_xml).unwrap_or_else(|| "#0f172a".to_string());
         // Size and draw share the 168px cap. A wider box must not reflow the lines.
-        push_centered_label(&mut svg, cx, cy, &node.label, 13.0, label_width.clamp(24.0, 168.0), "#0f172a", "500");
+        push_centered_label(&mut svg, cx, cy, &node.label, 13.0, label_width.clamp(24.0, 168.0), &text_fill, "500");
     }
 
     svg.push_str("</svg>");
@@ -1857,81 +2357,50 @@ fn parse_flowchart_statement(
     node_map: &mut HashMap<String, usize>,
     edges: &mut Vec<FlowEdge>,
 ) {
-    // Split statement by edges while keeping track of edge tokens.
-    let mut parts: Vec<(&str, Option<(EdgeStyle, bool, Option<String>)>)> = Vec::new();
-    let mut cursor = 0usize;
-    let bytes = stmt.as_bytes();
-    while cursor < bytes.len() {
-        // Skip bracketed/quoted node labels so `--` inside `[a-b]` isn't treated as an edge.
-        if matches!(bytes[cursor], b'[' | b'(' | b'{') {
-            let close = match bytes[cursor] {
-                b'[' => b']',
-                b'(' => b')',
-                _ => b'}',
-            };
-            if let Some(rel_end) = stmt[cursor + 1..].find(close as char) {
-                cursor += 1 + rel_end + 1;
-                continue;
-            }
-        }
-        if let Some((edge_len, style, arrow, label, next_start)) = match_flowchart_edge(&stmt[cursor..]) {
-            let lhs = stmt[..cursor].trim();
-            let _ = edge_len;
-            parts.push((lhs, Some((style, arrow, label.clone()))));
-            // Continue parsing the remainder recursively by slicing `stmt`
-            let rest = &stmt[cursor + next_start..];
-            let mut prev_group = ensure_node_group(lhs, subgraph, nodes, node_map);
-            let mut rest_str = rest;
-            let mut pending = (style, arrow, label);
-            loop {
-                if let Some((next_lhs, next_edge, next_rest)) = split_next_flowchart_edge(rest_str) {
-                    let cur_group = ensure_node_group(next_lhs, subgraph, nodes, node_map);
-                    for &u in &prev_group {
-                        for &v in &cur_group {
-                            edges.push(FlowEdge {
-                                from: u,
-                                to: v,
-                                label: pending.2.clone(),
-                                style: pending.0,
-                                arrow: pending.1,
-                            });
-                        }
-                    }
-                    prev_group = cur_group;
-                    pending = next_edge;
-                    rest_str = next_rest;
-                } else {
-                    let cur_group = ensure_node_group(rest_str, subgraph, nodes, node_map);
-                    for &u in &prev_group {
-                        for &v in &cur_group {
-                            edges.push(FlowEdge {
-                                from: u,
-                                to: v,
-                                label: pending.2.clone(),
-                                style: pending.0,
-                                arrow: pending.1,
-                            });
-                        }
-                    }
-                    break;
-                }
-            }
-            return;
-        }
-        let ch_len = stmt[cursor..].chars().next().map_or(1, char::len_utf8);
-        cursor += ch_len;
-    }
-
-    if parts.is_empty() {
+    let Some((lhs, mut pending, mut rest)) = split_next_flowchart_edge(stmt) else {
         let _ = ensure_node_group(stmt, subgraph, nodes, node_map);
+        return;
+    };
+    let mut prev_group = ensure_node_group(lhs, subgraph, nodes, node_map);
+    loop {
+        let next = split_next_flowchart_edge(rest);
+        let node_expr = next.as_ref().map_or(rest, |(next_lhs, _, _)| next_lhs);
+        let cur_group = ensure_node_group(node_expr, subgraph, nodes, node_map);
+        for &u in &prev_group {
+            for &v in &cur_group {
+                edges.push(FlowEdge {
+                    from: u,
+                    to: v,
+                    label: pending.label.clone(),
+                    style: pending.style,
+                    start: pending.start,
+                    end: pending.end,
+                });
+            }
+        }
+        prev_group = cur_group;
+        match next {
+            Some((_, tok, next_rest)) => {
+                pending = tok;
+                rest = next_rest;
+            }
+            None => break,
+        }
     }
 }
 
-fn split_next_flowchart_edge(s: &str) -> Option<(&str, (EdgeStyle, bool, Option<String>), &str)> {
+/// The text before the first link of `s` (skipping bracketed and quoted labels), the link, and the text after it.
+fn split_next_flowchart_edge(s: &str) -> Option<(&str, EdgeTok, &str)> {
     let bytes = s.as_bytes();
     let mut cursor = 0usize;
+    let mut quote = false;
     while cursor < bytes.len() {
-        if matches!(bytes[cursor], b'[' | b'(' | b'{') {
+        if bytes[cursor] == b'"' {
+            quote = !quote;
+            cursor += 1;
+            continue;
+        }
+        if !quote && matches!(bytes[cursor], b'[' | b'(' | b'{') {
             let close = match bytes[cursor] {
                 b'[' => b']',
                 b'(' => b')',
@@ -1942,67 +2411,125 @@ fn split_next_flowchart_edge(s: &str) -> Option<(&str, (EdgeStyle, bool, Option<
                 continue;
             }
         }
-        if let Some((_len, style, arrow, label, next_start)) = match_flowchart_edge(&s[cursor..]) {
-            return Some((s[..cursor].trim(), (style, arrow, label), &s[cursor + next_start..]));
+        let word_start = cursor == 0 || bytes[cursor - 1].is_ascii_whitespace();
+        if !quote && let Some((tok, consumed)) = match_flowchart_edge(&s[cursor..], word_start) {
+            let mut lhs = s[..cursor].trim();
+            // `A e1@--> B`: an edge id is not part of the node.
+            if let Some(before_id) = lhs.strip_suffix('@') {
+                lhs = before_id.rsplit_once(char::is_whitespace).map_or(before_id, |(node, _)| node).trim();
+            }
+            return Some((lhs, tok, &s[cursor + consumed..]));
         }
-        let ch_len = s[cursor..].chars().next().map_or(1, char::len_utf8);
-        cursor += ch_len;
+        cursor += s[cursor..].chars().next().map_or(1, char::len_utf8);
     }
     None
 }
 
-fn match_flowchart_edge(s: &str) -> Option<(usize, EdgeStyle, bool, Option<String>, usize)> {
-    // Check `-- label -->`, `-. label .->`, `== label ==>`
-    for (prefix, suffix, style, arrow) in [
-        ("-- ", " -->", EdgeStyle::Solid, true),
-        ("-- ", " ---", EdgeStyle::Solid, false),
-        ("-. ", " .->", EdgeStyle::Dashed, true),
-        ("== ", " ==>", EdgeStyle::Thick, true),
-    ] {
-        if let Some(after) = s.strip_prefix(prefix)
-            && let Some(end_idx) = after.find(suffix)
-        {
-            let lbl = after[..end_idx].trim();
-            let consumed = prefix.len() + end_idx + suffix.len();
-            return Some((
-                consumed,
-                style,
-                arrow,
-                (!lbl.is_empty()).then(|| unquote(lbl)),
-                consumed,
-            ));
+fn edge_end_marker(byte: Option<&u8>) -> Option<EdgeEnd> {
+    match byte {
+        Some(b'>') => Some(EdgeEnd::Arrow),
+        Some(b'o') => Some(EdgeEnd::Circle),
+        Some(b'x') => Some(EdgeEnd::Cross),
+        _ => None,
+    }
+}
+
+/// The link body at the start of `s` (after any start marker): its style, end marker and length.
+/// Solid `--+[-xo>]`, thick `==+[=xo>]`, dotted `-.+-[xo>]?` (or `.+-[xo>]?` closing a
+/// dotted text label), invisible `~~~+`.
+fn match_edge_body(s: &str) -> Option<(EdgeStyle, EdgeEnd, usize)> {
+    let b = s.as_bytes();
+    let run = |c: u8, from: usize| b[from..].iter().take_while(|&&x| x == c).count();
+    let dotted = |from: usize| -> Option<(EdgeStyle, EdgeEnd, usize)> {
+        let dots = run(b'.', from);
+        if dots == 0 || b.get(from + dots) != Some(&b'-') {
+            return None;
+        }
+        let at = from + dots + 1;
+        match edge_end_marker(b.get(at)) {
+            Some(end) => Some((EdgeStyle::Dashed, end, at + 1)),
+            None => Some((EdgeStyle::Dashed, EdgeEnd::None, at)),
+        }
+    };
+    match b.first()? {
+        b'~' => {
+            let n = run(b'~', 0);
+            (n >= 3).then_some((EdgeStyle::Invisible, EdgeEnd::None, n))
+        }
+        b'-' if b.get(1) == Some(&b'.') => dotted(1),
+        b'.' => dotted(0),
+        &c @ (b'-' | b'=') => {
+            let n = run(c, 0);
+            let style = if c == b'-' { EdgeStyle::Solid } else { EdgeStyle::Thick };
+            if n >= 2
+                && let Some(end) = edge_end_marker(b.get(n))
+            {
+                return Some((style, end, n + 1));
+            }
+            (n >= 3).then_some((style, EdgeEnd::None, n))
+        }
+        _ => None,
+    }
+}
+
+/// A link at the start of `s`: `-->`, `---`, `-.->`, `==>`, `~~~`, `<-->`, `o--o`, `x--x`,
+/// `--o`, `--x`, longer forms, `-- text -->` style labels and `-->|text|` labels.
+/// `word_start`: `s` begins a word, so a leading `o` / `x` may be a start marker.
+fn match_flowchart_edge(s: &str, word_start: bool) -> Option<(EdgeTok, usize)> {
+    let b = s.as_bytes();
+    let marker_then_link = || matches!(b.get(1), Some(b'-' | b'=')) && matches!(b.get(2), Some(b'-' | b'=' | b'.'));
+    let (start, i) = match b.first()? {
+        b'<' if matches!(b.get(1), Some(b'-' | b'=')) => (EdgeEnd::Arrow, 1),
+        b'o' if word_start && marker_then_link() => (EdgeEnd::Circle, 1),
+        b'x' if word_start && marker_then_link() => (EdgeEnd::Cross, 1),
+        b'-' | b'=' | b'~' => (EdgeEnd::None, 0),
+        _ => return None,
+    };
+    let body = &s[i..];
+
+    // Text labels inside the link: `-- text -->`, `-. text .->`, `== text ==>`.
+    for (open, closer, style) in [("--", "--", EdgeStyle::Solid), ("-.", ".-", EdgeStyle::Dashed), ("==", "==", EdgeStyle::Thick)] {
+        let Some(after) = body.strip_prefix(open) else { continue };
+        if !after.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let mut search = 0usize;
+        while let Some(rel) = after[search..].find(closer) {
+            let at = search + rel;
+            if let Some((close_style, end, len)) = match_edge_body(&after[at..])
+                && close_style == style
+            {
+                let text = after[..at].trim();
+                return Some((
+                    EdgeTok {
+                        style,
+                        start,
+                        end,
+                        label: (!text.is_empty()).then(|| unquote(text)),
+                    },
+                    i + open.len() + at + len,
+                ));
+            }
+            search = at + closer.len();
         }
     }
 
-    // Standard arrows with optional `|label|`
-    for (tok, style, arrow) in [
-        ("-.->", EdgeStyle::Dashed, true),
-        ("-.-", EdgeStyle::Dashed, false),
-        ("==>", EdgeStyle::Thick, true),
-        ("===", EdgeStyle::Thick, false),
-        ("-->", EdgeStyle::Solid, true),
-        ("---", EdgeStyle::Solid, false),
-    ] {
-        if let Some(after) = s.strip_prefix(tok) {
-            let after_ws = after.trim_start();
-            let ws_len = after.len() - after_ws.len();
-            if let Some(after_pipe) = after_ws.strip_prefix('|')
-                && let Some(close_pipe) = after_pipe.find('|')
-            {
-                let lbl = after_pipe[..close_pipe].trim();
-                let consumed = tok.len() + ws_len + 1 + close_pipe + 1;
-                return Some((
-                    consumed,
-                    style,
-                    arrow,
-                    (!lbl.is_empty()).then(|| unquote(lbl)),
-                    consumed,
-                ));
-            }
-            return Some((tok.len(), style, arrow, None, tok.len()));
-        }
+    let (style, end, len) = match_edge_body(body)?;
+    if style == EdgeStyle::Invisible && start != EdgeEnd::None {
+        return None;
     }
-    None
+    let mut consumed = i + len;
+    let after = &s[consumed..];
+    let after_ws = after.trim_start();
+    let mut label = None;
+    if let Some(after_pipe) = after_ws.strip_prefix('|')
+        && let Some(close_pipe) = after_pipe.find('|')
+    {
+        let text = after_pipe[..close_pipe].trim();
+        label = (!text.is_empty()).then(|| unquote(text));
+        consumed += (after.len() - after_ws.len()) + 1 + close_pipe + 1;
+    }
+    Some((EdgeTok { style, start, end, label }, consumed))
 }
 
 fn ensure_node_group(
@@ -2017,11 +2544,15 @@ fn ensure_node_group(
         if p.is_empty() {
             continue;
         }
+        let (p, class) = split_node_class(p);
         let (id, label_opt, shape_opt) = parse_node_token(p);
         if id.is_empty() {
             continue;
         }
         if let Some(&idx) = node_map.get(id) {
+            if let Some(class) = class {
+                nodes[idx].classes.push(class.to_string());
+            }
             if let Some(lbl) = label_opt {
                 nodes[idx].label = lbl;
             }
@@ -2039,12 +2570,24 @@ fn ensure_node_group(
                 label: label_opt.unwrap_or_else(|| id.to_string()),
                 shape: shape_opt.unwrap_or(NodeShape::Rect),
                 subgraph,
+                classes: class.map(|c| vec![c.to_string()]).unwrap_or_default(),
             });
             node_map.insert(id.to_string(), idx);
             ids.push(idx);
         }
     }
     ids
+}
+
+/// `A[Label]:::name` → (`A[Label]`, `name`). A `:::` inside the label is left alone.
+fn split_node_class(token: &str) -> (&str, Option<&str>) {
+    if let Some(at) = token.rfind(":::") {
+        let class = token[at + 3..].trim();
+        if !class.is_empty() && !class.contains([']', ')', '}', '"']) {
+            return (token[..at].trim(), Some(class));
+        }
+    }
+    (token, None)
 }
 
 fn parse_node_token(token: &str) -> (&str, Option<String>, Option<NodeShape>) {
@@ -4039,12 +4582,16 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             max_val = max_val.max(v.0);
         }
     }
+    // `y-axis min --> max` fixes the value range; otherwise it runs from 0 to the largest value.
+    let (y_lo, y_hi) = spec.y_range.unwrap_or((0.0, max_val));
+    let y_span = (y_hi - y_lo).max(f64::EPSILON);
+    let y_frac = |v: f64| ((v - y_lo) / y_span).clamp(0.0, 1.0) as f32;
     let width_px = 520u32;
-    let height_px = 280u32;
-    let pad_l = 52.0f32;
+    let height_px = if spec.x_axis_title.is_some() { 300u32 } else { 280u32 };
+    let pad_l = if spec.y_axis_title.is_some() { 70.0f32 } else { 52.0f32 };
     let pad_r = 24.0f32;
     let pad_t = if spec.title.is_some() { 44.0f32 } else { 24.0f32 };
-    let pad_b = 42.0f32;
+    let pad_b = if spec.x_axis_title.is_some() { 62.0f32 } else { 42.0f32 };
     let plot_w = width_px as f32 - pad_l - pad_r;
     let plot_h = height_px as f32 - pad_t - pad_b;
 
@@ -4070,11 +4617,27 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             r##"<line x1="{pad_l:.1}" y1="{gy:.1}" x2="{:.1}" y2="{gy:.1}" stroke="#e2e8f0" stroke-width="1"/>"##,
             pad_l + plot_w
         ));
-        let tick_val = max_val * frac as f64;
+        let tick_val = y_lo + y_span * frac as f64;
+        let tick = if y_span < 8.0 { format!("{tick_val:.1}") } else { format!("{tick_val:.0}") };
         svg.push_str(&format!(
-            r##"<text x="{:.1}" y="{:.1}" text-anchor="end" font-size="10" fill="#64748b">{tick_val:.0}</text>"##,
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="end" font-size="10" fill="#64748b">{tick}</text>"##,
             pad_l - 6.0,
             gy + 3.5
+        ));
+    }
+    if let Some(t) = &spec.y_axis_title {
+        let ty = pad_t + plot_h / 2.0;
+        svg.push_str(&format!(
+            r##"<text x="16" y="{ty:.1}" text-anchor="middle" font-size="11" fill="#334155" transform="rotate(-90 16 {ty:.1})" data-role="y-axis-title">{}</text>"##,
+            escape_xml(t)
+        ));
+    }
+    if let Some(t) = &spec.x_axis_title {
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155" data-role="x-axis-title">{}</text>"##,
+            pad_l + plot_w / 2.0,
+            height_px as f32 - 12.0,
+            escape_xml(t)
         ));
     }
     svg.push_str(&format!(
@@ -4108,7 +4671,7 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             for (ci, v_opt) in vals.iter().enumerate() {
                 if let Some(v) = v_opt {
                     let px = pad_l + (ci as f32 + 0.5) * slot_w;
-                    let py = pad_t + plot_h * (1.0 - (v.0 / max_val) as f32);
+                    let py = pad_t + plot_h * (1.0 - y_frac(v.0));
                     pts.push((px, py));
                 }
             }
@@ -4131,7 +4694,7 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             let bar_w = (slot_w * 0.54).min(40.0);
             for (ci, v_opt) in vals.iter().enumerate() {
                 if let Some(v) = v_opt {
-                    let bh = (plot_h * (v.0 / max_val) as f32).max(2.0);
+                    let bh = (plot_h * y_frac(v.0)).max(2.0);
                     let bx = pad_l + (ci as f32 + 0.5) * slot_w - bar_w / 2.0;
                     let by = pad_t + plot_h - bh;
                     svg.push_str(&format!(
@@ -5852,5 +6415,218 @@ flowchart TD
         assert!(frame.0 >= -0.5 && frame.1 >= -0.5 && frame.0 + frame.2 <= vw + 0.5 && frame.1 + frame.3 <= vh + 0.5, "frame outside viewBox");
         assert!(node.0 >= -0.5 && node.1 >= -0.5 && node.0 + node.2 <= vw + 0.5 && node.1 + node.3 <= vh + 0.5);
         assert!(svg.contains(">子ノード<"));
+    }
+
+    // ---- P0 compatibility additions --------------------------------------------------------
+
+    #[test]
+    fn header_aliases_reach_the_same_renderers() {
+        for (alias, canonical) in [
+            ("classDiagram-v2\n  class Animal\n  Animal <|-- Duck\n", "classDiagram\n  class Animal\n  Animal <|-- Duck\n"),
+            ("stateDiagram-v2\n  [*] --> Still\n", "stateDiagram\n  [*] --> Still\n"),
+            ("graph LR\n  A --> B\n", "flowchart LR\n  A --> B\n"),
+            ("flowchart-elk LR\n  A --> B\n", "flowchart LR\n  A --> B\n"),
+            ("flowchart-v2 LR\n  A --> B\n", "flowchart LR\n  A --> B\n"),
+            ("gitGraph:\n  commit\n  branch dev\n  commit\n", "gitGraph\n  commit\n  branch dev\n  commit\n"),
+        ] {
+            assert_eq!(render_mermaid(alias), render_mermaid(canonical), "{alias}");
+            assert!(render_mermaid(alias).is_some(), "{alias}");
+        }
+        // `graph LR;` keeps its direction: the two nodes sit side by side.
+        let svg = svg_of("graph LR;\n  A-->B;\n");
+        assert!((text_y(&svg, "A") - text_y(&svg, "B")).abs() < 1.0, "{svg}");
+        assert!(text_x(&svg, "B") > text_x(&svg, "A") + 40.0);
+        // Only whole words count as headers.
+        assert!(render_mermaid("graphql\n  A --> B\n").is_none());
+        assert!(render_mermaid("classDiagramX\n  class A\n").is_none());
+        assert!(render_mermaid("sankey-beta\n  A,B,10\n").is_none());
+        assert_eq!(diagram_kind("xychart horizontal"), Some(DiagramKind::XyChart));
+        assert_eq!(diagram_kind("sequenceDiagram"), Some(DiagramKind::Sequence));
+    }
+
+    #[test]
+    fn frontmatter_title_is_drawn_above_svg_diagrams() {
+        let plain = svg_of("flowchart LR\n  A --> B\n");
+        let titled_src = "---\ntitle: \"受注の流れ\"\nconfig:\n  title: nested is ignored\n---\nflowchart LR\n  A --> B\n";
+        let Some(MermaidOutput::Svg { bytes, width_px, height_px }) = render_mermaid(titled_src) else {
+            panic!("svg");
+        };
+        let titled = String::from_utf8(bytes).unwrap();
+        assert!(titled.contains(r#"data-role="diagram-title">受注の流れ</text>"#), "{titled}");
+        assert!(!titled.contains("nested is ignored"));
+        let (pw, ph) = view_box(&plain);
+        assert_eq!(width_px as f32, pw.max(width_px as f32));
+        assert_eq!(height_px as f32, ph + 40.0);
+        assert!(titled.contains(r#"<g transform="translate("#));
+        assert!(roxmltree::Document::parse(&titled).is_ok());
+        // A long title widens the canvas and centres the drawing.
+        let long = svg_of("---\ntitle: A very long diagram title that is wider than the single node below\n---\nflowchart LR\n  A\n");
+        let (lw, _) = view_box(&long);
+        assert!(lw > view_box(&svg_of("flowchart LR\n  A\n")).0);
+        // Charts take it as their title unless the body has one.
+        let Some(MermaidOutput::Chart(pie)) = render_mermaid("---\ntitle: Pets\n---\npie\n  \"Dogs\" : 3\n  \"Cats\" : 2\n") else {
+            panic!("pie");
+        };
+        assert_eq!(pie.title.as_deref(), Some("Pets"));
+        let Some(MermaidOutput::Chart(pie)) = render_mermaid("---\ntitle: Pets\n---\npie title Body\n  title Body\n  \"Dogs\" : 3\n") else {
+            panic!("pie");
+        };
+        assert_eq!(pie.title.as_deref(), Some("Body"));
+        // A diagram with its own title statement is not titled twice.
+        let seq = svg_of("---\ntitle: Front\n---\nsequenceDiagram\n  title Body title\n  A->>B: hi\n");
+        assert!(seq.contains(">Body title<"));
+        assert!(!seq.contains(">Front<"));
+        assert_eq!(mermaid_frontmatter_title("---\ntitle: 'Quoted'\n---\ngraph\n"), Some("Quoted".to_string()));
+        assert_eq!(mermaid_frontmatter_title("graph\n  A\n"), None);
+    }
+
+    #[test]
+    fn flowchart_bidirectional_circle_cross_and_invisible_edges() {
+        let tok = |s: &str| match_flowchart_edge(s, true).map(|(t, n)| (t.style, t.start, t.end, t.label, n));
+        assert_eq!(tok("<--> B"), Some((EdgeStyle::Solid, EdgeEnd::Arrow, EdgeEnd::Arrow, None, 4)));
+        assert_eq!(tok("o--o B"), Some((EdgeStyle::Solid, EdgeEnd::Circle, EdgeEnd::Circle, None, 4)));
+        assert_eq!(tok("x--x B"), Some((EdgeStyle::Solid, EdgeEnd::Cross, EdgeEnd::Cross, None, 4)));
+        assert_eq!(tok("--o B"), Some((EdgeStyle::Solid, EdgeEnd::None, EdgeEnd::Circle, None, 3)));
+        assert_eq!(tok("--x B"), Some((EdgeStyle::Solid, EdgeEnd::None, EdgeEnd::Cross, None, 3)));
+        assert_eq!(tok("<-.-> B"), Some((EdgeStyle::Dashed, EdgeEnd::Arrow, EdgeEnd::Arrow, None, 5)));
+        assert_eq!(tok("<==> B"), Some((EdgeStyle::Thick, EdgeEnd::Arrow, EdgeEnd::Arrow, None, 4)));
+        assert_eq!(tok("----> B"), Some((EdgeStyle::Solid, EdgeEnd::None, EdgeEnd::Arrow, None, 5)));
+        assert_eq!(tok("~~~ B"), Some((EdgeStyle::Invisible, EdgeEnd::None, EdgeEnd::None, None, 3)));
+        assert_eq!(tok("<-- text --> B"), Some((EdgeStyle::Solid, EdgeEnd::Arrow, EdgeEnd::Arrow, Some("text".into()), 12)));
+        assert_eq!(tok("-. 点線 .-> B").map(|t| (t.0, t.2, t.3)), Some((EdgeStyle::Dashed, EdgeEnd::Arrow, Some("点線".into()))));
+        assert_eq!(tok("-->|yes| B").map(|t| t.3), Some(Some("yes".into())));
+        assert_eq!(tok("-- B"), None);
+        // `o` / `x` start a link only at the start of a word: `Bo--x` is not a circle start.
+        assert!(match_flowchart_edge("o--o B", false).is_none());
+
+        let svg = svg_of("flowchart LR\n  A <--> B\n  B o--o C\n  C x--x D\n  D --o E\n  E ~~~ F\n");
+        for label in ["A", "B", "C", "D", "E", "F"] {
+            assert!(svg.contains(&format!(">{label}<")), "{label} missing:\n{svg}");
+        }
+        assert!(!svg.contains(">A <<") && !svg.contains("&lt;"), "no stray node text: {svg}");
+        assert_eq!(svg.matches(r##"marker-start="url(#flow-arrow)""##).count(), 1);
+        assert_eq!(svg.matches(r##"marker-start="url(#flow-circle)""##).count(), 1);
+        assert_eq!(svg.matches(r##"marker-start="url(#flow-cross)""##).count(), 1);
+        assert_eq!(svg.matches(r##"marker-end="url(#flow-circle)""##).count(), 2);
+        assert_eq!(svg.matches(r##"marker-end="url(#flow-cross)""##).count(), 1);
+        // The `~~~` link places F after E but draws nothing.
+        let body = &svg[svg.find("</defs>").expect("defs")..];
+        assert_eq!(fill_none_paths(body).len() + body.matches("<line x1").count(), 4, "{svg}");
+        assert!(text_x(&svg, "F") > text_x(&svg, "E"));
+        // Edge ids are not node text.
+        let ids = svg_of("flowchart LR\n  A e1@--> B\n");
+        assert!(ids.contains(">A<") && !ids.contains("e1"), "{ids}");
+    }
+
+    #[test]
+    fn flowchart_class_def_class_style_and_link_style() {
+        let svg = svg_of(
+            "flowchart LR
+  A:::warn --> B
+  B --> C
+  C --> D
+  classDef warn fill:#fee2e2,stroke:#dc2626,stroke-width:3px
+  classDef ok fill:#dcfce7
+  class B,C ok
+  style D fill:#f9f,stroke:#333,color:#ffffff,stroke-dasharray: 5 5
+  linkStyle 1 stroke:#ff3,stroke-width:4px
+  linkStyle default stroke:#0000ff
+",
+        );
+        assert!(svg.contains(r##"fill="#fee2e2" stroke="#dc2626" stroke-width="3""##), "{svg}");
+        assert_eq!(painted_rects(&svg, "#dcfce7").len(), 2, "class B,C ok:\n{svg}");
+        assert_eq!(painted_rects(&svg, "#f9f").len(), 1);
+        assert!(svg.contains(r##"stroke-dasharray="5 5""##));
+        assert!(svg.contains(r##"fill="#ffffff">D</text>"##), "style color is the label colour:\n{svg}");
+        // linkStyle: the second edge is yellow and wide, the others take the default.
+        assert_eq!(svg.matches(r##"stroke="#ff3" stroke-width="4""##).count(), 1, "{svg}");
+        assert_eq!(svg.matches(r##"stroke="#0000ff""##).count(), 2);
+        // `classDef default` applies to every node without being named.
+        let def = svg_of("flowchart LR\n  A --> B\n  classDef default fill:#abcdef\n");
+        assert_eq!(painted_rects(&def, "#abcdef").len(), 2);
+        // Values that could break out of the attribute are dropped.
+        let evil = svg_of("flowchart LR\n  A\n  style A fill:red\"/><script>,stroke:#123456\n");
+        assert!(!evil.contains("<script>") && evil.contains(r##"stroke="#123456""##), "{evil}");
+        assert!(roxmltree::Document::parse(&evil).is_ok());
+        assert_eq!(split_node_class("A[x]:::hot"), ("A[x]", Some("hot")));
+        assert_eq!(split_node_class("A[a:::b]"), ("A[a:::b]", None));
+        assert_eq!(parse_flow_style("fill:rgb(1, 2, 3),stroke-width:2px").fill.as_deref(), Some("rgb(1, 2, 3)"));
+    }
+
+    #[test]
+    fn sequence_rect_create_destroy_title_and_dividers() {
+        let svg = svg_of(
+            "sequenceDiagram
+  title 予約の流れ
+  participant Alice
+  rect rgba(0, 0, 255, 0.1)
+    Alice->>Bob: Hello
+    rect rgb(200, 150, 255)
+      Bob-->>Alice: Hi
+    end
+  end
+  create participant Carl
+  Alice->>Carl: Hi Carl
+  par Alice to Bob
+    Alice->>Bob: one
+  and Alice to Carl
+    Alice->>Carl: two
+  end
+  destroy Carl
+  Alice-xCarl: bye
+  note over Alice: done
+",
+        );
+        assert!(svg.contains(r#"data-role="diagram-title">予約の流れ</text>"#), "{svg}");
+        assert_eq!(svg.matches(r#"data-shape="seq-rect""#).count(), 2);
+        assert!(svg.contains(r#"fill="rgb(0,0,255)" fill-opacity="0.10""#), "{svg}");
+        assert!(svg.contains(r#"fill="rgb(200,150,255)" fill-opacity="1.00""#));
+        // Nested band drawn after (on top of) its parent.
+        assert!(svg.find("rgb(0,0,255)").unwrap() < svg.find("rgb(200,150,255)").unwrap());
+        // `rect ... end` does not close a fragment: one `par` frame, with an `and` divider.
+        assert!(svg.contains(">par<"), "{svg}");
+        assert!(svg.contains(">[Alice to Carl]<"));
+        // Carl's top box sits on the creating message, below Alice's; Carl has no bottom box.
+        let alice_boxes = svg.matches(">Alice</text>").count();
+        let carl_boxes = svg.matches(">Carl</text>").count();
+        assert_eq!(alice_boxes, 2);
+        assert_eq!(carl_boxes, 1, "{svg}");
+        assert!(text_y(&svg, "Carl") > text_y(&svg, "Alice") + 60.0);
+        assert!(svg.contains(r#"data-shape="seq-destroy""#));
+        assert!(svg.contains(">done<"), "lower-case note");
+        assert!(roxmltree::Document::parse(&svg).is_ok());
+
+        assert_eq!(seq_rect_paint("rgb(1,2,3)"), ("rgb(1,2,3)".to_string(), 1.0));
+        assert_eq!(seq_rect_paint("#abc"), ("#abc".to_string(), 1.0));
+        assert_eq!(seq_rect_paint("aqua"), ("aqua".to_string(), 1.0));
+        assert_eq!(seq_rect_paint("url(javascript:x)").0, "rgb(200,200,255)");
+    }
+
+    #[test]
+    fn xychart_axis_titles_and_value_range() {
+        let src = "xychart
+  title \"Sales Revenue\"
+  x-axis \"Month\" [jan, feb, mar]
+  y-axis \"Revenue (in $)\" 4000 --> 11000
+  bar [5000, 6000, 7500]
+";
+        let Some(MermaidOutput::Chart(spec)) = render_mermaid(src) else {
+            panic!("chart");
+        };
+        assert_eq!(spec.x_axis_title.as_deref(), Some("Month"));
+        assert_eq!(spec.y_axis_title.as_deref(), Some("Revenue (in $)"));
+        assert_eq!(spec.y_range, Some((4000.0, 11000.0)));
+        assert_eq!(spec.categories, vec!["jan", "feb", "mar"]);
+        let (bytes, _, _) = render_chart_spec_svg(&spec).expect("svg");
+        let svg = String::from_utf8(bytes).unwrap();
+        assert!(svg.contains(r#"data-role="y-axis-title">Revenue (in $)</text>"#), "{svg}");
+        assert!(svg.contains(r#"data-role="x-axis-title">Month</text>"#));
+        assert!(svg.contains(">4000<") && svg.contains(">11000<"), "{svg}");
+
+        assert_eq!(parse_xy_axis("\"Revenue\""), (Some("Revenue".into()), None));
+        assert_eq!(parse_xy_axis("0 --> 100"), (None, Some((0.0, 100.0))));
+        assert_eq!(parse_xy_axis("Score 1.5 --> 2.5"), (Some("Score".into()), Some((1.5, 2.5))));
+        assert_eq!(parse_xy_axis("\"Low --> High\""), (Some("Low --> High".into()), None));
+        assert_eq!(parse_xy_axis("10 --> 5"), (Some("10 --> 5".into()), None));
     }
 }
