@@ -189,7 +189,7 @@ pub fn is_law_xml(data: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(data) else {
         return false;
     };
-    let head = &text[..text.len().min(4096)];
+    let head = &text[..text.floor_char_boundary(4096)];
     head.contains("<Law") && (head.contains("<LawBody") || head.contains("<LawNum"))
 }
 
@@ -1521,6 +1521,13 @@ mod tests {
     </SupplProvision>
   </LawBody>
 </Law>"#;
+
+    #[test]
+    fn law_xml_probe_handles_utf8_across_scan_boundary() {
+        let markdown = format!("# Heading\n{}日本語", "a".repeat(4085));
+        assert!(!is_law_xml(markdown.as_bytes()));
+        assert!(input_to_markdown(markdown.as_bytes()).unwrap().is_none());
+    }
 
     #[test]
     fn roundtrips_law_xml_to_lawtext_and_back() {
