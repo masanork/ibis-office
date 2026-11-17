@@ -95,6 +95,8 @@ pub(super) enum SeqItem {
         dashed: bool,
         open_arrow: bool,
         cross_end: bool,
+        circle_from: bool,
+        circle_to: bool,
         activate_from: bool,
         deactivate_from: bool,
         activate_to: bool,
@@ -627,6 +629,8 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 dashed,
                 open_arrow,
                 cross_end,
+                circle_from,
+                circle_to,
                 activate_from: _,
                 deactivate_from: _,
                 activate_to: _,
@@ -691,6 +695,12 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                         y - 7.0,
                         escape_xml(&display_label)
                     ));
+                }
+                // Mermaid's () markers sit on the participants, not in their names.
+                for (enabled, cx, cy) in [(*circle_from, x1, y), (*circle_to, x2, if from == to { y + 24.0 } else { y })] {
+                    if enabled {
+                        svg.push_str(&format!(r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="4" fill="#334155" data-role="message-circle"/>"##));
+                    }
                 }
             }
             SeqItem::BlockStart { .. }
@@ -1072,6 +1082,12 @@ pub(super) fn parse_seq_message(
     ];
     for (arrow, dashed, open_arrow, cross_end) in arrows {
         if let Some((from_raw, to_raw)) = lhs.split_once(arrow) {
+            let from_raw = from_raw.trim();
+            let to_raw = to_raw.trim();
+            let circle_from = from_raw.ends_with("()");
+            let circle_to = to_raw.starts_with("()");
+            let from_raw = from_raw.strip_suffix("()").unwrap_or(from_raw);
+            let to_raw = to_raw.strip_prefix("()").unwrap_or(to_raw);
             let (from_id, activate_from, deactivate_from) = seq_actor_token(from_raw);
             let (to_id, activate_to, deactivate_to) = seq_actor_token(to_raw);
             if from_id.is_empty() || to_id.is_empty() {
@@ -1086,6 +1102,8 @@ pub(super) fn parse_seq_message(
                 dashed,
                 open_arrow,
                 cross_end,
+                circle_from,
+                circle_to,
                 activate_from,
                 deactivate_from,
                 activate_to,
@@ -1100,6 +1118,14 @@ pub(super) fn parse_seq_message(
 mod tests {
     use super::*;
     use crate::mermaid::test_support::*;
+
+    #[test]
+    fn sequence_circle_endpoints_keep_the_original_participants() {
+        let svg = svg_of("sequenceDiagram\n  participant Alice\n  participant John\n  Alice->>()John: Hello\n  Alice()->>John: How are you?\n  John()->>()Alice: Great!\n");
+        assert_eq!(svg.matches("data-role=\"message-circle\"").count(), 4, "{svg}");
+        assert_eq!(svg.matches("data-role=\"message\"").count(), 3, "{svg}");
+        assert!(!svg.contains(">()John<") && !svg.contains(">Alice()<") && !svg.contains(">John()<") && !svg.contains(">()Alice<"), "{svg}");
+    }
 
     #[test]
     fn renders_sequence_diagram_svg() {
