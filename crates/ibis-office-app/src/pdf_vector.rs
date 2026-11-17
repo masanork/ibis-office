@@ -61,7 +61,7 @@ pub struct PdfWriter {
     /// The same pictures by what they hold (size and a hash of the pixels, then the pixels themselves compared in full, so a hash that happens to match never stands in for another picture): one GPUI image rebuilt for another slide is compressed once.
     images_by_content: HashMap<(u32, u32, u64), Vec<(Vec<u8>, Image)>>,
     /// Glyphs left out for want of their font.
-    pub missing_glyphs: usize,
+    missing_glyphs: usize,
 }
 
 impl PdfWriter {
@@ -384,6 +384,12 @@ impl PdfWriter {
         let mut outlined: Vec<String> = self.fonts.values().flatten().filter(|f| f.outlined).map(|f| font_name(&f.data, f.index)).collect();
         outlined.sort();
         outlined.dedup();
+        if self.missing_glyphs > 0 {
+            return Err(crate::shell::i18n::format(
+                "_app.cannot-write-the-pdf-error",
+                &[("error", &format!("{} glyphs have unavailable font data", self.missing_glyphs))],
+            ));
+        }
         let pdf = self.document.finish().map_err(|e| crate::shell::i18n::format("_app.cannot-write-the-pdf-error", &[("error", &format!("{e:?}"))]))?;
         Ok((pdf, outlined))
     }
@@ -1038,6 +1044,28 @@ mod tests {
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    #[test]
+    fn missing_font_data_prevents_pdf_output() {
+        let mut writer = PdfWriter::new();
+        writer.add_page(
+            vec![PaintRecord::Glyph {
+                origin: point(px(12.0), px(24.0)),
+                font_id: FontId(0),
+                glyph_id: gpui_kit::GlyphId(1),
+                font_size: px(12.0),
+                color: gpui_kit::black(),
+                transformation: None,
+                clip: bounds(0.0, 0.0, 100.0, 100.0),
+                emoji: false,
+            }],
+            100.0,
+            (100.0, 100.0),
+            1.0,
+            &mut |_| (None, (false, false), Vec::new()),
+        );
+        assert!(writer.finish().unwrap_err().contains("1 glyphs have unavailable font data"));
     }
 
     /// An inner shadow (`a:innerShdw`) is no longer left out of the PDF: with the shape moved 6 px right and down as the hole, the shadow is

@@ -1281,9 +1281,6 @@ pub fn export(mut presentation: Presentation, options: &Options) -> Result<(), S
     }
     if let Some(writer) = vector {
         crate::render::chart_view::VECTOR_EXPORT.with(|v| v.set(false));
-        if writer.missing_glyphs > 0 {
-            eprintln!("ibisOffice: could not get the font data, so {} characters could not be written", writer.missing_glyphs);
-        }
         let path = options.out_dir.join(format!("{}.pdf", options.name));
         let (pdf, outlined) = writer.finish()?;
         lap("PDF written (finish)", &mut lap_at);
