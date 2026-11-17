@@ -364,12 +364,13 @@ pub(super) fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)>
             let shapes = svg.split_off(shape_at);
             svg.push_str(&restyle_svg_fragment(&shapes, style));
         }
-        let ink = style.color.as_deref().map(escape_xml);
+        let ink = style.color.as_deref().map(escape_attr);
         svg.push_str(&format!(
             r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="{}">{}</text>"##,
             y + 19.0,
             ink.clone().unwrap_or_else(|| "#134e4a".to_string()),
-            escape_xml(ent.label.as_deref().unwrap_or(&ent.name))
+            // Entity names may use Markdown emphasis (`"This **is** _Markdown_"`).
+            label_markup(ent.label.as_deref().unwrap_or(&ent.name), true)
         ));
         for (i, a) in ent.attrs.iter().enumerate() {
             let ay = y + 46.0 + i as f32 * 20.0;
@@ -565,5 +566,12 @@ erDiagram
         assert_eq!(svg.matches(">TOP<").count(), 1, "TOP is a frame, not an entity: {svg}");
         assert_eq!(svg.matches(">B1<").count(), 0, "{svg}");
         assert!(text_x(&svg, "A") < top.0, "{svg}");
+    }
+
+    #[test]
+    fn er_entity_names_with_markdown() {
+        let svg = svg_of("erDiagram\n    \"This **is** _Markdown_\"\n    LINE_ITEM_ID ||--o{ ORDER : has\n");
+        assert!(svg.contains(r#">This <tspan font-weight="bold">is</tspan> <tspan font-style="italic">Markdown</tspan></text>"#), "{svg}");
+        assert!(svg.contains(">LINE_ITEM_ID</text>"), "underscores inside a word stay: {svg}");
     }
 }

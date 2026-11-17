@@ -278,7 +278,10 @@ pub(super) fn render_mindmap_svg(source: &str, config: &MermaidConfig) -> Option
     // Nodes
     for (idx, n) in nodes.iter().enumerate() {
         let (fill, stroke, text_fill) = if n.depth == 0 {
-            ("#1e293b".to_string(), "#0f172a".to_string(), "#ffffff".to_string())
+            // `themeVariables.git0` / `gitBranchLabel0` colour the root, as in Mermaid.
+            let fill = config.color_var("git0").unwrap_or_else(|| "#1e293b".to_string());
+            let ink = config.color_var("gitBranchLabel0").unwrap_or_else(|| "#ffffff".to_string());
+            (fill, "#0f172a".to_string(), ink)
         } else {
             colour_of(idx)
         };
@@ -304,12 +307,16 @@ pub(super) fn render_mindmap_svg(source: &str, config: &MermaidConfig) -> Option
                 escape_xml(&name)
             ));
         }
-        for (k, line) in lines.iter().enumerate() {
+        // A Markdown string keeps its bold / italic runs; other labels are plain lines.
+        let markups: Vec<String> = match markdown_string(&n.label) {
+            Some(inner) => rich_lines(inner, 200.0, MIND_FONT).iter().map(|line| runs_markup(line)).collect(),
+            None => lines.iter().map(|line| escape_xml(line)).collect(),
+        };
+        for (k, markup) in markups.iter().enumerate() {
             svg.push_str(&format!(
-                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="{MIND_FONT}" font-weight="{}" fill="{text_fill}">{}</text>"##,
+                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="{MIND_FONT}" font-weight="{}" fill="{text_fill}">{markup}</text>"##,
                 top + icon_h + k as f32 * MIND_LINE + 12.0,
                 if n.depth == 0 { "bold" } else { "normal" },
-                escape_xml(line)
             ));
         }
     }
@@ -443,5 +450,18 @@ mod tests {
         assert_ne!(stroke_of(&depth, "A"), stroke_of(&depth, "A1"));
         let scaled = svg_of(&format!("---\nconfig:\n  themeVariables:\n    cScale0: '#bfdbfe'\n    cScaleLabel0: '#172554'\n---\n{body}"));
         assert!(scaled.contains(r##"fill="#bfdbfe""##) && scaled.contains(r##"fill="#172554">A<"##), "{scaled}");
+    }
+
+    #[test]
+    fn mindmap_root_colours_and_markdown_strings() {
+        let svg = svg_of("---\nconfig:\n  themeVariables:\n    git0: '#ff0000'\n    gitBranchLabel0: '#ffffff'\n---\nmindmap\n  root((mindmap))\n    A\n");
+        assert!(svg.contains(r##"fill="#ff0000""##), "{svg}");
+        let src = "mindmap\n    id1[\"`**Root** with\na second line`\"]\n      id2[\"`The dog in **the** hog... a *very long text* that wraps to a new line`\"]\n      id3[Regular labels still work]\n";
+        let svg = svg_of(src);
+        assert!(svg.contains(r#"<tspan font-weight="bold">Root</tspan> with</text>"#), "{svg}");
+        assert!(svg.contains(">a second line</text>"));
+        assert!(svg.contains(r#"<tspan font-style="italic">"#));
+        assert!(!svg.contains('`') && !svg.contains("**"), "{svg}");
+        assert!(svg.contains(">Regular labels still work</text>"));
     }
 }

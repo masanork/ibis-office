@@ -643,7 +643,7 @@ pub(super) fn restyle_svg_fragment(fragment: &str, style: &FlowStyle) -> String 
             if skip_none && old == "none" {
                 out.push_str(old);
             } else {
-                out.push_str(&escape_xml(value));
+                out.push_str(&escape_attr(value));
             }
             rest = &rest[value_start + len..];
         }
@@ -661,7 +661,7 @@ pub(super) fn restyle_svg_fragment(fragment: &str, style: &FlowStyle) -> String 
         out = replace_attr(&out, "stroke-width", width, false);
     }
     if let Some(dash) = &style.dasharray {
-        out = out.replace("/>", &format!(r#" stroke-dasharray="{}"/>"#, escape_xml(dash)));
+        out = out.replace("/>", &format!(r#" stroke-dasharray="{}"/>"#, escape_attr(dash)));
     }
     out
 }
@@ -891,7 +891,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
                 r##"<text x="{:.1}" y="{:.1}" font-size="11.5" font-weight="600" fill="#475569">{}</text>"##,
                 sx + 10.0,
                 sy + 16.0,
-                escape_xml(&sg.title)
+                label_markup(&sg.title, false)
             ));
         }
     }
@@ -920,7 +920,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
             .to_string()
         });
         let dash = match (&linked.dasharray, e.style) {
-            (Some(dash), _) => format!(r##" stroke-dasharray="{}""##, escape_xml(dash)),
+            (Some(dash), _) => format!(r##" stroke-dasharray="{}""##, escape_attr(dash)),
             (None, EdgeStyle::Dashed) => r##" stroke-dasharray="5,4""##.to_string(),
             _ => String::new(),
         };
@@ -937,8 +937,8 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         if let Some(id) = marker_id(e.end) {
             extra.push_str(&format!(r##" marker-end="url(#{id})""##));
         }
-        let stroke = linked.stroke.as_deref().map(escape_xml).unwrap_or_else(|| "#475569".to_string());
-        push_routed_edge(&mut svg, &route, &stroke, &escape_xml(&stroke_w), &extra);
+        let stroke = linked.stroke.as_deref().map(escape_attr).unwrap_or_else(|| "#475569".to_string());
+        push_routed_edge(&mut svg, &route, &stroke, &escape_attr(&stroke_w), &extra);
         if let Some(lbl) = &e.label {
             let (lx, ly) = route.label_at;
             let lines = label_lines(lbl, 140.0, 11.0);
@@ -1028,7 +1028,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
             NodeShape::Ext(ExtShape::Text) => w + 4.0,
             _ => w - 16.0,
         };
-        let text_fill = style.color.as_deref().map(escape_xml).unwrap_or_else(|| "#0f172a".to_string());
+        let text_fill = style.color.as_deref().map(escape_attr).unwrap_or_else(|| "#0f172a".to_string());
         // Size and draw share the 168px cap. A wider box must not reflow the lines.
         push_centered_label(&mut svg, cx, cy + label_dy, &node.label, 13.0, label_width.clamp(24.0, 168.0), &text_fill, "500");
     }
@@ -1940,5 +1940,25 @@ flowchart TD
         // A node id that happens to be reused after an edge id still parses as a node.
         let svg = svg_of("flowchart LR\n  n1@{ shape: hex, label: \"Six\" } --> n2\n");
         assert!(svg.contains(r#"data-shape="hexagon""#) && svg.contains(">Six<"));
+    }
+
+    #[test]
+    fn flowchart_markdown_strings_and_entity_codes() {
+        let src = "flowchart LR\n    markdown[\"`This **is** _Markdown_`\"]\n    newLines[\"`Line1\n    Line 2\n    Line 3`\"]\n    markdown --> newLines\n";
+        let svg = svg_of(src);
+        assert!(svg.contains(r#">This <tspan font-weight="bold">is</tspan> <tspan font-style="italic">Markdown</tspan></text>"#), "{svg}");
+        for line in ["Line1", "Line 2", "Line 3"] {
+            assert!(svg.contains(&format!(">{line}</text>")), "{line}: {svg}");
+        }
+        assert!(!svg.contains('`'));
+
+        let sub = svg_of("flowchart LR\nsubgraph \"`**Two**`\"\n  c(\"x\") -- \"`Bold **edge label**`\" --> d(\"y\")\nend\n");
+        assert!(sub.contains(r#"<tspan font-weight="bold">Two</tspan>"#), "{sub}");
+        assert!(sub.contains(r#">Bold <tspan font-weight="bold">edge label</tspan></text>"#), "{sub}");
+
+        let ent = svg_of("flowchart LR\n    A[\"A double quote:#quot;\"] --> B[\"A dec char:#9829;\"]\n");
+        assert!(ent.contains(">A double quote:&quot;</text>") && ent.contains(">A dec char:♥</text>"), "{ent}");
+        // A plain label with asterisks is not Markdown.
+        assert!(svg_of("flowchart LR\n  a[\"2 ** 3\"]\n").contains(">2 ** 3</text>"));
     }
 }

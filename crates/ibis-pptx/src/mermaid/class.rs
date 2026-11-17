@@ -450,7 +450,7 @@ pub(super) fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> 
             let shapes = svg.split_off(shape_at);
             svg.push_str(&restyle_svg_fragment(&shapes, style));
         }
-        let ink = style.color.as_deref().map(escape_xml);
+        let ink = style.color.as_deref().map(escape_attr);
         let title_fill = ink.clone().unwrap_or_else(|| "#0f172a".to_string());
         let member_fill = ink.unwrap_or_else(|| "#1e293b".to_string());
         let title = c.label.as_deref().unwrap_or(&c.name);

@@ -185,6 +185,9 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         .any(|line| line.trim_start().starts_with("title ") || line.trim() == "title");
     let front_title = mermaid_frontmatter_title(source).filter(|_| !body_title);
     let config = mermaid_frontmatter_config(source);
+    // A Markdown string may run over several lines; the parsers read one statement per line.
+    let joined = join_markdown_strings(trimmed);
+    let trimmed = joined.as_ref();
 
     let svg = match kind {
         DiagramKind::Pie => {
@@ -204,12 +207,12 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::State => render_state_diagram_svg(trimmed),
         DiagramKind::Class => render_class_diagram_svg(trimmed, &config),
         DiagramKind::Er => render_er_diagram_svg(trimmed),
-        DiagramKind::Gantt => render_gantt_svg(trimmed),
+        DiagramKind::Gantt => render_gantt_svg(trimmed, &config),
         DiagramKind::Mindmap => render_mindmap_svg(trimmed, &config),
         DiagramKind::GitGraph => render_git_graph_svg(trimmed, &config),
         DiagramKind::Journey => render_journey_svg(trimmed),
         DiagramKind::Timeline => render_timeline_svg(trimmed, &config),
-        DiagramKind::Quadrant => render_quadrant_chart_svg(trimmed),
+        DiagramKind::Quadrant => render_quadrant_chart_svg(trimmed, &config),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
     if let Some(title) = front_title {
