@@ -5485,6 +5485,33 @@ xychart-beta
     }
 
     #[test]
+    fn japanese_mermaid_diagrams_survive_docx_and_pptx_save() {
+        let diagrams = [
+            "flowchart LR\n  A[申請受付] --> B{内容を確認する}\n  B --> C[承認]\n",
+            "sequenceDiagram\n  利用者->>窓口: 長い申請内容を送信\n  窓口-->>利用者: 受付完了\n",
+            "erDiagram\n  CUSTOMER ||--o{ ORDER : places\n  CUSTOMER {\n    string name\n  }\n",
+            "gantt\n  dateFormat YYYY-MM-DD\n  section 進捗\n  要件確認 :a, 2026-01-05, 3d\n",
+            "pie\n  title 構成比\n  \"承認\" : 70\n  \"保留\" : 30\n",
+            "xychart-beta\n  title 月別売上\n  x-axis [一月, 二月]\n  line [10, 20]\n",
+        ];
+        let body = diagrams.iter().map(|diagram| format!("```mermaid\n{diagram}```\n\n")).collect::<String>();
+        let doc = open_markdown(body.as_bytes().to_vec()).expect("open document");
+        let bytes = doc.source.save(&doc.presentation, Default::default()).expect("save docx");
+        let reread = crate::read(&bytes).expect("read docx");
+        let exported = export_markdown(reread.flow.as_ref().expect("document flow"), &reread.media);
+        for diagram in &diagrams {
+            assert!(exported.contains(&format!("```mermaid\n{diagram}```")), "DOCX lost {diagram}:\n{exported}");
+        }
+        let slides = open_markdown_presentation(format!("# 図\n\n{body}").into_bytes()).expect("open slides");
+        let bytes = slides.source.save(&slides.presentation, Default::default()).expect("save pptx");
+        let reread = crate::read(&bytes).expect("read pptx");
+        let exported = export_presentation_markdown(&reread);
+        for diagram in &diagrams {
+            assert!(exported.contains(&format!("```mermaid\n{diagram}```")), "PPTX lost {diagram}:\n{exported}");
+        }
+    }
+
+    #[test]
     fn markdown_presentation_roundtrips_slides_mermaid_charts_and_tables() {
         let md = "\
 # AI 連携ロードマップ
