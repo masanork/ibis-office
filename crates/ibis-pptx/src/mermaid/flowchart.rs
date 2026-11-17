@@ -1162,57 +1162,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
             continue;
         }
         let shape_at = svg.len();
-        let mut label_dy = 0.0f32;
-        match node.shape {
-            NodeShape::Rect => {
-                svg.push_str(&format!(
-                    r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
-                ));
-            }
-            NodeShape::Round => {
-                svg.push_str(&format!(
-                    r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
-                ));
-            }
-            NodeShape::Stadium => {
-                svg.push_str(&format!(
-                    r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="{:.1}" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.4"/>"##,
-                    h / 2.0
-                ));
-            }
-            NodeShape::Subroutine => {
-                svg.push_str(&format!(
-                    r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
-                ));
-                svg.push_str(&format!(
-                    r##"<line x1="{:.1}" y1="{y:.1}" x2="{:.1}" y2="{:.1}" stroke="#2563eb" stroke-width="1.2"/>"##,
-                    x + 7.0, x + 7.0, y + h
-                ));
-                svg.push_str(&format!(
-                    r##"<line x1="{:.1}" y1="{y:.1}" x2="{:.1}" y2="{:.1}" stroke="#2563eb" stroke-width="1.2"/>"##,
-                    x + w - 7.0, x + w - 7.0, y + h
-                ));
-            }
-            NodeShape::Diamond => {
-                svg.push_str(&format!(
-                    r##"<polygon points="{cx:.1},{y:.1} {:.1},{cy:.1} {cx:.1},{:.1} {x:.1},{cy:.1}" fill="#fefce8" stroke="#ca8a04" stroke-width="1.4"/>"##,
-                    x + w, y + h
-                ));
-            }
-            NodeShape::Circle => {
-                svg.push_str(&format!(
-                    r##"<ellipse cx="{cx:.1}" cy="{cy:.1}" rx="{:.1}" ry="{:.1}" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.4" data-shape="circle"/>"##,
-                    w / 2.0, h / 2.0
-                ));
-            }
-            NodeShape::Cylinder => push_flow_cylinder(&mut svg, x, y, w, h),
-            NodeShape::Hexagon => push_flow_polygon(&mut svg, &hexagon_points(x, y, w, h), "#f5f3ff", "#7c3aed", "hexagon"),
-            NodeShape::Trapezoid => push_flow_polygon(&mut svg, &trapezoid_points(x, y, w, h, true), "#eff6ff", "#2563eb", "trapezoid"),
-            NodeShape::InvTrapezoid => push_flow_polygon(&mut svg, &trapezoid_points(x, y, w, h, false), "#eff6ff", "#2563eb", "inv-trapezoid"),
-            NodeShape::Parallelogram => push_flow_polygon(&mut svg, &parallelogram_points(x, y, w, h), "#eff6ff", "#2563eb", "parallelogram"),
-            NodeShape::Asymmetric => push_flow_polygon(&mut svg, &asymmetric_points(x, y, w, h), "#eff6ff", "#2563eb", "asymmetric"),
-            NodeShape::Ext(ext) => label_dy = push_ext_shape(&mut svg, ext, x, y, w, h),
-        }
+        let label_dy = push_flow_shape(&mut svg, node.shape, x, y, w, h, cx, cy);
         let style = &node_style[idx];
         if !style.is_empty() {
             let shape_svg = svg.split_off(shape_at);
@@ -1832,6 +1782,63 @@ pub(super) fn push_flow_media(svg: &mut String, media: &FlowMedia, label: &str, 
         let fill = style.color.as_deref().map(escape_attr).unwrap_or_else(|| "#0f172a".to_string());
         push_centered_label(svg, x + w / 2.0, ly + text_h / 2.0, label, 12.0, 168.0, &fill, "500");
     }
+}
+
+/// Draw a flowchart node shape in the box `x, y, w, h` (centre `cx, cy`). Returns how far the label
+/// moves down from the centre (some expanded shapes keep their text off-centre).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn push_flow_shape(svg: &mut String, shape: NodeShape, x: f32, y: f32, w: f32, h: f32, cx: f32, cy: f32) -> f32 {
+    match shape {
+        NodeShape::Rect => {
+            svg.push_str(&format!(
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
+            ));
+        }
+        NodeShape::Round => {
+            svg.push_str(&format!(
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
+            ));
+        }
+        NodeShape::Stadium => {
+            svg.push_str(&format!(
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="{:.1}" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.4"/>"##,
+                h / 2.0
+            ));
+        }
+        NodeShape::Subroutine => {
+            svg.push_str(&format!(
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
+            ));
+            svg.push_str(&format!(
+                r##"<line x1="{:.1}" y1="{y:.1}" x2="{:.1}" y2="{:.1}" stroke="#2563eb" stroke-width="1.2"/>"##,
+                x + 7.0, x + 7.0, y + h
+            ));
+            svg.push_str(&format!(
+                r##"<line x1="{:.1}" y1="{y:.1}" x2="{:.1}" y2="{:.1}" stroke="#2563eb" stroke-width="1.2"/>"##,
+                x + w - 7.0, x + w - 7.0, y + h
+            ));
+        }
+        NodeShape::Diamond => {
+            svg.push_str(&format!(
+                r##"<polygon points="{cx:.1},{y:.1} {:.1},{cy:.1} {cx:.1},{:.1} {x:.1},{cy:.1}" fill="#fefce8" stroke="#ca8a04" stroke-width="1.4"/>"##,
+                x + w, y + h
+            ));
+        }
+        NodeShape::Circle => {
+            svg.push_str(&format!(
+                r##"<ellipse cx="{cx:.1}" cy="{cy:.1}" rx="{:.1}" ry="{:.1}" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.4" data-shape="circle"/>"##,
+                w / 2.0, h / 2.0
+            ));
+        }
+        NodeShape::Cylinder => push_flow_cylinder(svg, x, y, w, h),
+        NodeShape::Hexagon => push_flow_polygon(svg, &hexagon_points(x, y, w, h), "#f5f3ff", "#7c3aed", "hexagon"),
+        NodeShape::Trapezoid => push_flow_polygon(svg, &trapezoid_points(x, y, w, h, true), "#eff6ff", "#2563eb", "trapezoid"),
+        NodeShape::InvTrapezoid => push_flow_polygon(svg, &trapezoid_points(x, y, w, h, false), "#eff6ff", "#2563eb", "inv-trapezoid"),
+        NodeShape::Parallelogram => push_flow_polygon(svg, &parallelogram_points(x, y, w, h), "#eff6ff", "#2563eb", "parallelogram"),
+        NodeShape::Asymmetric => push_flow_polygon(svg, &asymmetric_points(x, y, w, h), "#eff6ff", "#2563eb", "asymmetric"),
+        NodeShape::Ext(ext) => return push_ext_shape(svg, ext, x, y, w, h),
+    }
+    0.0
 }
 
 pub(super) fn push_flow_polygon(svg: &mut String, points: &[(f32, f32)], fill: &str, stroke: &str, shape: &str) {

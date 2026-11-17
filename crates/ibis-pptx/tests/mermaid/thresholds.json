@@ -1,5 +1,11 @@
 {
   "_comment": "Floors for tests/mermaid_corpus.rs: <doc> = examples that must render, <doc>.clean = examples that must render without a `gap` feature (features.txt). Raise them when support improves; never lower them to make CI pass.",
+  "architecture": 6,
+  "architecture.clean": 5,
+  "block": 30,
+  "block.clean": 30,
+  "c4": 5,
+  "c4.clean": 5,
   "classDiagram": 38,
   "classDiagram.clean": 38,
   "entityRelationshipDiagram": 25,
