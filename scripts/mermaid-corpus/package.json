@@ -1,0 +1,11 @@
+{
+  "name": "ibis-mermaid-corpus-ref",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "description": "Render the official Mermaid docs corpus with mermaid.js and compare it to ibisOffice SVGs.",
+  "dependencies": {
+    "mermaid": "12.3.0",
+    "puppeteer-core": "24.43.1"
+  }
+}
