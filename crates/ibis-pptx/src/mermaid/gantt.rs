@@ -139,7 +139,7 @@ pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(
         ));
     }
 
-    // Grid lines and tick labels: `tickInterval`, or a readable step of about five ticks.
+    // Grid lines and tick labels: `tickInterval`, or a readable step of about ten ticks (closer to mermaid.js).
     let bottom_y = top_pad + tasks.len() as f32 * row_h;
     let ticks = gantt_ticks(min_t, max_t, chart.tick_interval, chart.week_start);
     let format = chart.axis_format.as_deref().unwrap_or("%Y-%m-%d");
@@ -147,7 +147,8 @@ pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(
     // Thin the labels (not the grid) so neighbours never overlap.
     let widest = labels.iter().map(|l| estimate_text_width(l, 10.5)).fold(0.0f32, f32::max) + 8.0;
     let gap = if ticks.len() > 1 { chart_w * ((ticks[1] - ticks[0]) as f32 / span) } else { chart_w };
-    let every = ((widest / gap.max(1.0)).ceil() as usize).max(1);
+    // Only skip labels when they would clearly overlap; mermaid.js keeps weekly %Y-%m-%d ticks.
+    let every = ((widest / (gap * 1.2).max(1.0)).ceil() as usize).max(1);
     for (i, (&t, label)) in ticks.iter().zip(&labels).enumerate() {
         let gx = x_of(t);
         svg.push_str(&format!(
@@ -571,7 +572,7 @@ pub(super) fn gantt_ticks(min: i64, max: i64, interval: Option<(i64, TickUnit)>,
             (50, TickUnit::Year),
             (100, TickUnit::Year),
         ];
-        *STEPS.iter().find(|&&(n, unit)| span / gantt_unit_secs(n, unit) <= 6).unwrap_or(&(1000, TickUnit::Year))
+        *STEPS.iter().find(|&&(n, unit)| span / gantt_unit_secs(n, unit) <= 10).unwrap_or(&(1000, TickUnit::Year))
     });
     let mut ticks = Vec::new();
     let mut t = gantt_align(min, n, unit, week_start);
@@ -1000,7 +1001,7 @@ gantt
         // Without an interval: a handful of aligned ticks at any scale.
         for span in [90, 3600 * 5, DAY * 20, DAY * 400, DAY * 365 * 30] {
             let ticks = gantt_ticks(start, start + span, None, 0);
-            assert!((2..=7).contains(&ticks.len()), "{span}: {ticks:?}");
+            assert!((2..=12).contains(&ticks.len()), "{span}: {ticks:?}");
         }
 
         let svg = svg_of("gantt\n  dateFormat YYYY-MM-DD\n  axisFormat %d/%m\n  tickInterval 1day\n  A :a, 2026-03-01, 3d\n");
@@ -1008,6 +1009,11 @@ gantt
         assert!(svg.contains(">01/03<") && svg.contains(">04/03<"), "{svg}");
         // Settings without tasks still draw an (empty) axis.
         assert!(render_mermaid("gantt\n  tickInterval 1week\n  weekday monday\n").is_some());
+        // A ~50-day chart should get weekly %Y-%m-%d ticks, like mermaid.js (not one per month).
+        let month = svg_of("gantt\n    dateFormat YYYY-MM-DD\n    section S\n        A task :a1, 2014-01-01, 30d\n        Another :after a1, 20d\n");
+        for day in ["2014-01-05", "2014-01-12", "2014-01-19", "2014-02-02", "2014-02-16"] {
+            assert!(month.contains(&format!(">{day}<")), "{day}: {month}");
+        }
     }
 
     #[test]

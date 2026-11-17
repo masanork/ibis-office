@@ -5,12 +5,41 @@
 
 use super::*;
 
-pub(super) fn parse_pie_chart(source: &str, config: &MermaidConfig) -> Option<MermaidChartSpec> {
-    let show_data = source
-        .lines()
-        .next()
-        .is_some_and(|line| line.split_whitespace().any(|token| token == "showData"));
+/// `pie [showData] [title Title words]` on the first line, as mermaid.js accepts.
+pub(super) fn parse_pie_header(line: &str) -> (bool, Option<String>) {
+    let rest = line.trim();
+    let rest = rest
+        .strip_prefix("pie-beta")
+        .or_else(|| rest.strip_prefix("pie"))
+        .unwrap_or(rest)
+        .trim();
+    let mut show_data = false;
     let mut title = None;
+    let mut parts = rest.split_whitespace().peekable();
+    while let Some(tok) = parts.next() {
+        if tok == "showData" {
+            show_data = true;
+            continue;
+        }
+        if tok == "title" {
+            let t = unquote(parts.collect::<Vec<_>>().join(" ").trim());
+            if !t.is_empty() {
+                title = Some(t);
+            }
+            break;
+        }
+    }
+    (show_data, title)
+}
+
+pub(super) fn parse_pie_chart(source: &str, config: &MermaidConfig) -> Option<MermaidChartSpec> {
+    let mut show_data = false;
+    let mut title = None;
+    if let Some(first) = source.lines().next() {
+        let (sd, t) = parse_pie_header(first);
+        show_data = sd;
+        title = t;
+    }
     let mut categories = Vec::new();
     let mut values = Vec::new();
 
@@ -267,6 +296,60 @@ fn chart_number(v: f64) -> String {
     if (v - v.round()).abs() < 1e-9 { format!("{v:.0}") } else { format!("{v}") }
 }
 
+/// Evenly spaced "nice" ticks between `min` and `max`, aimed at about `target` values
+/// (the same kind of 1-2-5 steps mermaid.js / d3 use on xyChart axes).
+pub(super) fn nice_ticks(min: f64, max: f64, target: usize) -> Vec<f64> {
+    let lo = min.min(max);
+    let hi = min.max(max);
+    let span = (hi - lo).max(f64::EPSILON);
+    let target = target.max(2) as f64;
+    let raw = span / target;
+    let mag = 10f64.powf(raw.max(f64::EPSILON).log10().floor());
+    let residual = raw / mag;
+    let step = if residual <= 1.5 {
+        mag
+    } else if residual <= 3.0 {
+        2.0 * mag
+    } else if residual <= 7.0 {
+        5.0 * mag
+    } else {
+        10.0 * mag
+    };
+    let mut t = (lo / step).ceil() * step;
+    if ((lo / step) - (lo / step).round()).abs() < 1e-9 {
+        t = lo;
+    }
+    let mut out = Vec::new();
+    let end = hi + step * 1e-9;
+    while t <= end && out.len() < 40 {
+        let v = (t / step).round() * step;
+        if v >= lo - step * 1e-9 && v <= hi + step * 1e-9 {
+            out.push(v);
+        }
+        t += step;
+    }
+    if out.is_empty() {
+        out.push(lo);
+        if (hi - lo).abs() > f64::EPSILON {
+            out.push(hi);
+        }
+    }
+    out
+}
+
+pub(super) fn format_axis_tick(v: f64) -> String {
+    if v.abs() >= 1.0 && (v - v.round()).abs() < 1e-8 {
+        format!("{:.0}", v.round())
+    } else {
+        let s = format!("{v:.4}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+fn xy_series_is_named(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with("Bar ") && !name.starts_with("Line ") && name != "Series 1"
+}
+
 /// Render a parsed `MermaidChartSpec` (`pie` or `xychart-beta`) to a standalone SVG.
 ///
 /// Used as a fallback when a native Office chart cannot be instantiated (e.g., clipboard fragment paste).
@@ -338,12 +421,12 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             if frac >= 0.9999 {
                 if hole > 0.0 {
                     svg.push_str(&format!(
-                        r##"<path d="M {:.1} {scy:.1} A {r:.1} {r:.1} 0 1 1 {:.1} {scy:.1} A {r:.1} {r:.1} 0 1 1 {:.1} {scy:.1} Z M {:.1} {scy:.1} A {hole:.1} {hole:.1} 0 1 0 {:.1} {scy:.1} A {hole:.1} {hole:.1} 0 1 0 {:.1} {scy:.1} Z" fill="{color}" fill-rule="evenodd" stroke="#ffffff"{mark}/>"##,
+                        r##"<path d="M {:.1} {scy:.1} A {r:.1} {r:.1} 0 1 1 {:.1} {scy:.1} A {r:.1} {r:.1} 0 1 1 {:.1} {scy:.1} Z M {:.1} {scy:.1} A {hole:.1} {hole:.1} 0 1 0 {:.1} {scy:.1} A {hole:.1} {hole:.1} 0 1 0 {:.1} {scy:.1} Z" fill="{color}" fill-rule="evenodd" stroke="#ffffff"{mark} data-role="slice"/>"##,
                         scx - r, scx + r, scx - r, scx - hole, scx + hole, scx - hole
                     ));
                 } else {
                     svg.push_str(&format!(
-                        r##"<circle cx="{scx:.1}" cy="{scy:.1}" r="{r:.1}" fill="{color}" stroke="#ffffff"{mark}/>"##
+                        r##"<circle cx="{scx:.1}" cy="{scy:.1}" r="{r:.1}" fill="{color}" stroke="#ffffff"{mark} data-role="slice"/>"##
                     ));
                 }
             } else {
@@ -363,7 +446,7 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
                 } else {
                     format!("M {scx:.1} {scy:.1} L {x1:.1} {y1:.1} A {r:.1} {r:.1} 0 {large_arc} 1 {x2:.1} {y2:.1} Z")
                 };
-                svg.push_str(&format!(r##"<path d="{d}" fill="{color}" stroke="#ffffff"{mark}/>"##));
+                svg.push_str(&format!(r##"<path d="{d}" fill="{color}" stroke="#ffffff"{mark} data-role="slice"/>"##));
             }
             // The slice's share, like Mermaid's label on each slice.
             let lr = if frac >= 0.9999 { if hole > 0.0 { (hole + r) / 2.0 } else { 0.0 } } else { text_at.max(hole) };
@@ -421,14 +504,23 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
     let (y_lo, y_hi) = spec.y_range.unwrap_or((0.0, max_val));
     let y_span = (y_hi - y_lo).max(f64::EPSILON);
     let y_frac = |v: f64| ((v - y_lo) / y_span).clamp(0.0, 1.0) as f32;
+    let ticks = nice_ticks(y_lo, y_hi, 10);
+    let tick_labels: Vec<String> = ticks.iter().copied().map(format_axis_tick).collect();
+    let tick_w = tick_labels
+        .iter()
+        .map(|l| estimate_text_width(l, 10.0))
+        .fold(0.0f32, f32::max);
+    let has_legend = spec.series.iter().any(|(n, _)| xy_series_is_named(n));
+    let legend_h: f32 = if has_legend { 22.0 } else { 0.0 };
     let (width_px, height_px) = style.size_px.unwrap_or((
         XY_WIDTH,
         if spec.x_axis_title.is_some() { XY_HEIGHT + 20 } else { XY_HEIGHT },
     ));
-    let pad_l = if spec.y_axis_title.is_some() { 70.0f32 } else { 52.0f32 };
+    let height_px = height_px + legend_h.ceil() as u32;
+    let pad_l = (if spec.y_axis_title.is_some() { 28.0f32 } else { 10.0f32 } + tick_w + 8.0).max(if spec.y_axis_title.is_some() { 70.0 } else { 52.0 });
     let pad_r = 24.0f32;
     let pad_t = if spec.title.is_some() { 44.0f32 } else { 24.0f32 };
-    let pad_b = if spec.x_axis_title.is_some() { 62.0f32 } else { 42.0f32 };
+    let pad_b = if spec.x_axis_title.is_some() { 62.0f32 } else { 42.0f32 } + legend_h;
     let plot_w = width_px as f32 - pad_l - pad_r;
     let plot_h = height_px as f32 - pad_t - pad_b;
 
@@ -446,20 +538,19 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             escape_xml(t)
         ));
     }
-    // Grid & axes
-    for i in 0..=4 {
-        let frac = i as f32 / 4.0;
+    // Grid & axes: mermaid.js-style nice ticks, not a fixed 5-step split.
+    for (tick_val, tick) in ticks.iter().copied().zip(&tick_labels) {
+        let frac = ((tick_val - y_lo) / y_span).clamp(0.0, 1.0) as f32;
         let gy = pad_t + plot_h * (1.0 - frac);
         svg.push_str(&format!(
             r##"<line x1="{pad_l:.1}" y1="{gy:.1}" x2="{:.1}" y2="{gy:.1}" stroke="#e2e8f0" stroke-width="1"/>"##,
             pad_l + plot_w
         ));
-        let tick_val = y_lo + y_span * frac as f64;
-        let tick = if y_span < 8.0 { format!("{tick_val:.1}") } else { format!("{tick_val:.0}") };
         svg.push_str(&format!(
-            r##"<text x="{:.1}" y="{:.1}" text-anchor="end" font-size="10" fill="#64748b">{tick}</text>"##,
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="end" font-size="10" fill="#64748b" data-role="tick">{}</text>"##,
             pad_l - 6.0,
-            gy + 3.5
+            gy + 3.5,
+            escape_xml(tick)
         ));
     }
     if let Some(t) = &spec.y_axis_title {
@@ -510,6 +601,7 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
     for (si, (sname, vals)) in spec.series.iter().enumerate() {
         let color = color_of(si);
         let point_label = |ci: usize| spec.point_labels.get(si).and_then(|l| l.get(ci)).and_then(|l| l.as_deref());
+        svg.push_str(r##"<g data-role="series">"##);
         if is_line_at(si, sname) {
             let mut pts = Vec::new();
             for (ci, v_opt) in vals.iter().enumerate() {
@@ -579,8 +671,24 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
                 }
             }
         }
+        svg.push_str("</g>");
     }
     svg.push_str(&labels);
+
+    if has_legend {
+        let ly = height_px as f32 - 14.0;
+        let mut lx = pad_l;
+        for (si, (sname, _)) in spec.series.iter().enumerate() {
+            let color = color_of(si);
+            svg.push_str(&format!(
+                r##"<rect x="{lx:.1}" y="{:.1}" width="10" height="10" rx="1" fill="{color}" data-role="legend-swatch"/><text x="{:.1}" y="{ly:.1}" font-size="11" fill="#334155" data-role="legend">{}</text>"##,
+                ly - 9.0,
+                lx + 14.0,
+                escape_xml(sname)
+            ));
+            lx += estimate_text_width(sname, 11.0) + 28.0;
+        }
+    }
 
     svg.push_str("</svg>");
     Some((svg.into_bytes(), width_px, height_px))
@@ -773,4 +881,33 @@ pie showData
         assert!(svg.contains(">25%<") && svg.contains(">75%<"), "{svg}");
         assert!(!svg.contains("pie-rim") && !svg.contains("data-highlight"));
     }
+    #[test]
+    fn pie_title_on_the_header_line() {
+        let Some(MermaidOutput::Chart(spec)) = render_mermaid("pie title Pets adopted by volunteers\n    \"Dogs\" : 386\n    \"Cats\" : 85\n    \"Rats\" : 15\n") else {
+            panic!("expected pie");
+        };
+        assert_eq!(spec.title.as_deref(), Some("Pets adopted by volunteers"));
+        let Some((bytes, _, _)) = render_chart_spec_svg(&spec) else { panic!("svg") };
+        let svg = String::from_utf8(bytes).unwrap();
+        assert!(svg.contains(">Pets adopted by volunteers</text>"), "{svg}");
+        assert!(svg.contains(r#"data-role="slice""#), "{svg}");
+    }
+
+    #[test]
+    fn xychart_nice_ticks_and_named_series_legend() {
+        let ticks = nice_ticks(4000.0, 11000.0, 10);
+        assert!(ticks.contains(&5000.0) && ticks.contains(&10500.0) && ticks.contains(&11000.0), "{ticks:?}");
+        assert_eq!(format_axis_tick(10500.0), "10500");
+        let src = "xychart-beta\n  title \"An Example Chart\"\n  x-axis [\"90d\", \"60d\", \"30d\"]\n  y-axis \"Seconds\" 0 --> 198.2\n  line \"avg\" [48.1, 41.5, 45.7]\n  line \"p50\" [38.2, 36.8, 39.7]\n  line \"p95\" [112.2, 75.3, 103.0]\n";
+        let Some(MermaidOutput::Chart(spec)) = render_mermaid(src) else { panic!("expected xy") };
+        assert_eq!(spec.series.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["avg", "p50", "p95"]);
+        let Some((bytes, _, _)) = render_chart_spec_svg(&spec) else { panic!("svg") };
+        let svg = String::from_utf8(bytes).unwrap();
+        for label in ["avg", "p50", "p95", "180", "160", "0"] {
+            assert!(svg.contains(&format!(">{label}<")), "{label}: {svg}");
+        }
+        assert!(svg.contains(r#"data-role="legend""#) && svg.contains(r#"data-role="tick""#), "{svg}");
+        assert!(svg.contains(r#"data-role="series""#), "{svg}");
+    }
 }
+

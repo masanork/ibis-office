@@ -126,7 +126,7 @@ pub(super) fn render_journey_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             ));
         }
         svg.push_str(&format!(
-            r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="11" fill="{color}" stroke="#ffffff" stroke-width="2"/>"##
+            r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="11" fill="{color}" stroke="#ffffff" stroke-width="2" data-role="journey-task"/>"##
         ));
         svg.push_str(&format!(
             r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="11" font-weight="bold" fill="#ffffff">{:.0}</text>"##,

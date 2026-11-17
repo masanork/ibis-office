@@ -1791,23 +1791,23 @@ pub(super) fn push_flow_shape(svg: &mut String, shape: NodeShape, x: f32, y: f32
     match shape {
         NodeShape::Rect => {
             svg.push_str(&format!(
-                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4" data-shape="rect"/>"##
             ));
         }
         NodeShape::Round => {
             svg.push_str(&format!(
-                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4" data-shape="round"/>"##
             ));
         }
         NodeShape::Stadium => {
             svg.push_str(&format!(
-                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="{:.1}" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.4"/>"##,
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="{:.1}" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.4" data-shape="stadium"/>"##,
                 h / 2.0
             ));
         }
         NodeShape::Subroutine => {
             svg.push_str(&format!(
-                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4" data-shape="subroutine"/>"##
             ));
             svg.push_str(&format!(
                 r##"<line x1="{:.1}" y1="{y:.1}" x2="{:.1}" y2="{:.1}" stroke="#2563eb" stroke-width="1.2"/>"##,
@@ -1820,7 +1820,7 @@ pub(super) fn push_flow_shape(svg: &mut String, shape: NodeShape, x: f32, y: f32
         }
         NodeShape::Diamond => {
             svg.push_str(&format!(
-                r##"<polygon points="{cx:.1},{y:.1} {:.1},{cy:.1} {cx:.1},{:.1} {x:.1},{cy:.1}" fill="#fefce8" stroke="#ca8a04" stroke-width="1.4"/>"##,
+                r##"<polygon points="{cx:.1},{y:.1} {:.1},{cy:.1} {cx:.1},{:.1} {x:.1},{cy:.1}" fill="#fefce8" stroke="#ca8a04" stroke-width="1.4" data-shape="diamond"/>"##,
                 x + w, y + h
             ));
         }
@@ -1920,6 +1920,12 @@ flowchart LR
         assert!(width_px > 250 && height_px > 100);
         let svg = std::str::from_utf8(&bytes).unwrap();
         assert!(svg.contains("開始"));
+        assert!(
+            svg.contains(r#"data-shape="stadium""#)
+                && svg.contains(r#"data-shape="rect""#)
+                && svg.contains(r#"data-shape="diamond""#),
+            "{svg}"
+        );
         assert!(svg.contains("データ検証"));
         assert!(svg.contains("分岐"));
         assert!(svg.contains("完了"));

@@ -270,7 +270,7 @@ pub(super) fn render_mindmap_svg(source: &str, config: &MermaidConfig) -> Option
             let mx = (sx + ex) / 2.0;
             let (_, color, _) = colour_of(c_idx);
             svg.push_str(&format!(
-                r##"<path d="M {sx:.1} {sy:.1} C {mx:.1} {sy:.1}, {mx:.1} {ey:.1}, {ex:.1} {ey:.1}" fill="none" stroke="{color}" stroke-width="1.8"/>"##
+                r##"<path d="M {sx:.1} {sy:.1} C {mx:.1} {sy:.1}, {mx:.1} {ey:.1}, {ex:.1} {ey:.1}" fill="none" stroke="{color}" stroke-width="1.8" data-role="edge"/>"##
             ));
         }
     }

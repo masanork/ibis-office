@@ -321,19 +321,31 @@ pub(super) fn render_treemap_svg(source: &str, config: &MermaidConfig) -> Option
     let width = number("treemap.width", 800.0, 200.0, 3000.0);
     let height = number("treemap.height", 480.0, 100.0, 3000.0);
     let format = config.option("treemap.valueFormat").map(unquote).unwrap_or_else(|| ",".to_string());
+    let grand = t.roots.iter().map(|&r| tree_total(&t, r)).sum::<f64>();
+    let total_label = format_tree_value(grand, &format);
+    // mermaid.js shows the diagram total when there are several top-level sections.
+    let top_band = if t.roots.len() > 1 { 22.0 } else { 0.0 };
     let total_w = (width + pad * 2.0).ceil();
-    let total_h = (height + pad * 2.0).ceil();
+    let total_h = (height + pad * 2.0 + top_band).ceil();
     let mut svg = String::new();
     svg.push_str(&format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
     ));
     svg.push_str(&format!(r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##));
+    if t.roots.len() > 1 {
+        svg.push_str(&format!(
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="end" font-size="13" fill="#334155" data-role="treemap-total">{}</text>"##,
+            pad + width,
+            pad + 14.0,
+            escape_xml(&total_label)
+        ));
+    }
     let values: Vec<f64> = t.roots.iter().map(|&r| tree_total(&t, r)).collect();
     let palette: Vec<String> = (0..PALETTE.len())
         .map(|k| config.color_var(&format!("cScale{k}")).unwrap_or_else(|| PALETTE[k].to_string()))
         .collect();
     let lone = t.roots.len() == 1;
-    for (k, rect) in squarify(&values, pad, pad, width, height).into_iter().enumerate() {
+    for (k, rect) in squarify(&values, pad, pad + top_band, width, height).into_iter().enumerate() {
         // A lone top section is drawn neutral; its children carry the colours.
         let color = if lone { "#475569".to_string() } else { palette[k % palette.len()].clone() };
         draw_node(&t, t.roots[k], rect, &color, 0, &format, lone.then_some(palette.as_slice()), &mut svg);
@@ -401,5 +413,13 @@ mod tests {
         assert!(svg.contains(r##"fill="#f96" stroke="#ffffff" stroke-width="1.5" data-section="Ads""##));
         let (w, h) = view_box(&svg);
         assert_eq!((w, h), (900.0, 580.0));
+    }
+
+    #[test]
+    fn treemap_shows_the_grand_total_for_several_roots() {
+        let svg = svg_of("treemap-beta\n\"Category A\"\n    \"Item A1\": 10\n    \"Item A2\": 20\n\"Category B\"\n    \"Item B1\": 15\n    \"Item B2\": 25\n");
+        assert!(svg.contains(r#"data-role="treemap-total">70</text>"#), "{svg}");
+        let nested = svg_of("treemap-beta\n\"Section 1\"\n    \"Leaf 1.1\": 12\n    \"Section 1.2\"\n      \"Leaf 1.2.1\": 12\n\"Section 2\"\n    \"Leaf 2.1\": 20\n    \"Leaf 2.2\": 25\n    \"Leaf 2.3\": 12\n");
+        assert!(nested.contains(r#"data-role="treemap-total">81</text>"#), "{nested}");
     }
 }
