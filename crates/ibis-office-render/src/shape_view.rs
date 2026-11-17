@@ -2391,8 +2391,14 @@ impl Fonts {
         }
     }
 
-    /// Glyphs a missing mincho does not have in IPAmj, drawn from the additional administrative face.
+    /// Add the administrative face to the cascade while keeping the primary
+    /// font for text shaping and metrics.
     fn mincho_supplement(&self, requested: Option<&str>) -> Option<FontFallbacks> {
+        #[cfg(target_os = "macos")]
+        if std::env::var_os("IBIS_ADMIN_PUP_MODE").is_some_and(|mode| mode == "1") {
+            let supplement = self.installed_of(ACGJ_FAMILIES)?;
+            return Some(FontFallbacks::from_fonts(vec![supplement.to_string()]));
+        }
         let name = self.resolve(requested?);
         if self.available(name).is_some()
             || !is_east_asian_typeface(name)

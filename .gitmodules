@@ -12,7 +12,7 @@
 	url = https://github.com/ibisjp/gpui-pre-apple.git
 [submodule "forks/gpui-pre-macos"]
 	path = forks/gpui-pre-macos
-	url = https://github.com/ibisjp/gpui-pre-macos.git
+	url = https://github.com/masanork/gpui-pre-macos.git
 [submodule "forks/gpui-pre-web"]
 	path = forks/gpui-pre-web
 	url = https://github.com/masanork/gpui-pre-web.git
