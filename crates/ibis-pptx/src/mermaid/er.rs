@@ -355,7 +355,7 @@ pub(super) fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)>
         let style = &node_style[idx];
         let shape_at = svg.len();
         svg.push_str(&format!(
-            r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#ffffff" stroke="#0f766e" stroke-width="1.4"/>"##
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#ffffff" stroke="#0f766e" stroke-width="1.4" data-kind="entity"/>"##
         ));
         svg.push_str(&format!(
             r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="28" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.4"/>"##
@@ -498,6 +498,7 @@ erDiagram
         };
         assert!(width_px > 200 && height_px > 100);
         let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.contains(r#"data-kind="entity""#), "{svg}");
         assert!(svg.contains("CUSTOMER"));
         assert!(svg.contains("ORDER"));
         assert!(svg.contains("places"));

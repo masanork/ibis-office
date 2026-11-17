@@ -333,14 +333,14 @@ pub(super) fn render_git_graph_svg(source: &str, config: &MermaidConfig) -> Opti
         if let Some(p) = c.parent {
             let color = lane_color(lane_of_branch[c.branch]);
             svg.push_str(&format!(
-                r##"<path d="{}" fill="none" stroke="{color}" stroke-width="2.2"/>"##,
+                r##"<path d="{}" fill="none" stroke="{color}" stroke-width="2.2" data-role="edge"/>"##,
                 link(commit_pos(p), to)
             ));
         }
         if let Some(mp) = c.merge_parent {
             let color = lane_color(lane_of_branch[commits[mp].branch]);
             svg.push_str(&format!(
-                r##"<path d="{}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="4,3"/>"##,
+                r##"<path d="{}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="4,3" data-role="edge"/>"##,
                 link(commit_pos(mp), to)
             ));
         }
@@ -475,6 +475,7 @@ mod tests {
             assert_eq!(svg.matches(&format!(r#"data-commit-type="{kind}""#)).count(), 1, "{kind}\n{svg}");
         }
         assert!(svg.contains(">cherry-pick:B<") && svg.contains(r#"data-link="cherry-pick""#));
+        assert!(svg.contains(r#"data-role="edge""#), "{svg}");
         assert!(svg.contains(">v1<"));
         // `order:` sorts the lanes: main (0), dev (1), hotfix (3), whatever the definition order.
         let lane_y = |name: &str| text_y(&svg, name);

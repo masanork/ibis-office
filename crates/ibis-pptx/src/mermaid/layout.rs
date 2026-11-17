@@ -456,13 +456,13 @@ pub(super) fn push_routed_edge(svg: &mut String, route: &EdgeRoute, stroke: &str
             let (x1, y1) = route.start;
             let (x2, y2) = route.end;
             svg.push_str(&format!(
-                r##"<line x1="{x1:.1}" y1="{y1:.1}" x2="{x2:.1}" y2="{y2:.1}" stroke="{stroke}" stroke-width="{width}"{extra}/>"##
+                r##"<line x1="{x1:.1}" y1="{y1:.1}" x2="{x2:.1}" y2="{y2:.1}" stroke="{stroke}" stroke-width="{width}"{extra} data-role="edge"/>"##
             ));
         }
         EdgeRouteKind::Path { d, detour } => {
             let flag = if *detour { r#" data-route="detour""# } else { "" };
             svg.push_str(&format!(
-                r##"<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{width}"{extra}{flag}/>"##
+                r##"<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{width}"{extra}{flag} data-role="edge"/>"##
             ));
         }
     }

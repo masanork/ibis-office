@@ -399,8 +399,8 @@ function buildReport(results) {
   md += "Layout is not expected to match. A **label match** means both sides rendered and every mermaid.js label is present in the ibisOffice SVG. ";
   md += "A **structure match** means node and edge counts are within 25% or ±1 (whichever is looser). ";
   md += "This job is report-only and does not fail the workflow. ";
-  md += "Typical leftover mismatches are auto-generated axis ticks (gantt, xyChart) and C4 stereotype wording (`[Software System]` in mermaid.js vs `«system»` here), not dropped source labels. ";
-  md += "Node and edge counts use mermaid.js CSS classes vs ibisOffice `data-*` attributes, so the structure rate can lag the label rate when the markup differs.\n\n";
+  md += "Typical leftover mismatches are auto-generated labels mermaid.js adds that ibisOffice still does not, or a genuine missing node or edge. ";
+  md += "Node and edge counts are normalized: mermaid.js CSS classes and ibisOffice `data-*` attributes are mapped onto the same semantic roles (tasks, commits, slices, series, messages, and so on). Decorative ticks, grids, legends, and fallback shape counts are excluded.\n\n";
   md += `Headline: mermaid.js rendered ${fmtPct(tot.mermaidOk, tot.total)}; ibisOffice rendered ${fmtPct(tot.ourOk, tot.total)}; both ${fmtPct(tot.both, tot.total)}. `;
   md += `Label match ${fmtPct(tot.labelMatch, tot.both)} of both-rendered cases (${fmtPct(tot.labelMatch, tot.total)} of the corpus). `;
   md += `Structure match ${fmtPct(tot.structureMatch, tot.both)} of both-rendered; both metrics ${fmtPct(tot.fullMatch, tot.both)}.\n\n`;

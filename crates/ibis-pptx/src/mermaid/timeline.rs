@@ -143,7 +143,7 @@ pub(super) fn render_timeline_svg(source: &str, config: &MermaidConfig) -> Optio
         // `themeVariables.cScaleN` recolours period (or section) N; `timeline.disableMulticolor` uses one colour.
         let (color, box_fill, text_fill) = colours(colour_index(i));
         svg.push_str(&format!(
-            r##"<circle cx="{cx:.1}" cy="{axis_y:.1}" r="7" fill="{color}" stroke="#ffffff" stroke-width="2"/>"##
+            r##"<circle cx="{cx:.1}" cy="{axis_y:.1}" r="7" fill="{color}" stroke="#ffffff" stroke-width="2" data-role="timeline-period"/>"##
         ));
         let plines = &period_lines[i];
         for (k, line) in plines.iter().enumerate() {
@@ -157,7 +157,7 @@ pub(super) fn render_timeline_svg(source: &str, config: &MermaidConfig) -> Optio
         for lines in &event_lines[i] {
             let bh = box_h(lines.len());
             svg.push_str(&format!(
-                r##"<rect x="{:.1}" y="{ey:.1}" width="{box_w:.1}" height="{bh:.1}" rx="6" fill="{box_fill}" stroke="{color}" stroke-width="1.3"/>"##,
+                r##"<rect x="{:.1}" y="{ey:.1}" width="{box_w:.1}" height="{bh:.1}" rx="6" fill="{box_fill}" stroke="{color}" stroke-width="1.3" data-role="timeline-event"/>"##,
                 cx - box_w / 2.0
             ));
             for (k, line) in lines.iter().enumerate() {
@@ -204,6 +204,8 @@ mod tests {
             "timeline\n  title T\n  section 2023 Q1 <br> Release\n    Bullet 1 : a : b\n    Bullet 2 : c<br>d\n  section Q2\n    Bullet 3 : e\n",
         );
         let bands = tag_with(&svg, r#"data-role="section""#);
+        assert!(!tag_with(&svg, r#"data-role="timeline-period""#).is_empty(), "{svg}");
+        assert!(!tag_with(&svg, r#"data-role="timeline-event""#).is_empty(), "{svg}");
         assert_eq!(bands.len(), 2, "{svg}");
         // The first section spans two periods.
         assert!(attr_f32(bands[0], "width").unwrap() > attr_f32(bands[1], "width").unwrap() * 1.8, "{svg}");

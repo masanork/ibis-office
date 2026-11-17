@@ -303,32 +303,34 @@ fn element_colors(e: &C4Element) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+/// mermaid.js typography: `[Person]`, `[Software System]`, `[Container: Java]`, `[External …]`.
 fn stereotype(e: &C4Element) -> String {
-    let base = match e.kind {
-        C4Kind::Person => "person",
-        C4Kind::System => "system",
-        C4Kind::Container => "container",
-        C4Kind::Component => "component",
+    let typ = match (e.kind, e.external) {
+        (C4Kind::Person, false) => "Person",
+        (C4Kind::Person, true) => "External Person",
+        (C4Kind::System, false) => "Software System",
+        (C4Kind::System, true) => "External Software System",
+        (C4Kind::Container, false) => "Container",
+        (C4Kind::Container, true) => "External Container",
+        (C4Kind::Component, false) => "Component",
+        (C4Kind::Component, true) => "External Component",
     };
-    let form = match e.form {
-        C4Form::Box => "",
-        C4Form::Db => "_db",
-        C4Form::Queue => "_queue",
-    };
-    if e.external { format!("«external_{base}{form}»") } else { format!("«{base}{form}»") }
+    match e.techn.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!("[{typ}: {t}]"),
+        None => format!("[{typ}]"),
+    }
 }
 
 /// Text lines of an element: (text, font size, bold, italic).
+/// Order matches mermaid.js: name, type (with technology), then description.
 fn element_lines(e: &C4Element) -> Vec<(String, f32, bool, bool)> {
-    let mut out = vec![(stereotype(e), 11.0, false, true)];
     let text_w = if e.form == C4Form::Queue { TEXT_W - 24.0 } else { TEXT_W };
+    let mut out = Vec::new();
     for l in label_lines(&e.label, text_w, 15.0) {
         out.push((l, 15.0, true, false));
     }
-    if let Some(t) = &e.techn {
-        for l in label_lines(&format!("[{t}]"), text_w, 11.0) {
-            out.push((l, 11.0, false, true));
-        }
+    for l in label_lines(&stereotype(e), text_w, 11.0) {
+        out.push((l, 11.0, false, true));
     }
     if let Some(desc) = &e.descr {
         for l in label_lines(desc, text_w, 12.0) {
@@ -711,8 +713,8 @@ mod tests {
         let svg = svg_of(
             "C4Container\n  Person(u, \"User\")\n  ContainerDb(db, \"DB\", \"SQL\", \"Stores data\")\n  SystemQueue_Ext(q, \"Queue\")\n  Container_Boundary(c1, \"App\") {\n    Component(api, \"API\", \"Rust\")\n  }\n  Rel(u, api, \"Uses\", \"HTTPS\")\n  BiRel(api, db, \"Reads\")\n  Rel_Back(q, api, \"Feeds\")\n  UpdateRelStyle(u, api, $textColor=\"blue\", $lineColor=\"blue\")",
         );
-        assert!(svg.contains("«person»") && svg.contains("«container_db»") && svg.contains("«external_system_queue»") && svg.contains("«component»"));
-        assert!(svg.contains(">[SQL]<") && svg.contains(">Stores data<") && svg.contains(">[CONTAINER]<"));
+        assert!(svg.contains("[Person]") && svg.contains("[Container: SQL]") && svg.contains("[External Software System]") && svg.contains("[Component: Rust]"));
+        assert!(svg.contains(">Stores data<") && svg.contains(">[CONTAINER]<"));
         assert!(svg.contains(r##"fill="#08427B""##) && svg.contains(r##"fill="#85BBF0""##));
         assert!(svg.contains(r#"stroke="blue" stroke-width="1.2" marker-end="url(#c4-arrow-1)" data-rel="u-api""#));
         assert!(svg.contains(r#"marker-start="url(#c4-arrow)" marker-end="url(#c4-arrow)" data-rel="api-db""#));

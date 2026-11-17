@@ -231,7 +231,7 @@ pub(super) fn render_quadrant_chart_svg(source: &str, config: &MermaidConfig) ->
         let px = pad_l + pt.x * plot_w;
         let py = pad_t + (1.0 - pt.y) * plot_h;
         svg.push_str(&format!(
-            r##"<circle cx="{px:.1}" cy="{py:.1}" r="{r:.1}" fill="{fill}" stroke="{stroke}" stroke-width="{stroke_w:.1}"/>"##
+            r##"<circle cx="{px:.1}" cy="{py:.1}" r="{r:.1}" fill="{fill}" stroke="{stroke}" stroke-width="{stroke_w:.1}" data-role="quadrant-point"/>"##
         ));
         svg.push_str(&format!(
             r##"<text x="{px:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="{point_ink}">{}</text>"##,
@@ -263,6 +263,7 @@ mod tests {
         let svg = svg_of(src);
         let circles = tag_with(&svg, "<circle");
         assert_eq!(circles.len(), 5, "{svg}");
+        assert!(svg.contains(r#"data-role="quadrant-point""#), "{svg}");
         assert!(circles[0].contains(r#"r="12.0""#));
         // The point's own colour beats its class's.
         assert!(circles[1].contains(r##"fill="#ff3300""##) && circles[1].contains(r#"r="10.0""#));

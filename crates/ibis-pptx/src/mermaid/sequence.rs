@@ -128,6 +128,14 @@ pub(super) enum SeqNotePos {
     Over,
 }
 
+
+fn push_seq_autonumber(svg: &mut String, x: f32, y: f32, num: usize) {
+    svg.push_str(&format!(
+        r##"<circle cx="{x:.1}" cy="{y:.1}" r="8" fill="#ffffff" stroke="#334155" stroke-width="1" data-role="seq-autonumber"/><text x="{x:.1}" y="{:.1}" text-anchor="middle" font-size="10" fill="#334155" data-role="seq-autonumber">{num}</text>"##,
+        y + 3.5
+    ));
+}
+
 pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let mut participants: Vec<SeqParticipant> = Vec::new();
     let mut part_map: HashMap<String, usize> = HashMap::new();
@@ -578,11 +586,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 deactivate_to: _,
             } => {
                 msg_num += 1;
-                let display_label = if autonumber {
-                    format!("{msg_num}. {label}")
-                } else {
-                    label.clone()
-                };
+                let display_label = label.clone();
                 let x1 = centers[*from];
                 let mut x2 = centers[*to];
                 // The creating message ends at the new participant's box.
@@ -602,7 +606,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     let loop_w = 38.0;
                     let loop_h = 24.0;
                     svg.push_str(&format!(
-                        r##"<path d="M {x1:.1} {y:.1} H {:.1} V {:.1} H {x1:.1}" fill="none" stroke="#334155" stroke-width="1.4"{dash_attr}{marker_attr}/>"##,
+                        r##"<path d="M {x1:.1} {y:.1} H {:.1} V {:.1} H {x1:.1}" fill="none" stroke="#334155" stroke-width="1.4"{dash_attr}{marker_attr} data-role="message"/>"##,
                         x1 + loop_w,
                         y + loop_h
                     ));
@@ -612,10 +616,16 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                         y + loop_h / 2.0 + 4.0,
                         escape_xml(&display_label)
                     ));
+                    if autonumber {
+                        push_seq_autonumber(&mut svg, x1 + loop_w, y - 2.0, msg_num);
+                    }
                 } else {
                     svg.push_str(&format!(
-                        r##"<line x1="{x1:.1}" y1="{y:.1}" x2="{x2:.1}" y2="{y:.1}" stroke="#334155" stroke-width="1.4"{dash_attr}{marker_attr}/>"##
+                        r##"<line x1="{x1:.1}" y1="{y:.1}" x2="{x2:.1}" y2="{y:.1}" stroke="#334155" stroke-width="1.4"{dash_attr}{marker_attr} data-role="message"/>"##
                     ));
+                    if autonumber {
+                        push_seq_autonumber(&mut svg, (x1 + x2) / 2.0, y - 10.0, msg_num);
+                    }
                     if *cross_end {
                         svg.push_str(&format!(
                             r##"<path d="M {:.1} {:.1} L {:.1} {:.1} M {:.1} {:.1} L {:.1} {:.1}" stroke="#dc2626" stroke-width="1.6"/>"##,
@@ -672,18 +682,19 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         } else {
             rows.push(bottom_box_y);
         }
-        for by in rows {
+        for (row_i, by) in rows.iter().copied().enumerate() {
             let bx = cx - w / 2.0;
             let fill = if p.is_actor { "#eff6ff" } else { "#f1f5f9" };
             let stroke = if p.is_actor { "#2563eb" } else { "#475569" };
+            let actor_attr = if row_i == 0 { r#" data-kind="actor""# } else { r#" data-role="actor-bottom""# };
             let text_x = match p.kind {
                 Some(kind) => {
-                    push_seq_kind_box(&mut svg, kind, bx, by, w, box_h, fill, stroke);
+                    push_seq_kind_box(&mut svg, kind, bx, by, w, box_h, fill, stroke, actor_attr);
                     cx + 10.0
                 }
                 None => {
                     svg.push_str(&format!(
-                        r##"<rect x="{bx:.1}" y="{by:.1}" width="{w:.1}" height="{box_h:.1}" rx="6" fill="{fill}" stroke="{stroke}" stroke-width="1.4"/>"##
+                        r##"<rect x="{bx:.1}" y="{by:.1}" width="{w:.1}" height="{box_h:.1}" rx="6" fill="{fill}" stroke="{stroke}" stroke-width="1.4"{actor_attr}/>"##
                     ));
                     cx
                 }
@@ -706,9 +717,9 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 /// A participant of a mermaid type: databases, queues and collections change the box itself;
 /// boundary, control and entity keep the box and carry their UML symbol at its left.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn push_seq_kind_box(svg: &mut String, kind: SeqKind, x: f32, y: f32, w: f32, h: f32, fill: &str, stroke: &str) {
+pub(super) fn push_seq_kind_box(svg: &mut String, kind: SeqKind, x: f32, y: f32, w: f32, h: f32, fill: &str, stroke: &str, extra: &str) {
     let name = kind.name();
-    let attrs = format!(r##"fill="{fill}" stroke="{stroke}" stroke-width="1.4""##);
+    let attrs = format!(r##"fill="{fill}" stroke="{stroke}" stroke-width="1.4"{extra}"##);
     match kind {
         SeqKind::Database => {
             let ry = 5.0f32;
@@ -1016,10 +1027,11 @@ sequenceDiagram
         };
         assert!(width_px > 200 && height_px > 200);
         let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.contains(r#"data-kind="actor""#), "{svg}");
         assert!(svg.starts_with("<svg "));
         assert!(svg.contains("ユーザー"));
         assert!(svg.contains("バックエンドAPI"));
-        assert!(svg.contains("1. リクエスト送信"));
+        assert!(svg.contains(">リクエスト送信<") && svg.contains(r#"data-role="seq-autonumber">1</text>"#), "{svg}");
         assert!(svg.contains("200 OK"));
         assert!(svg.contains("alt"));
     }

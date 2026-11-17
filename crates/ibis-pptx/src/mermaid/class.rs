@@ -460,7 +460,7 @@ pub(super) fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> 
         let header_h = if c.stereotype.is_some() { 40.0 } else { 28.0 };
         let shape_at = svg.len();
         svg.push_str(&format!(
-            r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#ffffff" stroke="#334155" stroke-width="1.4"/>"##
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#ffffff" stroke="#334155" stroke-width="1.4" data-kind="class"/>"##
         ));
         svg.push_str(&format!(
             r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{header_h:.1}" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.4"/>"##
@@ -678,6 +678,7 @@ classDiagram
         };
         assert!(width_px > 120 && height_px > 120);
         let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.contains(r#"data-kind="class""#), "{svg}");
         assert!(svg.contains("Animal"));
         assert!(svg.contains("Dog"));
         assert!(svg.contains("speak() void"));

@@ -636,12 +636,12 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
         match node.kind {
             StateKind::Start => {
                 svg.push_str(&format!(
-                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="10" fill="#1e293b"/>"##
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="10" fill="#1e293b" data-kind="state" data-shape="start"/>"##
                 ));
             }
             StateKind::End => {
                 svg.push_str(&format!(
-                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="11" fill="#ffffff" stroke="#1e293b" stroke-width="2"/>"##
+                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="11" fill="#ffffff" stroke="#1e293b" stroke-width="2" data-kind="state" data-shape="end"/>"##
                 ));
                 svg.push_str(&format!(
                     r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="6" fill="#1e293b"/>"##
@@ -651,7 +651,7 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
                 let hw = nw / 2.0;
                 let hh = nh / 2.0;
                 svg.push_str(&format!(
-                    r##"<polygon points="{:.1},{cy:.1} {cx:.1},{:.1} {:.1},{cy:.1} {cx:.1},{:.1}" fill="#fff7ed" stroke="#ea580c" stroke-width="1.4" data-shape="choice"/>"##,
+                    r##"<polygon points="{:.1},{cy:.1} {cx:.1},{:.1} {:.1},{cy:.1} {cx:.1},{:.1}" fill="#fff7ed" stroke="#ea580c" stroke-width="1.4" data-kind="state" data-shape="choice"/>"##,
                     cx - hw,
                     cy - hh,
                     cx + hw,
@@ -663,7 +663,7 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
                 let y = cy - nh / 2.0;
                 let shape = if node.kind == StateKind::Fork { "fork" } else { "join" };
                 svg.push_str(&format!(
-                    r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" fill="#1e293b" data-shape="{shape}"/>"##
+                    r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" fill="#1e293b" data-kind="state" data-shape="{shape}"/>"##
                 ));
             }
             StateKind::Normal => {
@@ -671,7 +671,7 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
                 let y = cy - nh / 2.0;
                 let style = &node_style[idx];
                 let rect = format!(
-                    r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>"##
+                    r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4" data-kind="state"/>"##
                 );
                 svg.push_str(&if style.is_empty() { rect } else { restyle_svg_fragment(&rect, style) });
                 let ink = style.color.as_deref().map(escape_attr).unwrap_or_else(|| "#0f172a".to_string());
@@ -765,6 +765,7 @@ stateDiagram-v2
         };
         assert!(width_px > 120 && height_px > 120);
         let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.contains(r#"data-kind="state""#), "{svg}");
         assert!(svg.contains("Idle"));
         assert!(svg.contains("Running"));
         assert!(svg.contains("Active"));
