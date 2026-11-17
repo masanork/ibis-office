@@ -273,7 +273,7 @@ pub(super) fn render_wardley_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         height - 6.0
     ));
     svg.push_str(&format!(
-        r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="12" font-weight="bold" fill="#334155" transform="rotate(-90 {:.1} {:.1})">Value Chain</text><text x="{:.1}" y="{:.1}" text-anchor="start" font-size="10" fill="#64748b" transform="rotate(-90 {:.1} {:.1})">Invisible</text><text x="{:.1}" y="{:.1}" text-anchor="end" font-size="10" fill="#64748b" transform="rotate(-90 {:.1} {:.1})">Visible</text>"##,
+        r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="12" font-weight="bold" fill="#334155" transform="rotate(-90 {:.1} {:.1})">Visibility</text><text x="{:.1}" y="{:.1}" text-anchor="start" font-size="10" fill="#64748b" transform="rotate(-90 {:.1} {:.1})">Invisible</text><text x="{:.1}" y="{:.1}" text-anchor="end" font-size="10" fill="#64748b" transform="rotate(-90 {:.1} {:.1})">Visible</text>"##,
         LEFT - 16.0,
         TOP + ph / 2.0,
         LEFT - 16.0,
