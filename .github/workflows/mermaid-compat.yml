@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Mermaid renderer unit tests and the official-docs compatibility corpus.
+# The corpus report (rendered / clean rates per diagram type, gaps ranked by use)
+# is written to the job summary.
+name: Mermaid compatibility
+on:
+  push:
+    branches: [masanork]
+    paths:
+      - crates/ibis-pptx/**
+      - crates/ibis-doc-model/**
+      - scripts/mermaid-corpus/**
+      - Cargo.lock
+      - .github/workflows/mermaid-compat.yml
+  pull_request:
+    paths:
+      - crates/ibis-pptx/**
+      - crates/ibis-doc-model/**
+      - scripts/mermaid-corpus/**
+      - Cargo.lock
+      - .github/workflows/mermaid-compat.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mermaid-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  mermaid:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-28
+      - name: Mermaid unit tests (renderer and Markdown round trip)
+        run: cargo test --locked -p ibis-pptx --lib mermaid
+      - name: Official docs corpus
+        env:
+          MERMAID_CORPUS_REPORT: ${{ runner.temp }}/mermaid-corpus.md
+        run: cargo test --locked -p ibis-pptx --test mermaid_corpus -- --nocapture
+      - name: Publish corpus report
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/mermaid-corpus.md" ]; then
+            cat "$RUNNER_TEMP/mermaid-corpus.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mermaid-corpus-report
+          path: ${{ runner.temp }}/mermaid-corpus.md
+          if-no-files-found: ignore
