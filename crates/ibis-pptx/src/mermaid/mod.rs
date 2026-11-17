@@ -49,6 +49,8 @@ mod usecase;
 mod wardley;
 mod treeview;
 mod swimlanes;
+mod eventmodeling;
+mod agentflow;
 mod text;
 #[cfg(test)]
 mod test_support;
@@ -80,6 +82,8 @@ use usecase::*;
 use wardley::*;
 use treeview::*;
 use swimlanes::*;
+use eventmodeling::*;
+use agentflow::*;
 use sankey::*;
 use text::*;
 
@@ -174,6 +178,8 @@ enum DiagramKind {
     Wardley,
     TreeView,
     Swimlanes,
+    EventModeling,
+    Agentflow,
 }
 
 /// Header keywords, including the aliases current mermaid still accepts
@@ -229,6 +235,9 @@ const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
     ("treeView", DiagramKind::TreeView),
     ("swimlane-beta", DiagramKind::Swimlanes),
     ("swimlane", DiagramKind::Swimlanes),
+    ("eventmodeling", DiagramKind::EventModeling),
+    ("agentflow-beta", DiagramKind::Agentflow),
+    ("agentflow", DiagramKind::Agentflow),
 ];
 
 fn diagram_kind(header: &str) -> Option<DiagramKind> {
@@ -298,6 +307,8 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Wardley => render_wardley_svg(trimmed),
         DiagramKind::TreeView => render_treeview_svg(trimmed, &config),
         DiagramKind::Swimlanes => render_swimlanes_svg(trimmed),
+        DiagramKind::EventModeling => render_eventmodeling_svg(trimmed),
+        DiagramKind::Agentflow => render_agentflow_svg(trimmed),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
     if let Some(title) = front_title {

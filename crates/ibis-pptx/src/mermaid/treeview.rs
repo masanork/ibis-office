@@ -65,9 +65,28 @@ pub(super) fn parse_tree(source: &str) -> Vec<TreeEntry> {
     out
 }
 
-fn push_glyph(svg: &mut String, folder: bool, x: f32, cy: f32, size: f32) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Glyph {
+    Folder,
+    File,
+    /// A named icon from a pack that is not bundled: drawn as mermaid.js draws an
+    /// unregistered icon, a `?`.
+    Unknown,
+}
+
+fn push_glyph(svg: &mut String, glyph: Glyph, x: f32, cy: f32, size: f32) {
     let s = size / 14.0;
-    if folder {
+    if glyph == Glyph::Unknown {
+        svg.push_str(&format!(
+            r##"<rect x="{x:.1}" y="{:.1}" width="{:.1}" height="{:.1}" rx="2" fill="#e2e8f0" stroke="#64748b" stroke-width="0.8" data-glyph="unknown"/><text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="{:.1}" font-weight="bold" fill="#334155">?</text>"##,
+            cy - 6.0 * s,
+            12.0 * s,
+            12.0 * s,
+            x + 6.0 * s,
+            cy + 3.5 * s,
+            10.0 * s
+        ));
+    } else if glyph == Glyph::Folder {
         svg.push_str(&format!(
             r##"<path d="M {x:.1} {:.1} h {:.1} l {:.1} {:.1} h {:.1} v {:.1} h {:.1} z" fill="#fbbf24" stroke="#b45309" stroke-width="0.8" data-glyph="folder"/>"##,
             cy - 5.0 * s,
@@ -93,9 +112,19 @@ fn push_glyph(svg: &mut String, folder: bool, x: f32, cy: f32, size: f32) {
 }
 
 pub(super) fn render_treeview_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
-    let entries = parse_tree(source);
-    if entries.is_empty() {
+    let parsed = parse_tree(source);
+    if parsed.is_empty() {
         return None;
+    }
+    // mermaid.js hangs every entry off an implicit `/` root and drops the trailing `/` of
+    // directory names; `dirs` remembers which entries are directories.
+    let mut entries = vec![TreeEntry { name: "/".into(), depth: 0, classes: Vec::new(), icon: None, comment: None }];
+    let mut dirs = vec![true];
+    for (i, e) in parsed.iter().enumerate() {
+        let dir = e.name.ends_with('/') || parsed.get(i + 1).is_some_and(|n| n.depth > e.depth);
+        let name = if e.name.len() > 1 { e.name.trim_end_matches('/').to_string() } else { e.name.clone() };
+        entries.push(TreeEntry { name, depth: e.depth + 1, ..e.clone() });
+        dirs.push(dir);
     }
     let number = |key: &str, default: f32, lo: f32, hi: f32| config.option(key).and_then(px_number).map_or(default, |v| (v as f32).clamp(lo, hi));
     let indent = number("treeView.rowIndent", 22.0, 6.0, 200.0);
@@ -106,13 +135,21 @@ pub(super) fn render_treeview_svg(source: &str, config: &MermaidConfig) -> Optio
     let show_icons = config.flag("treeView.showIcons", false);
     let row = (font * 1.75).max(20.0);
     let margin = 16.0;
-    let has_children = |i: usize| entries.get(i + 1).is_some_and(|n| n.depth > entries[i].depth);
-    let glyph_of = |i: usize| -> Option<bool> {
+    // `filenameIcons.<name>` / `extensionIcons.<.ext>` from the config.
+    let mapped = |name: &str| -> Option<String> {
+        if let Some(v) = config.option(&format!("treeView.filenameIcons.{name}")) {
+            return Some(unquote(v));
+        }
+        let ext = name.rfind('.').map(|d| &name[d..])?;
+        config.option(&format!("treeView.extensionIcons.{ext}")).map(unquote)
+    };
+    let glyph_of = |i: usize| -> Option<Glyph> {
         let e = &entries[i];
-        match e.icon.as_deref() {
+        let plain = if dirs[i] { Glyph::Folder } else { Glyph::File };
+        match e.icon.clone().or_else(|| if show_icons && i > 0 { mapped(&e.name) } else { None }).as_deref() {
             Some("none") => None,
-            Some(_) => Some(e.name.ends_with('/') || has_children(i)),
-            None if show_icons => Some(e.name.ends_with('/') || has_children(i)),
+            Some(_) => Some(Glyph::Unknown),
+            None if show_icons => Some(plain),
             None => None,
         }
     };
@@ -154,10 +191,10 @@ pub(super) fn render_treeview_svg(source: &str, config: &MermaidConfig) -> Optio
                 escape_attr(&e.classes.join(" "))
             ));
         }
-        if let Some(folder) = glyph_of(i) {
-            push_glyph(&mut svg, folder, x0, y, font);
+        if let Some(glyph) = glyph_of(i) {
+            push_glyph(&mut svg, glyph, x0, y, font);
         }
-        let bold = if has_children(i) || e.name.ends_with('/') { "600" } else { "normal" };
+        let bold = if dirs[i] { "600" } else { "normal" };
         svg.push_str(&format!(
             r##"<text x="{lx:.1}" y="{:.1}" font-size="{font}" font-weight="{bold}" fill="{label_color}" data-item="{}">{}</text>"##,
             y + font * 0.35,
@@ -202,10 +239,18 @@ mod tests {
     #[test]
     fn tree_svg_rows_connectors_and_glyphs() {
         let svg = svg_of("---\nconfig:\n  treeView:\n    showIcons: true\n    rowIndent: 40\n---\ntreeView-beta\n    src/\n        index.js icon(none)\n        App.tsx :::highlight\n    package.json");
-        assert!(text_x(&svg, "App.tsx") - text_x(&svg, "src/") >= 40.0);
-        assert!(text_y(&svg, "App.tsx") > text_y(&svg, "src/"));
-        assert_eq!(svg.matches(r#"data-glyph="folder""#).count(), 1);
+        assert!(text_x(&svg, "App.tsx") - text_x(&svg, "src") >= 40.0);
+        assert!(text_y(&svg, "App.tsx") > text_y(&svg, "src") && text_y(&svg, "src") > text_y(&svg, "/"));
+        assert!(text_x(&svg, "src") > text_x(&svg, "/"));
+        assert_eq!(svg.matches(r#"data-glyph="folder""#).count(), 2);
         assert_eq!(svg.matches(r#"data-glyph="file""#).count(), 2);
         assert!(svg.contains(r#"data-class="highlight""#) && svg.contains(r#"data-role="connector""#));
+    }
+
+    #[test]
+    fn tree_unresolved_icons_draw_a_question_mark() {
+        let svg = svg_of("---\nconfig:\n  treeView:\n    showIcons: true\n    filenameIcons:\n      Dockerfile: docker\n    extensionIcons:\n      .ts: typescript\n      .txt: none\n---\ntreeView-beta\n    a.ts\n    Dockerfile\n    notes.txt\n    b.md icon(logos:react)\n    c.md");
+        assert_eq!(svg.matches(r#"data-glyph="unknown""#).count(), 3);
+        assert_eq!(svg.matches(r#"data-glyph="file""#).count(), 1);
     }
 }
