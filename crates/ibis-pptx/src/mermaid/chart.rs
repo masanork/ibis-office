@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(super) fn parse_pie_chart(source: &str) -> Option<MermaidChartSpec> {
+pub(super) fn parse_pie_chart(source: &str, config: &MermaidConfig) -> Option<MermaidChartSpec> {
     let show_data = source
         .lines()
         .next()
@@ -40,24 +40,95 @@ pub(super) fn parse_pie_chart(source: &str) -> Option<MermaidChartSpec> {
     if categories.is_empty() {
         return None;
     }
+    let style = pie_style(config, categories.len());
+    // `pie.donutHole` turns the pie into a doughnut (native `c:doughnutChart`).
+    let kind = if style.donut_hole.is_some() { NewChartKind::Doughnut } else { NewChartKind::Pie };
     Some(MermaidChartSpec {
-        kind: NewChartKind::Pie,
+        kind,
         title,
         categories,
         series: vec![("Series 1".to_string(), values)],
-        series_kinds: vec![NewChartKind::Pie],
+        series_kinds: vec![kind],
         show_data,
         x_axis_title: None,
         y_axis_title: None,
         y_range: None,
+        point_labels: Vec::new(),
+        style,
     })
 }
 
-pub(super) fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
+/// `config.pie.*` and the `pie1`..`pie12` / `pieOuterStrokeWidth` theme variables.
+pub(super) fn pie_style(config: &MermaidConfig, slices: usize) -> MermaidChartStyle {
+    let number = |key: &str| config.option(key).and_then(|v| unquote(v).trim().parse::<f64>().ok()).filter(|v| v.is_finite());
+    let custom: Vec<Option<String>> =
+        (1..=slices.min(12)).map(|i| config.vars.get(&format!("pie{i}")).and_then(|v| hex_color(v))).collect();
+    let palette = if custom.iter().any(Option::is_some) {
+        custom
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| c.unwrap_or_else(|| CHART_PALETTE[i % CHART_PALETTE.len()].to_string()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    MermaidChartStyle {
+        palette,
+        text_position: number("pie.textPosition").map(|v| v.clamp(0.0, 1.0)),
+        donut_hole: number("pie.donutHole").map(|v| v.clamp(0.0, 0.9)).filter(|v| *v > 0.0),
+        highlight: config
+            .option("pie.highlightSlice")
+            .map(unquote)
+            .filter(|label| !label.is_empty() && label != "hover"),
+        outer_stroke_width: config.vars.get("pieOuterStrokeWidth").and_then(|v| px_number(v)),
+        ..MermaidChartStyle::default()
+    }
+}
+
+/// `config.xyChart.*` and `themeVariables.xyChart.*`.
+pub(super) fn xy_style(config: &MermaidConfig) -> MermaidChartStyle {
+    let size = |key: &str| {
+        config
+            .option(key)
+            .and_then(|v| unquote(v).trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && (100.0..=4000.0).contains(v))
+            .map(|v| v.round() as u32)
+    };
+    let palette = config
+        .vars
+        .get("xyChart.plotColorPalette")
+        .map(|list| list.split(',').filter_map(hex_color).collect())
+        .unwrap_or_default();
+    let size_px = match (size("xyChart.width"), size("xyChart.height")) {
+        (None, None) => None,
+        (w, h) => Some((w.unwrap_or(XY_WIDTH), h.unwrap_or(XY_HEIGHT))),
+    };
+    MermaidChartStyle {
+        palette,
+        data_labels: config.flag("xyChart.showDataLabel", false),
+        data_labels_outside: config.flag("xyChart.showDataLabelOutsideBar", false),
+        size_px,
+        title_color: config.vars.get("xyChart.titleColor").and_then(|v| hex_color(v)),
+        ..MermaidChartStyle::default()
+    }
+}
+
+/// One `bar` / `line` value: `12`, or `540 "PaLM"` with a point label (Mermaid 11.16).
+pub(super) fn parse_xy_value(token: &str) -> (Option<Number>, Option<String>) {
+    let token = token.trim();
+    let (number, label) = match token.find(|c: char| c.is_whitespace() || c == '"') {
+        Some(at) => (&token[..at], Some(unquote(token[at..].trim()))),
+        None => (token, None),
+    };
+    (number.parse::<f64>().ok().map(Number), label.filter(|l| !l.is_empty()))
+}
+
+pub(super) fn parse_xy_chart(source: &str, config: &MermaidConfig) -> Option<MermaidChartSpec> {
     let mut title = None;
     let mut categories = Vec::new();
     let mut series = Vec::new();
     let mut series_kinds = Vec::new();
+    let mut point_labels: Vec<Vec<Option<String>>> = Vec::new();
     let mut has_bar = false;
     let mut has_line = false;
     let mut bar_idx = 1usize;
@@ -86,29 +157,23 @@ pub(super) fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
             }
         } else if let Some(rest) = l.strip_prefix("y-axis ") {
             (y_axis_title, y_range) = parse_xy_axis(rest);
-        } else if let Some(rest) = l.strip_prefix("bar ") {
+        } else if let Some((is_bar, rest)) =
+            l.strip_prefix("bar ").map(|r| (true, r)).or_else(|| l.strip_prefix("line ").map(|r| (false, r)))
+        {
             if let Some(list) = extract_bracket_list(rest) {
-                has_bar = true;
-                let vals: Vec<_> = list
-                    .into_iter()
-                    .map(|s| s.trim().parse::<f64>().ok().map(Number))
-                    .collect();
-                let name = xy_series_name(rest, &format!("Bar {bar_idx}"));
+                let (vals, labels): (Vec<_>, Vec<_>) = list.iter().map(|s| parse_xy_value(s)).unzip();
+                let name = if is_bar {
+                    has_bar = true;
+                    bar_idx += 1;
+                    xy_series_name(rest, &format!("Bar {}", bar_idx - 1))
+                } else {
+                    has_line = true;
+                    line_idx += 1;
+                    xy_series_name(rest, &format!("Line {}", line_idx - 1))
+                };
                 series.push((name, vals));
-                series_kinds.push(NewChartKind::ClusteredColumn);
-                bar_idx += 1;
-            }
-        } else if let Some(rest) = l.strip_prefix("line ") {
-            if let Some(list) = extract_bracket_list(rest) {
-                has_line = true;
-                let vals: Vec<_> = list
-                    .into_iter()
-                    .map(|s| s.trim().parse::<f64>().ok().map(Number))
-                    .collect();
-                let name = xy_series_name(rest, &format!("Line {line_idx}"));
-                series.push((name, vals));
-                series_kinds.push(NewChartKind::Line);
-                line_idx += 1;
+                series_kinds.push(if is_bar { NewChartKind::ClusteredColumn } else { NewChartKind::Line });
+                point_labels.push(labels);
             }
         }
     }
@@ -127,6 +192,9 @@ pub(super) fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
     } else {
         NewChartKind::ClusteredColumn
     };
+    if point_labels.iter().all(|labels| labels.iter().all(Option::is_none)) {
+        point_labels.clear();
+    }
     Some(MermaidChartSpec {
         kind,
         title,
@@ -137,6 +205,8 @@ pub(super) fn parse_xy_chart(source: &str) -> Option<MermaidChartSpec> {
         x_axis_title,
         y_axis_title,
         y_range,
+        point_labels,
+        style: xy_style(config),
     })
 }
 
@@ -185,18 +255,36 @@ pub(super) fn extract_bracket_list(s: &str) -> Option<Vec<String>> {
 }
 
 
+/// The colours the chart fallback draws with, before `config` overrides them.
+pub(super) const CHART_PALETTE: &[&str] = &[
+    "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16",
+];
+pub(super) const XY_WIDTH: u32 = 520;
+pub(super) const XY_HEIGHT: u32 = 280;
+
+/// A number shown on a chart: whole numbers without a fraction.
+fn chart_number(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 { format!("{v:.0}") } else { format!("{v}") }
+}
+
 /// Render a parsed `MermaidChartSpec` (`pie` or `xychart-beta`) to a standalone SVG.
 ///
 /// Used as a fallback when a native Office chart cannot be instantiated (e.g., clipboard fragment paste).
 pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u32)> {
-    const PALETTE: &[&str] = &[
-        "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16",
-    ];
     if spec.series.is_empty() || spec.categories.is_empty() {
         return None;
     }
+    let style = &spec.style;
+    let color_of = |i: usize| -> String {
+        if style.palette.is_empty() {
+            CHART_PALETTE[i % CHART_PALETTE.len()].to_string()
+        } else {
+            style.palette[i % style.palette.len()].clone()
+        }
+    };
+    let title_fill = style.title_color.clone().unwrap_or_else(|| "#0f172a".to_string());
 
-    if spec.kind == NewChartKind::Pie {
+    if matches!(spec.kind, NewChartKind::Pie | NewChartKind::Doughnut) {
         let vals: Vec<f64> = spec.series[0]
             .1
             .iter()
@@ -212,6 +300,10 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
         let cx = 130.0f64;
         let cy = (height_px as f64) / 2.0 + if spec.title.is_some() { 12.0 } else { 0.0 };
         let r = 86.0f64;
+        // `pie.donutHole`: the inner radius as a fraction of the outer one.
+        let hole = style.donut_hole.unwrap_or(0.0) * r;
+        // `pie.textPosition`: where the percentage sits, from the centre (0) to the rim (1).
+        let text_at = style.text_position.unwrap_or(0.75) * r;
 
         let mut svg = String::new();
         svg.push_str(&format!(
@@ -222,53 +314,95 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
         ));
         if let Some(t) = &spec.title {
             svg.push_str(&format!(
-                r##"<text x="{:.1}" y="26" text-anchor="middle" font-size="14" font-weight="bold" fill="#0f172a">{}</text>"##,
+                r##"<text x="{:.1}" y="26" text-anchor="middle" font-size="14" font-weight="bold" fill="{title_fill}">{}</text>"##,
                 width_px as f32 / 2.0,
                 escape_xml(t)
             ));
         }
 
         let mut angle = -std::f64::consts::FRAC_PI_2;
+        let mut labels = String::new();
         for (i, &val) in vals.iter().enumerate() {
             let frac = val / total;
             if frac <= 0.0 {
                 continue;
             }
-            let color = PALETTE[i % PALETTE.len()];
+            let color = color_of(i);
+            let next_angle = angle + frac * 2.0 * std::f64::consts::PI;
+            let mid = (angle + next_angle) / 2.0;
+            // `pie.highlightSlice`: that slice is pulled out of the pie and outlined.
+            let highlighted = style.highlight.as_deref() == Some(spec.categories[i].as_str());
+            let (ox, oy) = if highlighted { (8.0 * mid.cos(), 8.0 * mid.sin()) } else { (0.0, 0.0) };
+            let (scx, scy) = (cx + ox, cy + oy);
+            let mark = if highlighted { r##" data-highlight="1" stroke-width="3""## } else { r##" stroke-width="1.5""## };
             if frac >= 0.9999 {
-                svg.push_str(&format!(
-                    r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{r:.1}" fill="{color}" stroke="#ffffff" stroke-width="1.5"/>"##
-                ));
+                if hole > 0.0 {
+                    svg.push_str(&format!(
+                        r##"<path d="M {:.1} {scy:.1} A {r:.1} {r:.1} 0 1 1 {:.1} {scy:.1} A {r:.1} {r:.1} 0 1 1 {:.1} {scy:.1} Z M {:.1} {scy:.1} A {hole:.1} {hole:.1} 0 1 0 {:.1} {scy:.1} A {hole:.1} {hole:.1} 0 1 0 {:.1} {scy:.1} Z" fill="{color}" fill-rule="evenodd" stroke="#ffffff"{mark}/>"##,
+                        scx - r, scx + r, scx - r, scx - hole, scx + hole, scx - hole
+                    ));
+                } else {
+                    svg.push_str(&format!(
+                        r##"<circle cx="{scx:.1}" cy="{scy:.1}" r="{r:.1}" fill="{color}" stroke="#ffffff"{mark}/>"##
+                    ));
+                }
             } else {
-                let next_angle = angle + frac * 2.0 * std::f64::consts::PI;
-                let x1 = cx + r * angle.cos();
-                let y1 = cy + r * angle.sin();
-                let x2 = cx + r * next_angle.cos();
-                let y2 = cy + r * next_angle.sin();
+                let x1 = scx + r * angle.cos();
+                let y1 = scy + r * angle.sin();
+                let x2 = scx + r * next_angle.cos();
+                let y2 = scy + r * next_angle.sin();
                 let large_arc = if frac > 0.5 { 1 } else { 0 };
-                svg.push_str(&format!(
-                    r##"<path d="M {cx:.1} {cy:.1} L {x1:.1} {y1:.1} A {r:.1} {r:.1} 0 {large_arc} 1 {x2:.1} {y2:.1} Z" fill="{color}" stroke="#ffffff" stroke-width="1.5"/>"##
-                ));
-                angle = next_angle;
+                let d = if hole > 0.0 {
+                    let ix1 = scx + hole * next_angle.cos();
+                    let iy1 = scy + hole * next_angle.sin();
+                    let ix2 = scx + hole * angle.cos();
+                    let iy2 = scy + hole * angle.sin();
+                    format!(
+                        "M {x1:.1} {y1:.1} A {r:.1} {r:.1} 0 {large_arc} 1 {x2:.1} {y2:.1} L {ix1:.1} {iy1:.1} A {hole:.1} {hole:.1} 0 {large_arc} 0 {ix2:.1} {iy2:.1} Z"
+                    )
+                } else {
+                    format!("M {scx:.1} {scy:.1} L {x1:.1} {y1:.1} A {r:.1} {r:.1} 0 {large_arc} 1 {x2:.1} {y2:.1} Z")
+                };
+                svg.push_str(&format!(r##"<path d="{d}" fill="{color}" stroke="#ffffff"{mark}/>"##));
             }
+            // The slice's share, like Mermaid's label on each slice.
+            let lr = if frac >= 0.9999 { if hole > 0.0 { (hole + r) / 2.0 } else { 0.0 } } else { text_at.max(hole) };
+            let (lx, ly) = (scx + lr * mid.cos(), scy + lr * mid.sin());
+            labels.push_str(&format!(
+                r##"<text x="{lx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#ffffff" data-role="slice-label">{:.0}%</text>"##,
+                ly + 4.0,
+                frac * 100.0
+            ));
+            angle = next_angle;
+        }
+        svg.push_str(&labels);
+        // `themeVariables.pieOuterStrokeWidth`: a rim around the whole pie.
+        if let Some(w) = style.outer_stroke_width.filter(|w| *w > 0.0) {
+            svg.push_str(&format!(
+                r##"<circle cx="{cx:.1}" cy="{cy:.1}" r="{:.1}" fill="none" stroke="#000000" stroke-width="{w:.1}" data-role="pie-rim"/>"##,
+                r + w / 2.0
+            ));
         }
 
         // Legend
         let lx = 248.0f32;
         let ly_start = (cy as f32) - (spec.categories.len() as f32 * 22.0) / 2.0;
         for (i, cat) in spec.categories.iter().enumerate() {
-            let color = PALETTE[i % PALETTE.len()];
+            let color = color_of(i);
             let ly = ly_start + i as f32 * 22.0;
-            let pct = (vals.get(i).copied().unwrap_or(0.0) / total) * 100.0;
+            let val = vals.get(i).copied().unwrap_or(0.0);
+            let pct = (val / total) * 100.0;
             svg.push_str(&format!(
                 r##"<rect x="{lx:.1}" y="{:.1}" width="12" height="12" rx="2" fill="{color}"/>"##,
                 ly
             ));
+            let shown = if spec.show_data { format!(" [{}]", chart_number(val)) } else { String::new() };
             svg.push_str(&format!(
-                r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{} ({pct:.1}%)</text>"##,
+                r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{}{} ({pct:.1}%)</text>"##,
                 lx + 18.0,
                 ly + 10.5,
-                escape_xml(cat)
+                escape_xml(cat),
+                escape_xml(&shown)
             ));
         }
 
@@ -287,8 +421,10 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
     let (y_lo, y_hi) = spec.y_range.unwrap_or((0.0, max_val));
     let y_span = (y_hi - y_lo).max(f64::EPSILON);
     let y_frac = |v: f64| ((v - y_lo) / y_span).clamp(0.0, 1.0) as f32;
-    let width_px = 520u32;
-    let height_px = if spec.x_axis_title.is_some() { 300u32 } else { 280u32 };
+    let (width_px, height_px) = style.size_px.unwrap_or((
+        XY_WIDTH,
+        if spec.x_axis_title.is_some() { XY_HEIGHT + 20 } else { XY_HEIGHT },
+    ));
     let pad_l = if spec.y_axis_title.is_some() { 70.0f32 } else { 52.0f32 };
     let pad_r = 24.0f32;
     let pad_t = if spec.title.is_some() { 44.0f32 } else { 24.0f32 };
@@ -305,7 +441,7 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
     ));
     if let Some(t) = &spec.title {
         svg.push_str(&format!(
-            r##"<text x="{:.1}" y="24" text-anchor="middle" font-size="14" font-weight="bold" fill="#0f172a">{}</text>"##,
+            r##"<text x="{:.1}" y="24" text-anchor="middle" font-size="14" font-weight="bold" fill="{title_fill}">{}</text>"##,
             width_px as f32 / 2.0,
             escape_xml(t)
         ));
@@ -363,48 +499,88 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
         ));
     }
 
+    let is_line_at = |si: usize, sname: &str| {
+        spec.series_kinds.get(si) == Some(&NewChartKind::Line)
+            || (spec.series_kinds.is_empty() && (spec.kind == NewChartKind::Line || sname.starts_with("Line")))
+    };
+    // Bars of several series stand side by side in each category.
+    let bar_series: Vec<usize> =
+        (0..spec.series.len()).filter(|&si| !is_line_at(si, &spec.series[si].0)).collect();
+    let mut labels = String::new();
     for (si, (sname, vals)) in spec.series.iter().enumerate() {
-        let color = PALETTE[si % PALETTE.len()];
-        let is_line = spec.series_kinds.get(si) == Some(&NewChartKind::Line)
-            || (spec.series_kinds.is_empty() && (spec.kind == NewChartKind::Line || sname.starts_with("Line")));
-        if is_line {
+        let color = color_of(si);
+        let point_label = |ci: usize| spec.point_labels.get(si).and_then(|l| l.get(ci)).and_then(|l| l.as_deref());
+        if is_line_at(si, sname) {
             let mut pts = Vec::new();
             for (ci, v_opt) in vals.iter().enumerate() {
                 if let Some(v) = v_opt {
                     let px = pad_l + (ci as f32 + 0.5) * slot_w;
                     let py = pad_t + plot_h * (1.0 - y_frac(v.0));
-                    pts.push((px, py));
+                    pts.push((ci, v.0, px, py));
                 }
             }
             if pts.len() >= 2 {
                 let poly: String = pts
                     .iter()
-                    .map(|(x, y)| format!("{x:.1},{y:.1}"))
+                    .map(|(_, _, x, y)| format!("{x:.1},{y:.1}"))
                     .collect::<Vec<_>>()
                     .join(" ");
                 svg.push_str(&format!(
                     r##"<polyline points="{poly}" fill="none" stroke="{color}" stroke-width="2.2"/>"##
                 ));
             }
-            for (px, py) in pts {
+            for &(ci, v, px, py) in &pts {
                 svg.push_str(&format!(
                     r##"<circle cx="{px:.1}" cy="{py:.1}" r="3.5" fill="{color}" stroke="#ffffff" stroke-width="1"/>"##
                 ));
+                // A point label (`540 "PaLM"`) and / or the value (`showDataLabel`) above the point.
+                let text = match (point_label(ci), style.data_labels) {
+                    (Some(l), true) => format!("{} {l}", chart_number(v)),
+                    (Some(l), false) => l.to_string(),
+                    (None, true) => chart_number(v),
+                    (None, false) => continue,
+                };
+                labels.push_str(&format!(
+                    r##"<text x="{px:.1}" y="{:.1}" text-anchor="middle" font-size="10" fill="#1e293b" data-role="data-label">{}</text>"##,
+                    py - 8.0,
+                    escape_xml(&text)
+                ));
             }
         } else {
-            let bar_w = (slot_w * 0.54).min(40.0);
+            let lanes = bar_series.len().max(1) as f32;
+            let lane = bar_series.iter().position(|&b| b == si).unwrap_or(0) as f32;
+            let bar_w = ((slot_w * 0.54).min(40.0 * lanes)) / lanes;
             for (ci, v_opt) in vals.iter().enumerate() {
                 if let Some(v) = v_opt {
                     let bh = (plot_h * y_frac(v.0)).max(2.0);
-                    let bx = pad_l + (ci as f32 + 0.5) * slot_w - bar_w / 2.0;
+                    let bx = pad_l + (ci as f32 + 0.5) * slot_w - bar_w * lanes / 2.0 + lane * bar_w;
                     let by = pad_t + plot_h - bh;
                     svg.push_str(&format!(
                         r##"<rect x="{bx:.1}" y="{by:.1}" width="{bar_w:.1}" height="{bh:.1}" rx="2" fill="{color}" fill-opacity="0.88"/>"##
                     ));
+                    if style.data_labels || point_label(ci).is_some() {
+                        let text = match point_label(ci) {
+                            Some(l) if style.data_labels => format!("{} {l}", chart_number(v.0)),
+                            Some(l) => l.to_string(),
+                            None => chart_number(v.0),
+                        };
+                        // Inside the top of the bar, or above it with `showDataLabelOutsideBar`.
+                        let (ty, fill) = if style.data_labels_outside || bh < 18.0 {
+                            (by - 5.0, "#1e293b")
+                        } else {
+                            (by + 14.0, "#ffffff")
+                        };
+                        labels.push_str(&format!(
+                            r##"<text x="{:.1}" y="{ty:.1}" text-anchor="middle" font-size="10" fill="{fill}" data-role="data-label">{}</text>"##,
+                            bx + bar_w / 2.0,
+                            escape_xml(&text)
+                        ));
+                    }
                 }
             }
         }
     }
+    svg.push_str(&labels);
 
     svg.push_str("</svg>");
     Some((svg.into_bytes(), width_px, height_px))
@@ -413,6 +589,7 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mermaid::test_support::*;
 
     #[test]
     fn parses_pie_and_xychart_to_native_chart_specs() {
@@ -484,5 +661,116 @@ xychart
         assert_eq!(parse_xy_axis("Score 1.5 --> 2.5"), (Some("Score".into()), Some((1.5, 2.5))));
         assert_eq!(parse_xy_axis("\"Low --> High\""), (Some("Low --> High".into()), None));
         assert_eq!(parse_xy_axis("10 --> 5"), (Some("10 --> 5".into()), None));
+    }
+
+    fn chart_of(src: &str) -> MermaidChartSpec {
+        match render_mermaid(src) {
+            Some(MermaidOutput::Chart(spec)) => spec,
+            _ => panic!("expected chart"),
+        }
+    }
+
+    fn chart_svg(spec: &MermaidChartSpec) -> String {
+        String::from_utf8(render_chart_spec_svg(spec).expect("svg").0).unwrap()
+    }
+
+    #[test]
+    fn xychart_config_palette_labels_size_and_title_colour() {
+        let src = "---
+config:
+  xyChart:
+    width: 900
+    height: 600
+    showDataLabel: true
+    showDataLabelOutsideBar: true
+  themeVariables:
+    xyChart:
+      titleColor: \"#ff0000\"
+      plotColorPalette: '#000000, #0000FF, nope, #0F0'
+---
+xychart
+  title \"T\"
+  x-axis [a, b]
+  bar [12, 20]
+  line [5, 15]
+";
+        let spec = chart_of(src);
+        assert_eq!(spec.style.palette, vec!["#000000", "#0000ff", "#00ff00"]);
+        assert!(spec.style.data_labels && spec.style.data_labels_outside);
+        assert_eq!(spec.style.size_px, Some((900, 600)));
+        assert_eq!(spec.style.title_color.as_deref(), Some("#ff0000"));
+        let svg = chart_svg(&spec);
+        assert!(svg.contains(r#"width="900" height="600""#), "{svg}");
+        assert!(svg.contains(r##"font-weight="bold" fill="#ff0000">T<"##), "{svg}");
+        assert!(svg.contains(r##"fill="#000000" fill-opacity"##), "bar takes the first palette colour");
+        assert!(svg.contains(r##"stroke="#0000ff" stroke-width="2.2""##), "line takes the second");
+        let labels: Vec<_> = svg.match_indices(r#"data-role="data-label">"#).collect();
+        assert_eq!(labels.len(), 4, "{svg}");
+        assert!(svg.contains(r##"fill="#1e293b" data-role="data-label">12<"##), "outside bar: dark text above");
+
+        // Without `config`: no labels, the built-in colours, the default size.
+        let plain = chart_of("xychart\n  x-axis [a, b]\n  bar [12, 20]\n");
+        assert_eq!(plain.style, MermaidChartStyle::default());
+        let svg = chart_svg(&plain);
+        assert!(!svg.contains("data-label") && svg.contains(r#"width="520" height="280""#));
+    }
+
+    #[test]
+    fn xychart_point_labels() {
+        let spec = chart_of("xychart\n  x-axis [Q1, Q2, Q3]\n  line [25 \"Launch\", 45, 90 \"Target Hit\"]\n");
+        assert_eq!(spec.series[0].1, vec![Some(Number(25.0)), Some(Number(45.0)), Some(Number(90.0))]);
+        assert_eq!(spec.point_labels, vec![vec![Some("Launch".to_string()), None, Some("Target Hit".to_string())]]);
+        let svg = chart_svg(&spec);
+        assert!(svg.contains(">Launch<") && svg.contains(">Target Hit<"), "{svg}");
+        assert_eq!(parse_xy_value("540 \"PaLM\""), (Some(Number(540.0)), Some("PaLM".into())));
+        assert_eq!(parse_xy_value(" 3.8 "), (Some(Number(3.8)), None));
+        // No labels at all: nothing is kept.
+        assert!(chart_of("xychart\n  line [1, 2]\n").point_labels.is_empty());
+    }
+
+    #[test]
+    fn pie_config_donut_text_position_highlight_and_rim() {
+        let src = "---
+config:
+  pie:
+    textPosition: 0.5
+    donutHole: 0.2
+    highlightSlice: Potassium
+  themeVariables:
+    pieOuterStrokeWidth: \"5px\"
+    pie2: \"#123456\"
+---
+pie showData
+    \"Calcium\" : 42.96
+    \"Potassium\" : 50.05
+    \"Iron\" :  5
+";
+        let spec = chart_of(src);
+        assert_eq!(spec.kind, NewChartKind::Doughnut);
+        assert_eq!(spec.style.text_position, Some(0.5));
+        assert_eq!(spec.style.donut_hole, Some(0.2));
+        assert_eq!(spec.style.highlight.as_deref(), Some("Potassium"));
+        assert_eq!(spec.style.outer_stroke_width, Some(5.0));
+        assert_eq!(spec.style.palette[1], "#123456");
+        let svg = chart_svg(&spec);
+        assert_eq!(svg.matches(r#"data-role="slice-label""#).count(), 3, "{svg}");
+        assert_eq!(svg.matches(r#"data-highlight="1""#).count(), 1);
+        assert!(svg.contains(r#"data-role="pie-rim""#) && svg.contains(r#"stroke-width="5.0""#));
+        assert!(svg.contains(r##"fill="#123456""##));
+        assert!(svg.contains("[50.05]"), "showData puts the value in the legend");
+        // A doughnut's slices are rings: two arcs each.
+        let ring = svg.split("<path d=\"").nth(1).unwrap();
+        assert_eq!(ring.split('"').next().unwrap().matches(" A ").count(), 2, "{ring}");
+        // textPosition 0.5 puts the first label at half the radius from the centre.
+        let label = tag_with(&svg, r#"data-role="slice-label""#)[0];
+        let (x, y) = (attr_f32(&label, "x").unwrap(), attr_f32(&label, "y").unwrap() - 4.0);
+        let cy = (3 * 24 + 80).max(250) as f32 / 2.0;
+        assert!(((x - 130.0).hypot(y - cy) - 43.0).abs() < 1.0, "{label}");
+
+        let plain = chart_of("pie\n  \"A\" : 1\n  \"B\" : 3\n");
+        assert_eq!(plain.kind, NewChartKind::Pie);
+        let svg = chart_svg(&plain);
+        assert!(svg.contains(">25%<") && svg.contains(">75%<"), "{svg}");
+        assert!(!svg.contains("pie-rim") && !svg.contains("data-highlight"));
     }
 }
