@@ -736,6 +736,66 @@ struct SeqParticipant {
     _id: String,
     label: String,
     is_actor: bool,
+    /// `participant A@{ "type": "database" }`.
+    kind: Option<SeqKind>,
+}
+
+/// mermaid's participant types (`@{ "type": … }`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeqKind {
+    Boundary,
+    Control,
+    Entity,
+    Database,
+    Collections,
+    Queue,
+}
+
+impl SeqKind {
+    fn from_name(name: &str) -> Option<SeqKind> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "boundary" => Some(SeqKind::Boundary),
+            "control" => Some(SeqKind::Control),
+            "entity" => Some(SeqKind::Entity),
+            "database" => Some(SeqKind::Database),
+            "collections" => Some(SeqKind::Collections),
+            "queue" => Some(SeqKind::Queue),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            SeqKind::Boundary => "boundary",
+            SeqKind::Control => "control",
+            SeqKind::Entity => "entity",
+            SeqKind::Database => "database",
+            SeqKind::Collections => "collections",
+            SeqKind::Queue => "queue",
+        }
+    }
+}
+
+/// `Id`, `Id as Label`, `Id@{ "type": "database", "alias": "Label" } [as Label]` → (id, label, type).
+/// `as` wins over `alias`; `actor`/`participant` keywords are already stripped.
+fn seq_declaration(rest: &str) -> (&str, Option<String>, Option<SeqKind>) {
+    if let Some(at) = rest.find("@{")
+        && let Some(close) = find_unquoted(&rest[at..], '}')
+    {
+        let id = rest[..at].trim();
+        let attrs = parse_brace_attrs(&rest[at + 2..at + close]);
+        let after = rest[at + close + 1..].trim();
+        let get = |key: &str| attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let kind = get("type").and_then(|t| SeqKind::from_name(&t));
+        let label = after
+            .strip_prefix("as ")
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .or_else(|| get("alias").filter(|a| !a.is_empty()));
+        return (id, label, kind);
+    }
+    let (id, label) = split_alias(rest);
+    (id, label.map(str::to_string), None)
 }
 
 struct SeqBox {
@@ -828,6 +888,7 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             _id: id.to_string(),
             label: label.unwrap_or(id).to_string(),
             is_actor,
+            kind: None,
         });
         part_map.insert(id.to_string(), idx);
         idx
@@ -857,8 +918,9 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 (None, Some(decl)) => (false, decl),
                 (None, None) => (false, rest),
             };
-            let (id, lbl) = split_alias(decl);
-            let idx = ensure_participant(id, lbl, is_actor, &mut participants, &mut part_map);
+            let (id, lbl, kind) = seq_declaration(decl);
+            let idx = ensure_participant(id, lbl.as_deref(), is_actor, &mut participants, &mut part_map);
+            participants[idx].kind = kind.or(participants[idx].kind);
             note_seq_box(open.last(), &mut boxes, idx);
             pending_create.push(idx);
             continue;
@@ -880,15 +942,11 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             items.push(SeqItem::BlockElse { label: rest.trim().to_string() });
             continue;
         }
-        if let Some(rest) = l.strip_prefix("participant ") {
-            let (id, lbl) = split_alias(rest);
-            let idx = ensure_participant(id, lbl, false, &mut participants, &mut part_map);
-            note_seq_box(open.last(), &mut boxes, idx);
-            continue;
-        }
-        if let Some(rest) = l.strip_prefix("actor ") {
-            let (id, lbl) = split_alias(rest);
-            let idx = ensure_participant(id, lbl, true, &mut participants, &mut part_map);
+        let declared = l.strip_prefix("participant ").map(|r| (r, false)).or_else(|| l.strip_prefix("actor ").map(|r| (r, true)));
+        if let Some((rest, is_actor)) = declared {
+            let (id, lbl, kind) = seq_declaration(rest);
+            let idx = ensure_participant(id, lbl.as_deref(), is_actor, &mut participants, &mut part_map);
+            participants[idx].kind = kind.or(participants[idx].kind);
             note_seq_box(open.last(), &mut boxes, idx);
             continue;
         }
@@ -977,7 +1035,7 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let box_h = 38.0f32;
     let col_widths: Vec<f32> = participants
         .iter()
-        .map(|p| (estimate_text_width(&p.label, 13.0) + 32.0).max(96.0))
+        .map(|p| (estimate_text_width(&p.label, 13.0) + if p.kind.is_some() { 56.0 } else { 32.0 }).max(96.0))
         .collect();
 
     // Compute horizontal centers ensuring message labels have room.
@@ -1344,11 +1402,20 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             let bx = cx - w / 2.0;
             let fill = if p.is_actor { "#eff6ff" } else { "#f1f5f9" };
             let stroke = if p.is_actor { "#2563eb" } else { "#475569" };
+            let text_x = match p.kind {
+                Some(kind) => {
+                    push_seq_kind_box(&mut svg, kind, bx, by, w, box_h, fill, stroke);
+                    cx + 10.0
+                }
+                None => {
+                    svg.push_str(&format!(
+                        r##"<rect x="{bx:.1}" y="{by:.1}" width="{w:.1}" height="{box_h:.1}" rx="6" fill="{fill}" stroke="{stroke}" stroke-width="1.4"/>"##
+                    ));
+                    cx
+                }
+            };
             svg.push_str(&format!(
-                r##"<rect x="{bx:.1}" y="{by:.1}" width="{w:.1}" height="{box_h:.1}" rx="6" fill="{fill}" stroke="{stroke}" stroke-width="1.4"/>"##
-            ));
-            svg.push_str(&format!(
-                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">{}</text>"##,
+                r##"<text x="{text_x:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">{}</text>"##,
                 by + box_h / 2.0 + 4.5,
                 escape_xml(&p.label)
             ));
@@ -1359,6 +1426,90 @@ fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     match title {
         Some(title) => Some(add_svg_title(svg.into_bytes(), total_w, total_h, &title)),
         None => Some((svg.into_bytes(), total_w, total_h)),
+    }
+}
+
+/// A participant of a mermaid type: databases, queues and collections change the box itself;
+/// boundary, control and entity keep the box and carry their UML symbol at its left.
+#[allow(clippy::too_many_arguments)]
+fn push_seq_kind_box(svg: &mut String, kind: SeqKind, x: f32, y: f32, w: f32, h: f32, fill: &str, stroke: &str) {
+    let name = kind.name();
+    let attrs = format!(r##"fill="{fill}" stroke="{stroke}" stroke-width="1.4""##);
+    match kind {
+        SeqKind::Database => {
+            let ry = 5.0f32;
+            svg.push_str(&format!(
+                r##"<path d="M {x:.1} {:.1} L {x:.1} {:.1} A {:.1} {ry} 0 0 0 {:.1} {:.1} L {:.1} {:.1}" {attrs} data-shape="seq-{name}"/>"##,
+                y + ry,
+                y + h - ry,
+                w / 2.0,
+                x + w,
+                y + h - ry,
+                x + w,
+                y + ry
+            ));
+            svg.push_str(&format!(
+                r##"<ellipse cx="{:.1}" cy="{:.1}" rx="{:.1}" ry="{ry}" {attrs}/>"##,
+                x + w / 2.0,
+                y + ry,
+                w / 2.0
+            ));
+        }
+        SeqKind::Queue => {
+            let r = 7.0f32;
+            svg.push_str(&format!(
+                r##"<path d="M {:.1} {y:.1} L {:.1} {y:.1} A {r} {:.1} 0 0 1 {:.1} {:.1} L {:.1} {:.1} A {r} {:.1} 0 0 1 {:.1} {y:.1} Z" {attrs} data-shape="seq-{name}"/>"##,
+                x + r,
+                x + w - r,
+                h / 2.0,
+                x + w - r,
+                y + h,
+                x + r,
+                y + h,
+                h / 2.0,
+                x + r
+            ));
+            svg.push_str(&format!(
+                r##"<path d="M {:.1} {y:.1} A {r} {:.1} 0 0 0 {:.1} {:.1}" fill="none" stroke="{stroke}" stroke-width="1.2"/>"##,
+                x + w - r,
+                h / 2.0,
+                x + w - r,
+                y + h
+            ));
+        }
+        SeqKind::Collections => {
+            svg.push_str(&format!(
+                r##"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="{h:.1}" rx="4" {attrs}/>"##,
+                x + 4.0,
+                y - 4.0
+            ));
+            svg.push_str(&format!(
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="4" {attrs} data-shape="seq-{name}"/>"##
+            ));
+        }
+        SeqKind::Boundary | SeqKind::Control | SeqKind::Entity => {
+            svg.push_str(&format!(
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="6" {attrs} data-shape="seq-{name}"/>"##
+            ));
+            let (ix, iy, r) = (x + 22.0, y + h / 2.0, 7.0f32);
+            svg.push_str(&format!(
+                r##"<circle cx="{ix:.1}" cy="{iy:.1}" r="{r}" fill="#ffffff" stroke="{stroke}" stroke-width="1.3"/>"##
+            ));
+            let mark = match kind {
+                SeqKind::Boundary => format!(
+                    "M {:.1} {:.1} L {:.1} {:.1} M {:.1} {iy:.1} L {:.1} {iy:.1}",
+                    ix - 12.0,
+                    iy - 7.0,
+                    ix - 12.0,
+                    iy + 7.0,
+                    ix - 12.0,
+                    ix - r
+                ),
+                SeqKind::Control => format!("M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1}", ix - 1.0, iy - r - 3.0, ix + 3.0, iy - r, ix - 1.0, iy - r + 3.0),
+                _ => format!("M {:.1} {:.1} L {:.1} {:.1}", ix - r, iy + r + 2.0, ix + r, iy + r + 2.0),
+            };
+            svg.push_str(&format!(r##"<path d="{mark}" fill="none" stroke="{stroke}" stroke-width="1.3"/>"##));
+        }
     }
 }
 
@@ -4255,9 +4406,17 @@ fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 
 struct ClassNode {
     name: String,
+    /// `class Id["Label"]`, `Square~Shape~` (shown as `Square<Shape>`).
+    label: Option<String>,
     stereotype: Option<String>,
     fields: Vec<String>,
     methods: Vec<String>,
+    /// Innermost `namespace`.
+    namespace: Option<usize>,
+    /// `:::name` / `cssClass "A" name`, in order.
+    classes: Vec<String>,
+    /// A `note` box (its text is `name`).
+    note: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4269,6 +4428,8 @@ enum ClassRelKind {
     Dependency,  // ..> / <..
     Realization, // ..|> / <|..
     Link,        // -- / ..
+    /// `note for X` connector.
+    Note,
 }
 
 struct ClassEdge {
@@ -4277,6 +4438,28 @@ struct ClassEdge {
     kind: ClassRelKind,
     dashed: bool,
     label: Option<String>,
+    /// Multiplicity at each end (`Customer "1" --> "*" Order`).
+    from_card: Option<String>,
+    to_card: Option<String>,
+}
+
+/// `Name`, `Name:::style`, `Name~T~`, `Name["Label"]` → (key, label, class).
+fn class_name_parts(raw: &str) -> (String, Option<String>, Option<String>) {
+    let raw = raw.trim();
+    let (raw, css) = match raw.rfind(":::") {
+        Some(at) if !raw[at + 3..].contains([']', '"']) => (raw[..at].trim(), Some(raw[at + 3..].trim().to_string())),
+        _ => (raw, None),
+    };
+    if let Some(open) = raw.find('[')
+        && raw.ends_with(']')
+    {
+        let label = unquote(&raw[open + 1..raw.len() - 1]);
+        return (raw[..open].trim().to_string(), Some(label), css);
+    }
+    if let Some(tilde) = raw.find('~') {
+        return (raw[..tilde].trim().to_string(), Some(class_generics(raw)), css);
+    }
+    (raw.to_string(), None, css)
 }
 
 fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
@@ -4288,21 +4471,66 @@ fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec
     let mut map: HashMap<String, usize> = HashMap::new();
     let mut edges: Vec<ClassEdge> = Vec::new();
     let mut current_class: Option<usize> = None;
+    let mut namespaces: Vec<NodeGroup> = Vec::new();
+    let mut ns_stack: Vec<usize> = Vec::new();
+    // (enclosing namespace, dotted path) → namespace, so `A.B` can reopen an implied group.
+    let mut ns_paths: HashMap<(Option<usize>, String), usize> = HashMap::new();
+    let hierarchical = config.flag("class.hierarchicalNamespaces", true);
+    let mut class_defs: HashMap<String, FlowStyle> = HashMap::new();
+    let mut styles: Vec<(String, FlowStyle)> = Vec::new();
 
-    let mut ensure_class = |name: &str, classes: &mut Vec<ClassNode>, map: &mut HashMap<String, usize>| -> usize {
-        let key = name.trim();
-        if let Some(&idx) = map.get(key) {
-            return idx;
+    // Declares (or finds) a class; the innermost open namespace claims it the first time.
+    let ensure_class = |raw: &str, classes: &mut Vec<ClassNode>, map: &mut HashMap<String, usize>, ns: Option<usize>| -> usize {
+        let (key, label, css) = class_name_parts(raw);
+        let idx = match map.get(&key) {
+            Some(&idx) => idx,
+            None => {
+                let idx = classes.len();
+                classes.push(ClassNode {
+                    name: key.clone(),
+                    label: None,
+                    stereotype: None,
+                    fields: Vec::new(),
+                    methods: Vec::new(),
+                    namespace: None,
+                    classes: Vec::new(),
+                    note: false,
+                });
+                map.insert(key, idx);
+                idx
+            }
+        };
+        if label.is_some() {
+            classes[idx].label = label;
         }
-        let idx = classes.len();
+        if let Some(css) = css {
+            classes[idx].classes.push(css);
+        }
+        if classes[idx].namespace.is_none() {
+            classes[idx].namespace = ns;
+        }
+        idx
+    };
+    let add_member = |class: &mut ClassNode, member: &str| {
+        let member = class_generics(member.trim());
+        if member.contains('(') && member.contains(')') {
+            class.methods.push(member);
+        } else {
+            class.fields.push(member);
+        }
+    };
+    let new_note = |text: &str, classes: &mut Vec<ClassNode>| -> usize {
         classes.push(ClassNode {
-            name: key.to_string(),
+            name: unquote(text),
+            label: None,
             stereotype: None,
             fields: Vec::new(),
             methods: Vec::new(),
+            namespace: None,
+            classes: Vec::new(),
+            note: true,
         });
-        map.insert(key.to_string(), idx);
-        idx
+        classes.len() - 1
     };
 
     for raw in source.lines().skip(1) {
@@ -4317,72 +4545,145 @@ fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec
             }
             if l.starts_with("<<") && l.ends_with(">>") {
                 classes[cidx].stereotype = Some(l.to_string());
-            } else if l.contains('(') && l.contains(')') {
-                classes[cidx].methods.push(l.to_string());
             } else {
-                classes[cidx].fields.push(l.to_string());
+                add_member(&mut classes[cidx], l);
             }
+            continue;
+        }
+        let ns = ns_stack.last().copied();
+        if l == "}" {
+            ns_stack.pop();
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("namespace ") {
+            // `namespace Id["Label"] {` shows the label.
+            let (id, label, _) = class_name_parts(rest.trim().trim_end_matches('{'));
+            let g = match label {
+                Some(title) => {
+                    namespaces.push(NodeGroup { title, parent: ns });
+                    namespaces.len() - 1
+                }
+                // `A.B.C` nests inside `A.B` inside `A` (created when missing) unless
+                // `class.hierarchicalNamespaces` is false.
+                None if hierarchical && id.contains('.') => {
+                    let mut parent = ns;
+                    let mut path = String::new();
+                    for segment in id.split('.') {
+                        if !path.is_empty() {
+                            path.push('.');
+                        }
+                        path.push_str(segment);
+                        let key = (parent, path.clone());
+                        parent = Some(match ns_paths.get(&key) {
+                            Some(&g) => g,
+                            None => {
+                                namespaces.push(NodeGroup { title: segment.to_string(), parent });
+                                ns_paths.insert(key, namespaces.len() - 1);
+                                namespaces.len() - 1
+                            }
+                        });
+                    }
+                    parent.expect("a dotted namespace has a segment")
+                }
+                None => match ns_paths.get(&(ns, id.clone())) {
+                    Some(&g) => g,
+                    None => {
+                        namespaces.push(NodeGroup { title: id.clone(), parent: ns });
+                        ns_paths.insert((ns, id), namespaces.len() - 1);
+                        namespaces.len() - 1
+                    }
+                },
+            };
+            ns_stack.push(g);
             continue;
         }
         if let Some(rest) = l.strip_prefix("direction ") {
-            match rest.trim().to_ascii_uppercase().as_str() {
-                "LR" => {
-                    horizontal = true;
-                    reversed = false;
-                }
-                "RL" => {
-                    horizontal = true;
-                    reversed = true;
-                }
-                "BT" => {
-                    horizontal = false;
-                    reversed = true;
-                }
-                _ => {
-                    horizontal = false;
-                    reversed = false;
+            (horizontal, reversed) = match rest.trim().to_ascii_uppercase().as_str() {
+                "LR" => (true, false),
+                "RL" => (true, true),
+                "BT" => (false, true),
+                _ => (false, false),
+            };
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("note ") {
+            let rest = rest.trim();
+            if let Some(after_for) = rest.strip_prefix("for ") {
+                let after_for = after_for.trim();
+                let (target, text) = after_for.split_once(char::is_whitespace).unwrap_or((after_for, ""));
+                let target = ensure_class(target, &mut classes, &mut map, ns);
+                let note = new_note(text, &mut classes);
+                edges.push(ClassEdge {
+                    from: note,
+                    to: target,
+                    kind: ClassRelKind::Note,
+                    dashed: true,
+                    label: None,
+                    from_card: None,
+                    to_card: None,
+                });
+            } else {
+                new_note(rest, &mut classes);
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("classDef ") {
+            let rest = rest.trim();
+            let (names, props) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            let style = parse_flow_style(props);
+            for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                class_defs.entry(name.to_string()).or_default().merge(&style);
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("style ") {
+            if let Some((id, props)) = rest.trim().split_once(char::is_whitespace) {
+                styles.push((id.to_string(), parse_flow_style(props)));
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("cssClass ") {
+            if let Some((ids, css)) = rest.trim().rsplit_once(char::is_whitespace) {
+                for id in unquote(ids).split(',').map(str::trim).filter(|id| !id.is_empty()) {
+                    let idx = ensure_class(id, &mut classes, &mut map, ns);
+                    classes[idx].classes.push(css.trim().to_string());
                 }
             }
             continue;
         }
-        if l.starts_with("<<") {
-            if let Some(end) = l.find(">>") {
-                let stereo = &l[..=end + 1];
-                let cname = l[end + 2..].trim();
-                if !cname.is_empty() {
-                    let idx = ensure_class(cname, &mut classes, &mut map);
-                    classes[idx].stereotype = Some(stereo.to_string());
-                    continue;
-                }
+        if l.starts_with("click ") || l.starts_with("link ") || l.starts_with("callback ") || l.starts_with("accTitle") || l.starts_with("accDescr") {
+            continue;
+        }
+        if l.starts_with("<<")
+            && let Some(end) = l.find(">>")
+        {
+            let stereo = &l[..=end + 1];
+            let cname = l[end + 2..].trim();
+            if !cname.is_empty() {
+                let idx = ensure_class(cname, &mut classes, &mut map, ns);
+                classes[idx].stereotype = Some(stereo.to_string());
+                continue;
             }
         }
         if let Some(rest) = l.strip_prefix("class ") {
             if let Some(before_brace) = rest.strip_suffix('{') {
-                let cname = before_brace.trim();
-                let idx = ensure_class(cname, &mut classes, &mut map);
-                current_class = Some(idx);
+                current_class = Some(ensure_class(before_brace, &mut classes, &mut map, ns));
                 continue;
             }
-            let cname = rest.trim();
-            if !cname.is_empty() {
-                ensure_class(cname, &mut classes, &mut map);
+            if !rest.trim().is_empty() {
+                ensure_class(rest, &mut classes, &mut map, ns);
                 continue;
             }
         }
-        if let Some((lhs_part, label_opt)) = split_class_relation(l, &mut classes, &mut map, &mut edges, &mut ensure_class) {
-            let _ = (lhs_part, label_opt);
+        if split_class_relation(l, &mut classes, &mut map, &mut edges, &mut |raw, classes, map| ensure_class(raw, classes, map, ns)) {
             continue;
         }
         if let Some((cname, member)) = l.split_once(':') {
             let cn = cname.trim();
             let mb = member.trim();
             if !cn.is_empty() && !cn.contains(' ') && !mb.is_empty() {
-                let idx = ensure_class(cn, &mut classes, &mut map);
-                if mb.contains('(') && mb.contains(')') {
-                    classes[idx].methods.push(mb.to_string());
-                } else {
-                    classes[idx].fields.push(mb.to_string());
-                }
+                let idx = ensure_class(cn, &mut classes, &mut map, ns);
+                add_member(&mut classes[idx], mb);
             }
         }
     }
@@ -4391,10 +4692,36 @@ fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec
         return None;
     }
 
+    // classDef `default`, then the node's classes, then `style` statements.
+    let mut node_style: Vec<FlowStyle> = classes
+        .iter()
+        .map(|c| {
+            let mut style = class_defs.get("default").cloned().unwrap_or_default();
+            for name in &c.classes {
+                if let Some(def) = class_defs.get(name) {
+                    style.merge(def);
+                }
+            }
+            style
+        })
+        .collect();
+    for (id, style) in &styles {
+        if let Some(&idx) = map.get(id) {
+            node_style[idx].merge(style);
+        }
+    }
+
+    let note_lines = |c: &ClassNode| label_lines(&c.name, 200.0, 11.5);
     let node_sizes: Vec<(f32, f32)> = classes
         .iter()
         .map(|c| {
-            let mut max_w = estimate_text_width(&c.name, 13.0) + 28.0;
+            if c.note {
+                let lines = note_lines(c);
+                let w = lines.iter().map(|l| estimate_text_width(l, 11.5)).fold(0.0f32, f32::max) + 24.0;
+                return (w.max(80.0), lines.len() as f32 * 15.0 + 16.0);
+            }
+            let title = c.label.as_deref().unwrap_or(&c.name);
+            let mut max_w = estimate_text_width(title, 13.0) + 28.0;
             if let Some(st) = &c.stereotype {
                 max_w = max_w.max(estimate_text_width(st, 10.5) + 24.0);
             }
@@ -4405,32 +4732,17 @@ fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec
                 max_w = max_w.max(estimate_text_width(m, 11.5) + 24.0);
             }
             let header_h = if c.stereotype.is_some() { 40.0 } else { 28.0 };
-            let fields_h = if c.fields.is_empty() {
-                0.0
-            } else {
-                c.fields.len() as f32 * 18.0 + 10.0
-            };
-            let methods_h = if c.methods.is_empty() {
-                0.0
-            } else {
-                c.methods.len() as f32 * 18.0 + 10.0
-            };
+            let fields_h = if c.fields.is_empty() { 0.0 } else { c.fields.len() as f32 * 18.0 + 10.0 };
+            let methods_h = if c.methods.is_empty() { 0.0 } else { c.methods.len() as f32 * 18.0 + 10.0 };
             let min_h = if hide_empty { header_h } else { 36.0 };
             (max_w.max(110.0), (header_h + fields_h + methods_h).max(min_h))
         })
         .collect();
 
     let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
-    let (centers, total_w, total_h) = compute_layered_layout(
-        classes.len(),
-        &edge_pairs,
-        &node_sizes,
-        horizontal,
-        reversed,
-        34.0,
-        70.0,
-        40.0,
-    );
+    let member_of: Vec<Option<usize>> = classes.iter().map(|c| c.namespace).collect();
+    let (centers, total_w, total_h, frames) =
+        layout_with_groups(&node_sizes, &edge_pairs, &member_of, &namespaces, horizontal, reversed, 34.0, 70.0, 40.0);
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -4452,31 +4764,36 @@ fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec
   </marker>
 </defs>"##,
     );
-    svg.push_str(&format!(
-        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
-    ));
+    svg.push_str(&format!(r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##));
+    push_group_frames(&mut svg, &namespaces, &frames, "namespace");
 
     // Relationships
     for e in &edges {
-        let route = route_layered_edge(
-            e.from,
-            e.to,
-            &centers,
-            &node_sizes,
-            horizontal,
-            false,
-            (total_w as f32, total_h as f32),
-        );
+        let route = route_layered_edge(e.from, e.to, &centers, &node_sizes, horizontal, false, (total_w as f32, total_h as f32));
         let dash = if e.dashed { r#" stroke-dasharray="5,4""# } else { "" };
         let marker = match e.kind {
             ClassRelKind::Inheritance | ClassRelKind::Realization => r#" marker-end="url(#cls-inherit)""#,
             ClassRelKind::Composition => r#" marker-end="url(#cls-comp)""#,
             ClassRelKind::Aggregation => r#" marker-end="url(#cls-agg)""#,
             ClassRelKind::Association | ClassRelKind::Dependency => r#" marker-end="url(#cls-arrow)""#,
-            ClassRelKind::Link => "",
+            ClassRelKind::Link | ClassRelKind::Note => "",
         };
-        let extra = format!("{dash}{marker}");
-        push_routed_edge(&mut svg, &route, "#334155", "1.4", &extra);
+        let color = if e.kind == ClassRelKind::Note { "#ca8a04" } else { "#334155" };
+        push_routed_edge(&mut svg, &route, color, "1.4", &format!("{dash}{marker}"));
+        // Multiplicities sit just off each end, beside the line.
+        for (card, (px, py), (dx, dy)) in [
+            (&e.from_card, route.start, route.leave_dir),
+            (&e.to_card, route.end, (-route.arrive_dir.0, -route.arrive_dir.1)),
+        ] {
+            if let Some(card) = card {
+                let (tx, ty) = (px + dx * 18.0 - dy * 10.0, py + dy * 18.0 + dx * 10.0);
+                svg.push_str(&format!(
+                    r##"<text x="{tx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#0f766e" data-role="multiplicity">{}</text>"##,
+                    ty + 4.0,
+                    escape_xml(card)
+                ));
+            }
+        }
         if let Some(lbl) = &e.label {
             let (mx, my) = route.label_at;
             let lw = estimate_text_width(lbl, 11.0) + 10.0;
@@ -4493,43 +4810,67 @@ fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec
         }
     }
 
-    // Class boxes
+    // Class boxes and notes
     for (idx, c) in classes.iter().enumerate() {
         let (cx, cy) = centers[idx];
         let (nw, nh) = node_sizes[idx];
         let x = cx - nw / 2.0;
         let y = cy - nh / 2.0;
+        if c.note {
+            svg.push_str(&format!(
+                r##"<path d="M {x:.1} {y:.1} L {:.1} {y:.1} L {:.1} {:.1} L {:.1} {:.1} L {x:.1} {:.1} Z" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.2" data-shape="class-note"/>"##,
+                x + nw - 10.0,
+                x + nw,
+                y + 10.0,
+                x + nw,
+                y + nh,
+                y + nh
+            ));
+            for (i, line) in note_lines(c).iter().enumerate() {
+                svg.push_str(&format!(
+                    r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#713f12">{}</text>"##,
+                    x + 12.0,
+                    y + 20.0 + i as f32 * 15.0,
+                    escape_xml(line)
+                ));
+            }
+            continue;
+        }
+        let style = &node_style[idx];
         let header_h = if c.stereotype.is_some() { 40.0 } else { 28.0 };
+        let shape_at = svg.len();
         svg.push_str(&format!(
             r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#ffffff" stroke="#334155" stroke-width="1.4"/>"##
         ));
         svg.push_str(&format!(
             r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{header_h:.1}" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.4"/>"##
         ));
+        if !style.is_empty() {
+            let shapes = svg.split_off(shape_at);
+            svg.push_str(&restyle_svg_fragment(&shapes, style));
+        }
+        let ink = style.color.as_deref().map(escape_xml);
+        let title_fill = ink.clone().unwrap_or_else(|| "#0f172a".to_string());
+        let member_fill = ink.unwrap_or_else(|| "#1e293b".to_string());
+        let title = c.label.as_deref().unwrap_or(&c.name);
         if let Some(st) = &c.stereotype {
             svg.push_str(&format!(
                 r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#475569">{}</text>"##,
                 y + 15.0,
                 escape_xml(st)
             ));
-            svg.push_str(&format!(
-                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="#0f172a">{}</text>"##,
-                y + 32.0,
-                escape_xml(&c.name)
-            ));
-        } else {
-            svg.push_str(&format!(
-                r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="#0f172a">{}</text>"##,
-                y + 19.0,
-                escape_xml(&c.name)
-            ));
         }
+        svg.push_str(&format!(
+            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="{title_fill}">{}</text>"##,
+            y + if c.stereotype.is_some() { 32.0 } else { 19.0 },
+            escape_xml(title)
+        ));
 
         let mut cur_y = y + header_h;
         if !c.fields.is_empty() {
             for (i, f) in c.fields.iter().enumerate() {
                 svg.push_str(&format!(
-                    r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{}</text>"##,
+                    r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="{member_fill}">{}</text>"##,
                     x + 10.0,
                     cur_y + 16.0 + i as f32 * 18.0,
                     escape_xml(f)
@@ -4546,7 +4887,7 @@ fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec
             }
             for (i, m) in c.methods.iter().enumerate() {
                 svg.push_str(&format!(
-                    r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{}</text>"##,
+                    r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="{member_fill}">{}</text>"##,
                     x + 10.0,
                     cur_y + 16.0 + i as f32 * 18.0,
                     escape_xml(m)
@@ -4559,13 +4900,30 @@ fn render_class_diagram_svg(source: &str, config: &MermaidConfig) -> Option<(Vec
     Some((svg.into_bytes(), total_w, total_h))
 }
 
-fn split_class_relation<'a>(
-    line: &'a str,
+/// `"1"` at the end of `Customer "1"` / start of `"*" Order`, and the class name.
+fn split_class_card(raw: &str, card_first: bool) -> (&str, Option<String>) {
+    let raw = raw.trim();
+    if card_first {
+        if let Some(rest) = raw.strip_prefix('"')
+            && let Some(end) = rest.find('"')
+        {
+            return (rest[end + 1..].trim(), Some(rest[..end].to_string()));
+        }
+    } else if let Some(body) = raw.strip_suffix('"')
+        && let Some(start) = body.rfind('"')
+    {
+        return (body[..start].trim(), Some(body[start + 1..].to_string()));
+    }
+    (raw, None)
+}
+
+fn split_class_relation(
+    line: &str,
     classes: &mut Vec<ClassNode>,
     map: &mut HashMap<String, usize>,
     edges: &mut Vec<ClassEdge>,
     ensure_class: &mut impl FnMut(&str, &mut Vec<ClassNode>, &mut HashMap<String, usize>) -> usize,
-) -> Option<(&'a str, Option<String>)> {
+) -> bool {
     // Operators ordered longest-first so `<|..` matches before `..`.
     // Tuple: (token, target_is_lhs, kind, dashed)
     const OPS: &[(&str, bool, ClassRelKind, bool)] = &[
@@ -4585,40 +4943,230 @@ fn split_class_relation<'a>(
         ("..", false, ClassRelKind::Link, true),
     ];
 
-    let (body, label) = if let Some((b, lbl)) = line.split_once(':') {
-        (b.trim(), Some(lbl.trim().to_string()).filter(|s| !s.is_empty()))
-    } else {
-        (line.trim(), None)
+    // The label follows the last `:` outside quotes; `::` style members never reach here.
+    let (body, label) = match find_unquoted(line, ':') {
+        Some(at) if !line[at..].starts_with(":::") => {
+            (line[..at].trim(), Some(line[at + 1..].trim().to_string()).filter(|s| !s.is_empty()))
+        }
+        _ => (line.trim(), None),
     };
 
     for &(op, target_is_lhs, kind, dashed) in OPS {
-        if let Some(pos) = body.find(op) {
-            let lhs_raw = body[..pos].trim();
-            let rhs_raw = body[pos + op.len()..].trim();
-            // Strip optional quoted cardinalities (`Foo "1" --> "*" Bar`)
-            let lhs_name = lhs_raw.split_whitespace().next().unwrap_or("");
-            let rhs_name = rhs_raw.split_whitespace().last().unwrap_or("");
-            if lhs_name.is_empty() || rhs_name.is_empty() {
-                return None;
+        let Some(pos) = body.find(op) else { continue };
+        let (lhs_raw, lhs_card) = split_class_card(&body[..pos], false);
+        let (rhs_raw, rhs_card) = split_class_card(&body[pos + op.len()..], true);
+        let lhs_name = lhs_raw.split_whitespace().next().unwrap_or("");
+        let rhs_name = rhs_raw.split_whitespace().last().unwrap_or("");
+        if lhs_name.is_empty() || rhs_name.is_empty() {
+            return false;
+        }
+        let lhs_idx = ensure_class(lhs_name, classes, map);
+        let rhs_idx = ensure_class(rhs_name, classes, map);
+        let (from, to, from_card, to_card) = if target_is_lhs {
+            (rhs_idx, lhs_idx, rhs_card, lhs_card)
+        } else {
+            (lhs_idx, rhs_idx, lhs_card, rhs_card)
+        };
+        edges.push(ClassEdge {
+            from,
+            to,
+            kind,
+            dashed,
+            label,
+            from_card,
+            to_card,
+        });
+        return true;
+    }
+    false
+}
+
+/// A titled frame around diagram nodes: class `namespace`s, ER `subgraph`s.
+struct NodeGroup {
+    title: String,
+    parent: Option<usize>,
+}
+
+const GROUP_SIDE: f32 = 16.0;
+const GROUP_TOP: f32 = 34.0;
+
+/// A laid-out diagram with groups: node centers, canvas size, and each group's frame
+/// `(x, y, w, h)` (`None` for a group without nodes).
+type GroupedLayout = (Vec<(f32, f32)>, u32, u32, Vec<Option<(f32, f32, f32, f32)>>);
+
+/// Layered layout that keeps every group together: each group is laid out on its own
+/// (nested groups first, as blocks), then placed as one block among its siblings.
+/// Without groups this is exactly [`compute_layered_layout`].
+#[allow(clippy::too_many_arguments)]
+fn layout_with_groups(
+    sizes: &[(f32, f32)],
+    edges: &[(usize, usize)],
+    member_of: &[Option<usize>],
+    groups: &[NodeGroup],
+    horizontal: bool,
+    reversed: bool,
+    margin: f32,
+    layer_gap: f32,
+    sibling_gap: f32,
+) -> GroupedLayout {
+    let n = sizes.len();
+    // The child of `scope` on the way up from `cur` (`None` when `cur` is outside `scope`).
+    let slot_group = |scope: Option<usize>, mut cur: Option<usize>| -> Option<Option<usize>> {
+        let mut last = None;
+        loop {
+            if cur == scope {
+                return Some(last);
             }
-            let lhs_idx = ensure_class(lhs_name, classes, map);
-            let rhs_idx = ensure_class(rhs_name, classes, map);
-            let (from, to) = if target_is_lhs {
-                (rhs_idx, lhs_idx)
-            } else {
-                (lhs_idx, rhs_idx)
-            };
-            edges.push(ClassEdge {
-                from,
-                to,
-                kind,
-                dashed,
-                label: label.clone(),
-            });
-            return Some((lhs_name, label));
+            let g = cur?;
+            last = Some(g);
+            cur = groups[g].parent;
+        }
+    };
+    struct Placed {
+        centers: Vec<(usize, f32, f32)>,
+        frames: Vec<(usize, (f32, f32, f32, f32))>,
+        w: f32,
+        h: f32,
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn place(
+        scope: Option<usize>,
+        n: usize,
+        sizes: &[(f32, f32)],
+        edges: &[(usize, usize)],
+        member_of: &[Option<usize>],
+        groups: &[NodeGroup],
+        slot_group: &dyn Fn(Option<usize>, Option<usize>) -> Option<Option<usize>>,
+        opts: (bool, bool, f32, f32, f32),
+    ) -> Option<Placed> {
+        let (horizontal, reversed, margin, layer_gap, sibling_gap) = opts;
+        // Slots: direct nodes, and child groups (as laid-out blocks).
+        let mut slot_of: HashMap<usize, usize> = HashMap::new();
+        let mut slot_sizes: Vec<(f32, f32)> = Vec::new();
+        let mut slot_kind: Vec<Result<usize, Placed>> = Vec::new();
+        let mut child_slot: HashMap<usize, usize> = HashMap::new();
+        for i in 0..n {
+            match slot_group(scope, member_of[i]) {
+                None => {}
+                Some(None) => {
+                    slot_of.insert(i, slot_sizes.len());
+                    slot_sizes.push(sizes[i]);
+                    slot_kind.push(Ok(i));
+                }
+                Some(Some(child)) => {
+                    let slot = match child_slot.get(&child) {
+                        Some(&slot) => slot,
+                        None => {
+                            let block = place(Some(child), n, sizes, edges, member_of, groups, slot_group, opts)?;
+                            child_slot.insert(child, slot_sizes.len());
+                            slot_sizes.push((block.w, block.h));
+                            slot_kind.push(Err(block));
+                            slot_sizes.len() - 1
+                        }
+                    };
+                    slot_of.insert(i, slot);
+                }
+            }
+        }
+        if slot_sizes.is_empty() {
+            return None;
+        }
+        let mut slot_edges: Vec<(usize, usize)> = Vec::new();
+        for (a, b) in edges {
+            if let (Some(&sa), Some(&sb)) = (slot_of.get(a), slot_of.get(b))
+                && sa != sb
+                && !slot_edges.contains(&(sa, sb))
+            {
+                slot_edges.push((sa, sb));
+            }
+        }
+        let side = if scope.is_some() { GROUP_SIDE } else { margin };
+        let (centers, w, h) =
+            compute_layered_layout(slot_sizes.len(), &slot_edges, &slot_sizes, horizontal, reversed, side, layer_gap, sibling_gap);
+        // A group's title band sits above its content.
+        let extra_top = if scope.is_some() { GROUP_TOP - GROUP_SIDE } else { 0.0 };
+        // A frame is at least as wide as its title.
+        let title_w = scope.map_or(0.0, |g| estimate_text_width(&groups[g].title, 11.5) + 24.0);
+        let extra_x = ((title_w - w as f32) / 2.0).max(0.0);
+        let mut placed = Placed {
+            centers: Vec::new(),
+            frames: Vec::new(),
+            w: w as f32 + extra_x * 2.0,
+            h: h as f32 + extra_top,
+        };
+        for ((cx, cy), kind) in centers.into_iter().zip(slot_kind) {
+            let (cx, cy) = (cx + extra_x, cy + extra_top);
+            match kind {
+                Ok(i) => placed.centers.push((i, cx, cy)),
+                Err(block) => {
+                    let (ox, oy) = (cx - block.w / 2.0, cy - block.h / 2.0);
+                    placed.centers.extend(block.centers.into_iter().map(|(i, x, y)| (i, x + ox, y + oy)));
+                    placed.frames.extend(block.frames.into_iter().map(|(g, (x, y, fw, fh))| (g, (x + ox, y + oy, fw, fh))));
+                }
+            }
+        }
+        if let Some(g) = scope {
+            placed.frames.push((g, (0.0, 0.0, placed.w, placed.h)));
+        }
+        Some(placed)
+    }
+
+    let opts = (horizontal, reversed, margin, layer_gap, sibling_gap);
+    let Some(placed) = place(None, n, sizes, edges, member_of, groups, &slot_group, opts) else {
+        return (Vec::new(), 0, 0, vec![None; groups.len()]);
+    };
+    let mut centers = vec![(0.0f32, 0.0f32); n];
+    for (i, x, y) in placed.centers {
+        centers[i] = (x, y);
+    }
+    let mut frames = vec![None; groups.len()];
+    for (g, rect) in placed.frames {
+        frames[g] = Some(rect);
+    }
+    (centers, placed.w as u32, placed.h as u32, frames)
+}
+
+/// Frames for every group, outermost first.
+fn push_group_frames(svg: &mut String, groups: &[NodeGroup], frames: &[Option<(f32, f32, f32, f32)>], role: &str) {
+    let depth = |mut g: usize| {
+        let mut d = 0;
+        while let Some(p) = groups[g].parent {
+            d += 1;
+            g = p;
+        }
+        d
+    };
+    let mut order: Vec<usize> = (0..groups.len()).collect();
+    order.sort_by_key(|&g| depth(g));
+    for g in order {
+        let Some((fx, fy, fw, fh)) = frames[g] else { continue };
+        svg.push_str(&format!(
+            r##"<rect x="{fx:.1}" y="{fy:.1}" width="{fw:.1}" height="{fh:.1}" rx="6" fill="#f8fafc" fill-opacity="0.6" stroke="#94a3b8" stroke-width="1.1" stroke-dasharray="5,3" data-role="{role}"/>"##
+        ));
+        if !groups[g].title.is_empty() {
+            svg.push_str(&format!(
+                r##"<text x="{:.1}" y="{:.1}" font-size="11.5" font-weight="600" fill="#475569">{}</text>"##,
+                fx + 10.0,
+                fy + 16.0,
+                escape_xml(&groups[g].title)
+            ));
         }
     }
-    None
+}
+
+/// `~T~` generics as `<T>`.
+fn class_generics(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut open = false;
+    for ch in s.chars() {
+        if ch == '~' {
+            out.push(if open { '>' } else { '<' });
+            open = !open;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 // ============================================================================
@@ -4633,16 +5181,53 @@ struct ErAttr {
 
 struct ErEntity {
     name: String,
+    /// Display name for `id[Label]` / `id["Label"]`.
+    label: Option<String>,
     attrs: Vec<ErAttr>,
+    group: Option<usize>,
+    classes: Vec<String>,
+}
+
+/// An end of a relationship: an entity or a whole `subgraph`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ErEnd {
+    Entity(usize),
+    Group(usize),
 }
 
 struct ErEdge {
-    from: usize,
-    to: usize,
+    from: ErEnd,
+    to: ErEnd,
     left_card: String,
     right_card: String,
     dashed: bool,
     label: String,
+}
+
+/// Splits `REL : label` at the first lone `:` outside quotes (`A:::cls` is not a label).
+fn er_label_split(line: &str) -> (&str, Option<&str>) {
+    let bytes = line.as_bytes();
+    let mut in_quote = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => in_quote = !in_quote,
+            b':' if !in_quote => {
+                let mut j = i;
+                while j < bytes.len() && bytes[j] == b':' {
+                    j += 1;
+                }
+                if j - i == 1 {
+                    return (line[..i].trim(), Some(line[i + 1..].trim()));
+                }
+                i = j;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    (line.trim(), None)
 }
 
 fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
@@ -4650,18 +5235,40 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     let mut map: HashMap<String, usize> = HashMap::new();
     let mut edges: Vec<ErEdge> = Vec::new();
     let mut current_entity: Option<usize> = None;
+    let mut groups: Vec<NodeGroup> = Vec::new();
+    let mut group_ids: HashMap<String, usize> = HashMap::new();
+    let mut group_stack: Vec<usize> = Vec::new();
+    let mut horizontal = true;
+    let mut reversed = false;
+    let mut class_defs: HashMap<String, FlowStyle> = HashMap::new();
+    let mut styles: Vec<(String, FlowStyle)> = Vec::new();
 
-    let ensure_entity = |name: &str, entities: &mut Vec<ErEntity>, map: &mut HashMap<String, usize>| -> usize {
-        let key = unquote(name.trim());
-        if let Some(&idx) = map.get(&key) {
-            return idx;
+    let ensure_entity = |raw: &str, entities: &mut Vec<ErEntity>, map: &mut HashMap<String, usize>, group: Option<usize>| -> usize {
+        let (key, label, css) = class_name_parts(raw);
+        let key = unquote(&key);
+        let idx = match map.get(&key) {
+            Some(&idx) => idx,
+            None => {
+                entities.push(ErEntity {
+                    name: key.clone(),
+                    label: None,
+                    attrs: Vec::new(),
+                    group: None,
+                    classes: Vec::new(),
+                });
+                map.insert(key, entities.len() - 1);
+                entities.len() - 1
+            }
+        };
+        if label.is_some() {
+            entities[idx].label = label;
         }
-        let idx = entities.len();
-        entities.push(ErEntity {
-            name: key.clone(),
-            attrs: Vec::new(),
-        });
-        map.insert(key, idx);
+        if let Some(css) = css {
+            entities[idx].classes.push(css);
+        }
+        if entities[idx].group.is_none() {
+            entities[idx].group = group;
+        }
         idx
     };
 
@@ -4679,36 +5286,100 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             if parts.len() >= 2 {
                 let ty = parts[0].to_string();
                 let name = parts[1].to_string();
-                let key = parts
-                    .get(2)
-                    .filter(|s| !s.starts_with('"'))
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
+                // Keys: `PK`, `FK`, `UK`, or a list like `PK, FK`; a comment is quoted.
+                let key = parts[2..]
+                    .iter()
+                    .take_while(|s| !s.starts_with('"'))
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 entities[eidx].attrs.push(ErAttr { ty, name, key });
             }
+            continue;
+        }
+        let group = group_stack.last().copied();
+        if l == "end" {
+            group_stack.pop();
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("subgraph ") {
+            let rest = rest.trim();
+            let (id, title) = match rest.find('[') {
+                Some(open) if rest.ends_with(']') => (rest[..open].trim().to_string(), unquote(&rest[open + 1..rest.len() - 1])),
+                _ => (unquote(rest), unquote(rest)),
+            };
+            groups.push(NodeGroup { title, parent: group });
+            group_ids.insert(id, groups.len() - 1);
+            group_stack.push(groups.len() - 1);
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("direction ") {
+            // Only the diagram-level direction; nested ones are not modelled.
+            if group.is_none() {
+                (horizontal, reversed) = match rest.trim().to_ascii_uppercase().as_str() {
+                    "TB" | "TD" => (false, false),
+                    "BT" => (false, true),
+                    "RL" => (true, true),
+                    _ => (true, false),
+                };
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("classDef ") {
+            let rest = rest.trim();
+            let (names, props) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            let style = parse_flow_style(props);
+            for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                class_defs.entry(name.to_string()).or_default().merge(&style);
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("style ") {
+            if let Some((id, props)) = rest.trim().split_once(char::is_whitespace) {
+                styles.push((id.to_string(), parse_flow_style(props)));
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("class ") {
+            if let Some((ids, css)) = rest.trim().rsplit_once(char::is_whitespace) {
+                for id in ids.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+                    let idx = ensure_entity(id, &mut entities, &mut map, group);
+                    entities[idx].classes.push(css.trim().to_string());
+                }
+            }
+            continue;
+        }
+        if l.starts_with("title ") || l.starts_with("accTitle") || l.starts_with("accDescr") {
             continue;
         }
         if let Some(before_brace) = l.strip_suffix('{') {
             let ename = before_brace.trim();
             if !ename.is_empty() && !ename.contains("--") && !ename.contains("..") {
-                let idx = ensure_entity(ename, &mut entities, &mut map);
-                current_entity = Some(idx);
+                current_entity = Some(ensure_entity(ename, &mut entities, &mut map, group));
                 continue;
             }
         }
-        if let Some((rel_part, label_raw)) = l.split_once(':') {
-            if let Some((lhs, left_card, dashed, right_card, rhs)) = parse_er_relation(rel_part.trim()) {
-                let from = ensure_entity(lhs, &mut entities, &mut map);
-                let to = ensure_entity(rhs, &mut entities, &mut map);
-                edges.push(ErEdge {
-                    from,
-                    to,
-                    left_card: format_er_card(left_card),
-                    right_card: format_er_card(right_card),
-                    dashed,
-                    label: unquote(label_raw.trim()),
-                });
-            }
+        let (rel_part, label_raw) = er_label_split(l);
+        if let Some((lhs, left_card, dashed, right_card, rhs)) = parse_er_relation(rel_part) {
+            let end = |name: &str, entities: &mut Vec<ErEntity>, map: &mut HashMap<String, usize>| match group_ids.get(name) {
+                Some(&g) if !map.contains_key(name) => ErEnd::Group(g),
+                _ => ErEnd::Entity(ensure_entity(name, entities, map, group)),
+            };
+            let from = end(lhs, &mut entities, &mut map);
+            let to = end(rhs, &mut entities, &mut map);
+            edges.push(ErEdge {
+                from,
+                to,
+                left_card,
+                right_card,
+                dashed,
+                label: label_raw.map(unquote).unwrap_or_default(),
+            });
+            continue;
+        }
+        // A lone entity: `CUSTOMER`, `"Quoted name"`, `HOUSE:::cls`, `p[Person]`.
+        if label_raw.is_none() && (l.starts_with('"') || !l.contains(char::is_whitespace) || l.contains('[')) {
+            ensure_entity(l, &mut entities, &mut map, group);
         }
     }
 
@@ -4716,15 +5387,33 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         return None;
     }
 
-    let node_sizes: Vec<(f32, f32)> = entities
+    let mut node_style: Vec<FlowStyle> = entities
         .iter()
         .map(|e| {
-            let mut max_w = estimate_text_width(&e.name, 13.0) + 32.0;
+            let mut style = class_defs.get("default").cloned().unwrap_or_default();
+            for name in &e.classes {
+                if let Some(def) = class_defs.get(name) {
+                    style.merge(def);
+                }
+            }
+            style
+        })
+        .collect();
+    for (id, style) in &styles {
+        if let Some(&idx) = map.get(id) {
+            node_style[idx].merge(style);
+        }
+    }
+
+    let mut node_sizes: Vec<(f32, f32)> = entities
+        .iter()
+        .map(|e| {
+            let mut max_w = estimate_text_width(e.label.as_deref().unwrap_or(&e.name), 13.0) + 32.0;
             for a in &e.attrs {
                 let row = if a.key.is_empty() {
                     format!("{}  {}", a.ty, a.name)
                 } else {
-                    format!("{}  {}  {}", a.ty, a.name, a.key)
+                    format!("{}  {}  [{}]", a.ty, a.name, a.key)
                 };
                 max_w = max_w.max(estimate_text_width(&row, 11.5) + 28.0);
             }
@@ -4738,55 +5427,77 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         })
         .collect();
 
-    let edge_pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
-    let (centers, total_w, total_h) = compute_layered_layout(
-        entities.len(),
-        &edge_pairs,
-        &node_sizes,
-        true,
-        false,
-        36.0,
-        84.0,
-        40.0,
-    );
+    let member_of: Vec<Option<usize>> = entities.iter().map(|e| e.group).collect();
+    // A subgraph end lays out next to the subgraph's first member.
+    let group_anchor = |g: usize| -> Option<usize> {
+        (0..entities.len()).find(|&i| {
+            let mut cur = member_of[i];
+            while let Some(c) = cur {
+                if c == g {
+                    return true;
+                }
+                cur = groups[c].parent;
+            }
+            false
+        })
+    };
+    let layout_end = |end: ErEnd| match end {
+        ErEnd::Entity(i) => Some(i),
+        ErEnd::Group(g) => group_anchor(g),
+    };
+    let edge_pairs: Vec<(usize, usize)> = edges
+        .iter()
+        .filter_map(|e| Some((layout_end(e.from)?, layout_end(e.to)?)))
+        .filter(|(a, b)| a != b)
+        .collect();
+    let (mut centers, total_w, total_h, frames) =
+        layout_with_groups(&node_sizes, &edge_pairs, &member_of, &groups, horizontal, reversed, 36.0, 84.0, 40.0);
 
     let mut svg = String::new();
     svg.push_str(&format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" font-family="sans-serif">"##
     ));
-    svg.push_str(&format!(
-        r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
-    ));
+    svg.push_str(&format!(r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##));
+    push_group_frames(&mut svg, &groups, &frames, "subgraph");
+
+    // Subgraph ends route to the frame: append each frame as a virtual node.
+    let mut group_node: HashMap<usize, usize> = HashMap::new();
+    for (g, frame) in frames.iter().enumerate() {
+        if let Some((fx, fy, fw, fh)) = *frame {
+            group_node.insert(g, centers.len());
+            centers.push((fx + fw / 2.0, fy + fh / 2.0));
+            node_sizes.push((fw, fh));
+        }
+    }
+    let route_end = |end: ErEnd| match end {
+        ErEnd::Entity(i) => Some(i),
+        ErEnd::Group(g) => group_node.get(&g).copied(),
+    };
 
     // Edges
     for e in &edges {
-        let route = route_layered_edge(
-            e.from,
-            e.to,
-            &centers,
-            &node_sizes,
-            true,
-            false,
-            (total_w as f32, total_h as f32),
-        );
+        let (Some(from), Some(to)) = (route_end(e.from), route_end(e.to)) else { continue };
+        if from == to {
+            continue;
+        }
+        let route = route_layered_edge(from, to, &centers, &node_sizes, horizontal, false, (total_w as f32, total_h as f32));
         let dash = if e.dashed { r#" stroke-dasharray="5,4""# } else { "" };
         push_routed_edge(&mut svg, &route, "#475569", "1.5", dash);
         let (sx, sy) = route.start;
         let (ex, ey) = route.end;
         let (ux, uy) = route.leave_dir;
         let (vx, vy) = route.arrive_dir;
-        svg.push_str(&format!(
-            r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#0f766e">{}</text>"##,
-            sx + ux * 16.0,
-            sy + uy * 16.0 - 5.0,
-            escape_xml(&e.left_card)
-        ));
-        svg.push_str(&format!(
-            r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#0f766e">{}</text>"##,
-            ex - vx * 16.0,
-            ey - vy * 16.0 - 5.0,
-            escape_xml(&e.right_card)
-        ));
+        // Cards sit beside the line: above it when horizontal, to its right when vertical.
+        let (ox, oy) = if horizontal { (0.0, -5.0) } else { (12.0, 4.0) };
+        for (card, x, y) in [
+            (&e.left_card, sx + ux * 16.0 + ox, sy + uy * 16.0 + oy),
+            (&e.right_card, ex - vx * 16.0 + ox, ey - vy * 16.0 + oy),
+        ] {
+            svg.push_str(&format!(
+                r##"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#0f766e" data-role="cardinality">{}</text>"##,
+                escape_xml(card)
+            ));
+        }
         if !e.label.is_empty() {
             let (mx, my) = route.label_at;
             let lw = estimate_text_width(&e.label, 11.0) + 10.0;
@@ -4809,16 +5520,24 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         let (nw, nh) = node_sizes[idx];
         let x = cx - nw / 2.0;
         let y = cy - nh / 2.0;
+        let style = &node_style[idx];
+        let shape_at = svg.len();
         svg.push_str(&format!(
             r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="{nh:.1}" rx="4" fill="#ffffff" stroke="#0f766e" stroke-width="1.4"/>"##
         ));
         svg.push_str(&format!(
             r##"<rect x="{x:.1}" y="{y:.1}" width="{nw:.1}" height="28" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.4"/>"##
         ));
+        if !style.is_empty() {
+            let shapes = svg.split_off(shape_at);
+            svg.push_str(&restyle_svg_fragment(&shapes, style));
+        }
+        let ink = style.color.as_deref().map(escape_xml);
         svg.push_str(&format!(
-            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="#134e4a">{}</text>"##,
+            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="13" font-weight="bold" fill="{}">{}</text>"##,
             y + 19.0,
-            escape_xml(&ent.name)
+            ink.clone().unwrap_or_else(|| "#134e4a".to_string()),
+            escape_xml(ent.label.as_deref().unwrap_or(&ent.name))
         ));
         for (i, a) in ent.attrs.iter().enumerate() {
             let ay = y + 46.0 + i as f32 * 20.0;
@@ -4828,8 +5547,9 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 format!("{}  {}  [{}]", a.ty, a.name, a.key)
             };
             svg.push_str(&format!(
-                r##"<text x="{:.1}" y="{ay:.1}" font-size="11.5" fill="#1e293b">{}</text>"##,
+                r##"<text x="{:.1}" y="{ay:.1}" font-size="11.5" fill="{}">{}</text>"##,
                 x + 10.0,
+                ink.clone().unwrap_or_else(|| "#1e293b".to_string()),
                 escape_xml(&row)
             ));
         }
@@ -4839,26 +5559,71 @@ fn render_er_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     Some((svg.into_bytes(), total_w, total_h))
 }
 
-fn parse_er_relation(s: &str) -> Option<(&str, &str, bool, &str, &str)> {
-    let (sep, dashed) = if let Some(idx) = s.find("--") {
-        (idx, false)
-    } else if let Some(idx) = s.find("..") {
-        (idx, true)
-    } else {
-        return None;
-    };
-    let lhs_all = s[..sep].trim();
-    let rhs_all = s[sep + 2..].trim();
-    let lhs_split = lhs_all.rfind(' ')?;
-    let rhs_split = rhs_all.find(' ')?;
-    let lhs = lhs_all[..lhs_split].trim();
-    let left_card = lhs_all[lhs_split + 1..].trim();
-    let right_card = rhs_all[..rhs_split].trim();
-    let rhs = rhs_all[rhs_split + 1..].trim();
-    if lhs.is_empty() || rhs.is_empty() {
-        return None;
+const ER_CARD_CHARS: &[char] = &['|', 'o', '}', '{'];
+
+/// `A ||--o{ B`, `A||--||B`, `A only one to zero or more B` (`optionally to` is dashed) →
+/// (lhs, left card, dashed, right card, rhs) with the cards as `1`, `0..1`, `1..*`, `0..*`.
+fn parse_er_relation(s: &str) -> Option<(&str, String, bool, String, &str)> {
+    let symbolic = s.find("--").map(|i| (i, false)).or_else(|| s.find("..").map(|i| (i, true)));
+    if let Some((sep, dashed)) = symbolic {
+        let lhs_all = s[..sep].trim_end();
+        let rhs_all = s[sep + 2..].trim_start();
+        let (lhs, left_card) = match lhs_all.rfind(' ') {
+            Some(at) => (lhs_all[..at].trim(), &lhs_all[at + 1..]),
+            None if lhs_all.len() > 2 && lhs_all.is_char_boundary(lhs_all.len() - 2) => {
+                let at = lhs_all.len() - 2;
+                (&lhs_all[..at], &lhs_all[at..])
+            }
+            None => return None,
+        };
+        let (right_card, rhs) = match rhs_all.find(' ') {
+            Some(at) => (&rhs_all[..at], rhs_all[at + 1..].trim()),
+            None if rhs_all.len() > 2 && rhs_all.is_char_boundary(2) => (&rhs_all[..2], &rhs_all[2..]),
+            None => return None,
+        };
+        if lhs.is_empty() || rhs.is_empty() || !left_card.chars().all(|c| ER_CARD_CHARS.contains(&c)) || !right_card.chars().all(|c| ER_CARD_CHARS.contains(&c)) {
+            return None;
+        }
+        return Some((lhs, format_er_card(left_card), dashed, format_er_card(right_card), rhs));
     }
-    Some((lhs, left_card, dashed, right_card, rhs))
+    let (sep, len, dashed) = match s.find(" optionally to ") {
+        Some(i) => (i, " optionally to ".len(), true),
+        None => (s.find(" to ")?, " to ".len(), false),
+    };
+    let (lhs, left_words) = er_word_end(s[..sep].trim(), true)?;
+    let (rhs, right_words) = er_word_end(s[sep + len..].trim(), false)?;
+    Some((lhs, er_word_card(left_words)?, dashed, er_word_card(right_words)?, rhs))
+}
+
+/// Splits `NAME card words` (entity first) or `card words NAME` (entity last).
+fn er_word_end(s: &str, entity_first: bool) -> Option<(&str, &str)> {
+    let (name, words) = if entity_first {
+        if let Some(rest) = s.strip_prefix('"') {
+            let end = rest.find('"')? + 2;
+            (&s[..end], s[end..].trim())
+        } else {
+            let (name, words) = s.split_once(char::is_whitespace)?;
+            (name, words.trim())
+        }
+    } else if s.ends_with('"') {
+        let start = s[..s.len() - 1].rfind('"')?;
+        (&s[start..], s[..start].trim())
+    } else {
+        let (words, name) = s.rsplit_once(char::is_whitespace)?;
+        (name, words.trim())
+    };
+    (!name.is_empty() && !words.is_empty()).then_some((name, words))
+}
+
+fn er_word_card(words: &str) -> Option<String> {
+    let card = match words.to_ascii_lowercase().as_str() {
+        "1" | "one" | "only one" | "exactly one" => "1",
+        "zero or one" | "one or zero" => "0..1",
+        "one or more" | "one or many" | "many(1)" | "1+" => "1..*",
+        "zero or more" | "zero or many" | "many(0)" | "0+" => "0..*",
+        _ => return None,
+    };
+    Some(card.to_string())
 }
 
 fn format_er_card(card: &str) -> String {
@@ -7922,5 +8687,160 @@ flowchart TD
         let class = "classDiagram\n  class Duck\n";
         let hidden = height(&format!("---\nconfig:\n  class:\n    hideEmptyMembersBox: true\n---\n{class}"));
         assert!(hidden < height(class), "{hidden}");
+    }
+
+    #[test]
+    fn sequence_participant_types_and_aliases() {
+        let (id, label, kind) = seq_declaration(r#"Q@{ "type" : "queue", "alias": "Jobs" }"#);
+        assert_eq!((id, label.as_deref()), ("Q", Some("Jobs")));
+        assert!(matches!(kind, Some(SeqKind::Queue)));
+        // `as` wins over `alias`.
+        let (id, label, kind) = seq_declaration(r#"C@{ "type": "control", "alias": "X" } as Ctl"#);
+        assert_eq!((id, label.as_deref()), ("C", Some("Ctl")));
+        assert!(matches!(kind, Some(SeqKind::Control)));
+        assert!(seq_declaration("Plain").2.is_none());
+
+        let svg = svg_of(
+            r#"sequenceDiagram
+    participant A@{ "type": "database" }
+    participant Q@{ "type": "queue", "alias": "Jobs" }
+    participant C@{ "type": "control" } as Ctl
+    actor E@{ "type": "entity" }
+    participant B@{ "type": "boundary" }
+    participant L@{ "type": "collections" }
+    A->>Q: put
+    Q->>C: take
+"#,
+        );
+        for shape in ["database", "queue", "control", "entity", "boundary", "collections"] {
+            assert!(svg.contains(&format!(r#"data-shape="seq-{shape}""#)), "{shape}: {svg}");
+        }
+        assert!(svg.contains(">Jobs<") && svg.contains(">Ctl<"), "{svg}");
+        assert!(!svg.contains("@{"), "{svg}");
+    }
+
+    #[test]
+    fn class_namespaces_nest_and_frame_their_classes() {
+        let frames = |svg: &str| -> Vec<(f32, f32, f32, f32)> {
+            tag_with(svg, r#"data-role="namespace""#)
+                .iter()
+                .map(|t| (attr_f32(t, "x").unwrap(), attr_f32(t, "y").unwrap(), attr_f32(t, "width").unwrap(), attr_f32(t, "height").unwrap()))
+                .collect()
+        };
+        let svg = svg_of(
+            "classDiagram\n  namespace Platform {\n    class Gateway\n    namespace Auth {\n      class UserService\n    }\n  }\n  class Loose\n  Gateway --> UserService\n",
+        );
+        let f = frames(&svg);
+        assert_eq!(f.len(), 2, "{svg}");
+        let inside = |(x, y, w, h): (f32, f32, f32, f32), label: &str| {
+            let (tx, ty) = (text_x(&svg, label), text_y(&svg, label));
+            tx > x && tx < x + w && ty > y && ty < y + h
+        };
+        // Outermost first: Platform holds both classes, Auth only UserService.
+        assert!(inside(f[0], "Gateway") && inside(f[0], "UserService") && !inside(f[0], "Loose"), "{svg}");
+        assert!(inside(f[1], "UserService") && !inside(f[1], "Gateway"), "{svg}");
+        assert!(svg.contains(">Platform<") && svg.contains(">Auth<"));
+
+        // `namespace Id["Label"]` shows the label.
+        assert!(svg_of("classDiagram\n  namespace Auth[\"Authentication\"] {\n    class A\n  }\n").contains(">Authentication<"));
+
+        // Dotted names nest (`Company` > `Engineering` > `Backend`) unless hierarchicalNamespaces is off.
+        let dotted = "classDiagram\n  namespace Company.Engineering.Backend {\n    class Dev\n  }\n  namespace Company.Engineering {\n    class Lead\n  }\n  Lead --> Dev\n";
+        let nested = svg_of(dotted);
+        assert_eq!(frames(&nested).len(), 3, "{nested}");
+        assert!(nested.contains(">Backend<") && nested.contains(">Company<"), "{nested}");
+        let flat = svg_of(&format!("---\nconfig:\n  class:\n    hierarchicalNamespaces: false\n---\n{dotted}"));
+        assert_eq!(frames(&flat).len(), 2, "{flat}");
+        assert!(flat.contains(">Company.Engineering.Backend<"), "{flat}");
+    }
+
+    #[test]
+    fn class_notes_cardinality_generics_and_styles() {
+        assert_eq!(split_class_card(r#"Customer "1""#, false), ("Customer", Some("1".to_string())));
+        assert_eq!(split_class_card(r#""many" Star"#, true), ("Star", Some("many".to_string())));
+        assert_eq!(split_class_card("Star", true), ("Star", None));
+
+        let svg = svg_of(
+            "classDiagram\n  note \"General note\"\n  note for Duck \"Can fly\"\n  Customer \"1\" --> \"*\" Order : places\n  class Square~Shape~\n  Duck : +List~int~ eggs\n",
+        );
+        assert_eq!(tag_with(&svg, r#"data-shape="class-note""#).len(), 2, "{svg}");
+        assert!(svg.contains(">General note<") && svg.contains(">Can fly<"), "{svg}");
+        let cards = tag_with(&svg, r#"data-role="multiplicity""#);
+        assert_eq!(cards.len(), 2, "{svg}");
+        // Each multiplicity sits at its own end.
+        let dist = |a: &str, b: &str| (text_x(&svg, a) - text_x(&svg, b)).hypot(text_y(&svg, a) - text_y(&svg, b));
+        assert!(dist("*", "Order") < dist("*", "Customer"), "{svg}");
+        assert!(dist("1", "Customer") < dist("1", "Order"), "{svg}");
+        assert!(svg.contains(">Square&lt;Shape&gt;<") && svg.contains(">+List&lt;int&gt; eggs<"), "{svg}");
+
+        let styled = svg_of(
+            "classDiagram\n  class Animal:::pink\n  class Mineral\n  class Rock\n  classDef default fill:#f96,color:red\n  classDef pink color:#f9f\n  style Rock fill:#bbf\n",
+        );
+        assert!(styled.contains(r##"fill="#f9f">Animal<"##) && styled.contains(r##"fill="red">Mineral<"##), "{styled}");
+        assert!(!painted_rects(&styled, "#f96").is_empty() && !painted_rects(&styled, "#bbf").is_empty(), "{styled}");
+    }
+
+    #[test]
+    fn er_relations_symbolic_word_and_unspaced() {
+        let rel = |s| parse_er_relation(s).map(|(l, lc, d, rc, r)| (l.to_string(), lc, d, rc, r.to_string()));
+        let t = |l: &str, lc: &str, d, rc: &str, r: &str| Some((l.to_string(), lc.to_string(), d, rc.to_string(), r.to_string()));
+        assert_eq!(rel("A ||--o{ B"), t("A", "1", false, "0..*", "B"));
+        assert_eq!(rel("id1||--||id2"), t("id1", "1", false, "1", "id2"));
+        assert_eq!(rel("PERSON o{--|| HOUSE:::bar"), t("PERSON", "0..*", false, "1", "HOUSE:::bar"));
+        assert_eq!(rel("A }|..|{ B"), t("A", "1..*", true, "1..*", "B"));
+        assert_eq!(rel("CAR 1 to zero or more NAMED-DRIVER"), t("CAR", "1", false, "0..*", "NAMED-DRIVER"));
+        assert_eq!(rel("PERSON many(0) optionally to 0+ NAMED-DRIVER"), t("PERSON", "0..*", true, "0..*", "NAMED-DRIVER"));
+        assert_eq!(rel("MANUFACTURER only one to one or more CAR"), t("MANUFACTURER", "1", false, "1..*", "CAR"));
+        assert_eq!(rel("A to B"), None);
+        assert_eq!(rel("A banana to zero or more B"), None);
+        assert_eq!(er_label_split("PERSON:::foo ||--|| CAR : \"owns\""), ("PERSON:::foo ||--|| CAR", Some("\"owns\"")));
+        assert_eq!(er_label_split("HOUSE:::bar"), ("HOUSE:::bar", None));
+
+        let svg = svg_of("erDiagram\n  CAR 1 to zero or more NAMED-DRIVER : allows\n  id1||--||id2 : label\n");
+        for name in ["CAR", "NAMED-DRIVER", "id1", "id2", "allows", "label", "0..*"] {
+            assert!(svg.contains(&format!(">{name}<")), "{name}: {svg}");
+        }
+    }
+
+    #[test]
+    fn er_entities_aliases_direction_styles_and_subgraphs() {
+        // Entity-only lines render on their own.
+        let lone = svg_of("erDiagram\n  \"This is quoted\"\n  CUSTOMER\n  HOUSE:::c\n");
+        assert!(lone.contains(">This is quoted<") && lone.contains(">CUSTOMER<") && lone.contains(">HOUSE<"), "{lone}");
+        let alias = svg_of("erDiagram\n  p[Person] {\n    string name\n  }\n  a[\"Customer Account\"]\n  p ||--o| a : has\n");
+        assert!(alias.contains(">Person<") && alias.contains(">Customer Account<") && !alias.contains(">p<"), "{alias}");
+
+        // LR by default, `direction TB` stacks the layers.
+        let body = "  CUSTOMER ||--o{ ORDER : places\n";
+        let lr = svg_of(&format!("erDiagram\n{body}"));
+        assert!(text_x(&lr, "ORDER") > text_x(&lr, "CUSTOMER") + 50.0, "{lr}");
+        let tb = svg_of(&format!("erDiagram\n  direction TB\n{body}"));
+        assert!(text_y(&tb, "ORDER") > text_y(&tb, "CUSTOMER") + 30.0, "{tb}");
+        assert!((text_x(&tb, "ORDER") - text_x(&tb, "CUSTOMER")).abs() < 1.0, "{tb}");
+
+        let styled = svg_of(
+            "erDiagram\n  CAR:::hot\n  PERSON\n  id1\n  classDef default stroke:#00f\n  classDef hot fill:#f96\n  style id1 fill:#bbf,color:#fff\n",
+        );
+        assert!(!painted_rects(&styled, "#f96").is_empty() && !painted_rects(&styled, "#bbf").is_empty(), "{styled}");
+        assert!(styled.contains(r##"stroke="#00f""##) && styled.contains(r##"fill="#fff">id1<"##), "{styled}");
+
+        // Nested subgraphs: siblings do not overlap, the parent holds both; a subgraph id as a
+        // relationship end routes to its frame instead of becoming an entity.
+        let svg = svg_of(
+            "erDiagram\n  subgraph TOP\n    subgraph B1 [First]\n      I1 ||--|| F1 : links\n    end\n    subgraph \"B2\"\n      I2 ||--|| F2 : links\n    end\n  end\n  A ||--|| TOP : links\n  B1 ||--|| B2 : links\n",
+        );
+        let frames: Vec<(f32, f32, f32, f32)> = tag_with(&svg, r#"data-role="subgraph""#)
+            .iter()
+            .map(|t| (attr_f32(t, "x").unwrap(), attr_f32(t, "y").unwrap(), attr_f32(t, "width").unwrap(), attr_f32(t, "height").unwrap()))
+            .collect();
+        assert_eq!(frames.len(), 3, "{svg}");
+        let (top, b1, b2) = (frames[0], frames[1], frames[2]);
+        let within = |a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)| a.0 >= b.0 && a.1 >= b.1 && a.0 + a.2 <= b.0 + b.2 && a.1 + a.3 <= b.1 + b.3;
+        let disjoint = |a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)| a.0 + a.2 <= b.0 || b.0 + b.2 <= a.0 || a.1 + a.3 <= b.1 || b.1 + b.3 <= a.1;
+        assert!(within(b1, top) && within(b2, top) && disjoint(b1, b2), "{frames:?}");
+        assert!(svg.contains(">First<"), "{svg}");
+        assert_eq!(svg.matches(">TOP<").count(), 1, "TOP is a frame, not an entity: {svg}");
+        assert_eq!(svg.matches(">B1<").count(), 0, "{svg}");
+        assert!(text_x(&svg, "A") < top.0, "{svg}");
     }
 }
