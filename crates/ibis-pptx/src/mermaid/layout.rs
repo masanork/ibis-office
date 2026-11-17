@@ -882,7 +882,7 @@ pub(super) fn push_group_frames(svg: &mut String, groups: &[NodeGroup], frames: 
                 r##"<text x="{:.1}" y="{:.1}" font-size="11.5" font-weight="600" fill="#475569">{}</text>"##,
                 fx + 10.0,
                 fy + 16.0,
-                escape_xml(&groups[g].title)
+                label_markup(&groups[g].title, false)
             ));
         }
     }

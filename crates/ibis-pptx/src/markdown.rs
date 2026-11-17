@@ -2402,7 +2402,7 @@ fn build_chart_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Block,
         }
     }
 
-    build_chart_block_from_spec(kind, title, size, categories, series_list, &[], false, None, content, ctx)
+    build_chart_block_from_spec(kind, title, size, categories, series_list, &[], false, None, None, content, ctx)
 }
 
 /// `pie showData` labels the slices. A mix of `bar` and `line` becomes one
@@ -2457,6 +2457,61 @@ fn apply_mermaid_series_layout(chart: &mut Chart, series_kinds: &[NewChartKind],
         .collect();
 }
 
+/// The frontmatter `config` of a Mermaid `pie` / `xychart` on the native chart: series or slice
+/// colours, value labels, the doughnut hole and the highlighted slice.
+fn apply_mermaid_chart_style(chart: &mut Chart, style: &crate::mermaid::MermaidChartStyle, categories: &[String]) {
+    let solid = |hex: &str| parse_hex_rgb(hex).map(|rgb| Fill::Solid(ibis_doc_model::Color::opaque(rgb)));
+    let mut series_index = 0usize;
+    for group in &mut chart.groups {
+        let is_pie = matches!(group.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. });
+        if let (ChartType::Doughnut { hole, .. }, Some(ratio)) = (&mut group.kind, style.donut_hole) {
+            *hole = ((ratio * 100.0).round() as u32).clamp(10, 90);
+        }
+        let is_line = matches!(group.kind, ChartType::Line);
+        for series in &mut group.series {
+            if is_pie {
+                if !style.palette.is_empty() {
+                    series.point_fills = (0..categories.len())
+                        .filter_map(|i| solid(&style.palette[i % style.palette.len()]).map(|fill| (i, fill)))
+                        .collect();
+                }
+                if let Some(at) = style.highlight.as_ref().and_then(|h| categories.iter().position(|c| c == h)) {
+                    series.point_explosions = vec![(at, 15)];
+                }
+            } else {
+                let color = style
+                    .palette
+                    .get(series_index % style.palette.len().max(1))
+                    .and_then(|hex| parse_hex_rgb(hex))
+                    .map(ibis_doc_model::Color::opaque);
+                if let Some(color) = color {
+                    if is_line {
+                        match &mut series.stroke {
+                            Some(stroke) => stroke.color = color,
+                            None => series.stroke = Some(ibis_doc_model::Stroke::solid(color, 28_575)),
+                        }
+                    }
+                    series.fill = Fill::Solid(color);
+                }
+                if style.data_labels {
+                    series.labels = Some(DataLabels {
+                        show_value: true,
+                        position: Some(if is_line {
+                            LabelPosition::Above
+                        } else if style.data_labels_outside {
+                            LabelPosition::OutsideEnd
+                        } else {
+                            LabelPosition::InsideEnd
+                        }),
+                        ..DataLabels::default()
+                    });
+                }
+                series_index += 1;
+            }
+        }
+    }
+}
+
 /// `xychart` `y-axis min --> max` fixes the value axis' scale.
 fn apply_mermaid_value_range(chart: &mut Chart, y_range: Option<(f64, f64)>) {
     let Some((min, max)) = y_range else { return };
@@ -2504,15 +2559,24 @@ fn build_mermaid_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Bloc
     match crate::mermaid::render_mermaid(content) {
         Some(crate::mermaid::MermaidOutput::Chart(spec)) => {
             if ctx.source.is_some() && ctx.baseline_pres.is_some() {
+                // `xyChart.width` / `height` keep their aspect ratio at the default chart width.
+                let size = match spec.style.size_px {
+                    Some((w, h)) if w > 0 && h > 0 => EmuSize::new(
+                        DEFAULT_CHART_SIZE.width,
+                        DEFAULT_CHART_SIZE.width * h as Emu / w as Emu,
+                    ),
+                    _ => DEFAULT_CHART_SIZE,
+                };
                 build_chart_block_from_spec(
                     spec.kind,
                     spec.title,
-                    DEFAULT_CHART_SIZE,
+                    size,
                     spec.categories,
                     spec.series,
                     &spec.series_kinds,
                     spec.show_data,
                     spec.y_range,
+                    Some(&spec.style),
                     content,
                     ctx,
                 )
@@ -2597,6 +2661,7 @@ fn build_chart_block_from_spec(
     series_kinds: &[NewChartKind],
     show_data: bool,
     y_range: Option<(f64, f64)>,
+    style: Option<&crate::mermaid::MermaidChartStyle>,
     raw_fallback: &str,
     ctx: &mut ParseContext<'_>,
 ) -> Result<Block, Error> {
@@ -2681,6 +2746,9 @@ fn build_chart_block_from_spec(
             }
             apply_mermaid_series_layout(&mut chart, series_kinds, show_data);
             apply_mermaid_value_range(&mut chart, y_range);
+            if let Some(style) = style {
+                apply_mermaid_chart_style(&mut chart, style, &categories);
+            }
             chart.mermaid_source = ibis_doc_model::MermaidFence::new(raw_fallback);
             source.set_chart_data(shape_id, chart.clone(), chart_data);
         } else if let Some(t) = &title {
@@ -4151,7 +4219,7 @@ fn mermaid_source_matches(chart: &Chart, source: &str) -> bool {
     let pie = chart.groups.iter().any(|g| matches!(g.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }));
     let line_only = chart.groups.len() == 1 && matches!(chart.groups[0].kind, ChartType::Line);
     match spec.kind {
-        NewChartKind::Pie => pie,
+        NewChartKind::Pie | NewChartKind::Doughnut => pie,
         NewChartKind::Line => line_only,
         NewChartKind::ClusteredColumn => !pie && !line_only,
         _ => false,
@@ -5532,6 +5600,69 @@ xychart
         }
         let edited_md = export_markdown(edited.flow.as_ref().unwrap(), &edited.media);
         assert!(!edited_md.contains("4000 --> 11000"), "{edited_md}");
+    }
+
+    #[test]
+    fn mermaid_chart_config_reaches_native_charts() {
+        let md = "\
+```mermaid
+---
+config:
+  pie:
+    donutHole: 0.4
+    highlightSlice: B
+---
+pie
+  \"A\" : 1
+  \"B\" : 3
+```
+
+```mermaid
+---
+config:
+  xyChart:
+    showDataLabel: true
+  themeVariables:
+    xyChart:
+      plotColorPalette: '#ff0000, #00ff00'
+---
+xychart
+  x-axis [a, b]
+  bar [1, 2]
+  line [2, 3]
+```
+";
+        let opened = open_markdown(md.as_bytes().to_vec()).expect("open_markdown");
+        let flow = opened.presentation.flow.as_ref().expect("flow");
+        let charts: Vec<&Chart> = flow
+            .body
+            .iter()
+            .filter_map(|b| match b {
+                Block::Paragraph(p) => Some(p),
+                _ => None,
+            })
+            .flat_map(|p| p.runs.iter())
+            .filter_map(|run| match &run.kind {
+                FlowRunKind::Shape(shape) => match &shape.kind {
+                    ShapeKind::Chart(chart) => Some(&**chart),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(charts.len(), 2);
+        let pie = &charts[0].groups[0];
+        assert!(matches!(pie.kind, ChartType::Doughnut { hole: 40, .. }), "{:?}", pie.kind);
+        assert_eq!(pie.series[0].point_explosions, vec![(1, 15)]);
+        let xy = charts[1];
+        let series: Vec<&Series> = xy.groups.iter().flat_map(|g| g.series.iter()).collect();
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[0].fill, Fill::Solid(ibis_doc_model::Color::opaque(Rgb(0xff0000))));
+        assert_eq!(series[1].stroke.as_ref().map(|s| s.color), Some(ibis_doc_model::Color::opaque(Rgb(0x00ff00))));
+        assert!(series.iter().all(|s| s.labels.as_ref().is_some_and(|l| l.show_value)));
+        // The fence (with its config) is still what is exported.
+        let exported = export_markdown(flow, &opened.presentation.media);
+        assert!(exported.contains("donutHole: 0.4") && exported.contains("plotColorPalette"), "{exported}");
     }
 
     #[test]

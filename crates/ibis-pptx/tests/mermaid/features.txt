@@ -28,8 +28,8 @@
 * | config: themeCSS (arbitrary CSS is not applied) | wontfix | config | themeCSS$
 * | config: other options | gap | config | *
 * | %%{init}%% directive | gap | contains | %%{
-* | HTML entity codes (#quot; #9829;) | gap | contains | #quot;
-* | HTML entity codes (#quot; #9829;) | gap | contains | #9829;
+* | HTML entity codes (#quot; #9829;) | ok | contains | #quot;
+* | HTML entity codes (#quot; #9829;) | ok | contains | #9829;
 
 flowchart | classDef / class / ::: styling | ok | prefix | classDef
 flowchart | classDef / class / ::: styling | ok | prefix | class
@@ -54,7 +54,7 @@ flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ 
 flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ step:
 flowchart | edge animation (animate, animation, step) | wontfix | config | flowchart.stepDuration
 flowchart | collapsed subgraph @{ view } | gap | contains | @{ view:
-flowchart | markdown strings "`...`" | gap | contains | "`
+flowchart | markdown strings "`...`" | ok | contains | "`
 flowchart | Font Awesome icons (fa:) | gap | contains | fa:
 flowchart | click / callbacks | wontfix | prefix | click
 
@@ -77,19 +77,19 @@ classDiagram | generics ~T~ | ok | contains | ~
 classDiagram | relation cardinality "1" --> "*" | ok | contains | " --
 classDiagram | relation cardinality "1" --> "*" | ok | contains | " *--
 classDiagram | relation cardinality "1" --> "*" | ok | contains | " o--
-classDiagram | lollipop interfaces ()-- | gap | contains | ()--
-classDiagram | lollipop interfaces ()-- | gap | contains | --()
+classDiagram | lollipop interfaces ()-- | ok | contains | ()--
+classDiagram | lollipop interfaces ()-- | ok | contains | --()
 classDiagram | config: class.hideEmptyMembersBox | ok | config | class.hideEmptyMembersBox
 classDiagram | config: class.hierarchicalNamespaces (dotted namespaces nest) | ok | config | class.hierarchicalNamespaces
 classDiagram | click / link / callback | wontfix | prefix | click
 classDiagram | click / link / callback | wontfix | prefix | link
 classDiagram | click / link / callback | wontfix | prefix | callback
 
-stateDiagram | note | gap | prefix | note
-stateDiagram | concurrency -- | gap | prefix | --
-stateDiagram | classDef / class / ::: | gap | prefix | classDef
-stateDiagram | classDef / class / ::: | gap | prefix | class
-stateDiagram | classDef / class / ::: | gap | contains | :::
+stateDiagram | note | ok | prefix | note
+stateDiagram | concurrency -- | ok | prefix | --
+stateDiagram | classDef / class / ::: | ok | prefix | classDef
+stateDiagram | classDef / class / ::: | ok | prefix | class
+stateDiagram | classDef / class / ::: | ok | contains | :::
 
 entityRelationshipDiagram | entity alias p[Person] | ok | contains | [
 entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | one or
@@ -102,7 +102,7 @@ entityRelationshipDiagram | direction | ok | prefix | direction
 entityRelationshipDiagram | classDef / style / ::: | ok | prefix | classDef
 entityRelationshipDiagram | classDef / style / ::: | ok | prefix | style
 entityRelationshipDiagram | classDef / style / ::: | ok | contains | :::
-entityRelationshipDiagram | markdown in entity names (**bold** _italic_) | gap | contains | **
+entityRelationshipDiagram | markdown in entity names (**bold** _italic_) | ok | contains | **
 
 gantt | axisFormat | ok | prefix | axisFormat
 gantt | tickInterval | ok | prefix | tickInterval
@@ -112,6 +112,12 @@ gantt | weekday / weekend | ok | prefix | weekend
 gantt | vert markers | ok | contains | vert
 gantt | until | ok | contains | until
 gantt | click | wontfix | prefix | click
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.useWidth
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.topAxis
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.rightPadding
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.numberSectionStyles
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.barHeight
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.barGap
 
 gitgraph | cherry-pick | ok | prefix | cherry-pick
 gitgraph | commit type (HIGHLIGHT / REVERSE) | ok | contains | type:
@@ -134,18 +140,35 @@ mindmap | node shapes ((circle)) {{hexagon}} | ok | contains | {{
 mindmap | node shapes ((circle)) {{hexagon}} | ok | contains | )(
 mindmap | icons ::icon() (drawn as a named badge; icon fonts are not embedded) | ok | contains | ::icon(
 mindmap | classes ::: (CSS classes; only user CSS styles them) | wontfix | contains | :::
-mindmap | markdown strings "`...`" | gap | contains | "`
+mindmap | markdown strings "`...`" | ok | contains | "`
 mindmap | config: colorBy (depth) | ok | config | mindmap.colorBy
 mindmap | config: branch colours (cScale, cScaleLabel) | ok | config | themeVariables.cScale
+mindmap | config: root colour (git0, gitBranchLabel0) | ok | config | themeVariables.git0
+mindmap | config: root colour (git0, gitBranchLabel0) | ok | config | themeVariables.gitBranchLabel0
 
 timeline | section | ok | prefix | section
 timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok | config | themeVariables.cScale
 timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok | config | timeline.disableMulticolor
 
+pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.textPosition
+pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.donutHole
+pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.highlightSlice
+pie | config: legendPosition | gap | config | pie.legendPosition
+pie | config: pie theme variables (pie1-12, pieOuterStrokeWidth) | ok | config | themeVariables.pie
 xyChart | y-axis title / range | ok | prefix | y-axis
 xyChart | horizontal orientation | gap | header | horizontal
 xyChart | numeric x-axis range | gap | contains | x-axis 0
+xyChart | point labels (line [540 "PaLM", ...]) | ok | contains | "PaLM"
+xyChart | config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) | ok | config | xyChart.width
+xyChart | config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) | ok | config | xyChart.height
+xyChart | config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) | ok | config | xyChart.showDataLabel
+xyChart | config: xyChart theme variables (plotColorPalette, titleColor) | ok | config | themeVariables.xyChart.plotColorPalette
+xyChart | config: xyChart theme variables (plotColorPalette, titleColor) | ok | config | themeVariables.xyChart.titleColor
 
-quadrantChart | point styling (radius, color, :::) | gap | contains | radius:
-quadrantChart | point styling (radius, color, :::) | gap | contains | :::
-quadrantChart | point styling (radius, color, :::) | gap | prefix | classDef
+quadrantChart | point styling (radius, color, :::) | ok | contains | radius:
+quadrantChart | point styling (radius, color, :::) | ok | contains | :::
+quadrantChart | point styling (radius, color, :::) | ok | prefix | classDef
+quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | quadrantChart.chartWidth
+quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | quadrantChart.chartHeight
+quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | quadrantChart.pointRadius
+quadrantChart | config: quadrant theme variables (quadrantNFill / TextFill, point / axis / title fills) | ok | config | themeVariables.quadrant

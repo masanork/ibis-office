@@ -73,6 +73,34 @@ pub struct MermaidChartSpec {
     pub y_axis_title: Option<String>,
     /// `xychart` value-axis range (`y-axis 4000 --> 11000`); `None` is automatic.
     pub y_range: Option<(f64, f64)>,
+    /// `xychart` point labels (`line [540 "PaLM", 65]`): per series, per point. Empty: none.
+    pub point_labels: Vec<Vec<Option<String>>>,
+    /// Drawing options from the frontmatter `config`.
+    pub style: MermaidChartStyle,
+}
+
+/// The frontmatter `config` options of a `pie` / `xychart` that change how it is drawn.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MermaidChartStyle {
+    /// Series (xychart, `themeVariables.xyChart.plotColorPalette`) or slice (pie, `pie1`..`pie12`)
+    /// colours as `#rrggbb`, in order. Empty: the built-in palette.
+    pub palette: Vec<String>,
+    /// `xyChart.showDataLabel`: each bar / point shows its value.
+    pub data_labels: bool,
+    /// `xyChart.showDataLabelOutsideBar`: bar values sit above the bar instead of inside it.
+    pub data_labels_outside: bool,
+    /// `xyChart.width` / `xyChart.height`, in px.
+    pub size_px: Option<(u32, u32)>,
+    /// `themeVariables.xyChart.titleColor` as `#rrggbb`.
+    pub title_color: Option<String>,
+    /// `pie.textPosition`: where a slice's label sits, 0 (centre) to 1 (rim); Mermaid's default is 0.75.
+    pub text_position: Option<f64>,
+    /// `pie.donutHole`: the hole as a fraction of the radius (0 < hole <= 0.9).
+    pub donut_hole: Option<f64>,
+    /// `pie.highlightSlice`: the label of the slice that is pulled out.
+    pub highlight: Option<String>,
+    /// `themeVariables.pieOuterStrokeWidth`, in px.
+    pub outer_stroke_width: Option<f64>,
 }
 
 /// Result of converting a Mermaid block.
@@ -157,16 +185,19 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         .any(|line| line.trim_start().starts_with("title ") || line.trim() == "title");
     let front_title = mermaid_frontmatter_title(source).filter(|_| !body_title);
     let config = mermaid_frontmatter_config(source);
+    // A Markdown string may run over several lines; the parsers read one statement per line.
+    let joined = join_markdown_strings(trimmed);
+    let trimmed = joined.as_ref();
 
     let svg = match kind {
         DiagramKind::Pie => {
-            return parse_pie_chart(trimmed).map(|mut spec| {
+            return parse_pie_chart(trimmed, &config).map(|mut spec| {
                 spec.title = spec.title.or(front_title);
                 MermaidOutput::Chart(spec)
             });
         }
         DiagramKind::XyChart => {
-            return parse_xy_chart(trimmed).map(|mut spec| {
+            return parse_xy_chart(trimmed, &config).map(|mut spec| {
                 spec.title = spec.title.or(front_title);
                 MermaidOutput::Chart(spec)
             });
@@ -176,12 +207,12 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::State => render_state_diagram_svg(trimmed),
         DiagramKind::Class => render_class_diagram_svg(trimmed, &config),
         DiagramKind::Er => render_er_diagram_svg(trimmed),
-        DiagramKind::Gantt => render_gantt_svg(trimmed),
+        DiagramKind::Gantt => render_gantt_svg(trimmed, &config),
         DiagramKind::Mindmap => render_mindmap_svg(trimmed, &config),
         DiagramKind::GitGraph => render_git_graph_svg(trimmed, &config),
         DiagramKind::Journey => render_journey_svg(trimmed),
         DiagramKind::Timeline => render_timeline_svg(trimmed, &config),
-        DiagramKind::Quadrant => render_quadrant_chart_svg(trimmed),
+        DiagramKind::Quadrant => render_quadrant_chart_svg(trimmed, &config),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
     if let Some(title) = front_title {

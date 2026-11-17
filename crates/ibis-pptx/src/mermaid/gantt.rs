@@ -60,7 +60,42 @@ pub(super) struct GanttChart {
     pub(super) week_start: i64,
 }
 
-pub(super) fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+/// The `config.gantt.*` options the renderer reads.
+pub(super) struct GanttLook {
+    /// `useWidth`: the whole diagram's width in px.
+    pub(super) use_width: Option<f32>,
+    /// `topAxis`: tick labels above the rows too.
+    pub(super) top_axis: bool,
+    /// `rightPadding`, in px.
+    pub(super) right_padding: f32,
+    /// `numberSectionStyles`: sections take turns over this many row colours.
+    pub(super) section_styles: Option<usize>,
+    /// `barHeight` / `barGap`, in px.
+    pub(super) bar_height: f32,
+    pub(super) bar_gap: f32,
+}
+
+impl GanttLook {
+    pub(super) fn from_config(config: &MermaidConfig) -> Self {
+        let number = |key: &str, lo: f32, hi: f32| {
+            config.option(key).and_then(|v| px_number(v)).map(|v| v as f32).filter(|v| (lo..=hi).contains(v))
+        };
+        GanttLook {
+            use_width: number("gantt.useWidth", 200.0, 4000.0),
+            top_axis: config.flag("gantt.topAxis", false),
+            right_padding: number("gantt.rightPadding", 0.0, 400.0).unwrap_or(24.0),
+            section_styles: number("gantt.numberSectionStyles", 1.0, 4.0).map(|n| n as usize),
+            bar_height: number("gantt.barHeight", 6.0, 80.0).unwrap_or(18.0),
+            bar_gap: number("gantt.barGap", 0.0, 60.0).unwrap_or(12.0),
+        }
+    }
+}
+
+/// Row colours that `numberSectionStyles` cycles through, one per section.
+const SECTION_BACKGROUNDS: [&str; 4] = ["#eef2ff", "#ffffff", "#fefce8", "#f0fdf4"];
+
+pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
+    let look = GanttLook::from_config(config);
     let chart = parse_gantt_chart(source)?;
     let tasks = &chart.tasks;
 
@@ -79,11 +114,13 @@ pub(super) fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         .fold(120.0f32, f32::max)
         .min(240.0)
         + 24.0;
-    let chart_w = 480.0f32;
-    let right_pad = 24.0f32;
+    let right_pad = look.right_padding;
+    // `useWidth` fixes the whole width; the time axis takes what the labels leave.
+    let chart_w = look.use_width.map_or(480.0f32, |w| (w - label_col_w - right_pad).max(120.0));
     let vert_band = if chart.verts.is_empty() { 0.0 } else { 18.0 };
-    let top_pad = if chart.title.is_some() { 52.0f32 } else { 28.0f32 } + vert_band;
-    let row_h = 30.0f32;
+    let top_axis_band = if look.top_axis { 20.0 } else { 0.0 };
+    let top_pad = if chart.title.is_some() { 52.0f32 } else { 28.0f32 } + vert_band + top_axis_band;
+    let row_h = look.bar_height + look.bar_gap;
     let axis_h = 28.0f32;
     let total_w = (label_col_w + chart_w + right_pad).ceil() as u32;
     let total_h = (top_pad + tasks.len() as f32 * row_h + axis_h + 12.0).ceil() as u32;
@@ -122,14 +159,29 @@ pub(super) fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 bottom_y + 18.0,
                 escape_xml(label)
             ));
+            if look.top_axis {
+                svg.push_str(&format!(
+                    r##"<text x="{gx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#64748b" data-role="top-axis">{}</text>"##,
+                    top_pad - 7.0,
+                    escape_xml(label)
+                ));
+            }
         }
     }
 
     // Rows
     let mut prev_section: Option<&str> = None;
+    let mut section_index = 0usize;
     for (idx, task) in tasks.iter().enumerate() {
         let ry = top_pad + idx as f32 * row_h;
-        let bg = if idx % 2 == 0 { "#f8fafc" } else { "#ffffff" };
+        if idx > 0 && prev_section != Some(task.section.as_str()) {
+            section_index += 1;
+        }
+        let bg = match look.section_styles {
+            Some(n) => SECTION_BACKGROUNDS[section_index % n],
+            None if idx % 2 == 0 => "#f8fafc",
+            None => "#ffffff",
+        };
         svg.push_str(&format!(
             r##"<rect x="8" y="{ry:.1}" width="{:.1}" height="{row_h:.1}" fill="{bg}" fill-opacity="0.7"/>"##,
             total_w as f32 - 16.0
@@ -142,7 +194,7 @@ pub(super) fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         };
         svg.push_str(&format!(
             r##"<text x="14" y="{:.1}" font-size="12" fill="#1e293b">{}</text>"##,
-            ry + 19.0,
+            ry + row_h / 2.0 + 4.0,
             escape_xml(&label)
         ));
     }
@@ -185,17 +237,19 @@ pub(super) fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             // A milestone sits in the middle of its (usually zero) duration.
             let mx = (x1 + x2) / 2.0;
             let cy = ry + row_h / 2.0;
+            let m = (look.bar_height / 2.0 - 1.0).max(8.0);
             svg.push_str(&format!(
                 r##"<polygon points="{mx:.1},{:.1} {:.1},{cy:.1} {mx:.1},{:.1} {:.1},{cy:.1}" fill="{fill}" stroke="{stroke}" stroke-width="1.3" data-start="{start_iso}"/>"##,
-                cy - 8.0,
-                mx + 8.0,
-                cy + 8.0,
-                mx - 8.0
+                cy - m,
+                mx + m,
+                cy + m,
+                mx - m
             ));
         } else {
             svg.push_str(&format!(
-                r##"<rect x="{x1:.1}" y="{:.1}" width="{bw:.1}" height="18" rx="4" fill="{fill}" stroke="{stroke}" stroke-width="1.2" data-start="{start_iso}"/>"##,
-                ry + 6.0
+                r##"<rect x="{x1:.1}" y="{:.1}" width="{bw:.1}" height="{}" rx="4" fill="{fill}" stroke="{stroke}" stroke-width="1.2" data-start="{start_iso}"/>"##,
+                ry + look.bar_gap / 2.0,
+                look.bar_height
             ));
         }
     }
@@ -210,7 +264,7 @@ pub(super) fn render_gantt_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         ));
         svg.push_str(&format!(
             r##"<text x="{vx:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" fill="#6d28d9">{}</text>"##,
-            top_pad - 7.0,
+            top_pad - top_axis_band - 7.0,
             escape_xml(&v.name)
         ));
     }
@@ -984,5 +1038,30 @@ gantt
         let days = svg_of("gantt\n  dateFormat YYYY-MM-DD\n  excludes 2026-01-07, sunday\n  A :a, 2026-01-05, 7d\n");
         assert_eq!(tag_with(&days, r#"data-nonworking="date""#).len(), 1, "{days}");
         assert_eq!(tag_with(&days, r#"data-nonworking="weekend""#).len(), 1, "{days}");
+    }
+
+    #[test]
+    fn gantt_config_width_top_axis_padding_and_section_styles() {
+        let body = "gantt\n  dateFormat YYYY-MM-DD\n  section S1\n  A :a, 2026-03-01, 3d\n  section S2\n  B :b, after a, 2d\n  section S3\n  C :c, after b, 2d\n";
+        let plain = svg_of(body);
+        assert!(!plain.contains("top-axis"));
+        let svg = svg_of(&format!(
+            "---\nconfig:\n  gantt:\n    useWidth: 400\n    rightPadding: 0\n    topAxis: true\n    numberSectionStyles: 2\n    barHeight: 24\n---\n{body}"
+        ));
+        assert_eq!(view_box(&svg).0, 400.0, "useWidth sets the whole width");
+        let top: Vec<_> = tag_with(&svg, r#"data-role="top-axis""#);
+        let bottom_count = tag_with(&svg, r##"fill="#64748b">"##).len();
+        assert!(!top.is_empty() && top.len() == bottom_count, "top labels mirror the bottom ones");
+        // The rightmost bar ends at the right edge (no right padding).
+        let ends: Vec<f32> = tag_with(&svg, "data-start=")
+            .iter()
+            .filter_map(|t| Some(attr_f32(t, "x")? + attr_f32(t, "width")?))
+            .collect();
+        assert!(ends.iter().any(|e| (e - 400.0).abs() < 0.6), "{ends:?}");
+        assert!(tag_with(&svg, "data-start=").iter().all(|t| t.contains(r#"height="24""#)));
+        // Two section styles: S1 and S3 share a colour, S2 differs.
+        let rows: Vec<&str> = tag_with(&svg, r#"fill-opacity="0.7""#);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].contains("#eef2ff") && rows[1].contains("#ffffff") && rows[2].contains("#eef2ff"), "{rows:?}");
     }
 }

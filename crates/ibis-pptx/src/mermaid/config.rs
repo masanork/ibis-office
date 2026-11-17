@@ -108,6 +108,36 @@ pub(super) fn safe_css_value(value: &str) -> Option<String> {
     .then(|| value.to_string())
 }
 
+/// A hex colour (`#rgb`, `#rrggbb`, or the same without `#`, as in `quadrant1TextFill: "ff0000"`)
+/// as lowercase `#rrggbb`.
+pub(super) fn hex_color(value: &str) -> Option<String> {
+    let v = value.trim().trim_matches(|c| c == '"' || c == '\'');
+    let h = v.strip_prefix('#').unwrap_or(v);
+    if !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    match h.len() {
+        6 => Some(format!("#{}", h.to_ascii_lowercase())),
+        3 => Some(h.chars().flat_map(|c| [c, c]).fold(String::from("#"), |mut s, c| {
+            s.push(c.to_ascii_lowercase());
+            s
+        })),
+        _ => None,
+    }
+}
+
+/// A colour theme variable: a hex colour (also without `#`), or any other safe CSS colour name.
+pub(super) fn css_color(value: &str) -> Option<String> {
+    hex_color(value).or_else(|| safe_css_value(value).filter(|v| v.chars().all(|c| c.is_ascii_alphabetic())))
+}
+
+/// `5px`, `5` or `"5px"` as a number of px.
+pub(super) fn px_number(value: &str) -> Option<f64> {
+    let v = value.trim().trim_matches(|c| c == '"' || c == '\'');
+    let v = v.strip_suffix("px").unwrap_or(v).trim();
+    v.parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0)
+}
+
 /// The lines between the opening and closing `---` of a YAML frontmatter block.
 pub(super) fn frontmatter_lines(source: &str) -> Option<Vec<&str>> {
     let after_open = source.trim_start().strip_prefix("---")?;
