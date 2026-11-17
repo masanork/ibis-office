@@ -530,7 +530,7 @@ pub(super) fn parse_gantt_chart(source: &str) -> Option<GanttChart> {
             };
             let end = match &task.end {
                 GanttEnd::Date(t) => (*t).max(start),
-                GanttEnd::Duration(d) => gantt_add_duration(start, *d, &chart.excluded_weekdays, &chart.excluded_days),
+                GanttEnd::Duration(d) => gantt_add_duration(start, *d, &chart.excluded_weekdays, &chart.excluded_days)?,
                 GanttEnd::Until(ids) => ids
                     .iter()
                     .filter_map(|id| id_start.get(id.as_str()).copied())
@@ -567,12 +567,16 @@ pub(super) fn parse_gantt_chart(source: &str) -> Option<GanttChart> {
 /// `1day`, `2week`, `30minute` ... (`millisecond` is read as one second).
 /// Add a duration, skipping excluded calendar days when the duration is a whole number of days
 /// (mermaid.js `excludes` stretches day/week/month bars over weekends).
-pub(super) fn gantt_add_duration(start: i64, duration: i64, excluded_weekdays: &[i64], excluded_days: &[i64]) -> i64 {
+pub(super) fn gantt_add_duration(start: i64, duration: i64, excluded_weekdays: &[i64], excluded_days: &[i64]) -> Option<i64> {
     if duration <= 0 {
-        return start;
+        return Some(start);
     }
     if duration % DAY != 0 || (excluded_weekdays.is_empty() && excluded_days.is_empty()) {
-        return start + duration;
+        return start.checked_add(duration);
+    }
+    // An impossible calendar or an enormous span must not hang document import.
+    if (0..7).all(|day| excluded_weekdays.contains(&day)) {
+        return None;
     }
     let is_excluded = |t: i64| {
         let day = t.div_euclid(DAY);
@@ -581,13 +585,18 @@ pub(super) fn gantt_add_duration(start: i64, duration: i64, excluded_weekdays: &
     };
     let mut t = start;
     let mut remaining = duration / DAY;
+    let mut scanned = 0;
     while remaining > 0 {
-        t += DAY;
+        if scanned >= 1_000_000 {
+            return None;
+        }
+        scanned += 1;
+        t = t.checked_add(DAY)?;
         if !is_excluded(t - DAY) {
             remaining -= 1;
         }
     }
-    t
+    Some(t)
 }
 
 pub(super) fn parse_tick_interval(s: &str) -> Option<(i64, TickUnit)> {
@@ -1132,6 +1141,11 @@ gantt
         let days = svg_of("gantt\n  dateFormat YYYY-MM-DD\n  excludes 2026-01-07, sunday\n  A :a, 2026-01-05, 7d\n");
         assert_eq!(tag_with(&days, r#"data-nonworking="date""#).len(), 1, "{days}");
         assert_eq!(tag_with(&days, r#"data-nonworking="weekend""#).len(), 1, "{days}");
+
+        // An impossible work calendar falls back instead of looping forever.
+        let impossible = "gantt\n  dateFormat YYYY-MM-DD\n  excludes monday,tuesday,wednesday,thursday,friday,saturday,sunday\n  A :a, 2026-01-05, 1d\n";
+        assert!(parse_gantt_chart(impossible).is_none());
+        assert!(gantt_add_duration(0, 1_000_001 * DAY, &[0], &[]).is_none());
 
         // Day durations skip excluded days, so a 30d+20d chart with Fri–Sat weekends reaches March.
         let long = svg_of("gantt\n    title A Gantt Diagram Excluding Fri - Sat weekends\n    dateFormat YYYY-MM-DD\n    excludes weekends\n    weekend friday\n    section Section\n        A task          :a1, 2024-01-01, 30d\n        Another task    :after a1, 20d\n");
