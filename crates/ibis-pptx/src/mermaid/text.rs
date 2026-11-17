@@ -129,6 +129,11 @@ pub(super) fn wrap_piece(text: &str, max_width: f32, font_size: f32) -> Vec<Stri
     if !current.is_empty() {
         lines.push(current);
     }
+    // A line that wrapped after a word does not keep the space.
+    for line in &mut lines {
+        let end = line.trim_end().len();
+        line.truncate(end);
+    }
     if lines.is_empty() { vec![String::new()] } else { lines }
 }
 
@@ -143,7 +148,9 @@ pub(super) fn split_wrap_tokens(text: &str) -> Vec<String> {
             ascii_word = word;
             continue;
         }
-        if ch.is_whitespace() || (ascii_word && word) {
+        // A word ends at whitespace: `ab cd` is two tokens (`ab `, `cd`), so English wraps by word.
+        let after_space = current.ends_with(char::is_whitespace);
+        if ch.is_whitespace() || (ascii_word && word && !after_space) {
             current.push(ch);
             continue;
         }
@@ -471,6 +478,16 @@ mod tests {
         );
         assert_eq!(label_markup("`**Two**`", false), r#"<tspan font-weight="bold">Two</tspan>"#);
         assert_eq!(label_markup("**Two**", false), "**Two**");
+    }
+
+    #[test]
+    fn english_wraps_by_word() {
+        assert_eq!(split_wrap_tokens("ab cd  ef"), vec!["ab ", "cd  ", "ef"]);
+        let lines = label_lines("Important information! You can write notes.", 150.0, 11.0);
+        assert!(lines.len() >= 2, "{lines:?}");
+        assert!(lines.iter().all(|l| !l.is_empty()), "{lines:?}");
+        assert_eq!(lines.concat().replace(' ', ""), "Importantinformation!Youcanwritenotes.");
+        assert_eq!(lines, vec!["Important information!", "You can write notes."]);
     }
 
     #[test]

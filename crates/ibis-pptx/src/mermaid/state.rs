@@ -335,6 +335,10 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
                 nodes[idx].description = Some(desc.trim().to_string());
             }
         }
+        // A lone id declares a state (`stateId`, `Moving:::movement`).
+        else if l.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | ':')) {
+            ensure_state(l, &mut nodes, &mut node_map, cur_comp);
+        }
     }
 
     if nodes.is_empty() {
@@ -789,5 +793,11 @@ stateDiagram-v2
         // Each region starts from its own [*], plus the top-level one.
         assert_eq!(svg.matches("r=\"10\" fill=\"#1e293b\"").count(), 4, "{svg}");
         assert!(!svg.contains(">--<"));
+    }
+
+    #[test]
+    fn state_lone_id_declares_a_state() {
+        let svg = svg_of("stateDiagram-v2\n    stateId\n");
+        assert!(svg.contains(">stateId</text>"), "{svg}");
     }
 }
