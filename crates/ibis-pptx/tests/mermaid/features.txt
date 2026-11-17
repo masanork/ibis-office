@@ -104,13 +104,13 @@ entityRelationshipDiagram | classDef / style / ::: | ok | prefix | style
 entityRelationshipDiagram | classDef / style / ::: | ok | contains | :::
 entityRelationshipDiagram | markdown in entity names (**bold** _italic_) | gap | contains | **
 
-gantt | axisFormat | gap | prefix | axisFormat
-gantt | tickInterval | gap | prefix | tickInterval
+gantt | axisFormat | ok | prefix | axisFormat
+gantt | tickInterval | ok | prefix | tickInterval
 gantt | todayMarker | gap | prefix | todayMarker
-gantt | weekday / weekend | gap | prefix | weekday
-gantt | weekday / weekend | gap | prefix | weekend
-gantt | vert markers | gap | contains | vert
-gantt | until | gap | contains | until
+gantt | weekday / weekend | ok | prefix | weekday
+gantt | weekday / weekend | ok | prefix | weekend
+gantt | vert markers | ok | contains | vert
+gantt | until | ok | contains | until
 gantt | click | wontfix | prefix | click
 
 gitgraph | cherry-pick | ok | prefix | cherry-pick
@@ -129,14 +129,16 @@ gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit /
 gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit / tag labels) | ok | config | themeVariables.commitLabel
 gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit / tag labels) | ok | config | themeVariables.tagLabel
 
-mindmap | node shapes ((circle)) {{hexagon}} | gap | contains | ((
-mindmap | node shapes ((circle)) {{hexagon}} | gap | contains | {{
-mindmap | node shapes ((circle)) {{hexagon}} | gap | contains | )(
-mindmap | icons ::icon() | gap | contains | ::icon(
-mindmap | classes ::: | gap | contains | :::
+mindmap | node shapes ((circle)) {{hexagon}} | ok | contains | ((
+mindmap | node shapes ((circle)) {{hexagon}} | ok | contains | {{
+mindmap | node shapes ((circle)) {{hexagon}} | ok | contains | )(
+mindmap | icons ::icon() (drawn as a named badge; icon fonts are not embedded) | ok | contains | ::icon(
+mindmap | classes ::: (CSS classes; only user CSS styles them) | wontfix | contains | :::
 mindmap | markdown strings "`...`" | gap | contains | "`
+mindmap | config: colorBy (depth) | ok | config | mindmap.colorBy
+mindmap | config: branch colours (cScale, cScaleLabel) | ok | config | themeVariables.cScale
 
-timeline | section | gap | prefix | section
+timeline | section | ok | prefix | section
 timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok | config | themeVariables.cScale
 timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok | config | timeline.disableMulticolor
 
