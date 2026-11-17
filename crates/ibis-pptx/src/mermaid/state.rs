@@ -131,6 +131,12 @@ pub(super) fn layout_state_composites(
             alias[i] = Some(c);
         }
     }
+    // `Name: description` shows beside the frame's title, so the frame fits both.
+    let retitle: Vec<(usize, String)> = alias
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| Some((comp_group[(*a)?], format!("{}  {}", composites[(*a)?].0, nodes[i].description.as_deref()?))))
+        .collect();
     // An alias's transitions are laid out through one state inside it.
     let rep = |i: usize| -> usize {
         match alias[i] {
@@ -151,6 +157,9 @@ pub(super) fn layout_state_composites(
         if a != usize::MAX && b != usize::MAX {
             leaf_edges.push((a, b));
         }
+    }
+    for (g, title) in retitle {
+        groups[g].title = title;
     }
     let (leaf_centers, width, height, frames) =
         layout_with_groups(&leaf_sizes, &leaf_edges, &member_of, &groups, horizontal, reversed, margin, 62.0, 36.0);
@@ -520,6 +529,20 @@ pub(super) fn render_state_diagram_svg(source: &str) -> Option<(Vec<u8>, u32, u3
             sy + 18.0,
             escape_xml(name)
         ));
+        // The composite's own description (`NamedComposite: Another Composite`).
+        if let Some(desc) = layout
+            .alias
+            .iter()
+            .position(|a| *a == Some(c))
+            .and_then(|i| nodes[i].description.as_deref())
+        {
+            svg.push_str(&format!(
+                r##"<text x="{:.1}" y="{:.1}" font-size="11" fill="#64748b" data-role="composite-description">{}</text>"##,
+                sx + 10.0 + estimate_text_width(name, 11.5) * BOLD_WIDTH + 8.0,
+                sy + 18.0,
+                escape_xml(desc)
+            ));
+        }
         // Concurrent regions (`--`) are divided by dashed lines.
         let region_frames: Vec<(f32, f32, f32, f32)> = layout.region_groups[c].iter().filter_map(|&g| layout.frames[g]).collect();
         for pair in region_frames.windows(2) {
@@ -904,5 +927,16 @@ stateDiagram-v2
         for (name, frame) in [("fir", frames[0]), ("sec", frames[1]), ("thi", frames[2])] {
             assert!(rect_holds(frame, text_x(&siblings, name), text_y(&siblings, name)), "{name}");
         }
+    }
+
+    #[test]
+    fn composite_description_beside_its_title() {
+        let svg = svg_of("stateDiagram-v2\n    [*] --> NamedComposite\n    NamedComposite: Another Composite\n    state NamedComposite {\n        [*] --> namedSimple\n        namedSimple --> [*]\n        namedSimple: Another simple\n    }\n");
+        let desc = tag_with(&svg, r#"data-role="composite-description""#);
+        assert_eq!(desc.len(), 1, "{svg}");
+        assert!(svg.contains(">Another Composite</text>") && svg.contains(">Another simple</text>"));
+        let frame = rect_of(tag_with(&svg, r#"data-role="composite""#)[0]);
+        let x = attr_f32(desc[0], "x").unwrap();
+        assert!(x > text_x(&svg, "NamedComposite") && x + estimate_text_width("Another Composite", 11.0) <= frame.0 + frame.2, "{frame:?} {x}");
     }
 }

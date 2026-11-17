@@ -43,8 +43,8 @@ flowchart | bidirectional / circle / cross edges | ok | contains | --x
 flowchart | invisible link ~~~ | ok | contains | ~~~
 flowchart | expanded node shapes @{ shape } | ok | contains | @{ shape:
 flowchart | expanded node shapes @{ shape } | ok | contains | @{shape:
-flowchart | node icons / images @{ icon / img } | gap | contains | @{ icon:
-flowchart | node icons / images @{ icon / img } | gap | contains | @{ img:
+flowchart | node icons @{ icon } (drawn as a symbol in a box) | ok | contains | @{ icon:
+flowchart | node images @{ img } (a placeholder frame; the image is not fetched) | gap | contains | @{ img:
 flowchart | edge ids (e1@-->) | ok | contains | @--
 flowchart | edge ids (e1@-->) | ok | contains | @==
 flowchart | edge ids (e1@-->) | ok | contains | @-.
@@ -53,9 +53,9 @@ flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ 
 flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ animation
 flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ step:
 flowchart | edge animation (animate, animation, step) | wontfix | config | flowchart.stepDuration
-flowchart | collapsed subgraph @{ view } | gap | contains | @{ view:
+flowchart | collapsed subgraph @{ view } | ok | contains | @{ view:
 flowchart | markdown strings "`...`" | ok | contains | "`
-flowchart | Font Awesome icons (fa:) | gap | contains | fa:
+flowchart | Font Awesome icons (fa:) as Unicode symbols | ok | contains | fa:
 flowchart | click / callbacks | wontfix | prefix | click
 
 sequenceDiagram | rect highlight | ok | prefix | rect
