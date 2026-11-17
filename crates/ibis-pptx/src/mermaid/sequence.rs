@@ -95,6 +95,7 @@ pub(super) enum SeqItem {
         dashed: bool,
         open_arrow: bool,
         cross_end: bool,
+        bidirectional: bool,
         circle_from: bool,
         circle_to: bool,
         activate_from: bool,
@@ -629,6 +630,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 dashed,
                 open_arrow,
                 cross_end,
+                bidirectional,
                 circle_from,
                 circle_to,
                 activate_from: _,
@@ -653,11 +655,12 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     r##" marker-end="url(#seq-arrow)""##
                 };
 
+                let start_marker = if *bidirectional { r##" marker-start="url(#seq-arrow)""## } else { "" };
                 if from == to {
                     let loop_w = 38.0;
                     let loop_h = 24.0;
                     svg.push_str(&format!(
-                        r##"<path d="M {x1:.1} {y:.1} H {:.1} V {:.1} H {x1:.1}" fill="none" stroke="#334155" stroke-width="1.4"{dash_attr}{marker_attr} data-role="message"/>"##,
+                        r##"<path d="M {x1:.1} {y:.1} H {:.1} V {:.1} H {x1:.1}" fill="none" stroke="#334155" stroke-width="1.4"{dash_attr}{start_marker}{marker_attr} data-role="message"/>"##,
                         x1 + loop_w,
                         y + loop_h
                     ));
@@ -672,7 +675,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     }
                 } else {
                     svg.push_str(&format!(
-                        r##"<line x1="{x1:.1}" y1="{y:.1}" x2="{x2:.1}" y2="{y:.1}" stroke="#334155" stroke-width="1.4"{dash_attr}{marker_attr} data-role="message"/>"##
+                        r##"<line x1="{x1:.1}" y1="{y:.1}" x2="{x2:.1}" y2="{y:.1}" stroke="#334155" stroke-width="1.4"{dash_attr}{start_marker}{marker_attr} data-role="message"/>"##
                     ));
                     if autonumber {
                         push_seq_autonumber(&mut svg, (x1 + x2) / 2.0, y - 10.0, msg_num);
@@ -1071,6 +1074,8 @@ pub(super) fn parse_seq_message(
 ) -> Option<SeqItem> {
     let (lhs, label) = l.split_once(':')?;
     let arrows = [
+        ("<<-->>", true, false, false),
+        ("<<->>", false, false, false),
         ("-->>", true, false, false),
         ("->>", false, false, false),
         ("-->", true, true, false),
@@ -1102,6 +1107,7 @@ pub(super) fn parse_seq_message(
                 dashed,
                 open_arrow,
                 cross_end,
+                bidirectional: arrow.starts_with("<<"),
                 circle_from,
                 circle_to,
                 activate_from,
@@ -1118,6 +1124,18 @@ pub(super) fn parse_seq_message(
 mod tests {
     use super::*;
     use crate::mermaid::test_support::*;
+
+    #[test]
+    fn sequence_bidirectional_messages_draw_both_arrowheads() {
+        let svg = svg_of("sequenceDiagram\nAlice<<->>Bob: Request\nBob<<-->>Alice: Reply\n");
+        let messages = tag_with(&svg, r#"data-role="message""#);
+        assert_eq!(messages.len(), 2);
+        for message in &messages {
+            assert!(message.contains("marker-start=") && message.contains("marker-end="));
+        }
+        assert!(messages[1].contains("stroke-dasharray="));
+        assert!(!svg.contains("Alice&lt;&lt;"));
+    }
 
     #[test]
     fn sequence_circle_endpoints_keep_the_original_participants() {

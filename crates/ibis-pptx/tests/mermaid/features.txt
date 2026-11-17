@@ -65,7 +65,7 @@ sequenceDiagram | par/and, critical/option dividers | ok | prefix | and
 sequenceDiagram | par/and, critical/option dividers | ok | prefix | option
 sequenceDiagram | lower-case note | ok | prefix | note
 sequenceDiagram | participant types @{ "type" } | ok | contains | @{
-sequenceDiagram | bidirectional arrows <<->> | gap | contains | <<-
+sequenceDiagram | bidirectional arrows <<->> | ok | contains | <<-
 sequenceDiagram | actor menus (link / links) | wontfix | prefix | link
 
 classDiagram | namespace | ok | prefix | namespace
