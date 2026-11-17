@@ -51,6 +51,7 @@ mod treeview;
 mod swimlanes;
 mod eventmodeling;
 mod agentflow;
+mod railroad;
 mod text;
 #[cfg(test)]
 mod test_support;
@@ -84,6 +85,7 @@ use treeview::*;
 use swimlanes::*;
 use eventmodeling::*;
 use agentflow::*;
+use railroad::*;
 use sankey::*;
 use text::*;
 
@@ -180,6 +182,7 @@ enum DiagramKind {
     Swimlanes,
     EventModeling,
     Agentflow,
+    Railroad,
 }
 
 /// Header keywords, including the aliases current mermaid still accepts
@@ -238,6 +241,10 @@ const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
     ("eventmodeling", DiagramKind::EventModeling),
     ("agentflow-beta", DiagramKind::Agentflow),
     ("agentflow", DiagramKind::Agentflow),
+    ("railroad-beta", DiagramKind::Railroad),
+    ("railroad-ebnf-beta", DiagramKind::Railroad),
+    ("railroad-abnf-beta", DiagramKind::Railroad),
+    ("railroad-peg-beta", DiagramKind::Railroad),
 ];
 
 fn diagram_kind(header: &str) -> Option<DiagramKind> {
@@ -309,6 +316,7 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Swimlanes => render_swimlanes_svg(trimmed),
         DiagramKind::EventModeling => render_eventmodeling_svg(trimmed),
         DiagramKind::Agentflow => render_agentflow_svg(trimmed),
+        DiagramKind::Railroad => render_railroad_svg(trimmed),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
     if let Some(title) = front_title {
@@ -364,7 +372,7 @@ mod tests {
     fn unsupported_diagram_returns_none() {
         assert!(render_mermaid("zenuml\n  A.method()\n").is_none());
         assert!(render_mermaid("").is_none());
-        assert!(render_mermaid("railroad-beta\n  title x\n").is_none());
+        assert!(render_mermaid("cynefin-beta\n  title x\n").is_none());
     }
 
     #[test]
