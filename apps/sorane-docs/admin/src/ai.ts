@@ -10,7 +10,7 @@ export const AI_DAILY_REQUESTS = 30;
 const MAX_BODY_BYTES = 1_500_000;
 const MAX_MESSAGES = 12;
 
-type Reasoning = 'none' | 'low';
+type Reasoning = 'low';
 
 type CatalogModel = {
   key: string;
@@ -26,17 +26,6 @@ type CatalogModel = {
 
 const MODELS: readonly CatalogModel[] = [
   {
-    key: 'deepseek-flash',
-    label: 'DeepSeek V4.1 Flash',
-    id: '@cf/deepseek-ai/deepseek-v4.1-flash-1017',
-    maxInputChars: 120_000,
-    maxCompletionTokens: 4096,
-    reasoning: 'none',
-    inputPrice: '$0.30',
-    outputPrice: '$1.20',
-    note: null,
-  },
-  {
     key: 'gemma-4',
     label: 'Gemma 4 26B',
     id: '@cf/google/gemma-4-26b-a4b-it',
@@ -48,26 +37,26 @@ const MODELS: readonly CatalogModel[] = [
     note: null,
   },
   {
-    key: 'qwen-3.8',
-    label: 'Qwen 3.8 27B',
-    id: '@cf/qwen/qwen3.8-27b',
+    key: 'gpt-oss-20b',
+    label: 'GPT-OSS 20B',
+    id: '@cf/openai/gpt-oss-20b',
     maxInputChars: 40_000,
-    maxCompletionTokens: 2048,
+    maxCompletionTokens: 4096,
     reasoning: 'low',
-    inputPrice: '$0.45',
-    outputPrice: '$3.20',
-    note: '出力の単価が高めです。',
+    inputPrice: '$0.20',
+    outputPrice: '$0.30',
+    note: null,
   },
   {
-    key: 'glm-5.3',
-    label: 'GLM 5.3',
-    id: '@cf/zai-org/glm-5.3',
+    key: 'gpt-oss-120b',
+    label: 'GPT-OSS 120B',
+    id: '@cf/openai/gpt-oss-120b',
     maxInputChars: 80_000,
-    maxCompletionTokens: 2048,
+    maxCompletionTokens: 4096,
     reasoning: 'low',
-    inputPrice: '$1.40',
-    outputPrice: '$4.40',
-    note: 'このモデルは推論を切れません。最初の文字まで少し時間がかかり、出力の費用も高めです。',
+    inputPrice: '$0.35',
+    outputPrice: '$0.75',
+    note: null,
   },
 ];
 
@@ -144,7 +133,6 @@ function inferenceInput(model: CatalogModel, messages: ChatMessage[]): Record<st
     stream: true,
     max_completion_tokens: model.maxCompletionTokens,
   };
-  // GLM reads reasoning_effort "none" as "max". Only send a value this model accepts.
   if (model.reasoning) input.reasoning_effort = model.reasoning;
   return input;
 }
