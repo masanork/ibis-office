@@ -352,7 +352,7 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::TreeView => render_treeview_svg(trimmed, &config),
         DiagramKind::Swimlanes => render_swimlanes_svg(trimmed),
         DiagramKind::EventModeling => render_eventmodeling_svg(trimmed),
-        DiagramKind::Agentflow => render_agentflow_svg(trimmed),
+        DiagramKind::Agentflow => render_agentflow_svg(trimmed, &config),
         DiagramKind::Railroad => render_railroad_svg(trimmed),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;

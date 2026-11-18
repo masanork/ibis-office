@@ -803,7 +803,18 @@ pub(super) struct SubgraphInfo {
     pub(super) parent: Option<usize>,
 }
 
+pub(super) const FLOW_NODE_GAP: f32 = 34.0;
+pub(super) const FLOW_RANK_GAP: f32 = 64.0;
+
 pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+    render_flowchart_svg_with_spacing(source, FLOW_NODE_GAP, FLOW_RANK_GAP)
+}
+
+pub(super) fn render_flowchart_svg_with_spacing(
+    source: &str,
+    node_gap: f32,
+    rank_gap: f32,
+) -> Option<(Vec<u8>, u32, u32)> {
     let mut lines = source.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
     let header = lines.next()?;
     let dir_token = header
@@ -996,7 +1007,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
             if matches!(dir, FlowDir::Lr | FlowDir::Rl) { w } else { h }
         })
         .fold(0.0f32, f32::max);
-    let layer_gap = (label_span + 24.0).max(64.0);
+    let layer_gap = if label_span > 0.0 { rank_gap.max(label_span + 24.0) } else { rank_gap };
     // Hidden nodes and subgraph aliases are not laid out; an alias's edges go through a node
     // inside its subgraph, then end on the frame.
     let in_subgraph = |j: usize, sg: usize| {
@@ -1025,7 +1036,7 @@ pub(super) fn render_flowchart_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> 
         .collect();
     let member_of: Vec<Option<usize>> = laid.iter().map(|&i| nodes[i].subgraph).collect();
     let laid_sizes: Vec<(f32, f32)> = laid.iter().map(|&i| node_sizes[i]).collect();
-    let (laid_centers, total_w, total_h, frames) = layout_flowchart(&member_of, &edge_pairs, &laid_sizes, &subgraphs, dir, layer_gap);
+    let (laid_centers, total_w, total_h, frames) = layout_flowchart(&member_of, &edge_pairs, &laid_sizes, &subgraphs, dir, layer_gap, node_gap);
     let mut centers = vec![(-1.0e4f32, -1.0e4f32); nodes.len()];
     for (k, &i) in laid.iter().enumerate() {
         centers[i] = laid_centers[k];
@@ -1615,17 +1626,18 @@ pub(super) fn layout_flowchart(
     subgraphs: &[SubgraphInfo],
     dir: FlowDir,
     layer_gap: f32,
+    node_gap: f32,
 ) -> GroupedLayout {
     let flags = |d: FlowDir| (matches!(d, FlowDir::Lr | FlowDir::Rl), matches!(d, FlowDir::Bt | FlowDir::Rl));
     let (horizontal, reversed) = flags(dir);
     let margin = if subgraphs.is_empty() { 32.0f32 } else { 44.0f32 };
     if subgraphs.is_empty() {
-        let (centers, w, h) = compute_layered_layout(node_sizes.len(), edge_pairs, node_sizes, horizontal, reversed, margin, layer_gap, 34.0);
+        let (centers, w, h) = compute_layered_layout(node_sizes.len(), edge_pairs, node_sizes, horizontal, reversed, margin, layer_gap, node_gap);
         return (centers, w, h, Vec::new());
     }
     let groups: Vec<NodeGroup> = subgraphs.iter().map(|sg| NodeGroup { title: sg.title.clone(), parent: sg.parent }).collect();
     let dirs: Vec<Option<(bool, bool)>> = subgraphs.iter().map(|sg| sg.dir.map(flags)).collect();
-    layout_with_group_dirs(node_sizes, edge_pairs, member_of, &groups, &dirs, horizontal, reversed, margin, layer_gap, 34.0)
+    layout_with_group_dirs(node_sizes, edge_pairs, member_of, &groups, &dirs, horizontal, reversed, margin, layer_gap, node_gap)
 }
 
 /// Which nodes stand for a subgraph and which are hidden in a closed one.

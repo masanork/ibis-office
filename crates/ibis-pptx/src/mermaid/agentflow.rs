@@ -106,8 +106,18 @@ pub(super) fn agentflow_to_flowchart(source: &str) -> String {
     out
 }
 
-pub(super) fn render_agentflow_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
-    render_flowchart_svg(&agentflow_to_flowchart(source))
+pub(super) fn render_agentflow_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
+    let spacing = |key, default| {
+        config.option(key)
+            .and_then(px_number)
+            .filter(|value| (0.0..=1000.0).contains(value))
+            .map_or(default, |value| value as f32)
+    };
+    render_flowchart_svg_with_spacing(
+        &agentflow_to_flowchart(source),
+        spacing("agentflow.nodeSpacing", FLOW_NODE_GAP),
+        spacing("agentflow.rankSpacing", FLOW_RANK_GAP),
+    )
 }
 
 #[cfg(test)]
@@ -128,6 +138,38 @@ mod tests {
     fn agentflow_global_links_stay_outside_flows() {
         let src = "agentflow-beta TB\n  global\n    corpus[\"Corpus\"]@{ shape: refdoc }\n  end\n  flow s[\"S\"]\n    sum[\"Sum\"]@{ shape: task }\n    sum -.- corpus\n  end";
         assert!(agentflow_to_flowchart(src).ends_with("end\nsum -.- corpus\n"));
+    }
+
+    #[test]
+    fn agentflow_spacing_respects_direction_and_scope() {
+        for (direction, horizontal, grouped) in [("TB", false, false), ("RL", true, true)] {
+            let mut body = format!("agentflow {direction}\n");
+            if grouped {
+                body.push_str("flow review[Review]\n");
+            }
+            body.push_str("a[Start] --> b[First]\na --> c[Second]\n");
+            if grouped {
+                body.push_str("end\n");
+            }
+            let gaps = |svg: &str| {
+                let (rank, node): (fn(&str, &str) -> f32, fn(&str, &str) -> f32) =
+                    if horizontal { (text_x, text_y) } else { (text_y, text_x) };
+                ((rank(svg, "First") - rank(svg, "Start")).abs(),
+                 (node(svg, "First") - node(svg, "Second")).abs())
+            };
+            let (rank, node) = gaps(&svg_of(&body));
+            let render = |key, value| svg_of(&format!("---\nconfig:\n  agentflow:\n    {key}: {value}\n---\n{body}"));
+            let (wider_rank, same_node) = gaps(&render("rankSpacing", "104"));
+            let (same_rank, wider_node) = gaps(&render("nodeSpacing", "74"));
+            assert!((wider_rank - rank - 40.0).abs() < 0.2);
+            assert!((wider_node - node - 40.0).abs() < 0.2);
+            assert!((same_rank - rank).abs() < 0.2);
+            assert!((same_node - node).abs() < 0.2);
+            assert_eq!(gaps(&render("nodeSpacing", "-1")), (rank, node));
+            let flowchart = body.replace("agentflow", "flowchart").replace("flow review", "subgraph review");
+            let scoped = format!("---\nconfig:\n  agentflow:\n    nodeSpacing: 74\n---\n{flowchart}");
+            assert_eq!(svg_of(&scoped), svg_of(&flowchart));
+        }
     }
 
     #[test]
