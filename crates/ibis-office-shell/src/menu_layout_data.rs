@@ -1628,6 +1628,7 @@ pub(super) const SLIDE_CONTEXT: &[ContextSpec] = &[
         LayoutItem::Cmd("pptx.picture.compress"),
         LayoutItem::Cmd("pptx.3d-model.panel"),
         LayoutItem::Sep,
+        LayoutItem::Cmd("pptx.mermaid-source"),
         LayoutItem::Cmd("pptx.alt-text"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: None, label_key: "menu.group.position", items: &[
