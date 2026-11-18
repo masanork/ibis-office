@@ -8,4 +8,6 @@ Markdown の `mermaid` コードブロックを文書やスライドに読み込
 - 対応済みの図種でも、一部の構文や設定が描画されないことがあります。例えば flowchart の画像ノードは画像の代わりに枠を表示し、外部画像を取得しません。リンクやアニメーションなど、静的な文書では動作しない機能もあります。
 - ZenUML、Cynefin、Ishikawa は現在描画しません。アイコンパックが組み込まれていない図では代替表示になることがあります。
 
+[図種別デモ](mermaid-demo-ja.md) は Docs で直接開けます。公式例をすべて試す手順は [Markdown Reference](markdown-reference-ja.md) にあります。
+
 テスト対象と既知の構文差は [Mermaid compatibility corpus](../crates/ibis-pptx/tests/mermaid/README.md) と [features.txt](../crates/ibis-pptx/tests/mermaid/features.txt) に記載しています。コーパスで描画できることや参照実装とのラベル一致は、図の意味やレイアウトの完全な一致を保証しません。

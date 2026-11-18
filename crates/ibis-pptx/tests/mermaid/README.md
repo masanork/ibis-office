@@ -34,6 +34,20 @@ MERMAID_CORPUS_REPORT=/tmp/report.md MERMAID_CORPUS_DUMP=/tmp/mermaid-svg \
   cargo test -p ibis-pptx --test mermaid_corpus
 ```
 
+## Markdown demo
+
+```sh
+MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo cargo test -p ibis-pptx --test mermaid_corpus
+```
+
+Open the generated `index.md` for links to the per-diagram Markdown pages,
+the pinned source, and the MIT license. The index lists every tracked feature,
+including those with no matching official example. Each live Mermaid fence
+includes the renderer result and any known limitations matched by the test.
+CI publishes the same pages as `mermaid-markdown-demo`. The checked-in
+[diagram gallery](../../../../docs/mermaid-demo-ja.md) has a shorter example from each
+corpus document and supplemental cases.
+
 ## Corpus
 
 `corpus/*.mmd` are the ```` ```mermaid ```` / ```` ```mermaid-example ```` blocks
