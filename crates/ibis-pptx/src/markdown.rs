@@ -5694,7 +5694,11 @@ xychart-beta
             "xychart horizontal\n  x-axis [一月, 二月]\n  bar [10, 20]\n  line [7, 15 \"目標\"]\n",
             "xychart\n  x-axis \"経過秒\" 0 --> 10\n  line [10, 20 \"終了\"]\n",
             "xychart-beta\n  title 月別売上\n  x-axis [一月, 二月]\n  line [10, 20]\n",
+<<<<<<< HEAD
             "ishikawa-beta\n  受付の遅延\n  手順\n    確認漏れ\n  設備\n    通知が届かない\n",
+=======
+            "cynefin-beta\n  clear\n    \"手順が明確\"\n  clear --> chaotic : \"状況が変化\"\n",
+>>>>>>> masanork/feat/mermaid-cynefin
         ];
         let body = diagrams.iter().map(|diagram| format!("```mermaid\n{diagram}```\n\n")).collect::<String>();
         let doc = open_markdown(body.as_bytes().to_vec()).expect("open document");

@@ -545,8 +545,16 @@ cynefin-beta
   complex
   complicated
   clear
+    "既知の手順で対応"
   chaotic
+  confusion
+    "原因を調査中"
+  clear --> chaotic : "状況が急変"
 ```
+
+## コード表示の例
+
+Ishikawa、ZenUML は Mermaid フェンスのまま保持されます。
 
 ### Ishikawa
 
