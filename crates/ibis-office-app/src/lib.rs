@@ -416,6 +416,7 @@ fn parse_args() -> Result<Args, String> {
             "--read-only" => args.read_only = true,
             "--slide" => args.slide = Some(value()?.parse().map_err(|_| "--slide needs a slide number".to_string())?),
             "--export" => args.export = Some(value()?),
+            "--out-file" => args.out_file = Some(value()?.into()),
             "--ai-query" => args.ai_query = Some(value()?.into()),
             "--out-dir" => args.out_dir = Some(value()?.into()),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
@@ -448,6 +449,32 @@ fn parse_args() -> Result<Args, String> {
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
+    if matches!(format, "ai-preview" | "ai-apply") {
+        let path = args.path.as_deref().ok_or("name the original DOCX file")?;
+        if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
+            return Err("AI editing requires the original .docx file".into());
+        }
+        let proposal_path = args.ai_query.as_deref().ok_or("AI editing requires --ai-query")?;
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let proposal = std::fs::read(proposal_path).map_err(|e| format!("{}: {e}", proposal_path.display()))?;
+        let proposal = serde_json::from_slice(&proposal).map_err(|e| format!("{}: {e}", proposal_path.display()))?;
+        if format == "ai-preview" {
+            let preview = ibis_pptx::markdown::preview_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
+            println!("{preview:#}");
+        } else {
+            use std::io::Write;
+            let out = args.out_file.as_deref().ok_or("--export ai-apply requires --out-file")?;
+            if !out.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
+                return Err("AI editing requires a new .docx output file".into());
+            }
+            let bytes = ibis_pptx::markdown::apply_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
+            let parent = out.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+            let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+            file.write_all(&bytes).map_err(|e| e.to_string())?;
+            file.persist_noclobber(out).map_err(|e| format!("{}: {e}", out.display()))?;
+        }
+        return Ok(());
+    }
     if format == "ai-locate" {
         let path = args.path.as_deref().ok_or("name the original document")?;
         let query_path = args.ai_query.as_deref().ok_or("--export ai-locate requires --ai-query")?;

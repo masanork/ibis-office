@@ -293,6 +293,17 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 
 デスクトップ版では `ibisOffice --ai-query citation.json report.docx` で原本を開き、該当段落の先頭へ移動できます。対象は一つの本文段落に対応する引用です。複数段落をまたぐ引用、表や脚注、法令と表計算の位置は `ai-locate` で確認できます。
 
+### 段落の編集案を確認して適用する
+
+引用の JSON に、原文の段落全体のプレーンテキストを `before`、変更後の一行のテキストを `replacement` として追加します。
+
+```sh
+ibisOffice --export ai-preview --ai-query proposal.json report.docx
+ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed.docx report.docx
+```
+
+プレビューは変更前後を JSON で返します。適用時にも照合を行い、新規ファイルに保存します。対象は一つのテキストランからなる本文段落です。保護・署名・変更履歴の記録が有効な文書や、リンク・ブックマークなどの注釈を含む対象段落は拒否します。
+
 ## ステージング文書としての更新
 
 Markdown の機能を追加または変更する PR では、利用者の表示や保存結果が変わる場合、関連する説明と最小の例を同じ PR で更新します。例には入力、期待する結果、確認した経路を添えます。既知の差は本文に残し、対応した時点で書き換えます。

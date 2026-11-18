@@ -131,3 +131,39 @@ fn citations_resolve_against_the_original_document_only() {
     query["markdownBytes"][0] = serde_json::json!(start + 1);
     assert!(markdown::locate_ai_source(&docx, &query).is_err());
 }
+
+#[test]
+fn ai_edit_previews_and_round_trips_a_single_paragraph() {
+    let docx =
+        markdown::import_markdown_to_docx_bytes("# 見出し\n\n修正前。\n\n別の段落。\n".as_bytes())
+            .unwrap();
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let text = export["markdown"].as_str().unwrap();
+    let before = "修正前。";
+    let start = text.find(before).unwrap();
+    let mut proposal = serde_json::json!({
+        "version": 1,
+        "sourceSha256": export["sourceSha256"],
+        "markdownBytes": [start, start + before.len()],
+        "quote": before,
+        "before": before,
+        "replacement": "修正後。",
+    });
+    let preview = markdown::preview_ai_edit(&docx, &proposal).unwrap();
+    assert_eq!(preview["before"], before);
+    assert_eq!(preview["after"], "修正後。");
+    let edited = markdown::apply_ai_edit(&docx, &proposal).unwrap();
+    let remapped = markdown::export_ai_source(&edited).unwrap();
+    let after = remapped["markdown"].as_str().unwrap();
+    assert!(
+        after.contains("# 見出し") && after.contains("修正後。") && after.contains("別の段落。")
+    );
+    assert!(!after.contains(before));
+    assert!(markdown::apply_ai_edit(&edited, &proposal).is_err());
+
+    proposal["replacement"] = serde_json::json!("new\nparagraph");
+    assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
+    proposal["replacement"] = serde_json::json!("修正後。");
+    proposal["before"] = serde_json::json!("合わない本文");
+    assert!(markdown::apply_ai_edit(&docx, &proposal).is_err());
+}

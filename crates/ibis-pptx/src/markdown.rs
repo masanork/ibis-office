@@ -3906,6 +3906,75 @@ pub fn locate_ai_paragraph(data: &[u8], query: &serde_json::Value) -> Result<u32
         .ok_or_else(|| Error::new("The AI citation has no paragraph ID"))
 }
 
+/// Validate a paragraph replacement and return its before/after text.
+pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serde_json::Value, Error> {
+    let (_, _, _, preview) = prepare_ai_edit(data, proposal)?;
+    Ok(preview)
+}
+
+/// Create an edited DOCX from the same checked proposal used by the preview.
+pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8>, Error> {
+    let (mut opened, index, replacement, _) = prepare_ai_edit(data, proposal)?;
+    let doc = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+    let Block::Paragraph(paragraph) = &mut doc.body[index] else { unreachable!() };
+    paragraph.runs[0].kind = FlowRunKind::Text(replacement.into());
+    opened.source.save(&opened.presentation, SaveOptions::default())
+}
+
+fn prepare_ai_edit<'a>(
+    data: &[u8],
+    proposal: &'a serde_json::Value,
+) -> Result<(Opened, usize, &'a str, serde_json::Value), Error> {
+    use serde_json::json;
+
+    let paragraph_id = locate_ai_paragraph(data, proposal)?;
+    let before = proposal["before"].as_str().ok_or_else(|| Error::new("AI edit requires the original paragraph text in before"))?;
+    let replacement = proposal["replacement"].as_str()
+        .filter(|text| !text.is_empty() && !text.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
+        .ok_or_else(|| Error::new("AI replacement must be nonempty text on one line"))?;
+    if before == replacement {
+        return Err(Error::new("AI replacement does not change the paragraph"));
+    }
+    let opened = crate::open(data.to_vec())?;
+    if opened.source.has_package_signatures().map_err(|error| Error::new(error.to_string()))? {
+        return Err(Error::new("AI editing does not support signed documents"));
+    }
+    let doc = opened.presentation.flow.as_ref().ok_or_else(|| Error::new("AI editing requires a DOCX document"))?;
+    if doc.protection != ibis_doc_model::flow::DocumentProtection::None || doc.formatting_protection || doc.track_changes {
+        return Err(Error::new("AI editing does not support protected documents or active change tracking"));
+    }
+    let (index, paragraph) = doc.body.iter().enumerate().find_map(|(index, block)| {
+        match block {
+            Block::Paragraph(paragraph) if paragraph.id == paragraph_id => Some((index, paragraph)),
+            _ => None,
+        }
+    }).ok_or_else(|| Error::new("AI edit paragraph was not found in the original document"))?;
+    let [run] = paragraph.runs.as_slice() else {
+        return Err(Error::new("AI editing requires a paragraph with a single text run"));
+    };
+    let FlowRunKind::Text(text) = &run.kind else {
+        return Err(Error::new("AI editing requires a text run"));
+    };
+    if run.link.is_some() || run.control.is_some() || run.revision.is_some()
+        || paragraph.mark_revision.is_some() || !paragraph.bookmarks.is_empty()
+        || !paragraph.bookmark_ends.is_empty() || paragraph.field_start.is_some()
+        || paragraph.field_end || paragraph.subdoc.is_some()
+    {
+        return Err(Error::new("AI editing does not support this paragraph's annotations"));
+    }
+    if text != before {
+        return Err(Error::new("Original paragraph text does not match before"));
+    }
+    let preview = json!({
+        "version": 1,
+        "sourceSha256": proposal["sourceSha256"],
+        "source": {"part": "body", "kind": "paragraph", "index": index, "modelId": paragraph_id},
+        "before": before,
+        "after": replacement,
+    });
+    Ok((opened, index, replacement, preview))
+}
+
 fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
     let [left, right] = value.as_array()?.as_slice() else { return None };
     let left = usize::try_from(left.as_u64()?).ok()?;
