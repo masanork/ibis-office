@@ -61,7 +61,7 @@ Our aim is simple: a document made in Microsoft Office should look the same when
   [![ibisOffice introduction video](asset/video-en.jpg)](https://www.youtube.com/watch?v=nk2BRzMC2vw)
 
 - **Command-line interface**: for batch headless conversion to PDF/PNG, print settings, and performance benchmarking, see [Command-Line Options](docs/cli-options.md).
-- **Mermaid diagrams**: see [Markdown import and export limits](docs/mermaid-compatibility.md) (Japanese).
+- **Markdown, Mermaid, and Lawtext**: see the [Reference Manual and demo](docs/markdown-reference-ja.md) (Japanese).
 - **Embedding the browser version**: optional Close and Download buttons that hand the embedding page an event, see [Embedding](docs/web-embedding.md).
 
 ## Goals
