@@ -53,6 +53,7 @@ mod eventmodeling;
 mod agentflow;
 mod ishikawa;
 mod cynefin;
+mod zenuml;
 mod railroad;
 mod text;
 #[cfg(test)]
@@ -89,6 +90,7 @@ use eventmodeling::*;
 use agentflow::*;
 use ishikawa::*;
 use cynefin::*;
+use zenuml::*;
 use railroad::*;
 use sankey::*;
 use text::*;
@@ -200,6 +202,7 @@ enum DiagramKind {
     Agentflow,
     Ishikawa,
     Cynefin,
+    ZenUml,
     Railroad,
 }
 
@@ -261,6 +264,7 @@ const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
     ("agentflow", DiagramKind::Agentflow),
     ("ishikawa-beta", DiagramKind::Ishikawa),
     ("cynefin-beta", DiagramKind::Cynefin),
+    ("zenuml", DiagramKind::ZenUml),
     ("railroad-beta", DiagramKind::Railroad),
     ("railroad-ebnf-beta", DiagramKind::Railroad),
     ("railroad-abnf-beta", DiagramKind::Railroad),
@@ -379,6 +383,7 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Agentflow => render_agentflow_svg(trimmed, &config),
         DiagramKind::Ishikawa => render_ishikawa_svg(trimmed),
         DiagramKind::Cynefin => render_cynefin_svg(trimmed, &config),
+        DiagramKind::ZenUml => render_zenuml_svg(trimmed),
         DiagramKind::Railroad => render_railroad_svg(trimmed),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;
@@ -463,7 +468,6 @@ mod tests {
 
     #[test]
     fn unsupported_diagram_returns_none() {
-        assert!(render_mermaid("zenuml\n  A.method()\n").is_none());
         assert!(render_mermaid("").is_none());
     }
 

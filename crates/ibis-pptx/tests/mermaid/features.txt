@@ -341,3 +341,5 @@ cynefin | config: size, padding, descriptions and boundary | ok | config | cynef
 cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.showDomainDescriptions$
 cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.boundaryAmplitude$
 cynefin | config: random boundary seed | gap | config | cynefin.seed$
+zenuml | participants, messages and control fragments | ok | header | zenuml
+zenuml | Markdown formatting in comments | gap | contains | **Markdown**
