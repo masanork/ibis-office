@@ -1,5 +1,6 @@
 /target
 /www/pkg
+/www/samples/mermaid/
 /www/assets
 /www/main.js
 /www/font-loader.js

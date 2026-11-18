@@ -31,6 +31,10 @@ if [[ "${1:-}" == "--release" ]]; then PROFILE=release; FLAGS=(--release); fi
 
 scripts/build-font-subsetter.sh
 
+# Generate the public demo from the same pinned corpus used in compatibility CI.
+mkdir -p www/samples/mermaid
+MERMAID_CORPUS_DEMO="$PWD/www/samples/mermaid" cargo test --locked -p ibis-pptx --test mermaid_corpus
+
 # Optional self-hosted fonts, prepared before the app starts. Relative font and
 # text paths are resolved against the configuration file, not this script.
 if [[ -n "${IBIS_WEB_FONTS_CONFIG:-}" ]]; then
