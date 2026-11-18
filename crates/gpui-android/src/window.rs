@@ -56,9 +56,11 @@ pub struct WindowCallbacks {
 pub struct AndroidWindowInner {
     pub handle: AnyWindowHandle,
     pub display_state: Arc<Mutex<AndroidDisplayState>>,
-    pub native_window: RefCell<Option<NativeWindow>>,
     pub gpu_context: GpuContext,
     pub renderer: RefCell<Option<WgpuRenderer>>,
+    // Drop the renderer before releasing the handle it uses.
+    native_window: RefCell<Option<NativeWindow>>,
+    surface_active: Cell<bool>,
     pub atlas: RefCell<Option<Arc<dyn PlatformAtlas>>>,
     pub callbacks: RefCell<WindowCallbacks>,
     pub input_handler: RefCell<Option<PlatformInputHandler>>,
@@ -89,6 +91,7 @@ impl AndroidWindowInner {
         Ok(Rc::new(Self {
             handle,
             display_state,
+            surface_active: Cell::new(native_window.is_some()),
             native_window: RefCell::new(native_window),
             gpu_context,
             renderer: RefCell::new(renderer),
@@ -104,43 +107,66 @@ impl AndroidWindowInner {
         }))
     }
 
-    fn create_renderer(
-        gpu_context: &GpuContext,
-        native_window: &NativeWindow,
-        display_state: &Arc<Mutex<AndroidDisplayState>>,
-    ) -> anyhow::Result<WgpuRenderer> {
+    fn surface_config(display_state: &Mutex<AndroidDisplayState>) -> WgpuSurfaceConfig {
         let state = display_state.lock();
-        let config = WgpuSurfaceConfig {
+        WgpuSurfaceConfig {
             size: Size {
                 width: DevicePixels(state.physical_width.max(1) as i32),
                 height: DevicePixels(state.physical_height.max(1) as i32),
             },
             transparent: false,
             preferred_present_mode: None,
-        };
-        drop(state);
+        }
+    }
 
+    fn create_renderer(
+        gpu_context: &GpuContext,
+        native_window: &NativeWindow,
+        display_state: &Mutex<AndroidDisplayState>,
+    ) -> anyhow::Result<WgpuRenderer> {
         let surface_handle = AndroidSurfaceHandle {
             window: native_window.clone(),
         };
+        let config = Self::surface_config(display_state);
         WgpuRenderer::new(Rc::clone(gpu_context), &surface_handle, config, None)
     }
 
     pub fn set_native_window(&self, native_window: Option<NativeWindow>) {
-        *self.renderer.borrow_mut() = None;
-        *self.native_window.borrow_mut() = native_window.clone();
-        if let Some(win) = native_window {
-            match Self::create_renderer(&self.gpu_context, &win, &self.display_state) {
-                Ok(renderer) => {
-                    *self.atlas.borrow_mut() =
-                        Some(Arc::clone(renderer.sprite_atlas()) as Arc<dyn PlatformAtlas>);
-                    *self.renderer.borrow_mut() = Some(renderer);
-                    self.request_frame();
-                }
-                Err(err) => {
-                    log::error!("Failed to create WgpuRenderer for Android window: {err:#}");
-                }
+        let mut renderer = self.renderer.borrow_mut();
+        self.surface_active.set(false);
+        if let Some(renderer) = renderer.as_mut() {
+            renderer.unconfigure_surface();
+        }
+        let Some(window) = native_window else {
+            return;
+        };
+
+        let result = if let Some(renderer) = renderer.as_mut() {
+            let config = Self::surface_config(&self.display_state);
+            let handle = AndroidSurfaceHandle {
+                window: window.clone(),
+            };
+            let context = self.gpu_context.borrow();
+            let instance = &context
+                .as_ref()
+                .expect("renderer requires a GPU context")
+                .instance;
+            renderer.replace_surface(&handle, config, instance)
+        } else {
+            Self::create_renderer(&self.gpu_context, &window, &self.display_state).map(|created| {
+                *self.atlas.borrow_mut() =
+                    Some(Arc::clone(created.sprite_atlas()) as Arc<dyn PlatformAtlas>);
+                *renderer = Some(created);
+            })
+        };
+
+        match result {
+            Ok(()) => {
+                *self.native_window.borrow_mut() = Some(window);
+                self.surface_active.set(true);
+                self.request_frame();
             }
+            Err(err) => log::error!("Failed to attach Android renderer to native window: {err:#}"),
         }
     }
 
@@ -151,7 +177,9 @@ impl AndroidWindowInner {
             state.physical_height = height.max(1);
             state.scale_factor = scale_factor.max(1.0);
         }
-        if let Some(renderer) = self.renderer.borrow_mut().as_mut() {
+        if self.surface_active.get()
+            && let Some(renderer) = self.renderer.borrow_mut().as_mut()
+        {
             renderer.update_drawable_size(Size {
                 width: DevicePixels(width.max(1) as i32),
                 height: DevicePixels(height.max(1) as i32),
@@ -173,7 +201,7 @@ impl AndroidWindowInner {
     }
 
     pub fn dispatch_frame(&self) {
-        if self.renderer.borrow().is_none() {
+        if !self.surface_active.get() {
             return;
         }
         let should_draw = {
@@ -219,7 +247,10 @@ impl AndroidWindowInner {
         result
     }
 
-    pub fn with_input_handler<R>(&self, f: impl FnOnce(&mut PlatformInputHandler) -> R) -> Option<R> {
+    pub fn with_input_handler<R>(
+        &self,
+        f: impl FnOnce(&mut PlatformInputHandler) -> R,
+    ) -> Option<R> {
         let mut handler = self.input_handler.borrow_mut().take()?;
         let result = f(&mut handler);
         let mut slot = self.input_handler.borrow_mut();
@@ -407,7 +438,9 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn draw(&self, scene: &Scene) {
-        if let Some(renderer) = self.inner.renderer.borrow_mut().as_mut() {
+        if self.inner.surface_active.get()
+            && let Some(renderer) = self.inner.renderer.borrow_mut().as_mut()
+        {
             if !renderer.draw(scene) {
                 log::warn!("WgpuRenderer::draw returned false on Android");
             }
