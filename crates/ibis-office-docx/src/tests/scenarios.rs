@@ -237,6 +237,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("docx::ref010_cross_reference_dialog", ref010_cross_reference_dialog),
         ("docx::field013_styleref", field013_styleref),
         ("docx::access002_picture_alt_text", access002_picture_alt_text),
+        ("docx::mermaid_source_edit_roundtrip", mermaid_source_edit_roundtrip),
         ("docx::ref011_cross_reference_relative_and_captions", ref011_cross_reference_relative_and_captions),
         ("docx::access003_picture_decorative", access003_picture_decorative),
         ("docx::float017_selection_pane", float017_selection_pane),
@@ -10143,6 +10144,73 @@ fn field013_styleref() {
 
 /// 画像選択時の「代替テキスト…」メニュー（docx.picture.alt-text）、サイドバーパネルでのタイトル・説明文入力、
 /// 適用、Undo / Redo、ファイル保存・再読込保持を検証。
+fn mermaid_source_edit_roundtrip() {
+    let original = "flowchart LR\n  A[Before] --> B[End]";
+    let replacement = "sequenceDiagram\n  A->>B: After";
+    let markdown = format!("```mermaid\n{original}\n```\n");
+    let bytes = ibis_pptx::markdown::import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+    let directory = crate::shell::scenario::repo_root().join("target/scenario-fixtures");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("mermaid-source-input.docx");
+    std::fs::write(&path, bytes).unwrap();
+    let mut scenario = Scenario::open(path.to_str().unwrap());
+    let (at, original_media) = scenario.with(|editor, _| {
+        for paragraph in body(flow(editor.presentation())) {
+            let mut offset = 0;
+            for run in &paragraph.runs {
+                if let FlowRunKind::Picture { media, look, .. } = &run.kind
+                    && look.alt_text.title == "__mermaid__"
+                {
+                    return (FlowPos::new(paragraph.id, offset), *media);
+                }
+                offset += run.len();
+            }
+        }
+        panic!("Mermaid picture missing");
+    });
+    scenario.click_text(at);
+    let before = scenario.document();
+    scenario.menu("docx.picture.mermaid-source");
+    assert!(scenario.with(|editor, _| editor.dialog_is_modal()));
+    let apply = |scenario: &mut Scenario, source: &str| {
+        scenario.update(|editor, window, cx| {
+            let input = editor.doc_state().unwrap().mermaid_edit.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value(source.to_string(), window, cx));
+            editor.apply_mermaid_source(window, cx);
+        });
+    };
+    apply(&mut scenario, "unsupported diagram");
+    assert_eq!(scenario.document(), before);
+    apply(&mut scenario, replacement);
+    let after = scenario.document();
+    assert_ne!(after, before);
+    let edited_media = scenario.with(|editor, _| {
+        body(flow(editor.presentation())).iter().flat_map(|paragraph| &paragraph.runs)
+            .find_map(|run| match &run.kind {
+                FlowRunKind::Picture { media, look, .. } if look.alt_text.description == replacement => Some(*media),
+                _ => None,
+            }).unwrap()
+    });
+    assert_ne!(edited_media, original_media);
+    scenario.menu("edit.undo");
+    assert_eq!(scenario.document(), before);
+    scenario.menu("edit.redo");
+    assert_eq!(scenario.document(), after);
+    scenario.save_as("mermaid-source-edited.docx");
+    let reopened = scenario.reopen();
+    let exported = ibis_pptx::markdown::export_markdown(flow(&reopened), &reopened.media);
+    assert!(exported.contains(replacement));
+    assert!(!exported.contains(original));
+    let saved_media = body(flow(&reopened)).iter().flat_map(|paragraph| &paragraph.runs)
+        .find_map(|run| match &run.kind {
+            FlowRunKind::Picture { media, look, .. } if look.alt_text.description == replacement => Some(*media),
+            _ => None,
+        }).unwrap();
+    let svg = reopened.media(saved_media).unwrap();
+    assert_eq!(svg.format, ibis_doc_model::MediaFormat::Svg);
+    assert!(std::str::from_utf8(&svg.data).unwrap().contains("After"));
+}
+
 fn access002_picture_alt_text() {
     use ibis_doc_model::AltText;
     let mut s = Scenario::open(REPORT);
