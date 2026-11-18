@@ -142,7 +142,9 @@ function pickFile(accept?: string): Promise<PickedFile | null> {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = accept ?? '.exr,.psd,.tga,.tif,.tiff,.jp2,.j2k,.j2c,.jtd,.jtt,.jttc,.pptx,.xlsx,.docx,.ppt,.xls,.doc,.md,.markdown,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    // Safari can transcode an image to an accepted image type before giving
+    // it to the app. The document picker needs the original file and bytes.
+    if (accept !== undefined) input.accept = accept;
     input.addEventListener('change', () => {
       const file = input.files?.[0];
       if (!file) {
