@@ -2,9 +2,8 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Read-only DocuWorks page adapter for the fixed-layout viewer.
 //!
-//! The preview maps basic geometry, horizontal text and axis-aligned images.
-//! Horizontal glyph positions and rectangular clips are supported. Other clip
-//! shapes use their bounding rectangles.
+//! The preview preserves horizontal glyph positions, rectangular clips and
+//! quarter-turn images. Other clip shapes use their bounding rectangles.
 
 use ezpzxdw_core::{
     doc::Document,
@@ -93,10 +92,17 @@ impl XdwContainer {
                     path,
                     color,
                     evenodd,
+                    mul,
                     ..
                 } => path_command(
                     path,
-                    Some(rgba(color)),
+                    // The GPUI viewer uses source-over. Keep text visible under marker ink.
+                    Some(if mul {
+                        let [r, g, b, _] = rgba(color);
+                        [r, g, b, 96]
+                    } else {
+                        rgba(color)
+                    }),
                     None,
                     0.0,
                     if evenodd {
@@ -114,6 +120,9 @@ impl XdwContainer {
                     angle,
                     size,
                     sx,
+                    face,
+                    weight,
+                    italic,
                     vertical,
                     color,
                     text,
@@ -121,23 +130,41 @@ impl XdwContainer {
                     ..
                 } => {
                     let sx = if sx == 0.0 { 1.0 } else { sx };
-                    let glyph = |text, dx| DisplayCmd::DrawGlyphRun {
+                    let angle = -angle.to_radians();
+                    let (sin, cos) = angle.sin_cos();
+                    let glyph = |text, dx, max_width| DisplayCmd::DrawStyledGlyphRun {
                         text,
-                        origin: ((x + dx) * PT_PER_UNIT, y * PT_PER_UNIT),
+                        origin: ((x + dx * cos) * PT_PER_UNIT, (y + dx * sin) * PT_PER_UNIT),
                         font_size: size * PT_PER_UNIT,
+                        family: face.clone(),
+                        weight,
+                        italic,
+                        angle,
+                        horizontal_scale: sx,
+                        max_width,
                         rgba: rgba(color),
                     };
-                    if angle == 0.0
-                        && !vertical
-                        && !xs.is_empty()
-                        && xs.len() == text.chars().count()
-                    {
-                        display_list.extend(text.chars().zip(xs).filter_map(|(ch, dx)| {
-                            (!ch.is_whitespace()).then(|| glyph(ch.to_string(), dx * sx))
-                        }));
+                    if !vertical && !xs.is_empty() && xs.len() == text.chars().count() {
+                        for ((index, ch), &dx) in text.chars().enumerate().zip(&xs) {
+                            if ch.is_whitespace() {
+                                continue;
+                            }
+                            // Offsets are already in page units. sx scales glyph outlines.
+                            let advance = xs.get(index + 1).map(|next| (next - dx) * PT_PER_UNIT);
+                            let remaining = next_clip
+                                .filter(|_| angle == 0.0)
+                                .map(|clip| clip.x1 - (x + dx) * PT_PER_UNIT);
+                            let max_width = match (advance, remaining) {
+                                (Some(a), Some(b)) if b > 0.0 => Some(a.min(b)),
+                                (Some(a), _) => Some(a),
+                                (None, remaining) => remaining,
+                            }
+                            .filter(|width| *width > 0.0);
+                            display_list.push(glyph(ch.to_string(), dx, max_width));
+                        }
                         None
                     } else {
-                        Some(glyph(text, 0.0))
+                        Some(glyph(text, 0.0, None))
                     }
                 }
                 Item::Image {
@@ -178,6 +205,8 @@ impl XdwContainer {
                             pixel[3] = (f32::from(pixel[3]) * alpha).round() as u8;
                         }
                     }
+                    let (width, height, pixels) =
+                        orient_image(width, height, pixels, [a, b, c, d])?;
                     Some(DisplayCmd::DrawImage {
                         bounds: rect([
                             e + a.min(0.0) + c.min(0.0),
@@ -199,6 +228,42 @@ impl XdwContainer {
             text_index: Default::default(),
         })
     }
+}
+
+// Straight and quarter-turn transforms can be expressed as a rectangular
+// image placement once the pixel rows and columns are oriented.
+fn orient_image(
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    [a, b, c, d]: [f32; 4],
+) -> Result<(u32, u32, Vec<u8>)> {
+    let quarter_turn = a == 0.0 && d == 0.0 && b != 0.0 && c != 0.0;
+    let axis_aligned = b == 0.0 && c == 0.0;
+    let (flip_x, flip_y) = if quarter_turn {
+        (c > 0.0, b < 0.0)
+    } else if axis_aligned {
+        (a < 0.0, d < 0.0)
+    } else {
+        (false, false)
+    };
+    if !quarter_turn && !flip_x && !flip_y {
+        return Ok((width, height, pixels));
+    }
+    let source = image::RgbaImage::from_raw(width, height, pixels)
+        .ok_or_else(|| Error::new("Invalid DocuWorks image dimensions"))?;
+    let mut result = if quarter_turn {
+        image::imageops::rotate90(&source)
+    } else {
+        source
+    };
+    if flip_x {
+        image::imageops::flip_horizontal_in_place(&mut result);
+    }
+    if flip_y {
+        image::imageops::flip_vertical_in_place(&mut result);
+    }
+    Ok((result.width(), result.height(), result.into_raw()))
 }
 
 fn clip_rect(paths: &[Path]) -> Option<PdfRect> {
@@ -289,6 +354,25 @@ mod tests {
     use ezpzxdw_core::edit::Shape;
 
     #[test]
+    fn orients_quarter_turns_and_mirrors() {
+        let pixels: Vec<_> = (1..=6).flat_map(|red| [red, 0, 0, 255]).collect();
+        for (matrix, dimensions, expected) in [
+            ([0.0, 1.0, -1.0, 0.0], (3, 2), [5, 3, 1, 6, 4, 2]),
+            ([0.0, -1.0, 1.0, 0.0], (3, 2), [2, 4, 6, 1, 3, 5]),
+            ([-1.0, 0.0, 0.0, 1.0], (2, 3), [2, 1, 4, 3, 6, 5]),
+        ] {
+            let (w, h, data) = orient_image(2, 3, pixels.clone(), matrix).unwrap();
+            assert_eq!((w, h), dimensions);
+            assert_eq!(
+                data.chunks_exact(4)
+                    .map(|pixel| pixel[0])
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn intersects_nested_clips_and_preserves_empty_intersections() {
         assert_eq!(clip_rect(&[]), None);
         let page = Path::rect(0.0, 0.0, 21_000.0, 29_700.0);
@@ -336,6 +420,21 @@ mod tests {
                 },
             )
             .unwrap();
+        document
+            .add_annotation(
+                0,
+                1000.0,
+                1000.0,
+                2000.0,
+                500.0,
+                &Shape::Rect {
+                    stroke: None,
+                    width: 1.0,
+                    fill: Some(0xffff00),
+                    highlight: true,
+                },
+            )
+            .unwrap();
         let bytes = document.save().unwrap();
         assert!(is_xdw(&bytes));
         let xdw = XdwContainer::from_bytes(&bytes).unwrap();
@@ -346,13 +445,13 @@ mod tests {
         let scene = xdw.interpret_page_scene(0).unwrap();
         assert_eq!(scene.info, pages[0]);
         let display = xdw.0.render(0).unwrap();
-        let (x, y, sx, offsets) = display
+        let (x, y, offsets) = display
             .items
             .iter()
             .find_map(|item| match item {
-                Item::Text {
-                    text, x, y, sx, xs, ..
-                } if text == "閲覧テスト" => Some((*x, *y, *sx, xs)),
+                Item::Text { text, x, y, xs, .. } if text == "閲覧テスト" => {
+                    Some((*x, *y, xs))
+                }
                 _ => None,
             })
             .unwrap();
@@ -360,7 +459,9 @@ mod tests {
             .display_list
             .iter()
             .filter_map(|cmd| match cmd {
-                DisplayCmd::DrawGlyphRun { text, origin, .. } => Some((text.as_str(), *origin)),
+                DisplayCmd::DrawStyledGlyphRun { text, origin, .. } => {
+                    Some((text.as_str(), *origin))
+                }
                 _ => None,
             })
             .collect();
@@ -370,7 +471,7 @@ mod tests {
         );
         assert_eq!(glyphs.len(), offsets.len());
         for ((_, (gx, gy)), offset) in glyphs.iter().zip(offsets) {
-            assert_eq!(*gx, (x + offset * sx) * PT_PER_UNIT);
+            assert_eq!(*gx, (x + offset) * PT_PER_UNIT);
             assert_eq!(*gy, y * PT_PER_UNIT);
         }
         assert!(scene.display_list.iter().any(|cmd| matches!(
@@ -384,6 +485,13 @@ mod tests {
             cmd,
             DisplayCmd::DrawPath {
                 stroke_rgba: Some([0x11, 0x22, 0x33, 255]),
+                ..
+            }
+        )));
+        assert!(scene.display_list.iter().any(|cmd| matches!(
+            cmd,
+            DisplayCmd::DrawPath {
+                fill_rgba: Some([255, 255, 0, 96]),
                 ..
             }
         )));
@@ -413,11 +521,12 @@ mod tests {
                 None,
             )
             .unwrap();
+        document.rotate_page(1, 1).unwrap();
         let xdw = XdwContainer::from_bytes(&document.save().unwrap()).unwrap();
         assert_eq!(xdw.page_infos().len(), 2);
         let scene = xdw.interpret_page_scene(1).unwrap();
         assert!(scene.display_list.iter().any(|cmd| matches!(
-            cmd, DisplayCmd::DrawImage { width: 2, height: 1, rgba, .. } if rgba.len() == 8
+            cmd, DisplayCmd::DrawImage { width: 1, height: 2, rgba, .. } if rgba.len() == 8
         )));
     }
 }

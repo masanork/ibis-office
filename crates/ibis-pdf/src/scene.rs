@@ -82,6 +82,18 @@ pub enum DisplayCmd {
         font_size: f32,
         rgba: [u8; 4],
     },
+    DrawStyledGlyphRun {
+        text: String,
+        origin: (f32, f32),
+        font_size: f32,
+        family: String,
+        weight: u16,
+        italic: bool,
+        angle: f32,
+        horizontal_scale: f32,
+        max_width: Option<f32>,
+        rgba: [u8; 4],
+    },
     DrawImage {
         bounds: PdfRect,
         width: u32,
