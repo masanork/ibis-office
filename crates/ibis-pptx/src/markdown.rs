@@ -4813,6 +4813,9 @@ pub fn open_markdown_presentation_with_base_dir(
                                 );
                                 chart.title = src_chart.title.clone();
                                 copy_chart_group_topology(&mut chart, src_chart);
+                                if is_mermaid && kind == NewChartKind::Pie {
+                                    chart.legend = src_chart.legend.clone();
+                                }
                                 if is_mermaid || kind == NewChartKind::ClusteredBar {
                                     apply_mermaid_value_range(&mut chart, chart_value_range(src_chart));
                                 }
@@ -5863,7 +5866,7 @@ xychart
     }
 
     #[test]
-    fn mermaid_pie_legend_survives_docx() {
+    fn mermaid_pie_legend_survives_office_roundtrip() {
         for (name, side, position) in [
             ("top", Side::Top, LegendPosition::Top),
             ("bottom", Side::Bottom, LegendPosition::Bottom),
@@ -5871,7 +5874,7 @@ xychart
             ("right", Side::Right, LegendPosition::Right),
         ] {
             let md = format!("```mermaid\n---\nconfig:\n  pie:\n    legendPosition: {name}\n---\npie\n  \"A\" : 1\n  \"B\" : 3\n```\n");
-            let opened = open_markdown(md.into_bytes()).unwrap();
+            let opened = open_markdown(md.as_bytes().to_vec()).unwrap();
             let saved = opened.source.save(&opened.presentation, Default::default()).unwrap();
             let reread = crate::read(&saved).unwrap();
             for pres in [&opened.presentation, &reread] {
@@ -5883,6 +5886,21 @@ xychart
                 assert_eq!(legend.side, side);
                 assert_eq!(legend.source_position, Some(position));
                 assert!(export_markdown(flow, &pres.media).contains(&format!("legendPosition: {name}")));
+            }
+
+            let deck = open_markdown_presentation(md.into_bytes()).unwrap();
+            let saved = deck.source.save(&deck.presentation, Default::default()).unwrap();
+            let reread = crate::read(&saved).unwrap();
+            for pres in [&deck.presentation, &reread] {
+                let chart = pres.slides.iter().flat_map(|slide| &slide.shapes).find_map(|shape| {
+                    match &shape.kind {
+                        ShapeKind::Chart(chart) => Some(chart),
+                        _ => None,
+                    }
+                }).expect("native pie chart");
+                let legend = chart.legend.as_ref().unwrap();
+                assert_eq!(legend.side, side);
+                assert_eq!(legend.source_position, Some(position));
             }
         }
     }
