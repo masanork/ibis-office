@@ -113,7 +113,7 @@ Flowchart、sequence、ER、state、Gantt などは SVG として表示されま
 
 ### デモを開く
 
-[図種別デモ](mermaid-demo-ja.md) は、そのまま Docs で開ける Markdown です。すべての対応図種に表示例があり、未対応の図種はコード表示を試せます。この Reference には日本語ラベル、双方向矢印、横棒グラフ、数値 x 軸の例もあります。
+[図種別デモ](mermaid-demo-ja.md) は、そのまま Docs で開ける Markdown です。固定した公式コーパスの33図種に表示例があります。この Reference には日本語ラベル、双方向矢印、横棒グラフ、数値 x 軸の例もあります。
 
 公式コーパスの全例を、図種別の Markdown として生成できます。目次には描画結果と、対応・未実装・対象外として追跡する構文の一覧が載ります。各例には、該当する既知の制約を表示します。
 
@@ -128,7 +128,7 @@ MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo \
 
 第1列は現在認識するすべての図種キーワードと別名です。第2列は公式例コーパスで対応として追跡している項目です。設定キーや演算子は[構文一覧の元データ](../crates/ibis-pptx/tests/mermaid/features.txt)と[図種ごとの入力例](../crates/ibis-pptx/tests/mermaid/corpus/)で照合できます。
 
-共通設定は図の先頭の YAML に書きます。タイトル、配色テーマ、主要な色変数を扱います。HTML ラベルは SVG の通常テキストとして表示します。ELK 固有の配置、任意の CSS、コールバック、アニメーションは再現しません。ZenUML、Cynefin はコード表示になります。
+共通設定は図の先頭の YAML に書きます。タイトル、配色テーマ、主要な色変数を扱います。HTML ラベルは SVG の通常テキストとして表示します。ELK 固有の配置、任意の CSS、コールバック、アニメーションは再現しません。
 
 | 図種キーワードと別名 | コーパスで追跡している対応構文・設定 |
 | :--- | :--- |
@@ -161,6 +161,8 @@ MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo \
 | `treeView-beta` / `treeView` | box-drawing prefixes (├── └── │) / :::class highlight / ## comments / config: showIcons (generic folder / file glyphs) / config: rowIndent / lineThickness / config: treeView theme variables (labelFontSize, labelColor, lineColor) |
 | `swimlane-beta` / `swimlane` | lanes (subgraph id [title] … end) / links with labels and chains / flowchart node shapes / classDef / class / style / accTitle / accDescr |
 | `eventmodeling` | timeframes (tf / timeframe) / reset frames (rf / resetframe) / inline payloads { … } / data blocks and [[references]] / explicit sources (->> NN) / streams (Stream.Event lanes) |
+| `ishikawa-beta` | 最初の行に結果、その後に原因。インデントで下位要因を指定。 |
+| `cynefin-beta` | 5領域、引用符付き項目、タイトル、ラベル付き遷移、幅・高さ・余白、説明文の表示、境界の振幅。遷移は図の下に表示。 |
 | `agentflow-beta` / `agentflow` | flows (flow id["Agent"] … end, nested) / global block / node shapes (input / task / tool / decision / refdoc / action) / links (-->, -.-, --x, -- text -->) / connectors / collapsed flows (@{ view: collapsed }) / metadata (protocol, endpoint, connectorRef, params, returns, value, instruction; not drawn) / config: nodeSpacing / rankSpacing |
 | `railroad-beta` / `railroad-ebnf-beta` / `railroad-abnf-beta` / `railroad-peg-beta` | EBNF rules (alternatives, ? \* +, groups, [ ] and { }) / ABNF rules (/ and n\*m repetition) / PEG rules (<- / ! &) / function form (sequence / choice / optional / zeroOrMore / oneOrMore / terminal / nonterminal) / title |
 
