@@ -153,7 +153,7 @@ timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok 
 pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.textPosition
 pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.donutHole
 pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.highlightSlice
-pie | config: legendPosition | gap | config | pie.legendPosition
+pie | config: legendPosition | ok | config | pie.legendPosition
 pie | config: pie theme variables (pie1-12, pieOuterStrokeWidth) | ok | config | themeVariables.pie
 xyChart | y-axis title / range | ok | prefix | y-axis
 xyChart | horizontal orientation | ok | header | horizontal
