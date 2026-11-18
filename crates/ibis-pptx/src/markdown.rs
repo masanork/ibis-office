@@ -1521,13 +1521,12 @@ fn parse_blocks(
         }
 
         // Fenced code / math / chart block: ```lang ... ```
-        if let Some(fence_info) = trimmed.strip_prefix("```").or_else(|| trimmed.strip_prefix("~~~")) {
-            let fence_marker = if trimmed.starts_with("```") { "```" } else { "~~~" };
+        if let Some((fence_marker, fence_info)) = opening_fence(trimmed) {
             let lang = fence_info.trim().to_ascii_lowercase();
             i += 1;
             let mut content_lines = Vec::new();
             while i < lines.len() {
-                if lines[i].trim().starts_with(fence_marker) {
+                if closes_fence(lines[i].trim(), fence_marker) {
                     i += 1;
                     break;
                 }
@@ -2611,8 +2610,43 @@ fn build_mermaid_code_block(content: &str, ctx: &mut ParseContext<'_>) -> Block 
     build_code_block(fenced.trim_end_matches('\n'), ctx)
 }
 
+fn opening_fence(line: &str) -> Option<(&str, &str)> {
+    let marker = *line.as_bytes().first()?;
+    if !matches!(marker, b'`' | b'~') {
+        return None;
+    }
+    let count = line.bytes().take_while(|&byte| byte == marker).count();
+    (count >= 3).then(|| line.split_at(count))
+}
+
+fn closes_fence(line: &str, marker: &str) -> bool {
+    line.strip_prefix(marker).is_some_and(|tail| {
+        tail.trim_end().bytes().all(|byte| byte == marker.as_bytes()[0])
+    })
+}
+
+/// Track fenced content when scanning slide separators or speaker notes.
+fn is_fenced_line<'a>(line: &'a str, fence: &mut Option<&'a str>) -> bool {
+    if let Some(marker) = *fence {
+        if closes_fence(line, marker) {
+            *fence = None;
+        }
+        true
+    } else if let Some((marker, _)) = opening_fence(line) {
+        *fence = Some(marker);
+        true
+    } else {
+        false
+    }
+}
+
 fn is_literal_mermaid_fence(text: &str) -> bool {
-    text.starts_with("```mermaid\n") && text.ends_with("\n```")
+    let Some((first, remaining)) = text.split_once('\n') else { return false };
+    let Some((marker, info)) = opening_fence(first) else { return false };
+    if info != "mermaid" { return false; }
+    let mut lines = remaining.lines();
+    let Some(last) = lines.next_back() else { return false };
+    closes_fence(last, marker) && !lines.any(|line| closes_fence(line.trim(), marker))
 }
 
 fn build_mermaid_svg_paragraph(
@@ -3970,12 +4004,7 @@ fn serialize_paragraph(
                 }
             }
             FlowRunKind::Picture { look, .. } if look.alt_text.title == "__mermaid__" => {
-                out.push_str("```mermaid\n");
-                out.push_str(&look.alt_text.description);
-                if !look.alt_text.description.ends_with('\n') {
-                    out.push('\n');
-                }
-                out.push_str("```\n\n");
+                write_mermaid_fence(&look.alt_text.description, out);
                 return;
             }
             _ => {}
@@ -4246,12 +4275,18 @@ fn mermaid_source_matches(chart: &Chart, source: &str) -> bool {
 }
 
 fn write_mermaid_fence(source: &str, out: &mut String) {
-    out.push_str("```mermaid\n");
+    let longest = source.lines().map(|line| {
+        line.trim_start().bytes().take_while(|&byte| byte == b'`').count()
+    }).max().unwrap_or(0);
+    let marker = "`".repeat(3.max(longest + 1));
+    out.push_str(&marker);
+    out.push_str("mermaid\n");
     out.push_str(source);
     if !source.ends_with('\n') {
         out.push('\n');
     }
-    out.push_str("```\n\n");
+    out.push_str(&marker);
+    out.push_str("\n\n");
 }
 
 fn serialize_chart(chart: &Chart, out: &mut String) {
@@ -4822,12 +4857,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         .get(&shape.id)
                         .unwrap_or(&pic.alt_text);
                     if alt.title == "__mermaid__" {
-                        out.push_str("```mermaid\n");
-                        out.push_str(&alt.description);
-                        if !alt.description.ends_with('\n') {
-                            out.push('\n');
-                        }
-                        out.push_str("```\n\n");
+                        write_mermaid_fence(&alt.description, &mut out);
                     } else if let Some(media) = p.media(pic.media) {
                         use base64::Engine as _;
                         let mime = match media.format {
@@ -4908,13 +4938,10 @@ fn split_markdown_slides(text: &str) -> Vec<String> {
 
     let mut chunks: Vec<String> = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
-    let mut in_fence = false;
+    let mut in_fence = None;
     for line in body.lines() {
         let t = line.trim();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-        }
-        if !in_fence && (t == "---" || t == "***" || t == "___") {
+        if !is_fenced_line(t, &mut in_fence) && (t == "---" || t == "***" || t == "___") {
             let joined = cur.join("\n").trim().to_string();
             if !joined.is_empty() {
                 chunks.push(joined);
@@ -4933,13 +4960,10 @@ fn split_markdown_slides(text: &str) -> Vec<String> {
         // Fallback: split on top-level `# ` headings if multiple exist.
         let mut h_chunks: Vec<String> = Vec::new();
         let mut h_cur: Vec<&str> = Vec::new();
-        let mut in_f = false;
+        let mut in_f = None;
         for line in body.lines() {
             let t = line.trim();
-            if t.starts_with("```") || t.starts_with("~~~") {
-                in_f = !in_f;
-            }
-            if !in_f && line.starts_with("# ") && !h_cur.is_empty() {
+            if !is_fenced_line(t, &mut in_f) && line.starts_with("# ") && !h_cur.is_empty() {
                 let s = h_cur.join("\n").trim().to_string();
                 if !s.is_empty() {
                     h_chunks.push(s);
@@ -4967,8 +4991,13 @@ fn split_markdown_slides(text: &str) -> Vec<String> {
 fn extract_slide_notes(chunk: &str) -> (String, Option<String>) {
     let mut body_lines: Vec<&str> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
+    let mut fence = None;
     for line in chunk.lines() {
         let t = line.trim();
+        if is_fenced_line(t, &mut fence) {
+            body_lines.push(line);
+            continue;
+        }
         if let Some(inner) = t.strip_prefix("<!-- notes:").and_then(|s| s.strip_suffix("-->")) {
             let note = inner.trim();
             if !note.is_empty() {
@@ -5382,6 +5411,23 @@ series:
         assert!(out.contains("| **Left** | **Center** | **Right** |"));
         assert!(out.contains("| :--- | :---: | ---: |"));
         assert!(out.contains("| a | b | c |"));
+    }
+
+    #[test]
+    fn mermaid_fences_preserve_nested_delimiters_and_slide_markers() {
+        let source = "zenuml\n```\n---\n# data\n<!-- notes: keep in source -->\n~~~\n";
+        let markdown = format!("~~~~mermaid\n{source}~~~~\n");
+        let expected = format!("````mermaid\n{source}````");
+        let document = open_markdown(markdown.as_bytes().to_vec()).unwrap();
+        let docx = document.source.save(&document.presentation, Default::default()).unwrap();
+        let reopened = crate::read(&docx).unwrap();
+        assert!(export_markdown(reopened.flow.as_ref().unwrap(), &reopened.media).contains(&expected));
+        let slides = open_markdown_presentation(markdown.as_bytes().to_vec()).unwrap();
+        assert_eq!(slides.presentation.slides.len(), 1);
+        assert!(slides.presentation.slides[0].notes.is_empty());
+        let pptx = slides.source.save(&slides.presentation, Default::default()).unwrap();
+        let reopened = crate::read(&pptx).unwrap();
+        assert!(export_presentation_markdown(&reopened).contains(&expected));
     }
 
     #[test]
