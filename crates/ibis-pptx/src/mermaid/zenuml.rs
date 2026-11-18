@@ -198,7 +198,7 @@ fn sequence(source: &str) -> Option<String> {
         }
         if let Some((from, to, arrow, label)) = message {
             if !comments.is_empty() {
-                out.push_str(&format!("Note over {from}: {}\n", comments.join("<br>")));
+                out.push_str(&format!("Note over {from}: {}\n", comments.join(" ")));
                 comments.clear();
             }
             out.push_str(&format!("{from}{arrow}{to}: {label}\n"));

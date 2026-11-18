@@ -231,7 +231,7 @@ xychart
 
 ### ZenUML
 
-次は ZenUML のシーケンス図です。DOCX または PPTX に保存してから Markdown に戻し、言語指定 `mermaid` と本文が残ることを確認します。
+次は ZenUML のシーケンス図です。メッセージに付いたコメントはプレーンテキストの注記として描画します。DOCX または PPTX に保存してから Markdown に戻し、言語指定 `mermaid` と本文が残ることを確認します。
 
 ```mermaid
 zenuml
