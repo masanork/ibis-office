@@ -429,14 +429,26 @@ flowchart LR
 
 ### ガントの todayMarker
 
-工程は表示します。todayMarker による当日の線は描きません。
+図の生成時点のローカル日時が時間軸の範囲内なら、当日の線を描きます。線の色・太さ・不透明度を指定できます。
 
 ```mermaid
 gantt
   dateFormat YYYY-MM-DD
-  todayMarker stroke-width:3px,stroke:#2563eb
+  tickInterval 1year
+  todayMarker stroke-width:3px,stroke:#2563eb,opacity:0.7
   section 審査
-  受付 :2026-11-16, 2d
+  実施期間 :2025-01-01, 2030-01-01
+```
+
+`todayMarker off` を指定すると、時間軸の範囲内でも線を非表示にできます。
+
+```mermaid
+gantt
+  dateFormat YYYY-MM-DD
+  tickInterval 1year
+  todayMarker off
+  section 審査
+  実施期間 :2025-01-01, 2030-01-01
 ```
 
 ### 円グラフの凡例位置

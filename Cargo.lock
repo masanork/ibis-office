@@ -4225,6 +4225,7 @@ version = "0.8.0"
 dependencies = [
  "ag-psd",
  "base64 0.22.1",
+ "chrono",
  "delharc",
  "dicom-core",
  "dicom-object",
