@@ -26,6 +26,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | addr2line | 0.25.1 | Apache-2.0 OR MIT | https://github.com/gimli-rs/addr2line |
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | https://github.com/oyvindln/adler2 |
 | aes | 0.8.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/block-ciphers |
+| ag-psd | 0.3.0 | MIT | https://github.com/Vasyanator/ag-psd-rs |
 | ahash | 0.8.12 | MIT OR Apache-2.0 | https://github.com/tkaitchuck/ahash |
 | aho-corasick | 1.1.5 | Unlicense OR MIT | https://github.com/BurntSushi/aho-corasick |
 | alloc-no-stdlib | 2.0.4 | BSD-3-Clause | https://github.com/dropbox/rust-alloc-no-stdlib |
@@ -1040,6 +1041,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **addr2line 0.25.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016-2018 The gimli Developers
 - **adler2 2.0.1**：Copyright (C) Jonas Schievink <jonasschievink@gmail.com> / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **aes 0.8.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Artyom Pavlov
+- **ag-psd 0.3.0**：Copyright (c) 2016 Agamnentzar
 - **ahash 0.8.12**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Tom Kaitchuck
 - **aho-corasick 1.1.5**：Copyright (c) 2015 Andrew Gallant
 - **alloc-no-stdlib 2.0.4**：Copyright (c) 2016 Dropbox, Inc.

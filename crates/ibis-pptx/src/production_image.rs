@@ -13,10 +13,12 @@ const MAX_INPUT_BYTES: usize = 128 * 1024 * 1024;
 enum Format {
     Raster(ImageFormat),
     Jpeg2000,
+    Photoshop,
 }
 
 fn format(ext: &str) -> Option<Format> {
     match ext.to_ascii_lowercase().as_str() {
+        "psd" => Some(Format::Photoshop),
         "tga" => Some(Format::Raster(ImageFormat::Tga)),
         "tif" | "tiff" => Some(Format::Raster(ImageFormat::Tiff)),
         "jp2" | "j2k" | "j2c" => Some(Format::Jpeg2000),
@@ -46,6 +48,7 @@ pub fn open(extension: Option<&str>, bytes: &[u8]) -> Result<Option<crate::Opene
             reader.decode().map_err(|error| error.to_string())?
         }
         Format::Jpeg2000 => decode_jpeg2000(bytes)?,
+        Format::Photoshop => decode_psd(bytes)?,
     };
     let mut png = Cursor::new(Vec::new());
     image
@@ -56,6 +59,43 @@ pub fn open(extension: Option<&str>, bytes: &[u8]) -> Result<Option<crate::Opene
     crate::markdown::open_markdown(markdown.into_bytes())
         .map(Some)
         .map_err(|error| error.to_string())
+}
+
+fn decode_psd(bytes: &[u8]) -> Result<DynamicImage, String> {
+    let header = bytes.get(..26).ok_or("Incomplete PSD header")?;
+    if &header[..6] != b"8BPS\0\x01" || header[22..26] != [0, 8, 0, 3] {
+        return Err("PSD preview requires a version 1, 8-bit RGB image".into());
+    }
+    let height = u32::from_be_bytes(header[14..18].try_into().unwrap());
+    let width = u32::from_be_bytes(header[18..22].try_into().unwrap());
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err("PSD dimensions exceed the preview limits".into());
+    }
+    let missing_composite =
+        "PSD has no saved composite image. Enable Maximize Compatibility when saving.";
+    let psd = ag_psd::read_psd(
+        bytes,
+        &ag_psd::psd::ReadOptions {
+            skip_layer_image_data: Some(true),
+            skip_thumbnail: Some(true),
+            skip_linked_files_data: Some(true),
+            use_image_data: Some(true),
+            total_memory_limit: Some((MAX_PIXELS * 4) as usize),
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("Cannot read the saved PSD composite: {error}"))?;
+    if psd
+        .image_resources
+        .and_then(|resources| resources.version_info)
+        .is_some_and(|version| !version.has_real_merged_data)
+    {
+        return Err(missing_composite.into());
+    }
+    let pixels = psd.image_data.ok_or(missing_composite)?;
+    image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.data)
+        .map(DynamicImage::ImageRgba8)
+        .ok_or_else(|| "Invalid PSD composite pixel buffer".into())
 }
 
 fn decode_jpeg2000(bytes: &[u8]) -> Result<DynamicImage, String> {
@@ -116,6 +156,38 @@ mod tests {
             .to_rgba8()
             .get_pixel(0, 0)
             .0
+    }
+
+    #[test]
+    fn opens_saved_psd_composite() {
+        use ag_psd::psd::{ColorMode, ImageResources, PixelData, Psd, VersionInfo, WriteOptions};
+        let pixels = [25, 100, 225, 255];
+        let mut psd = Psd {
+            width: 1.0,
+            height: 1.0,
+            color_mode: Some(ColorMode::Rgb),
+            bits_per_channel: Some(8.0),
+            image_data: Some(PixelData {
+                width: 1,
+                height: 1,
+                data: pixels.to_vec(),
+            }),
+            ..Default::default()
+        };
+        let mut bytes = ag_psd::write_psd(&psd, &WriteOptions::default());
+        assert_eq!(
+            preview_pixel(open(Some("psd"), &bytes).unwrap().unwrap()),
+            pixels
+        );
+        bytes.truncate(26);
+        assert!(open(Some("psd"), &bytes).is_err());
+        psd.image_resources = Some(ImageResources {
+            version_info: Some(VersionInfo::default()),
+            ..Default::default()
+        });
+        let without_composite = ag_psd::write_psd(&psd, &WriteOptions::default());
+        assert!(matches!(open(Some("psd"), &without_composite),
+            Err(error) if error.contains("Maximize Compatibility")));
     }
 
     #[test]
