@@ -1059,9 +1059,10 @@ mod web {
         crate::render::web_image::set_http_client(http_client.clone());
         let app = Application::with_platform(platform)
             .with_http_client(http_client)
-            .with_assets(crate::shell::icons::Assets::new(
-                asset_base.unwrap_or_default(),
-            ));
+            .with_assets(
+                crate::shell::icons::Assets::new(asset_base.unwrap_or_default())
+                    .with_svg_sans_font(UI_FONT),
+            );
 
         // Fonts must be registered before init/open_editor populate their font
         // lists. Validate registration before entering GPUI's event loop.
