@@ -138,3 +138,21 @@ jobs:
           python3 -m http.server 8795 --bind 127.0.0.1 --directory . > /tmp/ibis-html-root.log 2>&1 &
           npm run test:html-browser
           npm run test:office-html-browser
+      - uses: actions/cache@v4
+        with:
+          path: data/fonts
+          key: mermaid-browser-source-fonts-${{ hashFiles('fonts/sources.json') }}
+      - name: Prepare pinned Web fonts for Mermaid
+        run: |
+          python3 scripts/fetch-web-fonts.py
+          npm run build:fonts -- scripts/web-fonts.sorane.json www
+      - name: Verify Mermaid labels in Chrome
+        env:
+          IBIS_MERMAID_TEST_ORIGIN: http://127.0.0.1:8796
+          IBIS_MERMAID_TEST_FONT_FIXTURE: "1"
+        run: |
+          IBIS_CHROME_PATH="$(command -v google-chrome)"
+          export IBIS_CHROME_PATH
+          python3 -m http.server 8796 --bind 127.0.0.1 --directory www > /tmp/ibis-mermaid-www.log 2>&1 &
+          node scripts/test-mermaid-labels-browser.mjs
+          IBIS_MERMAID_TEST_DYNAMIC=1 node scripts/test-mermaid-labels-browser.mjs

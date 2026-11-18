@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Run against a Web build serving scripts/web-fonts.sorane.json.
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { loadSubsetter } from './font-subsetter.mjs';
 import { chromium } from 'playwright-core';
 import { wasmVersion } from './browser-test-version.mjs';
 
@@ -25,7 +27,30 @@ try {
   const dynamic = process.env.IBIS_MERMAID_TEST_DYNAMIC === '1';
   const file = dynamic ? '/samples/mermaid-dynamic-labels.md' : '/samples/mermaid-labels.md';
   const fontService = process.env.IBIS_MERMAID_TEST_FONT_ORIGIN;
-  if (fontService) {
+  if (process.env.IBIS_MERMAID_TEST_FONT_FIXTURE === '1') {
+    // Exercise font registration with real subsets without depending on production.
+    const subsetter = await loadSubsetter();
+    const sourceDir = new URL('../data/fonts/', import.meta.url);
+    const catalog = JSON.parse(await readFile(new URL('../fonts/sources.json', import.meta.url), 'utf8'));
+    const fonts = new Map(await Promise.all(catalog.fonts.map(async ({ id, filename }) => [
+      id, await readFile(new URL(filename, sourceDir)),
+    ])));
+    await page.route(url => url.pathname === '/api/font/subset', async route => {
+      const { searchParams } = new URL(route.request().url());
+      const face = searchParams.get('font');
+      const font = fonts.get(face);
+      const glyphs = searchParams.get('text') ?? '';
+      if (!font || !glyphs || !subsetter.font_has_glyphs(font, glyphs)) {
+        await route.fulfill({ status: 204 });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: { 'X-Font-Id': face, 'Content-Type': 'font/otf' },
+        body: Buffer.from(subsetter.subset_font_raw(font, glyphs)),
+      });
+    });
+  } else if (fontService) {
     await page.route(url => url.pathname === '/api/font/subset', async route => {
       const request = new URL(route.request().url());
       const response = await route.fetch({ url: new URL(request.pathname + request.search, fontService).href });
@@ -37,9 +62,10 @@ try {
     const url = new URL(request.url());
     if (url.pathname === '/api/font/subset') requests.push(url.searchParams.get('text') ?? '');
   });
-  const loaded = page.waitForResponse(response => new URL(response.url()).pathname === file && response.ok());
-  await page.goto(new URL('/editor.html?open=' + encodeURIComponent(file), origin).href);
-  await loaded;
+  await Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === file && response.ok()),
+    page.goto(new URL('/editor.html?open=' + encodeURIComponent(file), origin).href),
+  ]);
   await page.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
   const canvas = page.locator('canvas').first();
 
