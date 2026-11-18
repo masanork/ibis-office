@@ -22,6 +22,19 @@ window.ibisOfficeAiModels = async () => {
   return await response.text();
 };
 
+function forwardStreamLine(line, onLine) {
+  if (line.startsWith('data:')) {
+    try {
+      const event = JSON.parse(line.slice(5));
+      // Workers AI can append a separate response/usage summary after the
+      // completion chunks. Its text duplicates deltas already shown.
+      if (event && !('choices' in event) && 'response' in event &&
+          event.usage && typeof event.usage === 'object' && !('error' in event)) return;
+    } catch { /* Let the editor handle malformed chunks and the [DONE] marker. */ }
+  }
+  onLine(line);
+}
+
 window.ibisOfficeAiStream = async (body, csrf, onLine) => {
   controller?.abort();
   controller = new AbortController();
@@ -55,7 +68,7 @@ window.ibisOfficeAiStream = async (body, csrf, onLine) => {
       while (split >= 0) {
         const line = buffer.slice(0, split).replace(/\r$/, '');
         buffer = buffer.slice(split + 1);
-        onLine(line);
+        forwardStreamLine(line, onLine);
         split = buffer.indexOf('\n');
       }
     }
@@ -63,7 +76,7 @@ window.ibisOfficeAiStream = async (body, csrf, onLine) => {
     if (error && error.name === 'AbortError') throw new Error('aborted');
     throw error;
   }
-  if (buffer) onLine(buffer.replace(/\r$/, ''));
+  if (buffer) forwardStreamLine(buffer.replace(/\r$/, ''), onLine);
 };
 
 window.ibisOfficeAiAbort = () => {
