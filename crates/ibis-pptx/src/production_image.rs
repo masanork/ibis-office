@@ -3,6 +3,8 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Import standalone production images into a document for preview.
 
+mod dpx;
+
 use base64::Engine as _;
 use image::{DynamicImage, ImageFormat, ImageReader};
 use std::io::Cursor;
@@ -15,10 +17,12 @@ enum Format {
     Jpeg2000,
     Photoshop,
     OpenExr,
+    Dpx,
 }
 
 fn format(ext: &str) -> Option<Format> {
     match ext.to_ascii_lowercase().as_str() {
+        "dpx" => Some(Format::Dpx),
         "exr" => Some(Format::OpenExr),
         "psd" => Some(Format::Photoshop),
         "tga" => Some(Format::Raster(ImageFormat::Tga)),
@@ -48,6 +52,10 @@ pub fn open_with_exposure(
         return Err("Image exceeds the preview file size limit".into());
     }
     let (png, exposure) = match format {
+        Format::Dpx => (
+            encode_png(DynamicImage::ImageRgb8(dpx::decode(bytes)?))?,
+            None,
+        ),
         Format::OpenExr => {
             let exposure = ExrExposure(decode_openexr(bytes)?);
             (exposure.preview_png(0)?, Some(exposure))
@@ -172,10 +180,14 @@ fn sdr_sample(sample: f32) -> u8 {
         let sample = sample.max(0.0);
         sample / (1.0 + sample)
     };
-    let encoded = if mapped <= 0.0031308 {
-        12.92 * mapped
+    encode_srgb(mapped)
+}
+
+fn encode_srgb(linear: f32) -> u8 {
+    let encoded = if linear <= 0.0031308 {
+        12.92 * linear
     } else {
-        1.055 * mapped.powf(1.0 / 2.4) - 0.055
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
     };
     (encoded * 255.0).round() as u8
 }
