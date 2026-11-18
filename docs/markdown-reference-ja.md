@@ -291,6 +291,8 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 
 `--export ai-locate --ai-query citation.json report.docx` は、指定範囲と重なる段落・表・脚注、条文、セルを標準出力に JSON で返します。`citation.json` には `version: 1` に相当する JSON フィールドと、書き出し時の `sourceSha256`、引用した `markdownBytes`、その範囲と完全に一致する `quote` を入れます。入力のハッシュが変わっていた場合や、UTF-8 の文字境界・引用が一致しない場合はエラーになります。
 
+デスクトップ版では `ibisOffice --ai-query citation.json report.docx` で原本を開き、該当段落の先頭へ移動できます。対象は一つの本文段落に対応する引用です。複数段落をまたぐ引用、表や脚注、法令と表計算の位置は `ai-locate` で確認できます。
+
 ## ステージング文書としての更新
 
 Markdown の機能を追加または変更する PR では、利用者の表示や保存結果が変わる場合、関連する説明と最小の例を同じ PR で更新します。例には入力、期待する結果、確認した経路を添えます。既知の差は本文に残し、対応した時点で書き換えます。

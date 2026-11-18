@@ -87,7 +87,41 @@ mod stack_tests {
 fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
-    let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    read_file_data(path, password, csv_encoding, data, read_t0)
+}
+
+/// Validate a citation against the same snapshot passed to the editor's reader.
+#[cfg(not(target_family = "wasm"))]
+pub fn read_file_at_ai_citation(path: &std::path::Path, query_path: &std::path::Path) -> Result<(Loaded, u32), String> {
+    if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
+        return Err("Opening an AI citation requires a .docx document".into());
+    }
+    let path = path.to_owned();
+    let query_path = query_path.to_owned();
+    std::thread::Builder::new().name("file-read".into()).stack_size(8 * 1024 * 1024)
+        .spawn(move || catch_read_panic(&path, || {
+            timing::mark_read_start();
+            let read_t0 = crate::clock::Instant::now();
+            let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+            let query = std::fs::read(&query_path).map_err(|e| e.to_string())?;
+            let query = serde_json::from_slice(&query).map_err(|e| e.to_string())?;
+            let paragraph = ibis_pptx::markdown::locate_ai_paragraph(&data, &query).map_err(|e| e.to_string())?;
+            let loaded = read_file_data(&path, None, ibis_pptx::csv::TextEncoding::Auto, data, read_t0)?;
+            Ok((loaded, paragraph))
+        }))
+        .map_err(|error| error.to_string())?
+        .join().map_err(|_| "File reader thread failed".to_string())?
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn read_file_data(
+    path: &std::path::Path,
+    password: Option<&str>,
+    csv_encoding: ibis_pptx::csv::TextEncoding,
+    mut data: Vec<u8>,
+    read_t0: crate::clock::Instant,
+) -> Result<Loaded, String> {
     if path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf") || ext.eq_ignore_ascii_case("ofd") || ext.eq_ignore_ascii_case("xps") || ext.eq_ignore_ascii_case("oxps")) || data.starts_with(b"%PDF-") || ibis_ofd::is_ofd(&data) || ibis_xps::is_xps(&data) {
         let raw: std::sync::Arc<[u8]> = data.into();
         let page_boxes: Vec<(f32, f32)> = if ibis_ofd::is_ofd(&raw) {

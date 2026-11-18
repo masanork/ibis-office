@@ -110,6 +110,17 @@ fn citations_resolve_against_the_original_document_only() {
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0]["source"]["kind"], "paragraph");
     assert_eq!(matches[0]["source"]["index"], 1);
+    assert_eq!(
+        u64::from(markdown::locate_ai_paragraph(&docx, &query).unwrap()),
+        matches[0]["source"]["modelId"].as_u64().unwrap()
+    );
+    let cross_block = serde_json::json!({
+        "version": 1,
+        "sourceSha256": export["sourceSha256"],
+        "markdownBytes": [0, text.len()],
+        "quote": text,
+    });
+    assert!(markdown::locate_ai_paragraph(&docx, &cross_block).is_err());
 
     assert!(
         markdown::locate_ai_source(b"different input", &query)

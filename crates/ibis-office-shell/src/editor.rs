@@ -1488,6 +1488,19 @@ impl SlideEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_read_then(path, read, slide, window, cx, |_, _| {});
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub fn open_read_then(
+        &mut self,
+        path: std::path::PathBuf,
+        read: impl FnOnce() -> Result<crate::read_file::Loaded, String> + Send + 'static,
+        slide: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        opened: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    ) {
         self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         self.commit_edit(window, cx);
         let name: SharedString = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
@@ -1662,6 +1675,7 @@ impl SlideEditor {
                     if let Some(view) = restore {
                         this.restore_view_state(&view, window, cx);
                     }
+                    opened(this, cx);
                     this.recent_files = crate::recent_files::add(&path);
                     crate::timing::document_loaded(window);
                     if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_slideshow) {

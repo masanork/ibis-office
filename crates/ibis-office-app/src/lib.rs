@@ -687,11 +687,22 @@ pub fn run_native() {
     // The upstream executable name is shared; do not overwrite its Windows Open With registration.
     timing::enable(args.timing);
     timing::mark("main");
+    if args.ai_query.is_some() && args.path.is_none() {
+        eprintln!("ibisOffice: --ai-query needs the original DOCX file");
+        std::process::exit(2);
+    }
+    let initial_query = args.ai_query.clone();
     // The file named is read and parsed while the application starts.
     let early_read = args.path.clone().map(|path| {
         let (sender, receiver) = std::sync::mpsc::channel();
         let read_path = path.clone();
-        std::thread::spawn(move || sender.send(read_file(&read_path)).ok());
+        std::thread::spawn(move || {
+            let result = match initial_query {
+                Some(query) => read_file_at_ai_citation(&read_path, &query).map(|(loaded, id)| (loaded, Some(id))),
+                None => read_file(&read_path).map(|loaded| (loaded, None)),
+            };
+            sender.send(result).ok()
+        });
         (path, receiver)
     });
     let slide = args.slide;
@@ -734,7 +745,7 @@ pub fn run_native() {
                 (None, Some((first, rest))) => {
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let read_path = first.clone();
-                    std::thread::spawn(move || sender.send(read_file(&read_path)).ok());
+                    std::thread::spawn(move || sender.send(read_file(&read_path).map(|loaded| (loaded, None))).ok());
                     (Some((first.clone(), receiver)), rest.to_vec())
                 }
                 (None, None) => (None, Vec::new()),
@@ -744,8 +755,18 @@ pub fn run_native() {
             match first {
                 Some((path, receiver)) => open_window_with(cx, move |editor, window, cx| {
                     editor.read_only = read_only;
-                    let read = move || receiver.recv().unwrap_or_else(|_| Err(crate::shell::i18n::text("shell.read-stopped").to_string()));
-                    editor.open_read(path, read, slide, window, cx)
+                    let (position, destination) = std::sync::mpsc::channel();
+                    let read = move || {
+                        let (loaded, paragraph) = receiver.recv()
+                            .unwrap_or_else(|_| Err(crate::shell::i18n::text("shell.read-stopped").to_string()))?;
+                        let _ = position.send(paragraph);
+                        Ok(loaded)
+                    };
+                    editor.open_read_then(path, read, slide, window, cx, move |editor, cx| {
+                        if let Ok(Some(id)) = destination.try_recv() {
+                            docx::reveal_body_paragraph(editor, id, cx);
+                        }
+                    });
                 }),
                 None => open_window_with(cx, move |editor, _, _| editor.read_only = read_only),
             }

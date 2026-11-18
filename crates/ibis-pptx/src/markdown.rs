@@ -3891,6 +3891,21 @@ pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_
     }))
 }
 
+/// A desktop jump requires a citation resolving to one body paragraph.
+pub fn locate_ai_paragraph(data: &[u8], query: &serde_json::Value) -> Result<u32, Error> {
+    let citation = locate_ai_source(data, query)?;
+    let matches = citation["matches"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let [entry] = matches else {
+        return Err(Error::new("The AI citation must identify one body paragraph"));
+    };
+    let source = &entry["source"];
+    if source["part"] != "body" || source["kind"] != "paragraph" {
+        return Err(Error::new("The AI citation does not point to a body paragraph"));
+    }
+    source["modelId"].as_u64().and_then(|id| u32::try_from(id).ok())
+        .ok_or_else(|| Error::new("The AI citation has no paragraph ID"))
+}
+
 fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
     let [left, right] = value.as_array()?.as_slice() else { return None };
     let left = usize::try_from(left.as_u64()?).ok()?;
