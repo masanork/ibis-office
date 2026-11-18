@@ -10,12 +10,14 @@ const origin = process.env.IBIS_MERMAID_TEST_ORIGIN ?? 'http://127.0.0.1:8787';
 const executablePath = process.env.IBIS_CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const browser = await chromium.launch({
   executablePath, headless: true,
-  args: ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--disable-gpu-sandbox'],
+  args: ['--disable-webgpu', '--use-angle=swiftshader', '--disable-gpu-sandbox'],
 });
 try {
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1, colorScheme: 'light' });
   const missing = [];
   const fontErrors = [];
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
   page.on('console', message => {
     const text = message.text();
     if (text.includes('Could not load a dynamic font')) fontErrors.push(text);
@@ -84,14 +86,14 @@ try {
     page.goto(new URL('/editor.html?open=' + encodeURIComponent(file), origin).href),
   ]);
   await page.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
-  const canvas = page.locator('canvas').first();
 
   // The light-blue interiors identify the three Mermaid nodes. Wait for their
   // rasterized image, then require dark label ink inside each of the three nodes.
   let boxes = [];
   let screenshot;
   for (let attempt = 0; attempt < 40; attempt++) {
-    screenshot = await canvas.screenshot();
+    // Capture the composited frame, as in the touch browser test.
+    screenshot = await page.screenshot();
     boxes = await page.evaluate(async data => {
       const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob());
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -129,6 +131,7 @@ try {
     await page.waitForTimeout(300);
   }
   try {
+    assert.deepEqual(pageErrors, [], 'the editor should open without a browser exception');
     assert.equal(boxes.length, 3, 'the Mermaid nodes should be visible');
     if (dynamic) assert.ok(requests.some(body => body.includes('𠮷')), 'the SVG-only glyph must be requested');
     if (failure === 'unsupported' || failure === 'unavailable') {
