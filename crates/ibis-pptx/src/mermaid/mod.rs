@@ -95,6 +95,7 @@ pub use chart::render_chart_spec_svg;
 #[derive(Debug, Clone, PartialEq)]
 pub struct MermaidChartSpec {
     pub kind: NewChartKind,
+    pub horizontal: bool,
     pub title: Option<String>,
     pub categories: Vec<String>,
     pub series: Vec<(String, Vec<Option<Number>>)>,
@@ -284,9 +285,16 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
             });
         }
         DiagramKind::XyChart => {
-            return parse_xy_chart(trimmed, &config).map(|mut spec| {
-                spec.title = spec.title.or(front_title);
-                MermaidOutput::Chart(spec)
+            let mut spec = parse_xy_chart(trimmed, &config)?;
+            spec.title = spec.title.or(front_title);
+            if !spec.horizontal || !spec.series_kinds.contains(&NewChartKind::Line) {
+                return Some(MermaidOutput::Chart(spec));
+            }
+            let (bytes, width_px, height_px) = render_chart_spec_svg(&spec)?;
+            return Some(MermaidOutput::Svg {
+                bytes: inject_acc_meta(apply_mermaid_theme(bytes, &config), trimmed),
+                width_px,
+                height_px,
             });
         }
         DiagramKind::Sequence => render_sequence_svg(trimmed),

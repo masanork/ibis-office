@@ -4269,7 +4269,12 @@ fn mermaid_source_matches(chart: &Chart, source: &str) -> bool {
     match spec.kind {
         NewChartKind::Pie | NewChartKind::Doughnut => pie,
         NewChartKind::Line => line_only,
-        NewChartKind::ClusteredColumn => !pie && !line_only,
+        NewChartKind::ClusteredBar => chart.groups.iter().all(|group| {
+            matches!(group.kind, ChartType::Bar { horizontal: true, .. })
+        }),
+        NewChartKind::ClusteredColumn => chart.groups.iter().any(|group| {
+            matches!(group.kind, ChartType::Bar { horizontal: false, .. })
+        }),
         _ => false,
     }
 }
@@ -4739,6 +4744,7 @@ pub fn open_markdown_presentation_with_base_dir(
             let sid = fresh_shape_id();
             let kind = match src_chart.groups.as_slice() {
                 [group] if matches!(group.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }) => NewChartKind::Pie,
+                [group] if matches!(group.kind, ChartType::Bar { horizontal: true, .. }) => NewChartKind::ClusteredBar,
                 [group] if matches!(group.kind, ChartType::Line) => NewChartKind::Line,
                 _ => NewChartKind::ClusteredColumn,
             };
@@ -4760,6 +4766,9 @@ pub fn open_markdown_presentation_with_base_dir(
                         );
                         chart.title = src_chart.title.clone();
                         copy_chart_group_topology(&mut chart, src_chart);
+                        if kind == NewChartKind::ClusteredBar {
+                            apply_mermaid_value_range(&mut chart, chart_value_range(src_chart));
+                        }
                         opened.source.set_chart_data(sid, chart.clone(), chart_data);
                     }
                 }
@@ -5588,6 +5597,8 @@ xychart-beta
             "erDiagram\n  CUSTOMER ||--o{ ORDER : places\n  CUSTOMER {\n    string name\n  }\n",
             "gantt\n  dateFormat YYYY-MM-DD\n  section 進捗\n  要件確認 :a, 2026-01-05, 3d\n",
             "pie\n  title 構成比\n  \"承認\" : 70\n  \"保留\" : 30\n",
+            "xychart horizontal\n  x-axis [一月, 二月]\n  bar [10, 20]\n",
+            "xychart horizontal\n  x-axis [一月, 二月]\n  bar [10, 20]\n  line [7, 15 \"目標\"]\n",
             "xychart-beta\n  title 月別売上\n  x-axis [一月, 二月]\n  line [10, 20]\n",
         ];
         let body = diagrams.iter().map(|diagram| format!("```mermaid\n{diagram}```\n\n")).collect::<String>();
@@ -5605,6 +5616,20 @@ xychart-beta
         for diagram in &diagrams {
             assert!(exported.contains(&format!("```mermaid\n{diagram}```")), "PPTX lost {diagram}:\n{exported}");
         }
+    }
+
+    #[test]
+    fn horizontal_mermaid_bar_stays_native_after_pptx_save() {
+        let markdown = b"# Chart\n\n```mermaid\nxychart horizontal\n  x-axis [A, B]\n  y-axis 0 --> 30\n  bar [10, 20]\n```\n";
+        let opened = open_markdown_presentation(markdown.to_vec()).expect("open slides");
+        let bytes = opened.source.save(&opened.presentation, Default::default()).expect("save pptx");
+        let reread = crate::read(&bytes).expect("read pptx");
+        assert!(reread.slides[0].shapes.iter().any(|shape| {
+            let ShapeKind::Chart(chart) = &shape.kind else { return false };
+            chart_value_range(chart) == Some((0.0, 30.0))
+                && chart.groups.iter().any(|group| matches!(group.kind, ChartType::Bar { horizontal: true, .. }))
+        }));
+        assert!(export_presentation_markdown(&reread).contains("```mermaid\nxychart horizontal"));
     }
 
     #[test]

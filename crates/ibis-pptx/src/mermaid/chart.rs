@@ -73,6 +73,7 @@ pub(super) fn parse_pie_chart(source: &str, config: &MermaidConfig) -> Option<Me
     // `pie.donutHole` turns the pie into a doughnut (native `c:doughnutChart`).
     let kind = if style.donut_hole.is_some() { NewChartKind::Doughnut } else { NewChartKind::Pie };
     Some(MermaidChartSpec {
+        horizontal: false,
         kind,
         title,
         categories,
@@ -153,13 +154,21 @@ pub(super) fn parse_xy_value(token: &str) -> (Option<Number>, Option<String>) {
 }
 
 pub(super) fn parse_xy_chart(source: &str, config: &MermaidConfig) -> Option<MermaidChartSpec> {
+    let header = source.lines().next()?;
+    let orientation = header
+        .split("%%")
+        .next()?
+        .split_whitespace()
+        .nth(1)
+        .or_else(|| config.option("xyChart.chartOrientation"));
+    let horizontal = orientation == Some("horizontal");
+    let bar_kind = if horizontal { NewChartKind::ClusteredBar } else { NewChartKind::ClusteredColumn };
     let mut title = None;
     let mut categories = Vec::new();
     let mut series = Vec::new();
     let mut series_kinds = Vec::new();
     let mut point_labels: Vec<Vec<Option<String>>> = Vec::new();
     let mut has_bar = false;
-    let mut has_line = false;
     let mut bar_idx = 1usize;
     let mut line_idx = 1usize;
     let mut x_axis_title = None;
@@ -196,12 +205,11 @@ pub(super) fn parse_xy_chart(source: &str, config: &MermaidConfig) -> Option<Mer
                     bar_idx += 1;
                     xy_series_name(rest, &format!("Bar {}", bar_idx - 1))
                 } else {
-                    has_line = true;
                     line_idx += 1;
                     xy_series_name(rest, &format!("Line {}", line_idx - 1))
                 };
                 series.push((name, vals));
-                series_kinds.push(if is_bar { NewChartKind::ClusteredColumn } else { NewChartKind::Line });
+                series_kinds.push(if is_bar { bar_kind } else { NewChartKind::Line });
                 point_labels.push(labels);
             }
         }
@@ -214,18 +222,12 @@ pub(super) fn parse_xy_chart(source: &str, config: &MermaidConfig) -> Option<Mer
         let max_len = series.iter().map(|(_, v)| v.len()).max().unwrap_or(0);
         categories = (1..=max_len).map(|i| i.to_string()).collect();
     }
-    let kind = if has_bar {
-        NewChartKind::ClusteredColumn
-    } else if has_line {
-        NewChartKind::Line
-    } else {
-        NewChartKind::ClusteredColumn
-    };
     if point_labels.iter().all(|labels| labels.iter().all(Option::is_none)) {
         point_labels.clear();
     }
     Some(MermaidChartSpec {
-        kind,
+        kind: if has_bar { bar_kind } else { NewChartKind::Line },
+        horizontal,
         title,
         categories,
         series,
@@ -501,14 +503,16 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
     }
 
     // XY chart (bar / line)
+    let mut min_val = 0.0f64;
     let mut max_val = 1.0f64;
     for (_, vals) in &spec.series {
         for v in vals.iter().flatten() {
+            min_val = min_val.min(v.0);
             max_val = max_val.max(v.0);
         }
     }
-    // `y-axis min --> max` fixes the value range; otherwise it runs from 0 to the largest value.
-    let (y_lo, y_hi) = spec.y_range.unwrap_or((0.0, max_val));
+    // An explicit `y-axis` range takes precedence over the automatic scale.
+    let (y_lo, y_hi) = spec.y_range.unwrap_or((if spec.horizontal { min_val } else { 0.0 }, max_val));
     let y_span = (y_hi - y_lo).max(f64::EPSILON);
     let y_frac = |v: f64| ((v - y_lo) / y_span).clamp(0.0, 1.0) as f32;
     let ticks = nice_ticks(y_lo, y_hi, 10);
@@ -519,17 +523,40 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
         .fold(0.0f32, f32::max);
     let has_legend = spec.series.iter().any(|(n, _)| xy_series_is_named(n));
     let legend_h: f32 = if has_legend { 22.0 } else { 0.0 };
+    let horizontal = spec.horizontal;
+    let (left_title, bottom_title) = if horizontal {
+        (&spec.x_axis_title, &spec.y_axis_title)
+    } else {
+        (&spec.y_axis_title, &spec.x_axis_title)
+    };
+    let left_label_width = if horizontal {
+        spec.categories.iter().map(|label| estimate_text_width(label, 11.0)).fold(0.0, f32::max)
+    } else {
+        tick_w
+    };
     let (width_px, height_px) = style.size_px.unwrap_or((
         XY_WIDTH,
-        if spec.x_axis_title.is_some() { XY_HEIGHT + 20 } else { XY_HEIGHT },
+        if bottom_title.is_some() { XY_HEIGHT + 20 } else { XY_HEIGHT },
     ));
     let height_px = height_px + legend_h.ceil() as u32;
-    let pad_l = (if spec.y_axis_title.is_some() { 28.0f32 } else { 10.0f32 } + tick_w + 8.0).max(if spec.y_axis_title.is_some() { 70.0 } else { 52.0 });
-    let pad_r = 24.0f32;
+    let pad_l = ((if left_title.is_some() { 36.0 } else { 18.0 }) + left_label_width)
+        .max(if left_title.is_some() { 70.0 } else { 52.0 })
+        .min(width_px as f32 * 0.5);
+    let pad_r = if horizontal { (tick_w / 2.0 + 6.0).max(24.0) } else { 24.0 };
     let pad_t = if spec.title.is_some() { 44.0f32 } else { 24.0f32 };
-    let pad_b = if spec.x_axis_title.is_some() { 62.0f32 } else { 42.0f32 } + legend_h;
+    let pad_b = if bottom_title.is_some() { 62.0f32 } else { 42.0f32 } + legend_h;
     let plot_w = width_px as f32 - pad_l - pad_r;
     let plot_h = height_px as f32 - pad_t - pad_b;
+    let plot_bottom = pad_t + plot_h;
+    let slot = if horizontal { plot_h } else { plot_w } / spec.categories.len() as f32;
+    let category_at = |index: usize| (index as f32 + 0.5) * slot;
+    let plot_at = |category: f32, value: f32| {
+        if horizontal {
+            (pad_l + plot_w * value, pad_t + category)
+        } else {
+            (pad_l + category, plot_bottom - plot_h * value)
+        }
+    };
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -547,52 +574,48 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
     }
     // Grid & axes: mermaid.js-style nice ticks, not a fixed 5-step split.
     for (tick_val, tick) in ticks.iter().copied().zip(&tick_labels) {
-        let frac = ((tick_val - y_lo) / y_span).clamp(0.0, 1.0) as f32;
-        let gy = pad_t + plot_h * (1.0 - frac);
+        let fraction = y_frac(tick_val);
+        let (x1, y1) = plot_at(0.0, fraction);
+        let (x2, y2) = plot_at(if horizontal { plot_h } else { plot_w }, fraction);
+        let (tx, ty, anchor) = if horizontal {
+            (x2, y2 + 18.0, "middle")
+        } else {
+            (x1 - 6.0, y1 + 3.5, "end")
+        };
         svg.push_str(&format!(
-            r##"<line x1="{pad_l:.1}" y1="{gy:.1}" x2="{:.1}" y2="{gy:.1}" stroke="#e2e8f0" stroke-width="1"/>"##,
-            pad_l + plot_w
-        ));
-        svg.push_str(&format!(
-            r##"<text x="{:.1}" y="{:.1}" text-anchor="end" font-size="10" fill="#64748b" data-role="tick">{}</text>"##,
-            pad_l - 6.0,
-            gy + 3.5,
+            r##"<line x1="{x1:.1}" y1="{y1:.1}" x2="{x2:.1}" y2="{y2:.1}" stroke="#e2e8f0" stroke-width="1"/><text x="{tx:.1}" y="{ty:.1}" text-anchor="{anchor}" font-size="10" fill="#64748b" data-role="tick">{}</text>"##,
             escape_xml(tick)
         ));
     }
-    if let Some(t) = &spec.y_axis_title {
+    if let Some(t) = left_title {
         let ty = pad_t + plot_h / 2.0;
+        let axis = if horizontal { "x" } else { "y" };
         svg.push_str(&format!(
-            r##"<text x="16" y="{ty:.1}" text-anchor="middle" font-size="11" fill="#334155" transform="rotate(-90 16 {ty:.1})" data-role="y-axis-title">{}</text>"##,
+            r##"<text x="16" y="{ty:.1}" text-anchor="middle" font-size="11" fill="#334155" transform="rotate(-90 16 {ty:.1})" data-role="{axis}-axis-title">{}</text>"##,
             escape_xml(t)
         ));
     }
-    if let Some(t) = &spec.x_axis_title {
+    if let Some(t) = bottom_title {
+        let axis = if horizontal { "y" } else { "x" };
         svg.push_str(&format!(
-            r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155" data-role="x-axis-title">{}</text>"##,
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155" data-role="{axis}-axis-title">{}</text>"##,
             pad_l + plot_w / 2.0,
-            height_px as f32 - 12.0,
+            height_px as f32 - legend_h - 12.0,
             escape_xml(t)
         ));
     }
     svg.push_str(&format!(
-        r##"<line x1="{pad_l:.1}" y1="{pad_t:.1}" x2="{pad_l:.1}" y2="{:.1}" stroke="#64748b" stroke-width="1.2"/>"##,
-        pad_t + plot_h
+        r##"<line x1="{pad_l:.1}" y1="{pad_t:.1}" x2="{pad_l:.1}" y2="{plot_bottom:.1}" stroke="#64748b" stroke-width="1.2"/><line x1="{pad_l:.1}" y1="{plot_bottom:.1}" x2="{:.1}" y2="{plot_bottom:.1}" stroke="#64748b" stroke-width="1.2"/>"##,
+        pad_l + plot_w
     ));
-    svg.push_str(&format!(
-        r##"<line x1="{pad_l:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#64748b" stroke-width="1.2"/>"##,
-        pad_t + plot_h,
-        pad_l + plot_w,
-        pad_t + plot_h
-    ));
-
-    let cat_count = spec.categories.len().max(1);
-    let slot_w = plot_w / cat_count as f32;
     for (ci, cat) in spec.categories.iter().enumerate() {
-        let cx = pad_l + (ci as f32 + 0.5) * slot_w;
+        let (x, y, anchor) = if horizontal {
+            (pad_l - 6.0, pad_t + category_at(ci) + 3.5, "end")
+        } else {
+            (pad_l + category_at(ci), plot_bottom + 18.0, "middle")
+        };
         svg.push_str(&format!(
-            r##"<text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#334155">{}</text>"##,
-            pad_t + plot_h + 18.0,
+            r##"<text x="{x:.1}" y="{y:.1}" text-anchor="{anchor}" font-size="11" fill="#334155">{}</text>"##,
             escape_xml(cat)
         ));
     }
@@ -613,8 +636,7 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             let mut pts = Vec::new();
             for (ci, v_opt) in vals.iter().enumerate() {
                 if let Some(v) = v_opt {
-                    let px = pad_l + (ci as f32 + 0.5) * slot_w;
-                    let py = pad_t + plot_h * (1.0 - y_frac(v.0));
+                    let (px, py) = plot_at(category_at(ci), y_frac(v.0));
                     pts.push((ci, v.0, px, py));
                 }
             }
@@ -639,23 +661,28 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
                     (None, true) => chart_number(v),
                     (None, false) => continue,
                 };
+                let (tx, ty, anchor) = if horizontal { (px + 7.0, py + 3.5, "start") } else { (px, py - 8.0, "middle") };
                 labels.push_str(&format!(
-                    r##"<text x="{px:.1}" y="{:.1}" text-anchor="middle" font-size="10" fill="#1e293b" data-role="data-label">{}</text>"##,
-                    py - 8.0,
+                    r##"<text x="{tx:.1}" y="{ty:.1}" text-anchor="{anchor}" font-size="10" fill="#1e293b" data-role="data-label">{}</text>"##,
                     escape_xml(&text)
                 ));
             }
         } else {
             let lanes = bar_series.len().max(1) as f32;
             let lane = bar_series.iter().position(|&b| b == si).unwrap_or(0) as f32;
-            let bar_w = ((slot_w * 0.54).min(40.0 * lanes)) / lanes;
+            let thickness = (slot * 0.54 / lanes).min(40.0);
             for (ci, v_opt) in vals.iter().enumerate() {
                 if let Some(v) = v_opt {
-                    let bh = (plot_h * y_frac(v.0)).max(2.0);
-                    let bx = pad_l + (ci as f32 + 0.5) * slot_w - bar_w * lanes / 2.0 + lane * bar_w;
-                    let by = pad_t + plot_h - bh;
+                    let category = category_at(ci) + (lane - lanes / 2.0) * thickness;
+                    let (end_x, end_y) = plot_at(category, y_frac(v.0));
+                    let (start_x, _) = plot_at(category, y_frac(0.0));
+                    let (bx, by, bw, bh) = if horizontal {
+                        (start_x.min(end_x), end_y, (end_x - start_x).abs().max(2.0), thickness)
+                    } else {
+                        (end_x, end_y.min(plot_bottom - 2.0), thickness, (plot_bottom - end_y).max(2.0))
+                    };
                     svg.push_str(&format!(
-                        r##"<rect x="{bx:.1}" y="{by:.1}" width="{bar_w:.1}" height="{bh:.1}" rx="2" fill="{color}" fill-opacity="0.88"/>"##
+                        r##"<rect x="{bx:.1}" y="{by:.1}" width="{bw:.1}" height="{bh:.1}" rx="2" fill="{color}" fill-opacity="0.88"/>"##
                     ));
                     if style.data_labels || point_label(ci).is_some() {
                         let text = match point_label(ci) {
@@ -663,15 +690,20 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
                             Some(l) => l.to_string(),
                             None => chart_number(v.0),
                         };
-                        // Inside the top of the bar, or above it with `showDataLabelOutsideBar`.
-                        let (ty, fill) = if style.data_labels_outside || bh < 18.0 {
-                            (by - 5.0, "#1e293b")
+                        let outside = style.data_labels_outside || if horizontal {
+                            bw < estimate_text_width(&text, 10.0) + 8.0
                         } else {
-                            (by + 14.0, "#ffffff")
+                            bh < 18.0
                         };
+                        let (tx, ty, anchor) = if horizontal {
+                            let right = (end_x >= start_x) == outside;
+                            (end_x + if right { 5.0 } else { -5.0 }, by + bh / 2.0 + 3.5, if right { "start" } else { "end" })
+                        } else {
+                            (bx + bw / 2.0, by + if outside { -5.0 } else { 14.0 }, "middle")
+                        };
+                        let fill = if outside { "#1e293b" } else { "#ffffff" };
                         labels.push_str(&format!(
-                            r##"<text x="{:.1}" y="{ty:.1}" text-anchor="middle" font-size="10" fill="{fill}" data-role="data-label">{}</text>"##,
-                            bx + bar_w / 2.0,
+                            r##"<text x="{tx:.1}" y="{ty:.1}" text-anchor="{anchor}" font-size="10" fill="{fill}" data-role="data-label">{}</text>"##,
                             escape_xml(&text)
                         ));
                     }
@@ -748,6 +780,29 @@ xychart
             spec.series_kinds,
             vec![NewChartKind::ClusteredColumn, NewChartKind::Line, NewChartKind::ClusteredColumn]
         );
+    }
+
+    #[test]
+    fn horizontal_xychart_swaps_geometry_without_rotating_labels() {
+        let source = "xychart horizontal\n  x-axis \"月\" [一月, 二月]\n  y-axis \"差分\" -10 --> 10\n  bar [-8, 3]\n";
+        let spec = chart_of(source);
+        assert_eq!(spec.kind, NewChartKind::ClusteredBar);
+        let configured = format!(
+            "---\nconfig:\n  xyChart:\n    chartOrientation: horizontal\n---\n{}",
+            source.replacen(" horizontal", "", 1)
+        );
+        assert_eq!(chart_of(&configured), spec);
+        let svg = chart_svg(&spec);
+        assert!(svg.contains(r#"data-role="x-axis-title">月"#));
+        assert!(svg.contains(r#"data-role="y-axis-title">差分"#));
+        assert!(svg.contains(r##"text-anchor="end" font-size="11" fill="#334155">一月"##));
+        let mixed = format!("{source}  line [-2, 6 \"目標\"]\n");
+        let Some(MermaidOutput::Svg { bytes, .. }) = render_mermaid(&mixed) else {
+            panic!("horizontal bar and line should render as SVG");
+        };
+        let svg = String::from_utf8(bytes).unwrap();
+        assert!(svg.contains("<polyline"));
+        assert!(svg.contains(r#"data-role="data-label">目標"#));
     }
 
     #[test]

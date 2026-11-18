@@ -120,7 +120,7 @@ Flowchart、sequence、ER、state、Gantt などは SVG として表示されま
 | 図種キーワードと別名 | コーパスで追跡している対応構文・設定 |
 | :--- | :--- |
 | `pie` | title, showData, slice values / config: pie options (textPosition, donutHole, highlightSlice) / config: pie theme variables (pie1-12, pieOuterStrokeWidth) |
-| `xychart` / `xychart-beta` | title, categorical x-axis, bar / line / y-axis title / range / point labels (line [540 "PaLM", ...]) / config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) / config: xyChart theme variables (plotColorPalette, titleColor) |
+| `xychart` / `xychart-beta` | title, horizontal orientation, categorical x-axis, bar / line / y-axis title / range / point labels (line [540 "PaLM", ...]) / config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) / config: xyChart theme variables (plotColorPalette, titleColor) |
 | `sequenceDiagram` | rect highlight / create / destroy participants / par/and, critical/option dividers / lower-case note / participant types @{ "type" } / bidirectional arrows <<->> |
 | `flowchart` / `flowchart-v2` / `flowchart-elk` / `graph` | classDef / class / ::: styling / style statement / linkStyle / bidirectional / circle / cross edges / invisible link ~~~ / expanded node shapes @{ shape } / node icons @{ icon } (drawn as a symbol in a box) / edge ids (e1@-->) / edge curve e1@{ curve } / collapsed subgraph @{ view } / markdown strings "`...`" / Font Awesome icons (fa:) as Unicode symbols |
 | `stateDiagram` / `stateDiagram-v2` | note / concurrency -- / classDef / class / ::: |
@@ -189,6 +189,16 @@ pie showData
   "本文" : 72
   "図表" : 25
   "注記" : 3
+```
+
+横向きは `xychart horizontal` または `config.xyChart.chartOrientation: horizontal` で指定できます。棒だけの場合は編集可能な横棒グラフになり、折れ線がある場合は SVG で表示します。
+
+```mermaid
+xychart horizontal
+  title "申請の処理件数"
+  x-axis [四月, 五月, 六月]
+  y-axis 0 --> 40
+  bar [18, 25, 34]
 ```
 
 ### 未対応の図
