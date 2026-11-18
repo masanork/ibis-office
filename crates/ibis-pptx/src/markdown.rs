@@ -2585,7 +2585,7 @@ fn build_mermaid_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Bloc
             {
                 Ok(build_mermaid_svg_paragraph(bytes, width_px, height_px, content, ctx))
             } else {
-                Ok(build_code_block(content, ctx))
+                Ok(build_mermaid_code_block(content, ctx))
             }
         }
         Some(crate::mermaid::MermaidOutput::Svg {
@@ -2599,8 +2599,20 @@ fn build_mermaid_block(content: &str, ctx: &mut ParseContext<'_>) -> Result<Bloc
             content,
             ctx,
         )),
-        None => Ok(build_code_block(content, ctx)),
+        None => Ok(build_mermaid_code_block(content, ctx)),
     }
+}
+
+// Keep the delimiters in editable text so both Office formats can store the
+// language and the source together, including edits made to the code.
+fn build_mermaid_code_block(content: &str, ctx: &mut ParseContext<'_>) -> Block {
+    let mut fenced = String::new();
+    write_mermaid_fence(content, &mut fenced);
+    build_code_block(fenced.trim_end_matches('\n'), ctx)
+}
+
+fn is_literal_mermaid_fence(text: &str) -> bool {
+    text.starts_with("```mermaid\n") && text.ends_with("\n```")
 }
 
 fn build_mermaid_svg_paragraph(
@@ -3985,16 +3997,23 @@ fn serialize_paragraph(
         && p.direct.borders[0].is_some_and(|b| b.is_some())
         && p.direct.borders[2].is_some_and(|b| b.is_some())
     {
-        out.push_str("```\n");
+        let mut code = String::new();
         for r in &p.runs {
             match &r.kind {
-                FlowRunKind::Text(t) => out.push_str(t),
-                FlowRunKind::LineBreak => out.push('\n'),
-                FlowRunKind::Tab => out.push('\t'),
+                FlowRunKind::Text(t) => code.push_str(t),
+                FlowRunKind::LineBreak => code.push('\n'),
+                FlowRunKind::Tab => code.push('\t'),
                 _ => {}
             }
         }
-        out.push_str("\n```\n\n");
+        if is_literal_mermaid_fence(&code) {
+            out.push_str(&code);
+            out.push_str("\n\n");
+        } else {
+            out.push_str("```\n");
+            out.push_str(&code);
+            out.push_str("\n```\n\n");
+        }
         return;
     }
 
@@ -4749,7 +4768,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                             .first()
                             .map(|para| para.runs.iter().map(|r| r.text.as_str()).collect::<String>())
                             .unwrap_or_default();
-                        if !first_line.trim().is_empty() {
+                        if !first_line.trim().is_empty() && !is_literal_mermaid_fence(&first_line) {
                             out.push_str("# ");
                             out.push_str(first_line.trim());
                             out.push_str("\n\n");
@@ -4850,6 +4869,11 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
 
 fn serialize_slide_paragraph(para: &ibis_doc_model::Paragraph, out: &mut String) {
     let text: String = para.runs.iter().map(|r| r.text.as_str()).collect();
+    if is_literal_mermaid_fence(&text) {
+        out.push_str(&text);
+        out.push_str("\n\n");
+        return;
+    }
     if text.trim().is_empty() {
         return;
     }
@@ -4986,6 +5010,22 @@ pub(crate) fn flow_paragraph_plain_text(p: &FlowParagraph) -> String {
 }
 
 fn flow_paragraph_to_slide_paragraph(p: &FlowParagraph) -> Option<ibis_doc_model::Paragraph> {
+    let mut code = String::new();
+    for run in &p.runs {
+        match &run.kind {
+            FlowRunKind::Text(text) => code.push_str(text),
+            FlowRunKind::LineBreak => code.push('\n'),
+            FlowRunKind::Tab => code.push('\t'),
+            _ => {}
+        }
+    }
+    if is_literal_mermaid_fence(&code) {
+        return Some(ibis_doc_model::Paragraph {
+            runs: vec![ibis_doc_model::Run { text: code, style: Default::default() }],
+            ..Default::default()
+        });
+    }
+
     let mut runs: Vec<ibis_doc_model::Run> = Vec::new();
     for r in &p.runs {
         if let FlowRunKind::Text(t) = &r.kind {
@@ -5373,7 +5413,17 @@ C4Context
         let exported = export_markdown(flow, &opened.presentation.media);
         assert!(exported.contains("requirementDiagram"), "exported:\n{exported}");
         assert!(exported.contains("C4Context"), "exported:\n{exported}");
-        assert!(!exported.contains("```mermaid"), "unsupported fences stay plain code:\n{exported}");
+        assert_eq!(exported.matches("```mermaid").count(), 3, "{exported}");
+        let bytes = opened.source.save(&opened.presentation, Default::default()).unwrap();
+        let document = crate::read(&bytes).unwrap();
+        assert_eq!(export_markdown(document.flow.as_ref().unwrap(), &document.media), exported);
+
+        let slides = open_markdown_presentation(md.as_bytes().to_vec()).unwrap();
+        let bytes = slides.source.save(&slides.presentation, Default::default()).unwrap();
+        let presentation = crate::read(&bytes).unwrap();
+        let exported = export_presentation_markdown(&presentation);
+        assert_eq!(exported.matches("```mermaid").count(), 3, "{exported}");
+        assert!(exported.contains("requirementDiagram\n  requirement req1"), "{exported}");
     }
 
     #[test]
