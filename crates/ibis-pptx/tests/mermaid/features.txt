@@ -106,7 +106,7 @@ entityRelationshipDiagram | markdown in entity names (**bold** _italic_) | ok | 
 
 gantt | axisFormat | ok | prefix | axisFormat
 gantt | tickInterval | ok | prefix | tickInterval
-gantt | todayMarker | gap | prefix | todayMarker
+gantt | todayMarker | ok | prefix | todayMarker
 gantt | weekday / weekend | ok | prefix | weekday
 gantt | weekday / weekend | ok | prefix | weekend
 gantt | vert markers | ok | contains | vert

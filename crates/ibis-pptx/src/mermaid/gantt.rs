@@ -45,8 +45,53 @@ pub(super) enum TickUnit {
     Year,
 }
 
+struct TodayMarker {
+    stroke: String,
+    width: f64,
+    opacity: f64,
+}
+
+impl Default for TodayMarker {
+    fn default() -> Self {
+        Self { stroke: "#dc2626".into(), width: 2.0, opacity: 1.0 }
+    }
+}
+
+impl TodayMarker {
+    fn parse(style: &str) -> Option<Self> {
+        if style.eq_ignore_ascii_case("off") {
+            return None;
+        }
+        let mut marker = Self::default();
+        for (key, value) in style.split(',').filter_map(|part| part.split_once(':')) {
+            match key.trim() {
+                "stroke" => {
+                    if let Some(color) = config::css_color(value) {
+                        marker.stroke = color;
+                    }
+                }
+                "stroke-width" => {
+                    if let Some(width) = config::px_number(value) {
+                        marker.width = width;
+                    }
+                }
+                "opacity" => {
+                    if let Ok(opacity) = value.trim().parse::<f64>()
+                        && (0.0..=1.0).contains(&opacity)
+                    {
+                        marker.opacity = opacity;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(marker)
+    }
+}
+
 pub(super) struct GanttChart {
     pub(super) title: Option<String>,
+    today_marker: Option<TodayMarker>,
     pub(super) tasks: Vec<GanttTask>,
     pub(super) verts: Vec<GanttVert>,
     /// Days (since 1970-01-01) of the week that `excludes` shades: `weekends` (Saturday and
@@ -95,6 +140,11 @@ impl GanttLook {
 const SECTION_BACKGROUNDS: [&str; 4] = ["#eef2ff", "#ffffff", "#fefce8", "#f0fdf4"];
 
 pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(Vec<u8>, u32, u32)> {
+    let now = chrono::Local::now().naive_local().and_utc().timestamp();
+    render_gantt_svg_at(source, config, now)
+}
+
+fn render_gantt_svg_at(source: &str, config: &MermaidConfig, now: i64) -> Option<(Vec<u8>, u32, u32)> {
     let look = GanttLook::from_config(config);
     let chart = parse_gantt_chart(source)?;
     let tasks = &chart.tasks;
@@ -307,6 +357,16 @@ pub(super) fn render_gantt_svg(source: &str, config: &MermaidConfig) -> Option<(
         ));
     }
 
+    if let Some(marker) = chart.today_marker
+        && (min_t..=max_t).contains(&now)
+    {
+        let x = x_of(now);
+        svg.push_str(&format!(
+            r#"<line x1="{x:.1}" y1="{top_pad:.1}" x2="{x:.1}" y2="{bottom_y:.1}" stroke="{}" stroke-width="{}" opacity="{}" data-role="today-marker"/>"#,
+            marker.stroke, marker.width, marker.opacity
+        ));
+    }
+
     svg.push_str("</svg>");
     Some((svg.into_bytes(), total_w, total_h))
 }
@@ -339,6 +399,7 @@ pub(super) const WEEKDAYS: [&str; 7] = ["sunday", "monday", "tuesday", "wednesda
 pub(super) fn parse_gantt_chart(source: &str) -> Option<GanttChart> {
     let mut chart = GanttChart {
         title: None,
+        today_marker: Some(TodayMarker::default()),
         tasks: Vec::new(),
         verts: Vec::new(),
         excluded_weekdays: Vec::new(),
@@ -400,7 +461,11 @@ pub(super) fn parse_gantt_chart(source: &str) -> Option<GanttChart> {
             }
             continue;
         }
-        if l.starts_with("todayMarker") || l.starts_with("includes ") || l.starts_with("inclusiveEndDates") || l.starts_with("topAxis") {
+        if let Some(style) = l.strip_prefix("todayMarker").filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+            chart.today_marker = TodayMarker::parse(style.trim());
+            continue;
+        }
+        if l.starts_with("includes ") || l.starts_with("inclusiveEndDates") || l.starts_with("topAxis") {
             continue;
         }
         if let Some(rest) = l.strip_prefix("section ") {
@@ -964,6 +1029,34 @@ pub(super) fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use crate::mermaid::test_support::*;
+
+    #[test]
+    fn gantt_today_marker_style_position_and_visibility() {
+        let chart = "gantt\n  dateFormat YYYY-MM-DD\n  A :a, 2026-11-16, 4d";
+        let now = days_from_civil(2026, 11, 18) * DAY;
+        let render = |directive, now| {
+            let source = format!("{chart}\n  {directive}\n");
+            let (bytes, _, _) = render_gantt_svg_at(&source, &MermaidConfig::default(), now).unwrap();
+            String::from_utf8(bytes).unwrap()
+        };
+        let default = render("", now);
+        let styled = render("todayMarker stroke-width:3px,stroke:#06f,opacity:0.5", now);
+        let marker = |svg: &str| {
+            let tags = tag_with(svg, r#"data-role="today-marker""#);
+            assert_eq!(tags.len(), 1);
+            tags[0].to_string()
+        };
+        assert_eq!(
+            marker(&default).replace(r##"stroke="#dc2626" stroke-width="2" opacity="1""##,
+                r##"stroke="#0066ff" stroke-width="3" opacity="0.5""##),
+            marker(&styled)
+        );
+        let earlier = marker(&render("", now - DAY));
+        assert_ne!(earlier, marker(&default));
+        assert!(!render("todayMarker off", now).contains("today-marker"));
+        assert!(!render("", now + 30 * DAY).contains("today-marker"));
+        assert!(render("todayMarker stroke:red\" onclick=oops", now).contains(r##"stroke="#dc2626""##));
+    }
 
     #[test]
     fn renders_gantt_svg() {

@@ -4215,6 +4215,7 @@ name = "ibis-pptx"
 version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "delharc",
  "dicom-core",
  "dicom-object",
