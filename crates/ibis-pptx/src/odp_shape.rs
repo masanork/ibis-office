@@ -974,24 +974,17 @@ fn border(text: Option<&str>, tag: &str) -> String {
 }
 
 fn table(cx: &mut Cx, frame: Node, table: Node, g: Geom, out: &mut String) {
-    // Columns (with repeats) and rows, through the header and body groups.
+    // DrawingML needs one grid column per ODF column, including repeats.
     let mut columns: Vec<i64> = Vec::new();
-    let mut rows: Vec<Node> = Vec::new();
-    fn collect<'a, 'i>(cx: &Cx, node: Node<'a, 'i>, columns: &mut Vec<i64>, rows: &mut Vec<Node<'a, 'i>>) {
-        for c in node.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(TABLE)) {
-            match c.tag_name().name() {
-                "table-column" => {
-                    let repeat = attr(c, TABLE, "number-columns-repeated").and_then(|r| r.parse::<usize>().ok()).unwrap_or(1).min(256);
-                    let width = attr(c, TABLE, "style-name").and_then(|s| cx.st.prop("table-column", s, STYLE, "column-width")).and_then(emu).unwrap_or(914_400);
-                    columns.extend(std::iter::repeat_n(width, repeat));
-                }
-                "table-row" => rows.push(c),
-                "table-columns" | "table-header-columns" | "table-header-rows" | "table-rows" | "table-row-group" => collect(cx, c, columns, rows),
-                _ => {}
-            }
-        }
+    for column in crate::odf::table_columns(table) {
+        let repeat = attr(column, TABLE, "number-columns-repeated").and_then(|r| r.parse::<usize>().ok()).unwrap_or(1).min(256);
+        let width = attr(column, TABLE, "style-name")
+            .and_then(|s| cx.st.prop("table-column", s, STYLE, "column-width"))
+            .and_then(emu)
+            .unwrap_or(914_400);
+        columns.extend(std::iter::repeat_n(width, repeat));
     }
-    collect(cx, table, &mut columns, &mut rows);
+    let rows: Vec<_> = crate::odf::table_rows(table).collect();
     if columns.is_empty() || rows.is_empty() {
         return;
     }

@@ -138,3 +138,45 @@ fn odp_text_boxes_and_notes_keep_wrapped_paragraphs() {
         assert_eq!(slide.notes.trim(), "発表者ノート");
     });
 }
+
+#[test]
+fn odp_table_with_grouped_columns_keeps_the_table() {
+    let data = package(
+        "application/vnd.oasis.opendocument.presentation",
+        r#"<office:presentation><draw:page draw:name="Table">
+          <draw:frame svg:x="2cm" svg:y="2cm" svg:width="8cm" svg:height="2cm">
+            <table:table table:name="Grouped">
+              <table:table-column-group><table:table-column-group>
+                <table:table-column table:style-name="column" table:number-columns-repeated="2"/>
+              </table:table-column-group></table:table-column-group>
+              <table:table-header-rows><table:table-row>
+                <table:table-cell><text:p>左</text:p></table:table-cell>
+                <table:table-cell><text:p>右</text:p></table:table-cell>
+              </table:table-row></table:table-header-rows>
+              <table:table-row-group><table:table-rows><table:table-row>
+                <table:table-cell><text:p>内容</text:p></table:table-cell>
+                <table:table-cell><text:p>詳細</text:p></table:table-cell>
+              </table:table-row></table:table-rows></table:table-row-group>
+            </table:table>
+          </draw:frame>
+        </draw:page></office:presentation>"#,
+        r#"<style:style style:name="column" style:family="table-column"><style:table-column-properties style:column-width="4cm"/></style:style>"#,
+    );
+    check_import_and_ooxml_save(data, |presentation| {
+        let shapes = &presentation.slides[0].shapes;
+        let table = shapes
+            .iter()
+            .find_map(|shape| match &shape.kind {
+                ibis_doc_model::ShapeKind::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("expected an editable table");
+        assert_eq!(table.columns, [1_440_000, 1_440_000]);
+        let cells: Vec<Vec<_>> = table
+            .rows
+            .iter()
+            .map(|row| row.cells.iter().map(|cell| cell.text.text()).collect())
+            .collect();
+        assert_eq!(cells, [vec!["左", "右"], vec!["内容", "詳細"]]);
+    });
+}
