@@ -54,7 +54,7 @@ fn document_ranges_point_to_utf8_markdown_and_footnotes() {
 #[test]
 fn workbook_cells_reference_their_unescaped_coordinates() {
     let xlsx = markdown::import_markdown_to_xlsx_bytes(
-        "## 売上\n\n| 区分 | 金額 |\n| --- | --- |\n| 国内 | 42 |\n".as_bytes(),
+        "| 区分 | 金額 |\n| --- | --- |\n| 国内 | 42 |\n".as_bytes(),
     )
     .unwrap();
     let presentation = ibis_pptx::read(&xlsx).unwrap();
