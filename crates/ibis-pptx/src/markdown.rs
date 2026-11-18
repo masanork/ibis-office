@@ -3894,6 +3894,12 @@ pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_
 /// A desktop jump requires a citation resolving to one body paragraph.
 pub fn locate_ai_paragraph(data: &[u8], query: &serde_json::Value) -> Result<u32, Error> {
     let citation = locate_ai_source(data, query)?;
+    let entry = ai_body_paragraph_entry(&citation)?;
+    entry["source"]["modelId"].as_u64().and_then(|id| u32::try_from(id).ok())
+        .ok_or_else(|| Error::new("The AI citation has no paragraph ID"))
+}
+
+fn ai_body_paragraph_entry(citation: &serde_json::Value) -> Result<&serde_json::Value, Error> {
     let matches = citation["matches"].as_array().map(Vec::as_slice).unwrap_or_default();
     let [entry] = matches else {
         return Err(Error::new("The AI citation must identify one body paragraph"));
@@ -3902,39 +3908,38 @@ pub fn locate_ai_paragraph(data: &[u8], query: &serde_json::Value) -> Result<u32
     if source["part"] != "body" || source["kind"] != "paragraph" {
         return Err(Error::new("The AI citation does not point to a body paragraph"));
     }
-    source["modelId"].as_u64().and_then(|id| u32::try_from(id).ok())
-        .ok_or_else(|| Error::new("The AI citation has no paragraph ID"))
+    Ok(entry)
 }
 
 /// Validate a paragraph replacement and return its before/after text.
 pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serde_json::Value, Error> {
-    let (_, _, _, preview) = prepare_ai_edit(data, proposal)?;
+    let (_, _, _, _, preview) = prepare_ai_edit(data, proposal)?;
     Ok(preview)
 }
 
 /// Create an edited DOCX from the same checked proposal used by the preview.
 pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8>, Error> {
-    let (mut opened, index, replacement, _) = prepare_ai_edit(data, proposal)?;
+    let (mut opened, index, run_index, replacement, _) = prepare_ai_edit(data, proposal)?;
     let doc = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
     let Block::Paragraph(paragraph) = &mut doc.body[index] else { unreachable!() };
-    paragraph.runs[0].kind = FlowRunKind::Text(replacement.into());
+    paragraph.runs[run_index].kind = FlowRunKind::Text(replacement.into());
     opened.source.save(&opened.presentation, SaveOptions::default())
 }
 
-fn prepare_ai_edit<'a>(
+fn prepare_ai_edit(
     data: &[u8],
-    proposal: &'a serde_json::Value,
-) -> Result<(Opened, usize, &'a str, serde_json::Value), Error> {
+    proposal: &serde_json::Value,
+) -> Result<(Opened, usize, usize, String, serde_json::Value), Error> {
     use serde_json::json;
 
-    let paragraph_id = locate_ai_paragraph(data, proposal)?;
+    let citation = locate_ai_source(data, proposal)?;
+    let entry = ai_body_paragraph_entry(&citation)?;
+    let paragraph_id = entry["source"]["modelId"].as_u64().and_then(|id| u32::try_from(id).ok())
+        .ok_or_else(|| Error::new("The AI citation has no paragraph ID"))?;
     let before = proposal["before"].as_str().ok_or_else(|| Error::new("AI edit requires the original paragraph text in before"))?;
     let replacement = proposal["replacement"].as_str()
         .filter(|text| !text.is_empty() && !text.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
         .ok_or_else(|| Error::new("AI replacement must be nonempty text on one line"))?;
-    if before == replacement {
-        return Err(Error::new("AI replacement does not change the paragraph"));
-    }
     let opened = crate::open(data.to_vec())?;
     if opened.source.has_package_signatures().map_err(|error| Error::new(error.to_string()))? {
         return Err(Error::new("AI editing does not support signed documents"));
@@ -3949,30 +3954,86 @@ fn prepare_ai_edit<'a>(
             _ => None,
         }
     }).ok_or_else(|| Error::new("AI edit paragraph was not found in the original document"))?;
-    let [run] = paragraph.runs.as_slice() else {
-        return Err(Error::new("AI editing requires a paragraph with a single text run"));
-    };
-    let FlowRunKind::Text(text) = &run.kind else {
-        return Err(Error::new("AI editing requires a text run"));
-    };
-    if run.link.is_some() || run.control.is_some() || run.revision.is_some()
+    if paragraph.runs.iter().any(|run| run.link.is_some() || run.control.is_some() || run.revision.is_some())
         || paragraph.mark_revision.is_some() || !paragraph.bookmarks.is_empty()
         || !paragraph.bookmark_ends.is_empty() || paragraph.field_start.is_some()
         || paragraph.field_end || paragraph.subdoc.is_some()
     {
         return Err(Error::new("AI editing does not support this paragraph's annotations"));
     }
-    if text != before {
+    let mut plain = String::new();
+    let mut runs = Vec::with_capacity(paragraph.runs.len());
+    for run in &paragraph.runs {
+        let FlowRunKind::Text(text) = &run.kind else {
+            return Err(Error::new("AI editing requires a paragraph containing only text runs"));
+        };
+        runs.push((plain.len(), text.as_str()));
+        plain.push_str(text);
+    }
+    if plain != before {
         return Err(Error::new("Original paragraph text does not match before"));
+    }
+    let (run_index, run_after, after) = if let Some(range) = proposal.get("paragraphBytes") {
+        let (start, end) = ai_byte_range(range)
+            .ok_or_else(|| Error::new("AI edit requires a nonempty paragraphBytes range"))?;
+        let quote = citation["quote"].as_str().unwrap();
+        if before.get(start..end) != Some(quote) {
+            return Err(Error::new("paragraphBytes does not identify the exact cited text"));
+        }
+        let (run_index, &(run_start, text)) = runs.iter().enumerate()
+            .find(|(_, (offset, text))| *offset <= start && end <= *offset + text.len())
+            .ok_or_else(|| Error::new("AI replacement must stay within one text run"))?;
+        let local = start - run_start..end - run_start;
+
+        // Compare the actual Markdown positions by substituting a marker in a
+        // temporary paragraph. This disambiguates repeated text and rejects
+        // citations of generated markup, even when it matches literal text.
+        let mut original = String::new();
+        let media = &opened.presentation.media;
+        serialize_paragraph(paragraph, doc, media, &HashMap::new(), &mut original);
+        let mut marker = String::from("IbisAiEditMarker");
+        while original.contains(&marker) {
+            marker.push('X');
+        }
+        let mut marked = paragraph.clone();
+        let mut marked_text = text.to_owned();
+        marked_text.replace_range(local.clone(), &marker);
+        marked.runs[run_index].kind = FlowRunKind::Text(marked_text.into());
+        let mut rendered = String::new();
+        serialize_paragraph(&marked, doc, media, &HashMap::new(), &mut rendered);
+        let (block_start, _) = ai_byte_range(&entry["markdownBytes"]).unwrap();
+        let (citation_start, citation_end) = ai_byte_range(&citation["markdownBytes"]).unwrap();
+        let expected = citation_start.checked_sub(block_start).zip(citation_end.checked_sub(block_start))
+            .and_then(|(left, right)| {
+                (original.get(left..right) == Some(quote))
+                    .then(|| format!("{}{}{}", &original[..left], marker, &original[right..]))
+            });
+        if expected.as_deref() != Some(&rendered) {
+            return Err(Error::new("paragraphBytes and markdownBytes point to different text"));
+        }
+
+        let mut run_after = text.to_owned();
+        run_after.replace_range(local, replacement);
+        let mut after = plain;
+        after.replace_range(start..end, replacement);
+        (run_index, run_after, after)
+    } else {
+        if runs.len() != 1 {
+            return Err(Error::new("Replacing a whole paragraph requires a single text run"));
+        }
+        (0, replacement.to_owned(), replacement.to_owned())
+    };
+    if before == after {
+        return Err(Error::new("AI replacement does not change the paragraph"));
     }
     let preview = json!({
         "version": 1,
         "sourceSha256": proposal["sourceSha256"],
         "source": {"part": "body", "kind": "paragraph", "index": index, "modelId": paragraph_id},
         "before": before,
-        "after": replacement,
+        "after": after,
     });
-    Ok((opened, index, replacement, preview))
+    Ok((opened, index, run_index, run_after, preview))
 }
 
 fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {

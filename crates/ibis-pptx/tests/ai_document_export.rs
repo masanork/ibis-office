@@ -167,3 +167,39 @@ fn ai_edit_previews_and_round_trips_a_single_paragraph() {
     proposal["before"] = serde_json::json!("合わない本文");
     assert!(markdown::apply_ai_edit(&docx, &proposal).is_err());
 }
+
+#[test]
+fn ai_edit_binds_a_partial_replacement_to_the_cited_run() {
+    let docx =
+        markdown::import_markdown_to_docx_bytes("同じ語と**同じ語の強調**、*斜体*。\n".as_bytes())
+            .unwrap();
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let markdown = export["markdown"].as_str().unwrap();
+    let before = "同じ語と同じ語の強調、斜体。";
+    let quote = "同じ語";
+    let plain_start = before.rfind(quote).unwrap();
+    let start = markdown.rfind(quote).unwrap();
+    let mut proposal = serde_json::json!({
+        "version": 1,
+        "sourceSha256": export["sourceSha256"],
+        "markdownBytes": [start, start + quote.len()],
+        "quote": quote,
+        "paragraphBytes": [plain_start, plain_start + quote.len()],
+        "before": before,
+        "replacement": "別の語",
+    });
+
+    let preview = markdown::preview_ai_edit(&docx, &proposal).unwrap();
+    assert_eq!(preview["before"], before);
+    assert_eq!(preview["after"], "同じ語と別の語の強調、斜体。");
+    let edited = markdown::apply_ai_edit(&docx, &proposal).unwrap();
+    let export = markdown::export_ai_source(&edited).unwrap();
+    assert_eq!(export["markdown"], "同じ語と**別の語の強調**、*斜体*。\n");
+
+    proposal["paragraphBytes"] = serde_json::json!([0, quote.len()]);
+    assert!(markdown::apply_ai_edit(&docx, &proposal).is_err());
+    proposal["paragraphBytes"] = serde_json::json!([plain_start + 1, plain_start + quote.len()]);
+    assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
+    proposal.as_object_mut().unwrap().remove("paragraphBytes");
+    assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
+}
