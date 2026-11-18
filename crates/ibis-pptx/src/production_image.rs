@@ -14,10 +14,12 @@ enum Format {
     Raster(ImageFormat),
     Jpeg2000,
     Photoshop,
+    OpenExr,
 }
 
 fn format(ext: &str) -> Option<Format> {
     match ext.to_ascii_lowercase().as_str() {
+        "exr" => Some(Format::OpenExr),
         "psd" => Some(Format::Photoshop),
         "tga" => Some(Format::Raster(ImageFormat::Tga)),
         "tif" | "tiff" => Some(Format::Raster(ImageFormat::Tiff)),
@@ -38,15 +40,8 @@ pub fn open(extension: Option<&str>, bytes: &[u8]) -> Result<Option<crate::Opene
         return Err("Image exceeds the preview file size limit".into());
     }
     let image = match format {
-        Format::Raster(format) => {
-            let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-            let mut limits = image::Limits::default();
-            limits.max_image_width = Some(8192);
-            limits.max_image_height = Some(8192);
-            limits.max_alloc = Some(MAX_PIXELS * 4);
-            reader.limits(limits);
-            reader.decode().map_err(|error| error.to_string())?
-        }
+        Format::Raster(format) => decode_raster(bytes, format, 4)?,
+        Format::OpenExr => decode_openexr(bytes)?,
         Format::Jpeg2000 => decode_jpeg2000(bytes)?,
         Format::Photoshop => decode_psd(bytes)?,
     };
@@ -59,6 +54,105 @@ pub fn open(extension: Option<&str>, bytes: &[u8]) -> Result<Option<crate::Opene
     crate::markdown::open_markdown(markdown.into_bytes())
         .map(Some)
         .map_err(|error| error.to_string())
+}
+
+fn decode_raster(
+    bytes: &[u8],
+    format: ImageFormat,
+    bytes_per_pixel: u64,
+) -> Result<DynamicImage, String> {
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(MAX_PIXELS * bytes_per_pixel);
+    reader.limits(limits);
+    reader.decode().map_err(|error| error.to_string())
+}
+
+fn decode_openexr(bytes: &[u8]) -> Result<DynamicImage, String> {
+    let metadata = exr::meta::MetaData::read_from_buffered(Cursor::new(bytes), false)
+        .map_err(|error| error.to_string())?;
+    let [header] = metadata.headers.as_slice() else {
+        return Err("OpenEXR preview requires a single part".into());
+    };
+    if header.deep {
+        return Err("Deep OpenEXR images cannot be previewed".into());
+    }
+    if !is_rec709_exr(header) {
+        return Err("OpenEXR preview supports linear Rec.709 color only".into());
+    }
+    for size in [
+        header.shared_attributes.display_window.size,
+        header.layer_size,
+    ] {
+        if size.0 > 8192 || size.1 > 8192 || size.0 as u64 * size.1 as u64 > MAX_PIXELS {
+            return Err("OpenEXR image or display window exceeds the preview limits".into());
+        }
+    }
+
+    let linear = decode_raster(bytes, ImageFormat::OpenExr, 16)?.into_rgba32f();
+    let preview = image::RgbaImage::from_fn(linear.width(), linear.height(), |x, y| {
+        let [r, g, b, a] = linear.get_pixel(x, y).0;
+        let alpha = if a.is_finite() {
+            a.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // EXR convention associates RGB with alpha. PNG stores straight RGB.
+        let rgb = [r, g, b].map(|sample| {
+            if alpha > 0.0 {
+                sdr_sample(sample / a)
+            } else {
+                0
+            }
+        });
+        image::Rgba([rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8])
+    });
+    Ok(DynamicImage::ImageRgba8(preview))
+}
+
+fn is_rec709_exr(header: &exr::meta::header::Header) -> bool {
+    use exr::meta::attribute::AttributeValue;
+    let attributes = &header.shared_attributes;
+    let known_color = attributes
+        .other
+        .iter()
+        .chain(&header.own_attributes.other)
+        .all(|(name, value)| {
+            if name == "colorInteropID" {
+                return matches!(value, AttributeValue::Text(id) if id == "lin_rec709_scene");
+            }
+            name != "acesImageContainerFlag"
+        });
+    // Files without color metadata are previewed using the Rec.709 assumption.
+    known_color
+        && attributes.chromaticities.as_ref().is_none_or(|c| {
+            [
+                (c.red, [0.64, 0.33]),
+                (c.green, [0.30, 0.60]),
+                (c.blue, [0.15, 0.06]),
+                (c.white, [0.3127, 0.3290]),
+            ]
+            .into_iter()
+            .all(|(point, [x, y])| (point.0 - x).abs() <= 0.0001 && (point.1 - y).abs() <= 0.0001)
+        })
+}
+
+/// Compress highlights at 0 EV before encoding the linear values as sRGB.
+fn sdr_sample(sample: f32) -> u8 {
+    let mapped = if sample == f32::INFINITY {
+        1.0
+    } else {
+        let sample = sample.max(0.0);
+        sample / (1.0 + sample)
+    };
+    let encoded = if mapped <= 0.0031308 {
+        12.92 * mapped
+    } else {
+        1.055 * mapped.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round() as u8
 }
 
 fn decode_psd(bytes: &[u8]) -> Result<DynamicImage, String> {
@@ -156,6 +250,32 @@ mod tests {
             .to_rgba8()
             .get_pixel(0, 0)
             .0
+    }
+
+    #[test]
+    fn opens_openexr_with_sdr_highlights_and_straight_alpha() {
+        let pixels = image::Rgba32FImage::from_pixel(1, 1, image::Rgba([0.125, 0.5, 2.0, 0.5]));
+        let mut exr = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba32F(pixels)
+            .write_to(&mut exr, ImageFormat::OpenExr)
+            .unwrap();
+        let opened = open(Some("EXR"), exr.get_ref()).unwrap().unwrap();
+        assert_eq!(preview_pixel(opened), [124, 188, 231, 128]);
+        assert_eq!(sdr_sample(f32::NAN), 0);
+        assert_eq!(sdr_sample(-1.0), 0);
+        assert_eq!(sdr_sample(f32::INFINITY), 255);
+
+        use exr::meta::attribute::AttributeValue;
+        let mut metadata =
+            exr::meta::MetaData::read_from_buffered(Cursor::new(exr.get_ref()), false).unwrap();
+        let header = &mut metadata.headers[0];
+        for (id, supported) in [("lin_rec709_scene", true), ("lin_ap1_scene", false)] {
+            header
+                .own_attributes
+                .other
+                .insert("colorInteropID".into(), AttributeValue::Text(id.into()));
+            assert_eq!(is_rec709_exr(header), supported);
+        }
     }
 
     #[test]
