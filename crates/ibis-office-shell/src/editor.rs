@@ -574,6 +574,10 @@ pub struct SlideEditor {
     pub opened_from_legacy: bool,
     /// Whether this document is opened in read-only / viewing mode (--read-only or ?view=1).
     pub read_only: bool,
+    #[cfg(target_os = "android")]
+    pub(crate) phone_editing: bool,
+    #[cfg(target_os = "android")]
+    phone_view_only: bool,
     /// A Standard-encrypted document remains read-only until saved as a copy.
     pub standard_read_only: bool,
     /// Preserve the original path even after creating an editable copy.
@@ -895,6 +899,10 @@ impl SlideEditor {
             read_only: crate::embed::is_view_only(),
             #[cfg(not(target_arch = "wasm32"))]
             read_only: false,
+            #[cfg(target_os = "android")]
+            phone_editing: false,
+            #[cfg(target_os = "android")]
+            phone_view_only: false,
             standard_read_only: false,
             #[cfg(not(target_family = "wasm"))]
             standard_source_path: None,
@@ -941,7 +949,32 @@ impl SlideEditor {
 
     /// Whether this editor is currently in read-only / viewing mode (either via `--read-only` or during CSV streaming).
     pub fn is_read_only(&self) -> bool {
+        self.file_is_read_only() || self.phone_view_only()
+    }
+
+    fn file_is_read_only(&self) -> bool {
         self.read_only || self.standard_read_only || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+    }
+
+    pub(crate) fn phone_view_only(&self) -> bool {
+        #[cfg(target_os = "android")]
+        { self.phone_view_only }
+        #[cfg(not(target_os = "android"))]
+        { false }
+    }
+
+    #[cfg(target_os = "android")]
+    fn update_phone_view(&mut self, narrow: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let viewing = narrow && !self.phone_editing;
+        if viewing == self.phone_view_only {
+            return;
+        }
+        if viewing {
+            self.commit_pending_edit(window, cx);
+        }
+        self.phone_view_only = viewing;
+        let model_read_only = viewing || self.read_only || self.standard_read_only || self.is_jtd_read_only();
+        self.document.set_read_only(model_read_only);
     }
 
     pub fn is_jtd_read_only(&self) -> bool {
@@ -1155,6 +1188,11 @@ impl SlideEditor {
     /// Replace the open presentation, dropping undo history and selection.
     pub fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.standard_read_only = false;
+        #[cfg(target_os = "android")]
+        {
+            self.phone_editing = false;
+            self.phone_view_only = window.viewport_size().width < px(600.);
+        }
         #[cfg(not(target_family = "wasm"))]
         { self.standard_source_path = None; }
         self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
@@ -1202,7 +1240,7 @@ impl SlideEditor {
         // fitted to the width without it): `FormatEditor::sidebar_on_request`.
         self.sidebar_open = !self.is_read_only() && !with_format!(self, sidebar_on_request());
         self.document = Document::new(presentation);
-        self.document.set_read_only(self.read_only);
+        self.document.set_read_only(self.read_only || self.phone_view_only());
         self.document_memory = Default::default();
         self.source = None;
         self.current_csv_format = None;
@@ -3967,6 +4005,7 @@ impl SlideEditor {
         // The mock's layout (shell/chrome.rs): the title row, the menu bar
         // and the toolbar (the first two hidden by the toolbar's ^), the
         // document with the sidebar on its right, and the status bar.
+        let narrow_android = cfg!(target_os = "android") && window.viewport_size().width < px(600.);
         if !self.has_document {
             window.set_window_title(&crate::start_view::start_title());
             // The settings dialog (modal) over the start view: its panel is built, and drawn, by the sidebar's code as in a document.
@@ -3974,12 +4013,14 @@ impl SlideEditor {
             if self.settings.is_some() || self.font_setup_is_open() {
                 let _ = self.render_sidebar(window, cx);
             }
-            return d.child(self.render_title_row(window, cx)).child(self.render_start_view(cx));
+            return d.child(self.render_title_row(window, cx)).child(self.render_start_view(narrow_android, cx));
         }
+        #[cfg(target_os = "android")]
+        self.update_phone_view(narrow_android, window, cx);
         #[cfg(target_family = "wasm")]
         let mobile_viewer = crate::embed::phone_viewer() && self.is_read_only() && !self.show_menu_bar && window.viewport_size().width < px(600.);
         #[cfg(not(target_family = "wasm"))]
-        let mobile_viewer = false;
+        let mobile_viewer = self.phone_view_only();
         let compact = self.chrome_compact;
         let focus = with_format!(self, chrome_hidden(self));
         let show_menu_bar = self.show_menu_bar;
@@ -3994,7 +4035,7 @@ impl SlideEditor {
                 true
             }
         };
-        let sidebar = if focus || self.grid_only {
+        let sidebar = if focus || self.grid_only || self.phone_view_only() {
             self.right_pane = Default::default();
             None
         } else {
@@ -4004,10 +4045,10 @@ impl SlideEditor {
         if self.grid_only {
             return d.child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)));
         }
-        d.when(mobile_viewer && !focus, |d| d.child(self.render_mobile_viewer_bar(cx)))
-            .when(!compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
-            .when(!compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
-            .when(!focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
+        d.when((mobile_viewer || narrow_android) && !focus, |d| d.child(self.render_mobile_viewer_bar(narrow_android, cx)))
+            .when(!narrow_android && !compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
+            .when(!mobile_viewer && !compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
+            .when(!mobile_viewer && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
             .child(
                 div()
                     .flex()
@@ -4021,18 +4062,33 @@ impl SlideEditor {
             .when(!focus, |d| d.child(self.render_status_bar(window, cx)))
     }
 
-    /// Compact document controls when the browser is used as a phone viewer.
-    fn render_mobile_viewer_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Compact document controls for phone-sized windows.
+    fn render_mobile_viewer_bar(&self, narrow_android: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let name = self.file_name.clone().unwrap_or_else(|| "Docs".into());
         h_flex().h(px(48.)).flex_shrink_0().px_3().gap_3().items_center()
             .bg(theme.title_bar).border_b_1().border_color(theme.title_bar_border)
-            .child(div().flex_1().min_w_0().overflow_hidden().text_sm().child(name))
+            .child(div().flex_1().min_w_0().truncate().text_sm().child(name))
             .child(div().id("mobile-open-file").flex().items_center().justify_center()
                 .min_w(px(72.)).h(px(40.)).px_3().rounded_md().cursor_pointer()
                 .text_sm().text_color(theme.foreground)
                 .child(crate::i18n::text("start.open"))
                 .on_click(cx.listener(|this, _, window, cx| this.open_file(&OpenFile, window, cx))))
+            .when(narrow_android && !self.file_is_read_only(), |bar| {
+                #[cfg(target_os = "android")]
+                let bar = bar.child(
+                    div().id("mobile-switch-mode").flex().items_center().justify_center()
+                        .min_w(px(72.)).h(px(44.)).px_3().rounded_md().cursor_pointer()
+                        .text_sm().text_color(theme.foreground)
+                        .child(crate::i18n::text(if self.phone_editing { "docx.interaction.viewing" } else { "menu.edit" }))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.phone_editing = !this.phone_editing;
+                            this.update_phone_view(true, window, cx);
+                            cx.notify();
+                        })),
+                );
+                bar
+            })
     }
 
     /// Apply a font size (in points) chosen or typed in the toolbar font size pulldown (#120).

@@ -406,7 +406,7 @@ impl SlideEditor {
         if self.current_csv_original.is_some() { self.document.begin_csv_edit_tracking(); }
         if self.standard_read_only {
             self.standard_read_only = false;
-            self.document.set_read_only(self.read_only);
+            self.document.set_read_only(self.read_only || self.phone_view_only());
             self.save_note = Some(crate::i18n::text("file.standard-copy-saved"));
         }
         let name: SharedString = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
