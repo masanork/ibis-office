@@ -372,6 +372,7 @@ struct Args {
     out_dir: Option<std::path::PathBuf>,
     /// `--export row-heights <file> [out.tsv]`: the second file name.
     out_file: Option<std::path::PathBuf>,
+    ai_query: Option<std::path::PathBuf>,
     width: Option<u32>,
     slides: Option<String>,
     layout: bool,
@@ -415,6 +416,7 @@ fn parse_args() -> Result<Args, String> {
             "--read-only" => args.read_only = true,
             "--slide" => args.slide = Some(value()?.parse().map_err(|_| "--slide needs a slide number".to_string())?),
             "--export" => args.export = Some(value()?),
+            "--ai-query" => args.ai_query = Some(value()?.into()),
             "--out-dir" => args.out_dir = Some(value()?.into()),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
             "--slides" => args.slides = Some(value()?),
@@ -446,6 +448,17 @@ fn parse_args() -> Result<Args, String> {
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
+    if format == "ai-locate" {
+        let path = args.path.as_deref().ok_or("name the original document")?;
+        let query_path = args.ai_query.as_deref().ok_or("--export ai-locate requires --ai-query")?;
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let query = std::fs::read(query_path).map_err(|e| format!("{}: {e}", query_path.display()))?;
+        let query = serde_json::from_slice(&query).map_err(|e| format!("{}: {e}", query_path.display()))?;
+        let result = ibis_pptx::markdown::locate_ai_source(&data, &query)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("{result:#}");
+        return Ok(());
+    }
     if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "lawxml" | "lawtext" | "ai-json") {
         let path = args
             .path

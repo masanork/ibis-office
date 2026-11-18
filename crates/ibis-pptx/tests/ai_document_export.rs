@@ -90,3 +90,33 @@ fn lawtext_and_bundled_law_xml_have_article_locators() {
         assert!(excerpt(&export, article).contains("第一条"));
     }
 }
+
+#[test]
+fn citations_resolve_against_the_original_document_only() {
+    let docx =
+        markdown::import_markdown_to_docx_bytes("# 見出し\n\n本文です。\n".as_bytes()).unwrap();
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let text = export["markdown"].as_str().unwrap();
+    let quote = "本文";
+    let start = text.find(quote).unwrap();
+    let mut query = serde_json::json!({
+        "version": 1,
+        "sourceSha256": export["sourceSha256"],
+        "markdownBytes": [start, start + quote.len()],
+        "quote": quote,
+    });
+    let found = markdown::locate_ai_source(&docx, &query).unwrap();
+    let matches = found["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["source"]["kind"], "paragraph");
+    assert_eq!(matches[0]["source"]["index"], 1);
+
+    assert!(
+        markdown::locate_ai_source(b"different input", &query)
+            .unwrap_err()
+            .to_string()
+            .contains("SHA-256")
+    );
+    query["markdownBytes"][0] = serde_json::json!(start + 1);
+    assert!(markdown::locate_ai_source(&docx, &query).is_err());
+}

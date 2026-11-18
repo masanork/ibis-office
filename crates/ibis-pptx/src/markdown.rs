@@ -3836,10 +3836,13 @@ fn export_markdown_with_positions<'a>(
     }
 }
 
+fn source_sha256(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(data))
+}
+
 /// Create a versioned AI export tied to the exact input snapshot.
 pub fn export_ai_source(data: &[u8]) -> Result<serde_json::Value, Error> {
-    use sha2::{Digest, Sha256};
-
     let mut result = if let Some(law) = crate::lawtext::export_ai_law(data)? {
         law
     } else {
@@ -3850,8 +3853,49 @@ pub fn export_ai_source(data: &[u8]) -> Result<serde_json::Value, Error> {
             export_ai_document(&presentation)?
         }
     };
-    result["sourceSha256"] = serde_json::json!(format!("{:x}", Sha256::digest(data)));
+    result["sourceSha256"] = serde_json::json!(source_sha256(data));
     Ok(result)
+}
+
+/// Resolve an AI citation against a fresh export of the exact original input.
+pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_json::Value, Error> {
+    use serde_json::json;
+
+    if query["version"].as_u64() != Some(1) {
+        return Err(Error::new("AI citation version must be 1"));
+    }
+    let expected = query["sourceSha256"].as_str().ok_or_else(|| Error::new("AI citation requires sourceSha256"))?;
+    if source_sha256(data) != expected {
+        return Err(Error::new("Source SHA-256 differs from the AI citation"));
+    }
+    let (start, end) = ai_byte_range(&query["markdownBytes"]).ok_or_else(|| Error::new("AI citation requires a nonempty markdownBytes range"))?;
+    let quote = query["quote"].as_str().ok_or_else(|| Error::new("AI citation requires the exact Markdown quote"))?;
+    let export = export_ai_source(data)?;
+    let markdown = export["markdown"].as_str().ok_or_else(|| Error::new("AI export has no Markdown"))?;
+    if markdown.get(start..end) != Some(quote) {
+        return Err(Error::new("Markdown range and quote do not match the regenerated export"));
+    }
+    let matches: Vec<_> = ["blocks", "articles", "cells"].into_iter()
+        .filter_map(|key| export[key].as_array())
+        .flatten()
+        .filter(|entry| ai_byte_range(&entry["markdownBytes"])
+            .is_some_and(|(left, right)| start < right && left < end))
+        .collect();
+    Ok(json!({
+        "version": 1,
+        "kind": export["kind"],
+        "sourceSha256": expected,
+        "markdownBytes": [start, end],
+        "quote": quote,
+        "matches": matches,
+    }))
+}
+
+fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
+    let [left, right] = value.as_array()?.as_slice() else { return None };
+    let left = usize::try_from(left.as_u64()?).ok()?;
+    let right = usize::try_from(right.as_u64()?).ok()?;
+    (left < right).then_some((left, right))
 }
 
 /// Markdown and original sheet coordinates, with display text and stored values kept separate.
