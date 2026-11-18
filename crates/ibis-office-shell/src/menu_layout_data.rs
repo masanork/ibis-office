@@ -498,6 +498,7 @@ pub(super) const DOC_CONTEXT: &[ContextSpec] = &[
         LayoutItem::Sub { id: None, label_key: "menu.group.wordart-styles", items: &[
         ] },
         LayoutItem::Cmd("docx.picture.alt-text"),
+        LayoutItem::Cmd("docx.picture.mermaid-source"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: None, label_key: "menu.group.position", items: &[
         ] },
@@ -532,6 +533,7 @@ pub(super) const DOC_CONTEXT: &[ContextSpec] = &[
         LayoutItem::Cmd("docx.picture.reset"),
         LayoutItem::Sep,
         LayoutItem::Cmd("docx.picture.alt-text"),
+        LayoutItem::Cmd("docx.picture.mermaid-source"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: None, label_key: "menu.group.position", items: &[
         ] },
