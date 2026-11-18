@@ -948,11 +948,12 @@ mod web {
             let app = app.borrow();
             let app = app.as_ref().ok_or_else(|| JsValue::from_str("Editor is not running"))?;
             app.update(|cx| {
-                cx.text_system().add_fonts(vec![Cow::Owned(data)])
+                cx.text_system().add_fonts(vec![Cow::Owned(data.clone())])
                     .map_err(|e| JsValue::from_str(&format!("Dynamic font: {e}")))?;
                 if !cx.text_system().all_font_names().contains(&family) {
                     return Err(JsValue::from_str("Dynamic font could not be registered"));
                 }
+                cx.svg_renderer().add_font(Cow::Owned(data));
                 SUPPLIED_FONTS.with(|fonts| {
                     if let Some(fonts) = fonts.borrow_mut().as_mut() {
                         if let Some(face) = face { fonts.face_fonts.push((face, family.clone())); }
@@ -1002,6 +1003,11 @@ mod web {
         let _prefetch = Prefetch;
         let mut text = ibis_doc_model::repertoire::font_repertoire(presentation);
         text.push('\n'); text.push_str(name);
+        for media in &presentation.media {
+            if media.format == ibis_doc_model::MediaFormat::Svg {
+                ibis_pptx::mermaid::append_svg_text(&media.data, &mut text);
+            }
+        }
         wasm_bindgen_futures::JsFuture::from(preload_fonts_js(&text)?).await?;
         Ok(())
     }
