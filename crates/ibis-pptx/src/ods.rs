@@ -21,10 +21,9 @@ mod shapes;
 use roxmltree::{Document, Node};
 
 use crate::Error;
+use crate::odf::{TABLE, TEXT};
 
 const OFFICE: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
-const TABLE: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
-const TEXT: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
 const STYLE: &str = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
 const FO: &str = "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0";
 const NUMBER: &str = "urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0";
@@ -582,6 +581,7 @@ fn cell_text(cell: Node) -> (String, Option<String>) {
                         }
                         collect(c, out, link);
                     }
+                    (Some(OFFICE), "annotation") => {}
                     _ => collect(c, out, link),
                 }
             }
@@ -590,7 +590,9 @@ fn cell_text(cell: Node) -> (String, Option<String>) {
     let mut out = String::new();
     let mut link = None;
     let mut first = true;
-    for p in children(cell, TEXT, "p") {
+    let paragraphs = crate::odf::through(cell, crate::odf::text_container)
+        .filter(|node| node.has_tag_name((TEXT, "p")) || node.has_tag_name((TEXT, "h")));
+    for p in paragraphs {
         if !first {
             out.push('\n');
         }
@@ -910,24 +912,20 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
         let mut cols = String::new();
         let mut col = 0u32;
         let mut col_default_style: Vec<(u32, u32, String)> = Vec::new();
-        for group in table.children().filter(|c| c.is_element()) {
-            let in_group = group.tag_name().name() == "table-column-group" || group.tag_name().name() == "table-header-columns" || group.tag_name().name() == "table-columns";
-            let columns: Vec<Node> = if in_group { children(group, TABLE, "table-column").collect() } else if group.tag_name().name() == "table-column" { vec![group] } else { Vec::new() };
-            for c in columns {
-                let repeat = attr(c, TABLE, "number-columns-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).min(16384);
-                let width = attr(c, TABLE, "style-name").and_then(|s| column_widths.get(s)).copied();
-                let hidden = matches!(attr(c, TABLE, "visibility"), Some("collapse") | Some("filter"));
-                if let Some(s) = attr(c, TABLE, "default-cell-style-name") {
-                    col_default_style.push((col, col + repeat - 1, s.to_string()));
-                }
-                if width.is_some() || hidden {
-                    // The width in characters of the digit width the reader uses.
-                    let digit = crate::xlsx::EXCEL_METRICS.digit_pt(Some(default_font.0.as_str()), default_font.1);
-                    let chars = width.map_or(48.0, |w| w) / digit;
-                    cols.push_str(&format!("<col min=\"{}\" max=\"{}\" width=\"{}\" customWidth=\"1\"{}/>", col + 1, col + repeat, ibis_calc::number_to_xml((chars * 256.0).ceil() / 256.0), if hidden { " hidden=\"1\"" } else { "" }));
-                }
-                col += repeat;
+        for c in crate::odf::table_columns(table) {
+            let repeat = attr(c, TABLE, "number-columns-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).min(16384);
+            let width = attr(c, TABLE, "style-name").and_then(|s| column_widths.get(s)).copied();
+            let hidden = crate::odf::column_hidden(c);
+            if let Some(s) = attr(c, TABLE, "default-cell-style-name") {
+                col_default_style.push((col, col + repeat - 1, s.to_string()));
             }
+            if width.is_some() || hidden {
+                // The width in characters of the digit width the reader uses.
+                let digit = crate::xlsx::EXCEL_METRICS.digit_pt(Some(default_font.0.as_str()), default_font.1);
+                let chars = width.map_or(48.0, |w| w) / digit;
+                cols.push_str(&format!("<col min=\"{}\" max=\"{}\" width=\"{}\" customWidth=\"1\"{}/>", col + 1, col + repeat, ibis_calc::number_to_xml((chars * 256.0).ceil() / 256.0), if hidden { " hidden=\"1\"" } else { "" }));
+            }
+            col += repeat;
         }
         let mut rows_xml = String::new();
         let mut merges: Vec<String> = Vec::new();
@@ -940,19 +938,11 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
         let mut row = 0u32;
         let mut max_row = 0u32;
         let mut max_col = 0u32;
-        let mut row_nodes: Vec<Node> = Vec::new();
-        for group in table.children().filter(|c| c.is_element()) {
-            match group.tag_name().name() {
-                "table-row" => row_nodes.push(group),
-                "table-row-group" | "table-header-rows" | "table-rows" => row_nodes.extend(children(group, TABLE, "table-row")),
-                _ => {}
-            }
-        }
         // Rows covered by a merge from above (their cells are covered ones, skipped).
-        for r in row_nodes {
+        for r in crate::odf::table_rows(table) {
             let row_repeat = attr(r, TABLE, "number-rows-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
             let height = attr(r, TABLE, "style-name").and_then(|s| row_heights.get(s)).copied();
-            let row_hidden = matches!(attr(r, TABLE, "visibility"), Some("collapse") | Some("filter"));
+            let row_hidden = crate::odf::row_hidden(r);
             // The cells of the row: (column, xml) once, for each repeat of the row.
             let mut cells: Vec<(u32, String)> = Vec::new();
             let mut c = 0u32;

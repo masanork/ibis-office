@@ -10,13 +10,12 @@ use roxmltree::Node;
 
 pub(crate) const OFFICE: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 pub(crate) const STYLE: &str = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
-pub(crate) const TEXT: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
 pub(crate) const DRAW: &str = "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0";
 pub(crate) const FO: &str = "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0";
 pub(crate) const SVG: &str = "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0";
 pub(crate) const PRESENTATION: &str = "urn:oasis:names:tc:opendocument:xmlns:presentation:1.0";
 pub(crate) const XLINK: &str = "http://www.w3.org/1999/xlink";
-pub(crate) const TABLE: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
+pub(crate) use crate::odf::{TABLE, TEXT};
 pub(crate) const SMIL: &str = "urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0";
 pub(crate) const LOEXT: &str = "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0";
 

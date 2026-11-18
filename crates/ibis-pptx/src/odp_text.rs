@@ -421,7 +421,13 @@ pub(crate) fn paragraphs(cx: &mut Cx, container: Node, frame: &[(&'static str, S
     let base: Chain = frame.to_vec();
     let frame_list = frame.iter().find_map(|(f, n)| cx.st.prop(f, n, STYLE, "list-style-name")).map(str::to_string);
     let mut out = String::new();
-    for c in container.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(TEXT)) {
+    // Sections and legacy numbered paragraphs may wrap the text of a text
+    // box or notes frame. Keep their content in order without evaluating conditions.
+    for c in crate::odf::through(container, |node| {
+        crate::odf::visible_section(node) || node.has_tag_name((TEXT, "numbered-paragraph"))
+    })
+    .filter(|node| node.tag_name().namespace() == Some(TEXT))
+    {
         match c.tag_name().name() {
             "p" | "h" => paragraph(cx, c, &base, None, body, &mut out),
             "list" => list(cx, c, &base, None, body, &mut out, frame_list.as_deref()),
