@@ -117,3 +117,68 @@ fn rejects_non_text_body_and_accepts_empty_text_body() {
     assert!(error.to_string().contains("office:body/office:text"));
     assert!(ibis_pptx::open(odt("<o:text/>")).is_ok());
 }
+
+#[test]
+fn preserves_merged_and_repeated_table_cells_in_their_grid_positions() {
+    use ibis_doc_model::VerticalMerge;
+
+    let data = odt(r#"<o:text><tbl:table tbl:name="Grid">
+      <tbl:table-row>
+        <tbl:table-cell tbl:number-columns-spanned="2" tbl:number-rows-spanned="2"><t:p>結合</t:p></tbl:table-cell>
+        <tbl:covered-table-cell/>
+        <tbl:table-cell><t:p>右上</t:p></tbl:table-cell>
+      </tbl:table-row>
+      <tbl:table-row>
+        <tbl:covered-table-cell tbl:number-columns-repeated="2"/>
+        <tbl:table-cell><t:p>右下</t:p></tbl:table-cell>
+      </tbl:table-row>
+      <tbl:table-row tbl:number-rows-repeated="2">
+        <tbl:table-cell tbl:number-columns-repeated="2"><t:p>反復</t:p></tbl:table-cell>
+        <tbl:table-cell><t:p>末尾</t:p></tbl:table-cell>
+      </tbl:table-row>
+    </tbl:table></o:text>"#);
+    let check = |presentation: &Presentation| {
+        let [Block::Table(table)] = presentation.flow.as_ref().unwrap().body.as_slice() else {
+            panic!("expected the table");
+        };
+        assert_eq!(table.rows.len(), 4);
+        let text = |row: usize, cell: usize| match &table.rows[row].cells[cell].blocks[0] {
+            Block::Paragraph(paragraph) => paragraph.text(),
+            _ => panic!("expected paragraph"),
+        };
+        assert_eq!(table.rows[0].cells[0].span, 2);
+        assert_eq!(table.rows[1].cells[0].span, 2);
+        assert_eq!(table.rows[0].cells[0].merge, VerticalMerge::Start);
+        assert_eq!(table.rows[1].cells[0].merge, VerticalMerge::Continue);
+        assert_eq!(text(0, 0), "結合");
+        assert_eq!(text(0, 1), "右上");
+        assert_eq!(text(1, 1), "右下");
+        for row in 2..4 {
+            assert_eq!(
+                [text(row, 0), text(row, 1), text(row, 2)],
+                ["反復", "反復", "末尾"]
+            );
+        }
+    };
+    check(&ibis_pptx::read(&data).unwrap());
+    let opened = ibis_pptx::open(data).unwrap();
+    check(&opened.presentation);
+    let saved = opened
+        .source
+        .save(&opened.presentation, Default::default())
+        .unwrap();
+    check(&ibis_pptx::read(&saved).unwrap());
+}
+
+#[test]
+fn rejects_table_expansion_that_exceeds_the_import_limit() {
+    for table in [
+        r#"<tbl:table-row tbl:number-rows-repeated="100001"><tbl:table-cell/></tbl:table-row>"#,
+        r#"<tbl:table-row><tbl:table-cell tbl:number-columns-repeated="257"/></tbl:table-row>"#,
+        r#"<tbl:table-row><tbl:table-cell><t:p><t:s t:c="999999999"/></t:p></tbl:table-cell></tbl:table-row>"#,
+    ] {
+        let data = odt(&format!("<o:text><tbl:table>{table}</tbl:table></o:text>"));
+        let error = ibis_pptx::open(data).err().unwrap();
+        assert!(error.to_string().contains("表を展開すると大きすぎます"));
+    }
+}
