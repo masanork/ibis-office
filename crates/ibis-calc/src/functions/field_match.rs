@@ -2,6 +2,7 @@
 // Copyright (c) masanork
 //! Pairwise comparison of explicitly typed fields.
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -25,10 +26,17 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             return err(CellError::Value);
         };
         let (left, right) = (&values[0], &values[1]);
-        let result = if mode.eq_ignore_ascii_case("date") {
+        let result = if mode.eq_ignore_ascii_case("address") {
+            let extra = match values.get(3) {
+                None | Some(Value::Empty) => "",
+                Some(Value::Text(text)) => text,
+                _ => return err(CellError::Value),
+            };
+            compare_addresses(left, right, extra)
+        } else if values.len() > 3 {
+            return err(CellError::Value);
+        } else if mode.eq_ignore_ascii_case("date") {
             compare_dates(left, right, ctx.date1904())
-        } else if mode.eq_ignore_ascii_case("address") {
-            compare_keys(left, right, address_key)
         } else if mode.eq_ignore_ascii_case("gender") {
             compare_keys(left, right, gender_key)
         } else {
@@ -94,6 +102,99 @@ fn gender_key(text: &str) -> Option<bool> {
         "女" | "女性" | "f" | "female" => Some(false),
         _ => None,
     }
+}
+
+fn compare_addresses(left: &Value, right: &Value, extra: &str) -> Option<u8> {
+    let (Value::Text(left), Value::Text(right)) = (left, right) else {
+        return None;
+    };
+    let left = address_key(left)?;
+    let right = address_key(right)?;
+    let (left_place, left_tail) = address_parts(&left);
+    let (right_place, right_tail) = address_parts(&right);
+    let extra: HashSet<char> = extra.chars().collect();
+    let wildcard = |c: char| {
+        matches!(c, '●' | '■' | '〓' | '�' | '?' | '？')
+            || (c.is_alphabetic() || matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' | '\u{100000}'..='\u{10fffd}')) && extra.contains(&c)
+    };
+    if left == right && !left_place.chars().any(wildcard) {
+        return Some(2);
+    }
+    if left_tail != right_tail {
+        return Some(0);
+    }
+
+    let left = fuzzy_place(left_place, wildcard);
+    let right = fuzzy_place(right_place, wildcard);
+    if left.chars().count() != right.chars().count() {
+        return Some(0);
+    }
+    let mut shared_letter = false;
+    for (a, b) in left.chars().zip(right.chars()) {
+        match (wildcard(a), wildcard(b)) {
+            (false, false) if a == b => shared_letter |= a.is_alphabetic(),
+            (true, true) => (),
+            (true, false) if b.is_alphabetic() => (),
+            (false, true) if a.is_alphabetic() => (),
+            _ => return Some(0),
+        }
+    }
+    Some(u8::from(shared_letter))
+}
+
+fn address_parts(key: &str) -> (&str, &str) {
+    // Protect the numeric suffix and any building/room text that follows it.
+    static NUMBER: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[0-9]|[〇零一二三四五六七八九十百千]+(?:丁目|番地|番|号)").expect("valid address number pattern"));
+    let boundary = NUMBER.find(key).map_or(key.len(), |m| m.start());
+    let (place, tail) = key.split_at(boundary);
+    (place.trim_end(), tail)
+}
+
+fn fuzzy_place(place: &str, wildcard: impl Fn(char) -> bool) -> String {
+    // Keep the municipality itself in the comparison.
+    let islands = [
+        ("三宅島", "三宅村"),
+        ("八丈島", "八丈町"),
+        ("種子島", "西之表市"),
+        ("種子島", "熊毛郡中種子町"),
+        ("種子島", "熊毛郡南種子町"),
+        ("種子島", "中種子町"),
+        ("種子島", "南種子町"),
+        ("奄美大島", "奄美市"),
+        ("伊豆大島", "大島町"),
+    ];
+    let mut place = place.to_owned();
+    for (island, municipality) in islands {
+        if let Some(at) = place.find(island)
+            && (at == 0 || place[..at].ends_with(['都', '県', '郡']))
+            && place[at + island.len()..].starts_with(municipality)
+            && !island.chars().any(&wildcard)
+        {
+            place.replace_range(at..at + island.len(), "");
+            break;
+        }
+    }
+    let mut after_oaza = false;
+    let mut result = String::new();
+    let mut rest = place.as_str();
+    while let Some(c) = rest.chars().next() {
+        if rest.starts_with("大字") && !wildcard('大') && !wildcard('字') {
+            after_oaza = true;
+            rest = &rest["大字".len()..];
+            continue;
+        }
+        rest = &rest[c.len_utf8()..];
+        if c == '字' && !wildcard(c) && (after_oaza || result.ends_with(['市', '区', '町', '村']) || result.is_empty()) {
+            after_oaza = false;
+            continue;
+        }
+        result.push(match c {
+            'ヶ' | 'ケ' | 'ヵ' | 'が' if !wildcard(c) => 'が',
+            _ => c,
+        });
+    }
+    result
 }
 
 fn address_key(text: &str) -> Option<String> {

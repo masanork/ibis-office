@@ -85,7 +85,7 @@ fn address_tokens_preserve_location_details() {
         (r#""霞が関二丁目十二番二十号","霞が関 2‐12−20","address""#, 2.0),
         (r#""霞が関2-1-2","霞が関2-1-3","address""#, 0.0),
         (r#""霞が関2-1-2 A棟101","霞が関2-1-2 A棟102","address""#, 0.0),
-        (r#""霞ヶ関2-1-2","霞が関2-1-2","address""#, 0.0),
+        (r#""霞ヶ関2-1-2","霞が関2-1-2","address""#, 1.0),
         (r#""霞が関1 2丁目1番2号","霞が関12-1-2","address""#, 0.0),
         (r#""霞が関2ー1ー2","霞が関2-1-2","address""#, 0.0),
         (r#""霞が関二十十丁目1番2号","霞が関30-1-2","address""#, 0.0),
@@ -113,4 +113,32 @@ fn arrays_can_filter_candidates() {
         r#"SUM(IBIS.FIELDMATCH({"1985-04-01","1985-04","1985-05"},"1985-04-01","date"))"#,
     );
     assert_eq!(result, (CellValue::Number(3.0), false));
+}
+
+#[test]
+fn address_place_variants_and_wildcards_are_possible_matches() {
+    for (args, result) in [
+        (r#""霞ケ関2-1-2","霞が関2-1-2","address""#, 1.0),
+        (r#""○町大字山田字上1","○町山田上1","address""#, 1.0),
+        (r#""○町字山田1","○町山田1","address""#, 1.0),
+        (r#""東京都八丈島八丈町大賀郷2551-2","東京都八丈町大賀郷2551-2","address""#, 1.0),
+        (r#""東京都八丈島三宅村阿古497","東京都三宅村阿古497","address""#, 0.0),
+        (r#""霞ヶ●2-1-2","霞が関2-1-2","address""#, 1.0),
+        (r#""霞〓関2-1-2","霞が関2-1-2","address""#, 1.0),
+        (r#""霞?関2-1-2","霞？関2-1-2","address""#, 1.0),
+        (r#""●●●2-1-2","霞が関2-1-2","address""#, 0.0),
+        (r#""霞●2-1-2","霞が関2-1-2","address""#, 0.0),
+        (r#""霞●関2-1-2","霞が関2-1-3","address""#, 0.0),
+        (r#""霞●関2-1-2 A棟101","霞が関2-1-2 A棟102","address""#, 0.0),
+        (r#""霞●関二丁目 A棟?","霞が関二丁目 A棟101","address""#, 0.0),
+    ] {
+        check(args, CellValue::Number(result));
+    }
+    let external = '\u{e123}';
+    check(
+        &format!(r#""霞{external}関2-1-2","霞が関2-1-2","address","{external}""#),
+        CellValue::Number(1.0),
+    );
+    check(&format!(r#""霞{external}関2-1-2","霞が関2-1-2","address""#), CellValue::Number(0.0));
+    check(r#""男性","Ｍ","gender","●""#, CellValue::Error(CellError::Value));
 }
