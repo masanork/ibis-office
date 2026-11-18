@@ -453,7 +453,9 @@ gantt
 
 ### 円グラフの凡例位置
 
-円グラフは表示します。下の `legendPosition` は反映されません。
+凡例は右・左・上・下・中央に配置できます。省略時は右に表示します。中央の凡例は円グラフに重なり、図全体を SVG として表示します。
+
+**下**
 
 ```mermaid
 ---
@@ -466,9 +468,57 @@ pie
   "保留": 20
 ```
 
-## コード表示の例
+**上**
 
-Cynefin、Ishikawa、ZenUML は Mermaid フェンスのまま保持されます。
+```mermaid
+---
+config:
+  pie:
+    legendPosition: top
+---
+pie
+  "了承": 80
+  "保留": 20
+```
+
+**左**
+
+```mermaid
+---
+config:
+  pie:
+    legendPosition: left
+---
+pie
+  "了承": 80
+  "保留": 20
+```
+
+**右**
+
+```mermaid
+---
+config:
+  pie:
+    legendPosition: right
+---
+pie
+  "了承": 80
+  "保留": 20
+```
+
+**中央**
+
+```mermaid
+---
+config:
+  pie:
+    legendPosition: center
+---
+pie
+  "了承": 80
+  "保留": 20
+```
 
 ### Cynefin
 

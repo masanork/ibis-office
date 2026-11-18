@@ -107,6 +107,16 @@ pub(super) fn pie_style(config: &MermaidConfig, slices: usize) -> MermaidChartSt
         palette,
         text_position: number("pie.textPosition").map(|v| v.clamp(0.0, 1.0)),
         donut_hole: number("pie.donutHole").map(|v| v.clamp(0.0, 0.9)).filter(|v| *v > 0.0),
+        pie_legend: config.option("pie.legendPosition").and_then(|value| {
+            match unquote(value).as_str() {
+                "top" => Some(PieLegendPosition::Side(Side::Top)),
+                "bottom" => Some(PieLegendPosition::Side(Side::Bottom)),
+                "left" => Some(PieLegendPosition::Side(Side::Left)),
+                "right" => Some(PieLegendPosition::Side(Side::Right)),
+                "center" => Some(PieLegendPosition::Center),
+                _ => None,
+            }
+        }),
         highlight: config
             .option("pie.highlightSlice")
             .map(unquote)
@@ -388,12 +398,44 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
         if total <= 0.0 {
             return None;
         }
-        let width_px = 460u32;
-        let legend_rows = spec.categories.len().max(1) as u32;
-        let height_px = (legend_rows * 24 + 80).max(250);
-        let cx = 130.0f64;
-        let cy = (height_px as f64) / 2.0 + if spec.title.is_some() { 12.0 } else { 0.0 };
+        let legend_labels: Vec<String> = spec.categories.iter().enumerate().map(|(i, category)| {
+            let val = vals.get(i).copied().unwrap_or(0.0);
+            let shown = if spec.show_data { format!(" [{}]", chart_number(val)) } else { String::new() };
+            format!("{category}{shown} ({:.1}%)", val / total * 100.0)
+        }).collect();
+        let legend_width = 18.0 + f64::from(legend_labels.iter()
+            .map(|label| estimate_text_width(label, 11.5))
+            .fold(0.0, f32::max));
+        let legend_height = legend_labels.len() as f64 * 22.0;
+        let title_width = spec.title.as_deref().map_or(0.0, |title| f64::from(estimate_text_width(title, 14.0)));
+        let title_offset = if spec.title.is_some() { 12.0 } else { 0.0 };
+        let plot_height = (legend_labels.len() as f64 * 24.0 + 80.0).max(250.0);
         let r = 86.0f64;
+        let position = style.pie_legend.unwrap_or(PieLegendPosition::Side(Side::Right));
+        let side_legend = matches!(position, PieLegendPosition::Side(Side::Left | Side::Right));
+        let width = 460.0_f64.max(title_width + 32.0).max(legend_width + if side_legend { 264.0 } else { 32.0 });
+        let mut cy = plot_height / 2.0 + title_offset;
+        let mut height = plot_height;
+        let cx = match position {
+            PieLegendPosition::Side(Side::Left) => width - 130.0,
+            PieLegendPosition::Side(Side::Right) => 130.0,
+            _ => width / 2.0,
+        };
+        let (legend_x, legend_y) = match position {
+            PieLegendPosition::Side(Side::Left) => (cx - 118.0 - legend_width, cy - legend_height / 2.0),
+            PieLegendPosition::Side(Side::Right) => (cx + 118.0, cy - legend_height / 2.0),
+            PieLegendPosition::Side(Side::Top) => {
+                height += legend_height;
+                cy += legend_height;
+                ((width - legend_width) / 2.0, 20.0 + title_offset * 2.0)
+            }
+            PieLegendPosition::Side(Side::Bottom) => {
+                height += legend_height;
+                ((width - legend_width) / 2.0, plot_height)
+            }
+            PieLegendPosition::Center => ((width - legend_width) / 2.0, cy - legend_height / 2.0),
+        };
+        let (width_px, height_px) = (width.ceil() as u32, height.ceil() as u32);
         // `pie.donutHole`: the inner radius as a fraction of the outer one.
         let hole = style.donut_hole.unwrap_or(0.0) * r;
         // `pie.textPosition`: where the percentage sits, from the centre (0) to the rim (1).
@@ -485,25 +527,21 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             ));
         }
 
-        // Legend
-        let lx = 248.0f32;
-        let ly_start = (cy as f32) - (spec.categories.len() as f32 * 22.0) / 2.0;
-        for (i, cat) in spec.categories.iter().enumerate() {
-            let color = color_of(i);
-            let ly = ly_start + i as f32 * 22.0;
-            let val = vals.get(i).copied().unwrap_or(0.0);
-            let pct = (val / total) * 100.0;
+        if position == PieLegendPosition::Center {
             svg.push_str(&format!(
-                r##"<rect x="{lx:.1}" y="{:.1}" width="12" height="12" rx="2" fill="{color}"/>"##,
-                ly
+                r##"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{legend_height:.1}" rx="4" fill="#ffffff" fill-opacity="0.88"/>"##,
+                legend_x - 6.0, legend_y - 4.0, legend_width + 12.0
             ));
-            let shown = if spec.show_data { format!(" [{}]", chart_number(val)) } else { String::new() };
+        }
+        for (i, label) in legend_labels.iter().enumerate() {
+            let color = color_of(i);
+            let ly = legend_y + i as f64 * 22.0;
             svg.push_str(&format!(
-                r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{}{} ({pct:.1}%)</text>"##,
-                lx + 18.0,
-                ly + 10.5,
-                escape_xml(cat),
-                escape_xml(&shown)
+                r##"<rect x="{legend_x:.1}" y="{ly:.1}" width="12" height="12" rx="2" fill="{color}" data-role="legend-key"/>"##
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{:.1}" y="{:.1}" font-size="11.5" fill="#1e293b">{}</text>"##,
+                legend_x + 18.0, ly + 10.5, escape_xml(label)
             ));
         }
 
@@ -1025,6 +1063,40 @@ pie showData
         assert!(svg.contains(">25%<") && svg.contains(">75%<"), "{svg}");
         assert!(!svg.contains("pie-rim") && !svg.contains("data-highlight"));
     }
+    #[test]
+    fn pie_legend_positions_in_svg() {
+        let body = "pie showData\n  \"一つだけ\" : 5\n";
+        for position in ["top", "bottom", "left", "right", "center", "unknown"] {
+            let source = format!("---\ntitle: Report\nconfig:\n  pie:\n    legendPosition: {position}\n---\n{body}");
+            let svg = match render_mermaid(&source).unwrap() {
+                MermaidOutput::Chart(spec) => {
+                    assert_ne!(position, "center");
+                    chart_svg(&spec)
+                }
+                MermaidOutput::Svg { bytes, .. } => {
+                    assert_eq!(position, "center");
+                    String::from_utf8(bytes).unwrap()
+                }
+            };
+            assert_eq!(svg.matches(">Report<").count(), 1);
+            assert!(svg.contains("一つだけ [5] (100.0%)"));
+            let circle = tag_with(&svg, r#"data-role="slice""#)[0];
+            let cx = attr_f32(circle, "cx").unwrap();
+            let cy = attr_f32(circle, "cy").unwrap();
+            let radius = attr_f32(circle, "r").unwrap();
+            let key = tag_with(&svg, r#"data-role="legend-key""#)[0];
+            let x = attr_f32(key, "x").unwrap();
+            let y = attr_f32(key, "y").unwrap();
+            match position {
+                "top" => assert!(y + 12.0 < cy - radius),
+                "bottom" => assert!(y > cy + radius),
+                "left" => assert!(x + 12.0 < cx - radius),
+                "center" => assert!((x - cx).hypot(y - cy) < radius),
+                _ => assert!(x > cx + radius),
+            }
+        }
+    }
+
     #[test]
     fn pie_title_on_the_header_line() {
         let Some(MermaidOutput::Chart(spec)) = render_mermaid("pie title Pets adopted by volunteers\n    \"Dogs\" : 386\n    \"Cats\" : 85\n    \"Rats\" : 15\n") else {

@@ -40,9 +40,9 @@ use ibis_doc_model::{
     Comment, DataLabels, DocProperties, EmphasisMark, Emu, EmuRect, EmuSize, Fill, FlowAlign, FlowBorder,
     FlowCell, FlowDocument, FlowParagraph, FlowPos, FlowRow, FlowRun, FlowRunKind, FlowRunStyle,
     FlowStyle, FlowStyles, FlowTable, Grouping, LineHeight, LineNumberRestart, LineNumbers, Link,
-    LabelPosition, ListRef, Media, MediaFormat, MediaId, Note, Number, PageSetup, ParaFormat, ParagraphSpacingPreset,
+    LabelPosition, LegendPosition, ListRef, Media, MediaFormat, MediaId, Note, Number, PageSetup, ParaFormat, ParagraphSpacingPreset,
     PictureLook, Presentation, Revision, RevisionKind, Rgb, RowHeight, RubyAlign, RunFormat,
-    Series, ShapeId, ShapeKind, StyleKind, StyleSetPreset, TableLook, TableStyleRef,
+    Series, ShapeId, ShapeKind, Side, StyleKind, StyleSetPreset, TableLook, TableStyleRef,
     VerticalMerge, VerticalPosition, Watermark,
 };
 
@@ -2459,6 +2459,17 @@ fn apply_mermaid_series_layout(chart: &mut Chart, series_kinds: &[NewChartKind],
 /// The frontmatter `config` of a Mermaid `pie` / `xychart` on the native chart: series or slice
 /// colours, value labels, the doughnut hole and the highlighted slice.
 fn apply_mermaid_chart_style(chart: &mut Chart, style: &crate::mermaid::MermaidChartStyle, categories: &[String]) {
+    if let Some(crate::mermaid::PieLegendPosition::Side(side)) = style.pie_legend
+        && let Some(legend) = &mut chart.legend
+    {
+        legend.side = side;
+        legend.source_position = Some(match side {
+            Side::Top => LegendPosition::Top,
+            Side::Bottom => LegendPosition::Bottom,
+            Side::Left => LegendPosition::Left,
+            Side::Right => LegendPosition::Right,
+        });
+    }
     let solid = |hex: &str| parse_hex_rgb(hex).map(|rgb| Fill::Solid(ibis_doc_model::Color::opaque(rgb)));
     let mut series_index = 0usize;
     for group in &mut chart.groups {
@@ -4802,6 +4813,9 @@ pub fn open_markdown_presentation_with_base_dir(
                                 );
                                 chart.title = src_chart.title.clone();
                                 copy_chart_group_topology(&mut chart, src_chart);
+                                if is_mermaid && kind == NewChartKind::Pie {
+                                    chart.legend = src_chart.legend.clone();
+                                }
                                 if is_mermaid || kind == NewChartKind::ClusteredBar {
                                     apply_mermaid_value_range(&mut chart, chart_value_range(src_chart));
                                 }
@@ -5849,6 +5863,46 @@ xychart
         }
         let edited_md = export_markdown(edited.flow.as_ref().unwrap(), &edited.media);
         assert!(!edited_md.contains("4000 --> 11000"), "{edited_md}");
+    }
+
+    #[test]
+    fn mermaid_pie_legend_survives_office_roundtrip() {
+        for (name, side, position) in [
+            ("top", Side::Top, LegendPosition::Top),
+            ("bottom", Side::Bottom, LegendPosition::Bottom),
+            ("left", Side::Left, LegendPosition::Left),
+            ("right", Side::Right, LegendPosition::Right),
+        ] {
+            let md = format!("```mermaid\n---\nconfig:\n  pie:\n    legendPosition: {name}\n---\npie\n  \"A\" : 1\n  \"B\" : 3\n```\n");
+            let opened = open_markdown(md.as_bytes().to_vec()).unwrap();
+            let saved = opened.source.save(&opened.presentation, Default::default()).unwrap();
+            let reread = crate::read(&saved).unwrap();
+            for pres in [&opened.presentation, &reread] {
+                let flow = pres.flow.as_ref().unwrap();
+                let Block::Paragraph(paragraph) = &flow.body[0] else { panic!("expected chart paragraph") };
+                let FlowRunKind::Shape(shape) = &paragraph.runs[0].kind else { panic!("expected chart shape") };
+                let ShapeKind::Chart(chart) = &shape.kind else { panic!("expected native chart") };
+                let legend = chart.legend.as_ref().unwrap();
+                assert_eq!(legend.side, side);
+                assert_eq!(legend.source_position, Some(position));
+                assert!(export_markdown(flow, &pres.media).contains(&format!("legendPosition: {name}")));
+            }
+
+            let deck = open_markdown_presentation(md.into_bytes()).unwrap();
+            let saved = deck.source.save(&deck.presentation, Default::default()).unwrap();
+            let reread = crate::read(&saved).unwrap();
+            for pres in [&deck.presentation, &reread] {
+                let chart = pres.slides.iter().flat_map(|slide| &slide.shapes).find_map(|shape| {
+                    match &shape.kind {
+                        ShapeKind::Chart(chart) => Some(chart),
+                        _ => None,
+                    }
+                }).expect("native pie chart");
+                let legend = chart.legend.as_ref().unwrap();
+                assert_eq!(legend.side, side);
+                assert_eq!(legend.source_position, Some(position));
+            }
+        }
     }
 
     #[test]

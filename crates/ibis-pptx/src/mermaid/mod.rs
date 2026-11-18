@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use ibis_doc_model::Number;
+use ibis_doc_model::{Number, Side};
 
 use crate::save::pptx_new_chart::NewChartKind;
 
@@ -116,6 +116,13 @@ pub struct MermaidChartSpec {
     pub style: MermaidChartStyle,
 }
 
+/// Pie legend placement. OOXML supports the four sides; Mermaid also allows a centered overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PieLegendPosition {
+    Side(Side),
+    Center,
+}
+
 /// The frontmatter `config` options of a `pie` / `xychart` that change how it is drawn.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MermaidChartStyle {
@@ -134,6 +141,8 @@ pub struct MermaidChartStyle {
     pub text_position: Option<f64>,
     /// `pie.donutHole`: the hole as a fraction of the radius (0 < hole <= 0.9).
     pub donut_hole: Option<f64>,
+    /// `pie.legendPosition`: placement relative to the plot.
+    pub pie_legend: Option<PieLegendPosition>,
     /// `pie.highlightSlice`: the label of the slice that is pulled out.
     pub highlight: Option<String>,
     /// `themeVariables.pieOuterStrokeWidth`, in px.
@@ -308,9 +317,16 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
 
     let svg = match kind {
         DiagramKind::Pie => {
-            return parse_pie_chart(trimmed, &config).map(|mut spec| {
-                spec.title = spec.title.or(front_title);
-                MermaidOutput::Chart(spec)
+            let mut spec = parse_pie_chart(trimmed, &config)?;
+            spec.title = spec.title.or(front_title);
+            if spec.style.pie_legend != Some(PieLegendPosition::Center) {
+                return Some(MermaidOutput::Chart(spec));
+            }
+            let (bytes, width_px, height_px) = render_chart_spec_svg(&spec)?;
+            return Some(MermaidOutput::Svg {
+                bytes: inject_acc_meta(apply_mermaid_theme(bytes, &config), trimmed),
+                width_px,
+                height_px,
             });
         }
         DiagramKind::XyChart => {
