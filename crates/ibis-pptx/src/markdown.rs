@@ -457,6 +457,13 @@ pub fn export_presentation_to_markdown(presentation: &Presentation) -> Result<St
 
 /// Export visible worksheets in a workbook [`Presentation`] as GFM Markdown tables.
 pub fn export_workbook_markdown(p: &Presentation) -> Result<String, Error> {
+    export_workbook_markdown_with_positions(p, |_, _, _, _, _, _| {})
+}
+
+fn export_workbook_markdown_with_positions(
+    p: &Presentation,
+    mut record: impl FnMut(&str, u32, u32, Option<&ibis_doc_model::SheetCell>, usize, usize),
+) -> Result<String, Error> {
     use ibis_doc_model::{CellAlign, SheetState};
     let book = p
         .workbook
@@ -520,13 +527,13 @@ pub fn export_workbook_markdown(p: &Presentation) -> Result<String, Error> {
         for (ri, &r) in rows.iter().enumerate() {
             out.push('|');
             for &c in &cols {
-                let raw = sheet
-                    .cell(r, c)
-                    .map(|cell| cell.text.as_str())
-                    .unwrap_or("");
+                let cell = sheet.cell(r, c);
+                let raw = cell.map(|cell| cell.text.as_str()).unwrap_or("");
                 let escaped = raw.replace('|', "\\|").replace('\n', "<br>");
                 out.push(' ');
+                let start = out.len();
                 out.push_str(escaped.trim());
+                record(&sheet_ref.name, r, c, cell, start, out.len());
                 out.push_str(" |");
             }
             out.push('\n');
@@ -3727,6 +3734,19 @@ fn encode_base64(data: &[u8]) -> String {
 
 /// Export a [`FlowDocument`] and its media to deterministic Rich Markdown.
 pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
+    export_markdown_with_positions(doc, media, |_, _, _| {})
+}
+
+enum MarkdownSource<'a> {
+    Body(usize, &'a Block),
+    Footnote(&'a Note),
+}
+
+fn export_markdown_with_positions<'a>(
+    doc: &'a FlowDocument,
+    media: &[Media],
+    mut record: impl FnMut(MarkdownSource<'a>, usize, usize),
+) -> String {
     let mut out = String::new();
 
     // 1. YAML Frontmatter (written when metadata, non-default page setup, headers/footers, or watermark exist)
@@ -3755,7 +3775,9 @@ pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
                     out.push('\n');
                     prev_was_list = false;
                 }
+                let start = out.len();
                 out.push_str("[[toc]]\n\n");
+                record(MarkdownSource::Body(i, block), start, out.len());
                 while i < doc.body.len() {
                     let is_end = matches!(&doc.body[i], Block::Paragraph(ep) if ep.field_end);
                     i += 1;
@@ -3772,7 +3794,9 @@ pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
             out.push('\n');
         }
 
+        let start = out.len();
         serialize_block(block, doc, media, &comments_by_id, &mut out);
+        record(MarkdownSource::Body(i, block), start, out.len());
         prev_was_list = is_list;
         i += 1;
     }
@@ -3798,7 +3822,9 @@ pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
                     note_md.push_str(&serialize_runs(&runs, media, &comments_by_id));
                 }
             }
+            let start = out.len();
             out.push_str(&format!("[^{}]: {}\n", note.id, note_md.trim()));
+            record(MarkdownSource::Footnote(note), start, out.len());
         }
     }
 
@@ -3808,6 +3834,121 @@ pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
     } else {
         format!("{trimmed}\n")
     }
+}
+
+/// Create a versioned AI export tied to the exact input snapshot.
+pub fn export_ai_source(data: &[u8]) -> Result<serde_json::Value, Error> {
+    use sha2::{Digest, Sha256};
+
+    let mut result = if let Some(law) = crate::lawtext::export_ai_law(data)? {
+        law
+    } else {
+        let presentation = crate::read(data)?;
+        if presentation.workbook.is_some() {
+            export_ai_workbook(&presentation)?
+        } else {
+            export_ai_document(&presentation)?
+        }
+    };
+    result["sourceSha256"] = serde_json::json!(format!("{:x}", Sha256::digest(data)));
+    Ok(result)
+}
+
+/// Markdown and original sheet coordinates, with display text and stored values kept separate.
+pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> {
+    use ibis_doc_model::CellValue;
+    use serde_json::json;
+
+    let mut cells = Vec::new();
+    let markdown = export_workbook_markdown_with_positions(p, |sheet, row, column, cell, start, end| {
+        let (kind, value) = match cell.map(|cell| &cell.value) {
+            None | Some(CellValue::Empty) => ("empty", json!(null)),
+            Some(CellValue::Number(number)) if number.is_finite() => ("number", json!(number)),
+            Some(CellValue::Number(number)) => ("nonfinite_number", json!(number.to_string())),
+            Some(CellValue::Text(text)) => ("text", json!(text)),
+            Some(CellValue::Bool(value)) => ("boolean", json!(value)),
+            Some(CellValue::Error(error)) => ("error", json!(error.to_string())),
+        };
+        cells.push(json!({
+            "source": { "sheet": sheet, "row": row + 1, "column": column + 1 },
+            "markdownBytes": [start, end],
+            "display": cell.map(|cell| cell.text.as_str()).unwrap_or(""),
+            "valueType": kind,
+            "value": value,
+            "formula": cell.and_then(|cell| cell.formula.as_deref()),
+        }));
+    })?;
+    Ok(json!({
+        "version": 1,
+        "kind": "workbook",
+        "markdown": markdown,
+        "cells": cells,
+        "diagnostics": [
+            { "code": "visible_sheet_cells_only" },
+            { "code": "first_exported_row_used_as_markdown_header" },
+        ],
+    }))
+}
+
+/// Markdown plus snapshot-relative locations for DOCX body blocks and footnotes.
+pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Value, Error> {
+    use serde_json::json;
+
+    let doc = presentation.flow.as_ref().ok_or_else(|| Error::new("AI document export requires a word-processing document"))?;
+    let mut blocks = Vec::new();
+    let mut diagnostics = Vec::new();
+    let markdown = export_markdown_with_positions(doc, &presentation.media, |source, start, end| {
+        let locator = match source {
+            MarkdownSource::Body(index, Block::Paragraph(p)) =>
+                json!({ "part": "body", "kind": "paragraph", "index": index, "modelId": p.id }),
+            MarkdownSource::Body(index, Block::Table(t)) =>
+                json!({ "part": "body", "kind": "table", "index": index, "modelId": t.id }),
+            MarkdownSource::Footnote(n) =>
+                json!({ "part": "footnotes", "kind": "footnote", "id": n.id }),
+        };
+        blocks.push((locator.clone(), start, end));
+        let mut warn = |code| diagnostics.push(json!({ "code": code, "source": locator }));
+        match source {
+            MarkdownSource::Body(_, Block::Table(table)) => {
+                if table.rows.iter().flat_map(|row| &row.cells)
+                    .any(|cell| cell.span > 1 || cell.merge != VerticalMerge::None)
+                {
+                    warn("table_merge_not_preserved");
+                }
+                if table.rows.iter().flat_map(|row| &row.cells).flat_map(|cell| &cell.blocks)
+                    .any(|block| matches!(block, Block::Table(_)))
+                {
+                    warn("nested_table_omitted");
+                }
+            }
+            MarkdownSource::Body(_, Block::Paragraph(p)) => {
+                if p.runs.iter().any(|run| matches!(&run.kind, FlowRunKind::Shape(shape)
+                    if !matches!(shape.kind, ShapeKind::Chart(_)) || p.runs.len() != 1))
+                {
+                    warn("drawing_shape_omitted");
+                }
+            }
+            MarkdownSource::Footnote(note) => {
+                if note.blocks.iter().any(|block| matches!(block, Block::Table(_))) {
+                    warn("footnote_table_omitted");
+                }
+            }
+        }
+    });
+    // The Markdown exporter trims the document's final blank lines.
+    let blocks: Vec<_> = blocks.into_iter().map(|(source, start, end)| {
+        json!({ "source": source, "markdownBytes": [start.min(markdown.len()), end.min(markdown.len())] })
+    }).collect();
+    if !doc.endnotes.is_empty() {
+        diagnostics.push(json!({ "code": "endnote_definitions_omitted", "source": { "part": "endnotes" } }));
+    }
+    Ok(json!({
+        "version": 1,
+        "kind": "document",
+        "markdown": markdown,
+        "blocks": blocks,
+        "diagnostics": diagnostics,
+    }))
 }
 
 fn serialize_frontmatter(doc: &FlowDocument) -> String {

@@ -446,7 +446,7 @@ fn parse_args() -> Result<Args, String> {
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
-    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "lawxml" | "lawtext") {
+    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "lawxml" | "lawtext" | "ai-json") {
         let path = args
             .path
             .as_deref()
@@ -458,6 +458,14 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "document".into());
         let raw_data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if format == "ai-json" {
+            let export = ibis_pptx::markdown::export_ai_source(&raw_data)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let out_path = out_dir.join(format!("{stem}.ai.json"));
+            std::fs::write(&out_path, format!("{export:#}\n"))
+                .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            return Ok(());
+        }
         let data = match ibis_pptx::lawtext::input_to_markdown(&raw_data)
             .map_err(|e| format!("{}: {e}", path.display()))?
         {
