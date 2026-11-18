@@ -33,27 +33,70 @@ pub fn supports_extension(ext: &str) -> bool {
 }
 
 pub fn open(extension: Option<&str>, bytes: &[u8]) -> Result<Option<crate::Opened>, String> {
+    open_with_exposure(extension, bytes).map(|result| result.map(|(opened, _)| opened))
+}
+
+/// Open the SDR document and retain the linear samples when exposure can be adjusted.
+pub fn open_with_exposure(
+    extension: Option<&str>,
+    bytes: &[u8],
+) -> Result<Option<(crate::Opened, Option<ExrExposure>)>, String> {
     let Some(format) = extension.and_then(format) else {
         return Ok(None);
     };
     if bytes.len() > MAX_INPUT_BYTES {
         return Err("Image exceeds the preview file size limit".into());
     }
-    let image = match format {
-        Format::Raster(format) => decode_raster(bytes, format, 4)?,
-        Format::OpenExr => decode_openexr(bytes)?,
-        Format::Jpeg2000 => decode_jpeg2000(bytes)?,
-        Format::Photoshop => decode_psd(bytes)?,
+    let (png, exposure) = match format {
+        Format::OpenExr => {
+            let exposure = ExrExposure(decode_openexr(bytes)?);
+            (exposure.preview_png(0)?, Some(exposure))
+        }
+        Format::Raster(format) => (encode_png(decode_raster(bytes, format, 4)?)?, None),
+        Format::Jpeg2000 => (encode_png(decode_jpeg2000(bytes)?)?, None),
+        Format::Photoshop => (encode_png(decode_psd(bytes)?)?, None),
     };
+    let data_url = base64::engine::general_purpose::STANDARD.encode(png);
+    let markdown = format!("![Image preview](data:image/png;base64,{data_url})\n");
+    crate::markdown::open_markdown(markdown.into_bytes())
+        .map(|opened| Some((opened, exposure)))
+        .map_err(|error| error.to_string())
+}
+
+fn encode_png(image: DynamicImage) -> Result<Vec<u8>, String> {
     let mut png = Cursor::new(Vec::new());
     image
         .write_to(&mut png, ImageFormat::Png)
         .map_err(|error| error.to_string())?;
-    let data_url = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
-    let markdown = format!("![Image preview](data:image/png;base64,{data_url})\n");
-    crate::markdown::open_markdown(markdown.into_bytes())
-        .map(Some)
-        .map_err(|error| error.to_string())
+    Ok(png.into_inner())
+}
+
+/// Original scene-linear samples for the lifetime of the open preview.
+pub struct ExrExposure(image::Rgba32FImage);
+
+impl ExrExposure {
+    pub fn preview_png(&self, ev: i8) -> Result<Vec<u8>, String> {
+        let linear = &self.0;
+        let gain = 2.0_f32.powi(i32::from(ev));
+        let preview = image::RgbaImage::from_fn(linear.width(), linear.height(), |x, y| {
+            let [r, g, b, a] = linear.get_pixel(x, y).0;
+            let alpha = if a.is_finite() {
+                a.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            // EXR associates RGB with alpha. The display PNG stores straight RGB.
+            let rgb = [r, g, b].map(|sample| {
+                if alpha > 0.0 {
+                    sdr_sample((sample / a) * gain)
+                } else {
+                    0
+                }
+            });
+            image::Rgba([rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8])
+        });
+        encode_png(DynamicImage::ImageRgba8(preview))
+    }
 }
 
 fn decode_raster(
@@ -70,7 +113,7 @@ fn decode_raster(
     reader.decode().map_err(|error| error.to_string())
 }
 
-fn decode_openexr(bytes: &[u8]) -> Result<DynamicImage, String> {
+fn decode_openexr(bytes: &[u8]) -> Result<image::Rgba32FImage, String> {
     let metadata = exr::meta::MetaData::read_from_buffered(Cursor::new(bytes), false)
         .map_err(|error| error.to_string())?;
     let [header] = metadata.headers.as_slice() else {
@@ -91,25 +134,7 @@ fn decode_openexr(bytes: &[u8]) -> Result<DynamicImage, String> {
         }
     }
 
-    let linear = decode_raster(bytes, ImageFormat::OpenExr, 16)?.into_rgba32f();
-    let preview = image::RgbaImage::from_fn(linear.width(), linear.height(), |x, y| {
-        let [r, g, b, a] = linear.get_pixel(x, y).0;
-        let alpha = if a.is_finite() {
-            a.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        // EXR convention associates RGB with alpha. PNG stores straight RGB.
-        let rgb = [r, g, b].map(|sample| {
-            if alpha > 0.0 {
-                sdr_sample(sample / a)
-            } else {
-                0
-            }
-        });
-        image::Rgba([rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8])
-    });
-    Ok(DynamicImage::ImageRgba8(preview))
+    Ok(decode_raster(bytes, ImageFormat::OpenExr, 16)?.into_rgba32f())
 }
 
 fn is_rec709_exr(header: &exr::meta::header::Header) -> bool {
@@ -139,7 +164,7 @@ fn is_rec709_exr(header: &exr::meta::header::Header) -> bool {
         })
 }
 
-/// Compress highlights at 0 EV before encoding the linear values as sRGB.
+/// Compress highlights before encoding exposure-adjusted linear values as sRGB.
 fn sdr_sample(sample: f32) -> u8 {
     let mapped = if sample == f32::INFINITY {
         1.0
@@ -259,8 +284,21 @@ mod tests {
         DynamicImage::ImageRgba32F(pixels)
             .write_to(&mut exr, ImageFormat::OpenExr)
             .unwrap();
-        let opened = open(Some("EXR"), exr.get_ref()).unwrap().unwrap();
+        let (opened, exposure) = open_with_exposure(Some("EXR"), exr.get_ref())
+            .unwrap()
+            .unwrap();
+        let exposure = exposure.unwrap();
+        let pixel_at = |ev| {
+            image::load_from_memory(&exposure.preview_png(ev).unwrap())
+                .unwrap()
+                .to_rgba8()
+                .get_pixel(0, 0)
+                .0
+        };
         assert_eq!(preview_pixel(opened), [124, 188, 231, 128]);
+        assert_eq!(pixel_at(1), [156, 213, 242, 128]);
+        assert_eq!(pixel_at(-1), [94, 156, 213, 128]);
+        assert_eq!(pixel_at(0), [124, 188, 231, 128]);
         assert_eq!(sdr_sample(f32::NAN), 0);
         assert_eq!(sdr_sample(-1.0), 0);
         assert_eq!(sdr_sample(f32::INFINITY), 255);

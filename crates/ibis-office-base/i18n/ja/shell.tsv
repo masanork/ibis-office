@@ -1291,3 +1291,6 @@ file.signature-inspect.policies-absent	埋め込み証明書に証明書ポリ�
 file.signature-inspect.policies-unavailable	証明書ポリシーの記載を検査できません。ポリシーと信頼性は未検証。
 file.signature-inspect.policy-truncated	先頭 64 件のみ検査し、例を最大 8 件表示。
 file.signature-inspect.policy-complete	例を最大 8 件表示。
+view.exr-exposure-down	OpenEXRプレビューの露出を下げる
+view.exr-exposure-reset	OpenEXRプレビューの露出を0 EVに戻す
+view.exr-exposure-up	OpenEXRプレビューの露出を上げる

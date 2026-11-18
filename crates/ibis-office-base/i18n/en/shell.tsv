@@ -1293,3 +1293,6 @@ file.signature-inspect.policies-absent	The embedded certificate has no certifica
 file.signature-inspect.policies-unavailable	Certificate policy claims could not be inspected. Policy and trust are not evaluated.
 file.signature-inspect.policy-truncated	Only the first 64 entries were inspected and up to eight examples are shown.
 file.signature-inspect.policy-complete	Up to eight examples are shown.
+view.exr-exposure-down	Decrease OpenEXR preview exposure
+view.exr-exposure-reset	Reset OpenEXR preview exposure to 0 EV
+view.exr-exposure-up	Increase OpenEXR preview exposure

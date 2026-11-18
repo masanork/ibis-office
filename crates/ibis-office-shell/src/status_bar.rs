@@ -9,7 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarAxis, ScrollbarHandle};
-use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -131,9 +131,31 @@ impl SlideEditor {
                         }
                     }))
                     .children(right_texts)
+                    .children(self.render_exr_exposure(cx))
                     .child(self.render_zoom(compact, cx)),
             )
             .children(tab_scrollbar)
+    }
+
+    fn render_exr_exposure(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let view = self.exr_exposure.as_ref()?;
+        let ev = view.ev;
+        let label = if ev == 0 { "0 EV".to_string() } else { format!("{ev:+} EV") };
+        Some(h_flex()
+            .gap_1()
+            .items_center()
+            .child(Button::new("exr-exposure-down").ghost().xsmall().icon(IconName::Minus)
+                .tooltip(crate::i18n::text("view.exr-exposure-down"))
+                .disabled(view.rendering || ev == -8)
+                .on_click(cx.listener(move |this, _, window, cx| this.set_exr_ev(ev - 1, window, cx))))
+            .child(Button::new("exr-exposure-reset").ghost().xsmall().label(label)
+                .tooltip(crate::i18n::text("view.exr-exposure-reset"))
+                .disabled(view.rendering || ev == 0)
+                .on_click(cx.listener(|this, _, window, cx| this.set_exr_ev(0, window, cx))))
+            .child(Button::new("exr-exposure-up").ghost().xsmall().icon(IconName::Plus)
+                .tooltip(crate::i18n::text("view.exr-exposure-up"))
+                .disabled(view.rendering || ev == 8)
+                .on_click(cx.listener(move |this, _, window, cx| this.set_exr_ev(ev + 1, window, cx)))))
     }
 
     /// Zoom of the status bar: − / slider / +, the percentage with ▲ for
