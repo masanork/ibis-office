@@ -51,6 +51,7 @@ mod treeview;
 mod swimlanes;
 mod eventmodeling;
 mod agentflow;
+mod ishikawa;
 mod railroad;
 mod text;
 #[cfg(test)]
@@ -85,6 +86,7 @@ use treeview::*;
 use swimlanes::*;
 use eventmodeling::*;
 use agentflow::*;
+use ishikawa::*;
 use railroad::*;
 use sankey::*;
 use text::*;
@@ -185,6 +187,7 @@ enum DiagramKind {
     Swimlanes,
     EventModeling,
     Agentflow,
+    Ishikawa,
     Railroad,
 }
 
@@ -244,6 +247,7 @@ const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
     ("eventmodeling", DiagramKind::EventModeling),
     ("agentflow-beta", DiagramKind::Agentflow),
     ("agentflow", DiagramKind::Agentflow),
+    ("ishikawa-beta", DiagramKind::Ishikawa),
     ("railroad-beta", DiagramKind::Railroad),
     ("railroad-ebnf-beta", DiagramKind::Railroad),
     ("railroad-abnf-beta", DiagramKind::Railroad),
@@ -353,6 +357,7 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::Swimlanes => render_swimlanes_svg(trimmed),
         DiagramKind::EventModeling => render_eventmodeling_svg(trimmed),
         DiagramKind::Agentflow => render_agentflow_svg(trimmed),
+        DiagramKind::Ishikawa => render_ishikawa_svg(trimmed),
         DiagramKind::Railroad => render_railroad_svg(trimmed),
     };
     let (mut bytes, mut width_px, mut height_px) = svg?;

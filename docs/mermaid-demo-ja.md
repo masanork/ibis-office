@@ -454,25 +454,7 @@ pie
   "保留": 20
 ```
 
-## コード表示の例
-
-Cynefin、Ishikawa、ZenUML は Mermaid フェンスのまま保持されます。
-
-### Cynefin
-
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/cynefin.md) · [コーパス例 3](../crates/ibis-pptx/tests/mermaid/corpus/cynefin.mmd)
-
-```mermaid
-cynefin-beta
-  title Cynefin Framework
-
-  complex
-  complicated
-  clear
-  chaotic
-```
-
-### Ishikawa
+## 特性要因図（Ishikawa）
 
 [公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/ishikawa.md) · [コーパス例 1](../crates/ibis-pptx/tests/mermaid/corpus/ishikawa.mmd)
 
@@ -497,6 +479,24 @@ ishikawa-beta
     Environment
         Subject moved too quickly
         Too dark
+```
+
+## コード表示の例
+
+Cynefin、ZenUML は Mermaid フェンスのまま保持されます。
+
+### Cynefin
+
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/cynefin.md) · [コーパス例 3](../crates/ibis-pptx/tests/mermaid/corpus/cynefin.mmd)
+
+```mermaid
+cynefin-beta
+  title Cynefin Framework
+
+  complex
+  complicated
+  clear
+  chaotic
 ```
 
 ### ZenUML

@@ -20,6 +20,8 @@
   "gantt.clean": 11,
   "gitgraph": 35,
   "gitgraph.clean": 35,
+  "ishikawa": 1,
+  "ishikawa.clean": 1,
   "kanban": 3,
   "kanban.clean": 3,
   "mindmap": 15,
