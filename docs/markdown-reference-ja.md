@@ -122,7 +122,7 @@ MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo \
   cargo test -p ibis-pptx --test mermaid_corpus
 ```
 
-生成先の `index.md` が目次です。例の出典と MIT ライセンスも生成先に含まれます。Mermaid CI では `mermaid-markdown-demo` 成果物として取得できます。
+[Web 版の図種別デモ](https://docs.sorane.dev/samples/mermaid/web.html) からも各ページを開けます。生成先の `index.md` が目次です。例の出典と MIT ライセンスも生成先に含まれます。Mermaid CI では `mermaid-markdown-demo` 成果物として取得できます。
 
 ### 対応する図種と構文
 

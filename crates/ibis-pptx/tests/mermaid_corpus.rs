@@ -346,6 +346,36 @@ fn append_demo_case(page: &mut String, case: &Case, rendering: &str, limitations
     writeln!(page, "{fence}mermaid\n{}{fence}\n", case.source).unwrap();
 }
 
+fn write_web_demo_index(path: &Path, stats: &BTreeMap<String, DocStats>) {
+    let total: usize = stats.values().map(|stat| stat.total).sum();
+    let rendered: usize = stats.values().map(|stat| stat.rendered).sum();
+    let mut html = format!(r#"<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mermaid 構文デモ集 — Docs</title>
+  <link rel="stylesheet" href="../../sorane-home.css">
+</head>
+<body>
+  <header class="topbar"><div class="wrap nav"><a class="brand" href="../../">Docs</a></div></header>
+  <main class="wrap">
+    <h1>Mermaid 構文デモ集</h1>
+    <p>公式例 {total} 件を図種別に開けます。{rendered} 件を描画し、残りはコードで表示します。</p>
+    <p><a href="../../editor.html?open=.%2Fsamples%2Fmermaid%2Findex.md">対応状況を Docs で開く</a> · <a href="LICENSE">MIT ライセンス</a> · <a href="SOURCE.json">出典</a></p>
+    <div class="gallery">
+"#);
+    for (name, stat) in stats {
+        assert!(name.bytes().all(|byte| byte.is_ascii_alphanumeric()), "invalid demo file name");
+        writeln!(html,
+            r#"      <article class="gallery-card"><a class="sample-link" href="../../editor.html?open=.%2Fsamples%2Fmermaid%2F{name}.md">{name} を開く</a> <span>{} / {} 件描画</span> <a href="{name}.md" download>Markdown をダウンロード</a></article>"#,
+            stat.rendered, stat.total,
+        ).unwrap();
+    }
+    html.push_str("    </div>\n  </main>\n</body>\n</html>\n");
+    fs::write(path.join("web.html"), html).expect("write web demo index");
+}
+
 #[test]
 fn mermaid_official_corpus() {
     let dir = corpus_dir();
@@ -571,6 +601,7 @@ fn mermaid_official_corpus() {
             writeln!(index, "| {} | {name} | {status} | {count} |", feature.doc).unwrap();
         }
         fs::write(path.join("index.md"), index).expect("write demo index");
+        write_web_demo_index(&path, &stats);
     }
     println!("{report}");
     if let Ok(path) = std::env::var("MERMAID_CORPUS_REPORT") {
