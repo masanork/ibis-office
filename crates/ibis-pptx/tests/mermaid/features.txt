@@ -315,6 +315,8 @@ eventmodeling | data blocks and [[references]] | ok | contains | [[
 eventmodeling | explicit sources (->> NN) | ok | contains | ->>
 eventmodeling | streams (Stream.Event lanes) | ok | contains | .
 
+ishikawa | effect and indented causes | ok | header | ishikawa-beta
+
 agentflow | flows (flow id["Agent"] … end, nested) | ok | prefix | flow
 agentflow | global block | ok | prefix | global
 agentflow | node shapes (input / task / tool / decision / refdoc / action) | ok | contains | shape:

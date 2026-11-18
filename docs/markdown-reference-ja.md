@@ -128,7 +128,7 @@ MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo \
 
 第1列は現在認識するすべての図種キーワードと別名です。第2列は公式例コーパスで対応として追跡している項目です。設定キーや演算子は[構文一覧の元データ](../crates/ibis-pptx/tests/mermaid/features.txt)と[図種ごとの入力例](../crates/ibis-pptx/tests/mermaid/corpus/)で照合できます。
 
-共通設定は図の先頭の YAML に書きます。タイトル、配色テーマ、主要な色変数を扱います。HTML ラベルは SVG の通常テキストとして表示します。ELK 固有の配置、任意の CSS、コールバック、アニメーションは再現しません。ZenUML、Cynefin、Ishikawa はコード表示になります。
+共通設定は図の先頭の YAML に書きます。タイトル、配色テーマ、主要な色変数を扱います。HTML ラベルは SVG の通常テキストとして表示します。ELK 固有の配置、任意の CSS、コールバック、アニメーションは再現しません。ZenUML、Cynefin はコード表示になります。
 
 | 図種キーワードと別名 | コーパスで追跡している対応構文・設定 |
 | :--- | :--- |

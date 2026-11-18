@@ -575,6 +575,24 @@ ishikawa-beta
         Too dark
 ```
 
+## コード表示の例
+
+Cynefin、ZenUML は Mermaid フェンスのまま保持されます。
+
+### Cynefin
+
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/cynefin.md) · [コーパス例 3](../crates/ibis-pptx/tests/mermaid/corpus/cynefin.mmd)
+
+```mermaid
+cynefin-beta
+  title Cynefin Framework
+
+  complex
+  complicated
+  clear
+  chaotic
+```
+
 ### ZenUML
 
 [公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/zenuml.md) · [コーパス例 7](../crates/ibis-pptx/tests/mermaid/corpus/zenuml.mmd)
