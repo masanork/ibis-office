@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Run against a Web build serving scripts/web-fonts.sorane.json.
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { loadSubsetter } from './font-subsetter.mjs';
 import { chromium } from 'playwright-core';
 import { wasmVersion } from './browser-test-version.mjs';
@@ -13,10 +13,12 @@ const browser = await chromium.launch({
   args: ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--disable-gpu-sandbox'],
 });
 try {
-  const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1 });
+  const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1, colorScheme: 'light' });
   const missing = [];
+  const fontErrors = [];
   page.on('console', message => {
     const text = message.text();
+    if (text.includes('Could not load a dynamic font')) fontErrors.push(text);
     if (/usvg::text.*(?:No match for|No fonts with)/.test(text)) missing.push(text);
   });
   await page.addInitScript(version => {
@@ -24,9 +26,13 @@ try {
     localStorage.setItem('ibisOffice.app.last-started-version', version);
     localStorage.setItem('ibisOffice.font-setup.checked-version', version);
   }, wasmVersion);
-  const dynamic = process.env.IBIS_MERMAID_TEST_DYNAMIC === '1';
+  const failure = process.env.IBIS_MERMAID_TEST_FONT_FAILURE;
+  const dynamic = failure || process.env.IBIS_MERMAID_TEST_DYNAMIC === '1';
+  assert.ok(!failure || ['unsupported', 'unavailable', 'retry'].includes(failure));
+  assert.ok(!failure || process.env.IBIS_MERMAID_TEST_FONT_FIXTURE === '1');
   const file = dynamic ? '/samples/mermaid-dynamic-labels.md' : '/samples/mermaid-labels.md';
   const fontService = process.env.IBIS_MERMAID_TEST_FONT_ORIGIN;
+  let injectedErrors = 0;
   if (process.env.IBIS_MERMAID_TEST_FONT_FIXTURE === '1') {
     // Exercise font registration with real subsets without depending on production.
     const subsetter = await loadSubsetter();
@@ -40,6 +46,17 @@ try {
       const face = searchParams.get('font');
       const font = fonts.get(face);
       const glyphs = searchParams.get('text') ?? '';
+      if (glyphs.includes('𠮷')) {
+        if (failure === 'unsupported') {
+          await route.fulfill({ status: 204 });
+          return;
+        }
+        if (failure === 'unavailable' || (failure === 'retry' && injectedErrors === 0)) {
+          injectedErrors++;
+          await route.fulfill({ status: 503 });
+          return;
+        }
+      }
       if (!font || !glyphs || !subsetter.font_has_glyphs(font, glyphs)) {
         await route.fulfill({ status: 204 });
         return;
@@ -67,52 +84,81 @@ try {
     page.goto(new URL('/editor.html?open=' + encodeURIComponent(file), origin).href),
   ]);
   await page.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
-  const canvas = page.locator('canvas').first();
+  if (failure === 'unavailable') {
+    if (!fontErrors.length) {
+      await page.waitForEvent('console', {
+        predicate: message => message.text().includes('Could not load a dynamic font'),
+        timeout: 15_000,
+      });
+    }
+    assert.equal(injectedErrors, 3, 'persistent failure must exhaust the three attempts');
+    console.log('PASS: persistent font service failure exhausts retries and is reported');
+  } else {
+    const canvas = page.locator('canvas').first();
 
-  // The light-blue interiors identify the three Mermaid nodes. Wait for their
-  // rasterized image, then require dark label ink inside each of the three nodes.
-  let boxes = [];
-  for (let attempt = 0; attempt < 20 && boxes.length !== 3; attempt++) {
-    const png = (await canvas.screenshot()).toString('base64');
-    boxes = await page.evaluate(async data => {
-      const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob());
-      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(bitmap, 0, 0);
-      const { data: pixels } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const blue = (x, y) => {
-        const i = 4 * (y * canvas.width + x);
-        return pixels[i] >= 233 && pixels[i] <= 242 && pixels[i + 1] >= 240 && pixels[i + 1] <= 248 && pixels[i + 2] >= 250;
-      };
-      for (let y = 360; y < Math.min(560, canvas.height - 22); y++) {
-        const spans = [];
-        for (let x = 330; x < Math.min(900, canvas.width);) {
-          const start = x;
-          while (x < Math.min(900, canvas.width) && blue(x, y)) x++;
-          if (x - start >= 60) spans.push([start, x]);
-          if (x === start) x++;
-        }
-        if (spans.length !== 3) continue;
-        return spans.map(([left, right]) => {
-          let ink = 0;
-          for (let row = y + 5; row < y + 22; row++) {
-            for (let column = left + 10; column < right - 10; column++) {
-              const i = 4 * (row * canvas.width + column);
-              if (pixels[i] < 100 && pixels[i + 1] < 110 && pixels[i + 2] < 130) ink++;
-            }
+    // The light-blue interiors identify the three Mermaid nodes. Wait for their
+    // rasterized image, then require dark label ink inside each of the three nodes.
+    let boxes = [];
+    let screenshot;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      screenshot = await canvas.screenshot();
+      boxes = await page.evaluate(async data => {
+        const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob());
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bitmap, 0, 0);
+        const { data: pixels } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const blue = (x, y) => {
+          const i = 4 * (y * canvas.width + x);
+          return pixels[i] >= 233 && pixels[i] <= 242 && pixels[i + 1] >= 240 && pixels[i + 1] <= 248 && pixels[i + 2] >= 250;
+        };
+        for (let y = 0; y < canvas.height - 22; y++) {
+          const spans = [];
+          for (let x = 0; x < canvas.width;) {
+            const start = x;
+            while (x < Math.min(900, canvas.width) && blue(x, y)) x++;
+            if (x - start >= 40) spans.push([start, x]);
+            if (x === start) x++;
           }
-          return ink;
-        });
+          if (spans.length !== 3) continue;
+          return spans.map(([left, right]) => {
+            let ink = 0;
+            for (let row = y + 5; row < y + 22; row++) {
+              for (let column = left + 10; column < right - 10; column++) {
+                const i = 4 * (row * canvas.width + column);
+                if (pixels[i] < 100 && pixels[i + 1] < 110 && pixels[i + 2] < 130) ink++;
+              }
+            }
+            return ink;
+          });
+        }
+        return [];
+      }, screenshot.toString('base64'));
+      if (boxes.length === 3 && boxes[0] > 0 && boxes[2] > 0 &&
+          (failure === 'unsupported' || boxes[1] > 0)) break;
+      await page.waitForTimeout(300);
+    }
+    try {
+      assert.equal(boxes.length, 3, 'the Mermaid nodes should be visible');
+      if (dynamic) assert.ok(requests.some(body => body.includes('𠮷')), 'the SVG-only glyph must be requested');
+      if (failure === 'unsupported') {
+        assert.ok(boxes[0] > 0 && boxes[2] > 0, `label pixels per node: ${boxes}`);
+        assert.deepEqual(fontErrors, []);
+        console.log(`PASS: diagram and neighboring labels render with font service ${failure} (label pixels: ${boxes})`);
+      } else {
+        assert.ok(boxes.every(ink => ink > 0), `label pixels per node: ${boxes}`);
+        if (failure === 'retry') assert.equal(injectedErrors, 1);
+        assert.deepEqual(missing, []);
+        assert.deepEqual(fontErrors, []);
+        console.log('PASS: English, Japanese and symbol SVG labels render without missing-glyph warnings');
       }
-      return [];
-    }, png);
-    if (boxes.length !== 3) await page.waitForTimeout(300);
+    } catch (error) {
+      if (process.env.IBIS_MERMAID_TEST_SCREENSHOT) {
+        await writeFile(process.env.IBIS_MERMAID_TEST_SCREENSHOT, screenshot);
+      }
+      throw error;
+    }
   }
-  assert.equal(boxes.length, 3, 'the Mermaid nodes should be visible');
-  assert.ok(boxes.every(ink => ink > 0), `label pixels per node: ${boxes}`);
-  assert.deepEqual(missing, []);
-  if (dynamic) assert.ok(requests.some(body => body.includes('𠮷')), 'the SVG-only glyph must be requested');
-  console.log('PASS: English, Japanese and symbol SVG labels render without missing-glyph warnings');
 } finally {
   await browser.close();
 }

@@ -150,9 +150,19 @@ jobs:
         env:
           IBIS_MERMAID_TEST_ORIGIN: http://127.0.0.1:8796
           IBIS_MERMAID_TEST_FONT_FIXTURE: "1"
+          IBIS_MERMAID_TEST_SCREENSHOT: mermaid-labels-failure.png
         run: |
           IBIS_CHROME_PATH="$(command -v google-chrome)"
           export IBIS_CHROME_PATH
           python3 -m http.server 8796 --bind 127.0.0.1 --directory www > /tmp/ibis-mermaid-www.log 2>&1 &
           node scripts/test-mermaid-labels-browser.mjs
           IBIS_MERMAID_TEST_DYNAMIC=1 node scripts/test-mermaid-labels-browser.mjs
+          IBIS_MERMAID_TEST_FONT_FAILURE=unsupported node scripts/test-mermaid-labels-browser.mjs
+          IBIS_MERMAID_TEST_FONT_FAILURE=retry node scripts/test-mermaid-labels-browser.mjs
+          IBIS_MERMAID_TEST_FONT_FAILURE=unavailable node scripts/test-mermaid-labels-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: mermaid-labels-failure
+          path: mermaid-labels-failure.png
+          if-no-files-found: ignore
