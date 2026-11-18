@@ -27,10 +27,18 @@ pub struct DecodedImage {
 
 /// Decode a JPEG 2000 codestream (`.j2k`/`.j2c`) or container (`.jp2`) into 8-bit interleaved pixels.
 pub fn decode(bytes: &[u8]) -> Result<DecodedImage> {
+    decode_with_pixel_limit(bytes, u64::MAX)
+}
+
+/// Decode only if the image dimensions fit the caller’s pixel budget.
+pub fn decode_with_pixel_limit(bytes: &[u8], max_pixels: u64) -> Result<DecodedImage> {
     let image = Image::new(bytes, &DecodeSettings::default())
         .map_err(|e| Error::new(format!("JPEG 2000 header decode failed: {e:?}")))?;
     let width = image.width();
     let height = image.height();
+    if u64::from(width) * u64::from(height) > max_pixels {
+        return Err(Error::new("JPEG 2000 exceeds the preview pixel limit"));
+    }
     let has_alpha = image.has_alpha();
     let color_space = match image.color_space() {
         HayroColorSpace::Gray => ColorSpace::Gray,

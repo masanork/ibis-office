@@ -1316,7 +1316,9 @@ impl SlideEditor {
             }
             // A download-enabled embed needs the original package to write
             // edits back; ordinary initial previews keep the lighter read path.
-            if initial && !crate::embed::show_download() {
+            let extension = name.rsplit_once('.').map(|(_, ext)| ext);
+            let production_image = extension.is_some_and(ibis_pptx::production_image::supports_extension);
+            if initial && !production_image && !crate::embed::show_download() {
                 let mut result = ibis_pptx::read(&data).map_err(|e| e.to_string());
                 if let Ok(presentation) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
@@ -1332,7 +1334,11 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let mut result = ibis_pptx::open(data).map_err(|e| e.to_string());
+            let mut result = match ibis_pptx::production_image::open(extension, &data) {
+                Ok(Some(opened)) => Ok(opened),
+                Ok(None) => ibis_pptx::open(data).map_err(|e| e.to_string()),
+                Err(error) => Err(error),
+            };
             if let Ok(opened) = &result {
                 if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {
                     result = Err(crate::web::font_preload_error(error));
@@ -1453,7 +1459,8 @@ impl SlideEditor {
                         this.set_loaded_source(loaded.source);
                         this.path = None;
                         this.document.set_file(None);
-                    } else if path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
+                    } else if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::production_image::supports_extension)
+                        || path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
                         // An old workbook or presentation (or an OpenDocument workbook) is read as a new .xlsx or .pptx: saving asks where, and leaves the old file as it is.
                         let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         let extension = crate::format::info(ibis_pptx::Kind::of(&loaded.presentation)).extension;

@@ -4223,6 +4223,7 @@ dependencies = [
  "ibis-doc-model",
  "ibis-emf",
  "ibis-ooxml",
+ "image",
  "j2k-rs",
  "jxl-oxide",
  "miniz_oxide 0.8.9",

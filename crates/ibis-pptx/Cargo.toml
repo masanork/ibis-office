@@ -11,6 +11,7 @@ base64 = "0.22"
 ibis-calc.workspace = true
 ibis-doc-model.workspace = true
 j2k-rs.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "tga", "tiff"] }
 ibis-ooxml.workspace = true
 miniz_oxide = "0.8"
 roxmltree = "0.21"

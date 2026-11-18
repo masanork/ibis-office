@@ -127,6 +127,10 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encod
         let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
         return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false });
     }
+    if let Some(opened) = ibis_pptx::production_image::open(path.extension().and_then(|e| e.to_str()), &data)? {
+        crate::render::preload::Preload::start_for_next(&opened.presentation);
+        return Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false });
+    }
     if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::jtd::is_extension) || ibis_pptx::jtd::is_jtd(&data) {
         let (presentation, jtd_gallery) = crate::jtd_preview::read(&data)?;
         let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;

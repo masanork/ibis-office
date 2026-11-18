@@ -166,6 +166,9 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub fn copy_to(&self, path: &std::path::Path) -> Result<(), String> {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
+        if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::production_image::supports_extension) {
+            return Err("Choose a document extension to save the imported image".into());
+        }
         self.check_standard_copy_format(path)?;
         if self.current_csv_format.is_some() && self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
             return Err(crate::i18n::text("file.csv-error.copy-original").to_string());
