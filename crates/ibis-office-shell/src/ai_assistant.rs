@@ -4,7 +4,7 @@
 //! Shared AI Assistant sidebar for spreadsheets, presentations, and documents.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -98,7 +98,7 @@ impl UiMessage {
 }
 
 pub struct AiAssistantState {
-    pub prompt_input: Entity<InputState>,
+    pub prompt_input: Entity<TextareaState>,
     pub base_url_input: Entity<InputState>,
     pub model_input: Entity<InputState>,
     pub api_key_input: Entity<InputState>,
@@ -358,8 +358,12 @@ impl SlideEditor {
     pub fn open_ai_assistant_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ai_assistant.is_none() {
             let cfg = AiConfig::load();
-            let prompt_input =
-                cx.new(|cx| InputState::new(window, cx).placeholder("指示を入力 (Enterで送信)"));
+            let prompt_input = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(2, 8)
+                    .submit_on_enter(true)
+                    .placeholder("指示を入力（Enterで送信、Shift+Enterで改行）")
+            });
             let _prompt_subscription = cx.subscribe_in(
                 &prompt_input,
                 window,
@@ -3973,7 +3977,7 @@ impl SlideEditor {
         let footer = v_flex()
             .gap_2()
             .w_full()
-            .child(Input::new(&prompt_input).small())
+            .child(Textarea::new(&prompt_input).small())
             .child(
                 h_flex()
                     .w_full()
