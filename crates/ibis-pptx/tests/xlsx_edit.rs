@@ -10110,3 +10110,30 @@ fn test_sheet_connector_line_roundtrip() {
     let ShapeKind::Line(re) = &reopened.slides[0].shape(id).unwrap().kind else { panic!() };
     assert_eq!((re.color.rgb, re.width, re.dash), (Rgb(0xFF0000), 38_100, LineDash::DashDot));
 }
+
+#[test]
+fn field_match_recalculates_after_xlsx_roundtrip() {
+    let sheet_name = "照合";
+    let source = ibis_pptx::csv::workbook_from_with_delimiter(
+        "東京都千代田区霞が関二丁目１番２号,東京都千代田区霞が関2-1-2",
+        sheet_name,
+        ',',
+    )
+    .unwrap();
+    let opened = ibis_pptx::open(source).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let s = slide(document.presentation(), sheet_name);
+    let formula = r#"IBIS.FIELDMATCH(A1,B1,"address")"#;
+    set(&mut document, s, vec![(0, 2, CellInput::Formula(formula.into()))]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(2.0));
+
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let reopened = ibis_pptx::read(&saved).unwrap();
+    assert_eq!(cell(&reopened, sheet_name, 0, 2).formula.as_deref(), Some(formula));
+    assert_eq!(value(&reopened, sheet_name, 0, 2), CellValue::Number(2.0));
+
+    let s = slide(&reopened, sheet_name);
+    let mut document = Document::new(reopened);
+    set(&mut document, s, vec![(0, 1, CellInput::Value(CellValue::Text("東京都千代田区霞が関2-1-3".into())))]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(0.0));
+}
