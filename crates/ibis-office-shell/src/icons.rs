@@ -51,18 +51,37 @@ impl IconNamed for MaterialFill {
 /// The app's asset source: the bundled icons, then GPUI Kit's assets.
 pub struct Assets {
     kit: gpui_kit::assets::AllAssets,
+    #[cfg(target_family = "wasm")]
+    svg_sans_font: Option<&'static [u8]>,
 }
 
 impl Assets {
     /// `endpoint` is where GPUI Kit's own assets are fetched from in the
     /// browser (see `gpui_kit::assets::AllAssets::new`).
     pub fn new(endpoint: impl Into<SharedString>) -> Self {
-        Self { kit: gpui_kit::assets::AllAssets::new(endpoint) }
+        Self {
+            kit: gpui_kit::assets::AllAssets::new(endpoint),
+            #[cfg(target_family = "wasm")]
+            svg_sans_font: None,
+        }
+    }
+
+    /// Supply the bundled IBM Plex Sans to GPUI's SVG font resolver.
+    #[cfg(target_family = "wasm")]
+    pub fn with_svg_sans_font(mut self, font: &'static [u8]) -> Self {
+        self.svg_sans_font = Some(font);
+        self
     }
 }
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        #[cfg(target_family = "wasm")]
+        if path == "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf"
+            && let Some(font) = self.svg_sans_font
+        {
+            return Ok(Some(Cow::Borrowed(font)));
+        }
         let own = path.strip_prefix("icons/ibis/").map(|n| format!("ibis/{n}"));
         if let Some(name) = path.strip_prefix(PREFIX).or(own.as_deref()).and_then(|p| p.strip_suffix(".svg")) {
             if let Some((_, data)) = MATERIAL_ICONS.iter().find(|(n, _)| *n == name) {
