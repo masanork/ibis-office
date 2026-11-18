@@ -105,6 +105,8 @@ pub struct MermaidChartSpec {
     pub show_data: bool,
     /// `xychart` axis titles (`x-axis "Month" [...]`, `y-axis "Revenue" 0 --> 100`).
     pub x_axis_title: Option<String>,
+    /// Numeric x-axis bounds. Samples in each series are spaced evenly across this range.
+    pub x_range: Option<(f64, f64)>,
     pub y_axis_title: Option<String>,
     /// `xychart` value-axis range (`y-axis 4000 --> 11000`); `None` is automatic.
     pub y_range: Option<(f64, f64)>,
@@ -287,7 +289,7 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::XyChart => {
             let mut spec = parse_xy_chart(trimmed, &config)?;
             spec.title = spec.title.or(front_title);
-            if !spec.horizontal || !spec.series_kinds.contains(&NewChartKind::Line) {
+            if spec.x_range.is_none() && (!spec.horizontal || !spec.series_kinds.contains(&NewChartKind::Line)) {
                 return Some(MermaidOutput::Chart(spec));
             }
             let (bytes, width_px, height_px) = render_chart_spec_svg(&spec)?;
