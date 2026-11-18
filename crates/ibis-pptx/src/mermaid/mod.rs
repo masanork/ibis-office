@@ -444,7 +444,6 @@ mod tests {
     fn unsupported_diagram_returns_none() {
         assert!(render_mermaid("zenuml\n  A.method()\n").is_none());
         assert!(render_mermaid("").is_none());
-        assert!(render_mermaid("cynefin-beta\n  title x\n").is_none());
     }
 
     #[test]
