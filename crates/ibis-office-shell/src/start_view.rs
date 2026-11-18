@@ -110,7 +110,7 @@ fn request_panel(muted: Hsla) -> Div {
 
 impl SlideEditor {
     /// The white page under the title bar while no file is open.
-    pub(crate) fn render_start_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_start_view(&self, narrow: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let open = div()
@@ -132,6 +132,7 @@ impl SlideEditor {
         let new_files = div()
             .flex()
             .gap_4()
+            .when(narrow, |row| row.flex_wrap())
             .ml(px(BADGE_OVERHANG - TILE_PADDING))
             .children(crate::format::creatable_infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)))
             .child(self.new_markdown_tile(cx));
@@ -150,10 +151,11 @@ impl SlideEditor {
             .child(
                 v_flex()
                     .w(px(COLUMN_WIDTH))
-                    .min_w(px(COLUMN_MIN_WIDTH))
+                    .min_w(px(if narrow { 0. } else { COLUMN_MIN_WIDTH }))
                     .flex_shrink(1.0)
                     .h_full()
-                    .px_8()
+                    .when(narrow, |column| column.px_4())
+                    .when(!narrow, |column| column.px_8())
                     .pb(px(BOTTOM_MARGIN))
                     .child(section_title("start.new", BOTTOM_MARGIN, 0.0))
                     .child(new_files)
@@ -163,11 +165,11 @@ impl SlideEditor {
                     .map(|d| self.recent_files_list(d, cx))
                     .when_some(self.status.clone(), |d, status| d.child(div().mt_3().text_sm().text_color(muted).child(status))),
             )
-            .child(v_flex().w(px(REQUEST_WIDTH)).min_w(px(REQUEST_MIN_WIDTH)).flex_shrink(1.).mr(px(COLUMN_PADDING)).mt(px(BOTTOM_MARGIN)).gap_4()
+            .when(!narrow, |view| view.child(v_flex().w(px(REQUEST_WIDTH)).min_w(px(REQUEST_MIN_WIDTH)).flex_shrink(1.).mr(px(COLUMN_PADDING)).mt(px(BOTTOM_MARGIN)).gap_4()
                 .children(Self::update_button())
                 .child(crate::chrome::brand_logo("start-app-logo",REQUEST_WIDTH / crate::chrome::LOGO_ASPECT,true))
                 .child(Self::version_line(muted))
-                .child(request_panel(muted).w_full().mt_0().mr_0()))
+                .child(request_panel(muted).w_full().mt_0().mr_0())))
     }
 
     /// 「ver.0.8.6」 under the logo, right-aligned, a little smaller than the body text.
