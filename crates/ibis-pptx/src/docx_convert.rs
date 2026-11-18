@@ -1925,6 +1925,43 @@ struct OdtStyleDef {
     size_half_pt: Option<u32>,
 }
 
+const ODT_OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
+const ODT_TEXT_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
+const ODT_TABLE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
+
+/// Flatten only ODF's structural text containers. In particular, do not
+/// collect paragraphs from annotations, tracked deletions or drawing objects.
+fn odt_blocks<'a, 'input>(root: roxmltree::Node<'a, 'input>) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> {
+    let mut children = vec![root.children()];
+    std::iter::from_fn(move || {
+        while let Some(level) = children.last_mut() {
+            let Some(node) = level.next() else {
+                children.pop();
+                continue;
+            };
+            if !node.is_element() {
+                continue;
+            }
+            match (node.tag_name().namespace(), node.tag_name().name()) {
+                (Some(ODT_TEXT_NS), "section") => {
+                    // Preserve visible sections. Evaluating ODF conditions is outside this import.
+                    if !matches!(node.attribute((ODT_TEXT_NS, "display")), Some("none" | "condition")) {
+                        children.push(node.children());
+                    }
+                }
+                (Some(ODT_TEXT_NS), "list" | "list-item" | "list-header" | "numbered-paragraph") => {
+                    children.push(node.children());
+                }
+                (Some(ODT_TEXT_NS), "p" | "h") | (Some(ODT_TABLE_NS), "table") => {
+                    return Some(node);
+                }
+                _ => {}
+            }
+        }
+        None
+    })
+}
+
 /// Convert OpenDocument Text (`.odt`) bytes into `.docx` package bytes.
 pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
     let archive = Archive::new(data).map_err(|e| Error::new(format!("ODT アーカイブを開けません: {e}")))?;
@@ -2013,11 +2050,15 @@ pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
                     }
                 }
             } else if child.is_element() {
+                // Annotation bodies are metadata, even when anchored inside a paragraph.
+                if child.has_tag_name((ODT_OFFICE_NS, "annotation")) {
+                    continue;
+                }
                 match child.tag_name().name() {
                     "span" => {
                         let mut cur = inherited.clone();
                         if let Some(sname) = child
-                            .attribute(("urn:oasis:names:tc:opendocument:xmlns:text:1.0", "style-name"))
+                            .attribute((ODT_TEXT_NS, "style-name"))
                             .or_else(|| child.attribute("style-name"))
                         {
                             if let Some(sdef) = styles.get(sname) {
@@ -2051,7 +2092,7 @@ pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
                     }),
                     "s" => {
                         let count = child
-                            .attribute(("urn:oasis:names:tc:opendocument:xmlns:text:1.0", "c"))
+                            .attribute((ODT_TEXT_NS, "c"))
                             .or_else(|| child.attribute("c"))
                             .and_then(|v| v.parse::<usize>().ok())
                             .unwrap_or(1);
@@ -2077,7 +2118,7 @@ pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
         let mut p = ConvPara::default();
         if p_node.tag_name().name() == "h" {
             let lvl = p_node
-                .attribute(("urn:oasis:names:tc:opendocument:xmlns:text:1.0", "outline-level"))
+                .attribute((ODT_TEXT_NS, "outline-level"))
                 .or_else(|| p_node.attribute("outline-level"))
                 .and_then(|v| v.parse::<u8>().ok())
                 .unwrap_or(1)
@@ -2086,7 +2127,7 @@ pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
         }
         let mut base_style = OdtStyleDef::default();
         if let Some(sname) = p_node
-            .attribute(("urn:oasis:names:tc:opendocument:xmlns:text:1.0", "style-name"))
+            .attribute((ODT_TEXT_NS, "style-name"))
             .or_else(|| p_node.attribute("style-name"))
         {
             if let Some(sdef) = styles.get(sname) {
@@ -2101,30 +2142,34 @@ pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
     };
 
     let mut blocks = Vec::new();
-    if let Some(office_text) = xml.descendants().find(|n| n.tag_name().name() == "text" && n.parent().is_some_and(|p| p.tag_name().name() == "body")) {
-        for child in office_text.children().filter(|c| c.is_element()) {
-            match child.tag_name().name() {
-                "p" | "h" => blocks.push(ConvBlock::Para(parse_odt_para(child))),
-                "table" => {
-                    let mut rows = Vec::new();
-                    for r_node in child.children().filter(|c| c.tag_name().name() == "table-row") {
-                        let mut cells = Vec::new();
-                        for c_node in r_node.children().filter(|c| c.tag_name().name() == "table-cell") {
-                            let paras: Vec<ConvPara> = c_node
-                                .children()
-                                .filter(|c| matches!(c.tag_name().name(), "p" | "h"))
-                                .map(parse_odt_para)
-                                .collect();
-                            cells.push(paras);
-                        }
-                        if !cells.is_empty() {
-                            rows.push(cells);
-                        }
+    let root = xml.root_element();
+    if !root.has_tag_name((ODT_OFFICE_NS, "document-content")) {
+        return Err(Error::new("ODT の content.xml が office:document-content ではありません"));
+    }
+    let body = root.children().find(|n| n.has_tag_name((ODT_OFFICE_NS, "body")))
+        .and_then(|body| body.children().find(|n| n.has_tag_name((ODT_OFFICE_NS, "text"))))
+        .ok_or_else(|| Error::new("ODT に本文 (office:body/office:text) がありません"))?;
+    for child in odt_blocks(body) {
+        match child.tag_name().name() {
+            "p" | "h" => blocks.push(ConvBlock::Para(parse_odt_para(child))),
+            "table" => {
+                let mut rows = Vec::new();
+                for r_node in child.children().filter(|c| c.has_tag_name((ODT_TABLE_NS, "table-row"))) {
+                    let mut cells = Vec::new();
+                    for c_node in r_node.children().filter(|c| c.has_tag_name((ODT_TABLE_NS, "table-cell"))) {
+                        let paras: Vec<ConvPara> = odt_blocks(c_node)
+                            .filter(|c| c.has_tag_name((ODT_TEXT_NS, "p")) || c.has_tag_name((ODT_TEXT_NS, "h")))
+                            .map(parse_odt_para)
+                            .collect();
+                        cells.push(paras);
                     }
-                    blocks.push(ConvBlock::Table(ConvTable { rows }));
+                    if !cells.is_empty() {
+                        rows.push(cells);
+                    }
                 }
-                _ => {}
+                blocks.push(ConvBlock::Table(ConvTable { rows }));
             }
+            _ => {}
         }
     }
 
