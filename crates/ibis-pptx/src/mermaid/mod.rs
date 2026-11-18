@@ -51,6 +51,7 @@ mod treeview;
 mod swimlanes;
 mod eventmodeling;
 mod agentflow;
+mod zenuml;
 mod railroad;
 mod text;
 #[cfg(test)]
@@ -85,6 +86,7 @@ use treeview::*;
 use swimlanes::*;
 use eventmodeling::*;
 use agentflow::*;
+use zenuml::*;
 use railroad::*;
 use sankey::*;
 use text::*;
@@ -185,6 +187,7 @@ enum DiagramKind {
     Swimlanes,
     EventModeling,
     Agentflow,
+    ZenUml,
     Railroad,
 }
 
@@ -244,6 +247,7 @@ const DIAGRAM_HEADERS: &[(&str, DiagramKind)] = &[
     ("eventmodeling", DiagramKind::EventModeling),
     ("agentflow-beta", DiagramKind::Agentflow),
     ("agentflow", DiagramKind::Agentflow),
+    ("zenuml", DiagramKind::ZenUml),
     ("railroad-beta", DiagramKind::Railroad),
     ("railroad-ebnf-beta", DiagramKind::Railroad),
     ("railroad-abnf-beta", DiagramKind::Railroad),
@@ -352,6 +356,7 @@ pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
         DiagramKind::TreeView => render_treeview_svg(trimmed, &config),
         DiagramKind::Swimlanes => render_swimlanes_svg(trimmed),
         DiagramKind::EventModeling => render_eventmodeling_svg(trimmed),
+        DiagramKind::ZenUml => render_zenuml_svg(trimmed),
         DiagramKind::Agentflow => render_agentflow_svg(trimmed),
         DiagramKind::Railroad => render_railroad_svg(trimmed),
     };
@@ -437,7 +442,6 @@ mod tests {
 
     #[test]
     fn unsupported_diagram_returns_none() {
-        assert!(render_mermaid("zenuml\n  A.method()\n").is_none());
         assert!(render_mermaid("").is_none());
         assert!(render_mermaid("cynefin-beta\n  title x\n").is_none());
     }

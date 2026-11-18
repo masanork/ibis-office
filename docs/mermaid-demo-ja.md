@@ -454,9 +454,19 @@ pie
   "保留": 20
 ```
 
+## ZenUML
+
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/zenuml.md) · [コーパス例 7](../crates/ibis-pptx/tests/mermaid/corpus/zenuml.mmd)
+
+```mermaid
+zenuml
+    new A1
+    new A2(with, parameters)
+```
+
 ## コード表示の例
 
-Cynefin、Ishikawa、ZenUML は Mermaid フェンスのまま保持されます。
+Cynefin、Ishikawa は Mermaid フェンスのまま保持されます。
 
 ### Cynefin
 
@@ -497,14 +507,4 @@ ishikawa-beta
     Environment
         Subject moved too quickly
         Too dark
-```
-
-### ZenUML
-
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/zenuml.md) · [コーパス例 7](../crates/ibis-pptx/tests/mermaid/corpus/zenuml.mmd)
-
-```mermaid
-zenuml
-    new A1
-    new A2(with, parameters)
 ```

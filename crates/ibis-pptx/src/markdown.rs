@@ -5680,6 +5680,7 @@ xychart-beta
             "xychart horizontal\n  x-axis [一月, 二月]\n  bar [10, 20]\n  line [7, 15 \"目標\"]\n",
             "xychart\n  x-axis \"経過秒\" 0 --> 10\n  line [10, 20 \"終了\"]\n",
             "xychart-beta\n  title 月別売上\n  x-axis [一月, 二月]\n  line [10, 20]\n",
+            "zenuml\n  利用者->窓口.受付() {\n    return 完了\n  }\n",
         ];
         let body = diagrams.iter().map(|diagram| format!("```mermaid\n{diagram}```\n\n")).collect::<String>();
         let doc = open_markdown(body.as_bytes().to_vec()).expect("open document");

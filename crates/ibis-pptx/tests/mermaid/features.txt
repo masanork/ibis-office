@@ -329,3 +329,6 @@ railroad | ABNF rules (/ and n*m repetition) | ok | header | railroad-abnf
 railroad | PEG rules (<- / ! &) | ok | header | railroad-peg
 railroad | function form (sequence / choice / optional / zeroOrMore / oneOrMore / terminal / nonterminal) | ok | header | railroad-beta
 railroad | title | ok | prefix | title
+
+zenuml | participants, messages and control fragments | ok | header | zenuml
+zenuml | Markdown formatting in comments | gap | contains | **Markdown**
