@@ -215,6 +215,14 @@ struct ConvPara {
 #[derive(Clone, Debug, Default)]
 struct ConvTable {
     rows: Vec<Vec<Vec<ConvPara>>>,
+    // Non-default geometry, keyed by output row and cell (not grid column).
+    geometry: HashMap<(usize, usize), (usize, ibis_doc_model::VerticalMerge)>,
+}
+
+impl ConvTable {
+    fn plain(rows: Vec<Vec<Vec<ConvPara>>>) -> Self {
+        Self { rows, geometry: HashMap::new() }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -311,31 +319,46 @@ fn build_docx_from_blocks(blocks: &[ConvBlock], title: Option<&str>) -> Result<V
             match block {
                 ConvBlock::Para(p) => write_para(&mut doc_xml, p, &mut rels),
                 ConvBlock::Table(t) => {
-                    let cols = t.rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+                    let cols = t.rows.iter().enumerate().map(|(r, cells)| {
+                        cells.iter().enumerate().map(|(c, _)| t.geometry.get(&(r, c)).map_or(1, |g| g.0)).sum::<usize>()
+                    }).max().unwrap_or(1).max(1);
                     let col_w = 8500 / cols;
                     doc_xml.push_str("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders></w:tblPr><w:tblGrid>");
                     for _ in 0..cols {
                         doc_xml.push_str(&format!(r#"<w:gridCol w:w="{col_w}"/>"#));
                     }
                     doc_xml.push_str("</w:tblGrid>");
-                    for row in &t.rows {
+                    for (r, row) in t.rows.iter().enumerate() {
                         doc_xml.push_str("<w:tr>");
-                        for c_idx in 0..cols {
+                        let mut remaining = cols;
+                        for (c, cell_paras) in row.iter().enumerate() {
+                            use ibis_doc_model::VerticalMerge;
+                            let (span, merge) = t.geometry.get(&(r, c)).copied().unwrap_or((1, VerticalMerge::None));
+                            remaining -= span;
+                            let width = col_w * span;
                             doc_xml.push_str(&format!(
-                                r#"<w:tc><w:tcPr><w:tcW w:w="{col_w}" w:type="dxa"/></w:tcPr>"#
+                                r#"<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/>"#
                             ));
-                            if let Some(cell_paras) = row.get(c_idx) {
-                                if cell_paras.is_empty() {
-                                    doc_xml.push_str("<w:p/>");
-                                } else {
-                                    for p in cell_paras {
-                                        write_para(&mut doc_xml, p, &mut rels);
-                                    }
-                                }
-                            } else {
+                            if span > 1 {
+                                doc_xml.push_str(&format!(r#"<w:gridSpan w:val="{span}"/>"#));
+                            }
+                            doc_xml.push_str(match merge {
+                                VerticalMerge::Start => r#"<w:vMerge w:val="restart"/>"#,
+                                VerticalMerge::Continue => "<w:vMerge/>",
+                                VerticalMerge::None => "",
+                            });
+                            doc_xml.push_str("</w:tcPr>");
+                            if cell_paras.is_empty() {
                                 doc_xml.push_str("<w:p/>");
+                            } else {
+                                for p in cell_paras {
+                                    write_para(&mut doc_xml, p, &mut rels);
+                                }
                             }
                             doc_xml.push_str("</w:tc>");
+                        }
+                        for _ in 0..remaining {
+                            doc_xml.push_str(&format!(r#"<w:tc><w:tcPr><w:tcW w:w="{col_w}" w:type="dxa"/></w:tcPr><w:p/></w:tc>"#));
                         }
                         doc_xml.push_str("</w:tr>");
                     }
@@ -867,9 +890,7 @@ pub fn import_rtf_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
                                     cur_para.heading = state.heading;
                                 }
                                 if !table_rows.is_empty() && !state.in_table {
-                                    blocks.push(ConvBlock::Table(ConvTable {
-                                        rows: std::mem::take(&mut table_rows),
-                                    }));
+                                    blocks.push(ConvBlock::Table(ConvTable::plain(std::mem::take(&mut table_rows))));
                                 }
                                 if state.in_table {
                                     cur_cell.push(std::mem::take(&mut cur_para));
@@ -916,9 +937,7 @@ pub fn import_rtf_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
 
     flush_run(&mut cur_text, &mut cur_para, &state);
     if !table_rows.is_empty() {
-        blocks.push(ConvBlock::Table(ConvTable {
-            rows: std::mem::take(&mut table_rows),
-        }));
+        blocks.push(ConvBlock::Table(ConvTable::plain(std::mem::take(&mut table_rows))));
     }
     if !cur_para.runs.is_empty() {
         cur_para.align = state.align;
@@ -1006,7 +1025,7 @@ fn doc_flow_to_conv_blocks(doc: &FlowDocument) -> Vec<ConvBlock> {
                     }
                     rows.push(cells);
                 }
-                blocks.push(ConvBlock::Table(ConvTable { rows }));
+                blocks.push(ConvBlock::Table(ConvTable::plain(rows)));
             }
         }
     }
@@ -1277,16 +1296,14 @@ fn doc_raw_text_to_docx_bytes(raw_text: &str) -> Result<Vec<u8>, Error> {
             let clean: String = trailing.chars().filter(|&c| c == '\t' || !c.is_control()).collect();
             if !clean.is_empty() {
                 if !table_rows.is_empty() {
-                    blocks.push(ConvBlock::Table(ConvTable { rows: std::mem::take(&mut table_rows) }));
+                    blocks.push(ConvBlock::Table(ConvTable::plain(std::mem::take(&mut table_rows))));
                 }
                 blocks.push(ConvBlock::Para(plain_para(clean)));
             }
             continue;
         }
         if !table_rows.is_empty() {
-            blocks.push(ConvBlock::Table(ConvTable {
-                rows: std::mem::take(&mut table_rows),
-            }));
+            blocks.push(ConvBlock::Table(ConvTable::plain(std::mem::take(&mut table_rows))));
         }
         let clean: String = seg
             .chars()
@@ -1307,7 +1324,7 @@ fn doc_raw_text_to_docx_bytes(raw_text: &str) -> Result<Vec<u8>, Error> {
         }
     }
     if !table_rows.is_empty() {
-        blocks.push(ConvBlock::Table(ConvTable { rows: table_rows }));
+        blocks.push(ConvBlock::Table(ConvTable::plain(table_rows)));
     }
     build_docx_from_blocks(&blocks, None)
 }
@@ -1676,9 +1693,7 @@ pub fn import_html_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
                             table_rows.push(std::mem::take(&mut cur_row));
                         }
                         if !table_rows.is_empty() {
-                            blocks.push(ConvBlock::Table(ConvTable {
-                                rows: std::mem::take(&mut table_rows),
-                            }));
+                            blocks.push(ConvBlock::Table(ConvTable::plain(std::mem::take(&mut table_rows))));
                         }
                         in_table = false;
                         in_cell = false;
@@ -1940,6 +1955,161 @@ fn odt_blocks<'a, 'input>(root: roxmltree::Node<'a, 'input>) -> impl Iterator<It
     })
 }
 
+fn odt_table<'a, 'i>(
+    table: roxmltree::Node<'a, 'i>,
+    parse_para: &impl Fn(roxmltree::Node<'a, 'i>) -> ConvPara,
+    budget: &mut usize,
+) -> Result<ConvTable, Error> {
+    use ibis_doc_model::VerticalMerge;
+    const MAX_COLUMNS: usize = 256;
+    const MAX_ROWS: usize = 100_000;
+    let invalid = || Error::new("ODT の表の結合または繰り返しが正しくありません");
+    let too_large = || Error::new("ODT の表を展開すると大きすぎます");
+    let count = |node: roxmltree::Node, name| match node.attribute((ODT_TABLE_NS, name)) {
+        Some(value) => value
+            .trim()
+            .trim_start_matches('+')
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(invalid),
+        None => Ok(1),
+    };
+
+    let mut result = ConvTable::default();
+    // Per grid column, the anchor of a vertical merge and its exclusive ending row.
+    let mut active = [None::<(usize, usize, bool)>; MAX_COLUMNS];
+    let mut row_index = 0;
+    let mut grid_width = 0;
+    for row in crate::odf::table_rows(table) {
+        let repeat = count(row, "number-rows-repeated")?;
+        if repeat > MAX_ROWS - row_index {
+            return Err(too_large());
+        }
+        let hidden = crate::odf::row_hidden(row);
+        let mut slots = Vec::new();
+        for cell in row.children().filter(|node| {
+            node.has_tag_name((ODT_TABLE_NS, "table-cell"))
+                || node.has_tag_name((ODT_TABLE_NS, "covered-table-cell"))
+        }) {
+            let count = count(cell, "number-columns-repeated")?;
+            if count > MAX_COLUMNS - slots.len() {
+                return Err(too_large());
+            }
+            slots.extend(std::iter::repeat_n(cell, count));
+        }
+        let covered =
+            |node: &roxmltree::Node| node.has_tag_name((ODT_TABLE_NS, "covered-table-cell"));
+
+        for _ in 0..repeat {
+            let mut cells = Vec::new();
+            let mut col = 0;
+            while let Some(&cell) = slots.get(col) {
+                let (span, merge) = if let Some((width, _, shown)) =
+                    active[col].filter(|&(_, end, _)| end > row_index)
+                {
+                    if !slots
+                        .get(col..col + width)
+                        .is_some_and(|cells| cells.iter().all(covered))
+                    {
+                        return Err(invalid());
+                    }
+                    (
+                        width,
+                        if shown {
+                            VerticalMerge::Continue
+                        } else {
+                            VerticalMerge::None
+                        },
+                    )
+                } else {
+                    if covered(&cell) {
+                        return Err(invalid());
+                    }
+                    let width = count(cell, "number-columns-spanned")?;
+                    let height = count(cell, "number-rows-spanned")?;
+                    if width > slots.len() - col
+                        || height > MAX_ROWS - row_index
+                        || !slots[col + 1..col + width].iter().all(covered)
+                        || active[col + 1..col + width]
+                            .iter()
+                            .flatten()
+                            .any(|&(_, end, _)| end > row_index)
+                    {
+                        return Err(invalid());
+                    }
+                    if height > 1 {
+                        active[col] = Some((width, row_index + height, !hidden));
+                    }
+                    (
+                        width,
+                        if height > 1 {
+                            VerticalMerge::Start
+                        } else {
+                            VerticalMerge::None
+                        },
+                    )
+                };
+
+                if !hidden {
+                    *budget = budget
+                        .checked_sub(cell.range().len() + 64)
+                        .ok_or_else(too_large)?;
+                    for space in cell
+                        .descendants()
+                        .filter(|n| n.has_tag_name((ODT_TEXT_NS, "s")))
+                    {
+                        let width = space
+                            .attribute((ODT_TEXT_NS, "c"))
+                            .or_else(|| space.attribute("c"))
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .unwrap_or(1);
+                        *budget = budget.checked_sub(width).ok_or_else(too_large)?;
+                    }
+                    let paras = if covered(&cell) {
+                        Vec::new()
+                    } else {
+                        odt_blocks(cell)
+                            .filter(|p| {
+                                p.has_tag_name((ODT_TEXT_NS, "p"))
+                                    || p.has_tag_name((ODT_TEXT_NS, "h"))
+                            })
+                            .map(parse_para)
+                            .collect()
+                    };
+                    if span > 1 || merge != VerticalMerge::None {
+                        result
+                            .geometry
+                            .insert((result.rows.len(), cells.len()), (span, merge));
+                    }
+                    cells.push(paras);
+                }
+                col += span;
+            }
+            if active[col..]
+                .iter()
+                .flatten()
+                .any(|&(_, end, _)| end > row_index)
+            {
+                return Err(invalid());
+            }
+            row_index += 1;
+            if !cells.is_empty() {
+                grid_width = grid_width.max(col);
+                result.rows.push(cells);
+            }
+        }
+    }
+    if active.iter().flatten().any(|&(_, end, _)| end > row_index) {
+        return Err(invalid());
+    }
+    // The DOCX writer pads ragged rows. Charge the entire rectangular grid.
+    *budget = budget
+        .checked_sub(result.rows.len() * grid_width * 32)
+        .ok_or_else(too_large)?;
+    Ok(result)
+}
+
 /// Convert OpenDocument Text (`.odt`) bytes into `.docx` package bytes.
 pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
     let archive = Archive::new(data).map_err(|e| Error::new(format!("ODT アーカイブを開けません: {e}")))?;
@@ -2127,26 +2297,14 @@ pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
     let body = root.children().find(|n| n.has_tag_name((ODT_OFFICE_NS, "body")))
         .and_then(|body| body.children().find(|n| n.has_tag_name((ODT_OFFICE_NS, "text"))))
         .ok_or_else(|| Error::new("ODT に本文 (office:body/office:text) がありません"))?;
+    let mut table_budget = 16 * 1024 * 1024;
     for child in odt_blocks(body) {
         match child.tag_name().name() {
             "p" | "h" => blocks.push(ConvBlock::Para(parse_odt_para(child))),
             "table" => {
-                let mut rows = Vec::new();
-                for r_node in crate::odf::table_rows(child).filter(|row| !crate::odf::row_hidden(*row)) {
-                    let mut cells = Vec::new();
-                    for c_node in r_node.children().filter(|c| c.has_tag_name((ODT_TABLE_NS, "table-cell"))) {
-                        let paras: Vec<ConvPara> = odt_blocks(c_node)
-                            .filter(|c| c.has_tag_name((ODT_TEXT_NS, "p")) || c.has_tag_name((ODT_TEXT_NS, "h")))
-                            .map(parse_odt_para)
-                            .collect();
-                        cells.push(paras);
-                    }
-                    if !cells.is_empty() {
-                        rows.push(cells);
-                    }
-                }
-                if !rows.is_empty() {
-                    blocks.push(ConvBlock::Table(ConvTable { rows }));
+                let table = odt_table(child, &parse_odt_para, &mut table_budget)?;
+                if !table.rows.is_empty() {
+                    blocks.push(ConvBlock::Table(table));
                 }
             }
             _ => {}
