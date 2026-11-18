@@ -280,12 +280,23 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 
 出力は `report.ai.json` です。`markdown` に本文、`sourceSha256` に入力ファイルの SHA-256 が入ります。`markdownBytes` は JSON を読み取った後の Markdown 文字列に対する UTF-8 バイト範囲です。開始位置を含み、終了位置は含みません。
 
-- DOCX の `blocks` は本文の段落・表と脚注を指します。本文の `index` は 0 始まり、`modelId` は読み込んだ時点の文書モデル内の ID です。
+- DOCX の `blocks` は本文の段落・表と、ページ脚注・文末脚注を指します。本文の `index` は 0 始まり、`modelId` は読み込んだ時点の文書モデル内の ID です。注記の `id` は元の DOCX の値です。`part` が `footnotes` か `endnotes` かで、同じ ID の注記を区別できます。
 - XLSX の `cells` はシート名と 1 始まりの行列を持ちます。表示文字列、保存された値とその型、数式を別々に記録します。Markdown 出力と同じく表示中のシート・行・列を対象にします。
 - Lawtext と法令標準 XML の `articles` は法令番号、条番号、附則の位置と改正法令番号を記録します。本則の附則位置は `null` です。
-- `diagnostics` は、結合セルの構造や入れ子表、文末脚注など、現在検出する変換上の差を示します。
+- `diagnostics` は、結合セルの構造、入れ子表、脚注内の表など、現在検出する変換上の差を示します。
 
 位置情報は書き出し時の入力に対応します。改版後の照合や、AI の編集案の適用に使う場合は入力の SHA-256 を確認してください。
+
+DOCX のページ脚注と文末脚注に同じ ID がある場合、Markdown は別々のラベルで書き出します。
+
+```markdown
+本文[^1]と補足[^endnote-1]。
+
+[^1]: ページ脚注
+[^endnote-1]: 文末注記
+```
+
+`ai-locate` で注記本文を引用すると、元の DOCX の注記種別と ID が返ります。書き出した Markdown を Docs に読み込む場合は、どちらのラベルも Markdown の脚注として取り込みます。
 
 ### AI の指摘から原文の位置を引く
 

@@ -3739,7 +3739,7 @@ pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
 
 enum MarkdownSource<'a> {
     Body(usize, &'a Block),
-    Footnote(&'a Note),
+    Note { note: &'a Note, endnote: bool },
 }
 
 fn export_markdown_with_positions<'a>(
@@ -3801,12 +3801,12 @@ fn export_markdown_with_positions<'a>(
         i += 1;
     }
 
-    // 3. Footnotes
-    if !doc.footnotes.is_empty() {
-        if !out.ends_with("\n\n") && !out.is_empty() {
-            out.push('\n');
-        }
-        for note in &doc.footnotes {
+    // 3. Footnotes and endnotes have independent OOXML ID spaces.
+    if !(doc.footnotes.is_empty() && doc.endnotes.is_empty()) && !out.ends_with("\n\n") && !out.is_empty() {
+        out.push('\n');
+    }
+    for (notes, endnote) in [(&doc.footnotes, false), (&doc.endnotes, true)] {
+        for note in notes {
             let mut note_md = String::new();
             for b in &note.blocks {
                 if let Block::Paragraph(p) = b {
@@ -3819,12 +3819,21 @@ fn export_markdown_with_positions<'a>(
                         })
                         .cloned()
                         .collect();
+                    if endnote && !note_md.is_empty() {
+                        note_md.push('\n');
+                    }
                     note_md.push_str(&serialize_runs(&runs, media, &comments_by_id));
                 }
             }
             let start = out.len();
-            out.push_str(&format!("[^{}]: {}\n", note.id, note_md.trim()));
-            record(MarkdownSource::Footnote(note), start, out.len());
+            let label = markdown_note_label(note.id, endnote);
+            if endnote {
+                let body = note_md.trim().replace('\n', "\n    ");
+                out.push_str(&format!("[^{label}]: {body}\n"));
+            } else {
+                out.push_str(&format!("[^{label}]: {}\n", note_md.trim()));
+            }
+            record(MarkdownSource::Note { note, endnote }, start, out.len());
         }
     }
 
@@ -4079,7 +4088,7 @@ pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> 
     }))
 }
 
-/// Markdown plus snapshot-relative locations for DOCX body blocks and footnotes.
+/// Markdown plus snapshot-relative locations for DOCX body blocks, footnotes, and endnotes.
 pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Value, Error> {
     use serde_json::json;
 
@@ -4092,8 +4101,10 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
                 json!({ "part": "body", "kind": "paragraph", "index": index, "modelId": p.id }),
             MarkdownSource::Body(index, Block::Table(t)) =>
                 json!({ "part": "body", "kind": "table", "index": index, "modelId": t.id }),
-            MarkdownSource::Footnote(n) =>
-                json!({ "part": "footnotes", "kind": "footnote", "id": n.id }),
+            MarkdownSource::Note { note, endnote: false } =>
+                json!({ "part": "footnotes", "kind": "footnote", "id": note.id }),
+            MarkdownSource::Note { note, endnote: true } =>
+                json!({ "part": "endnotes", "kind": "endnote", "id": note.id }),
         };
         blocks.push((locator.clone(), start, end));
         let mut warn = |code| diagnostics.push(json!({ "code": code, "source": locator }));
@@ -4117,9 +4128,9 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
                     warn("drawing_shape_omitted");
                 }
             }
-            MarkdownSource::Footnote(note) => {
+            MarkdownSource::Note { note, endnote } => {
                 if note.blocks.iter().any(|block| matches!(block, Block::Table(_))) {
-                    warn("footnote_table_omitted");
+                    warn(if endnote { "endnote_table_omitted" } else { "footnote_table_omitted" });
                 }
             }
         }
@@ -4128,9 +4139,6 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
     let blocks: Vec<_> = blocks.into_iter().map(|(source, start, end)| {
         json!({ "source": source, "markdownBytes": [start.min(markdown.len()), end.min(markdown.len())] })
     }).collect();
-    if !doc.endnotes.is_empty() {
-        diagnostics.push(json!({ "code": "endnote_definitions_omitted", "source": { "part": "endnotes" } }));
-    }
     Ok(json!({
         "version": 1,
         "kind": "document",
@@ -4709,6 +4717,14 @@ fn serialize_chart(chart: &Chart, out: &mut String) {
     out.push_str("```\n\n");
 }
 
+fn markdown_note_label(id: u32, endnote: bool) -> String {
+    if endnote {
+        format!("endnote-{id}")
+    } else {
+        id.to_string()
+    }
+}
+
 fn serialize_runs(
     runs: &[FlowRun],
     media: &[Media],
@@ -4733,7 +4749,7 @@ fn serialize_runs(
                 }
             }
             FlowRunKind::Ruby { base, text, .. } => format!("{{{base}|{text}}}"),
-            FlowRunKind::NoteRef { id, .. } => format!("[^{id}]"),
+            FlowRunKind::NoteRef { id, endnote } => format!("[^{}]", markdown_note_label(*id, *endnote)),
             FlowRunKind::CommentRef(cid) => {
                 if let Some(c) = comments.get(cid) {
                     let body: String = c
