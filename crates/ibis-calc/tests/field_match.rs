@@ -134,6 +134,12 @@ fn address_place_variants_and_wildcards_are_possible_matches() {
     ] {
         check(args, CellValue::Number(result));
     }
+    for substitute in ['\u{001a}', '\u{fffd}', '\u{3013}', '\u{25cf}', '\u{25a0}', '?', '？'] {
+        check(&format!(r#""霞{substitute}関2-1-2","霞が関2-1-2","address""#), CellValue::Number(1.0));
+    }
+    for literal in ['\u{fffc}', '\u{fffe}', '△', '□', '한'] {
+        check(&format!(r#""霞{literal}関2-1-2","霞が関2-1-2","address""#), CellValue::Number(0.0));
+    }
     let external = '\u{e123}';
     check(
         &format!(r#""霞{external}関2-1-2","霞が関2-1-2","address","{external}""#),
