@@ -8146,6 +8146,59 @@ pub(crate) fn picture_artistic_effects_options() {
     undo_all_and_redo(&mut s);
 }
 
+fn mermaid_source_edit_roundtrip() {
+    let original = "flowchart LR\n  A[Before] --> B[End]";
+    let updated = "sequenceDiagram\n  A->>B: After";
+    let markdown = format!("# Diagram\n\n```mermaid\n{original}\n```\n");
+    let bytes = ibis_pptx::markdown::import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap();
+    let dir = crate::shell::scenario::repo_root().join("target/scenario-fixtures");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pptx-mermaid-source-input.pptx");
+    std::fs::write(&path, bytes).unwrap();
+    let mut s = Scenario::open(path.to_str().unwrap());
+    let idx = s.with(|e, _| e.slide().shapes.iter().position(|shape| {
+        e.slide().shape_alt_texts.get(&shape.id).is_some_and(|alt| alt.title == "__mermaid__")
+    }).unwrap());
+    s.select_shape(idx);
+    let snapshot = |s: &mut Scenario| s.with(|e, _| {
+        let shape = &e.slide().shapes[idx];
+        (shape.clone(), e.slide().shape_alt_texts.get(&shape.id).cloned())
+    });
+    let before = snapshot(&mut s);
+    s.update(|e, window, cx| e.open_pptx_mermaid_source(window, cx));
+    assert!(s.with(|e, _| e.dialog_is_modal()));
+    let apply = |s: &mut Scenario, source: &str| s.update(|e, window, cx| {
+        let input = e.pptx().unwrap().mermaid_edit.as_ref().unwrap().input.clone();
+        input.update(cx, |input, cx| input.set_value(source.to_string(), window, cx));
+        e.apply_pptx_mermaid_source(window, cx);
+    });
+    apply(&mut s, "unsupported diagram");
+    assert_eq!(snapshot(&mut s), before);
+    apply(&mut s, updated);
+    let after = snapshot(&mut s);
+    assert_eq!(after.1.as_ref().unwrap().description, updated);
+    let (old, new) = (before.0.frame, after.0.frame);
+    assert!(new.width <= old.width && new.height <= old.height);
+    assert!((2 * (new.x - old.x) + new.width - old.width).abs() <= 1);
+    assert!((2 * (new.y - old.y) + new.height - old.height).abs() <= 1);
+    s.key("cmd-z");
+    assert_eq!(snapshot(&mut s), before);
+    s.key("cmd-shift-z");
+    assert_eq!(snapshot(&mut s), after);
+    s.save_as("pptx-mermaid-source-edited.pptx");
+    let reopened = s.reopen();
+    let markdown = ibis_pptx::markdown::export_presentation_markdown(&reopened);
+    assert!(markdown.contains(updated));
+    assert!(!markdown.contains(original));
+    let picture = reopened.slides[0].shapes.iter().find_map(|shape| match &shape.kind {
+        ShapeKind::Picture(picture) => Some(picture),
+        _ => None,
+    }).unwrap();
+    let media = reopened.media(picture.media).unwrap();
+    assert_eq!(media.format, ibis_doc_model::MediaFormat::Svg);
+    assert!(std::str::from_utf8(&media.data).unwrap().contains("After"));
+}
+
 /// I4: the file picker completion replaces its original target, preserving formats.
 pub(crate) fn replace_picture_file() {
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
@@ -16297,6 +16350,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("pptx::copy_and_paste_paragraph_formats", copy_and_paste_paragraph_formats),
         ("pptx::copy_auto_paragraph_format", copy_auto_paragraph_format),
         ("pptx::replace_picture_file", replace_picture_file),
+        ("pptx::mermaid_source_edit_roundtrip", mermaid_source_edit_roundtrip),
         ("pptx::shape_shadow_presets_and_safe_rejection", shape_shadow_presets_and_safe_rejection),
         ("pptx::text_font_scale_custom", text_font_scale_custom),
         ("pptx::text_font_scale_presets", text_font_scale_presets),

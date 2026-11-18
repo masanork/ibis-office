@@ -22,6 +22,7 @@ impl SlideEditor {
             "glow_panel" => { self.shape_edit.glow_panel = None; }
             "frame_panel" => { self.shape_edit.frame_panel = None; }
             "text_insets_panel" => { self.shape_edit.insets_panel = None; }
+            "pptx_mermaid_source" => { state.mermaid_edit = None; }
             "alt_text_panel" => { self.shape_edit.alt_text_panel = None; }
             "chart_panel" => { self.shape_edit.chart_panel = None; }
             "compare_panel" => { state.compare_panel = None; }

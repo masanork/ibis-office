@@ -109,3 +109,5 @@ pub(crate) use super::timing_panel::TimingPanelExtCrate as _;
 pub(crate) use super::title_buttons::TitleButtonsCrate as _;
 pub(crate) use super::view_state::ViewStateCrate as _;
 pub(crate) use super::zoom_cards::ZoomCardsCrate as _;
+
+pub(crate) use super::mermaid_panel::MermaidPanelCrate as _;

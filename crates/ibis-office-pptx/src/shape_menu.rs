@@ -759,6 +759,10 @@ impl SlideEditor {
             entries.push(MenuItem::tr("pptx.chrome.reset-crop").icon("reset_image").on(|e, _, cx| e.crop_selected_pictures(ibis_doc_model::Crop::default(), cx)).into());
             entries.push(Submenu::tr("pptx.video.shape", "crop_original", crate::chrome::video_shape_items(self, true)).into());
             entries.push(crate::ibis_text::wrap_menu(self, true));
+            if self.selected_mermaid_picture().is_some() {
+                entries.push(MenuItem::new("pptx.mermaid-source", "docx.picture.mermaid-source")
+                    .on(|editor, window, cx| editor.open_pptx_mermaid_source(window, cx)).into());
+            }
             entries.push(MenuItem::tr("pptx.chrome.replace-picture").icon("swap_horiz").on(|e, w, cx| e.pick_replacement_picture(w, cx)).into());
             entries.push(MenuItem::tr("pptx.picture.remove-background").icon("auto_fix_high").on(|e, _, cx| e.set_selected_pictures_clear(Some(ibis_doc_model::Rgb(0xffffff)), cx)).into());
             entries.push(Submenu::tr("pptx.picture.color", "palette", crate::chrome::picture_color_items(true)).into());
