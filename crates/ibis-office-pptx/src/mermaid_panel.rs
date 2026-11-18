@@ -131,9 +131,10 @@ impl SlideEditor {
                     .add_media(MediaFormat::Svg, bytes.clone());
                 self.resources.add_picture(media, MediaFormat::Svg, &bytes);
                 picture.media = media;
-                picture.alt_text.title = "__mermaid__".to_string();
-                picture.alt_text.description = source;
-                let alt_text = picture.alt_text.clone();
+                let alt_text = ibis_doc_model::AltText {
+                    title: "__mermaid__".to_string(),
+                    description: source,
+                };
                 self.run(
                     vec![
                         Command::SetKind {
