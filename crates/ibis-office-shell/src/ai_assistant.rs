@@ -81,10 +81,27 @@ pub enum UiMessageKind {
 }
 
 #[derive(Clone, Debug)]
+pub struct AiReplacementTarget {
+    pub flow: std::sync::Weak<ibis_doc_model::flow::FlowDocument>,
+    pub range: (FlowPos, FlowPos),
+    pub before: String,
+}
+
+impl AiReplacementTarget {
+    pub fn matches(&self, other: &Self) -> bool {
+        self.flow.ptr_eq(&other.flow) && self.range == other.range && self.before == other.before
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct UiMessage {
     pub kind: UiMessageKind,
     pub text: String,
     pub has_edits: bool,
+    #[cfg(target_family = "wasm")]
+    replacement: Option<AiReplacementTarget>,
+    #[cfg(target_family = "wasm")]
+    preview_replacement: bool,
 }
 
 impl UiMessage {
@@ -93,6 +110,10 @@ impl UiMessage {
             kind,
             text: text.into(),
             has_edits: false,
+            #[cfg(target_family = "wasm")]
+            replacement: None,
+            #[cfg(target_family = "wasm")]
+            preview_replacement: false,
         }
     }
 }
@@ -566,7 +587,7 @@ impl SlideEditor {
 
     fn submit_ai_assistant_text(&mut self, prompt: String, cx: &mut Context<Self>) {
         #[cfg(target_family = "wasm")]
-        self.submit_browser_assistant(prompt, cx);
+        self.submit_browser_assistant(prompt, false, cx);
         #[cfg(not(target_family = "wasm"))]
         self.submit_desktop_assistant(prompt, cx);
     }
@@ -872,7 +893,7 @@ impl SlideEditor {
     }
 
     #[cfg(target_family = "wasm")]
-    fn submit_browser_assistant(&mut self, prompt: String, cx: &mut Context<Self>) {
+    fn submit_browser_assistant(&mut self, prompt: String, rewrite_selection: bool, cx: &mut Context<Self>) {
         let Some(panel) = self.ai_assistant.as_ref() else { return };
         if panel.streaming {
             return;
@@ -906,6 +927,18 @@ impl SlideEditor {
             return;
         }
         let room = document_room(&prompt, budget);
+        if rewrite_selection {
+            let Some(target) = with_format!(self, ai_replacement_target(self)) else {
+                self.push_ai_error("本文の1段落内で、置き換える文字を選択してください。".into(), cx);
+                return;
+            };
+            if utf16_units(&target.before) > room {
+                self.push_ai_error("選択範囲が長すぎます。範囲を狭めてください。".into(), cx);
+                return;
+            }
+            self.begin_browser_turn(prompt, target.before.clone(), false, true, Some(target), budget, cx);
+            return;
+        }
         let document = self.browser_extract(BrowserScope::Document, room);
         if document.overflow {
             let selection = self.browser_extract(BrowserScope::Selection, room);
@@ -922,7 +955,7 @@ impl SlideEditor {
             cx.notify();
             return;
         }
-        self.begin_browser_turn(prompt, document.text, false, false, budget, cx);
+        self.begin_browser_turn(prompt, document.text, false, false, None, budget, cx);
     }
 
     #[cfg(target_family = "wasm")]
@@ -933,7 +966,7 @@ impl SlideEditor {
         }
         let room = document_room(&pending.prompt, pending.budget);
         let document = self.browser_extract(BrowserScope::Document, room);
-        self.begin_browser_turn(pending.prompt, document.text, document.overflow, false, pending.budget, cx);
+        self.begin_browser_turn(pending.prompt, document.text, document.overflow, false, None, pending.budget, cx);
     }
 
     #[cfg(target_family = "wasm")]
@@ -951,7 +984,7 @@ impl SlideEditor {
             cx.notify();
             return;
         }
-        self.begin_browser_turn(pending.prompt, selection.text, false, true, pending.budget, cx);
+        self.begin_browser_turn(pending.prompt, selection.text, false, true, None, pending.budget, cx);
     }
 
     #[cfg(target_family = "wasm")]
@@ -972,11 +1005,17 @@ impl SlideEditor {
         document: String,
         truncated: bool,
         selection: bool,
+        replacement: Option<AiReplacementTarget>,
         budget: usize,
         cx: &mut Context<Self>,
     ) {
         let latest = wrap_browser_user(&prompt, &document, truncated);
-        let prior = self.ai_assistant.as_ref().map(|panel| panel.history.clone()).unwrap_or_default();
+        let rewrite_selection = replacement.is_some();
+        let prior = if rewrite_selection {
+            Vec::new()
+        } else {
+            self.ai_assistant.as_ref().map(|panel| panel.history.clone()).unwrap_or_default()
+        };
         let Ok(outbound) = fit_browser_messages(&prior, latest, budget) else {
             self.push_ai_error(explain_ai_error("too_long"), cx);
             return;
@@ -997,7 +1036,9 @@ impl SlideEditor {
             panel.streaming = true;
             panel.streaming_text.clear();
             panel.messages.push(UiMessage::new(UiMessageKind::User, shown));
-            panel.history.push(ChatMessage::user(prompt));
+            if !rewrite_selection {
+                panel.history.push(ChatMessage::user(prompt));
+            }
             panel.scroll_handle.scroll_to_bottom();
             panel.run_id
         };
@@ -1045,13 +1086,30 @@ impl SlideEditor {
                         }
                         panel.streaming = false;
                         panel.streaming_text.clear();
-                        let text = if out.content.is_empty() {
+                        let empty = out.content.is_empty();
+                        let complete = match out.finish_reason.as_deref() {
+                            Some(reason) => reason == "stop",
+                            None => out.received_done,
+                        };
+                        let text = if empty {
                             "応答に文章がありませんでした。".to_string()
                         } else {
                             out.content
                         };
-                        panel.history.push(ChatMessage::assistant(Some(text.clone()), Vec::new()));
-                        panel.messages.push(UiMessage::new(UiMessageKind::Assistant, text));
+                        if !rewrite_selection {
+                            panel.history.push(ChatMessage::assistant(Some(text.clone()), Vec::new()));
+                        }
+                        let mut message = UiMessage::new(UiMessageKind::Assistant, text);
+                        message.replacement = replacement.filter(|target| {
+                            complete && !empty && !message.text.trim().is_empty() && target.before != message.text
+                        });
+                        panel.messages.push(message);
+                        if rewrite_selection && !complete && !empty {
+                            panel.messages.push(UiMessage::new(
+                                UiMessageKind::Error,
+                                "応答が途中で終了しました。選択範囲の書き換え案をもう一度生成してください。",
+                            ));
+                        }
                         panel.scroll_handle.scroll_to_bottom();
                         cx.notify();
                     });
@@ -1059,6 +1117,33 @@ impl SlideEditor {
             }
         })
         .detach();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn set_ai_replacement_preview(&mut self, index: usize, visible: bool, cx: &mut Context<Self>) {
+        if let Some(message) = self.ai_assistant.as_mut().and_then(|panel| panel.messages.get_mut(index)) {
+            message.preview_replacement = visible;
+            cx.notify();
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn apply_browser_replacement(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(message) = self.ai_assistant.as_ref().and_then(|panel| panel.messages.get(index)) else { return };
+        let Some(target) = message.replacement.clone().filter(|_| message.preview_replacement) else { return };
+        let text = message.text.clone();
+        let applied = with_format!(self, apply_ai_replacement(self, &target, &text, cx));
+        if let Some(message) = self.ai_assistant.as_mut().and_then(|panel| panel.messages.get_mut(index)) {
+            message.replacement = None;
+            message.preview_replacement = false;
+        }
+        if applied {
+            self.focus_handle.focus(window, cx);
+            self.set_status("選択範囲を置き換えました。".into(), cx);
+        } else {
+            self.push_ai_error("文書または選択範囲が変わったか、編集できない状態です。範囲を選び直して書き換え案を作ってください。".into(), cx);
+        }
+        cx.notify();
     }
 
     #[cfg(target_family = "wasm")]
@@ -3843,7 +3928,7 @@ impl SlideEditor {
                 ],
             ),
             AiDocKind::Docx => (
-                "文書の要約や校正案を文章で受け取れます。返答は提案です。文書は変わりません。コピーしてから貼り付けてください。",
+                "文書の要約や校正案を受け取れます。選択範囲の書き換え案は、プレビューから文書に適用できます。",
                 vec![
                     ("ai-quick-1", "文書を要約", "文書の要点を要約してください。文書は変えず、文章で答えてください。"),
                     ("ai-quick-2", "校正の案", "誤字や読みにくさの改善案を文章で提案してください。"),
@@ -3906,6 +3991,32 @@ impl SlideEditor {
             let copy_text = msg.text.clone();
             let show_copy = matches!(msg.kind, UiMessageKind::Error | UiMessageKind::Assistant);
             let show_undo = msg.has_edits;
+            #[cfg(target_family = "wasm")]
+            let replacement_ui = msg.replacement.as_ref().map(|target| {
+                if msg.preview_replacement {
+                    v_flex()
+                        .gap_1()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .pt_1()
+                        .child(div().text_xs().child("置換前"))
+                        .child(div().text_xs().child(target.before.clone()))
+                        .child(div().text_xs().child("置換後"))
+                        .child(div().text_xs().child(msg.text.clone()))
+                        .child(h_flex().gap_1().justify_end()
+                            .child(Button::new(("ai-replacement-cancel", idx)).ghost().xsmall().label("キャンセル")
+                                .on_click(cx.listener(move |this, _, _, cx| this.set_ai_replacement_preview(idx, false, cx))))
+                            .child(Button::new(("ai-replacement-apply", idx)).primary().xsmall().label("選択範囲を置換")
+                                .on_click(cx.listener(move |this, _, window, cx| this.apply_browser_replacement(idx, window, cx)))))
+                        .into_any_element()
+                } else {
+                    Button::new(("ai-replacement-preview", idx)).outline().xsmall().label("置換をプレビュー")
+                        .on_click(cx.listener(move |this, _, _, cx| this.set_ai_replacement_preview(idx, true, cx)))
+                        .into_any_element()
+                }
+            });
+            #[cfg(not(target_family = "wasm"))]
+            let replacement_ui: Option<AnyElement> = None;
             msg_list = msg_list.child(
                 v_flex()
                     .p_2()
@@ -3913,6 +4024,7 @@ impl SlideEditor {
                     .rounded_md()
                     .bg(bg)
                     .child(div().text_xs().text_color(fg).child(msg.text.clone()))
+                    .children(replacement_ui)
                     .when(show_copy || show_undo, |box_el| {
                         box_el.child(
                             h_flex()
@@ -3974,7 +4086,21 @@ impl SlideEditor {
             .children(pending_box)
             .child(scrollable_msgs);
 
+        #[cfg(target_family = "wasm")]
+        let rewrite_button = (kind == AiDocKind::Docx && !streaming).then(|| {
+            Button::new("ai-rewrite-selection").outline().xsmall().label("選択範囲の書き換え案")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.submit_browser_assistant(
+                        "選択した文章を、意味を変えずに読みやすく書き換えてください。書き換えた本文だけを、見出し・説明・Markdownの装飾を付けずに返してください。".into(),
+                        true,
+                        cx,
+                    );
+                }))
+        });
+        #[cfg(not(target_family = "wasm"))]
+        let rewrite_button: Option<Button> = None;
         let footer = v_flex()
+            .children(rewrite_button)
             .gap_2()
             .w_full()
             .child(Textarea::new(&prompt_input).small())

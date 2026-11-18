@@ -172,6 +172,7 @@ pub struct CompletionOutcome {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
+    pub received_done: bool,
 }
 
 #[derive(Default)]
@@ -187,6 +188,7 @@ pub struct SseStreamParser {
     content: String,
     tool_calls: BTreeMap<usize, PartialToolCall>,
     finish_reason: Option<String>,
+    received_done: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -247,6 +249,7 @@ impl SseStreamParser {
         };
         let data = data.trim();
         if data == "[DONE]" {
+            self.received_done = true;
             return Ok(Some(SseEvent::Done));
         }
         if let Ok(err) = serde_json::from_str::<ErrorEnvelope>(data) {
@@ -319,6 +322,7 @@ impl SseStreamParser {
             content: self.content,
             tool_calls,
             finish_reason: self.finish_reason,
+            received_done: self.received_done,
         }
     }
 }
@@ -866,6 +870,7 @@ mod tests {
         let outcome = parser.into_outcome();
         assert_eq!(outcome.content, "Hello world");
         assert_eq!(outcome.finish_reason.as_deref(), Some("tool_calls"));
+        assert!(outcome.received_done);
         assert_eq!(outcome.tool_calls.len(), 1);
         assert_eq!(outcome.tool_calls[0].id, "call_1");
         assert_eq!(outcome.tool_calls[0].function.name, "set_cells");

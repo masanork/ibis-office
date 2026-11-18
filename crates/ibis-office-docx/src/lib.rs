@@ -377,6 +377,52 @@ impl FormatEditor for Document {
         if text.trim().is_empty() { None } else { Some(text) }
     }
 
+    fn ai_replacement_target(editor: &SlideEditor) -> Option<crate::shell::ai_assistant::AiReplacementTarget> {
+        let state = editor.doc_state()?;
+        if editor.is_read_only() || state.shape_selected || state.box_edit.is_some() || editor.has_extra_selections() {
+            return None;
+        }
+        let (start, end) = editor.ordered_selection()?;
+        if start == end || start.para != end.para {
+            return None;
+        }
+        let flow = editor.flow()?;
+        // Limit the first implementation to plain text in one body paragraph.
+        // Mixed objects and revision markers can be invisible in a text preview.
+        let paragraph = flow.body.iter().find_map(|block| match block {
+            ibis_doc_model::Block::Paragraph(p) if p.id == start.para => Some(p),
+            _ => None,
+        })?;
+        if end.offset > paragraph.len()
+            || paragraph.runs.iter().any(|run| {
+                !matches!(run.kind, ibis_doc_model::FlowRunKind::Text(_))
+                    || run.revision.is_some()
+                    || run.link.is_some()
+            })
+        {
+            return None;
+        }
+        let before = editor.selected_text();
+        if before.trim().is_empty() {
+            return None;
+        }
+        Some(crate::shell::ai_assistant::AiReplacementTarget {
+            flow: std::sync::Arc::downgrade(flow),
+            range: (start, end),
+            before,
+        })
+    }
+
+    fn apply_ai_replacement(editor: &mut SlideEditor, target: &crate::shell::ai_assistant::AiReplacementTarget, text: &str, cx: &mut Context<SlideEditor>) -> bool {
+        let Some(current) = Self::ai_replacement_target(editor) else { return false };
+        if !target.matches(&current) || text.trim().is_empty() || text == current.before {
+            return false;
+        }
+        let undo_before = editor.document.undo_len();
+        editor.type_text(text, cx);
+        editor.document.undo_len() > undo_before
+    }
+
     fn note_open_failed(path: &std::path::Path) {
         repair::note_open_failed(path);
     }

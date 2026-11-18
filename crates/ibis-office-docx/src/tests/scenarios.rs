@@ -52,6 +52,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("docx::float003_wrap_tight_through_top_bottom", float003_wrap_tight_through_top_bottom),
         ("docx::view007_scroll_pages_vertically", view007_scroll_pages_vertically),
         ("docx::edit010_paste_plain", edit010_paste_plain),
+        ("docx::assistant_replacement", assistant_replacement),
         ("docx::list012_level_with_tab", list012_level_with_tab),
         ("docx::bullet001_bullet_symbol_and_font", bullet001_bullet_symbol_and_font),
         ("docx::bullet002_gallery_symbols", bullet002_gallery_symbols),
@@ -2283,6 +2284,44 @@ fn h5_footnotes() {
     assert_eq!(flow(&saved).endnotes.len(), 2);
     s.update(|e, window, cx| e.undo(&crate::Undo, window, cx));
     assert_eq!(s.document().footnotes.len(), 2, "one undo takes the endnotes back");
+}
+
+fn assistant_replacement() {
+    use crate::shell::format::FormatEditor as _;
+    use ibis_doc_model::{FlowRun, FlowRunStyle};
+    let mut s = Scenario::start_view();
+    let mut presentation = ibis_pptx::blank(ibis_pptx::Kind::Document);
+    let id = 1;
+    let flow = std::sync::Arc::make_mut(presentation.flow.as_mut().unwrap());
+    flow.body = vec![Block::Paragraph(FlowParagraph {
+        id,
+        runs: vec![FlowRun::new(FlowRunKind::Text("abc def".into()), FlowRunStyle::default())],
+        ..Default::default()
+    })];
+    s.update(|e, window, cx| e.load(presentation, "rewrite.docx".into(), window, cx));
+    let select = |s: &mut Scenario, start| {
+        s.update(|e, _, cx| {
+            e.set_caret(FlowPos::new(id, start), false, cx);
+            e.set_caret(FlowPos::new(id, start + 3), true, cx);
+        });
+    };
+    select(&mut s, 0);
+    let target = s.with(|e, _| crate::Document::ai_replacement_target(e)).unwrap();
+    assert_eq!(target.before, "abc");
+    select(&mut s, 4);
+    assert!(!s.update(|e, _, cx| crate::Document::apply_ai_replacement(e, &target, "XYZ", cx)));
+    assert_eq!(para(&s.document(), id).text(), "abc def");
+    s.update(|e, _, cx| {
+        e.set_caret(FlowPos::new(id, 7), false, cx);
+        e.type_text("!", cx);
+    });
+    select(&mut s, 0);
+    assert!(!s.update(|e, _, cx| crate::Document::apply_ai_replacement(e, &target, "XYZ", cx)));
+    let current = s.with(|e, _| crate::Document::ai_replacement_target(e)).unwrap();
+    assert!(s.update(|e, _, cx| crate::Document::apply_ai_replacement(e, &current, "読める文章", cx)));
+    assert_eq!(para(&s.document(), id).text(), "読める文章 def!");
+    s.update(|e, window, cx| e.undo(&crate::Undo, window, cx));
+    assert_eq!(para(&s.document(), id).text(), "abc def!");
 }
 
 /// H10: a word selected → 挿入 > コメント, the text typed and Enter → 返信
