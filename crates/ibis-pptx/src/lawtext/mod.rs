@@ -193,6 +193,16 @@ pub fn is_law_xml(data: &[u8]) -> bool {
     head.contains("<Law") && (head.contains("<LawBody") || head.contains("<LawNum"))
 }
 
+/// The upstream Lawtext examples put the law number on its own line.
+fn standalone_law_number(line: &str) -> Option<&str> {
+    let number = line.strip_prefix('（')?.strip_suffix('）')?.trim();
+    (number.ends_with('号') && number.rsplit_once('第').is_some_and(|(prefix, ordinal)| {
+        !prefix.is_empty() && ordinal.chars().next().is_some_and(|ch| {
+            ch.is_ascii_digit() || "０１２３４５６７８９〇零一二三四五六七八九十百千万".contains(ch)
+        })
+    })).then_some(number)
+}
+
 /// Return `true` when `data` looks like a Lawtext document (`.law.txt` / `.lawtext`)
 /// or Markdown with `type: lawtext` frontmatter.
 pub fn is_lawtext(data: &[u8]) -> bool {
@@ -207,7 +217,8 @@ pub fn is_lawtext(data: &[u8]) -> bool {
     let Some(first) = lines.next() else {
         return false;
     };
-    let has_header = first.contains('（') && first.contains('）');
+    let has_header = (first.contains('（') && first.contains('）'))
+        || lines.next().and_then(standalone_law_number).is_some();
     let has_article = trimmed.lines().any(|l| parse_article_header(l.trim()).is_some());
     has_header && has_article
 }
@@ -863,11 +874,20 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
         }
     };
 
-    for raw_line in text.lines() {
+    let mut lines = text.trim_start_matches('\u{feff}').lines()
+        .filter(|line| !line.trim().is_empty());
+    let mut header = lines.clone();
+    if let (Some(title), Some(number)) = (
+        header.next().map(str::trim).filter(|title| !title.contains('（') && !title.starts_with('第')),
+        header.next().map(str::trim).and_then(standalone_law_number),
+    ) {
+        doc.law_title = title.to_string();
+        doc.law_num = number.to_string();
+        lines = header;
+    }
+
+    for raw_line in lines {
         let trimmed = raw_line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
         if doc.law_title.is_empty() && cur_article.is_none() && div_stack.is_empty() {
             if let Some((title, law_num)) = split_title_and_parens(trimmed) {
                 if !is_caption_line(trimmed) && !trimmed.starts_with('第') {

@@ -94,28 +94,17 @@ zenuml
 
 ## 法令標準XML と Lawtext
 
-Docs は UTF-8 の法令標準XMLや、法令名・法令番号と条見出しを持つ Lawtext を認識し、条文を Markdown に変換して開きます。文書全体を法令として扱う挙動は、以下のコード例を単独のファイルに保存するか、同梱の XML で試せます。
+Docs は UTF-8 の法令標準XMLや、法令名・法令番号と条見出しを持つ Lawtext を認識し、条文を Markdown に変換して開きます。文書全体を法令として扱う挙動は、同梱の Lawtext と XML をそれぞれ開いて試せます。
 
-以下は架空の条文です。内容だけを `sample.lawtext` に保存してください。
-
-```text
-原稿確認規程（令和八年規程第一号）
-
-（目的）
-第一条 この規程は、原稿の確認方法を定める。
-２ 確認結果は、原稿とともに保存する。
-
-（見直し）
-第二条 この規程は、必要に応じて見直す。
-```
+Lawtext 本家が掲載している行政手続法の第一条を、法令名と法令番号が別行の原文のまま同梱しています。次の例では、章見出し、条の見出し、第二項を確認できます。[Lawtext 本家の掲載例](https://github.com/yamachig/Lawtext/blob/60567c6ca7de6b14c8c1d895338c4614b49969d1/README.md#lawtextの例--example-of-lawtext)・[同梱した入力](../crates/ibis-pptx/tests/lawtext/administrative-procedure-act.lawtext)。
 
 ```sh
-ibisOffice --export md --out-dir /tmp/docs-reference/law sample.lawtext
-ibisOffice --export lawxml --out-dir /tmp/docs-reference/law sample.lawtext
+ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-pptx/tests/lawtext/administrative-procedure-act.lawtext
+ibisOffice --export lawxml --out-dir /tmp/docs-reference/law crates/ibis-pptx/tests/lawtext/administrative-procedure-act.lawtext
 ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-pptx/tests/lawtext/321CONSTITUTION.xml
 ```
 
-日本国憲法の XML では、Markdown に前文が出ることと、ibisOffice が生成した Lawtext を読み直すと本則の構造が一致することを CI で確認します。改正履歴や全 XML 要素の可逆性、外部実装が出力する Lawtext との互換性は個別に確認が必要です。[CI の入力と出典](../crates/ibis-pptx/tests/lawtext/README.md)。
+日本国憲法の XML では、Markdown に前文が出ることと、ibisOffice が生成した Lawtext を読み直すと本則の構造が一致することを CI で確認します。改正履歴や全 XML 要素の可逆性、他の Lawtext 構文との互換性は個別に確認が必要です。[CI の入力と出典](../crates/ibis-pptx/tests/lawtext/README.md)。
 
 ## ステージング文書としての更新
 
