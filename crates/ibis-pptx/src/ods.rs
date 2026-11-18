@@ -424,6 +424,32 @@ fn split_reference(part: &str) -> (Option<String>, String) {
     (sheet_text, cell)
 }
 
+/// Workbook names are children of office:spreadsheet; sheet-local names
+/// are children of their table and need SpreadsheetML's localSheetId.
+fn append_named_ranges(container: Node, scope: Option<usize>, out: &mut String) {
+    use std::fmt::Write as _;
+    let scope = scope.map(|index| format!(r#" localSheetId="{index}""#)).unwrap_or_default();
+    for expressions in children(container, TABLE, "named-expressions") {
+        for node in children(expressions, TABLE, "named-range") {
+            let (Some(name), Some(range)) = (attr(node, TABLE, "name"), attr(node, TABLE, "cell-range-address")) else {
+                continue;
+            };
+            let mut endpoints = range.splitn(2, ':').map(split_reference);
+            let Some((Some(sheet), start)) = endpoints.next() else {
+                continue;
+            };
+            let reference = match endpoints.next() {
+                None => format!("{}!{start}", sheet_ref(&sheet)),
+                Some((end_sheet, end)) if end_sheet.as_ref().is_none_or(|name| name == &sheet) => {
+                    format!("{}!{start}:{end}", sheet_ref(&sheet))
+                }
+                _ => continue,
+            };
+            let _ = write!(out, r#"<definedName name="{}"{scope}>{}</definedName>"#, esc(name), esc(&reference));
+        }
+    }
+}
+
 /// A formula of the document (`of:=SUM([.A1:.A3];2)`) as an Excel formula without the `=`.
 fn formula_to_excel(text: &str) -> String {
     let t = text.trim();
@@ -887,6 +913,7 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
     let mut sheet_rels: Vec<String> = Vec::new();
     let mut hidden_sheets: Vec<bool> = Vec::new();
     let mut names_xml = String::new();
+    append_named_ranges(spreadsheet, None, &mut names_xml);
     let mut budget_cells = 8_000_000usize;
     // The data validations: the definitions by name.
     let mut validation_defs: HashMap<String, Node> = HashMap::new();
@@ -906,6 +933,7 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
     let mut chart_parts: Vec<(String, String)> = Vec::new();
     let chart_tables: Vec<(String, Node)> = children(spreadsheet, TABLE, "table").map(|t| (attr(t, TABLE, "name").unwrap_or("Sheet").to_string(), t)).collect();
     for table in children(spreadsheet, TABLE, "table") {
+        append_named_ranges(table, Some(sheet_xml.len()), &mut names_xml);
         let name = attr(table, TABLE, "name").unwrap_or("Sheet").to_string();
         hidden_sheets.push(attr(table, TABLE, "display") == Some("false"));
         // Columns.
@@ -1180,23 +1208,6 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
     if sheet_xml.is_empty() {
         return Err(bad("シートがありません"));
     }
-    // Named ranges (`table:named-range`).
-    for expressions in children(spreadsheet, TABLE, "named-expressions") {
-        for n in children(expressions, TABLE, "named-range") {
-            let (Some(name), Some(range)) = (attr(n, TABLE, "name"), attr(n, TABLE, "cell-range-address")) else { continue };
-            let reference = range.split(':').map(|p| {
-                let (sheet, cell) = split_reference(p);
-                (sheet, cell)
-            }).collect::<Vec<_>>();
-            let text = match reference.as_slice() {
-                [(Some(s), a), (_, b)] => format!("{}!{a}:{b}", sheet_ref(s)),
-                [(Some(s), a)] => format!("{}!{a}", sheet_ref(s)),
-                _ => continue,
-            };
-            names_xml.push_str(&format!("<definedName name=\"{}\">{}</definedName>", esc(name), esc(&text)));
-        }
-    }
-
     // The package.
     let mut zip = ibis_ooxml::zip::Writer::new();
     let meta = ibis_ooxml::zip::EntryMeta::new();

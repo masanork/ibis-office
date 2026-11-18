@@ -180,3 +180,64 @@ fn odp_table_with_grouped_columns_keeps_the_table() {
         assert_eq!(cells, [vec!["左", "右"], vec!["内容", "詳細"]]);
     });
 }
+
+#[test]
+fn ods_local_named_ranges_recalculate_in_their_own_sheets() {
+    use ibis_doc_model::{
+        Command, Document, SheetCommand,
+        sheet_command::{CellEdit, CellInput},
+    };
+
+    let data = package(
+        "application/vnd.oasis.opendocument.spreadsheet",
+        r#"<office:spreadsheet>
+          <table:table table:name="Base's Data">
+            <table:table-row>
+              <table:table-cell office:value-type="float" office:value="5"/>
+              <table:table-cell office:value-type="float" office:value="10" table:formula="of:=Rate*2"/>
+            </table:table-row>
+            <table:named-expressions>
+              <table:named-range table:name="Rate" table:base-cell-address="$'Base''s Data'.$A$1" table:cell-range-address="$'Base''s Data'.$A$1"/>
+            </table:named-expressions>
+          </table:table>
+          <table:table table:name="Summary">
+            <table:table-row>
+              <table:table-cell office:value-type="float" office:value="11"/>
+              <table:table-cell office:value-type="float" office:value="16" table:formula="of:=Rate+['Base''s Data'.A1]"/>
+            </table:table-row>
+            <table:named-expressions>
+              <table:named-range table:name="Rate" table:base-cell-address="$Summary.$A$1" table:cell-range-address="$Summary.$A$1"/>
+            </table:named-expressions>
+          </table:table>
+        </office:spreadsheet>"#,
+        "",
+    );
+    check_import_and_ooxml_save(data, |presentation| {
+        let mut document = Document::new(presentation.clone());
+        let value = |doc: &Document, sheet: usize| {
+            sheet_of_slide(&doc.presentation().slides[sheet])
+                .unwrap()
+                .cell(0, 1)
+                .unwrap()
+                .value
+                .clone()
+        };
+        assert_eq!(value(&document, 0), CellValue::Number(10.0));
+        assert_eq!(value(&document, 1), CellValue::Number(16.0));
+        for (sheet, n, expected) in [(0, 7.0, [14.0, 18.0]), (1, 13.0, [14.0, 20.0])] {
+            let slide = presentation.slides[sheet].id;
+            document
+                .execute(vec![Command::Sheet(SheetCommand::SetCells {
+                    slide,
+                    edits: vec![CellEdit {
+                        row: 0,
+                        column: 0,
+                        input: CellInput::Value(CellValue::Number(n)),
+                    }],
+                })])
+                .unwrap();
+            assert_eq!(value(&document, 0), CellValue::Number(expected[0]));
+            assert_eq!(value(&document, 1), CellValue::Number(expected[1]));
+        }
+    });
+}
