@@ -1661,6 +1661,15 @@ pub fn workbook_from(text: &str, name: &str) -> Result<Vec<u8>, Error> {
 
 /// A workbook (`.xlsx` bytes) of one sheet named `name` holding the delimited values.
 pub fn workbook_from_with_delimiter(text: &str, name: &str, delimiter: char) -> Result<Vec<u8>, Error> {
+    workbook_from_fields(text, name, delimiter, |_, _| false)
+}
+
+pub(crate) fn workbook_from_fields(
+    text: &str,
+    name: &str,
+    delimiter: char,
+    is_text: impl Fn(usize, usize) -> bool,
+) -> Result<Vec<u8>, Error> {
     let records = parse_with_delimiter(text, delimiter);
     // Number formats the values take (as typing them gives), by code.
     let mut formats: Vec<String> = Vec::new();
@@ -1672,7 +1681,12 @@ pub fn workbook_from_with_delimiter(text: &str, name: &str, delimiter: char) -> 
                 continue;
             }
             let at = format!("{}{}", column_name(c as u32), r + 1);
-            match parse_imported(field, false) {
+            let typed = if is_text(r, c) {
+                Typed::Value(CellValue::Text(field.clone()), None)
+            } else {
+                parse_imported(field, false)
+            };
+            match typed {
                 Typed::Formula(f) => cells.push_str(&format!(r#"<c r="{at}"><f>{}</f></c>"#, escape(&ibis_calc::formula::to_file(&f)))),
                 Typed::Value(v, format) => {
                     let style = match format {
