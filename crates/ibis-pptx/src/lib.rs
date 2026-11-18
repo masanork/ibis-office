@@ -85,6 +85,7 @@ pub mod svg_convert;
 pub mod theme_effects;
 mod theme;
 mod drawing_props;
+mod odf;
 mod ods;
 mod xlsb;
 mod xlsb_formula;

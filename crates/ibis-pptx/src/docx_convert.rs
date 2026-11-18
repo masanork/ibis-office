@@ -16,6 +16,7 @@ use ibis_doc_model::{
 use ibis_ooxml::cfb::{self, Item as CfbItem};
 use ibis_ooxml::zip::{EntryMeta, Writer};
 
+use crate::odf::{TABLE as ODT_TABLE_NS, TEXT as ODT_TEXT_NS};
 use crate::zip::Archive;
 use crate::{Error, Opened};
 
@@ -1926,39 +1927,16 @@ struct OdtStyleDef {
 }
 
 const ODT_OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
-const ODT_TEXT_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
-const ODT_TABLE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
 
 /// Flatten only ODF's structural text containers. In particular, do not
 /// collect paragraphs from annotations, tracked deletions or drawing objects.
 fn odt_blocks<'a, 'input>(root: roxmltree::Node<'a, 'input>) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> {
-    let mut children = vec![root.children()];
-    std::iter::from_fn(move || {
-        while let Some(level) = children.last_mut() {
-            let Some(node) = level.next() else {
-                children.pop();
-                continue;
-            };
-            if !node.is_element() {
-                continue;
-            }
-            match (node.tag_name().namespace(), node.tag_name().name()) {
-                (Some(ODT_TEXT_NS), "section") => {
-                    // Preserve visible sections. Evaluating ODF conditions is outside this import.
-                    if !matches!(node.attribute((ODT_TEXT_NS, "display")), Some("none" | "condition")) {
-                        children.push(node.children());
-                    }
-                }
-                (Some(ODT_TEXT_NS), "list" | "list-item" | "list-header" | "numbered-paragraph") => {
-                    children.push(node.children());
-                }
-                (Some(ODT_TEXT_NS), "p" | "h") | (Some(ODT_TABLE_NS), "table") => {
-                    return Some(node);
-                }
-                _ => {}
-            }
-        }
-        None
+    crate::odf::through(root, crate::odf::text_container)
+    .filter(|node| {
+        matches!(
+            (node.tag_name().namespace(), node.tag_name().name()),
+            (Some(ODT_TEXT_NS), "p" | "h") | (Some(ODT_TABLE_NS), "table")
+        )
     })
 }
 
@@ -2154,7 +2132,7 @@ pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
             "p" | "h" => blocks.push(ConvBlock::Para(parse_odt_para(child))),
             "table" => {
                 let mut rows = Vec::new();
-                for r_node in child.children().filter(|c| c.has_tag_name((ODT_TABLE_NS, "table-row"))) {
+                for r_node in crate::odf::table_rows(child).filter(|row| !crate::odf::row_hidden(*row)) {
                     let mut cells = Vec::new();
                     for c_node in r_node.children().filter(|c| c.has_tag_name((ODT_TABLE_NS, "table-cell"))) {
                         let paras: Vec<ConvPara> = odt_blocks(c_node)
@@ -2167,7 +2145,9 @@ pub fn import_odt_to_docx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
                         rows.push(cells);
                     }
                 }
-                blocks.push(ConvBlock::Table(ConvTable { rows }));
+                if !rows.is_empty() {
+                    blocks.push(ConvBlock::Table(ConvTable { rows }));
+                }
             }
             _ => {}
         }

@@ -53,9 +53,14 @@ fn check_body(presentation: &Presentation) {
     assert_eq!(nested.text(), "子項目");
     assert_eq!(continuation.text(), "");
     assert_eq!(numbered.text(), "旧形式の番号付き段落");
-    let [Block::Paragraph(cell)] = table.rows[0].cells[0].blocks.as_slice() else {
+    let [Block::Paragraph(cell)] = table.rows[1].cells[0].blocks.as_slice() else {
         panic!("expected the list item's paragraph in the table cell");
     };
+    assert_eq!(table.rows.len(), 2);
+    let [Block::Paragraph(header)] = table.rows[0].cells[0].blocks.as_slice() else {
+        panic!("expected the header paragraph in the first row");
+    };
+    assert_eq!(header.text(), "表見出し");
     assert_eq!(cell.text(), "セル内の項目");
     assert_eq!(after.text(), "後");
 }
@@ -75,14 +80,25 @@ fn preserves_list_and_section_paragraphs_in_order() {
                 </t:list>
                 <t:numbered-paragraph><t:p>旧形式の番号付き段落</t:p></t:numbered-paragraph>
                 <tbl:table tbl:name="table">
-                    <tbl:table-row><tbl:table-cell>
-                        <t:list><t:list-item><t:p>セル内の項目</t:p></t:list-item></t:list>
-                    </tbl:table-cell></tbl:table-row>
+                    <tbl:table-header-rows>
+                        <tbl:table-row><tbl:table-cell><t:p>表見出し</t:p></tbl:table-cell></tbl:table-row>
+                    </tbl:table-header-rows>
+                    <tbl:table-row-group><tbl:table-rows>
+                        <tbl:table-row><tbl:table-cell>
+                            <t:list><t:list-item><t:p>セル内の項目</t:p></t:list-item></t:list>
+                        </tbl:table-cell></tbl:table-row>
+                    </tbl:table-rows></tbl:table-row-group>
+                    <tbl:table-row-group tbl:display="false"><tbl:table-row><tbl:table-cell>
+                        <t:p>非表示の表行</t:p>
+                    </tbl:table-cell></tbl:table-row></tbl:table-row-group>
                 </tbl:table>
             </t:section>
             <t:section t:name="hidden" t:display="none"><t:p>非表示</t:p></t:section>
             <t:section t:name="conditional" t:display="condition"><t:p>条件付き</t:p></t:section>
             <other:list><t:p>別名前空間の要素</t:p></other:list>
+            <tbl:table tbl:name="hidden-table"><tbl:table-row tbl:visibility="collapse">
+                <tbl:table-cell><t:p>全行非表示</t:p></tbl:table-cell>
+            </tbl:table-row></tbl:table>
             <t:p>後</t:p>
         </o:text>"#);
     check_body(&ibis_pptx::read(&data).unwrap());
