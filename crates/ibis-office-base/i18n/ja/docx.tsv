@@ -2377,3 +2377,7 @@ _docx.tab-num	リスト
 docx.marks.page-break	改ページ
 docx.marks.column-break	段区切り
 docx.header-footer.close	ヘッダーとフッターを閉じる
+docx.picture.mermaid-source	Mermaid ソースを編集…
+docx.picture.mermaid-source.invalid	このソースを Mermaid 図として描画できません。
+docx.picture.mermaid-source.stale	編集中の図が変更されました。ソース編集を開き直してください。
+docx.picture.mermaid-source.rejected	現在の文書では図を更新できません。

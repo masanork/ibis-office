@@ -2386,3 +2386,7 @@ _docx.tab-num	List
 docx.marks.page-break	Page Break
 docx.marks.column-break	Column Break
 docx.header-footer.close	Close Header and Footer
+docx.picture.mermaid-source	Edit Mermaid Source…
+docx.picture.mermaid-source.invalid	This source could not be rendered as a Mermaid diagram.
+docx.picture.mermaid-source.stale	The selected diagram changed. Reopen the source editor to continue.
+docx.picture.mermaid-source.rejected	This diagram could not be updated in the current document.

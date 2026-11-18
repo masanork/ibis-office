@@ -1833,6 +1833,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("docx.picture.distribute.horizontally", |this, _, cx| this.distribute_pictures_horizontally(cx));
     menus.connect("docx.picture.distribute.vertically", |this, _, cx| this.distribute_pictures_vertically(cx));
     menus.connect("docx.picture.align-to.margin", |this, _, cx| this.set_picture_align_relative("margin", cx));
+    menus.connect("docx.picture.mermaid-source", |this, window, cx| this.open_mermaid_source(window, cx));
     menus.connect("docx.picture.alt-text", |this, window, cx| this.open_picture_alt_text(window, cx));
     menus.connect("docx.alt-text", |this, window, cx| this.open_picture_alt_text(window, cx));
     menus.connect("docx.picture.decorative", |this, _, cx| this.toggle_picture_decorative(cx));
@@ -1977,6 +1978,8 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
         .icon("crop").disabled(!_editor.can_crop_mode()).on(|this,window,cx|this.begin_crop_mode(window,cx)).into());
     menus.items_mut(MenuId::Format).push(MenuItem::tr("docx.picture.alt-text")
         .disabled(_editor.picture_at_caret().is_none()).on(|this,window,cx|this.open_picture_alt_text(window,cx)).into());
+    menus.items_mut(MenuId::Format).push(MenuItem::tr("docx.picture.mermaid-source")
+        .disabled(!_editor.can_edit_mermaid_source()).on(|this, window, cx| this.open_mermaid_source(window, cx)).into());
     let has_pic = _editor.picture_at_caret().is_some();
     let pic_dec = _editor.picture_decorative_at_caret().unwrap_or(false);
     menus.items_mut(MenuId::Format).push(MenuItem::tr("docx.picture.decorative")

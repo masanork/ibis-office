@@ -31,6 +31,7 @@ impl SlideEditor {
     pub(crate) fn discard_docx_dialog(&mut self, key: &'static str) {
         let Some(state) = self.doc_state_mut() else { return; };
         match key {
+            "docx_mermaid_source" => { state.mermaid_edit = None; }
             "font_panel" => { state.font_edit = None; }
             "style_panel" => { state.style_edit = None; }
             "new_style_panel" => { state.helper.new_style = None; }

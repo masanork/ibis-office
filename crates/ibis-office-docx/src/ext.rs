@@ -113,6 +113,7 @@ pub(crate) use super::paragraph_panel::ParagraphPanelCrate as _;
 pub(crate) use super::picture_crop::PictureCropCrate as _;
 pub use super::picture_panel::PicturePanel as _;
 pub(crate) use super::picture_panel::PicturePanelCrate as _;
+pub(crate) use super::mermaid_panel::MermaidPanelCrate as _;
 pub use super::prefs::PrefsExt as _;
 pub(crate) use super::prefs::PrefsExtCrate as _;
 pub use super::print_panel::PrintPanel as _;
