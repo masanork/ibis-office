@@ -3,7 +3,8 @@
 //! Read-only DocuWorks page adapter for the fixed-layout viewer.
 //!
 //! The preview maps basic geometry, horizontal text and axis-aligned images.
-//! Text positioning, path clipping and compositing need richer viewer commands.
+//! Horizontal glyph positions and rectangular clips are supported. Other clip
+//! shapes use their bounding rectangles.
 
 use ezpzxdw_core::{
     doc::Document,
@@ -69,7 +70,24 @@ impl XdwContainer {
             .map_err(|err| Error::new(err.to_string()))?;
         let mut display_list = Vec::with_capacity(display.items.len());
         let mut image_budget = PAGE_IMAGE_BUDGET;
+        let clips: Vec<_> = display
+            .clips
+            .iter()
+            .map(|clip| clip_rect(&clip.0))
+            .collect();
+        let mut current_clip = None;
         for item in display.items {
+            let clip = match &item {
+                Item::Fill { clip, .. }
+                | Item::Stroke { clip, .. }
+                | Item::Text { clip, .. }
+                | Item::Image { clip, .. } => *clip,
+            };
+            let next_clip = clips.get(clip as usize).copied().flatten();
+            if next_clip != current_clip {
+                display_list.push(DisplayCmd::SetClipRect(next_clip));
+                current_clip = next_clip;
+            }
             let command = match item {
                 Item::Fill {
                     path,
@@ -93,16 +111,35 @@ impl XdwContainer {
                 Item::Text {
                     x,
                     y,
+                    angle,
                     size,
+                    sx,
+                    vertical,
                     color,
                     text,
+                    xs,
                     ..
-                } => Some(DisplayCmd::DrawGlyphRun {
-                    text,
-                    origin: (x * PT_PER_UNIT, y * PT_PER_UNIT),
-                    font_size: size * PT_PER_UNIT,
-                    rgba: rgba(color),
-                }),
+                } => {
+                    let sx = if sx == 0.0 { 1.0 } else { sx };
+                    let glyph = |text, dx| DisplayCmd::DrawGlyphRun {
+                        text,
+                        origin: ((x + dx) * PT_PER_UNIT, y * PT_PER_UNIT),
+                        font_size: size * PT_PER_UNIT,
+                        rgba: rgba(color),
+                    };
+                    if angle == 0.0
+                        && !vertical
+                        && !xs.is_empty()
+                        && xs.len() == text.chars().count()
+                    {
+                        display_list.extend(text.chars().zip(xs).filter_map(|(ch, dx)| {
+                            (!ch.is_whitespace()).then(|| glyph(ch.to_string(), dx * sx))
+                        }));
+                        None
+                    } else {
+                        Some(glyph(text, 0.0))
+                    }
+                }
                 Item::Image {
                     image,
                     m: [a, b, c, d, e, f],
@@ -162,6 +199,25 @@ impl XdwContainer {
             text_index: Default::default(),
         })
     }
+}
+
+fn clip_rect(paths: &[Path]) -> Option<PdfRect> {
+    paths
+        .iter()
+        .map(|path| {
+            // Empty paths clip everything. GPUI supports rectangular content masks.
+            rect(path.bounds().unwrap_or([0.0; 4]))
+        })
+        .reduce(|a, b| {
+            let x0 = a.x0.max(b.x0);
+            let y0 = a.y0.max(b.y0);
+            PdfRect {
+                x0,
+                y0,
+                x1: a.x1.min(b.x1).max(x0),
+                y1: a.y1.min(b.y1).max(y0),
+            }
+        })
 }
 
 fn charge_image(width: u32, height: u32, budget: &mut usize) -> Result<()> {
@@ -233,6 +289,19 @@ mod tests {
     use ezpzxdw_core::edit::Shape;
 
     #[test]
+    fn intersects_nested_clips_and_preserves_empty_intersections() {
+        assert_eq!(clip_rect(&[]), None);
+        let page = Path::rect(0.0, 0.0, 21_000.0, 29_700.0);
+        let cell = Path::rect(200.0, 300.0, 500.0, 600.0);
+        assert_eq!(
+            clip_rect(&[page, cell.clone()]),
+            Some(rect([200.0, 300.0, 500.0, 600.0]))
+        );
+        let separate = Path::rect(700.0, 300.0, 800.0, 600.0);
+        assert_eq!(clip_rect(&[cell, separate]).unwrap().width(), 0.0);
+    }
+
+    #[test]
     fn opens_and_interprets_synthetic_docuworks() {
         let mut document = Document::blank(21_000.0, 29_700.0).unwrap();
         document
@@ -276,9 +345,34 @@ mod tests {
         assert!((pages[0].crop_box.height() - 841.89).abs() < 0.02);
         let scene = xdw.interpret_page_scene(0).unwrap();
         assert_eq!(scene.info, pages[0]);
-        assert!(scene.display_list.iter().any(|cmd| matches!(
-            cmd, DisplayCmd::DrawGlyphRun { text, .. } if text == "閲覧テスト"
-        )));
+        let display = xdw.0.render(0).unwrap();
+        let (x, y, sx, offsets) = display
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Text {
+                    text, x, y, sx, xs, ..
+                } if text == "閲覧テスト" => Some((*x, *y, *sx, xs)),
+                _ => None,
+            })
+            .unwrap();
+        let glyphs: Vec<_> = scene
+            .display_list
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DisplayCmd::DrawGlyphRun { text, origin, .. } => Some((text.as_str(), *origin)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            glyphs.iter().map(|(ch, _)| *ch).collect::<String>(),
+            "閲覧テスト"
+        );
+        assert_eq!(glyphs.len(), offsets.len());
+        for ((_, (gx, gy)), offset) in glyphs.iter().zip(offsets) {
+            assert_eq!(*gx, (x + offset * sx) * PT_PER_UNIT);
+            assert_eq!(*gy, y * PT_PER_UNIT);
+        }
         assert!(scene.display_list.iter().any(|cmd| matches!(
             cmd,
             DisplayCmd::DrawPath {

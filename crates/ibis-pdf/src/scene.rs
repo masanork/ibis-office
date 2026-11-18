@@ -56,6 +56,8 @@ pub enum FillRule {
 /// Drawing commands emitted by a page interpreter for GPUI rendering.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DisplayCmd {
+    /// Replace the current device-space rectangular clip. None clears it.
+    SetClipRect(Option<PdfRect>),
     PushClip(PdfRect),
     PopClip,
     PushTransparencyGroup {

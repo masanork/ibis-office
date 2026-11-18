@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::{
-    App, Bounds, Font, Hsla, PathBuilder, Pixels, Point, RenderImage, Rgba, SharedString,
+    App, Bounds, ContentMask, Font, Hsla, PathBuilder, Pixels, Point, RenderImage, Rgba, SharedString,
     TextAlign, TextRun, Window, fill, point, px, size,
 };
 use ibis_pdf::scene::{DisplayCmd, PageScene, PathCmd, PdfRect};
@@ -103,8 +103,15 @@ pub fn paint_page_scene(
     window.paint_quad(fill(page_bounds, gpui_kit::white()));
 
     let origin = page_bounds.origin;
+    let mut mask = None;
     for (cmd_idx, cmd) in scene.display_list.iter().enumerate() {
-        match cmd {
+        if let DisplayCmd::SetClipRect(rect) = cmd {
+            mask = rect.map(|rect| ContentMask {
+                bounds: map_rect(origin, scale, rect).intersect(&page_bounds),
+            });
+            continue;
+        }
+        window.with_content_mask(mask, |window| match cmd {
             DisplayCmd::DrawRect { rect, fill_rgba } => {
                 if let Some(rgba) = fill_rgba {
                     window.paint_quad(fill(map_rect(origin, scale, *rect), rgba_to_hsla(*rgba)));
@@ -189,10 +196,11 @@ pub fn paint_page_scene(
                     );
                 }
             }
-            DisplayCmd::PushClip(_)
+            DisplayCmd::SetClipRect(_)
+            | DisplayCmd::PushClip(_)
             | DisplayCmd::PopClip
             | DisplayCmd::PushTransparencyGroup { .. }
             | DisplayCmd::PopTransparencyGroup => {}
-        }
+        });
     }
 }
