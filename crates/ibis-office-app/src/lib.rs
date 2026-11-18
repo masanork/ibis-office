@@ -1057,13 +1057,6 @@ mod web {
         // The art page borders' pictures are fetched from the same place.
         crate::docx::art_border::set_web_source(asset_base.clone().unwrap_or_default(), http_client.clone());
         crate::render::web_image::set_http_client(http_client.clone());
-        let app = Application::with_platform(platform)
-            .with_http_client(http_client)
-            .with_assets(
-                crate::shell::icons::Assets::new(asset_base.unwrap_or_default())
-                    .with_svg_sans_font(UI_FONT),
-            );
-
         // Fonts must be registered before init/open_editor populate their font
         // lists. Validate registration before entering GPUI's event loop.
         let mut font_data = vec![Cow::Borrowed(UI_FONT)];
@@ -1072,6 +1065,10 @@ mod web {
                 font_data.extend(std::mem::take(&mut fonts.data).into_iter().map(Cow::Owned));
             }
         });
+        let app = Application::with_platform(platform)
+            .with_http_client(http_client)
+            .with_assets(crate::shell::icons::Assets::new(asset_base.unwrap_or_default()))
+            .with_svg_fonts(font_data.clone());
         app.text_system().add_fonts(font_data).map_err(|err| JsValue::from_str(&format!("Could not load supplied fonts: {err}")))?;
         let registered: HashSet<_> = app.text_system().all_font_names().into_iter().collect();
         let missing = SUPPLIED_FONTS.with(|fonts| {

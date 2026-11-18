@@ -362,7 +362,7 @@ fn write_web_demo_index(path: &Path, stats: &BTreeMap<String, DocStats>) {
   <main class="wrap">
     <h1>Mermaid 構文デモ集</h1>
     <p>公式例 {total} 件を図種別に開けます。{rendered} 件を描画し、残りはコードで表示します。</p>
-    <p><a href="../../editor.html?open=.%2Fsamples%2Fmermaid%2Findex.md">対応状況を Docs で開く</a> · <a href="LICENSE">MIT ライセンス</a> · <a href="SOURCE.json">出典</a></p>
+    <p><a href="../../editor.html?open=.%2Fsamples%2Fmermaid%2Findex.md">対応状況を Docs で開く</a> · <a href="../../editor.html?open=.%2Fsamples%2Fmermaid-labels.md">英字・日本語・記号の表示例</a> · <a href="LICENSE">MIT ライセンス</a> · <a href="SOURCE.json">出典</a></p>
     <div class="gallery">
 "#);
     for (name, stat) in stats {
