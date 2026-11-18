@@ -174,3 +174,86 @@ fn names_distinguish_exact_spelling_from_possible_matches() {
     let mark = '\u{e123}';
     check(&format!(r#""田{mark} 花子","田中花子","name","{mark}""#), CellValue::Number(1.0));
 }
+
+// Adapted from synthetic fixtures by the soroe contributors.
+// https://github.com/digital-go-jp/soroe/tree/a3b750a2efde43b103678d2ecc0f07ba3c2d9f69/tests/cases
+// Fixture paths are relative to that directory. The expected ranks follow
+// ibisOffice's review policy, including a rank of 1 for explicit former names.
+#[test]
+fn soroe_scenarios_keep_ambiguous_candidates_distinct() {
+    for (case, mode, left, right, rank) in [
+        // reconcile-record/mixed_shape_old_name_keyword.yaml
+        ("former surname", "name", "田中 (旧姓: 山田) 太郎", "山田 太郎", 1.0),
+        ("former surname with different given name", "name", "田中 (旧姓: 山田) 太郎", "山田 一郎", 0.0),
+        // name/wildcard_default.yaml, with synthetic counterpart spellings.
+        ("geta", "name", "〓田中", "竹田中", 1.0),
+        ("black circle", "name", "田●中", "田野中", 1.0),
+        ("black square", "name", "田中■", "田中学", 1.0),
+        ("replacement character", "name", "田中�", "田中学", 1.0),
+        ("wildcard with conflicting known text", "name", "田●中", "山野中", 0.0),
+        // reconcile-date/possible_partial.yaml and false_year_mismatch_partial.yaml
+        ("year only", "date", "1985年", "1985-04-15", 1.0),
+        ("year and month", "date", "1985年4月", "1985-04-15", 1.0),
+        ("different month", "date", "1985年4月", "1985-05-15", 0.0),
+        ("different year", "date", "1995-08", "1996-08", 0.0),
+        // address/island_miyake_hachijo.yaml and wildcard_unique.yaml
+        ("island prefix", "address", "東京都三宅島三宅村阿古497", "東京都三宅村阿古497", 1.0),
+        (
+            "island prefix with different lot",
+            "address",
+            "東京都三宅島三宅村阿古497",
+            "東京都三宅村阿古498",
+            0.0,
+        ),
+        ("ward wildcard", "address", "東京都●●●区霞が関2-1-2", "東京都千代田区霞が関2-1-2", 1.0),
+        (
+            "each ward wildcard covers exactly one character",
+            "address",
+            "東京都●●●区銀座5-10-1",
+            "東京都中央区銀座5-10-1",
+            0.0,
+        ),
+    ] {
+        for (a, b) in [(left, right), (right, left)] {
+            let args = format!(r#""{a}","{b}","{mode}""#);
+            check(&args, CellValue::Number(rank));
+
+            let review = format!(r#"IF(IFNA(IBIS.FIELDMATCH({args})=1,FALSE),"要確認","")"#);
+            let expected = if rank == 1.0 { "要確認" } else { "" };
+            assert_eq!(
+                evaluate(&Sheet { date1904: false }, (0, 2, 0), &review),
+                (CellValue::Text(expected.into()), false),
+                "{case}: {review}",
+            );
+        }
+    }
+}
+
+#[test]
+fn soroe_marriage_scenario_can_be_filtered_by_date_and_address() {
+    // reconcile-record/multi_field_marriage.yaml, with exact-name and missing-date controls.
+    for (right_name, date, lot, expected) in [
+        ("田中 花子", "1990-12-15", 2, "要確認"),
+        ("田中 花子", "1990-12-15", 3, ""),
+        ("田中 花子", "1990-12-16", 2, ""),
+        ("田中 花子", "", 2, ""),
+        ("鈴木 花子", "1990-12-15", 2, ""),
+        ("佐藤 太郎", "1990-12-15", 2, ""),
+    ] {
+        let formula = format!(
+            concat!(
+                r#"IF(IFNA(AND(IBIS.FIELDMATCH("鈴木 花子","{right_name}","name")=1,"#,
+                r#"IBIS.FIELDMATCH("1990-12-15","{date}","date")=2,"#,
+                r#"IBIS.FIELDMATCH("東京都千代田区霞が関2-1-2","東京都千代田区霞が関2-1-{lot}","address")=2),FALSE),"要確認","")"#,
+            ),
+            right_name = right_name,
+            date = date,
+            lot = lot
+        );
+        assert_eq!(
+            evaluate(&Sheet { date1904: false }, (0, 2, 0), &formula),
+            (CellValue::Text(expected.into()), false),
+            "{formula}",
+        );
+    }
+}
