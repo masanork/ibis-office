@@ -1090,6 +1090,10 @@ pub fn to_markdown(doc: &LawDoc) -> String {
     if !doc.law_num.is_empty() {
         out.push_str(&format!("> 法令番号: {}\n\n", doc.law_num));
     }
+    if let Some(preamble) = doc.preamble.as_deref().filter(|text| !text.is_empty()) {
+        out.push_str(preamble);
+        out.push_str("\n\n");
+    }
     for node in &doc.main_provision {
         write_markdown_node(&mut out, node, 2);
     }
