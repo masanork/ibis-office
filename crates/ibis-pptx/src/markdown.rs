@@ -4554,6 +4554,13 @@ pub fn open_markdown_presentation_with_base_dir(
         .map(|l| l.id)
         .unwrap_or(title_layout);
 
+    enum SlideBlock<'a> {
+        Text(Vec<ibis_doc_model::Paragraph>),
+        Table(&'a FlowTable),
+        Picture(MediaId, EmuSize, &'a PictureLook),
+        Chart(&'a Chart),
+    }
+
     for (idx, chunk) in slide_chunks.iter().enumerate() {
         let (clean_chunk, notes) = extract_slide_notes(chunk);
         let parsed = open_markdown_with_base_dir(clean_chunk.into_bytes(), base_dir)?;
@@ -4605,44 +4612,56 @@ pub fn open_markdown_presentation_with_base_dir(
             body_blocks.push(b);
         }
 
-        let mut text_paras: Vec<ibis_doc_model::Paragraph> = Vec::new();
-        let mut tables: Vec<&FlowTable> = Vec::new();
-        let mut pictures: Vec<(MediaId, EmuSize, PictureLook)> = Vec::new();
-        let mut charts: Vec<&Chart> = Vec::new();
-
+        // Keep source order in the shape list, which Markdown export walks after reopening.
+        let mut blocks = Vec::new();
         for b in body_blocks {
             match b {
                 Block::Paragraph(p) => {
-                    let mut has_visual = false;
+                    let before = blocks.len();
                     for r in &p.runs {
                         match &r.kind {
                             FlowRunKind::Picture { media, size, look } => {
                                 if let Some(&new_mid) = media_remap.get(media) {
-                                    pictures.push((new_mid, *size, look.clone()));
-                                    has_visual = true;
+                                    blocks.push(SlideBlock::Picture(new_mid, *size, look));
                                 }
                             }
                             FlowRunKind::Shape(shape) => {
                                 if let ShapeKind::Chart(chart) = &shape.kind {
-                                    charts.push(chart);
-                                    has_visual = true;
+                                    blocks.push(SlideBlock::Chart(chart));
                                 }
                             }
                             _ => {}
                         }
                     }
-                    if !has_visual {
-                        if let Some(sp) = flow_paragraph_to_slide_paragraph(p) {
-                            text_paras.push(sp);
+                    if blocks.len() == before
+                        && let Some(paragraph) = flow_paragraph_to_slide_paragraph(p)
+                    {
+                        if let Some(SlideBlock::Text(paragraphs)) = blocks.last_mut() {
+                            paragraphs.push(paragraph);
+                        } else {
+                            blocks.push(SlideBlock::Text(vec![paragraph]));
                         }
                     }
                 }
-                Block::Table(tbl) => tables.push(tbl),
+                Block::Table(tbl) => blocks.push(SlideBlock::Table(tbl)),
             }
         }
 
         let slide_id = opened.presentation.slides[idx].id;
-        let has_visuals = !tables.is_empty() || !pictures.is_empty() || !charts.is_empty();
+        let line_count = |paragraphs: &[ibis_doc_model::Paragraph]| -> i64 {
+            paragraphs
+                .iter()
+                .map(|para| 1 + para.runs.iter().map(|run| run.text.matches('\n').count()).sum::<usize>())
+                .sum::<usize>() as i64
+        };
+        let text_lines: i64 = blocks
+            .iter()
+            .filter_map(|block| match block {
+                SlideBlock::Text(paragraphs) => Some(line_count(paragraphs)),
+                _ => None,
+            })
+            .sum();
+        let has_visuals = blocks.iter().any(|block| !matches!(block, SlideBlock::Text(_)));
 
         // Populate title placeholder (shape 0).
         if let Some(title_text) = slide_title {
@@ -4663,130 +4682,139 @@ pub fn open_markdown_presentation_with_base_dir(
             }
         }
 
-        // Populate body/subtitle placeholder (shape 1) or resize if visuals are present.
-        let visual_frame = if text_paras.is_empty() {
-            // Remove empty body placeholder so visuals get full canvas.
-            if opened.presentation.slides[idx].shapes.len() > 1 {
-                opened.presentation.slides[idx].shapes.remove(1);
-            }
+        let text_width = if has_visuals { 5_100_000 } else { 10_668_000 };
+        let visual_frame = if text_lines == 0 {
             EmuRect::new(762_000, 1_550_000, 10_668_000, 4_750_000)
         } else {
-            if let Some(sh) = opened.presentation.slides[idx].shapes.get_mut(1) {
-                sh.frame = if has_visuals {
-                    EmuRect::new(762_000, 1_550_000, 5_100_000, 4_750_000)
-                } else {
-                    EmuRect::new(762_000, 1_550_000, 10_668_000, 4_750_000)
-                };
-                if let Some(body) = shape_text_body_mut(&mut sh.kind) {
-                    body.paragraphs = text_paras;
-                }
-            }
             EmuRect::new(6_160_000, 1_550_000, 5_270_000, 4_750_000)
         };
-
-        // Add tables
-        for tbl in tables {
-            let sid = fresh_shape_id();
-            let slide_tbl = flow_table_to_slide_table(tbl, visual_frame.width);
-            opened.presentation.slides[idx].shapes.push(ibis_doc_model::Shape {
-                id: sid,
-                frame: visual_frame,
-                rotation: 0,
-                flip_h: false,
-                flip_v: false,
-                kind: ShapeKind::Table(Box::new(slide_tbl)),
-                floating: None,
-            });
-        }
-
-        // Add pictures (including Mermaid SVGs)
-        for (mid, size, look) in pictures {
-            let sid = fresh_shape_id();
-            let frame = fit_size_in_rect(size, visual_frame);
-            if !look.alt_text.title.is_empty() || !look.alt_text.description.is_empty() {
-                opened.presentation.slides[idx]
-                    .shape_alt_texts
-                    .insert(sid, look.alt_text.clone());
-            }
-            opened.presentation.slides[idx].shapes.push(ibis_doc_model::Shape {
-                id: sid,
-                frame,
-                rotation: 0,
-                flip_h: false,
-                flip_v: false,
-                kind: ShapeKind::Picture(ibis_doc_model::Picture {
-                    media: mid,
-                    crop: ibis_doc_model::Crop::default(),
-                    stroke: None,
-                    corner: 0,
-                    duotone: None,
-                    clear: None,
-                    luminance: None,
-                    clip: None,
-                    shadow: None,
-                    reflection: None,
-                    soft_edge: None,
-                    alt_text: look.alt_text,
-                    decorative: false,
-                    name: format!("Picture {}", sid.0),
-                    geometry: None,
-                    effects: ibis_doc_model::BlipEffects::default(),
-                    tile: None,
-                    fill_rect: None,
-                    artistic_effect: None,
-                }),
-                floating: None,
-            });
-        }
-
-        // Add native charts
-        for src_chart in charts {
-            let sid = fresh_shape_id();
-            let kind = match src_chart.groups.as_slice() {
-                [group] if matches!(group.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }) => NewChartKind::Pie,
-                [group] if matches!(group.kind, ChartType::Bar { horizontal: true, .. }) => NewChartKind::ClusteredBar,
-                [group] if matches!(group.kind, ChartType::Line) => NewChartKind::Line,
-                _ => NewChartKind::ClusteredColumn,
-            };
-            let mut chart_shape = opened.source.new_chart_kind(
-                &opened.presentation,
-                slide_id,
-                sid,
-                visual_frame,
-                kind,
-            )?;
-            if let ShapeKind::Chart(cbox) = &mut chart_shape.kind {
-                let mut chart = (**cbox).clone();
-                if let Ok(chart_data) = crate::save::pptx_chart_data::workbook_from_chart(src_chart) {
-                    if let Ok(wb_pres) = crate::read(&chart_data.workbook) {
-                        chart = crate::save::pptx_chart_data::chart_from_data(
-                            &chart,
-                            &wb_pres,
-                            &chart_data.series,
-                        );
-                        chart.title = src_chart.title.clone();
-                        copy_chart_group_topology(&mut chart, src_chart);
-                        if kind == NewChartKind::ClusteredBar {
-                            apply_mermaid_value_range(&mut chart, chart_value_range(src_chart));
-                        }
-                        opened.source.set_chart_data(sid, chart.clone(), chart_data);
+        let shapes = &mut opened.presentation.slides[idx].shapes;
+        let mut body_placeholder = (shapes.len() > 1).then(|| shapes.remove(1));
+        // Interleaved visuals split the text into multiple shapes. Share the original
+        // text column between them, counting explicit line breaks in literal fences.
+        let mut used_lines = 0;
+        for block in blocks {
+            match block {
+                SlideBlock::Text(paragraphs) => {
+                    let top = 4_750_000 * used_lines / text_lines;
+                    used_lines += line_count(&paragraphs);
+                    let bottom = 4_750_000 * used_lines / text_lines;
+                    let frame = EmuRect::new(762_000, 1_550_000 + top, text_width, bottom - top);
+                    let mut shape = body_placeholder.take().unwrap_or_else(|| ibis_doc_model::Shape {
+                        id: fresh_shape_id(),
+                        frame,
+                        rotation: 0,
+                        flip_h: false,
+                        flip_v: false,
+                        kind: ShapeKind::TextBox(Default::default()),
+                        floating: None,
+                    });
+                    shape.frame = frame;
+                    if let Some(body) = shape_text_body_mut(&mut shape.kind) {
+                        body.paragraphs = paragraphs;
                     }
+                    opened.presentation.slides[idx].shapes.push(shape);
                 }
-                chart.mermaid_source = src_chart.mermaid_source.clone();
-                *cbox = Box::new(chart);
+                SlideBlock::Table(tbl) => {
+                    let sid = fresh_shape_id();
+                    let slide_tbl = flow_table_to_slide_table(tbl, visual_frame.width);
+                    opened.presentation.slides[idx].shapes.push(ibis_doc_model::Shape {
+                        id: sid,
+                        frame: visual_frame,
+                        rotation: 0,
+                        flip_h: false,
+                        flip_v: false,
+                        kind: ShapeKind::Table(Box::new(slide_tbl)),
+                        floating: None,
+                    });
+                }
+                SlideBlock::Picture(mid, size, look) => {
+                    let sid = fresh_shape_id();
+                    let frame = fit_size_in_rect(size, visual_frame);
+                    if !look.alt_text.title.is_empty() || !look.alt_text.description.is_empty() {
+                        opened.presentation.slides[idx]
+                            .shape_alt_texts
+                            .insert(sid, look.alt_text.clone());
+                    }
+                    opened.presentation.slides[idx].shapes.push(ibis_doc_model::Shape {
+                        id: sid,
+                        frame,
+                        rotation: 0,
+                        flip_h: false,
+                        flip_v: false,
+                        kind: ShapeKind::Picture(ibis_doc_model::Picture {
+                            media: mid,
+                            crop: ibis_doc_model::Crop::default(),
+                            stroke: None,
+                            corner: 0,
+                            duotone: None,
+                            clear: None,
+                            luminance: None,
+                            clip: None,
+                            shadow: None,
+                            reflection: None,
+                            soft_edge: None,
+                            alt_text: look.alt_text.clone(),
+                            decorative: false,
+                            name: format!("Picture {}", sid.0),
+                            geometry: None,
+                            effects: ibis_doc_model::BlipEffects::default(),
+                            tile: None,
+                            fill_rect: None,
+                            artistic_effect: None,
+                        }),
+                        floating: None,
+                    });
+                }
+                SlideBlock::Chart(src_chart) => {
+                    let sid = fresh_shape_id();
+                    let kind = match src_chart.groups.as_slice() {
+                        [group] if matches!(group.kind, ChartType::Pie { .. } | ChartType::Doughnut { .. }) => NewChartKind::Pie,
+                        [group] if matches!(group.kind, ChartType::Bar { horizontal: true, .. }) => NewChartKind::ClusteredBar,
+                        [group] if matches!(group.kind, ChartType::Line) => NewChartKind::Line,
+                        _ => NewChartKind::ClusteredColumn,
+                    };
+                    let mut chart_shape = opened.source.new_chart_kind(
+                        &opened.presentation,
+                        slide_id,
+                        sid,
+                        visual_frame,
+                        kind,
+                    )?;
+                    if let ShapeKind::Chart(cbox) = &mut chart_shape.kind {
+                        let mut chart = (**cbox).clone();
+                        if let Ok(chart_data) = crate::save::pptx_chart_data::workbook_from_chart(src_chart) {
+                            if let Ok(wb_pres) = crate::read(&chart_data.workbook) {
+                                chart = crate::save::pptx_chart_data::chart_from_data(
+                                    &chart,
+                                    &wb_pres,
+                                    &chart_data.series,
+                                );
+                                chart.title = src_chart.title.clone();
+                                copy_chart_group_topology(&mut chart, src_chart);
+                                if kind == NewChartKind::ClusteredBar {
+                                    apply_mermaid_value_range(&mut chart, chart_value_range(src_chart));
+                                }
+                                opened.source.set_chart_data(sid, chart.clone(), chart_data);
+                            }
+                        }
+                        chart.mermaid_source = src_chart.mermaid_source.clone();
+                        *cbox = Box::new(chart);
+                    }
+                    if let ShapeKind::Chart(chart) = &chart_shape.kind
+                        && let Some(source) = chart.mermaid_source.as_str()
+                    {
+                        opened.presentation.slides[idx].shape_alt_texts.insert(
+                            sid,
+                            ibis_doc_model::AltText {
+                                title: "__mermaid__".to_string(),
+                                description: source.to_string(),
+                            },
+                        );
+                    }
+                    opened.presentation.slides[idx].shapes.push(chart_shape);
+                }
             }
-            if let ShapeKind::Chart(chart) = &chart_shape.kind
-                && let Some(source) = chart.mermaid_source.as_str()
-            {
-                opened.presentation.slides[idx].shape_alt_texts.insert(
-                    sid,
-                    ibis_doc_model::AltText {
-                        title: "__mermaid__".to_string(),
-                        description: source.to_string(),
-                    },
-                );
-            }
-            opened.presentation.slides[idx].shapes.push(chart_shape);
         }
 
         let _ = notes;
@@ -5479,6 +5507,47 @@ C4Context
         let exported = export_presentation_markdown(&presentation);
         assert_eq!(exported.matches("```mermaid").count(), 3, "{exported}");
         assert!(exported.contains("requirementDiagram\n  requirement req1"), "{exported}");
+    }
+
+    #[test]
+    fn pptx_mermaid_fences_keep_source_order_across_shape_kinds() {
+        let markdown = r#"# 図の順序
+
+導入
+
+```mermaid
+pie
+  "承認" : 70
+  "保留" : 30
+```
+
+```mermaid
+flowchart LR
+  A[受付] --> B[承認]
+```
+
+図の注記
+
+```mermaid
+zenuml
+  Author.review()
+```
+
+```mermaid
+xychart horizontal
+  x-axis [一月, 二月]
+  bar [10, 20]
+```
+
+まとめ
+"#;
+        let slides = open_markdown_presentation(markdown.as_bytes().to_vec()).unwrap();
+        let pptx = slides.source.save(&slides.presentation, Default::default()).unwrap();
+        let reopened = crate::read(&pptx).unwrap();
+        let exported = export_presentation_markdown(&reopened);
+        let actual: Vec<_> = exported.lines().filter(|line| !line.is_empty()).collect();
+        let expected: Vec<_> = markdown.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(actual, expected, "{exported}");
     }
 
     #[test]
