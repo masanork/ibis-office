@@ -19,6 +19,20 @@ agentflow-beta TB
   a["A"] --> b["B"]
 ```
 
+同じ段のノード同士は `nodeSpacing`、段と段の間は `rankSpacing` で調整します。指定できる範囲は 0〜1000 px です。矢印のラベルがあるときは、そのラベルに必要な間隔を確保します。
+
+```mermaid
+---
+config:
+  agentflow:
+    nodeSpacing: 100
+    rankSpacing: 120
+---
+agentflow TB
+  a["受付"] --> b["審査"]
+  a --> c["記録"]
+```
+
 ## アーキテクチャ
 
 [公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/architecture.md) · [コーパス例 3](../crates/ibis-pptx/tests/mermaid/corpus/architecture.mmd)
