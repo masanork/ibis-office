@@ -2776,7 +2776,11 @@ fn build_chart_block_from_spec(
                 }],
                 ..Chart::empty()
             };
-            let chart_data = crate::save::pptx_chart_data::workbook_from_chart(&temp_chart)?;
+            let chart_data = if style.is_some() {
+                crate::save::pptx_chart_data::workbook_from_mermaid_chart(&temp_chart)?
+            } else {
+                crate::save::pptx_chart_data::workbook_from_chart(&temp_chart)?
+            };
             let wb_pres = crate::read(&chart_data.workbook)?;
             chart = crate::save::pptx_chart_data::chart_from_data(
                 &chart,
@@ -4783,7 +4787,13 @@ pub fn open_markdown_presentation_with_base_dir(
                     )?;
                     if let ShapeKind::Chart(cbox) = &mut chart_shape.kind {
                         let mut chart = (**cbox).clone();
-                        if let Ok(chart_data) = crate::save::pptx_chart_data::workbook_from_chart(src_chart) {
+                        let is_mermaid = src_chart.mermaid_source.as_str().is_some();
+                        let chart_data = if is_mermaid {
+                            crate::save::pptx_chart_data::workbook_from_mermaid_chart(src_chart)
+                        } else {
+                            crate::save::pptx_chart_data::workbook_from_chart(src_chart)
+                        };
+                        if let Ok(chart_data) = chart_data {
                             if let Ok(wb_pres) = crate::read(&chart_data.workbook) {
                                 chart = crate::save::pptx_chart_data::chart_from_data(
                                     &chart,
@@ -4792,7 +4802,7 @@ pub fn open_markdown_presentation_with_base_dir(
                                 );
                                 chart.title = src_chart.title.clone();
                                 copy_chart_group_topology(&mut chart, src_chart);
-                                if kind == NewChartKind::ClusteredBar {
+                                if is_mermaid || kind == NewChartKind::ClusteredBar {
                                     apply_mermaid_value_range(&mut chart, chart_value_range(src_chart));
                                 }
                                 opened.source.set_chart_data(sid, chart.clone(), chart_data);
@@ -5686,6 +5696,27 @@ xychart-beta
         for diagram in &diagrams {
             assert!(exported.contains(&format!("```mermaid\n{diagram}```")), "PPTX lost {diagram}:\n{exported}");
         }
+    }
+
+    #[test]
+    fn mermaid_categories_remain_literal_in_office_chart_workbooks() {
+        let source = r#"xychart
+  x-axis ["Apr 2022", "003", "=1+1", "TRUE"]
+  y-axis 0 --> 40
+  line [10, 20, 30, 35]
+"#;
+        let markdown = format!("# 図\n\n```mermaid\n{source}```\n");
+        let document = open_markdown(markdown.as_bytes().to_vec()).unwrap();
+        let docx = document.source.save(&document.presentation, Default::default()).unwrap();
+        let reread = crate::read(&docx).unwrap();
+        let exported = export_markdown(reread.flow.as_ref().unwrap(), &reread.media);
+        assert!(exported.contains(source), "{exported}");
+
+        let slides = open_markdown_presentation(markdown.into_bytes()).unwrap();
+        let pptx = slides.source.save(&slides.presentation, Default::default()).unwrap();
+        let reread = crate::read(&pptx).unwrap();
+        let exported = export_presentation_markdown(&reread);
+        assert!(exported.contains(source), "{exported}");
     }
 
     #[test]

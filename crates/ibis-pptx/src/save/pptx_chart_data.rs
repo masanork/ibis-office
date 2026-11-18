@@ -118,6 +118,15 @@ pub(crate) fn chart_refs(doc: &XmlDocument) -> Vec<SeriesRefs> {
 /// names in row 1 from B, categories in column A from row 2, each series'
 /// values in its column, all a table), and the references to it.
 pub(crate) fn workbook_from_chart(chart: &Chart) -> Result<ChartData, Error> {
+    workbook_from_chart_data(chart, false)
+}
+
+/// Mermaid names and categories are literal labels, including dates and leading zeroes.
+pub(crate) fn workbook_from_mermaid_chart(chart: &Chart) -> Result<ChartData, Error> {
+    workbook_from_chart_data(chart, true)
+}
+
+fn workbook_from_chart_data(chart: &Chart, literal_labels: bool) -> Result<ChartData, Error> {
     let series: Vec<&ibis_doc_model::Series> = chart.groups.iter().flat_map(|g| g.series.iter()).collect();
     let quote = |t: &str| format!("\"{}\"", t.replace('"', "\"\""));
     let categories: Vec<String> = series.iter().find(|s| !s.categories.is_empty()).map(|s| s.categories.clone()).unwrap_or_default();
@@ -158,7 +167,12 @@ pub(crate) fn workbook_from_chart(chart: &Chart) -> Result<ChartData, Error> {
     }
     let workbook = {
         use ibis_doc_model::{Command, SheetCommand, SheetTable};
-        let opened = crate::open(crate::csv::workbook_from(&csv, "Sheet1")?)?;
+        let workbook = if literal_labels {
+            crate::csv::workbook_from_fields(&csv, "Sheet1", ',', |row, column| row == 0 || column == 0)?
+        } else {
+            crate::csv::workbook_from(&csv, "Sheet1")?
+        };
+        let opened = crate::open(workbook)?;
         let mut doc = ibis_doc_model::Document::new(opened.presentation.clone());
         let slide = doc.presentation().slides.first().map(|s| s.id).ok_or_else(|| Error::new("ブックを作れません"))?;
         let range = CellRange { first_row: 0, first_column: 0, last_row: last, last_column: series.len() as u32 };
