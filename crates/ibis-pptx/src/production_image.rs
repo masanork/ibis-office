@@ -4,6 +4,8 @@
 //! Import standalone production images into a document for preview.
 
 mod dpx;
+#[cfg(target_os = "macos")]
+mod heic;
 
 use base64::Engine as _;
 use image::{DynamicImage, ImageFormat, ImageReader};
@@ -18,10 +20,12 @@ enum Format {
     Photoshop,
     OpenExr,
     Dpx,
+    Heic,
 }
 
 fn format(ext: &str) -> Option<Format> {
     match ext.to_ascii_lowercase().as_str() {
+        "heic" | "heif" => Some(Format::Heic),
         "dpx" => Some(Format::Dpx),
         "exr" => Some(Format::OpenExr),
         "psd" => Some(Format::Photoshop),
@@ -52,6 +56,19 @@ pub fn open_with_exposure(
         return Err("Image exceeds the preview file size limit".into());
     }
     let (png, exposure) = match format {
+        Format::Heic => {
+            #[cfg(target_os = "macos")]
+            {
+                (
+                    encode_png(DynamicImage::ImageRgba8(heic::decode(bytes)?))?,
+                    None,
+                )
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err("HEIC preview is currently available on macOS".into());
+            }
+        }
         Format::Dpx => (
             encode_png(DynamicImage::ImageRgb8(dpx::decode(bytes)?))?,
             None,
@@ -358,6 +375,35 @@ mod tests {
         let without_composite = ag_psd::write_psd(&psd, &WriteOptions::default());
         assert!(matches!(open(Some("psd"), &without_composite),
             Err(error) if error.contains("Maximize Compatibility")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn opens_heic_primary_image() {
+        // ffmpeg testsrc=size=128x64:rate=1, converted to HEIC with sips.
+        let sample = include_bytes!("../tests/fixtures/preview-chart.heic");
+        let decoded = heic::decode(sample).unwrap();
+        assert_eq!(decoded.dimensions(), (128, 64));
+        for channel in 0..3 {
+            let count = decoded
+                .pixels()
+                .filter(|pixel| {
+                    pixel[3] == 255
+                        && (0..3).all(|i| {
+                            if i == channel {
+                                pixel[i] > 170
+                            } else {
+                                pixel[i] < 90
+                            }
+                        })
+                })
+                .count();
+            assert!(count > 50, "expected saturated color in channel {channel}");
+        }
+        let opened = open(Some("HEIF"), sample).unwrap().unwrap();
+        assert_eq!(preview_pixel(opened), decoded.get_pixel(0, 0).0);
+        assert!(open(Some("heic"), &sample[..36]).is_err());
+        assert!(open(Some("heic"), b"not an image").is_err());
     }
 
     #[test]

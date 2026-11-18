@@ -25,6 +25,11 @@ pure_jpegls = "2.1"
 jxl-oxide = { version = "0.12", default-features = false }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = "0.24"
+foreign-types = "0.5"
+
 [dev-dependencies]
 dicom-core = "0.10.1"
 ibis-emf.workspace = true
