@@ -156,7 +156,7 @@ pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | confi
 pie | config: legendPosition | gap | config | pie.legendPosition
 pie | config: pie theme variables (pie1-12, pieOuterStrokeWidth) | ok | config | themeVariables.pie
 xyChart | y-axis title / range | ok | prefix | y-axis
-xyChart | horizontal orientation | gap | header | horizontal
+xyChart | horizontal orientation | ok | header | horizontal
 xyChart | numeric x-axis range | gap | contains | x-axis 0
 xyChart | point labels (line [540 "PaLM", ...]) | ok | contains | "PaLM"
 xyChart | config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) | ok | config | xyChart.width
