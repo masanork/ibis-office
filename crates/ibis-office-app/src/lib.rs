@@ -1003,12 +1003,28 @@ mod web {
         let _prefetch = Prefetch;
         let mut text = ibis_doc_model::repertoire::font_repertoire(presentation);
         text.push('\n'); text.push_str(name);
+        if !text.trim().is_empty() {
+            wasm_bindgen_futures::JsFuture::from(preload_fonts_js(&text)?).await?;
+        }
+
+        // SVG pictures can render with the fonts already installed. Keep their
+        // font requests separate so an unavailable label cannot block opening
+        // the document or applying a Mermaid edit.
+        let mut svg_text = String::new();
         for media in &presentation.media {
             if media.format == ibis_doc_model::MediaFormat::Svg {
-                ibis_pptx::mermaid::append_svg_text(&media.data, &mut text);
+                ibis_pptx::mermaid::append_svg_text(&media.data, &mut svg_text);
             }
         }
-        wasm_bindgen_futures::JsFuture::from(preload_fonts_js(&text)?).await?;
+        if !svg_text.trim().is_empty() {
+            let result = match preload_fonts_js(&svg_text) {
+                Ok(promise) => wasm_bindgen_futures::JsFuture::from(promise).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                log::warn!("SVG font prefetch: {}", crate::shell::web::font_preload_error(error));
+            }
+        }
         Ok(())
     }
 
