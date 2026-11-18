@@ -26,7 +26,7 @@ try {
   const file = dynamic ? '/samples/mermaid-dynamic-labels.md' : '/samples/mermaid-labels.md';
   const fontService = process.env.IBIS_MERMAID_TEST_FONT_ORIGIN;
   if (fontService) {
-    await page.route('**/api/font/subset?*', async route => {
+    await page.route(url => url.pathname === '/api/font/subset', async route => {
       const request = new URL(route.request().url());
       const response = await route.fetch({ url: new URL(request.pathname + request.search, fontService).href });
       await route.fulfill({ response });
