@@ -15,6 +15,7 @@ pub(crate) mod date;
 mod dist;
 mod engineering;
 mod ets;
+mod field_match;
 mod financial;
 mod groupby;
 mod info;
@@ -36,6 +37,9 @@ pub type Func = fn(&mut Ctx, &[Expr]) -> Value;
 
 /// The function named `name` (upper case, no prefix), if the engine has it.
 pub fn lookup(name: &str) -> Option<Func> {
+    if name == "IBIS.FIELDMATCH" {
+        return Some(field_match::field_match);
+    }
     math::get(name).or_else(|| logical::get(name)).or_else(|| info::get(name)).or_else(|| text::get(name)).or_else(|| stat::get(name)).or_else(|| lookup::get(name)).or_else(|| date::get(name)).or_else(|| financial::get(name)).or_else(|| groupby::get(name)).or_else(|| ets::get(name)).or_else(|| engineering::get(name)).or_else(|| database::get(name))
 }
 

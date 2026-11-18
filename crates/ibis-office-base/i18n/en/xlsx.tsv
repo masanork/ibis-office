@@ -2554,6 +2554,7 @@ xlsx.fndesc.count	Counts the cells that hold numbers
 xlsx.fndesc.counta	Counts the cells that are not empty
 xlsx.fndesc.max	Finds the largest number
 xlsx.fndesc.min	Finds the smallest number
+xlsx.fndesc.ibis.fieldmatch	Compares two values as date, address or gender. Returns 2 for a normalized match, 1 for a partial or inferred date match, 0 for no match, or #N/A when comparison is unavailable.
 xlsx.fndesc.if	Gives one value or another, by whether a condition holds
 xlsx.fndesc.iferror	Gives another value only when a formula ends in an error
 xlsx.fndesc.ifs	Tries several conditions in turn and gives the value of the first that holds
