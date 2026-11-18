@@ -68,7 +68,10 @@ fn workbook_cells_reference_their_unescaped_coordinates() {
         .iter()
         .find(|c| c["source"]["row"] == 2 && c["source"]["column"] == 1)
         .unwrap();
-    assert_eq!(cell["source"]["sheet"], "売上");
+    assert_eq!(
+        cell["source"]["sheet"],
+        presentation.workbook.as_ref().unwrap().sheets[0].name
+    );
     assert_eq!(cell["valueType"], "text");
     assert_eq!(cell["value"], "国内");
     assert_eq!(excerpt(&export, cell), "国内");
