@@ -10142,8 +10142,6 @@ fn field013_styleref() {
     assert!(p_saved.runs.iter().any(|r| matches!(&r.kind, FlowRunKind::Field { instruction, .. } if instruction.contains("STYLEREF"))), "STYLEREF preserved after reopen");
 }
 
-/// 画像選択時の「代替テキスト…」メニュー（docx.picture.alt-text）、サイドバーパネルでのタイトル・説明文入力、
-/// 適用、Undo / Redo、ファイル保存・再読込保持を検証。
 fn mermaid_source_edit_roundtrip() {
     let original = "flowchart LR\n  A[Before] --> B[End]";
     let replacement = "sequenceDiagram\n  A->>B: After";
@@ -10211,6 +10209,8 @@ fn mermaid_source_edit_roundtrip() {
     assert!(std::str::from_utf8(&svg.data).unwrap().contains("After"));
 }
 
+/// 画像選択時の「代替テキスト…」メニュー（docx.picture.alt-text）、サイドバーパネルでのタイトル・説明文入力、
+/// 適用、Undo / Redo、ファイル保存・再読込保持を検証。
 fn access002_picture_alt_text() {
     use ibis_doc_model::AltText;
     let mut s = Scenario::open(REPORT);
