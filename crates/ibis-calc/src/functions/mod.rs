@@ -21,6 +21,7 @@ mod groupby;
 mod info;
 mod logical;
 mod lookup;
+mod name_match;
 pub(crate) mod math;
 pub(crate) mod stat;
 mod text;

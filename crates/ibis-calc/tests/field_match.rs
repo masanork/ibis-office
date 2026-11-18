@@ -34,6 +34,9 @@ impl Book for Sheet {
     fn defined_name(&self, _: &str, _: Option<usize>) -> Option<String> {
         None
     }
+    fn name_variant_cluster(&self, c: char) -> Option<u32> {
+        matches!(c, '髙' | '高').then_some(1)
+    }
     fn date1904(&self) -> bool {
         self.date1904
     }
@@ -147,4 +150,27 @@ fn address_place_variants_and_wildcards_are_possible_matches() {
     );
     check(&format!(r#""霞{external}関2-1-2","霞が関2-1-2","address""#), CellValue::Number(0.0));
     check(r#""男性","Ｍ","gender","●""#, CellValue::Error(CellError::Value));
+}
+
+#[test]
+fn names_distinguish_exact_spelling_from_possible_matches() {
+    for (args, expected) in [
+        (r#""山田　花子","山田花子","name""#, 2.0),
+        (r#""髙橋 花子","高橋花子","name""#, 1.0),
+        (r#""田中（旧姓：山田）花子","山田花子","name""#, 1.0),
+        (r#""田中・旧姓山田 花子","山田花子","name""#, 1.0),
+        (r#""田中（旧姓：山田）花子","佐藤 (旧姓 山田) 花子","name""#, 1.0),
+        (r#""鈴木 花子","田中 花子","name""#, 1.0),
+        (r#""鈴木花子","田中花子","name""#, 0.0),
+        (r#""鈴木 花子","田中 花●","name""#, 0.0),
+        (r#""田中 ●子","田中 花子","name""#, 1.0),
+        (r#""〓〓 花子","田中 花子","name""#, 1.0),
+        (r#""〓〓","田中","name""#, 0.0),
+        (r#""田中 花子","山田 太郎","name""#, 0.0),
+        (r#""田中（旧姓：山田）花子","山田春子","name""#, 0.0),
+    ] {
+        check(args, CellValue::Number(expected));
+    }
+    let mark = '\u{e123}';
+    check(&format!(r#""田{mark} 花子","田中花子","name","{mark}""#), CellValue::Number(1.0));
 }

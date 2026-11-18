@@ -103,6 +103,10 @@ pub trait Book {
     fn table_at(&self, _sheet: usize, _row: u32, _column: u32) -> Option<TableInfo> {
         None
     }
+    /// Optional character cluster used by the name comparison function.
+    fn name_variant_cluster(&self, _character: char) -> Option<u32> {
+        None
+    }
     fn date1904(&self) -> bool {
         false
     }

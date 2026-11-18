@@ -2551,7 +2551,7 @@ xlsx.fndesc.count	数値が入っているセルの個数を数える
 xlsx.fndesc.counta	空でないセルの個数を数える
 xlsx.fndesc.max	数値の最大値を求める
 xlsx.fndesc.min	数値の最小値を求める
-xlsx.fndesc.ibis.fieldmatch	日付（date）、住所（address）、性別（gender）を照合する。表記差を吸収した一致は2、曖昧一致は1、一致なしは0、比較できないときは#N/A。住所の第4引数には外字ワイルドカードを指定できる。
+xlsx.fndesc.ibis.fieldmatch	日付（date）、住所（address）、性別（gender）、氏名（name）を照合する。表記差を吸収した一致は2、曖昧一致は1、一致なしは0、比較できないときは#N/A。住所・氏名の第4引数には外字ワイルドカードを指定できる。
 xlsx.fndesc.if	条件が成り立つかで、返す値を切り替える
 xlsx.fndesc.iferror	式がエラーになったときだけ、代わりの値を返す
 xlsx.fndesc.ifs	複数の条件を順に調べ、最初に成り立つものの値を返す

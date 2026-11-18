@@ -21,8 +21,8 @@ const ENCODING_SUBSTITUTES: &[char] = &['\u{fffd}', '\u{001a}'];
 // including exports of Juki data. JPKI carries substitution positions separately.
 const LEGACY_JAPANESE_SUBSTITUTES: &[char] = &['\u{3013}', '\u{25cf}'];
 
-// Other conventional placeholders accepted specifically by the address matcher.
-const ADDRESS_PLACEHOLDERS: &[char] = &['\u{25a0}', '\u{003f}', '\u{ff1f}'];
+// Other conventional placeholders accepted by field matching.
+const FIELD_PLACEHOLDERS: &[char] = &['\u{25a0}', '\u{003f}', '\u{ff1f}'];
 
 pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
     ctx.map_args(args, |ctx, values| {
@@ -36,13 +36,19 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             return err(CellError::Value);
         };
         let (left, right) = (&values[0], &values[1]);
-        let result = if mode.eq_ignore_ascii_case("address") {
+        let result = if mode.eq_ignore_ascii_case("address") || mode.eq_ignore_ascii_case("name") {
             let extra = match values.get(3) {
                 None | Some(Value::Empty) => "",
                 Some(Value::Text(text)) => text,
                 _ => return err(CellError::Value),
             };
-            compare_addresses(left, right, extra)
+            let extra: HashSet<char> = extra.chars().collect();
+            let wildcard = |c| is_wildcard(c, &extra);
+            if mode.eq_ignore_ascii_case("name") {
+                super::name_match::compare(left, right, wildcard, |c| ctx.book.name_variant_cluster(c))
+            } else {
+                compare_addresses(left, right, wildcard)
+            }
         } else if values.len() > 3 {
             return err(CellError::Value);
         } else if mode.eq_ignore_ascii_case("date") {
@@ -114,7 +120,14 @@ fn gender_key(text: &str) -> Option<bool> {
     }
 }
 
-fn compare_addresses(left: &Value, right: &Value, extra: &str) -> Option<u8> {
+fn is_wildcard(c: char, extra: &HashSet<char>) -> bool {
+    ENCODING_SUBSTITUTES.contains(&c)
+        || LEGACY_JAPANESE_SUBSTITUTES.contains(&c)
+        || FIELD_PLACEHOLDERS.contains(&c)
+        || (c.is_alphabetic() || matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' | '\u{100000}'..='\u{10fffd}')) && extra.contains(&c)
+}
+
+fn compare_addresses(left: &Value, right: &Value, wildcard: impl Fn(char) -> bool + Copy) -> Option<u8> {
     let (Value::Text(left), Value::Text(right)) = (left, right) else {
         return None;
     };
@@ -122,13 +135,6 @@ fn compare_addresses(left: &Value, right: &Value, extra: &str) -> Option<u8> {
     let right = address_key(right)?;
     let (left_place, left_tail) = address_parts(&left);
     let (right_place, right_tail) = address_parts(&right);
-    let extra: HashSet<char> = extra.chars().collect();
-    let wildcard = |c: char| {
-        ENCODING_SUBSTITUTES.contains(&c)
-            || LEGACY_JAPANESE_SUBSTITUTES.contains(&c)
-            || ADDRESS_PLACEHOLDERS.contains(&c)
-            || (c.is_alphabetic() || matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' | '\u{100000}'..='\u{10fffd}')) && extra.contains(&c)
-    };
     if left == right && !left_place.chars().any(wildcard) {
         return Some(2);
     }
