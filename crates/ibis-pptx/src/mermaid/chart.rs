@@ -451,8 +451,15 @@ pub fn render_chart_spec_svg(spec: &MermaidChartSpec) -> Option<(Vec<u8>, u32, u
             // The slice's share, like Mermaid's label on each slice.
             let lr = if frac >= 0.9999 { if hole > 0.0 { (hole + r) / 2.0 } else { 0.0 } } else { text_at.max(hole) };
             let (lx, ly) = (scx + lr * mid.cos(), scy + lr * mid.sin());
+            // A narrow slice may put white text across the white separator.
+            // A dark outline keeps the percentage legible on both backgrounds.
+            let outline = if frac < 0.05 {
+                r##" stroke="#1e293b" stroke-width="2" stroke-linejoin="round" paint-order="stroke""##
+            } else {
+                ""
+            };
             labels.push_str(&format!(
-                r##"<text x="{lx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#ffffff" data-role="slice-label">{:.0}%</text>"##,
+                r##"<text x="{lx:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="#ffffff"{outline} data-role="slice-label">{:.0}%</text>"##,
                 ly + 4.0,
                 frac * 100.0
             ));
