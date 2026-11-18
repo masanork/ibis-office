@@ -13,6 +13,11 @@ pub async fn preload_document_fonts(presentation: &ibis_doc_model::Presentation,
     let callback = FONT_PRELOAD.with(|slot| slot.get());
     match callback { Some(callback) => callback(presentation.clone(), name.to_string()).await, None => Ok(()) }
 }
+pub async fn preload_svg_fonts(bytes: Vec<u8>) -> Result<(), JsValue> {
+    let mut presentation = ibis_doc_model::Presentation::default();
+    presentation.add_media(ibis_doc_model::MediaFormat::Svg, bytes);
+    preload_document_fonts(&presentation, "").await
+}
 pub fn font_preload_error(error: JsValue) -> String {
     error.as_string().or_else(|| js_sys::Reflect::get(&error, &JsValue::from_str("message"))
         .ok().and_then(|message| message.as_string()))

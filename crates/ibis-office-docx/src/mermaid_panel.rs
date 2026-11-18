@@ -86,6 +86,40 @@ impl SlideEditor {
     }
 
     pub(crate) fn apply_mermaid_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        if let Some(edit) = self.doc_state().and_then(|state| state.mermaid_edit.as_ref()) {
+            let source = edit.input.read(cx).value().to_string();
+            if source != edit.original
+                && let Some(MermaidOutput::Svg { bytes, .. }) = render_mermaid(&source)
+            {
+                let input = edit.input.clone();
+                cx.spawn_in(window, async move |this, cx| {
+                    let result = crate::shell::web::preload_svg_fonts(bytes).await;
+                    let _ = this.update_in(cx, |editor, window, cx| {
+                        let Some(edit) = editor.doc_state().and_then(|state| state.mermaid_edit.as_ref()) else {
+                            return;
+                        };
+                        if edit.input.entity_id() != input.entity_id() || edit.input.read(cx).value().to_string() != source {
+                            return;
+                        }
+                        if let Err(error) = result {
+                            log::warn!("Mermaid font prefetch: {}", crate::shell::web::font_preload_error(error));
+                            if let Some(edit) = editor.doc_state_mut().and_then(|state| state.mermaid_edit.as_mut()) {
+                                edit.error = Some("docx.picture.mermaid-source.rejected");
+                            }
+                            cx.notify();
+                            return;
+                        }
+                        editor.apply_mermaid_source_ready(window, cx);
+                    });
+                }).detach();
+                return;
+            }
+        }
+        self.apply_mermaid_source_ready(window, cx);
+    }
+
+    fn apply_mermaid_source_ready(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(edit) = self
             .doc_state()
             .and_then(|state| state.mermaid_edit.as_ref())

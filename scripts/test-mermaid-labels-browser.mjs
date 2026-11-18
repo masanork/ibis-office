@@ -22,7 +22,21 @@ try {
     localStorage.setItem('ibisOffice.app.last-started-version', version);
     localStorage.setItem('ibisOffice.font-setup.checked-version', version);
   }, wasmVersion);
-  const file = '/samples/mermaid-labels.md';
+  const dynamic = process.env.IBIS_MERMAID_TEST_DYNAMIC === '1';
+  const file = dynamic ? '/samples/mermaid-dynamic-labels.md' : '/samples/mermaid-labels.md';
+  const fontService = process.env.IBIS_MERMAID_TEST_FONT_ORIGIN;
+  if (fontService) {
+    await page.route('**/api/font/subset?*', async route => {
+      const request = new URL(route.request().url());
+      const response = await route.fetch({ url: new URL(request.pathname + request.search, fontService).href });
+      await route.fulfill({ response });
+    });
+  }
+  const requests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/font/subset') requests.push(url.searchParams.get('text') ?? '');
+  });
   const loaded = page.waitForResponse(response => new URL(response.url()).pathname === file && response.ok());
   await page.goto(new URL('/editor.html?open=' + encodeURIComponent(file), origin).href);
   await loaded;
@@ -71,6 +85,7 @@ try {
   assert.equal(boxes.length, 3, 'the Mermaid nodes should be visible');
   assert.ok(boxes.every(ink => ink > 0), `label pixels per node: ${boxes}`);
   assert.deepEqual(missing, []);
+  if (dynamic) assert.ok(requests.some(body => body.includes('𠮷')), 'the SVG-only glyph must be requested');
   console.log('PASS: English, Japanese and symbol SVG labels render without missing-glyph warnings');
 } finally {
   await browser.close();

@@ -259,6 +259,33 @@ fn diagram_kind(header: &str) -> Option<DiagramKind> {
     DIAGRAM_HEADERS.iter().find(|(name, _)| *name == word).map(|(_, kind)| *kind)
 }
 
+/// Appends SVG text elements for font prefetch. Joining descendant text keeps
+/// combining characters and variation selectors in the same shaping sequence.
+pub fn append_svg_text(bytes: &[u8], output: &mut String) {
+    let Ok(svg) = std::str::from_utf8(bytes) else { return };
+    let Ok(document) = roxmltree::Document::parse(svg) else { return };
+    for node in document
+        .descendants()
+        .filter(|node| node.has_tag_name(("http://www.w3.org/2000/svg", "text")))
+    {
+        output.push('\n');
+        for child in node.descendants().filter(|child| child.is_text()) {
+            output.push_str(child.text().unwrap_or_default());
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn svg_font_prefetch_collects_text_runs_without_markup() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><title>metadata</title>
+      <text>𠮷<tspan>&#xE0100;</tspan> &amp; ❤</text><text>確認</text>
+    </svg>"#;
+    let mut text = "本文".to_owned();
+    append_svg_text(svg.as_bytes(), &mut text);
+    assert_eq!(text, format!("本文\n𠮷{} & ❤\n確認", char::from_u32(0xE0100).unwrap()));
+}
+
 /// Parse and render a Mermaid diagram into either a native chart or an SVG.
 /// Returns `None` if the diagram type is unsupported (caller falls back to a fenced code block).
 pub fn render_mermaid(source: &str) -> Option<MermaidOutput> {
