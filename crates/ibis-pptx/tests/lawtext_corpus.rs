@@ -13,3 +13,13 @@ fn egov_constitution_opens_as_markdown_and_lawtext() {
     assert_eq!(reparsed.law_title, law.law_title);
     assert_eq!(reparsed.main_provision, law.main_provision);
 }
+
+#[test]
+fn upstream_lawtext_sample_keeps_the_split_title_and_both_paragraphs() {
+    let source = include_str!("lawtext/administrative-procedure-act.lawtext");
+    let markdown = input_to_markdown(source.as_bytes()).unwrap().unwrap();
+    assert!(markdown.contains("# 行政手続法"));
+    assert!(markdown.contains("法令番号: 平成五年法律第八十八号"));
+    assert!(markdown.contains("第一条 （目的等）"));
+    assert!(markdown.contains("他の法律に特別の定めがある場合"));
+}
