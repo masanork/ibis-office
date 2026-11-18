@@ -23,6 +23,8 @@ enum ViewerSource {
     Pdf(Arc<Mutex<PdfContainer>>),
     Ofd(Arc<OfdContainer>),
     Xps(Arc<XpsContainer>),
+    #[cfg(not(target_family = "wasm"))]
+    Xdw(Arc<ibis_xdw::XdwContainer>),
 }
 
 /// Viewer state for an open PDF or OFD document (lazy page scene & GPU image cache).
@@ -56,6 +58,15 @@ impl PdfViewerState {
     /// without eagerly interpreting page content streams.
     pub fn open(bytes: impl Into<Arc<[u8]>>) -> Result<Self> {
         let raw: Arc<[u8]> = bytes.into();
+        #[cfg(not(target_family = "wasm"))]
+        if ibis_xdw::is_xdw(&raw) {
+            let xdw = ibis_xdw::XdwContainer::from_bytes(&raw)?;
+            return Ok(Self {
+                pages: xdw.page_infos(),
+                source: ViewerSource::Xdw(Arc::new(xdw)),
+                ..Self::empty()
+            });
+        }
         if ibis_ofd::is_ofd(&raw) {
             let ofd = OfdContainer::from_bytes(raw).map_err(|e| ibis_pdf::Error::new(e.to_string()))?;
             let pages = ofd.page_infos();
@@ -102,6 +113,14 @@ impl PdfViewerState {
         })
     }
 
+    pub fn is_xdw(&self) -> bool {
+        match self.source {
+            #[cfg(not(target_family = "wasm"))]
+            ViewerSource::Xdw(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }
@@ -132,11 +151,18 @@ impl PdfViewerState {
                 ofd.interpret_page_scene(page_index)
                     .map_err(|e| ibis_pdf::Error::new(e.to_string()))?,
             ),
+            #[cfg(not(target_family = "wasm"))]
+            ViewerSource::Xdw(xdw) => Arc::new(xdw.interpret_page_scene(page_index)?),
             ViewerSource::Xps(xps) => Arc::new(
                 xps.interpret_page_scene(page_index)
                     .map_err(|e| ibis_pdf::Error::new(e.to_string()))?,
             ),
         };
+        if self.is_xdw() && self.scene_cache.len() >= 4 {
+            // Scanned pages may retain large decoded images in both caches.
+            self.scene_cache.clear();
+            self.image_cache.clear();
+        }
         self.scene_cache.insert(page_index, scene.clone());
         Ok(scene)
     }

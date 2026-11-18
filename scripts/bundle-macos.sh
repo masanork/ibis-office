@@ -138,6 +138,12 @@ cat > "$APP/Contents/Info.plist" <<EOF
 			<key>CFBundleTypeExtensions</key><array><string>xps</string><string>oxps</string></array>
 		</dict>
 		<dict>
+			<key>CFBundleTypeName</key><string>DocuWorks document</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>CFBundleTypeExtensions</key><array><string>xdw</string></array>
+		</dict>
+		<dict>
 			<key>CFBundleTypeName</key>
 			<string>Office document</string>
 			<key>CFBundleTypeRole</key>

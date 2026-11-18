@@ -16,3 +16,6 @@ ibis-doc-model.workspace = true
 ibis-pptx.workspace = true
 gpui-kit.workspace = true
 image = { version = "0.25", default-features = false }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+ibis-xdw.workspace = true

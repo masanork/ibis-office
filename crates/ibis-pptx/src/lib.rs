@@ -272,12 +272,17 @@ impl Kind {
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" => Some(Kind::Workbook),
             "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "jtd" | "jtt" | "jttc" | "md" | "markdown" => Some(Kind::Document),
             "pdf" | "ofd" | "xps" | "oxps" => Some(Kind::Pdf),
+            #[cfg(not(target_family = "wasm"))]
+            "xdw" => Some(Kind::Pdf),
             _ => None,
         }
     }
 
     /// The extensions of the files that can be opened (what `from_extension` knows), for the file dialog.
-    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc", "md", "markdown", "pdf", "ofd", "xps", "oxps"];
+    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc", "md", "markdown", "pdf", "ofd", "xps", "oxps",
+        #[cfg(not(target_family = "wasm"))]
+        "xdw",
+    ];
 
     /// The kind of document contained in `presentation`.
     pub fn of(presentation: &Presentation) -> Self {

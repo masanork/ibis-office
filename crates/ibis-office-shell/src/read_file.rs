@@ -87,9 +87,17 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encod
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
-    if path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf") || ext.eq_ignore_ascii_case("ofd") || ext.eq_ignore_ascii_case("xps") || ext.eq_ignore_ascii_case("oxps")) || data.starts_with(b"%PDF-") || ibis_ofd::is_ofd(&data) || ibis_xps::is_xps(&data) {
+    let is_xdw = path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("xdw"))
+        || ibis_xdw::is_xdw(&data);
+    if is_xdw || path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf") || ext.eq_ignore_ascii_case("ofd") || ext.eq_ignore_ascii_case("xps") || ext.eq_ignore_ascii_case("oxps")) || data.starts_with(b"%PDF-") || ibis_ofd::is_ofd(&data) || ibis_xps::is_xps(&data) {
         let raw: std::sync::Arc<[u8]> = data.into();
-        let page_boxes: Vec<(f32, f32)> = if ibis_ofd::is_ofd(&raw) {
+        let page_boxes: Vec<(f32, f32)> = if is_xdw {
+            ibis_xdw::XdwContainer::from_bytes(&raw).map_err(|e| e.to_string())?
+                .page_infos()
+                .into_iter()
+                .map(|p| (p.crop_box.width(), p.crop_box.height()))
+                .collect()
+        } else if ibis_ofd::is_ofd(&raw) {
             let ofd = ibis_ofd::OfdContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
             ofd.page_infos()
                 .into_iter()

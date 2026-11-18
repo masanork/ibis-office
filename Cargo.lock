@@ -2255,6 +2255,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ezpzxdw-core"
+version = "0.3.0"
+source = "git+https://github.com/ezpzfile/ezpzfile-xdw?rev=cdc5be54cda640f5e81ae5aa4c034c0d8e2de9ca#cdc5be54cda640f5e81ae5aa4c034c0d8e2de9ca"
+dependencies = [
+ "encoding_rs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4058,6 +4068,7 @@ dependencies = [
  "ibis-office-shell",
  "ibis-pdf",
  "ibis-pptx",
+ "ibis-xdw",
  "ibis-xps",
  "image",
 ]
@@ -4134,6 +4145,7 @@ dependencies = [
  "ibis-office-updater",
  "ibis-pdf",
  "ibis-pptx",
+ "ibis-xdw",
  "ibis-xps",
  "image",
  "js-sys",
@@ -4229,6 +4241,15 @@ dependencies = [
  "pure_jpegls",
  "roxmltree 0.21.1",
  "serde_json",
+]
+
+[[package]]
+name = "ibis-xdw"
+version = "0.8.0"
+dependencies = [
+ "ezpzxdw-core",
+ "ibis-pdf",
+ "image",
 ]
 
 [[package]]

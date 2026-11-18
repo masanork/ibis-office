@@ -1,0 +1,12 @@
+[package]
+name = "ibis-xdw"
+description = "Read-only DocuWorks page adapter for ibisOffice."
+license = "AGPL-3.0-only"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ezpzxdw-core = { git = "https://github.com/ezpzfile/ezpzfile-xdw", rev = "cdc5be54cda640f5e81ae5aa4c034c0d8e2de9ca" }
+ibis-pdf = { path = "../ibis-pdf" }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

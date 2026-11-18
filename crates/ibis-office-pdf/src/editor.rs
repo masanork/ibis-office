@@ -154,11 +154,21 @@ impl FormatEditor for PdfDocument {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    fn save_refused(editor: &SlideEditor) -> Option<String> {
+        editor.presentation().pdf_bytes.as_deref()
+            .filter(|bytes| ibis_xdw::is_xdw(bytes))
+            .map(|_| ibis_office_shell::i18n::text("xdw.read-only").to_string())
+    }
+
     fn status_items(editor: &SlideEditor) -> Vec<SharedString> {
         let Some(state) = editor.format_state::<State>() else {
             return Vec::new();
         };
         let guard = state.viewer.lock().expect("pdf viewer lock");
+        if guard.is_xdw() {
+            return vec![ibis_office_shell::i18n::text("xdw.preview")];
+        }
         guard
             .signature_status_text()
             .map(SharedString::from)
