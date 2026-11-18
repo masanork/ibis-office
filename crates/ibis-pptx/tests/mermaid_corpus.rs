@@ -14,8 +14,10 @@
 //! the report ranks the gaps by how many examples use them.
 //!
 //! Set `MERMAID_CORPUS_REPORT=<path>` to also write the report as Markdown.
+//! Set `MERMAID_CORPUS_DEMO=<dir>` to write runnable Markdown pages for all cases.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -325,11 +327,37 @@ fn uses(feature: &Feature, case: &CaseText) -> bool {
         })
 }
 
+/// Choose a fence longer than any run of backticks in the original source.
+fn append_demo_case(page: &mut String, case: &Case, rendering: &str, limitations: &[String]) {
+    let mut longest = 0;
+    let mut run = 0;
+    for byte in case.source.bytes() {
+        run = if byte == b'`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let fence = "`".repeat(3.max(longest + 1));
+    writeln!(page, "## {}\n\n{rendering}\n", case.id).unwrap();
+    for limitation in limitations {
+        writeln!(page, "- {limitation}").unwrap();
+    }
+    if !limitations.is_empty() {
+        page.push('\n');
+    }
+    writeln!(page, "{fence}mermaid\n{}{fence}\n", case.source).unwrap();
+}
+
 #[test]
 fn mermaid_official_corpus() {
     let dir = corpus_dir();
     let thresholds = load_thresholds(&dir.join("thresholds.json"));
     let features = load_features(&dir.join("features.txt"));
+    let demo_dir = std::env::var_os("MERMAID_CORPUS_DEMO").map(PathBuf::from);
+    if let Some(path) = &demo_dir {
+        fs::create_dir_all(path).expect("create demo directory");
+        for file in ["LICENSE", "SOURCE.json"] {
+            fs::copy(dir.join("corpus").join(file), path.join(file)).expect("copy demo attribution");
+        }
+    }
     // (cases using it, of those rendered)
     let mut feature_use: Vec<(usize, usize)> = vec![(0, 0); features.len()];
     let mut paths: Vec<PathBuf> = fs::read_dir(dir.join("corpus"))
@@ -345,9 +373,13 @@ fn mermaid_official_corpus() {
         let doc = path.file_stem().unwrap().to_string_lossy().to_string();
         let entry = stats.entry(doc.clone()).or_default();
         let supported = thresholds.contains_key(&doc);
+        let mut page = demo_dir.as_ref().map(|_| format!(
+            "# {doc}\n\n[目次](index.md) · [ソース](SOURCE.json) · [MIT ライセンス](LICENSE)\n\n"
+        ));
         for case in load_cases(path) {
             entry.total += 1;
             let result = catch_unwind(AssertUnwindSafe(|| render_mermaid(&case.source)));
+            let mut rendering = "コード表示";
             let rendered = match result {
                 Err(_) => {
                     entry.defects.push(format!("{}: panicked", case.id));
@@ -359,6 +391,10 @@ fn mermaid_official_corpus() {
                 }
                 Ok(Some(output)) => match check_output(&output) {
                     Ok(()) => {
+                        rendering = match &output {
+                            MermaidOutput::Svg { .. } => "SVG",
+                            MermaidOutput::Chart(_) => "グラフ（SVG に変換できることも検証済み）",
+                        };
                         entry.rendered += 1;
                         dump_svg(&doc, &case.id, &output);
                         true
@@ -370,6 +406,9 @@ fn mermaid_official_corpus() {
                 },
             };
             if !supported {
+                if let Some(page) = &mut page {
+                    append_demo_case(page, &case, rendering, &[]);
+                }
                 continue;
             }
             let (front, header, body) = split_case(&case.source);
@@ -395,6 +434,7 @@ fn mermaid_official_corpus() {
                 config_unlisted: &config_unlisted,
             };
             let mut has_gap = false;
+            let mut limitations = Vec::new();
             for (fi, feature) in features.iter().enumerate() {
                 if applies(feature) && uses(feature, &text) {
                     feature_use[fi].0 += 1;
@@ -402,11 +442,25 @@ fn mermaid_official_corpus() {
                         feature_use[fi].1 += 1;
                     }
                     has_gap |= feature.status == Status::Gap;
+                    if page.is_some() && feature.status != Status::Ok {
+                        let label = if feature.status == Status::Gap { "未実装" } else { "対象外" };
+                        if feature.name == "config: other options" {
+                            limitations.extend(config_unlisted.iter().map(|key| format!("{label} — `{key}`")));
+                        } else {
+                            limitations.push(format!("{label} — {}", feature.name));
+                        }
+                    }
                 }
             }
             if rendered && !has_gap {
                 entry.clean += 1;
             }
+            if let Some(page) = &mut page {
+                append_demo_case(page, &case, rendering, &limitations);
+            }
+        }
+        if let (Some(dir), Some(page)) = (&demo_dir, page) {
+            fs::write(dir.join(format!("{doc}.md")), page).expect("write demo page");
         }
     }
 
@@ -498,6 +552,25 @@ fn mermaid_official_corpus() {
         report.push_str("\n<details><summary>Failures</summary>\n\n");
         report.push_str(&detail);
         report.push_str("\n</details>\n");
+    }
+    if let Some(path) = demo_dir {
+        let mut index = String::from(
+            "# Mermaid 構文デモ集\n\n[ソース](SOURCE.json) · [MIT ライセンス](LICENSE)\n\n             各ページを Docs で開くと公式例を表示できます。SVG とグラフの区分はレンダラーの出力です。             対応範囲の注記には構文の簡易マッチを使っています。個々の描画や配置の一致を保証するものではありません。\n\n             | 図種 | 描画例 | 全例 |\n| --- | ---: | ---: |\n",
+        );
+        for (doc, stats) in &stats {
+            writeln!(index, "| [{doc}]({doc}.md) | {} | {} |", stats.rendered, stats.total).unwrap();
+        }
+        index.push_str("\n## 登録済みの構文と設定\n\n| 図種 | 項目 | 状態 | マッチした公式例 |\n| --- | --- | --- | ---: |\n");
+        for (feature, (count, _)) in features.iter().zip(&feature_use) {
+            let status = match feature.status {
+                Status::Ok => "対応",
+                Status::Gap => "未実装",
+                Status::WontFix => "対象外",
+            };
+            let name = feature.name.replace('|', "\\|");
+            writeln!(index, "| {} | {name} | {status} | {count} |", feature.doc).unwrap();
+        }
+        fs::write(path.join("index.md"), index).expect("write demo index");
     }
     println!("{report}");
     if let Ok(path) = std::env::var("MERMAID_CORPUS_REPORT") {

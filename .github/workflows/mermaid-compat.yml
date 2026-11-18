@@ -50,6 +50,7 @@ jobs:
         env:
           MERMAID_CORPUS_REPORT: ${{ runner.temp }}/mermaid-corpus.md
           MERMAID_CORPUS_DUMP: ${{ runner.temp }}/mermaid-svg
+          MERMAID_CORPUS_DEMO: ${{ runner.temp }}/mermaid-markdown-demo
         run: cargo test --locked -p ibis-pptx --test mermaid_corpus -- --nocapture
       - name: Publish corpus report
         if: always()
@@ -69,6 +70,12 @@ jobs:
         with:
           name: mermaid-corpus-svgs
           path: ${{ runner.temp }}/mermaid-svg
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mermaid-markdown-demo
+          path: ${{ runner.temp }}/mermaid-markdown-demo
           if-no-files-found: ignore
 
   mermaid-js-compare:

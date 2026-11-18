@@ -111,6 +111,19 @@ series:
 
 Flowchart、sequence、ER、state、Gantt などは SVG として表示されます。`pie` と `xychart` は通常、編集可能な Office グラフになります。取り込み経路によっては SVG になります。グラフを編集すると、再書き出し時には編集結果を表す `chart` ブロックになる場合があります。[Mermaid の対応範囲](mermaid-compatibility.md)。
 
+### デモを開く
+
+[図種別デモ](mermaid-demo-ja.md) は、そのまま Docs で開ける Markdown です。すべての対応図種に表示例があり、未対応の図種はコード表示を試せます。この Reference には日本語ラベル、双方向矢印、横棒グラフ、数値 x 軸の例もあります。
+
+公式コーパスの全例を、図種別の Markdown として生成できます。目次には描画結果と、対応・未実装・対象外として追跡する構文の一覧が載ります。各例には、該当する既知の制約を表示します。
+
+```sh
+MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo \
+  cargo test -p ibis-pptx --test mermaid_corpus
+```
+
+生成先の `index.md` が目次です。例の出典と MIT ライセンスも生成先に含まれます。Mermaid CI では `mermaid-markdown-demo` 成果物として取得できます。
+
 ### 対応する図種と構文
 
 第1列は現在認識するすべての図種キーワードと別名です。第2列は公式例コーパスで対応として追跡している項目です。設定キーや演算子は[構文一覧の元データ](../crates/ibis-pptx/tests/mermaid/features.txt)と[図種ごとの入力例](../crates/ibis-pptx/tests/mermaid/corpus/)で照合できます。
