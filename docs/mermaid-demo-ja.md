@@ -454,11 +454,7 @@ pie
   "保留": 20
 ```
 
-## コード表示の例
-
-Cynefin、Ishikawa、ZenUML は Mermaid フェンスのまま保持されます。
-
-### Cynefin
+## Cynefin
 
 [公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/cynefin.md) · [コーパス例 3](../crates/ibis-pptx/tests/mermaid/corpus/cynefin.mmd)
 
@@ -469,8 +465,16 @@ cynefin-beta
   complex
   complicated
   clear
+    "既知の手順で対応"
   chaotic
+  confusion
+    "原因を調査中"
+  clear --> chaotic : "状況が急変"
 ```
+
+## コード表示の例
+
+Ishikawa、ZenUML は Mermaid フェンスのまま保持されます。
 
 ### Ishikawa
 

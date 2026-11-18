@@ -329,3 +329,12 @@ railroad | ABNF rules (/ and n*m repetition) | ok | header | railroad-abnf
 railroad | PEG rules (<- / ! &) | ok | header | railroad-peg
 railroad | function form (sequence / choice / optional / zeroOrMore / oneOrMore / terminal / nonterminal) | ok | header | railroad-beta
 railroad | title | ok | prefix | title
+
+cynefin | five domains and items | ok | header | cynefin-beta
+cynefin | labeled transitions | ok | contains | -->
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.width$
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.height$
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.padding$
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.showDomainDescriptions$
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.boundaryAmplitude$
+cynefin | config: random boundary seed | gap | config | cynefin.seed$
