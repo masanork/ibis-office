@@ -5216,6 +5216,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn docx_markdown_round_trip_keeps_explicit_operator_limits() {
+        fn limit_placement(data: &[u8]) -> Vec<(bool, bool, String, String)> {
+            let presentation = crate::read(data).unwrap();
+            let mut placements = Vec::new();
+            for block in &presentation.flow.as_ref().unwrap().body {
+                let Block::Paragraph(paragraph) = block else { continue };
+                for run in &paragraph.runs {
+                    if let FlowRunKind::Math { math, display } = &run.kind {
+                        let operator = match math {
+                            ibis_doc_model::math::Math::Row(items) => &items[0],
+                            operator => operator,
+                        };
+                        let ibis_doc_model::math::Math::Nary {
+                            stacked, sub: Some(sub), sup: Some(sup), ..
+                        } = operator else {
+                            panic!("expected editable operator with two limits: {operator:?}");
+                        };
+                        placements.push((*display, *stacked, sub.to_latex(), sup.to_latex()));
+                    }
+                }
+            }
+            placements
+        }
+
+        let markdown = br"Inline $\int\limits_{0}^{1} x$.
+
+$$
+\sum\nolimits_{i=0}^{n} x_i
+$$
+";
+        let docx = import_markdown_to_docx_bytes(markdown).unwrap();
+        let expected = vec![
+            (false, true, "0".into(), "1".into()),
+            (true, false, "i=0".into(), "n".into()),
+        ];
+        assert_eq!(limit_placement(&docx), expected);
+        let exported = export_docx_to_markdown(&docx).unwrap();
+        assert!(exported.contains(r"\int\limits_{0}^{1}"));
+        assert!(exported.contains(r"\sum\nolimits_{i=0}^{n}"));
+        let saved_again = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        assert_eq!(limit_placement(&saved_again), expected);
+    }
+
+    #[test]
     fn detects_markdown_vs_csv() {
         assert!(is_markdown(b"# Heading 1\n\nSome paragraph."));
         assert!(is_markdown(b"---\ntitle: Test\n---\nHello"));

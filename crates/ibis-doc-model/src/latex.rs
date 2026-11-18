@@ -294,10 +294,20 @@ impl LatexParser {
     }
 
     fn parse_nary(&mut self, op: &str) -> Math {
+        let mut stacked = stacked_by_default(op);
         let mut sub = None;
         let mut sup = None;
         while let Some(c) = self.peek_non_ws() {
-            if c == '_' {
+            if c == '\\' {
+                let command: String = self.chars[self.at + 1..].iter().copied()
+                    .take_while(char::is_ascii_alphabetic).collect();
+                stacked = match command.as_str() {
+                    "limits" => true,
+                    "nolimits" => false,
+                    _ => break,
+                };
+                self.at += command.len() + 1;
+            } else if c == '_' {
                 self.at += 1;
                 sub = Some(Box::new(self.parse_required_arg()));
             } else if c == '^' {
@@ -312,7 +322,7 @@ impl LatexParser {
             sub,
             sup,
             body: Box::new(Math::Row(Vec::new())),
-            stacked: stacked_by_default(op),
+            stacked,
         }
     }
 
