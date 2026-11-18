@@ -189,6 +189,7 @@ pub struct Resources {
     /// Color and contrast rendering mode (Color, Grayscale, HighContrast).
     pub color_mode: ColorMode,
     pub images: HashMap<MediaId, Arc<Image>>,
+    picture_preview: Option<(MediaId, Arc<Image>)>,
     /// Encoded data of pictures that can be wrapped in SVG to rotate them.
     sources: std::cell::RefCell<HashMap<MediaId, (crate::picture_svg::Encoding, Arc<[u8]>)>>,
     /// Rotated pictures made so far, with their bounds relative to the frame.
@@ -575,6 +576,7 @@ impl Resources {
             print_breaks: Default::default(),
             exact: false,
             theme_fonts: presentation.theme_fonts.as_ref().map(|t| t.minor.clone()),
+            picture_preview: None,
             live: Default::default(),
             sheets,
             edited_box: None,
@@ -670,10 +672,22 @@ impl Resources {
         None
     }
 
+    /// Override one picture for display without replacing the document media.
+    pub fn set_picture_preview(&mut self, preview: Option<(MediaId, Arc<Image>)>) {
+        self.picture_preview = preview;
+    }
+
     /// The picture to draw for `media`: decoded, or left to GPUI to load.
     /// `None` while it is still decoding (it is drawn when it is ready) or
     /// when it cannot be drawn.
     pub fn picture(&self, media: MediaId) -> Option<ImageSource> {
+        if !self.print {
+            if let Some((id, preview)) = &self.picture_preview {
+                if *id == media {
+                    return Some(ImageSource::Image(preview.clone()));
+                }
+            }
+        }
         match self.preload.decoded(media) {
             Ok(Some(image)) => Some(ImageSource::Render(image)),
             Ok(None) => None,

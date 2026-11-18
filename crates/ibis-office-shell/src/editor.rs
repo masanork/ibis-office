@@ -266,6 +266,13 @@ impl RulerUnit {
 }
 
 // The ruler's unit is one setting for the three screens (each screen's menus call these).
+pub(crate) struct ExrExposureView {
+    media: ibis_doc_model::MediaId,
+    samples: std::sync::Arc<ibis_pptx::production_image::ExrExposure>,
+    pub(crate) ev: i8,
+    pub(crate) rendering: bool,
+}
+
 impl SlideEditor {
     /// ルーラーの測定単位を取得する (DOCX-VIEW-013).
     pub fn ruler_unit(&self) -> RulerUnit {
@@ -572,6 +579,7 @@ pub struct SlideEditor {
     /// Preserve the original path even after creating an editable copy.
     #[cfg(not(target_family = "wasm"))]
     pub standard_source_path: Option<std::path::PathBuf>,
+    pub(crate) exr_exposure: Option<ExrExposureView>,
     /// Original JTD bytes: presence makes this document permanently read-only.
     pub jtd_original: Option<std::sync::Arc<[u8]>>,
     /// An auxiliary preview, not a reconstruction of the source document.
@@ -891,6 +899,7 @@ impl SlideEditor {
             #[cfg(not(target_family = "wasm"))]
             standard_source_path: None,
             jtd_original: None,
+            exr_exposure: None,
             jtd_gallery: false,
             jtd_gallery_body: None,
             jtd_thumbnail: false,
@@ -1095,6 +1104,54 @@ impl SlideEditor {
         }
     }
 
+    fn set_exr_exposure(&mut self, exposure: Option<ibis_pptx::production_image::ExrExposure>) {
+        self.exr_exposure = exposure.and_then(|samples| {
+            let media = self.presentation().media.last()?.id;
+            Some(ExrExposureView { media, samples: std::sync::Arc::new(samples), ev: 0, rendering: false })
+        });
+    }
+
+    pub(crate) fn set_exr_ev(&mut self, ev: i8, window: &mut Window, cx: &mut Context<Self>) {
+        let ev = ev.clamp(-8, 8);
+        let Some(view) = self.exr_exposure.as_mut() else { return };
+        if view.rendering || view.ev == ev { return; }
+        if ev == 0 {
+            view.ev = 0;
+            self.resources.set_picture_preview(None);
+            cx.notify();
+            return;
+        }
+        view.rendering = true;
+        let samples = view.samples.clone();
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            #[cfg(not(target_family = "wasm"))]
+            let result = {
+                let samples = samples.clone();
+                cx.background_executor().spawn(async move { samples.preview_png(ev) }).await
+            };
+            #[cfg(target_family = "wasm")]
+            let result = {
+                cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
+                samples.preview_png(ev)
+            };
+            this.update_in(cx, |this, _, cx| {
+                let Some(view) = this.exr_exposure.as_mut() else { return };
+                if !std::sync::Arc::ptr_eq(&view.samples, &samples) { return; }
+                view.rendering = false;
+                match result {
+                    Ok(bytes) => {
+                        let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, bytes);
+                        this.resources.set_picture_preview(Some((view.media, std::sync::Arc::new(image))));
+                        view.ev = ev;
+                    }
+                    Err(error) => this.set_status(error, cx),
+                }
+                cx.notify();
+            }).ok();
+        }).detach();
+    }
+
     /// Replace the open presentation, dropping undo history and selection.
     pub fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.standard_read_only = false;
@@ -1104,6 +1161,7 @@ impl SlideEditor {
         with_format!(self, show_end(self, window, cx));
         self.opened_from_legacy = presentation.opened_from_legacy;
         self.jtd_original = None;
+        self.exr_exposure = None;
         self.jtd_gallery = false;
         self.jtd_gallery_body = None;
         self.jtd_thumbnail = false;
@@ -1316,7 +1374,9 @@ impl SlideEditor {
             }
             // A download-enabled embed needs the original package to write
             // edits back; ordinary initial previews keep the lighter read path.
-            if initial && !crate::embed::show_download() {
+            let extension = name.rsplit_once('.').map(|(_, ext)| ext);
+            let production_image = extension.is_some_and(ibis_pptx::production_image::supports_extension);
+            if initial && !production_image && !crate::embed::show_download() {
                 let mut result = ibis_pptx::read(&data).map_err(|e| e.to_string());
                 if let Ok(presentation) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
@@ -1332,8 +1392,12 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let mut result = ibis_pptx::open(data).map_err(|e| e.to_string());
-            if let Ok(opened) = &result {
+            let mut result = match ibis_pptx::production_image::open_with_exposure(extension, &data) {
+                Ok(Some(result)) => Ok(result),
+                Ok(None) => ibis_pptx::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
+                Err(error) => Err(error),
+            };
+            if let Ok((opened, _)) = &result {
                 if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {
                     result = Err(crate::web::font_preload_error(error));
                 }
@@ -1341,7 +1405,7 @@ impl SlideEditor {
             this.update_in(cx, |this, window, cx| match result {
                 // Closed (ファイル > 閉じる) while it was read.
                 _ if this.closed != closed || this.web_open_generation != generation => {}
-                Ok(opened) => {
+                Ok((opened, exposure)) => {
                     let is_ppsx = name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::is_slideshow(e));
                     let is_tmpl = name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::is_template(e));
                     let doc_name = if is_tmpl {
@@ -1350,6 +1414,7 @@ impl SlideEditor {
                         name
                     };
                     this.load(opened.presentation, doc_name, window, cx);
+                    this.set_exr_exposure(exposure);
                     this.set_loaded_source(std::sync::Arc::new(opened.source));
                     // (A presentation opens without the speaker notes, as a new one does.)
                     with_format!(this, file_opened(this));
@@ -1453,7 +1518,8 @@ impl SlideEditor {
                         this.set_loaded_source(loaded.source);
                         this.path = None;
                         this.document.set_file(None);
-                    } else if path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
+                    } else if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::production_image::supports_extension)
+                        || path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
                         // An old workbook or presentation (or an OpenDocument workbook) is read as a new .xlsx or .pptx: saving asks where, and leaves the old file as it is.
                         let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         let extension = crate::format::info(ibis_pptx::Kind::of(&loaded.presentation)).extension;
@@ -1476,6 +1542,7 @@ impl SlideEditor {
                         this.watch.known = stamp_before_read;
                         this.protection_password = loaded.password.clone();
                     }
+                    this.set_exr_exposure(loaded.exr_exposure);
                     if loaded.standard_encryption {
                         this.standard_read_only = true;
                         this.standard_source_path = Some(path.clone());

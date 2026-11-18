@@ -9,7 +9,7 @@ pub mod encode;
 pub mod mq;
 pub mod tier2;
 
-pub use decode::{ColorSpace, DecodedImage, decode};
+pub use decode::{ColorSpace, DecodedImage, decode, decode_with_pixel_limit};
 pub use encode::{EncodeOptions, PixelFormat, encode_j2k, encode_jp2};
 
 /// Error returned by JPEG 2000 encoding or decoding.

@@ -345,6 +345,9 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
+        if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::production_image::supports_extension) {
+            return Err("Choose a document extension to save the imported image".into());
+        }
         self.check_standard_copy_format(&path)?;
         if self.standard_source_path.as_deref().is_some_and(|original| same_file(original, &path)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
