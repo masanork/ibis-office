@@ -71,7 +71,7 @@ fn decode_image(image: Image<'_>) -> Result<DecodedImage> {
     })
 }
 
-/// Decode display pixels, converting an embedded RGB ICC profile to sRGB.
+/// Decode display pixels, converting an embedded RGB or CMYK ICC profile to sRGB.
 #[cfg(feature = "color-managed-preview")]
 pub fn decode_srgb_preview(bytes: &[u8], max_pixels: u64) -> Result<DecodedImage> {
     use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
@@ -84,33 +84,41 @@ pub fn decode_srgb_preview(bytes: &[u8], max_pixels: u64) -> Result<DecodedImage
     else {
         return decode_image(image);
     };
-    if *num_channels != 3 {
-        return Err(Error::new("JPEG 2000 preview requires an RGB ICC profile"));
-    }
     let color_error = |error| Error::new(format!("JPEG 2000 ICC conversion failed: {error}"));
     let profile = ColorProfile::new_from_slice(profile).map_err(color_error)?;
-    if profile.color_space != DataColorSpace::Rgb {
-        return Err(Error::new("JPEG 2000 preview requires an RGB ICC profile"));
-    }
-    let layout = if image.has_alpha() {
-        Layout::Rgba
-    } else {
-        Layout::Rgb
+    let (input, output) = match (profile.color_space, *num_channels, image.has_alpha()) {
+        (DataColorSpace::Rgb, 3, false) => (Layout::Rgb, Layout::Rgb),
+        (DataColorSpace::Rgb, 3, true) => (Layout::Rgba, Layout::Rgba),
+        // moxcms represents a four-component CMYK source with the Rgba layout.
+        (DataColorSpace::Cmyk, 4, false) => (Layout::Rgba, Layout::Rgb),
+        (DataColorSpace::Cmyk, 4, true) => {
+            return Err(Error::new(
+                "JPEG 2000 CMYK previews with alpha are unsupported",
+            ));
+        }
+        _ => {
+            return Err(Error::new(
+                "JPEG 2000 preview requires an RGB or CMYK ICC profile",
+            ));
+        }
     };
     let transform = profile
         .create_transform_8bit(
-            layout,
+            input,
             &ColorProfile::new_srgb(),
-            layout,
+            output,
             TransformOptions::default(),
         )
         .map_err(color_error)?;
     let mut decoded = decode_image(image)?;
-    let mut srgb = vec![0; decoded.data.len()];
+    let channels = 3 + u8::from(decoded.has_alpha);
+    let mut srgb =
+        vec![0; decoded.data.len() / usize::from(decoded.channels) * usize::from(channels)];
     transform
         .transform(&decoded.data, &mut srgb)
         .map_err(color_error)?;
     decoded.data = srgb;
+    decoded.channels = channels;
     decoded.color_space = ColorSpace::Rgb;
     Ok(decoded)
 }
