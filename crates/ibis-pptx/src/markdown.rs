@@ -874,6 +874,10 @@ fn parse_markdown_into(
     // If a `[[toc]]` placeholder was inserted, populate its entries from the document headings.
     populate_toc_blocks(doc);
 
+    for command in ibis_doc_model::flow_command::updated_fields(doc) {
+        let _ = ibis_doc_model::flow_command::apply_to(doc, command);
+    }
+
     Ok(())
 }
 
@@ -1553,7 +1557,7 @@ fn parse_blocks(
             let content = content_lines.join("\n");
             match lang.split_whitespace().next().unwrap_or("") {
                 "math" | "latex" | "tex" => {
-                    blocks.push(build_display_math_block(&content, ctx));
+                    blocks.push(build_display_math_block(&content, None, ctx));
                 }
                 "chart" => {
                     blocks.push(build_chart_block(&content, ctx)?);
@@ -1570,13 +1574,15 @@ fn parse_blocks(
 
         // Display math block: $$ ... $$
         if trimmed.starts_with("$$") {
-            if trimmed.len() > 4 && trimmed.ends_with("$$") {
-                let inner = trimmed[2..trimmed.len() - 2].trim();
-                blocks.push(build_display_math_block(inner, ctx));
+            if let Some((inner, bookmark)) = display_math_close(&trimmed[2..])
+                && !inner.trim().is_empty()
+            {
+                blocks.push(build_display_math_block(inner, bookmark, ctx));
                 i += 1;
                 continue;
             }
             let mut math_lines = Vec::new();
+            let mut bookmark = None;
             let first_after = trimmed.strip_prefix("$$").unwrap_or("").trim();
             if !first_after.is_empty() {
                 math_lines.push(first_after.to_string());
@@ -1584,7 +1590,8 @@ fn parse_blocks(
             i += 1;
             while i < lines.len() {
                 let l = lines[i].trim();
-                if let Some(before_close) = l.strip_suffix("$$") {
+                if let Some((before_close, id)) = display_math_close(l) {
+                    bookmark = id;
                     if !before_close.trim().is_empty() {
                         math_lines.push(before_close.trim().to_string());
                     }
@@ -1594,7 +1601,7 @@ fn parse_blocks(
                 math_lines.push(lines[i].to_string());
                 i += 1;
             }
-            blocks.push(build_display_math_block(&math_lines.join("\n"), ctx));
+            blocks.push(build_display_math_block(&math_lines.join("\n"), bookmark, ctx));
             continue;
         }
 
@@ -2024,7 +2031,23 @@ fn build_code_block(code: &str, ctx: &mut ParseContext<'_>) -> Block {
     Block::Paragraph(p)
 }
 
-fn build_display_math_block(latex: &str, ctx: &mut ParseContext<'_>) -> Block {
+/// Split a closing math delimiter from an optional Word-compatible bookmark.
+fn display_math_close(line: &str) -> Option<(&str, Option<&str>)> {
+    if let Some(math) = line.strip_suffix("$$") {
+        return Some((math, None));
+    }
+    let (math, label) = line.strip_suffix('}')?.rsplit_once("{#")?;
+    let math = math.trim_end().strip_suffix("$$")?;
+    is_equation_bookmark(label).then_some((math, Some(label)))
+}
+
+fn is_equation_bookmark(label: &str) -> bool {
+    label.len() <= 40
+        && label.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn build_display_math_block(latex: &str, bookmark: Option<&str>, ctx: &mut ParseContext<'_>) -> Block {
     let math = parse_latex(latex.trim());
     let mut p = FlowParagraph {
         id: ctx.fresh_id(),
@@ -2035,6 +2058,7 @@ fn build_display_math_block(latex: &str, ctx: &mut ParseContext<'_>) -> Block {
             after: Some(6 * EMU_PER_PT),
             ..ParaFormat::default()
         },
+        bookmarks: bookmark.map(str::to_owned).into_iter().collect(),
         runs: vec![FlowRun::new(
             FlowRunKind::Math {
                 math,
@@ -2994,6 +3018,37 @@ fn parse_yaml_series_item(s: &str) -> Option<(String, Vec<Option<Number>>)> {
 // Inline parsing
 // ============================================================================
 
+fn markdown_sequence(name: &str) -> Option<(&'static str, &'static str)> {
+    [("equation", "Equation"), ("figure", "Figure"), ("table", "Table")]
+        .into_iter()
+        .find(|(markdown, _)| name.eq_ignore_ascii_case(markdown))
+}
+
+fn markdown_number_field(rest: &str) -> Option<(usize, String)> {
+    let field = rest.strip_prefix("{{")?;
+    let (token, _) = field.split_once("}}")?;
+    let (kind, value) = token.split_once(':')?;
+    let instruction = match kind {
+        "seq" => format!("SEQ {}", markdown_sequence(value)?.1),
+        "ref" if is_equation_bookmark(value) => format!("REF {value} \\h"),
+        _ => return None,
+    };
+    Some((token.len() + 4, instruction))
+}
+
+fn format_markdown_number_field(instruction: &str, shown: &str) -> String {
+    let words = ibis_doc_model::flow_command::field_words(instruction);
+    match words.as_slice() {
+        [seq, name] if seq.eq_ignore_ascii_case("SEQ") => {
+            markdown_sequence(name).map_or_else(|| shown.to_owned(), |(label, _)| format!("{{{{seq:{label}}}}}"))
+        }
+        [reference, name, r"\h"] if reference.eq_ignore_ascii_case("REF") && is_equation_bookmark(name) => {
+            format!("{{{{ref:{name}}}}}")
+        }
+        _ => shown.to_owned(),
+    }
+}
+
 fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -> Vec<FlowRun> {
     let mut out = Vec::new();
     let mut plain = String::new();
@@ -3027,6 +3082,18 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                 i += 1 + next_ch.len_utf8();
                 continue;
             }
+        }
+
+        if let Some((consumed, instruction)) = markdown_number_field(rest) {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let mut run = FlowRun::new(
+                FlowRunKind::Field { instruction, shown: "?".into() },
+                FlowRunStyle::default(),
+            );
+            run.format = base_fmt.clone();
+            out.push(run);
+            i += consumed;
+            continue;
         }
 
         // CriticMarkup Insertion: `{++text++}`
@@ -4767,7 +4834,11 @@ fn serialize_paragraph(
             FlowRunKind::Math { math, display: true } => {
                 out.push_str("$$\n");
                 out.push_str(&math.to_latex());
-                out.push_str("\n$$\n\n");
+                out.push_str("\n$$");
+                if let Some(bookmark) = p.bookmarks.iter().find(|name| is_equation_bookmark(name)) {
+                    out.push_str(&format!(" {{#{bookmark}}}"));
+                }
+                out.push_str("\n\n");
                 return;
             }
             FlowRunKind::Shape(shape) => {
@@ -5205,6 +5276,13 @@ fn serialize_runs(
     for run in runs {
         let mut piece = match &run.kind {
             FlowRunKind::Text(t) => format_text_run(t, &run.format, run.link.is_some()),
+            FlowRunKind::Field { instruction, shown } => {
+                if run.field_locked {
+                    shown.clone()
+                } else {
+                    format_markdown_number_field(instruction, shown)
+                }
+            }
             FlowRunKind::LineBreak => "  \n".to_string(),
             FlowRunKind::Tab => "\t".to_string(),
             FlowRunKind::PageBreak => "\\newpage".to_string(),
@@ -6137,6 +6215,186 @@ mod tests {
         assert_eq!(slide.rows[0].cells[0].column_span, 2);
         assert!(slide.rows[0].cells[1].merged);
         assert!(!slide.rows[0].cells[2].merged);
+    }
+
+    #[test]
+    fn caption_numbers_and_forward_references_round_trip_and_renumber() {
+        fn fields(data: &[u8]) -> Vec<(String, String)> {
+            let presentation = crate::read(data).unwrap();
+            presentation.flow.as_ref().unwrap().body.iter()
+                .filter_map(|block| match block {
+                    Block::Paragraph(paragraph) => Some(&paragraph.runs),
+                    _ => None,
+                })
+                .flatten()
+                .filter_map(|run| match &run.kind {
+                    FlowRunKind::Field { instruction, shown } => Some((instruction.clone(), shown.clone())),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        let input = b"See equation ({{ref:eq_energy_number}}).
+
+$$E=mc^2$$ {#eq_energy}
+
+{{seq:equation}} {#eq_energy_number}
+
+Figure {{seq:figure}} {#fig_setup}
+
+Table {{seq:table}} {#tbl_results}
+";
+        let original = import_markdown_to_docx_bytes(input).unwrap();
+        let expected = [
+            (r"REF eq_energy_number \h".into(), "1".into()),
+            ("SEQ Equation".into(), "1".into()),
+            ("SEQ Figure".into(), "1".into()),
+            ("SEQ Table".into(), "1".into()),
+        ];
+        assert_eq!(fields(&original), expected);
+        let markdown = export_docx_to_markdown(&original).unwrap();
+        assert!(markdown.contains("{{seq:equation}} {#eq_energy_number}"));
+        assert!(markdown.contains("{{ref:eq_energy_number}}"));
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        assert_eq!(fields(&rebuilt), expected);
+
+        let earlier = format!("{{{{seq:equation}}}} {{#eq_earlier_number}}\n\n{markdown}");
+        let renumbered = import_markdown_to_docx_bytes(earlier.as_bytes()).unwrap();
+        assert_eq!(
+            fields(&renumbered),
+            [
+                ("SEQ Equation".into(), "1".into()),
+                (r"REF eq_energy_number \h".into(), "2".into()),
+                ("SEQ Equation".into(), "2".into()),
+                ("SEQ Figure".into(), "1".into()),
+                ("SEQ Table".into(), "1".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn equation_bookmarks_and_internal_links_survive_docx_round_trip() {
+        let input = br"See the [energy equation](#eq_energy).
+
+$$
+E=mc^2
+$$ {#eq_energy}
+
+$$a=b$$ {#eq_inline_source}
+
+Following paragraph.
+";
+        let docx = import_markdown_to_docx_bytes(input).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        assert!(markdown.contains("[energy equation](#eq_energy)"));
+        assert!(markdown.contains("$$ {#eq_energy}"));
+        assert!(markdown.contains("$$ {#eq_inline_source}"));
+        assert!(markdown.contains("Following paragraph."));
+
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        let flow = presentation.flow.unwrap();
+        let [Block::Paragraph(reference), Block::Paragraph(equation), ..] = flow.body.as_slice() else {
+            panic!("expected a reference followed by a display equation");
+        };
+        assert!(reference.runs.iter().any(|run| {
+            matches!(&run.link, Some(Link::Anchor(anchor)) if anchor == "eq_energy")
+        }));
+        assert_eq!(equation.bookmarks, ["eq_energy"]);
+        assert!(matches!(equation.runs[0].kind, FlowRunKind::Math { display: true, .. }));
+    }
+
+    #[test]
+    fn docx_markdown_round_trip_keeps_matrix_and_equation_array_structure() {
+        // Inject independent OMML instead of using our Markdown or OMML writer
+        // to construct the input equations.
+        let equations = r#"
+<w:p><m:oMathPara><m:oMath><m:m>
+  <m:mr><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:mr>
+  <m:mr><m:e><m:r><m:t>c</m:t></m:r></m:e><m:e><m:r><m:t>d</m:t></m:r></m:e></m:mr>
+</m:m></m:oMath></m:oMathPara></w:p>
+<w:p><m:oMathPara><m:oMath><m:eqArr>
+  <m:e><m:r><m:t>x</m:t></m:r><m:r><m:rPr><m:aln/></m:rPr><m:t>=1</m:t></m:r></m:e>
+  <m:e><m:r><m:rPr><m:aln m:val="0"/></m:rPr><m:t>yy</m:t></m:r><m:box>
+    <m:boxPr><m:opEmu/><m:aln/></m:boxPr><m:e><m:r><m:t>=</m:t></m:r></m:e>
+  </m:box><m:r><m:t>2</m:t></m:r></m:e>
+</m:eqArr></m:oMath></m:oMathPara></w:p>"#;
+        let template = import_markdown_to_docx_bytes(b"Math\n").unwrap();
+        let mut package = ibis_ooxml::Package::open(template).unwrap();
+        let xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+        let xml = xml.replace(
+            "<w:body>",
+            &format!(
+                "<w:body xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\">{equations}"
+            ),
+        );
+        package.set_bytes("word/document.xml", xml.into_bytes());
+        let original = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
+
+        let markdown = export_docx_to_markdown(&original).unwrap();
+        assert!(markdown.contains(r"\begin{matrix}a & b \\ c & d\end{matrix}"));
+        assert!(markdown.contains(r"\begin{aligned}x&=1 \\ yy&=2\end{aligned}"));
+
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        let flow = presentation.flow.unwrap();
+        let formulas: Vec<_> = flow.body.iter().filter_map(|block| {
+            let Block::Paragraph(paragraph) = block else { return None };
+            let [run] = paragraph.runs.as_slice() else { return None };
+            let FlowRunKind::Math { math, display: true } = &run.kind else { return None };
+            Some(math)
+        }).collect();
+        use ibis_doc_model::math::Math;
+        let [Math::Matrix(matrix), Math::EqArray(rows)] = formulas.as_slice() else {
+            panic!("expected an editable matrix and equation array: {formulas:?}");
+        };
+        let cells: Vec<Vec<_>> = matrix.iter().map(|row| row.iter().map(Math::linear).collect()).collect();
+        assert_eq!(cells, [vec!["a", "b"], vec!["c", "d"]]);
+        assert_eq!(rows.iter().map(Math::linear).collect::<Vec<_>>(), ["x&=1", "yy&=2"]);
+    }
+
+    #[test]
+    fn docx_markdown_round_trip_keeps_explicit_operator_limits() {
+        fn limit_placement(data: &[u8]) -> Vec<(bool, bool, String, String)> {
+            let presentation = crate::read(data).unwrap();
+            let mut placements = Vec::new();
+            for block in &presentation.flow.as_ref().unwrap().body {
+                let Block::Paragraph(paragraph) = block else { continue };
+                for run in &paragraph.runs {
+                    if let FlowRunKind::Math { math, display } = &run.kind {
+                        let operator = match math {
+                            ibis_doc_model::math::Math::Row(items) => &items[0],
+                            operator => operator,
+                        };
+                        let ibis_doc_model::math::Math::Nary {
+                            stacked, sub: Some(sub), sup: Some(sup), ..
+                        } = operator else {
+                            panic!("expected editable operator with two limits: {operator:?}");
+                        };
+                        placements.push((*display, *stacked, sub.to_latex(), sup.to_latex()));
+                    }
+                }
+            }
+            placements
+        }
+
+        let markdown = br"Inline $\int\limits_{0}^{1} x$.
+
+$$
+\sum\nolimits_{i=0}^{n} x_i
+$$
+";
+        let docx = import_markdown_to_docx_bytes(markdown).unwrap();
+        let expected = vec![
+            (false, true, "0".into(), "1".into()),
+            (true, false, "i=0".into(), "n".into()),
+        ];
+        assert_eq!(limit_placement(&docx), expected);
+        let exported = export_docx_to_markdown(&docx).unwrap();
+        assert!(exported.contains(r"\int\limits_{0}^{1}"));
+        assert!(exported.contains(r"\sum\nolimits_{i=0}^{n}"));
+        let saved_again = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        assert_eq!(limit_placement(&saved_again), expected);
     }
 
     #[test]

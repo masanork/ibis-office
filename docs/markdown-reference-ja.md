@@ -38,6 +38,22 @@ $$
 E = mc^2
 $$
 
+インラインの分数 $\frac{a_1}{\sqrt{b}}$ や、別行の行列も表示できます。
+
+$$
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}
+$$
+
+演算子の上下限の配置は `\limits`（上下）または `\nolimits`（右側）で指定できます。次の式を DOCX に保存し、Markdown に書き戻しても、配置の指定を保持します。DOCX ではネイティブの数式として保存されます。
+
+$$
+\int\limits_{0}^{1} x^2\,dx = \frac{1}{3}
+$$
+
+$$
+\sum\nolimits_{i=1}^{n} i = \frac{n(n+1)}{2}
+$$
+
 次はコードブロックです。コマンドを実行する場合は、リポジトリのルートで `ibisOffice` を利用できるようにしてください。
 
 ```sh
@@ -45,6 +61,55 @@ ibisOffice --export docx --out-dir /tmp/docs-reference/docx docs/markdown-refere
 ibisOffice --export pptx --out-dir /tmp/docs-reference/pptx docs/markdown-reference-ja.md
 ibisOffice --export md --out-dir /tmp/docs-reference/markdown /tmp/docs-reference/docx/markdown-reference-ja.docx
 ```
+
+## Office Open Markdown の往復確認
+
+Office Open Markdown は、Office 文書の構造を人と AI が編集できる Markdown に移し、対応する構造を編集可能な OOXML に戻す取り組みです。数式は LaTeX 記法で書き、DOCX では Word の数式形式である OMML として保存します。
+
+次の複数行の式は、DOCX に変換してから Markdown に戻すと、各行と `&` の整列位置を保ちます。
+
+$$
+\begin{aligned}
+x &= 1 \\
+yy &= 2
+\end{aligned}
+$$
+
+行列の行・列と、複数行の式の整列位置は、OMML を入力にした往復テストでそれぞれ確認しています。OMML の整列用属性は Markdown の `&` に変換され、DOCX に戻すときは等式配列内の整列マーカーとして保存されます。
+
+### 式にリンクする
+
+本文から [エネルギーの式](#eq_energy) にリンクできます。
+
+$$
+E=mc^2
+$$ {#eq_energy}
+
+閉じる `$$` の後ろの `{#eq_energy}` は DOCX のブックマークになり、本文の `[エネルギーの式](#eq_energy)` は文書内リンクになります。ラベルは文書内で一意にし、英字で始まる40文字以内の英数字とアンダースコアを使います。リンクの表示文字列は指定したまま保持されます。
+
+### 式・図・表に番号を付ける
+
+本文から式 ({{ref:eq_energy_number}}) を参照します。参照は番号の段落より前にも置けます。
+
+{{seq:equation}} {#eq_energy_number align=right}
+
+`{{seq:equation}}` は DOCX の `SEQ Equation`、`{{ref:eq_energy_number}}` はブックマークを指す `REF` フィールドになります。数式にリンクするラベルと、番号を参照するラベルは別々に付けます。番号だけを参照したい場合は、番号フィールド専用の段落にします。
+
+`{{seq:figure}}` と `{{seq:table}}` は図と表の独立した連番です。たとえば `図 {{seq:figure}} {#fig_setup}` を参照すると、ラベル付きの「図 1」になります。番号を追加して Markdown を読み直すと、各連番と参照が再計算されます。
+
+Markdown に書き戻せるフィールドは、ここで示した書式の連番とリンク付きの単純な参照です。Word 固有の書式やスイッチを含むフィールドは表示文字列として書き出します。
+
+### 往復の確認範囲と実装順
+
+往復テストでは、Markdown と DOCX の間で変換した後の文書モデルを比較します。数式を例にすると、式の構造、インラインと別行の区別、整列位置、参照先を確認します。記法や XML は変換時に正規化される場合があります。
+
+| 順番 | 対象 | 確認すること |
+| :--- | :--- | :--- |
+| 1 | 数式への文書内リンク | ブックマークと参照先が一致すること。合成 DOCX で検証済み。 |
+| 2 | 式・図・表の番号と参照 | 基本的な連番とブックマーク参照の往復、番号の追加後の再計算を合成 DOCX で確認済み。 |
+| 3 | ページ脚注と文末脚注 | 同じ ID の両注記を区別し、参照・本文・種別の往復を確認済み。 |
+| 4 | 引用と参考文献 | 本文中の引用を文献データに結び付け、編集後も参照できること。 |
+| 5 | 複雑な表 | 横結合・縦結合・入れ子表の往復と原本のセル引用を確認済み。 |
 
 ## 表のセル結合
 
