@@ -46,6 +46,7 @@ declare global {
   interface Window {
     /** Called from Rust for ファイル → 開く. */
     ibisOfficePickFile: () => Promise<PickedFile | null>;
+    ibisOfficeDecodeHeic: (bytes: Uint8Array) => Promise<Uint8Array>;
     /** Awaited by Rust after parsing the complete model, before layout. */
     ibisOfficePreloadFonts: (text: string) => Promise<void>;
     /** Download a locally generated DOCX without sending the document to a server. */
@@ -419,6 +420,75 @@ function downloadFile(name: string, bytes: Uint8Array, type: string): void {
 window.ibisOfficeDownloadDocx = (name, bytes) => downloadFile(name, bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 window.ibisOfficeDownloadHtml = (name, bytes) => downloadFile(name, bytes, 'text/html;charset=utf-8');
 
+function decodeHeicInWorker(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./heic-worker.js', import.meta.url), {type: 'module'});
+    const failure = ja ? 'HEIC画像をデコードできません。' : 'Could not decode the HEIC image.';
+    const finish = () => {
+      clearTimeout(timeout);
+      worker.terminate();
+    };
+    const fail = () => {
+      finish();
+      reject(failure);
+    };
+    const timeout = setTimeout(fail, 45_000);
+    worker.onerror = event => {
+      event.preventDefault();
+      fail();
+    };
+    worker.onmessageerror = fail;
+    worker.onmessage = ({data}: MessageEvent<{png?: Uint8Array}>) => {
+      if (!(data?.png instanceof Uint8Array)) return fail();
+      finish();
+      resolve(data.png);
+    };
+    try {
+      worker.postMessage(bytes, [bytes.buffer as ArrayBuffer]);
+    } catch {
+      fail();
+    }
+  });
+}
+
+/** Prefer the browser decoder and load the software decoder only if it fails. */
+async function decodeHeic(bytes: Uint8Array): Promise<Uint8Array> {
+  // Blob snapshots the bytes before Rust can reuse its Wasm memory.
+  const source = new Blob([bytes as BlobPart], {type: 'image/heic'});
+  const url = URL.createObjectURL(source);
+  const image = new Image();
+  try {
+    image.src = url;
+    try {
+      await image.decode();
+    } catch {
+      return decodeHeicInWorker(new Uint8Array(await source.arrayBuffer()));
+    }
+    const {naturalWidth: width, naturalHeight: height} = image;
+    if (width < 1 || height < 1 || width > 8192 || height > 8192 || width * height > 32 * 1024 * 1024) {
+      throw ja ? 'HEIC画像がプレビューの寸法上限を超えています。'
+        : 'HEIC image exceeds the preview dimensions.';
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    try {
+      const context = canvas.getContext('2d', {colorSpace: 'srgb'});
+      if (!context) throw 'Cannot create the HEIC preview canvas';
+      context.drawImage(image, 0, 0);
+      const png = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(blob => blob ? resolve(blob) : reject('Cannot encode the HEIC preview'), 'image/png');
+      });
+      return new Uint8Array(await png.arrayBuffer());
+    } finally {
+      canvas.width = canvas.height = 0;
+    }
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+window.ibisOfficeDecodeHeic = decodeHeic;
 window.ibisOfficePickFile = () => pickFile();
 window.ibisOfficePickIcc = pickIcc;
 window.ibisOfficeIccSave = iccSave;

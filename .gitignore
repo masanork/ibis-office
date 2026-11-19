@@ -3,6 +3,7 @@
 /www/samples/mermaid/
 /www/assets
 /www/main.js
+/www/heic-worker.js
 /www/font-loader.js
 /www/dynamic-fonts.js
 /www/fonts.json

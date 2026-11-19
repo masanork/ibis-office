@@ -951,6 +951,9 @@ jtd.no-embedded-images	No displayable embedded images were found. The body previ
 jtd.omitted-sheets	 {count} additional sheet(s) omitted.
 jtd.omitted-objects	 {count} embedded-object storage(s) omitted.
 jtd.read-only	Ichitaro documents are read-only
+xdw.read-only	DocuWorks documents are read-only.
+xdw.preview	DocuWorks preview · Read-only
+xdw.page-error	This DocuWorks page could not be displayed.
 jtd.edit-as-docx	Convert to Word and edit
 jtd.editable-notice	Converted to Word. Unsupported formatting, images and some table lines are omitted. Save separately from the original Ichitaro file.
 jtd.source-protected	Saving as an Ichitaro file is not supported. Save separately from the original file.
@@ -1296,3 +1299,13 @@ file.signature-inspect.policy-complete	Up to eight examples are shown.
 view.exr-exposure-down	Decrease OpenEXR preview exposure
 view.exr-exposure-reset	Reset OpenEXR preview exposure to 0 EV
 view.exr-exposure-up	Increase OpenEXR preview exposure
+view.sequence-previous	Previous image frame
+view.sequence-next	Next image frame
+view.sequence-missing	{direction} (skips {count} missing)
+view.sequence-frame	Frame {number}
+view.sequence-gap	 · {count} missing nearby
+view.image-background-page	Page background
+view.image-background-checker	Checkerboard
+view.image-background-black	Black background
+view.image-alpha-only	Alpha channel
+view.image-alpha-cycle	Change image preview background or show the alpha channel

@@ -10115,7 +10115,7 @@ fn test_sheet_connector_line_roundtrip() {
 fn field_match_recalculates_after_xlsx_roundtrip() {
     let sheet_name = "照合";
     let source = ibis_pptx::csv::workbook_from_with_delimiter(
-        "東京都千代田区霞が関二丁目１番２号,東京都千代田区霞が関2-1-2",
+        "東京都千代田区霞が関二丁目１番２号,東京都千代田区霞が関2-1-2\n田中（旧姓：山田）花子,山田花子",
         sheet_name,
         ',',
     )
@@ -10124,16 +10124,171 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     let mut document = Document::new(opened.presentation.clone());
     let s = slide(document.presentation(), sheet_name);
     let formula = r#"IBIS.FIELDMATCH(A1,B1,"address")"#;
-    set(&mut document, s, vec![(0, 2, CellInput::Formula(formula.into()))]);
+    let name_formula = r#"IBIS.FIELDMATCH(A2,B2,"name")"#;
+    let phone_formula = r#"IBIS.FIELDMATCH(A3,B3,"phone")"#;
+    let postal_formula = r#"IBIS.FIELDMATCH(A4,B4,"postal")"#;
+    let email_formula = r#"IBIS.FIELDMATCH(A5,B5,"email")"#;
+    let corporate_formula = r#"IBIS.FIELDMATCH(A6,B6,"corporate-number")"#;
+    let mynumber_formula = r#"IBIS.FIELDMATCH(A7,B7,"mynumber")"#;
+    let license_formula = r#"IBIS.FIELDMATCH(A8,B8,"drivers-license")"#;
+    let passport_formula = r#"IBIS.FIELDMATCH(A9,B9,"passport-jp")"#;
+    let kana_formula = r#"IBIS.FIELDMATCH(A10,B10,"kana")"#;
+    set(&mut document, s, vec![
+        (0, 2, CellInput::Formula(formula.into())),
+        (1, 2, CellInput::Formula(name_formula.into())),
+        (2, 0, CellInput::Value(CellValue::Text("03-1234-5678 内線123".into()))),
+        (2, 1, CellInput::Value(CellValue::Text("+81 (0)3 1234 5678".into()))),
+        (2, 2, CellInput::Formula(phone_formula.into())),
+        (3, 0, CellInput::Value(CellValue::Text("060-0001".into()))),
+        (3, 1, CellInput::Value(CellValue::Number(600001.0))),
+        (3, 2, CellInput::Formula(postal_formula.into())),
+        (4, 0, CellInput::Value(CellValue::Text("Billing@EXAMPLE.COM".into()))),
+        (4, 1, CellInput::Value(CellValue::Text("Billing@example.com".into()))),
+        (4, 2, CellInput::Formula(email_formula.into())),
+        (5, 0, CellInput::Value(CellValue::Text("1180-3010-18771".into()))),
+        (5, 1, CellInput::Value(CellValue::Number(1180301018771.0))),
+        (5, 2, CellInput::Formula(corporate_formula.into())),
+        (6, 0, CellInput::Value(CellValue::Text("0123-4567-8903".into()))),
+        (6, 1, CellInput::Value(CellValue::Text("012345678903".into()))),
+        (6, 2, CellInput::Formula(mynumber_formula.into())),
+        (7, 0, CellInput::Value(CellValue::Text("1234-5678-9032".into()))),
+        (7, 1, CellInput::Value(CellValue::Number(123456789033.0))),
+        (7, 2, CellInput::Formula(license_formula.into())),
+        (8, 0, CellInput::Value(CellValue::Text(concat!("P<JPNTEST<<SAMPLE<<<<<<<<<<<<<<<<<<<<<<<<<<<\n", "TK01234568JPN9001011<3012316<<<<<<<<<<<<<<02").into()))),
+        (8, 1, CellInput::Value(CellValue::Text("TK0123456".into()))),
+        (8, 2, CellInput::Formula(passport_formula.into())),
+        (9, 0, CellInput::Value(CellValue::Text("ﾔﾏﾀﾞ ﾀﾛｰ".into()))),
+        (9, 1, CellInput::Value(CellValue::Text("やまだ　たろう".into()))),
+        (9, 2, CellInput::Formula(kana_formula.into())),
+    ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(2.0));
 
     let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
     let reopened = ibis_pptx::read(&saved).unwrap();
     assert_eq!(cell(&reopened, sheet_name, 0, 2).formula.as_deref(), Some(formula));
     assert_eq!(value(&reopened, sheet_name, 0, 2), CellValue::Number(2.0));
+    assert_eq!(cell(&reopened, sheet_name, 1, 2).formula.as_deref(), Some(name_formula));
+    assert_eq!(value(&reopened, sheet_name, 1, 2), CellValue::Number(1.0));
+    assert_eq!(cell(&reopened, sheet_name, 2, 2).formula.as_deref(), Some(phone_formula));
+    assert_eq!(value(&reopened, sheet_name, 2, 2), CellValue::Number(1.0));
+    assert_eq!(cell(&reopened, sheet_name, 3, 2).formula.as_deref(), Some(postal_formula));
+    assert_eq!(value(&reopened, sheet_name, 3, 2), CellValue::Number(1.0));
+    assert_eq!(cell(&reopened, sheet_name, 4, 2).formula.as_deref(), Some(email_formula));
+    assert_eq!(value(&reopened, sheet_name, 4, 2), CellValue::Number(2.0));
+    assert_eq!(cell(&reopened, sheet_name, 5, 2).formula.as_deref(), Some(corporate_formula));
+    assert_eq!(value(&reopened, sheet_name, 5, 2), CellValue::Number(2.0));
+    assert_eq!(cell(&reopened, sheet_name, 6, 2).formula.as_deref(), Some(mynumber_formula));
+    assert_eq!(value(&reopened, sheet_name, 6, 2), CellValue::Number(2.0));
+    assert_eq!(cell(&reopened, sheet_name, 7, 2).formula.as_deref(), Some(license_formula));
+    assert_eq!(value(&reopened, sheet_name, 7, 2), CellValue::Number(1.0));
+    assert_eq!(cell(&reopened, sheet_name, 8, 2).formula.as_deref(), Some(passport_formula));
+    assert_eq!(value(&reopened, sheet_name, 8, 2), CellValue::Number(2.0));
+    assert_eq!(cell(&reopened, sheet_name, 9, 2).formula.as_deref(), Some(kana_formula));
+    assert_eq!(value(&reopened, sheet_name, 9, 2), CellValue::Number(1.0));
 
     let s = slide(&reopened, sheet_name);
     let mut document = Document::new(reopened);
-    set(&mut document, s, vec![(0, 1, CellInput::Value(CellValue::Text("東京都千代田区霞が関2-1-3".into())))]);
+    set(&mut document, s, vec![
+        (0, 1, CellInput::Value(CellValue::Text("東京都千代田区霞が関2-1-3".into()))),
+        (1, 1, CellInput::Value(CellValue::Text("山田春子".into()))),
+        (2, 1, CellInput::Value(CellValue::Text("+81 3 1234 5678 ext.124".into()))),
+        (3, 1, CellInput::Value(CellValue::Number(600002.0))),
+        (4, 1, CellInput::Value(CellValue::Text("billing@example.com".into()))),
+        (5, 1, CellInput::Value(CellValue::Number(5180301018771.0))),
+        (6, 1, CellInput::Value(CellValue::Number(12345678903.0))),
+        (7, 1, CellInput::Value(CellValue::Number(123456789043.0))),
+        (8, 1, CellInput::Value(CellValue::Text(concat!("P<JPNTEST<<SAMPLE<<<<<<<<<<<<<<<<<<<<<<<<<<<\n", "TK01234568JPN9001011<3012316<<<<<<<<<<<<<<03").into()))),
+        (9, 1, CellInput::Value(CellValue::Text("ヤマダ ジロウ".into()))),
+    ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 1, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 2, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 3, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 4, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 5, 2), CellValue::Error(ibis_doc_model::CellError::NA));
+    assert_eq!(value(document.presentation(), sheet_name, 6, 2), CellValue::Error(ibis_doc_model::CellError::NA));
+    assert_eq!(value(document.presentation(), sheet_name, 7, 2), CellValue::Error(ibis_doc_model::CellError::NA));
+    assert_eq!(value(document.presentation(), sheet_name, 8, 2), CellValue::Error(ibis_doc_model::CellError::NA));
+    assert_eq!(value(document.presentation(), sheet_name, 9, 2), CellValue::Number(0.0));
+}
+
+#[test]
+fn name_and_kana_field_match_uses_both_reading_cells_after_reopen() {
+    let sheet_name = "氏名照合";
+    let bytes = ibis_pptx::csv::workbook_from_with_delimiter("山田太郎,山田太郎,やまだたろう,ﾔﾏﾀﾞﾀﾛｳ", sheet_name, ',').unwrap();
+    let opened = ibis_pptx::open(bytes).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let s = slide(document.presentation(), sheet_name);
+    let formula = r#"IBIS.FIELDMATCH(A1,B1,"name-with-kana",C1,D1)"#;
+    set(&mut document, s, vec![(0, 4, CellInput::Formula(formula.into()))]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(2.0));
+
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let reopened = ibis_pptx::read(&saved).unwrap();
+    assert_eq!(cell(&reopened, sheet_name, 0, 4).formula.as_deref(), Some(formula));
+    assert_eq!(value(&reopened, sheet_name, 0, 4), CellValue::Number(2.0));
+
+    let s = slide(&reopened, sheet_name);
+    let mut document = Document::new(reopened);
+    set(&mut document, s, vec![(0, 3, CellInput::Clear)]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(1.0));
+    set(&mut document, s, vec![(0, 3, CellInput::Value(CellValue::Text("ヤマダジロウ".into())))]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(0.0));
+}
+
+#[test]
+fn record_match_recalculates_when_a_field_changes_after_reopen() {
+    let sheet_name = "行照合";
+    let bytes = ibis_pptx::csv::workbook_from_with_delimiter("1985-04,1985-04-15,060-0001,600001", sheet_name, ',').unwrap();
+    let opened = ibis_pptx::open(bytes).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let s = slide(document.presentation(), sheet_name);
+    let formula = r#"IBIS.RECORDMATCH(IBIS.FIELDMATCH(A1,B1,"date"),IBIS.FIELDMATCH(C1,D1,"postal"))"#;
+    set(&mut document, s, vec![
+        (0, 0, CellInput::Value(CellValue::Text("1985-04".into()))),
+        (0, 1, CellInput::Value(CellValue::Text("1985-04-15".into()))),
+        (0, 2, CellInput::Value(CellValue::Text("060-0001".into()))),
+        (0, 4, CellInput::Formula(formula.into())),
+    ]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(1.0));
+
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let package = ibis_ooxml::Package::open(saved.clone()).unwrap();
+    let xml = String::from_utf8(package.read("xl/worksheets/sheet1.xml").unwrap()).unwrap();
+    assert!(xml.contains("_xlfn.IBIS.RECORDMATCH(_xlfn.IBIS.FIELDMATCH("));
+    let reopened = ibis_pptx::read(&saved).unwrap();
+    assert_eq!(cell(&reopened, sheet_name, 0, 4).formula.as_deref(), Some(formula));
+    assert_eq!(value(&reopened, sheet_name, 0, 4), CellValue::Number(1.0));
+
+    let s = slide(&reopened, sheet_name);
+    let mut document = Document::new(reopened);
+    set(&mut document, s, vec![(0, 3, CellInput::Value(CellValue::Number(600002.0)))]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(0.0));
+}
+
+#[test]
+fn record_match_range_spills_and_recalculates_after_reopen() {
+    let sheet_name = "一括照合";
+    let bytes = ibis_pptx::csv::workbook_from_with_delimiter("2,2,2\n2,1,2\n1,2,0", sheet_name, ',').unwrap();
+    let opened = ibis_pptx::open(bytes).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let s = slide(document.presentation(), sheet_name);
+    let formula = "IBIS.RECORDMATCH(A1:C3)";
+    set(&mut document, s, vec![(0, 3, CellInput::Formula(formula.into()))]);
+
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let reopened = ibis_pptx::read(&saved).unwrap();
+    assert_eq!(cell(&reopened, sheet_name, 0, 3).formula.as_deref(), Some(formula));
+    for (r, grade) in [2.0, 1.0, 0.0].into_iter().enumerate() {
+        assert_eq!(value(&reopened, sheet_name, r as u32, 3), CellValue::Number(grade));
+    }
+    let s = slide(&reopened, sheet_name);
+    let mut document = Document::new(reopened);
+    set(&mut document, s, vec![
+        (1, 1, CellInput::Value(CellValue::Number(2.0))),
+        (2, 2, CellInput::Clear),
+    ]);
+    for (r, grade) in [2.0, 2.0, 1.0].into_iter().enumerate() {
+        assert_eq!(value(document.presentation(), sheet_name, r as u32, 3), CellValue::Number(grade));
+    }
 }

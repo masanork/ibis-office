@@ -1880,7 +1880,7 @@ impl SlideEditor {
         #[cfg(target_arch = "wasm32")]
         {
             let mut buttons = Vec::new();
-            if crate::embed::show_download() {
+            if crate::embed::show_download() && !self.is_xdw() {
                 let handler: Handler = Rc::new(|this: &mut SlideEditor, window, cx| this.embed_download(window, cx));
                 buttons.push(title_button("embed-download", "download", "shell.embed.download", Some(handler), editor));
             }

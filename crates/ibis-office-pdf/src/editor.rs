@@ -11,10 +11,12 @@ use gpui_kit::{
     SharedString, Size, StatefulInteractiveElement as _, Styled, Window, canvas, div, fill, hsla,
     point, px, rgb, size,
 };
-use ibis_doc_model::Presentation;
+use ibis_doc_model::{Presentation, SlideId};
 use ibis_office_shell::chrome::MenuId;
 use ibis_office_shell::commands::KindMask;
-use ibis_office_shell::editor::{SlideEditor, WorkspaceContent};
+use ibis_office_shell::editor::{
+    SlideEditor, WorkspaceContent, bounds_observer, wheel_zoom_listener,
+};
 use ibis_office_shell::format::{
     FormatEditor, FormatInfo, OfficeApp, ShapeRules, impl_format_state,
 };
@@ -35,6 +37,10 @@ impl_format_state!(State, ibis_pptx::Kind::Pdf);
 
 const PAGE_GAP_PX: f32 = 24.0;
 const PAGE_PAD_PX: f32 = 32.0;
+
+fn page_scale(editor: &SlideEditor) -> f32 {
+    editor.current_zoom().max(0.1) * (96.0 / 72.0)
+}
 
 fn outer_contexts(_state: &ContextState) -> Vec<ContextMenu> {
     Vec::new()
@@ -70,7 +76,7 @@ impl FormatEditor for PdfDocument {
             MenuId::Window,
             MenuId::Help,
         ],
-        icon: "picture_as_pdf",
+        icon: "description",
         color: 0xc93b32,
         context_tones: [
             ContextTone {
@@ -127,8 +133,7 @@ impl FormatEditor for PdfDocument {
     }
 
     fn workspace_content(editor: &SlideEditor, workspace: Size<Pixels>) -> WorkspaceContent {
-        let zoom = editor.zoom.unwrap_or(1.0).max(0.1);
-        let scale = zoom * (96.0 / 72.0);
+        let scale = page_scale(editor);
         let Some(state) = editor.format_state::<State>() else {
             return WorkspaceContent {
                 size: workspace,
@@ -154,16 +159,85 @@ impl FormatEditor for PdfDocument {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    fn save_refused(editor: &SlideEditor) -> Option<String> {
+        editor
+            .presentation()
+            .pdf_bytes
+            .as_deref()
+            .filter(|bytes| ibis_xdw::is_xdw(bytes))
+            .map(|_| ibis_office_shell::i18n::text("xdw.read-only").to_string())
+    }
+
     fn status_items(editor: &SlideEditor) -> Vec<SharedString> {
         let Some(state) = editor.format_state::<State>() else {
             return Vec::new();
         };
         let guard = state.viewer.lock().expect("pdf viewer lock");
+        if guard.is_xdw() {
+            return vec![ibis_office_shell::i18n::text("xdw.preview")];
+        }
         guard
             .signature_status_text()
             .map(SharedString::from)
             .into_iter()
             .collect()
+    }
+
+    fn show_page(
+        editor: &mut SlideEditor,
+        slide: SlideId,
+        _: &mut Window,
+        _: &mut Context<SlideEditor>,
+    ) -> bool {
+        let Some(index) = editor.presentation().slide_index(slide) else {
+            return false;
+        };
+        let Some(state) = editor.format_state::<State>() else {
+            return false;
+        };
+        let scale = page_scale(editor);
+        let top = state
+            .viewer
+            .lock()
+            .expect("pdf viewer lock")
+            .pages
+            .iter()
+            .take(index)
+            .map(|page| page.crop_box.height() * scale + PAGE_GAP_PX)
+            .sum::<f32>();
+        let x = editor.workspace_scroll.offset().x;
+        editor.workspace_scroll.set_offset(point(x, px(-top)));
+        editor.clamp_workspace_scroll();
+        editor.current_slide = slide;
+        true
+    }
+
+    fn before_render(editor: &mut SlideEditor, _: &mut Window, _: &mut Context<SlideEditor>) {
+        let Some(workspace) = editor.workspace_bounds else {
+            return;
+        };
+        let Some(state) = editor.format_state::<State>() else {
+            return;
+        };
+        let scale = page_scale(editor);
+        let center = f32::from(workspace.size.height * 0.5 - editor.workspace_scroll.offset().y);
+        let index = {
+            let viewer = state.viewer.lock().expect("pdf viewer lock");
+            let mut bottom = PAGE_PAD_PX;
+            viewer
+                .pages
+                .iter()
+                .take(viewer.pages.len().saturating_sub(1))
+                .take_while(|page| {
+                    bottom += page.crop_box.height() * scale + PAGE_GAP_PX;
+                    bottom <= center
+                })
+                .count()
+        };
+        if let Some(slide) = editor.presentation().slides.get(index) {
+            editor.current_slide = slide.id;
+        }
     }
 
     fn render_body(
@@ -175,13 +249,13 @@ impl FormatEditor for PdfDocument {
             return div().size_full().into_any_element();
         };
         let viewer = state.viewer.clone();
-        let zoom = editor.zoom.unwrap_or(1.0).max(0.1);
-        let scale = zoom * (96.0 / 72.0);
+        let scale = page_scale(editor);
         let workspace = editor
             .workspace_bounds
             .map(|b| b.size)
             .unwrap_or(size(px(1200.0), px(800.0)));
         let content = Self::workspace_content(editor, workspace);
+        let entity = cx.entity().downgrade();
 
         div()
             .relative()
@@ -249,6 +323,21 @@ impl FormatEditor for PdfDocument {
                             ),
                     ),
             )
+            .child(wheel_zoom_listener(cx))
+            .child(bounds_observer(move |bounds, window, cx| {
+                let changed = entity.update(cx, |editor, cx| {
+                    if editor.workspace_bounds == Some(bounds) {
+                        return false;
+                    }
+                    editor.workspace_bounds = Some(bounds);
+                    editor.clamp_workspace_scroll();
+                    cx.notify();
+                    true
+                });
+                if matches!(changed, Ok(true)) {
+                    window.on_next_frame(|window, _| window.refresh());
+                }
+            }))
             .scrollbar(&editor.workspace_scroll, ScrollbarAxis::Both)
             .into_any_element()
     }

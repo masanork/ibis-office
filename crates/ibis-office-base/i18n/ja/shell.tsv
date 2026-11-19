@@ -949,6 +949,9 @@ jtd.no-embedded-images	表示できる埋め込み画像がありません。本
 jtd.omitted-sheets	 追加シート{count}件は対象外。
 jtd.omitted-objects	 埋め込み領域{count}件は対象外。
 jtd.read-only	一太郎文書は読み取り専用です
+xdw.read-only	DocuWorks 文書は読み取り専用です。
+xdw.preview	DocuWorks プレビュー（読み取り専用）
+xdw.page-error	この DocuWorks のページは表示できません。
 jtd.edit-as-docx	Word文書に変換して編集
 jtd.editable-notice	Word文書に変換しました。未対応の書式・画像や一部の罫線は失われます。元の一太郎文書とは別に保存してください。
 jtd.source-protected	一太郎形式には保存できません。元のファイルとは別に保存してください。
@@ -1294,3 +1297,13 @@ file.signature-inspect.policy-complete	例を最大 8 件表示。
 view.exr-exposure-down	OpenEXRプレビューの露出を下げる
 view.exr-exposure-reset	OpenEXRプレビューの露出を0 EVに戻す
 view.exr-exposure-up	OpenEXRプレビューの露出を上げる
+view.sequence-previous	前のコマ
+view.sequence-next	次のコマ
+view.sequence-missing	{direction}（欠番{count}コマをスキップ）
+view.sequence-frame	コマ {number}
+view.sequence-gap	・前後に欠番{count}コマ
+view.image-background-page	ページ背景
+view.image-background-checker	市松模様
+view.image-background-black	黒背景
+view.image-alpha-only	アルファチャンネル
+view.image-alpha-cycle	画像プレビューの背景またはアルファチャンネル表示を切り替える

@@ -131,14 +131,77 @@ impl SlideEditor {
                         }
                     }))
                     .children(right_texts)
+                    .children(self.render_image_alpha(cx))
                     .children(self.render_exr_exposure(cx))
+                    .children({
+                        #[cfg(not(target_family = "wasm"))]
+                        { self.render_image_sequence(cx) }
+                        #[cfg(target_family = "wasm")]
+                        { None::<AnyElement> }
+                    })
                     .child(self.render_zoom(compact, cx)),
             )
             .children(tab_scrollbar)
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    fn render_image_sequence(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let sequence = self.image_sequence.as_ref().filter(|_| self.path.is_none())?;
+        let blocked = self.is_dirty() || self.watch.opening_path.is_some();
+        let button = |frame: Option<&crate::image_sequence::Frame>, id, icon, caption, cx: &mut Context<Self>| {
+            let label = match frame.filter(|frame| frame.missing > 0) {
+                Some(frame) => crate::i18n::format("view.sequence-missing", &[
+                    ("direction", &crate::i18n::text(caption)),
+                    ("count", &frame.missing.to_string()),
+                ]),
+                None => crate::i18n::text(caption).to_string(),
+            };
+            let mut button = Button::new(id).ghost().xsmall().icon(icon)
+                .tooltip(label).disabled(blocked || frame.is_none());
+            if let Some(frame) = frame {
+                let path = frame.path.clone();
+                button = button.on_click(cx.listener(move |this, _, window, cx| {
+                    this.commit_edit(window, cx);
+                    if !this.is_dirty() && this.path.is_none() && this.watch.opening_path.is_none() {
+                        this.open_path_or_raise(path.clone(), window, cx);
+                    }
+                }));
+            }
+            button
+        };
+        let number = format!("{:0width$}", sequence.number, width = sequence.padding);
+        let missing = sequence.previous.as_ref().map_or(0, |frame| frame.missing)
+            + sequence.next.as_ref().map_or(0, |frame| frame.missing);
+        let mut label = crate::i18n::format("view.sequence-frame", &[("number", &number)]);
+        if missing > 0 {
+            label.push_str(&crate::i18n::format("view.sequence-gap", &[("count", &missing.to_string())]));
+        }
+        Some(h_flex()
+            .gap_1()
+            .items_center()
+            .child(button(sequence.previous.as_ref(), "sequence-previous", IconName::ChevronLeft, "view.sequence-previous", cx))
+            .child(div().child(label))
+            .child(button(sequence.next.as_ref(), "sequence-next", IconName::ChevronRight, "view.sequence-next", cx)))
+    }
+
+    fn render_image_alpha(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        use ibis_pptx::production_image::AlphaPreview;
+        let view = self.production_image_view.as_ref()?;
+        let (caption, next) = match view.alpha {
+            AlphaPreview::Original => ("view.image-background-page", AlphaPreview::Checker),
+            AlphaPreview::Checker => ("view.image-background-checker", AlphaPreview::Black),
+            AlphaPreview::Black => ("view.image-background-black", AlphaPreview::Alpha),
+            AlphaPreview::Alpha => ("view.image-alpha-only", AlphaPreview::Original),
+        };
+        Some(Button::new("image-alpha-view").ghost().xsmall()
+            .label(crate::i18n::text(caption))
+            .tooltip(crate::i18n::text("view.image-alpha-cycle"))
+            .disabled(view.rendering)
+            .on_click(cx.listener(move |this, _, window, cx| this.set_image_alpha(next, window, cx))))
+    }
+
     fn render_exr_exposure(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let view = self.exr_exposure.as_ref()?;
+        let view = self.production_image_view.as_ref().filter(|view| view.has_exposure())?;
         let ev = view.ev;
         let label = if ev == 0 { "0 EV".to_string() } else { format!("{ev:+} EV") };
         Some(h_flex()

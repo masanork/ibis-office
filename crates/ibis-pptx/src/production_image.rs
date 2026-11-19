@@ -4,6 +4,8 @@
 //! Import standalone production images into a document for preview.
 
 mod dpx;
+#[cfg(target_os = "macos")]
+mod heic;
 
 use base64::Engine as _;
 use image::{DynamicImage, ImageFormat, ImageReader};
@@ -18,10 +20,12 @@ enum Format {
     Photoshop,
     OpenExr,
     Dpx,
+    Heic,
 }
 
 fn format(ext: &str) -> Option<Format> {
     match ext.to_ascii_lowercase().as_str() {
+        "heic" | "heif" => Some(Format::Heic),
         "dpx" => Some(Format::Dpx),
         "exr" => Some(Format::OpenExr),
         "psd" => Some(Format::Photoshop),
@@ -52,6 +56,24 @@ pub fn open_with_exposure(
         return Err("Image exceeds the preview file size limit".into());
     }
     let (png, exposure) = match format {
+        Format::Heic => {
+            #[cfg(target_os = "macos")]
+            {
+                (
+                    encode_png(DynamicImage::ImageRgba8(heic::decode(bytes)?))?,
+                    None,
+                )
+            }
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                validate_heic_still(bytes)?;
+                (ibis_heic_web::decode_heic_png(bytes)?, None)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+            {
+                return Err("HEIC decoding is unavailable on this platform".into());
+            }
+        }
         Format::Dpx => (
             encode_png(DynamicImage::ImageRgb8(dpx::decode(bytes)?))?,
             None,
@@ -64,11 +86,49 @@ pub fn open_with_exposure(
         Format::Jpeg2000 => (encode_png(decode_jpeg2000(bytes)?)?, None),
         Format::Photoshop => (encode_png(decode_psd(bytes)?)?, None),
     };
+    open_preview_png(&png).map(|opened| Some((opened, exposure)))
+}
+
+fn open_preview_png(png: &[u8]) -> Result<crate::Opened, String> {
     let data_url = base64::engine::general_purpose::STANDARD.encode(png);
     let markdown = format!("![Image preview](data:image/png;base64,{data_url})\n");
-    crate::markdown::open_markdown(markdown.into_bytes())
-        .map(|opened| Some((opened, exposure)))
-        .map_err(|error| error.to_string())
+    crate::markdown::open_markdown(markdown.into_bytes()).map_err(|error| error.to_string())
+}
+
+#[cfg(target_family = "wasm")]
+pub fn open_browser_heic_preview(png: &[u8]) -> Result<crate::Opened, String> {
+    if png.len() > MAX_INPUT_BYTES {
+        return Err("HEIC preview exceeds the preview file size limit".into());
+    }
+    open_preview_png(png)
+}
+
+pub fn validate_heic_still(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err("Image exceeds the preview file size limit".into());
+    }
+    // Require the HEVC still-image brand. Image I/O can also open unrelated formats.
+    let header = bytes.get(..16).ok_or("Missing HEIC file type box")?;
+    let box_size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+    let file_type = bytes.get(0..box_size).filter(|box_bytes| {
+        box_bytes.len() >= 16 && box_bytes.len() % 4 == 0 && &header[4..8] == b"ftyp"
+    });
+    if !file_type.is_some_and(|file_type| {
+        &header[8..12] == b"heic"
+            || (&header[8..12] == b"mif1"
+                && file_type[16..]
+                    .chunks_exact(4)
+                    .any(|brand| brand == b"heic"))
+    }) {
+        return Err("HEIC preview requires an HEVC still image".into());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+pub fn is_heic_extension(extension: &str) -> bool {
+    matches!(format(extension), Some(Format::Heic))
 }
 
 fn encode_png(image: DynamicImage) -> Result<Vec<u8>, String> {
@@ -84,9 +144,13 @@ pub struct ExrExposure(image::Rgba32FImage);
 
 impl ExrExposure {
     pub fn preview_png(&self, ev: i8) -> Result<Vec<u8>, String> {
+        encode_png(DynamicImage::ImageRgba8(self.preview_pixels(ev)))
+    }
+
+    fn preview_pixels(&self, ev: i8) -> image::RgbaImage {
         let linear = &self.0;
         let gain = 2.0_f32.powi(i32::from(ev));
-        let preview = image::RgbaImage::from_fn(linear.width(), linear.height(), |x, y| {
+        image::RgbaImage::from_fn(linear.width(), linear.height(), |x, y| {
             let [r, g, b, a] = linear.get_pixel(x, y).0;
             let alpha = if a.is_finite() {
                 a.clamp(0.0, 1.0)
@@ -102,9 +166,50 @@ impl ExrExposure {
                 }
             });
             image::Rgba([rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8])
-        });
-        encode_png(DynamicImage::ImageRgba8(preview))
+        })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlphaPreview {
+    Original,
+    Checker,
+    Black,
+    Alpha,
+}
+
+/// Build a display-only PNG from the original pixels and the selected view.
+pub fn display_preview_png(
+    original: &[u8],
+    exposure: Option<&ExrExposure>,
+    ev: i8,
+    mode: AlphaPreview,
+) -> Result<Vec<u8>, String> {
+    let mut image = match exposure {
+        Some(exposure) => exposure.preview_pixels(ev),
+        None => decode_raster(original, ImageFormat::Png, 4)?.into_rgba8(),
+    };
+    if mode == AlphaPreview::Original {
+        return encode_png(DynamicImage::ImageRgba8(image));
+    }
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let [r, g, b, alpha] = pixel.0;
+        let backdrop = match mode {
+            AlphaPreview::Original => unreachable!(),
+            AlphaPreview::Alpha => {
+                pixel.0 = [alpha, alpha, alpha, 255];
+                continue;
+            }
+            AlphaPreview::Black => 0,
+            AlphaPreview::Checker if ((x / 8) + (y / 8)) % 2 == 0 => 224,
+            AlphaPreview::Checker => 160,
+        };
+        let alpha = u16::from(alpha);
+        let blend =
+            |channel| ((u16::from(channel) * alpha + backdrop * (255 - alpha) + 127) / 255) as u8;
+        pixel.0 = [blend(r), blend(g), blend(b), 255];
+    }
+    encode_png(DynamicImage::ImageRgba8(image))
 }
 
 fn decode_raster(
@@ -290,6 +395,36 @@ mod tests {
     }
 
     #[test]
+    fn previews_alpha_without_changing_the_original_png() {
+        let source = image::RgbaImage::from_fn(9, 1, |x, _| {
+            if x == 0 {
+                image::Rgba([200, 100, 50, 128])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        });
+        let png = encode_png(DynamicImage::ImageRgba8(source.clone())).unwrap();
+        let display = |mode| {
+            let bytes = display_preview_png(&png, None, 0, mode).unwrap();
+            image::load_from_memory_with_format(&bytes, ImageFormat::Png)
+                .unwrap()
+                .into_rgba8()
+        };
+        assert_eq!(
+            display(AlphaPreview::Black).get_pixel(0, 0).0,
+            [100, 50, 25, 255]
+        );
+        assert_eq!(
+            display(AlphaPreview::Alpha).get_pixel(0, 0).0,
+            [128, 128, 128, 255]
+        );
+        let checker = display(AlphaPreview::Checker);
+        assert_eq!(checker.get_pixel(1, 0).0, [224, 224, 224, 255]);
+        assert_eq!(checker.get_pixel(8, 0).0, [160, 160, 160, 255]);
+        assert_eq!(image::load_from_memory(&png).unwrap().into_rgba8(), source);
+    }
+
+    #[test]
     fn opens_openexr_with_sdr_highlights_and_straight_alpha() {
         let pixels = image::Rgba32FImage::from_pixel(1, 1, image::Rgba([0.125, 0.5, 2.0, 0.5]));
         let mut exr = Cursor::new(Vec::new());
@@ -358,6 +493,37 @@ mod tests {
         let without_composite = ag_psd::write_psd(&psd, &WriteOptions::default());
         assert!(matches!(open(Some("psd"), &without_composite),
             Err(error) if error.contains("Maximize Compatibility")));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn opens_heic_primary_image() {
+        // ffmpeg testsrc=size=128x64:rate=1, converted to HEIC with sips.
+        let sample = include_bytes!("../tests/fixtures/preview-chart.heic");
+        let opened = open(Some("HEIF"), sample).unwrap().unwrap();
+        let media = opened.presentation.media.last().unwrap();
+        let decoded = image::load_from_memory_with_format(&media.data, ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(decoded.dimensions(), (128, 64));
+        for channel in 0..3 {
+            let count = decoded
+                .pixels()
+                .filter(|pixel| {
+                    pixel[3] == 255
+                        && (0..3).all(|i| {
+                            if i == channel {
+                                pixel[i] > 170
+                            } else {
+                                pixel[i] < 90
+                            }
+                        })
+                })
+                .count();
+            assert!(count > 50, "expected saturated color in channel {channel}");
+        }
+        assert!(open(Some("heic"), &sample[..36]).is_err());
+        assert!(open(Some("heic"), b"not an image").is_err());
     }
 
     #[test]
