@@ -10132,6 +10132,7 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     let mynumber_formula = r#"IBIS.FIELDMATCH(A7,B7,"mynumber")"#;
     let license_formula = r#"IBIS.FIELDMATCH(A8,B8,"drivers-license")"#;
     let passport_formula = r#"IBIS.FIELDMATCH(A9,B9,"passport-jp")"#;
+    let kana_formula = r#"IBIS.FIELDMATCH(A10,B10,"kana")"#;
     set(&mut document, s, vec![
         (0, 2, CellInput::Formula(formula.into())),
         (1, 2, CellInput::Formula(name_formula.into())),
@@ -10156,6 +10157,9 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
         (8, 0, CellInput::Value(CellValue::Text(concat!("P<JPNTEST<<SAMPLE<<<<<<<<<<<<<<<<<<<<<<<<<<<\n", "TK01234568JPN9001011<3012316<<<<<<<<<<<<<<02").into()))),
         (8, 1, CellInput::Value(CellValue::Text("TK0123456".into()))),
         (8, 2, CellInput::Formula(passport_formula.into())),
+        (9, 0, CellInput::Value(CellValue::Text("ﾔﾏﾀﾞ ﾀﾛｰ".into()))),
+        (9, 1, CellInput::Value(CellValue::Text("やまだ　たろう".into()))),
+        (9, 2, CellInput::Formula(kana_formula.into())),
     ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(2.0));
 
@@ -10179,6 +10183,8 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     assert_eq!(value(&reopened, sheet_name, 7, 2), CellValue::Number(1.0));
     assert_eq!(cell(&reopened, sheet_name, 8, 2).formula.as_deref(), Some(passport_formula));
     assert_eq!(value(&reopened, sheet_name, 8, 2), CellValue::Number(2.0));
+    assert_eq!(cell(&reopened, sheet_name, 9, 2).formula.as_deref(), Some(kana_formula));
+    assert_eq!(value(&reopened, sheet_name, 9, 2), CellValue::Number(1.0));
 
     let s = slide(&reopened, sheet_name);
     let mut document = Document::new(reopened);
@@ -10192,6 +10198,7 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
         (6, 1, CellInput::Value(CellValue::Number(12345678903.0))),
         (7, 1, CellInput::Value(CellValue::Number(123456789043.0))),
         (8, 1, CellInput::Value(CellValue::Text(concat!("P<JPNTEST<<SAMPLE<<<<<<<<<<<<<<<<<<<<<<<<<<<\n", "TK01234568JPN9001011<3012316<<<<<<<<<<<<<<03").into()))),
+        (9, 1, CellInput::Value(CellValue::Text("ヤマダ ジロウ".into()))),
     ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(0.0));
     assert_eq!(value(document.presentation(), sheet_name, 1, 2), CellValue::Number(0.0));
@@ -10202,4 +10209,5 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     assert_eq!(value(document.presentation(), sheet_name, 6, 2), CellValue::Error(ibis_doc_model::CellError::NA));
     assert_eq!(value(document.presentation(), sheet_name, 7, 2), CellValue::Error(ibis_doc_model::CellError::NA));
     assert_eq!(value(document.presentation(), sheet_name, 8, 2), CellValue::Error(ibis_doc_model::CellError::NA));
+    assert_eq!(value(document.presentation(), sheet_name, 9, 2), CellValue::Number(0.0));
 }

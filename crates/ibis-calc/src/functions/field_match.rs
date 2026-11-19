@@ -67,6 +67,8 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             super::identifier_match::compare_drivers_licenses(left, right)
         } else if mode.eq_ignore_ascii_case("passport-jp") {
             compare_keys(left, right, super::identifier_match::japanese_passport_number)
+        } else if mode.eq_ignore_ascii_case("kana") {
+            text_value(left).zip(text_value(right)).and_then(|(a, b)| super::kana_match::compare(a, b))
         } else if mode.eq_ignore_ascii_case("gender") {
             compare_keys(left, right, |v| gender_key(text_value(v)?))
         } else {

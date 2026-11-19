@@ -452,3 +452,33 @@ fn japanese_passport_mrz_verifies_the_issuer_and_check_digits() {
         check(&format!(r#""{invalid}","TK0123456","passport-jp""#), CellValue::Error(CellError::NA));
     }
 }
+
+#[test]
+fn kana_matches_script_and_width_but_flags_long_vowel_variants() {
+    for (args, rank) in [
+        (r#""やまだ　たろう","ﾔﾏﾀﾞ ﾀﾛｳ","kana""#, 2.0),
+        (r#""ヤマダ タロウ","ヤマダタロウ","kana""#, 2.0),
+        (r#""がく","ガク","kana""#, 2.0),
+        (r#""ぱぴぷぺぽ","ﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ","kana""#, 2.0),
+        (r#""ｳﾞｧﾝ","ゔぁん","kana""#, 2.0),
+        (r#""アン･マリー","あん・まりー","kana""#, 2.0),
+        (r#""ヷ","ヷ","kana""#, 2.0),
+        (r#""オオノ","オーノ","kana""#, 1.0),
+        (r#""ヤマダ タロー","やまだ　たろう","kana""#, 1.0),
+        (r#""ﾔﾏﾀﾞ ﾀﾛｳ","ヤマダ　ジロウ","kana""#, 0.0),
+        (r#""キョウコ","キヨウコ","kana""#, 0.0),
+        (r#""ガク","カク","kana""#, 0.0),
+        (r#""サト ウメ","サトーメ","kana""#, 0.0),
+    ] {
+        check(args, CellValue::Number(rank));
+    }
+    for args in [
+        r#""山田太郎","やまだたろう","kana""#,
+        r#""","やまだ","kana""#,
+        r#""ー・","ーー","kana""#,
+        r#""カ ﾞ","ガ","kana""#,
+        r#""ナﾞ","ナ","kana""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+}

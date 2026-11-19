@@ -21,6 +21,7 @@ mod financial;
 mod groupby;
 mod identifier_match;
 mod info;
+mod kana_match;
 mod logical;
 mod lookup;
 mod name_match;
