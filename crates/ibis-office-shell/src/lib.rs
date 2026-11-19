@@ -160,6 +160,8 @@ pub(crate) mod input;
 pub mod plain_path;
 pub mod recent_files;
 pub(crate) mod status_bar;
+#[cfg(not(target_family = "wasm"))]
+mod image_sequence;
 pub mod spell_panel;
 pub mod symbols;
 pub mod user_name;

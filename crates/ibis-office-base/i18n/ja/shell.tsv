@@ -1294,3 +1294,8 @@ file.signature-inspect.policy-complete	例を最大 8 件表示。
 view.exr-exposure-down	OpenEXRプレビューの露出を下げる
 view.exr-exposure-reset	OpenEXRプレビューの露出を0 EVに戻す
 view.exr-exposure-up	OpenEXRプレビューの露出を上げる
+view.sequence-previous	前のコマ
+view.sequence-next	次のコマ
+view.sequence-missing	{direction}（欠番{count}コマをスキップ）
+view.sequence-frame	コマ {number}
+view.sequence-gap	・前後に欠番{count}コマ

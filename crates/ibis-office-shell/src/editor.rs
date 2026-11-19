@@ -584,6 +584,8 @@ pub struct SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub standard_source_path: Option<std::path::PathBuf>,
     pub(crate) exr_exposure: Option<ExrExposureView>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) image_sequence: Option<crate::image_sequence::ImageSequence>,
     /// Original JTD bytes: presence makes this document permanently read-only.
     pub jtd_original: Option<std::sync::Arc<[u8]>>,
     /// An auxiliary preview, not a reconstruction of the source document.
@@ -908,6 +910,8 @@ impl SlideEditor {
             standard_source_path: None,
             jtd_original: None,
             exr_exposure: None,
+            #[cfg(not(target_family = "wasm"))]
+            image_sequence: None,
             jtd_gallery: false,
             jtd_gallery_body: None,
             jtd_thumbnail: false,
@@ -1200,6 +1204,8 @@ impl SlideEditor {
         self.opened_from_legacy = presentation.opened_from_legacy;
         self.jtd_original = None;
         self.exr_exposure = None;
+        #[cfg(not(target_family = "wasm"))]
+        { self.image_sequence = None; }
         self.jtd_gallery = false;
         self.jtd_gallery_body = None;
         self.jtd_thumbnail = false;
@@ -1506,7 +1512,18 @@ impl SlideEditor {
         self.watch.opening_path = Some(path.clone());
         let closed = self.closed;
         cx.spawn_in(window, async move |this, cx| {
-            let mut result = cx.background_executor().spawn(async move { read() }).await;
+            let sequence_path = path.clone();
+            let (mut result, sequence) = cx.background_executor().spawn(async move {
+                let result = read();
+                let sequence = if result.is_ok() && sequence_path.extension().and_then(|ext| ext.to_str())
+                    .is_some_and(ibis_pptx::production_image::supports_extension)
+                {
+                    crate::image_sequence::ImageSequence::discover(&sequence_path)
+                } else {
+                    None
+                };
+                (result, sequence)
+            }).await;
             let ambiguous = result.as_ref().ok().and_then(|loaded| loaded.source.original_csv_format())
                 .is_some_and(|format| matches!(format.encoding, ibis_pptx::csv::OriginalEncoding::AsciiAmbiguous | ibis_pptx::csv::OriginalEncoding::Utf8OrCp932));
             if ambiguous {
@@ -1541,12 +1558,13 @@ impl SlideEditor {
                     Ok(opened)
                 }).await;
             }
-            this.update(cx, |this, _| this.watch.opening_path = None).ok();
             this.update_in(cx, |this, window, cx| {
+            if this.closed != closed || this.watch.opening_path.as_deref() != Some(path.as_path()) {
+                return;
+            }
+            this.watch.opening_path = None;
             let restore = this.watch.restore_view.take().filter(|(p, _)| *p == path).map(|(_, view)| view);
             match result {
-                // Closed (ファイル > 閉じる) while it was read.
-                _ if this.closed != closed => {}
                 Ok(loaded) => {
                     let signature_presence = loaded.source.has_package_signatures();
                     let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
@@ -1585,6 +1603,7 @@ impl SlideEditor {
                         this.protection_password = loaded.password.clone();
                     }
                     this.set_exr_exposure(loaded.exr_exposure);
+                    this.image_sequence = sequence;
                     if loaded.standard_encryption {
                         this.standard_read_only = true;
                         this.standard_source_path = Some(path.clone());

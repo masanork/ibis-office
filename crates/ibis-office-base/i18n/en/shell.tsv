@@ -1296,3 +1296,8 @@ file.signature-inspect.policy-complete	Up to eight examples are shown.
 view.exr-exposure-down	Decrease OpenEXR preview exposure
 view.exr-exposure-reset	Reset OpenEXR preview exposure to 0 EV
 view.exr-exposure-up	Increase OpenEXR preview exposure
+view.sequence-previous	Previous image frame
+view.sequence-next	Next image frame
+view.sequence-missing	{direction} (skips {count} missing)
+view.sequence-frame	Frame {number}
+view.sequence-gap	 · {count} missing nearby
