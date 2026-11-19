@@ -857,6 +857,10 @@ fn parse_markdown_into(
     // If a `[[toc]]` placeholder was inserted, populate its entries from the document headings.
     populate_toc_blocks(doc);
 
+    for command in ibis_doc_model::flow_command::updated_fields(doc) {
+        let _ = ibis_doc_model::flow_command::apply_to(doc, command);
+    }
+
     Ok(())
 }
 
@@ -2924,6 +2928,37 @@ fn parse_yaml_series_item(s: &str) -> Option<(String, Vec<Option<Number>>)> {
 // Inline parsing
 // ============================================================================
 
+fn markdown_sequence(name: &str) -> Option<(&'static str, &'static str)> {
+    [("equation", "Equation"), ("figure", "Figure"), ("table", "Table")]
+        .into_iter()
+        .find(|(markdown, _)| name.eq_ignore_ascii_case(markdown))
+}
+
+fn markdown_number_field(rest: &str) -> Option<(usize, String)> {
+    let field = rest.strip_prefix("{{")?;
+    let (token, _) = field.split_once("}}")?;
+    let (kind, value) = token.split_once(':')?;
+    let instruction = match kind {
+        "seq" => format!("SEQ {}", markdown_sequence(value)?.1),
+        "ref" if is_equation_bookmark(value) => format!("REF {value} \\h"),
+        _ => return None,
+    };
+    Some((token.len() + 4, instruction))
+}
+
+fn format_markdown_number_field(instruction: &str, shown: &str) -> String {
+    let words = ibis_doc_model::flow_command::field_words(instruction);
+    match words.as_slice() {
+        [seq, name] if seq.eq_ignore_ascii_case("SEQ") => {
+            markdown_sequence(name).map_or_else(|| shown.to_owned(), |(label, _)| format!("{{{{seq:{label}}}}}"))
+        }
+        [reference, name, r"\h"] if reference.eq_ignore_ascii_case("REF") && is_equation_bookmark(name) => {
+            format!("{{{{ref:{name}}}}}")
+        }
+        _ => shown.to_owned(),
+    }
+}
+
 fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -> Vec<FlowRun> {
     let mut out = Vec::new();
     let mut plain = String::new();
@@ -2957,6 +2992,18 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                 i += 1 + next_ch.len_utf8();
                 continue;
             }
+        }
+
+        if let Some((consumed, instruction)) = markdown_number_field(rest) {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let mut run = FlowRun::new(
+                FlowRunKind::Field { instruction, shown: "?".into() },
+                FlowRunStyle::default(),
+            );
+            run.format = base_fmt.clone();
+            out.push(run);
+            i += consumed;
+            continue;
         }
 
         // CriticMarkup Insertion: `{++text++}`
@@ -4412,6 +4459,13 @@ fn serialize_runs(
     for run in runs {
         let mut piece = match &run.kind {
             FlowRunKind::Text(t) => format_text_run(t, &run.format, run.link.is_some()),
+            FlowRunKind::Field { instruction, shown } => {
+                if run.field_locked {
+                    shown.clone()
+                } else {
+                    format_markdown_number_field(instruction, shown)
+                }
+            }
             FlowRunKind::LineBreak => "  \n".to_string(),
             FlowRunKind::Tab => "\t".to_string(),
             FlowRunKind::PageBreak => "\\newpage".to_string(),
@@ -5238,6 +5292,61 @@ fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_numbers_and_forward_references_round_trip_and_renumber() {
+        fn fields(data: &[u8]) -> Vec<(String, String)> {
+            let presentation = crate::read(data).unwrap();
+            presentation.flow.as_ref().unwrap().body.iter()
+                .filter_map(|block| match block {
+                    Block::Paragraph(paragraph) => Some(&paragraph.runs),
+                    _ => None,
+                })
+                .flatten()
+                .filter_map(|run| match &run.kind {
+                    FlowRunKind::Field { instruction, shown } => Some((instruction.clone(), shown.clone())),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        let input = b"See equation ({{ref:eq_energy_number}}).
+
+$$E=mc^2$$ {#eq_energy}
+
+{{seq:equation}} {#eq_energy_number}
+
+Figure {{seq:figure}} {#fig_setup}
+
+Table {{seq:table}} {#tbl_results}
+";
+        let original = import_markdown_to_docx_bytes(input).unwrap();
+        let expected = [
+            (r"REF eq_energy_number \h".into(), "1".into()),
+            ("SEQ Equation".into(), "1".into()),
+            ("SEQ Figure".into(), "1".into()),
+            ("SEQ Table".into(), "1".into()),
+        ];
+        assert_eq!(fields(&original), expected);
+        let markdown = export_docx_to_markdown(&original).unwrap();
+        assert!(markdown.contains("{{seq:equation}} {#eq_energy_number}"));
+        assert!(markdown.contains("{{ref:eq_energy_number}}"));
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        assert_eq!(fields(&rebuilt), expected);
+
+        let earlier = format!("{{{{seq:equation}}}} {{#eq_earlier_number}}\n\n{markdown}");
+        let renumbered = import_markdown_to_docx_bytes(earlier.as_bytes()).unwrap();
+        assert_eq!(
+            fields(&renumbered),
+            [
+                ("SEQ Equation".into(), "1".into()),
+                (r"REF eq_energy_number \h".into(), "2".into()),
+                ("SEQ Equation".into(), "2".into()),
+                ("SEQ Figure".into(), "1".into()),
+                ("SEQ Table".into(), "1".into()),
+            ],
+        );
+    }
 
     #[test]
     fn equation_bookmarks_and_internal_links_survive_docx_round_trip() {
