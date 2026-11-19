@@ -119,6 +119,27 @@ fn arrays_can_filter_candidates() {
 }
 
 #[test]
+fn a_broadcast_address_keeps_per_cell_modes_and_errors() {
+    let sheet = Sheet { date1904: false };
+    for (formula, expected) in [
+        (
+            r#"SUM(IBIS.FIELDMATCH({"霞が関二丁目1番2号"},{"霞が関2-1-2","霞ヶ関2-1-2","霞が関2-1-3"},{"ADDRESS"}))"#,
+            CellValue::Number(3.0),
+        ),
+        (
+            r#"SUM(IBIS.FIELDMATCH("霞が関二丁目1番2号",{"霞が関2-1-2","霞が関2-1-2"},{"address","gender"}))"#,
+            CellValue::Error(CellError::NA),
+        ),
+        (
+            r#"INDEX(IBIS.FIELDMATCH(" ",{"霞が関2-1-2",#DIV/0!},"address"),1,2)"#,
+            CellValue::Error(CellError::Div0),
+        ),
+    ] {
+        assert_eq!(evaluate(&sheet, (0, 2, 0), formula), (expected, false), "{formula}");
+    }
+}
+
+#[test]
 fn address_place_variants_and_wildcards_are_possible_matches() {
     for (args, result) in [
         (r#""霞ケ関2-1-2","霞が関2-1-2","address""#, 1.0),

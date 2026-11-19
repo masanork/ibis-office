@@ -2,6 +2,7 @@
 // Copyright (c) masanork
 //! Pairwise comparison of explicitly typed fields.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -25,7 +26,17 @@ const LEGACY_JAPANESE_SUBSTITUTES: &[char] = &['\u{3013}', '\u{25cf}'];
 const FIELD_PLACEHOLDERS: &[char] = &['\u{25a0}', '\u{003f}', '\u{ff1f}'];
 
 pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
-    ctx.map_args(args, |ctx, values| {
+    let args: Vec<_> = args.iter().map(|arg| ctx.eval_scalar_or_array(arg)).collect();
+    // A single address is broadcast unchanged across the other argument.
+    // Keep even a failed normalization, so it is not retried for each row.
+    let fixed_addresses = if stable_text(&args[2]).is_some_and(|mode| mode.eq_ignore_ascii_case("address"))
+        && args.iter().any(|value| matches!(value, Value::Array(_)))
+    {
+        [stable_text(&args[0]).map(address_key), stable_text(&args[1]).map(address_key)]
+    } else {
+        [None, None]
+    };
+    ctx.map_values(args, &mut |ctx, values| {
         if let Some(error) = values.iter().find_map(|value| match value {
             Value::Error(error) => Some(*error),
             _ => None,
@@ -56,7 +67,9 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             if mode.eq_ignore_ascii_case("name") {
                 super::name_match::compare(left, right, wildcard, |c| ctx.book.name_variant_cluster(c))
             } else {
-                compare_addresses(left, right, wildcard)
+                let left = normalized_address(left, &fixed_addresses[0]);
+                let right = normalized_address(right, &fixed_addresses[1]);
+                left.as_deref().zip(right.as_deref()).and_then(|(left, right)| compare_addresses(left, right, wildcard))
             }
         } else if values.len() > 3 {
             return err(CellError::Value);
@@ -192,14 +205,23 @@ fn is_wildcard(c: char, extra: &HashSet<char>) -> bool {
         || (c.is_alphabetic() || matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' | '\u{100000}'..='\u{10fffd}')) && extra.contains(&c)
 }
 
-fn compare_addresses(left: &Value, right: &Value, wildcard: impl Fn(char) -> bool + Copy) -> Option<u8> {
-    let (Value::Text(left), Value::Text(right)) = (left, right) else {
-        return None;
-    };
-    let left = address_key(left)?;
-    let right = address_key(right)?;
-    let (left_place, left_tail) = address_parts(&left);
-    let (right_place, right_tail) = address_parts(&right);
+fn stable_text(value: &Value) -> Option<&str> {
+    match value {
+        Value::Array(array) if array.rows == 1 && array.columns == 1 => text_value(array.get(0, 0)),
+        value => text_value(value),
+    }
+}
+
+fn normalized_address<'a>(value: &Value, fixed: &'a Option<Option<String>>) -> Option<Cow<'a, str>> {
+    match fixed {
+        Some(address) => address.as_deref().map(Cow::Borrowed),
+        None => address_key(text_value(value)?).map(Cow::Owned),
+    }
+}
+
+fn compare_addresses(left: &str, right: &str, wildcard: impl Fn(char) -> bool + Copy) -> Option<u8> {
+    let (left_place, left_tail) = address_parts(left);
+    let (right_place, right_tail) = address_parts(right);
     if left == right && !left_place.chars().any(wildcard) {
         return Some(2);
     }
