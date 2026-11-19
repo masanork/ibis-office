@@ -310,26 +310,34 @@ impl Book for BookView<'_> {
         }
         let Some(sheet) = self.sheets.get(sheet).and_then(|s| s.sheet) else { return };
         let (r0, c0, r1, c1) = area;
-        let start = sheet.cells.partition_point(|c| (c.row, c.column) < (r0, c0));
-        let mut i = start;
-        while i < sheet.cells.len() {
-            let cell = &sheet.cells[i];
+        let cells = &sheet.cells;
+        let mut i = cells.partition_point(|c| (c.row, c.column) < (r0, c0));
+        while let Some(cell) = cells.get(i) {
             if cell.row > r1 {
                 break;
             }
-            if cell.column < c0 {
-                // Jump to this row's first column in the area.
-                i = sheet.cells.partition_point(|c| (c.row, c.column) < (cell.row, c0));
+            let next = if cell.column < c0 {
+                (cell.row, c0)
+            } else if cell.column > c1 {
+                (cell.row + 1, c0)
+            } else {
+                if cell.formula.is_some() || !cell.value.is_empty() {
+                    f(cell.row, cell.column, &cell.value);
+                }
+                i += 1;
                 continue;
-            }
-            if cell.column > c1 {
-                i = sheet.cells.partition_point(|c| (c.row, c.column) < (cell.row + 1, c0));
-                continue;
-            }
-            if cell.formula.is_some() || !cell.value.is_empty() {
-                f(cell.row, cell.column, &cell.value);
-            }
+            };
             i += 1;
+            // In a narrow sheet the next in-range cell is usually close.
+            // Keep a binary search for wide rows with long gaps.
+            let rest = &cells[i..];
+            let before_next = |c: &crate::sheet::SheetCell| (c.row, c.column) < next;
+            let nearby = rest.len().min(16);
+            if nearby == rest.len() || !before_next(&rest[nearby - 1]) {
+                i += rest[..nearby].partition_point(before_next);
+            } else {
+                i += nearby + rest[nearby..].partition_point(before_next);
+            }
         }
     }
 
@@ -474,6 +482,39 @@ mod tests {
             phonetic: None,
             runs: None,
         }
+    }
+
+    #[test]
+    fn range_iteration_skips_both_short_and_long_gaps() {
+        let mut sheet = Sheet::default();
+        sheet.cells.push(make_cell(0, 2, CellValue::Number(1.0), None));
+        for column in 3..40 {
+            sheet.cells.push(make_cell(0, column, CellValue::Number(9.0), None));
+        }
+        sheet.cells.push(make_cell(2, 0, CellValue::Number(9.0), None));
+        sheet.cells.push(make_cell(2, 1, CellValue::Empty, None));
+        sheet.cells.push(make_cell(2, 2, CellValue::Empty, Some("A1")));
+        sheet.cells.push(make_cell(2, 3, CellValue::Number(9.0), None));
+        sheet.cells.push(make_cell(3, 1, CellValue::Number(2.0), None));
+        sheet.cells.push(make_cell(4, 1, CellValue::Number(9.0), None));
+
+        let mut slide = Slide::new(SlideId(1));
+        slide.shapes.push(Shape::new(
+            crate::model::ShapeId(1),
+            crate::geometry::EmuRect::default(),
+            ShapeKind::Sheet(Arc::new(sheet)),
+        ));
+        let mut presentation = Presentation::empty(crate::geometry::EmuSize::WIDESCREEN);
+        presentation.slides.push(slide);
+        let mut found = Vec::new();
+        BookView::new(&presentation).for_each_cell(0, (0, 1, 3, 2), &mut |r, c, v| {
+            found.push((r, c, v.clone()));
+        });
+        assert_eq!(found, [
+            (0, 2, CellValue::Number(1.0)),
+            (2, 2, CellValue::Empty),
+            (3, 1, CellValue::Number(2.0)),
+        ]);
     }
 
     #[test]
