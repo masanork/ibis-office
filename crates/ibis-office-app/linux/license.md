@@ -13,7 +13,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | Carlito | Calibri が入っていないときの代わりの文字 | SIL Open Font License 1.1 |
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
-| Unicode 15.0 | 文字の表示可否データ | Unicode-3.0 |
+| Unicode 15.0 | 文字の表示可否・漢字互換マッピング | Unicode-3.0 |
 
 ## Rust の部品（664 件）
 

@@ -9,6 +9,10 @@ fn main() {
             println!("cargo:rerun-if-changed={}", path.display());
             fs::copy(&path, out).unwrap_or_else(|e| panic!("cannot copy {}: {e}", path.display()));
         }
-        None => fs::write(out, []).unwrap(),
+        None => {
+            let path = "resources/unicode-15.0-cjk-variants.zst";
+            println!("cargo:rerun-if-changed={path}");
+            fs::copy(path, out).unwrap();
+        }
     }
 }

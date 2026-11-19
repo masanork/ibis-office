@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a local bitmap dictionary from a reviewed member/cluster/representative CSV."""
+"""Build a bitmap dictionary from a reviewed CSV or pinned Unicode 15.0 data."""
 import argparse
 import csv
 import hashlib
@@ -9,11 +9,28 @@ import subprocess
 import tempfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('csv', type=pathlib.Path)
+parser.add_argument('--unicode-data', action='store_true', help='use Unicode 15.0.0 UnicodeData.txt instead of CSV')
+parser.add_argument('source', type=pathlib.Path)
 parser.add_argument('output', type=pathlib.Path, help='output .zst file')
 args = parser.parse_args()
-source = args.csv.read_bytes()
-rows = list(csv.DictReader(source.decode('utf-8-sig').splitlines()))
+source = args.source.read_bytes()
+digest = hashlib.sha256(source).hexdigest()
+if args.unicode_data:
+    if digest != '806e9aed65037197f1ec85e12be6e8cd870fc5608b4de0fffd990f689f376a73':
+        raise ValueError('expected the pinned Unicode 15.0.0 UnicodeData.txt')
+    representatives = {}
+    for line in source.decode('utf-8').splitlines():
+        fields = line.split(';')
+        if fields[1].startswith('CJK COMPATIBILITY IDEOGRAPH-') and fields[5]:
+            member, representative = int(fields[0], 16), int(fields[5], 16)
+            representatives[member] = representative
+            representatives.setdefault(representative, representative)
+    rows = [
+        dict(member_codepoint=hex(member), cluster_id=hex(rep), representative_codepoint=hex(rep))
+        for member, rep in sorted(representatives.items())
+    ]
+else:
+    rows = list(csv.DictReader(source.decode('utf-8-sig').splitlines()))
 groups = {}
 reps = []
 pairs = []
@@ -63,4 +80,4 @@ with tempfile.TemporaryDirectory() as tmp:
     path = pathlib.Path(tmp) / 'dictionary.bin'
     path.write_bytes(raw)
     subprocess.run(['zstd', '-q', '-19', '-f', str(path), '-o', str(args.output)], check=True)
-print(f'CSV sha256={hashlib.sha256(source).hexdigest()} members={len(pairs)} clusters={len(groups)} pages={len(pages)} raw={len(raw)} zstd={args.output.stat().st_size}')
+print(f'Source sha256={digest} members={len(pairs)} clusters={len(groups)} pages={len(pages)} raw={len(raw)} zstd={args.output.stat().st_size}')

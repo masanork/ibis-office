@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | 和暦 | [国立国会図書館: 江戸から明治の改暦](https://www.ndl.go.jp/koyomi/chapter1/s2.html)。明治6年より前は旧暦の可能性があり、変換対象外とする。改元日の根拠も実装前に整理する。 | 日付候補処理の試作のみ。外部データを同梱していない。 |
 | 異体字 | [MJ縮退マップ](https://moji.or.jp/mojikiban/map/) は CC BY-SA 2.1 JP で IPA 著作物の表示が必要。候補が複数・ゼロのものもあり、入力値の代表形を一意の正解として扱えない。 | 未採用。派生データの継承条件と AGPL / 商用ライセンスでの配布形態を要確認。 |
-| 異体字 | [Unicode データの利用条件](https://www.unicode.org/copyright.html)。実際に選ぶファイルと版、固有の例外とライセンス文を確認する。 | 未採用。IVD 等は単独で氏名の同一性を判定する辞書ではない。 |
+| 異体字 | [Unicode データの利用条件](https://www.unicode.org/copyright.html)。実際に選ぶファイルと版、固有の例外とライセンス文を確認する。 | UnicodeData.txt の CJK 互換漢字の正準分解を採用。IVD は未採用。 |
 | 住所 | [アドレス・ベース・レジストリ利用規約](https://www.digital.go.jp/policies/base_registry_address_tos)。出典と編集・加工主体の記載を求めている。地番マスター等には別の規約が適用される。 | 未採用。使うデータセット自体のメタデータと規約を確認し、版とハッシュを固定する。 |
 | 郵便番号 | [日本郵便: UTF-8 形式郵便番号データの説明](https://www.post.japanpost.jp/service/search/zipcode/download/utf-readme.html)。郵便番号データについて日本郵便は著作権を主張せず、自由な配布を認めている。CSV と API の条件は別。 | 未採用。採用時は版、出典と加工内容を記載する。 |
 
@@ -20,15 +20,27 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 日付の試作では年/月/日の順で、2桁年の 00〜29 を 2000〜2029、30〜99 を
 1930〜1999 と推定して明示する。この境界は暫定で、入力の種類によって適否が異なる。
 
-未実装: 異体字辞書、ABR 住所照合、辞書の更新と表示、
-ブラウザー上のサイズ・性能検証。辞書を持たない処理を辞書ベースの名寄せや住所正規化と
+未実装: ABR 住所照合、辞書の更新と表示、ブラウザー上の性能検証。辞書を持たない処理を辞書ベースの名寄せや住所正規化と
 誤認させない。
+
+## 配布用の異体字クラスタ
+
+デスクトップ版と Web 版は、Unicode 15.0.0 の [UnicodeData.txt](https://www.unicode.org/Public/15.0.0/ucd/UnicodeData.txt)
+から、正準分解先がある CJK 互換漢字だけを取り出した辞書を既定で組み込む。
+互換漢字を分解先ごとにまとめ、同じクラスタに属する別の表記を氏名照合で曖昧一致として返す。
+たとえば「塚」と「塚」は対象。正準分解で対応づけられていない「髙」と「高」はこの辞書の対象外。
+辞書は 1,904 文字、902 クラスタ、圧縮後 10,879 バイト。
+Unicode-3.0 のライセンス表示は `crates/ibis-doc-model/UNICODE-LICENSE.txt` と配布物のライセンス一覧に掲載する。
+
+生成方法は `python3 scripts/generate-variant-bitmap.py --unicode-data UnicodeData.txt crates/ibis-doc-model/resources/unicode-15.0-cjk-variants.zst`。
+出典の SHA-256 は `806e9aed65037197f1ec85e12be6e8cd870fc5608b4de0fffd990f689f376a73`、
+生成物の SHA-256 は `108c4b71ac0b738859b9ab182f8db7e1d9cc9efc5e6a468461c49eb589ee4960`。
 
 ## 異体字クラスタのローカル試作
 
 異体字クラスターマップの調製: Masanori Kusunoki (gjs)。この試作は gjs のローカル DB から出力したクラスタ一覧を使うが、DB の元データの版と全出典は固定・確認できていない。gjs の [Third-Party Notices](https://github.com/digital-go-jp/gjs/blob/main/NOTICE.md) はデータと生成物をコードの MIT ライセンスとは別に扱い、MJ文字情報一覧表には CC BY-SA 2.1 JP を挙げている。クラスタへの各データの寄与・条件を検証するまで、このスナップショットやそれを含む成果物を再配布しない。調製者のクレジットは第三者の条件に代わらない。
 
-`python3 scripts/generate-variant-bitmap.py /path/to/clusters_direct.csv /path/to/clusters.zst` でビットマップを生成し、`IBIS_VARIANT_BITMAP=/path/to/clusters.zst` を指定してビルドする。省略時は辞書を含めず、メニューを表示しない。辞書が破損して読み込めない場合は画面にその旨を示す。実行時に gjs・soroe やネットワークは不要。ビルド時の環境変数・ファイルはローカル専用であり、配布用辞書の決定を意味しない。
+`python3 scripts/generate-variant-bitmap.py /path/to/clusters_direct.csv /path/to/clusters.zst` でビットマップを生成し、`IBIS_VARIANT_BITMAP=/path/to/clusters.zst` を指定してビルドする。省略時は配布用の Unicode 辞書を使う。辞書が破損して読み込めない場合は画面にその旨を示す。実行時に gjs・soroe やネットワークは不要。ビルド時の環境変数・ファイルはローカル専用であり、配布用辞書の決定を意味しない。
 
 候補はセルを変更しない。クラスタ所属は元資料の直接の関係、同一人物、または置換の安全性を保証しない。文字と異体字セレクタを組み合わせたシーケンスは対象外。大量の結果は先頭200件までとし、その旨を示す。
 
@@ -102,7 +114,7 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 `=IBIS.FIELDMATCH(A2,B2,"name")` で氏名を比較する。
 空白をそろえた一致は 2。伏字や外字、組み込み済みの異体字クラスタ、旧姓併記による一致は 1。
 住所と同じ既定の伏字を使い、追加の外字は第4引数で指定できる。
-異体字クラスタは `IBIS_VARIANT_BITMAP` を指定したビルドで使える。
+配布用の異体字クラスタを既定で使う。ローカルビルドでは `IBIS_VARIANT_BITMAP` で別の辞書に差し替えられる。
 
 `田中（旧姓：山田）花子`、`田中・旧姓山田 花子` のように旧姓が明記されていれば、
 現姓と旧姓の両方を照合する。双方が姓と名を空白で区切っている場合、名が一致して姓が違う組も
