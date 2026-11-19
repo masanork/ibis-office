@@ -275,6 +275,7 @@ pub fn encode_queries(queries: &[Query], parameters: &[Parameter]) -> String {
     for q in queries {
         out.push_str(&format!("query\t{}\t{}\n", esc(&q.name), q.output.as_deref().map(esc).unwrap_or_default()));
         match &q.source {
+            Source::Parquet(name) => out.push_str(&format!("source\tparquet\t{}\n", esc(name))),
             Source::Blank => out.push_str("source\tblank\n"),
             Source::Table(t) => out.push_str(&format!("source\ttable\t{}\n", esc(t))),
             Source::Range { sheet, range } => out.push_str(&format!("source\trange\t{}\t{}\n", esc(sheet), esc(range))),
@@ -301,6 +302,7 @@ pub fn decode_queries(text: &str) -> (Vec<Query>, Vec<Parameter>) {
             Some("source") => {
                 if let Some(q) = queries.last_mut() {
                     q.source = match f.get(1).copied() {
+                        Some("parquet") if f.len() >= 3 => Source::Parquet(unesc(f[2])),
                         Some("blank") => Source::Blank,
                         Some("range") if f.len() >= 4 => Source::Range { sheet: unesc(f[2]), range: unesc(f[3]) },
                         _ => Source::Table(f.get(2).map(|t| unesc(t)).unwrap_or_default()),

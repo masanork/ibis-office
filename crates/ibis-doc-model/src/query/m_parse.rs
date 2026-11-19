@@ -610,7 +610,11 @@ pub fn m_to_query(code: &str, base: &Query) -> Result<Query, CodeError> {
         let Some(name) = parse_id(&binding[..eq]) else { return fail("syntax", binding[..eq].trim()) };
         let body = binding[eq + 1..].trim();
         if names.is_empty() {
-            source = Some(source_of(body)?);
+            source = Some(if body == "Ibis.ParquetSource()" && matches!(base.source, Source::Parquet(_)) {
+                base.source.clone()
+            } else {
+                source_of(body)?
+            });
         } else {
             let prev = names.last().cloned().unwrap_or_default();
             steps.push(step_of(&strip_comments(body), &prev).map_err(|mut e| {

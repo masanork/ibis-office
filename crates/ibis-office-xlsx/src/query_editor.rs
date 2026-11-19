@@ -130,6 +130,56 @@ impl SlideEditor {
         self.open_query_editor(query, window, cx);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn pick_parquet_query(&mut self, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_cell_edit(cx);
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true, directories: false, extensions: vec!["parquet".into()],
+            multiple: false, prompt: None,
+        });
+        let document_id = self.file_id;
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let source = cx.background_executor().spawn(async move { query::read_parquet(&path) }).await;
+            this.update_in(cx, |this, window, cx| {
+                if this.file_id != document_id {
+                    return;
+                }
+                let source = match source {
+                    Ok(source) => source,
+                    Err(error) => {
+                        this.set_status(error, cx);
+                        return;
+                    }
+                };
+                let workbook = this.presentation().workbook.as_ref();
+                let mut q = existing.unwrap_or_else(|| {
+                    let base = crate::shell::i18n::text("query.default-name").to_string();
+                    let query_name = (1..).map(|n| format!("{base}{n}"))
+                        .find(|name| workbook.is_none_or(|book| !book.queries.iter().any(|q| q.name == *name)))
+                        .unwrap_or(base);
+                    Query::new(&query_name, Source::Parquet(name.clone()))
+                });
+                if refresh {
+                    let Some(book) = workbook else { return };
+                    if !book.queries.contains(&q) {
+                        return;
+                    }
+                    q.source = Source::Parquet(name);
+                    match query::result_from_source(this.presentation(), &q, &book.queries, &book.query_parameters, 0, source) {
+                        Ok(table) => this.load_refreshed_query(q, table, cx),
+                        Err(error) => this.queries_message(error, cx),
+                    }
+                } else {
+                    q.source = Source::Parquet(name);
+                    this.open_query_editor_with_source(q, source, window, cx);
+                }
+            }).ok();
+        }).detach();
+    }
+
     /// The editor on a query (a new one, or one of the workbook's to edit).
     pub(crate) fn open_query_editor(&mut self, query: Query, window: &mut Window, cx: &mut Context<Self>) {
         let source = match query::read_source(self.presentation(), &query.source) {
@@ -139,6 +189,10 @@ impl SlideEditor {
                 return;
             }
         };
+        self.open_query_editor_with_source(query, source, window, cx);
+    }
+
+    fn open_query_editor_with_source(&mut self, query: Query, source: QTable, window: &mut Window, cx: &mut Context<Self>) {
         let parameters = self.presentation().workbook.as_ref().map(|w| w.query_parameters.clone()).unwrap_or_default();
         let name = input(&query.name, "", window, cx);
         let editor = QueryEditor {
@@ -193,7 +247,11 @@ impl SlideEditor {
         let mut base = ed.query.clone();
         base.name = ed.name.read(cx).value().to_string();
         let result = query::m_to_query(&code, &base).map_err(|e| crate::shell::i18n::format(&format!("query.code-error.{}", e.key), &[("detail", &e.detail)]));
-        let result = result.and_then(|q| match query::read_source(self.presentation(), &q.source) {
+        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet(_)) && q.source == ed.query.source {
+            Ok(ed.source.clone())
+        } else {
+            query::read_source(self.presentation(), &q.source)
+        } {
             Ok(table) => Ok((q, table)),
             Err(e) => Err(crate::shell::i18n::format("query.code-source-failed", &[("error", &e)])),
         });
@@ -432,6 +490,10 @@ impl SlideEditor {
 
     pub(crate) fn edit_query(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(query) = self.presentation().workbook.as_ref().and_then(|w| w.queries.get(index)).cloned() else { return };
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if matches!(query.source, Source::Parquet(_)) {
+            return self.pick_parquet_query(Some(query), false, window, cx);
+        }
         self.open_query_editor(query, window, cx);
     }
 
@@ -450,13 +512,21 @@ impl SlideEditor {
     }
 
     /// 更新: the query worked out again from its source and its sheet rewritten.
-    pub(crate) fn refresh_query(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_query(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(wb) = self.presentation().workbook.as_ref() else { return };
         let Some(query) = wb.queries.get(index).cloned() else { return };
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if matches!(query.source, Source::Parquet(_)) {
+            return self.pick_parquet_query(Some(query), true, _window, cx);
+        }
         let table = match query::result_of(self.presentation(), &query, &wb.queries, &wb.query_parameters, 0) {
             Ok(t) => t,
             Err(e) => return self.queries_message(crate::shell::i18n::format("query.refresh-failed", &[("name", &query.name), ("error", &e)]), cx),
         };
+        self.load_refreshed_query(query, table, cx);
+    }
+
+    fn load_refreshed_query(&mut self, query: Query, table: QTable, cx: &mut Context<Self>) {
         let rows = table.rows.len();
         let slide = self.current_slide;
         if let Err(e) = self.document.execute(vec![Command::Sheet(SheetCommand::LoadQuery { slide, query: query.clone(), table })]) {
@@ -490,6 +560,7 @@ impl SlideEditor {
         }
         for (i, q) in queries.iter().enumerate() {
             let source = match &q.source {
+                Source::Parquet(name) => format!("Parquet · {name}"),
                 Source::Blank => crate::shell::i18n::text("query.source-blank").to_string(),
                 Source::Table(t) => t.clone(),
                 Source::Range { sheet, range } => format!("{sheet}!{range}"),
@@ -502,7 +573,7 @@ impl SlideEditor {
                         .gap_1()
                         .flex_wrap()
                         .child(mark(format!("edit-{i}"), crate::shell::chrome::action_button(SharedString::from(format!("query-edit-{i}"))).small().label(crate::shell::i18n::text("query.edit")).on_click(cx.listener(move |this, _, window, cx| this.edit_query(i, window, cx))).into_any_element()))
-                        .child(mark(format!("refresh-{i}"), crate::shell::chrome::action_button(SharedString::from(format!("query-refresh-{i}"))).small().label(crate::shell::i18n::text("query.refresh")).on_click(cx.listener(move |this, _, _, cx| this.refresh_query(i, cx))).into_any_element()))
+                        .child(mark(format!("refresh-{i}"), crate::shell::chrome::action_button(SharedString::from(format!("query-refresh-{i}"))).small().label(crate::shell::i18n::text("query.refresh")).on_click(cx.listener(move |this, _, window, cx| this.refresh_query(i, window, cx))).into_any_element()))
                         .child(mark(format!("delete-{i}"), crate::shell::chrome::destructive_button(SharedString::from(format!("query-delete-{i}")),cx).small().label(crate::shell::i18n::text("query.delete")).on_click(cx.listener(move |this, _, _, cx| this.delete_query(i, cx))).into_any_element())),
                 );
         }

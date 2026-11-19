@@ -1905,6 +1905,7 @@ xlsx.links-banner.close	閉じる
 xlsx.links-banner.updated	{count} 件のリンクの値を更新しました。
 xlsx.links-banner.partly	{count} 件のリンクの値を更新しました。見つからないファイル：{missing}
 xlsx.query-from-table	テーブルまたは範囲から…
+xlsx.query-from-parquet	Parquet ファイルから
 xlsx.query-blank	空のクエリ…
 xlsx.queries	クエリと接続
 query.no-data	データのあるセルを選んでください。

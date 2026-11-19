@@ -155,6 +155,7 @@ pub fn step_m(step: &Step, prev: &str) -> (String, String) {
 /// The M code of `query`: `let Source = …, step = …  in step`.
 pub fn query_to_m(query: &Query) -> String {
     let source = match &query.source {
+        Source::Parquet(_) => "Ibis.ParquetSource()".to_string(),
         Source::Blank => "#table({}, {})".to_string(),
         Source::Table(name) => format!("Excel.CurrentWorkbook(){{[Name={}]}}[Content]", q(name)),
         Source::Range { sheet, range } => format!("Excel.CurrentWorkbook(){{[Name={}]}}[Content] /* {range} */", q(sheet)),

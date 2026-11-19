@@ -16,12 +16,16 @@ use ibis_calc::input::{parse_date_in_order, DateOrder};
 use ibis_calc::{CellError, CellValue};
 
 mod book;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod parquet_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use parquet_source::read_parquet;
 mod codec;
 mod expr;
 mod m_parse;
 mod text_m;
 
-pub use book::{read_source, result_of, BookResolver};
+pub use book::{read_source, result_from_source, result_of, BookResolver};
 pub use codec::{decode_queries, encode_queries};
 pub use expr::Expr;
 pub use m_parse::{CodeError, m_to_query};
@@ -309,6 +313,8 @@ pub struct Parameter {
 /// What a query starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
+    /// A local Parquet file selected by the user. Only the display name is stored.
+    Parquet(String),
     /// A blank query starting with an empty table (`#table({}, {})`).
     Blank,
     /// A table of the book, or a named range (`Excel.CurrentWorkbook(){[Name="Table1"]}[Content]`).

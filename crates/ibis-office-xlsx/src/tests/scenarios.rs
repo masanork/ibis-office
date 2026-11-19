@@ -21820,7 +21820,7 @@ fn query001_editor() {
     s.update(|e, window, cx| e.close_dialog(window, cx));
     s.click_cell("B8");
     s.enter("5000000", "enter");
-    s.update(|e, _, cx| e.refresh_query(0, cx));
+    s.update(|e, window, cx| e.refresh_query(0, window, cx));
     assert_eq!(read(&mut s, output.clone(), 1, 0), Some(CellValue::Text("駅前店".into())));
     assert_eq!(read(&mut s, output.clone(), 1, 1), Some(CellValue::Number(5_000_000.0)));
     // Edited again: the steps are there, one more is added, and loaded to the same sheet.

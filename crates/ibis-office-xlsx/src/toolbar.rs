@@ -2590,6 +2590,16 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
             Err(back) => from_table = back,
         }
     }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        let mut parquet: MenuEntry = MenuItem::tr("xlsx.query-from-parquet").icon("table_chart").on(|this, window, cx| this.pick_parquet_query(None, false, window, cx)).into();
+        for (_, entries) in menus.menus.iter_mut() {
+            match insert_after(entries, "xlsx.import-text", parquet) {
+                Ok(()) => break,
+                Err(back) => parquet = back,
+            }
+        }
+    }
     let mut query_blank: MenuEntry = MenuItem::tr("xlsx.query-blank").icon("note_add").on(|this, window, cx| this.open_blank_query(window, cx)).into();
     for (_, entries) in menus.menus.iter_mut() {
         match insert_after(entries, "xlsx.query-from-table", query_blank) {

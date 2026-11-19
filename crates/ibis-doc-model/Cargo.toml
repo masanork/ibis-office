@@ -12,3 +12,6 @@ ruzstd = "0.8"
 unicode-segmentation = "1"
 regex = "1"
 unicode-normalization = "0.1.26"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+parquet = { version = "60.1", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "brotli"] }
