@@ -546,3 +546,28 @@ fn record_match_combines_name_date_and_address_formulas() {
     );
     assert_eq!(evaluate(&sheet, (0, 2, 0), formula), (CellValue::Text("要確認".into()), false));
 }
+
+#[test]
+fn record_match_range_reduces_columns_and_spills_by_row() {
+    let sheet = Sheet { date1904: false };
+    for (formula, expected) in [
+        (
+            r#"TEXTJOIN(",",FALSE,IFNA(IBIS.RECORDMATCH({2,2;2,1;2,0;2,#N/A;#N/A,#N/A}),"?"))"#,
+            CellValue::Text("2,1,0,1,?".into()),
+        ),
+        (
+            r#"TEXTJOIN(",",FALSE,IBIS.RECORDMATCH({2,1;2,0},{2,2;1,2}))"#,
+            CellValue::Text("2,1,1,0".into()),
+        ),
+        (
+            r#"TEXTJOIN(",",FALSE,FILTER({"一致";"要確認";"除外"},IBIS.RECORDMATCH({2,2;2,1;2,0})>0))"#,
+            CellValue::Text("一致,要確認".into()),
+        ),
+        ("IBIS.RECORDMATCH({2,1,2})", CellValue::Number(1.0)),
+        ("IBIS.RECORDMATCH(2)", CellValue::Number(2.0)),
+        ("IBIS.RECORDMATCH(C1)", CellValue::Error(CellError::NA)),
+        ("IBIS.RECORDMATCH(1/0)", CellValue::Error(CellError::Div0)),
+    ] {
+        assert_eq!(evaluate(&sheet, (0, 2, 0), formula), (expected, false), "{formula}");
+    }
+}

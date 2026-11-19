@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{err, number};
+use super::{array_value, err, number};
 use crate::eval::convert::{date_from_serial, serial_from_date};
 use crate::eval::{Ctx, Value};
 use crate::formula::Expr;
@@ -89,23 +89,36 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
 
 /// Combine explicit field grades, retaining conflicts and missing evidence.
 pub(super) fn record_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
-    ctx.map_args(args, |_, values| {
-        let mut rank = 2.0_f64;
-        let mut compared = false;
-        for value in values {
-            match value {
-                Value::Number(n @ (0.0 | 1.0 | 2.0)) => {
-                    compared = true;
-                    rank = rank.min(*n);
-                }
-                Value::Empty | Value::Error(CellError::NA) => rank = rank.min(1.0),
-                Value::Text(text) if text.trim().is_empty() => rank = rank.min(1.0),
-                Value::Error(error) => return err(*error),
-                _ => return err(CellError::Value),
+    if let [range] = args {
+        return match ctx.eval_array(range) {
+            Value::Array(a) if a.rows == 1 => record_grade(&a.data),
+            Value::Array(a) if a.columns != 0 => {
+                let grades = a.data.chunks_exact(a.columns).map(record_grade).collect();
+                array_value(a.rows, 1, grades)
             }
+            Value::Array(_) => err(CellError::Calc),
+            value => record_grade(std::slice::from_ref(&value)),
+        };
+    }
+    ctx.map_args(args, |_, values| record_grade(values))
+}
+
+fn record_grade(values: &[Value]) -> Value {
+    let mut rank = 2.0_f64;
+    let mut compared = false;
+    for value in values {
+        match value {
+            Value::Number(n @ (0.0 | 1.0 | 2.0)) => {
+                compared = true;
+                rank = rank.min(*n);
+            }
+            Value::Empty | Value::Error(CellError::NA) => rank = rank.min(1.0),
+            Value::Text(text) if text.trim().is_empty() => rank = rank.min(1.0),
+            Value::Error(error) => return err(*error),
+            _ => return err(CellError::Value),
         }
-        if compared { number(rank) } else { err(CellError::NA) }
-    })
+    }
+    if compared { number(rank) } else { err(CellError::NA) }
 }
 
 fn compare_keys<T: Eq>(left: &Value, right: &Value, key: impl Fn(&Value) -> Option<T>) -> Option<u8> {

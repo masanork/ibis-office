@@ -10265,3 +10265,30 @@ fn record_match_recalculates_when_a_field_changes_after_reopen() {
     set(&mut document, s, vec![(0, 3, CellInput::Value(CellValue::Number(600002.0)))]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(0.0));
 }
+
+#[test]
+fn record_match_range_spills_and_recalculates_after_reopen() {
+    let sheet_name = "一括照合";
+    let bytes = ibis_pptx::csv::workbook_from_with_delimiter("2,2,2\n2,1,2\n1,2,0", sheet_name, ',').unwrap();
+    let opened = ibis_pptx::open(bytes).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let s = slide(document.presentation(), sheet_name);
+    let formula = "IBIS.RECORDMATCH(A1:C3)";
+    set(&mut document, s, vec![(0, 3, CellInput::Formula(formula.into()))]);
+
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let reopened = ibis_pptx::read(&saved).unwrap();
+    assert_eq!(cell(&reopened, sheet_name, 0, 3).formula.as_deref(), Some(formula));
+    for (r, grade) in [2.0, 1.0, 0.0].into_iter().enumerate() {
+        assert_eq!(value(&reopened, sheet_name, r as u32, 3), CellValue::Number(grade));
+    }
+    let s = slide(&reopened, sheet_name);
+    let mut document = Document::new(reopened);
+    set(&mut document, s, vec![
+        (1, 1, CellInput::Value(CellValue::Number(2.0))),
+        (2, 2, CellInput::Clear),
+    ]);
+    for (r, grade) in [2.0, 2.0, 1.0].into_iter().enumerate() {
+        assert_eq!(value(document.presentation(), sheet_name, r as u32, 3), CellValue::Number(grade));
+    }
+}
