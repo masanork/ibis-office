@@ -410,6 +410,27 @@ fn ai_batch_edits_validate_before_writing_and_keep_edit_order() {
     assert_eq!(preview["targets"][0]["source"]["kind"], "paragraph");
     assert_eq!(preview["targets"][1]["editIndices"], serde_json::json!([2]));
     assert_eq!(preview["targets"][1]["source"]["kind"], "tableCell");
+    let mut checked = batch.clone();
+    checked["previewSha256"] = preview["previewSha256"].clone();
+    assert_eq!(checked["previewSha256"].as_str().unwrap().len(), 64);
+    let verified = markdown::apply_ai_edit(&docx, &checked).unwrap();
+    assert!(
+        markdown::export_docx_to_markdown(&verified)
+            .unwrap()
+            .contains("| Reviewed cell |")
+    );
+
+    checked["edits"][1]["replacement"] = serde_json::json!("Changed after preview");
+    assert!(
+        markdown::apply_ai_edit(&docx, &checked)
+            .unwrap_err()
+            .to_string()
+            .contains("preview SHA-256")
+    );
+    checked["edits"] = batch["edits"].clone();
+    checked["edits"].as_array_mut().unwrap().swap(0, 1);
+    assert!(markdown::apply_ai_edit(&docx, &checked).is_err());
+
     let edited = markdown::apply_ai_edit(&docx, &batch).unwrap();
     let output = markdown::export_docx_to_markdown(&edited).unwrap();
     assert!(output.contains("Reviewed sentence."));

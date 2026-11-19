@@ -337,6 +337,12 @@ ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed
 
 単独プレビューと一括プレビューの各 `edits` 要素は、操作の種類を `operation`（`replace`、`delete`、`insert`）で返します。`markdownBytes` と `quote` は照合した引用です。`affectedParagraphBytes` は、原本の段落またはセルのプレーンテキスト `before` のうち、実際に変わる UTF-8 バイト範囲を指します。挿入の場合は開始と終了が同じ位置です。`replacement` はその範囲に入る文字列です。
 
+### 確認した編集案を指定して保存する
+
+`ai-preview` が返す `previewSha256` を編集案 JSON の最上位にコピーできます。`ai-apply` はこの値を指定した場合、照合済みの変更内容から再計算し、一致しなければ保存しません。一括編集では案の順番も照合します。編集案を変更したら、改めてプレビューして新しい値を取得します。
+
+この値は原本に対する編集内容を照合するためのものです。確認者の本人性や承認を証明する電子署名ではありません。
+
 ### 編集案 JSON を検証する
 
 単独編集と一括編集の入力形式は [編集案 JSON Schema v1](schemas/ai-edit-proposal-v1.schema.json) で確認できます。Draft 2020-12 のバリデーターを使うと、項目名の誤り、必須項目の不足、空のバッチ、改行を含む置換などを事前に検出できます。

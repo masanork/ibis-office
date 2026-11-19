@@ -3951,11 +3951,32 @@ struct PreparedAiEdit {
     preview: serde_json::Value,
 }
 
+fn ai_edit_preview_digest(proposal: &serde_json::Value, edits: &[PreparedAiEdit]) -> String {
+    let entries: Vec<_> = edits.iter().map(|edit| {
+        let preview = &edit.preview;
+        let source = &preview["source"];
+        serde_json::json!([
+            source["kind"], source["index"], source["modelId"],
+            preview["operation"], preview["markdownBytes"], preview["quote"],
+            preview["affectedParagraphBytes"], preview["before"], preview["replacement"],
+        ])
+    }).collect();
+    let snapshot = serde_json::json!([
+        "ibisOffice DOCX edit preview v1",
+        proposal["sourceSha256"],
+        entries,
+    ]);
+    source_sha256(snapshot.to_string().as_bytes())
+}
+
 /// Validate a single edit or a batch and return before/after text.
 pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serde_json::Value, Error> {
     let (_, mut edits) = prepare_ai_edits(data, proposal)?;
+    let digest = ai_edit_preview_digest(proposal, &edits);
     if proposal.get("edits").is_none() {
-        return Ok(edits.remove(0).preview);
+        let mut preview = edits.remove(0).preview;
+        preview["previewSha256"] = digest.into();
+        return Ok(preview);
     }
     let mut target_indices = HashMap::new();
     let mut target_edits: Vec<Vec<(usize, &PreparedAiEdit)>> = Vec::new();
@@ -3986,6 +4007,7 @@ pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serd
     Ok(serde_json::json!({
         "version": 1,
         "sourceSha256": proposal["sourceSha256"],
+        "previewSha256": digest,
         "edits": edits.into_iter().map(|edit| edit.preview).collect::<Vec<_>>(),
         "targets": targets,
     }))
@@ -3994,6 +4016,11 @@ pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serd
 /// Validate every edit against the original snapshot and write one DOCX.
 pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8>, Error> {
     let (mut opened, mut edits) = prepare_ai_edits(data, proposal)?;
+    if let Some(expected) = proposal.get("previewSha256")
+        && expected.as_str() != Some(ai_edit_preview_digest(proposal, &edits).as_str())
+    {
+        return Err(Error::new("AI edit differs from the checked preview SHA-256"));
+    }
     // Each range refers to the original run. Changes to its right do not
     // shift the offsets of changes to its left.
     edits.sort_unstable_by_key(|edit| std::cmp::Reverse(edit.range.start));
@@ -4039,6 +4066,9 @@ fn prepare_ai_edits(data: &[u8], proposal: &serde_json::Value) -> Result<(Opened
         let prepared = if batch.is_some() {
             let mut edit = edit.clone();
             let entry = edit.as_object_mut().ok_or_else(|| Error::new(format!("Edit {} must be an object", index + 1)))?;
+            if entry.contains_key("previewSha256") {
+                return Err(Error::new("previewSha256 belongs on the batch, not on an individual edit"));
+            }
             for key in ["version", "sourceSha256"] {
                 if entry.get(key).is_some_and(|value| value != &proposal[key]) {
                     return Err(Error::new(format!("Edit {} conflicts with the batch {key}", index + 1)));
