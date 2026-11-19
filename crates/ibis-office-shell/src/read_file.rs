@@ -3,6 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Reading a file for editing (on a thread of its own), with its password if it has one.
 
+#[cfg(not(target_family = "wasm"))]
 use crate::timing;
 
 /// A file read for editing: its model, and what saving it needs.
@@ -83,47 +84,68 @@ mod stack_tests {
     }
 }
 
+pub(crate) fn read_xdw(raw: std::sync::Arc<[u8]>) -> Result<ibis_doc_model::Presentation, String> {
+    let page_boxes: Vec<_> = ibis_xdw::XdwContainer::from_bytes(raw.clone())
+        .map_err(|error| error.to_string())?
+        .page_infos()
+        .into_iter()
+        .map(|page| (page.crop_box.width(), page.crop_box.height()))
+        .collect();
+    Ok(fixed_layout(raw, &page_boxes))
+}
+
+fn fixed_layout(raw: std::sync::Arc<[u8]>, page_boxes: &[(f32, f32)]) -> ibis_doc_model::Presentation {
+    let first_size = page_boxes
+        .first()
+        .map(|&(w, h)| ibis_doc_model::EmuSize::new((w as i64) * ibis_doc_model::EMU_PER_POINT, (h as i64) * ibis_doc_model::EMU_PER_POINT))
+        .unwrap_or_else(|| ibis_doc_model::EmuSize::new(595 * ibis_doc_model::EMU_PER_POINT, 842 * ibis_doc_model::EMU_PER_POINT));
+    let mut presentation = ibis_doc_model::Presentation::empty(first_size);
+    for (w, h) in page_boxes {
+        let mut slide = ibis_doc_model::Slide::new(presentation.new_slide_id());
+        slide.size = Some(ibis_doc_model::EmuSize::new(
+            (*w as i64) * ibis_doc_model::EMU_PER_POINT,
+            (*h as i64) * ibis_doc_model::EMU_PER_POINT,
+        ));
+        presentation.slides.push(slide);
+    }
+    presentation.pdf_bytes = Some(raw);
+    presentation
+}
+
 #[cfg(not(target_family = "wasm"))]
 fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
-    if path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf") || ext.eq_ignore_ascii_case("ofd") || ext.eq_ignore_ascii_case("xps") || ext.eq_ignore_ascii_case("oxps")) || data.starts_with(b"%PDF-") || ibis_ofd::is_ofd(&data) || ibis_xps::is_xps(&data) {
+    let is_xdw = path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("xdw"))
+        || ibis_xdw::is_xdw(&data);
+    if is_xdw || path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf") || ext.eq_ignore_ascii_case("ofd") || ext.eq_ignore_ascii_case("xps") || ext.eq_ignore_ascii_case("oxps")) || data.starts_with(b"%PDF-") || ibis_ofd::is_ofd(&data) || ibis_xps::is_xps(&data) {
         let raw: std::sync::Arc<[u8]> = data.into();
-        let page_boxes: Vec<(f32, f32)> = if ibis_ofd::is_ofd(&raw) {
-            let ofd = ibis_ofd::OfdContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
-            ofd.page_infos()
-                .into_iter()
-                .map(|p| (p.crop_box.width(), p.crop_box.height()))
-                .collect()
-        } else if ibis_xps::is_xps(&raw) {
-            let xps = ibis_xps::XpsContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
-            xps.page_infos()
-                .into_iter()
-                .map(|p| (p.crop_box.width(), p.crop_box.height()))
-                .collect()
+        let presentation = if is_xdw {
+            read_xdw(raw)?
         } else {
-            let mut container = ibis_pdf::PdfContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
-            ibis_pdf::scene::collect_pages(&mut container)
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .map(|p| (p.crop_box.width(), p.crop_box.height()))
-                .collect()
+            let page_boxes: Vec<(f32, f32)> = if ibis_ofd::is_ofd(&raw) {
+                let ofd = ibis_ofd::OfdContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
+                ofd.page_infos()
+                    .into_iter()
+                    .map(|p| (p.crop_box.width(), p.crop_box.height()))
+                    .collect()
+            } else if ibis_xps::is_xps(&raw) {
+                let xps = ibis_xps::XpsContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
+                xps.page_infos()
+                    .into_iter()
+                    .map(|p| (p.crop_box.width(), p.crop_box.height()))
+                    .collect()
+            } else {
+                let mut container = ibis_pdf::PdfContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
+                ibis_pdf::scene::collect_pages(&mut container)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|p| (p.crop_box.width(), p.crop_box.height()))
+                    .collect()
+            };
+            fixed_layout(raw, &page_boxes)
         };
-        let first_size = page_boxes
-            .first()
-            .map(|&(w, h)| ibis_doc_model::EmuSize::new((w as i64) * ibis_doc_model::EMU_PER_POINT, (h as i64) * ibis_doc_model::EMU_PER_POINT))
-            .unwrap_or_else(|| ibis_doc_model::EmuSize::new(595 * ibis_doc_model::EMU_PER_POINT, 842 * ibis_doc_model::EMU_PER_POINT));
-        let mut presentation = ibis_doc_model::Presentation::empty(first_size);
-        for (w, h) in &page_boxes {
-            let mut slide = ibis_doc_model::Slide::new(presentation.new_slide_id());
-            slide.size = Some(ibis_doc_model::EmuSize::new(
-                (*w as i64) * ibis_doc_model::EMU_PER_POINT,
-                (*h as i64) * ibis_doc_model::EMU_PER_POINT,
-            ));
-            presentation.slides.push(slide);
-        }
-        presentation.pdf_bytes = Some(raw);
         let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
         return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, exr_exposure: None });
@@ -198,6 +220,7 @@ fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encod
 
 /// Tell every format that the file at `path` could not be parsed (in the order of their registration, as they were told
 /// before the shell was a crate of its own: the workbook's, then the document's).
+#[cfg(not(target_family = "wasm"))]
 fn note_open_failed(path: &std::path::Path) {
     for (_, driver) in crate::format::drivers() {
         driver.note_open_failed(path);

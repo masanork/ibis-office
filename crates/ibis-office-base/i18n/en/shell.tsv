@@ -951,6 +951,9 @@ jtd.no-embedded-images	No displayable embedded images were found. The body previ
 jtd.omitted-sheets	 {count} additional sheet(s) omitted.
 jtd.omitted-objects	 {count} embedded-object storage(s) omitted.
 jtd.read-only	Ichitaro documents are read-only
+xdw.read-only	DocuWorks documents are read-only.
+xdw.preview	DocuWorks preview · Read-only
+xdw.page-error	This DocuWorks page could not be displayed.
 jtd.edit-as-docx	Convert to Word and edit
 jtd.editable-notice	Converted to Word. Unsupported formatting, images and some table lines are omitted. Save separately from the original Ichitaro file.
 jtd.source-protected	Saving as an Ichitaro file is not supported. Save separately from the original file.
