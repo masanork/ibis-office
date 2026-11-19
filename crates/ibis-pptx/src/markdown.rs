@@ -3102,6 +3102,17 @@ fn citation_pages(pages: &str) -> bool {
 }
 
 fn markdown_citation_instruction(value: &str) -> Option<String> {
+    let mut sources = value.split(';').map(str::trim);
+    let mut instruction = String::from("CITATION ");
+    instruction.push_str(&markdown_citation_source(sources.next()?)?);
+    for source in sources {
+        instruction.push_str(r" \m ");
+        instruction.push_str(&markdown_citation_source(source)?);
+    }
+    Some(instruction)
+}
+
+fn markdown_citation_source(value: &str) -> Option<String> {
     let (source, pages) = value.split_once('#').map_or((value, None), |(source, pages)| (source, Some(pages)));
     let (tag, locale) = source.split_once(':').map_or((source, None), |(tag, locale)| (tag, Some(locale)));
     if !citation_tag(tag) || locale.is_some_and(|value| value.parse::<u16>().is_err())
@@ -3109,7 +3120,7 @@ fn markdown_citation_instruction(value: &str) -> Option<String> {
     {
         return None;
     }
-    let mut instruction = format!("CITATION {tag}");
+    let mut instruction = tag.to_owned();
     if let Some(locale) = locale {
         instruction.push_str(&format!(r" \l {locale}"));
     }
@@ -3119,7 +3130,24 @@ fn markdown_citation_instruction(value: &str) -> Option<String> {
     Some(instruction)
 }
 
-fn format_markdown_citation(tag: &str, switches: &[&str]) -> Option<String> {
+fn format_markdown_citation<'a>(mut tag: &'a str, switches: &[&'a str]) -> Option<String> {
+    let mut marker = String::from("{{cite:");
+    let mut start = 0;
+    for (index, pair) in switches.chunks(2).enumerate() {
+        if let [r"\m", next_tag] = pair {
+            let end = index * 2;
+            marker.push_str(&format_markdown_citation_source(tag, &switches[start..end])?);
+            marker.push(';');
+            tag = next_tag;
+            start = end + 2;
+        }
+    }
+    marker.push_str(&format_markdown_citation_source(tag, &switches[start..])?);
+    marker.push_str("}}");
+    Some(marker)
+}
+
+fn format_markdown_citation_source(tag: &str, switches: &[&str]) -> Option<String> {
     fn unquote(value: &str) -> &str {
         value.strip_prefix('"').and_then(|value| value.strip_suffix('"')).unwrap_or(value)
     }
@@ -3136,7 +3164,7 @@ fn format_markdown_citation(tag: &str, switches: &[&str]) -> Option<String> {
             _ => return None,
         }
     }
-    let mut marker = format!("{{{{cite:{tag}");
+    let mut marker = tag.to_owned();
     if let Some(locale) = locale {
         marker.push(':');
         marker.push_str(locale);
@@ -3145,7 +3173,6 @@ fn format_markdown_citation(tag: &str, switches: &[&str]) -> Option<String> {
         marker.push('#');
         marker.push_str(pages);
     }
-    marker.push_str("}}");
     Some(marker)
 }
 
@@ -6457,10 +6484,27 @@ mod tests {
                    "{{cite:Tanaka_2025:1041}}");
         assert_eq!(format_markdown_inline_field(r"CITATION Tanaka_2025 \p 12-15 \l 1041", ""),
                    "{{cite:Tanaka_2025:1041#12-15}}");
-        assert_eq!(format_markdown_inline_field(r"CITATION Tanaka_2025 \p 12 \m Smith-2024", "(田中, 2025)"),
+        assert_eq!(format_markdown_inline_field(r"CITATION Tanaka_2025 \p 12 \m Smith-2024 \f see", "(田中, 2025)"),
                    "(田中, 2025)");
         assert!(markdown_inline_field("{{cite:Tanaka_2025#12-}}").is_none());
         assert!(markdown_inline_field("{{cite:Tanaka_2025:invalid}}").is_none());
+    }
+
+    #[test]
+    fn multisource_citations_keep_order_and_per_source_switches() {
+        let input = "See {{cite:Tanaka_2025:1041#12–15;Smith-2024:1033#24;Suzuki_2023}}.";
+        let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let presentation = crate::read(&docx).unwrap();
+        let Block::Paragraph(paragraph) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected a paragraph");
+        };
+        assert!(paragraph.runs.iter().any(|run| matches!(&run.kind,
+            FlowRunKind::Field { instruction, .. }
+                if instruction == r#"CITATION Tanaka_2025 \l 1041 \p "12–15" \m Smith-2024 \l 1033 \p "24" \m Suzuki_2023"#
+        )));
+        assert_eq!(export_docx_to_markdown(&docx).unwrap().trim(), input);
+        assert!(markdown_inline_field("{{cite:Tanaka_2025;}}").is_none());
+        assert!(format_markdown_citation("Tanaka_2025", &[r"\m", "Smith-2024", r"\p"]).is_none());
     }
 
     #[test]
