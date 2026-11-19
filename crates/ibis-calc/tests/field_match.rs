@@ -345,3 +345,28 @@ fn corporate_number_checks_both_inputs_before_comparison() {
         check(args, CellValue::Error(CellError::NA));
     }
 }
+
+#[test]
+fn mynumber_preserves_leading_zeros_and_verifies_the_check_digit() {
+    // Synthetic bodies exercise both remainder branches of the mod-11 rule.
+    for (args, rank) in [
+        (r#""０１２３－４５６７－８９０３","012345678903","mynumber""#, 2.0),
+        (r#""123456789018",123456789018,"mynumber""#, 2.0),
+        (r#""0000 0000 0060","000000000060","mynumber""#, 2.0),
+        (r#""000000000000","000000000060","mynumber""#, 0.0),
+        (r#""123456789018","234567890121","mynumber""#, 0.0),
+    ] {
+        check(args, CellValue::Number(rank));
+    }
+    for args in [
+        r#""012345678903",12345678903,"mynumber""#,
+        r#""123456789019","123456789019","mynumber""#,
+        r#""123456789019","123456789018","mynumber""#,
+        r#""123456789018","123456789019","mynumber""#,
+        r#""000000000061","000000000060","mynumber""#,
+        r#""12345678901?","123456789018","mynumber""#,
+        r#"123456789018.5,"123456789018","mynumber""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+}
