@@ -1107,19 +1107,48 @@ impl Writer<'_> {
         // later edit (or compatibility change) can make them grow again.
         let spilling = !new.spills.is_empty();
         let mut cm = if spilling { Some(self.dynamic_array_metadata(new.spills.keys().any(|anchor| !old.spills.contains_key(anchor)))?) } else { None };
+        // Collect the original metadata before writing any cells. Reuse the
+        // parsed worksheet for both this lookup and the edits below.
+        let mut metadata_targets: HashMap<_, _> = changes.iter()
+            .filter_map(|&(row, column, before, after)| {
+                let after = after?;
+                let needs_metadata = if after.formula.is_some() {
+                    new.spills.contains_key(&(row, column))
+                } else {
+                    before.is_some_and(|cell| cell.formula.is_some())
+                };
+                needs_metadata.then(|| (cell_name(column, row), (row, column)))
+            })
+            .collect();
+        let mut original_metadata = HashMap::new();
+        if !metadata_targets.is_empty() {
+            let doc = self.package.xml_mut(part)?;
+            if let Some(root) = doc.root_element() {
+                for cell in doc.descendants(root) {
+                    if doc.local_name(cell) == "c"
+                        && doc.namespace(cell) == Some(MAIN_NS)
+                        && let Some(address) = doc.attr(cell, "r")
+                        && let Some(position) = metadata_targets.remove(address)
+                        && let Some(index) = doc.attr(cell, "cm")
+                    {
+                        original_metadata.insert(position, index.to_owned());
+                    }
+                    if metadata_targets.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
         // A value can still carry unrelated cell metadata. When it becomes
         // a dynamic formula, combine only that cell's records with XLDAPR.
         let mut activated_metadata = HashMap::new();
         if let Some(indices) = &mut cm {
             for &(row, column, _, after) in &changes {
                 if !after.is_some_and(|c| c.formula.is_some()) || !new.spills.contains_key(&(row,column)) { continue; }
-                let doc = self.package.xml(part)?;
-                let existing = doc.root_element().and_then(|root| doc.descendants(root).into_iter().find(|&c|
-                    doc.local_name(c)=="c" && doc.namespace(c)==Some(MAIN_NS) && doc.attr(c,"r")==Some(cell_name(column,row).as_str())))
-                    .and_then(|c| doc.attr(c,"cm").map(str::to_string));
-                if let Some(index) = existing
-                    && !indices.iter().any(|v| crate::xlsx::metadata_index(v)==crate::xlsx::metadata_index(&index)) {
-                    let merged = self.metadata_with_dynamic_record(&index, &indices[0])?;
+                if let Some(index) = original_metadata.get(&(row, column))
+                    && !indices.iter().any(|v| crate::xlsx::metadata_index(v) == crate::xlsx::metadata_index(index))
+                {
+                    let merged = self.metadata_with_dynamic_record(index, &indices[0])?;
                     indices.push(merged.clone()); activated_metadata.insert((row,column),merged);
                 }
             }
@@ -1129,11 +1158,9 @@ impl Writer<'_> {
         let mut literal_metadata = HashMap::new();
         for &(row, column, before, after) in &changes {
             if before.is_some_and(|c| c.formula.is_some()) && after.is_some_and(|c| c.formula.is_none()) {
-                let doc = self.package.xml(part)?;
-                let existing = doc.root_element().and_then(|root| doc.descendants(root).into_iter().find(|&c|
-                    doc.local_name(c)=="c" && doc.namespace(c)==Some(MAIN_NS) && doc.attr(c,"r")==Some(cell_name(column,row).as_str())))
-                    .and_then(|c| doc.attr(c,"cm").map(str::to_string));
-                if let Some(index) = existing { literal_metadata.insert((row,column), self.metadata_without_dynamic_record(&index)?); }
+                if let Some(index) = original_metadata.get(&(row, column)) {
+                    literal_metadata.insert((row, column), self.metadata_without_dynamic_record(index)?);
+                }
             }
         }
         // The formats the changed cells need, as cellXfs entries.
