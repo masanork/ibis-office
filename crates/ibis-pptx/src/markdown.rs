@@ -3945,6 +3945,7 @@ enum AiEditTarget {
 struct PreparedAiEdit {
     target: AiEditTarget,
     run_index: usize,
+    range: std::ops::Range<usize>,
     replacement: String,
     preview: serde_json::Value,
 }
@@ -3964,9 +3965,12 @@ pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serd
 
 /// Validate every edit against the original snapshot and write one DOCX.
 pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8>, Error> {
-    let (mut opened, edits) = prepare_ai_edits(data, proposal)?;
+    let (mut opened, mut edits) = prepare_ai_edits(data, proposal)?;
+    // Each range refers to the original run. Changes to its right do not
+    // shift the offsets of changes to its left.
+    edits.sort_unstable_by_key(|edit| std::cmp::Reverse(edit.range.start));
     let doc = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
-    for PreparedAiEdit { target, run_index, replacement, .. } in edits {
+    for PreparedAiEdit { target, run_index, range, replacement, .. } in edits {
         let block = match target {
             AiEditTarget::Paragraph(index) => &mut doc.body[index],
             AiEditTarget::TableCell { table, row, cell } => {
@@ -3975,7 +3979,8 @@ pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8
             }
         };
         let Block::Paragraph(paragraph) = block else { unreachable!() };
-        paragraph.runs[run_index].kind = FlowRunKind::Text(replacement.into());
+        let FlowRunKind::Text(text) = &mut paragraph.runs[run_index].kind else { unreachable!() };
+        text.replace_range(range, &replacement);
     }
     opened.source.save(&opened.presentation, SaveOptions::default())
 }
@@ -4000,7 +4005,7 @@ fn prepare_ai_edits(data: &[u8], proposal: &serde_json::Value) -> Result<(Opened
         return Err(Error::new("AI editing does not support protected documents or active change tracking"));
     }
 
-    let mut seen = std::collections::HashSet::new();
+    let mut ranges: HashMap<_, BTreeMap<usize, usize>> = HashMap::new();
     let mut edits = Vec::with_capacity(proposals.len());
     for (index, edit) in proposals.iter().enumerate() {
         let prepared = if batch.is_some() {
@@ -4017,9 +4022,15 @@ fn prepare_ai_edits(data: &[u8], proposal: &serde_json::Value) -> Result<(Opened
         } else {
             prepare_ai_edit(&opened, doc, &export, edit)?
         };
-        if !seen.insert((prepared.target, prepared.run_index)) {
-            return Err(Error::new(format!("Edit {} repeats a text run target", index + 1)));
+        let ranges = ranges.entry((prepared.target, prepared.run_index)).or_default();
+        let start = prepared.range.start;
+        let end = prepared.range.end;
+        let overlaps_previous = ranges.range(..start).next_back().is_some_and(|(_, &right)| right > start);
+        let overlaps_next = ranges.range(start..end).next().is_some();
+        if overlaps_previous || overlaps_next {
+            return Err(Error::new(format!("Edit {} overlaps an earlier edit in the same text run", index + 1)));
         }
+        ranges.insert(start, end);
         edits.push(prepared);
     }
     Ok((opened, edits))
@@ -4098,7 +4109,7 @@ fn prepare_ai_edit(
     if plain != before {
         return Err(Error::new("Original paragraph text does not match before"));
     }
-    let (run_index, run_after, after) = if let Some(range) = proposal.get("paragraphBytes") {
+    let (run_index, range, after) = if let Some(range) = proposal.get("paragraphBytes") {
         let (start, end) = ai_byte_range(range)
             .ok_or_else(|| Error::new("AI edit requires a nonempty paragraphBytes range"))?;
         let quote = citation["quote"].as_str().unwrap();
@@ -4151,16 +4162,14 @@ fn prepare_ai_edit(
             return Err(Error::new("paragraphBytes and markdownBytes point to different text"));
         }
 
-        let mut run_after = text.to_owned();
-        run_after.replace_range(local, replacement);
         let mut after = plain;
         after.replace_range(start..end, replacement);
-        (run_index, run_after, after)
+        (run_index, local, after)
     } else {
         if runs.len() != 1 {
             return Err(Error::new("Replacing a whole paragraph requires a single text run"));
         }
-        (0, replacement.to_owned(), replacement.to_owned())
+        (0, 0..plain.len(), replacement.to_owned())
     };
     if before == after {
         return Err(Error::new("AI replacement does not change the paragraph"));
@@ -4172,7 +4181,7 @@ fn prepare_ai_edit(
         "before": before,
         "after": after,
     });
-    Ok(PreparedAiEdit { target, run_index, replacement: run_after, preview })
+    Ok(PreparedAiEdit { target, run_index, range, replacement: replacement.to_owned(), preview })
 }
 
 fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {

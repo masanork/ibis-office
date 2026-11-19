@@ -423,7 +423,7 @@ fn ai_batch_edits_validate_before_writing_and_keep_edit_order() {
         markdown::preview_ai_edit(&docx, &batch)
             .unwrap_err()
             .to_string()
-            .contains("repeats")
+            .contains("overlaps")
     );
 }
 
@@ -463,12 +463,19 @@ fn ai_batch_combines_edits_to_distinct_runs_in_one_cell() {
             .contains("| **横浜市**と*札幌* |")
     );
 
-    // Distinct slices of the same run still conflict.
-    batch["edits"] = serde_json::json!([edit("東", "西"), edit("京", "都")]);
+    batch["edits"] = serde_json::json!([edit("東", "西東京"), edit("京", "都")]);
+    let edited = markdown::apply_ai_edit(&docx, &batch).unwrap();
+    assert!(
+        markdown::export_docx_to_markdown(&edited)
+            .unwrap()
+            .contains("| **西東京都**と*大阪* |")
+    );
+
+    batch["edits"] = serde_json::json!([edit("京", "都"), edit("東京", "札幌")]);
     assert!(
         markdown::apply_ai_edit(&docx, &batch)
             .unwrap_err()
             .to_string()
-            .contains("repeats a text run")
+            .contains("overlaps")
     );
 }
