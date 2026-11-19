@@ -144,9 +144,13 @@ pub struct ExrExposure(image::Rgba32FImage);
 
 impl ExrExposure {
     pub fn preview_png(&self, ev: i8) -> Result<Vec<u8>, String> {
+        encode_png(DynamicImage::ImageRgba8(self.preview_pixels(ev)))
+    }
+
+    fn preview_pixels(&self, ev: i8) -> image::RgbaImage {
         let linear = &self.0;
         let gain = 2.0_f32.powi(i32::from(ev));
-        let preview = image::RgbaImage::from_fn(linear.width(), linear.height(), |x, y| {
+        image::RgbaImage::from_fn(linear.width(), linear.height(), |x, y| {
             let [r, g, b, a] = linear.get_pixel(x, y).0;
             let alpha = if a.is_finite() {
                 a.clamp(0.0, 1.0)
@@ -162,9 +166,50 @@ impl ExrExposure {
                 }
             });
             image::Rgba([rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8])
-        });
-        encode_png(DynamicImage::ImageRgba8(preview))
+        })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlphaPreview {
+    Original,
+    Checker,
+    Black,
+    Alpha,
+}
+
+/// Build a display-only PNG from the original pixels and the selected view.
+pub fn display_preview_png(
+    original: &[u8],
+    exposure: Option<&ExrExposure>,
+    ev: i8,
+    mode: AlphaPreview,
+) -> Result<Vec<u8>, String> {
+    let mut image = match exposure {
+        Some(exposure) => exposure.preview_pixels(ev),
+        None => decode_raster(original, ImageFormat::Png, 4)?.into_rgba8(),
+    };
+    if mode == AlphaPreview::Original {
+        return encode_png(DynamicImage::ImageRgba8(image));
+    }
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let [r, g, b, alpha] = pixel.0;
+        let backdrop = match mode {
+            AlphaPreview::Original => unreachable!(),
+            AlphaPreview::Alpha => {
+                pixel.0 = [alpha, alpha, alpha, 255];
+                continue;
+            }
+            AlphaPreview::Black => 0,
+            AlphaPreview::Checker if ((x / 8) + (y / 8)) % 2 == 0 => 224,
+            AlphaPreview::Checker => 160,
+        };
+        let alpha = u16::from(alpha);
+        let blend =
+            |channel| ((u16::from(channel) * alpha + backdrop * (255 - alpha) + 127) / 255) as u8;
+        pixel.0 = [blend(r), blend(g), blend(b), 255];
+    }
+    encode_png(DynamicImage::ImageRgba8(image))
 }
 
 fn decode_raster(
@@ -347,6 +392,36 @@ mod tests {
             .to_rgba8()
             .get_pixel(0, 0)
             .0
+    }
+
+    #[test]
+    fn previews_alpha_without_changing_the_original_png() {
+        let source = image::RgbaImage::from_fn(9, 1, |x, _| {
+            if x == 0 {
+                image::Rgba([200, 100, 50, 128])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        });
+        let png = encode_png(DynamicImage::ImageRgba8(source.clone())).unwrap();
+        let display = |mode| {
+            let bytes = display_preview_png(&png, None, 0, mode).unwrap();
+            image::load_from_memory_with_format(&bytes, ImageFormat::Png)
+                .unwrap()
+                .into_rgba8()
+        };
+        assert_eq!(
+            display(AlphaPreview::Black).get_pixel(0, 0).0,
+            [100, 50, 25, 255]
+        );
+        assert_eq!(
+            display(AlphaPreview::Alpha).get_pixel(0, 0).0,
+            [128, 128, 128, 255]
+        );
+        let checker = display(AlphaPreview::Checker);
+        assert_eq!(checker.get_pixel(1, 0).0, [224, 224, 224, 255]);
+        assert_eq!(checker.get_pixel(8, 0).0, [160, 160, 160, 255]);
+        assert_eq!(image::load_from_memory(&png).unwrap().into_rgba8(), source);
     }
 
     #[test]

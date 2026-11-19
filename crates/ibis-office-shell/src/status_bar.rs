@@ -131,6 +131,7 @@ impl SlideEditor {
                         }
                     }))
                     .children(right_texts)
+                    .children(self.render_image_alpha(cx))
                     .children(self.render_exr_exposure(cx))
                     .children({
                         #[cfg(not(target_family = "wasm"))]
@@ -183,8 +184,24 @@ impl SlideEditor {
             .child(button(sequence.next.as_ref(), "sequence-next", IconName::ChevronRight, "view.sequence-next", cx)))
     }
 
+    fn render_image_alpha(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        use ibis_pptx::production_image::AlphaPreview;
+        let view = self.production_image_view.as_ref()?;
+        let (caption, next) = match view.alpha {
+            AlphaPreview::Original => ("view.image-background-page", AlphaPreview::Checker),
+            AlphaPreview::Checker => ("view.image-background-checker", AlphaPreview::Black),
+            AlphaPreview::Black => ("view.image-background-black", AlphaPreview::Alpha),
+            AlphaPreview::Alpha => ("view.image-alpha-only", AlphaPreview::Original),
+        };
+        Some(Button::new("image-alpha-view").ghost().xsmall()
+            .label(crate::i18n::text(caption))
+            .tooltip(crate::i18n::text("view.image-alpha-cycle"))
+            .disabled(view.rendering)
+            .on_click(cx.listener(move |this, _, window, cx| this.set_image_alpha(next, window, cx))))
+    }
+
     fn render_exr_exposure(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let view = self.exr_exposure.as_ref()?;
+        let view = self.production_image_view.as_ref().filter(|view| view.has_exposure())?;
         let ev = view.ev;
         let label = if ev == 0 { "0 EV".to_string() } else { format!("{ev:+} EV") };
         Some(h_flex()

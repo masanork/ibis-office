@@ -266,11 +266,23 @@ impl RulerUnit {
 }
 
 // The ruler's unit is one setting for the three screens (each screen's menus call these).
-pub(crate) struct ExrExposureView {
+pub(crate) struct ProductionImageView {
     media: ibis_doc_model::MediaId,
-    samples: std::sync::Arc<ibis_pptx::production_image::ExrExposure>,
+    source: std::sync::Arc<ProductionImageSource>,
     pub(crate) ev: i8,
+    pub(crate) alpha: ibis_pptx::production_image::AlphaPreview,
     pub(crate) rendering: bool,
+}
+
+struct ProductionImageSource {
+    png: std::sync::Arc<[u8]>,
+    exposure: Option<ibis_pptx::production_image::ExrExposure>,
+}
+
+impl ProductionImageView {
+    pub(crate) fn has_exposure(&self) -> bool {
+        self.source.exposure.is_some()
+    }
 }
 
 impl SlideEditor {
@@ -583,7 +595,7 @@ pub struct SlideEditor {
     /// Preserve the original path even after creating an editable copy.
     #[cfg(not(target_family = "wasm"))]
     pub standard_source_path: Option<std::path::PathBuf>,
-    pub(crate) exr_exposure: Option<ExrExposureView>,
+    pub(crate) production_image_view: Option<ProductionImageView>,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) image_sequence: Option<crate::image_sequence::ImageSequence>,
     /// Original JTD bytes: presence makes this document permanently read-only.
@@ -909,7 +921,7 @@ impl SlideEditor {
             #[cfg(not(target_family = "wasm"))]
             standard_source_path: None,
             jtd_original: None,
-            exr_exposure: None,
+            production_image_view: None,
             #[cfg(not(target_family = "wasm"))]
             image_sequence: None,
             jtd_gallery: false,
@@ -1145,46 +1157,66 @@ impl SlideEditor {
         }
     }
 
-    fn set_exr_exposure(&mut self, exposure: Option<ibis_pptx::production_image::ExrExposure>) {
-        self.exr_exposure = exposure.and_then(|samples| {
-            let media = self.presentation().media.last()?.id;
-            Some(ExrExposureView { media, samples: std::sync::Arc::new(samples), ev: 0, rendering: false })
-        });
+    fn set_production_image_view(&mut self, present: bool, exposure: Option<ibis_pptx::production_image::ExrExposure>) {
+        use ibis_pptx::production_image::AlphaPreview;
+        self.production_image_view = self.presentation().media.last()
+            .filter(|media| present && media.format == ibis_doc_model::MediaFormat::Png)
+            .map(|media| ProductionImageView {
+                media: media.id,
+                source: std::sync::Arc::new(ProductionImageSource { png: media.data.clone(), exposure }),
+                ev: 0,
+                alpha: AlphaPreview::Original,
+                rendering: false,
+            });
     }
 
     pub(crate) fn set_exr_ev(&mut self, ev: i8, window: &mut Window, cx: &mut Context<Self>) {
-        let ev = ev.clamp(-8, 8);
-        let Some(view) = self.exr_exposure.as_mut() else { return };
-        if view.rendering || view.ev == ev { return; }
-        if ev == 0 {
+        let Some(view) = self.production_image_view.as_ref().filter(|view| view.has_exposure()) else { return };
+        self.set_image_display(ev.clamp(-8, 8), view.alpha, window, cx);
+    }
+
+    pub(crate) fn set_image_alpha(&mut self, alpha: ibis_pptx::production_image::AlphaPreview, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.production_image_view.as_ref() else { return };
+        self.set_image_display(view.ev, alpha, window, cx);
+    }
+
+    fn set_image_display(&mut self, ev: i8, alpha: ibis_pptx::production_image::AlphaPreview, window: &mut Window, cx: &mut Context<Self>) {
+        use ibis_pptx::production_image::{AlphaPreview, display_preview_png};
+        let Some(view) = self.production_image_view.as_mut() else { return };
+        if view.rendering || (view.ev == ev && view.alpha == alpha) { return; }
+        if ev == 0 && alpha == AlphaPreview::Original {
             view.ev = 0;
+            view.alpha = alpha;
             self.resources.set_picture_preview(None);
             cx.notify();
             return;
         }
         view.rendering = true;
-        let samples = view.samples.clone();
+        let source = view.source.clone();
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             #[cfg(not(target_family = "wasm"))]
             let result = {
-                let samples = samples.clone();
-                cx.background_executor().spawn(async move { samples.preview_png(ev) }).await
+                let source = source.clone();
+                cx.background_executor().spawn(async move {
+                    display_preview_png(&source.png, source.exposure.as_ref(), ev, alpha)
+                }).await
             };
             #[cfg(target_family = "wasm")]
             let result = {
                 cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
-                samples.preview_png(ev)
+                display_preview_png(&source.png, source.exposure.as_ref(), ev, alpha)
             };
             this.update_in(cx, |this, _, cx| {
-                let Some(view) = this.exr_exposure.as_mut() else { return };
-                if !std::sync::Arc::ptr_eq(&view.samples, &samples) { return; }
+                let Some(view) = this.production_image_view.as_mut() else { return };
+                if !std::sync::Arc::ptr_eq(&view.source, &source) { return; }
                 view.rendering = false;
                 match result {
                     Ok(bytes) => {
                         let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, bytes);
                         this.resources.set_picture_preview(Some((view.media, std::sync::Arc::new(image))));
                         view.ev = ev;
+                        view.alpha = alpha;
                     }
                     Err(error) => this.set_status(error, cx),
                 }
@@ -1207,7 +1239,7 @@ impl SlideEditor {
         with_format!(self, show_end(self, window, cx));
         self.opened_from_legacy = presentation.opened_from_legacy;
         self.jtd_original = None;
-        self.exr_exposure = None;
+        self.production_image_view = None;
         #[cfg(not(target_family = "wasm"))]
         { self.image_sequence = None; }
         self.jtd_gallery = false;
@@ -1479,7 +1511,7 @@ impl SlideEditor {
                         name
                     };
                     this.load(opened.presentation, doc_name, window, cx);
-                    this.set_exr_exposure(exposure);
+                    this.set_production_image_view(production_image, exposure);
                     this.set_loaded_source(std::sync::Arc::new(opened.source));
                     // (A presentation opens without the speaker notes, as a new one does.)
                     with_format!(this, file_opened(this));
@@ -1619,7 +1651,9 @@ impl SlideEditor {
                         this.watch.known = stamp_before_read;
                         this.protection_password = loaded.password.clone();
                     }
-                    this.set_exr_exposure(loaded.exr_exposure);
+                    let production_image = path.extension().and_then(|ext| ext.to_str())
+                        .is_some_and(ibis_pptx::production_image::supports_extension);
+                    this.set_production_image_view(production_image, loaded.exr_exposure);
                     this.image_sequence = sequence;
                     if loaded.standard_encryption {
                         this.standard_read_only = true;

@@ -1304,3 +1304,8 @@ view.sequence-next	Next image frame
 view.sequence-missing	{direction} (skips {count} missing)
 view.sequence-frame	Frame {number}
 view.sequence-gap	 · {count} missing nearby
+view.image-background-page	Page background
+view.image-background-checker	Checkerboard
+view.image-background-black	Black background
+view.image-alpha-only	Alpha channel
+view.image-alpha-cycle	Change image preview background or show the alpha channel

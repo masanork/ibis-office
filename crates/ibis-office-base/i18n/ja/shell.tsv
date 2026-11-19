@@ -1302,3 +1302,8 @@ view.sequence-next	次のコマ
 view.sequence-missing	{direction}（欠番{count}コマをスキップ）
 view.sequence-frame	コマ {number}
 view.sequence-gap	・前後に欠番{count}コマ
+view.image-background-page	ページ背景
+view.image-background-checker	市松模様
+view.image-background-black	黒背景
+view.image-alpha-only	アルファチャンネル
+view.image-alpha-cycle	画像プレビューの背景またはアルファチャンネル表示を切り替える
