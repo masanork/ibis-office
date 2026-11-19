@@ -90,12 +90,7 @@ pub fn decode_srgb_preview(bytes: &[u8], max_pixels: u64) -> Result<DecodedImage
         (DataColorSpace::Rgb, 3, false) => (Layout::Rgb, Layout::Rgb),
         (DataColorSpace::Rgb, 3, true) => (Layout::Rgba, Layout::Rgba),
         // moxcms represents a four-component CMYK source with the Rgba layout.
-        (DataColorSpace::Cmyk, 4, false) => (Layout::Rgba, Layout::Rgb),
-        (DataColorSpace::Cmyk, 4, true) => {
-            return Err(Error::new(
-                "JPEG 2000 CMYK previews with alpha are unsupported",
-            ));
-        }
+        (DataColorSpace::Cmyk, 4, _) => (Layout::Rgba, Layout::Rgb),
         _ => {
             return Err(Error::new(
                 "JPEG 2000 preview requires an RGB or CMYK ICC profile",
@@ -114,9 +109,37 @@ pub fn decode_srgb_preview(bytes: &[u8], max_pixels: u64) -> Result<DecodedImage
     let channels = 3 + u8::from(decoded.has_alpha);
     let mut srgb =
         vec![0; decoded.data.len() / usize::from(decoded.channels) * usize::from(channels)];
-    transform
-        .transform(&decoded.data, &mut srgb)
-        .map_err(color_error)?;
+    if decoded.channels == 5 {
+        // Convert bounded batches of CMYK while preserving the straight alpha byte.
+        const BATCH: usize = 1024;
+        let mut cmyk = [0; BATCH * 4];
+        let mut rgb = [0; BATCH * 3];
+        for (source, dest) in decoded
+            .data
+            .chunks(BATCH * 5)
+            .zip(srgb.chunks_mut(BATCH * 4))
+        {
+            let pixels = source.len() / 5;
+            for (sample, ink) in source.chunks_exact(5).zip(cmyk.chunks_exact_mut(4)) {
+                ink.copy_from_slice(&sample[..4]);
+            }
+            transform
+                .transform(&cmyk[..pixels * 4], &mut rgb[..pixels * 3])
+                .map_err(color_error)?;
+            for ((sample, color), rgba) in source
+                .chunks_exact(5)
+                .zip(rgb.chunks_exact(3))
+                .zip(dest.chunks_exact_mut(4))
+            {
+                rgba[..3].copy_from_slice(color);
+                rgba[3] = sample[4];
+            }
+        }
+    } else {
+        transform
+            .transform(&decoded.data, &mut srgb)
+            .map_err(color_error)?;
+    }
     decoded.data = srgb;
     decoded.channels = channels;
     decoded.color_space = ColorSpace::Rgb;
