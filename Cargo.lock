@@ -4076,6 +4076,7 @@ dependencies = [
  "ibis-office-shell",
  "ibis-pdf",
  "ibis-pptx",
+ "ibis-xdw",
  "ibis-xps",
  "image",
 ]
@@ -4152,6 +4153,7 @@ dependencies = [
  "ibis-office-updater",
  "ibis-pdf",
  "ibis-pptx",
+ "ibis-xdw",
  "ibis-xps",
  "image",
  "js-sys",
@@ -4255,6 +4257,25 @@ dependencies = [
  "pure_jpegls",
  "roxmltree 0.21.1",
  "serde_json",
+]
+
+[[package]]
+name = "ibis-xdw"
+version = "0.8.0"
+dependencies = [
+ "ibis-pdf",
+ "ibis-xdw-read",
+]
+
+[[package]]
+name = "ibis-xdw-read"
+version = "0.8.0"
+dependencies = [
+ "delharc",
+ "encoding_rs",
+ "ibis-pdf",
+ "image",
+ "tiny-skia",
 ]
 
 [[package]]

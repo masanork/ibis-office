@@ -953,7 +953,11 @@ impl SlideEditor {
     }
 
     fn file_is_read_only(&self) -> bool {
-        self.read_only || self.standard_read_only || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+        self.read_only || self.standard_read_only || self.is_xdw() || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+    }
+
+    pub(crate) fn is_xdw(&self) -> bool {
+        self.presentation().pdf_bytes.as_deref().is_some_and(ibis_xdw::is_xdw)
     }
 
     pub(crate) fn phone_view_only(&self) -> bool {
@@ -1393,6 +1397,19 @@ impl SlideEditor {
             // Let the empty document show before reading the file, which
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            let is_xdw = name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("xdw"))
+                || ibis_xdw::is_xdw(&data);
+            if is_xdw {
+                let result = crate::read_file::read_xdw(data.into());
+                this.update_in(cx, |this, window, cx| {
+                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    match result {
+                        Ok(presentation) => this.load(presentation, name, window, cx),
+                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                    }
+                }).ok();
+                return;
+            }
             let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ibis_pptx::jtd::is_extension(ext)) || ibis_pptx::jtd::is_jtd(&data);
             if is_jtd {
                 let mut result = crate::jtd_preview::read(&data);
@@ -1993,6 +2010,9 @@ impl SlideEditor {
 
     /// The zoom shown, 1.0 being 100%.
     pub fn current_zoom(&self) -> f32 {
+        if self.kind() == ibis_pptx::Kind::Pdf {
+            return self.zoom.unwrap_or(1.0);
+        }
         self.zoom.or_else(|| self.slide_layout().map(|l| l.zoom(self.px_per_inch_at_100()))).unwrap_or(1.0)
     }
 
