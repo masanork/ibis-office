@@ -90,6 +90,7 @@ jobs:
           result=$?
           set -e
           test "$result" -eq 1
+          python3 scripts/test-ai-edit-cli.py "$app/Contents/MacOS/ibisOffice"
           test -s "$app/Contents/Resources/Licenses/license.md"
           test -z "$(find "$app" -iname '*onnx*' -print -quit)"
           test -s "$app/Contents/Resources/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip"
@@ -196,6 +197,7 @@ jobs:
           result=$?
           set -e
           test "$result" -eq 1
+          python3 scripts/test-ai-edit-cli.py "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
           cp "$image" ci-artifact/desktop-linux-x64-ci.AppImage
       - name: Hash deliverables
         run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
