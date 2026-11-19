@@ -10,7 +10,7 @@ fn main() {
             fs::copy(&path, out).unwrap_or_else(|e| panic!("cannot copy {}: {e}", path.display()));
         }
         None => {
-            let path = "resources/unicode-15.0-cjk-variants.zst";
+            let path = "resources/gjs-variant-clusters.zst";
             println!("cargo:rerun-if-changed={path}");
             fs::copy(path, out).unwrap();
         }

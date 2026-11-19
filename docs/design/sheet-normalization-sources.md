@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | 和暦 | [国立国会図書館: 江戸から明治の改暦](https://www.ndl.go.jp/koyomi/chapter1/s2.html)。明治6年より前は旧暦の可能性があり、変換対象外とする。改元日の根拠も実装前に整理する。 | 日付候補処理の試作のみ。外部データを同梱していない。 |
 | 異体字 | [MJ縮退マップ](https://moji.or.jp/mojikiban/map/) は CC BY-SA 2.1 JP で IPA 著作物の表示が必要。候補が複数・ゼロのものもあり、入力値の代表形を一意の正解として扱えない。 | 未採用。派生データの継承条件と AGPL / 商用ライセンスでの配布形態を要確認。 |
-| 異体字 | [Unicode データの利用条件](https://www.unicode.org/copyright.html)。実際に選ぶファイルと版、固有の例外とライセンス文を確認する。 | UnicodeData.txt の CJK 互換漢字の正準分解を採用。IVD は未採用。 |
+| 異体字 | [Unicode データの利用条件](https://www.unicode.org/copyright.html)。実際に選ぶファイルと版、固有の例外とライセンス文を確認する。 | UnicodeData.txt の正準分解は初期辞書で使用。現行の組み込み辞書には提供された gjs クラスタを使用。 |
 | 住所 | [アドレス・ベース・レジストリ利用規約](https://www.digital.go.jp/policies/base_registry_address_tos)。出典と編集・加工主体の記載を求めている。地番マスター等には別の規約が適用される。 | 未採用。使うデータセット自体のメタデータと規約を確認し、版とハッシュを固定する。 |
 | 郵便番号 | [日本郵便: UTF-8 形式郵便番号データの説明](https://www.post.japanpost.jp/service/search/zipcode/download/utf-readme.html)。郵便番号データについて日本郵便は著作権を主張せず、自由な配布を認めている。CSV と API の条件は別。 | 未採用。採用時は版、出典と加工内容を記載する。 |
 
@@ -25,26 +25,22 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 
 ## 配布用の異体字クラスタ
 
-デスクトップ版と Web 版は、Unicode 15.0.0 の [UnicodeData.txt](https://www.unicode.org/Public/15.0.0/ucd/UnicodeData.txt)
-から、正準分解先がある CJK 互換漢字だけを取り出した辞書を既定で組み込む。
-互換漢字を分解先ごとにまとめ、同じクラスタに属する別の表記を氏名照合で曖昧一致として返す。
-たとえば「塚」と「塚」は対象。正準分解で対応づけられていない「髙」と「高」はこの辞書の対象外。
-辞書は 1,904 文字、902 クラスタ、圧縮後 10,879 バイト。
-Unicode-3.0 のライセンス表示は `crates/ibis-doc-model/UNICODE-LICENSE.txt` と配布物のライセンス一覧に掲載する。
+デスクトップ版と Web 版は、Masanori Kusunoki (gjs) が公開データから再構築し、
+ibisOffice に CLA に沿って提供した異体字クラスターマップを既定で組み込む。
+提供された `clusters_direct.csv` の全 34,509 文字・9,538 クラスタを収録する。
+元データの表記は保持し、「髙」と「高」のように同じクラスタに属する別の文字を氏名照合で曖昧一致として扱う。
+クラスタ所属が示すのは確認候補であり、同一人物や安全な置換を示すものではない。
+異体字セレクタを含むシーケンスは対象外。
 
-生成方法は `python3 scripts/generate-variant-bitmap.py --unicode-data UnicodeData.txt crates/ibis-doc-model/resources/unicode-15.0-cjk-variants.zst`。
-出典の SHA-256 は `806e9aed65037197f1ec85e12be6e8cd870fc5608b4de0fffd990f689f376a73`、
-生成物の SHA-256 は `108c4b71ac0b738859b9ab182f8db7e1d9cc9efc5e6a468461c49eb589ee4960`。
+入力は 2026-11-16 に検証した gjs のエクスポートで、SHA-256 は
+`cf38af4da41ca5daa49d8e556d3e27ed94c9074e6b14d23ca6c67bc8dfef1293`。
+`python3 scripts/generate-variant-bitmap.py clusters_direct.csv crates/ibis-doc-model/resources/gjs-variant-clusters.zst`
+で生成した辞書は 171,059 バイトで、SHA-256 は
+`544b80b5ba1aeb0c30bccee327379dac244d0aba54b7dc6174061c63ba3187e8`。
+元データの条件は [gjs の Third-Party Notices](https://github.com/digital-go-jp/gjs/blob/main/NOTICE.md) を参照。
 
-## 異体字クラスタのローカル試作
-
-異体字クラスターマップの調製: Masanori Kusunoki (gjs)。この試作は gjs のローカル DB から出力したクラスタ一覧を使うが、DB の元データの版と全出典は固定・確認できていない。gjs の [Third-Party Notices](https://github.com/digital-go-jp/gjs/blob/main/NOTICE.md) はデータと生成物をコードの MIT ライセンスとは別に扱い、MJ文字情報一覧表には CC BY-SA 2.1 JP を挙げている。クラスタへの各データの寄与・条件を検証するまで、このスナップショットやそれを含む成果物を再配布しない。調製者のクレジットは第三者の条件に代わらない。
-
-`python3 scripts/generate-variant-bitmap.py /path/to/clusters_direct.csv /path/to/clusters.zst` でビットマップを生成し、`IBIS_VARIANT_BITMAP=/path/to/clusters.zst` を指定してビルドする。省略時は配布用の Unicode 辞書を使う。辞書が破損して読み込めない場合は画面にその旨を示す。実行時に gjs・soroe やネットワークは不要。ビルド時の環境変数・ファイルはローカル専用であり、配布用辞書の決定を意味しない。
-
-候補はセルを変更しない。クラスタ所属は元資料の直接の関係、同一人物、または置換の安全性を保証しない。文字と異体字セレクタを組み合わせたシーケンスは対象外。大量の結果は先頭200件までとし、その旨を示す。
-
-今回のローカル検証に使った `clusters_direct.csv` は SHA-256 `cf38af4da41ca5daa49d8e556d3e27ed94c9074e6b14d23ca6c67bc8dfef1293`、生成辞書は `544b80b5ba1aeb0c30bccee327379dac244d0aba54b7dc6174061c63ba3187e8`。34,509文字、9,538クラスタ。このハッシュは観測したスナップショットの識別であり、元データの来歴や再配布条件を証明しない。
+開発時は `IBIS_VARIANT_BITMAP` で別の検証用辞書に差し替えられる。
+辞書はバイナリに組み込むため、照合時は gjs・soroe やネットワークに接続する必要がない。
 
 ### 選択範囲の異体字照合
 

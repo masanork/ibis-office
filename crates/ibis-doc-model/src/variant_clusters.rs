@@ -208,19 +208,20 @@ mod tests {
         }
     }
     #[test]
-    fn bundled_unicode_dictionary_is_used_by_field_match() {
+    fn bundled_gjs_dictionary_is_used_by_field_match() {
         if option_env!("IBIS_VARIANT_BITMAP").is_some() {
             return;
         }
-        let dict = embedded().expect("default Unicode dictionary");
-        assert_eq!(dict.len(), 1_904);
-        assert_eq!(dict.cluster_index('塚'), dict.cluster_index('塚'));
+        let dict = embedded().expect("default gjs dictionary");
+        assert_eq!(dict.len(), 34_509);
+        let high = dict.cluster_index('高').expect("高 in bundled gjs dictionary");
+        assert_eq!(dict.cluster_index('髙'), Some(high));
         let book = crate::Presentation::empty(crate::geometry::EmuSize::WIDESCREEN);
         let view = crate::sheet_calc::BookView::new(&book);
         for (formula, rank) in [
             (r#"IBIS.FIELDMATCH("塚本花子","塚本花子","name")"#, 1.0),
             (r#"IBIS.FIELDMATCH("塚本花子","塚本花子","name")"#, 2.0),
-            (r#"IBIS.FIELDMATCH("髙橋花子","高橋花子","name")"#, 0.0),
+            (r#"IBIS.FIELDMATCH("髙橋花子","高橋花子","name")"#, 1.0),
         ] {
             assert_eq!(
                 ibis_calc::recalc::evaluate(&view, (0, 0, 0), formula),

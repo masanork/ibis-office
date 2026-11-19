@@ -15,7 +15,8 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | IBM Plex Sans | UI の文字（Web 版） | SIL Open Font License 1.1 |
 | Lucide | アイコン（`assets/icons/`） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
-| Unicode 15.0 | 文字の表示可否・漢字互換マッピング | Unicode-3.0 |
+| Unicode 15.0 | 文字の表示可否データ | Unicode-3.0 |
+| gjs 異体字クラスターマップ | 異体字照合。調製・提供 Masanori Kusunoki (gjs) | ibisOffice への提供データ。[元データの表示](https://github.com/digital-go-jp/gjs/blob/main/NOTICE.md) |
 
 ## Rust の部品（531 件）
 
