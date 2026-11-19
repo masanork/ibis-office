@@ -75,6 +75,27 @@ mod tests {
     }
 
     #[test]
+    fn main_header_lrcp_overrides_the_cod_progression() {
+        let pixels: Vec<u8> = (0..192).map(|i| (i * 13) as u8).collect();
+        let mut codestream =
+            encode_j2k(&pixels, 8, 8, PixelFormat::Rgb8, &EncodeOptions::default()).unwrap();
+        let cod = codestream
+            .windows(2)
+            .position(|m| m == [0xff, 0x52])
+            .unwrap();
+        let sot = codestream
+            .windows(2)
+            .position(|m| m == [0xff, 0x90])
+            .unwrap();
+        codestream[cod + 5] = 3;
+        let poc = [0xff, 0x5f, 0, 9, 0, 0, 0, 1, 32, 3, 0];
+        codestream.splice(sot..sot, poc);
+        assert_eq!(decode(&codestream).unwrap().data, pixels);
+        codestream[sot + 9] = 2;
+        assert!(decode(&codestream).is_err());
+    }
+
+    #[test]
     fn roundtrips_rgb_j2k_and_jp2_losslessly() {
         let (w, h) = (29u32, 23u32);
         let mut rgb = Vec::with_capacity((w * h * 3) as usize);

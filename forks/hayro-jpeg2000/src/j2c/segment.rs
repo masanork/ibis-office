@@ -68,10 +68,14 @@ pub(crate) fn parse<'a, 'b>(
             storage,
         )
         .is_none()
-            && header.strict
+            && (header.strict || header.main_progression.is_some())
         {
             bail!(TileError::Invalid);
         }
+    }
+
+    if header.main_progression.is_some() && progression_iterator.next().is_some() {
+        bail!(TileError::Invalid);
     }
 
     Ok(())

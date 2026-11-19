@@ -4,7 +4,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::build::{PrecinctData, SubBandType};
-use super::codestream::{ComponentInfo, Header, ProgressionOrder, markers, skip_marker_segment};
+use super::codestream::{
+    ComponentInfo, Header, ProgressionOrder, ProgressionVolume, markers, skip_marker_segment,
+};
 use super::rect::IntRect;
 use crate::error::{MarkerError, Result, TileError, ValidationError, bail, err};
 use crate::j2c::codestream;
@@ -18,7 +20,7 @@ pub(crate) struct Tile<'a> {
     /// The concatenated tile parts that contain all the information for all
     /// constituent codeblocks.
     pub(crate) tile_parts: Vec<TilePart<'a>>,
-    pub(crate) progression_changes: Vec<TileProgressionChange>,
+    pub(crate) progression_changes: Vec<ProgressionVolume>,
     /// Parameters for each component. In most cases, those are directly
     /// inherited from the main header. But in some cases, individual tiles
     /// might override them.
@@ -29,15 +31,6 @@ pub(crate) struct Tile<'a> {
     pub(crate) progression_order: ProgressionOrder,
     pub(crate) num_layers: u8,
     pub(crate) mct: bool,
-}
-
-/// A single LRCP progression volume starting at layer, resolution and component zero.
-#[derive(Clone, Debug)]
-
-pub(crate) struct TileProgressionChange {
-    pub(crate) end_layer: u8,
-    pub(crate) end_resolution: u8,
-    pub(crate) end_component: u8,
 }
 
 /// A tile part where packet headers and packet data are interleaved.
@@ -197,6 +190,7 @@ fn parse_tile_part<'a>(
 
     let mut ppt_headers = vec![];
     let mut progression_change = None;
+    let mut roi_components = [false; 256];
 
     loop {
         let Some(marker) = reader.peek_marker() else {
@@ -268,22 +262,26 @@ fn parse_tile_part<'a>(
                 reader.read_marker()?;
                 ppt_headers.push(ppt_marker(reader).ok_or(MarkerError::ParseFailure("PPT"))?);
             }
-            markers::POC => {
-                reader.read_marker()?;
-                let length = reader.read_u16().ok_or(TileError::Invalid)?;
-                // This subset accepts one LRCP volume per part, with one-byte components.
-                if length != 9 || progression_change.is_some() || num_components >= 257 {
+            markers::RGN => {
+                if !tile.tile_parts.is_empty() || num_components > roi_components.len() {
                     bail!(MarkerError::Unsupported);
                 }
-                let bytes = reader.read_bytes(7).ok_or(TileError::Invalid)?;
-                let [0, 0, 0, end_layer, end_resolution, end_component, 0] = bytes else {
+                reader.read_marker()?;
+                let (index, shift) = codestream::rgn_marker(reader, num_components)?;
+                if core::mem::replace(&mut roi_components[index], true) {
+                    bail!(MarkerError::ParseFailure("RGN"));
+                }
+                tile.component_infos[index].roi_shift = shift;
+            }
+            markers::POC => {
+                reader.read_marker()?;
+                if progression_change.is_some()
+                    || num_components > 256
+                    || main_header.main_progression.is_some()
+                {
                     bail!(MarkerError::Unsupported);
-                };
-                progression_change = Some(TileProgressionChange {
-                    end_layer: *end_layer,
-                    end_resolution: *end_resolution,
-                    end_component: *end_component,
-                });
+                }
+                progression_change = Some(codestream::lrcp_volume(reader)?);
             }
             markers::PLT => {
                 // Can be inferred ourselves.
@@ -797,6 +795,7 @@ mod tests {
         };
 
         let component_info_0 = ComponentInfo {
+            roi_shift: 0,
             size_info: component_size_info_0,
             coding_style: dummy_component_coding_style.clone(),
             quantization_info: dummy_quantization_info.clone(),
@@ -809,6 +808,7 @@ mod tests {
         };
 
         let component_info_1 = ComponentInfo {
+            roi_shift: 0,
             size_info: component_size_info_1,
             coding_style: dummy_component_coding_style.clone(),
             quantization_info: dummy_quantization_info.clone(),
@@ -838,6 +838,7 @@ mod tests {
         assert_eq!(size_data.num_tiles(), 16);
 
         let header = Header {
+            main_progression: None,
             size_data,
             // Just dummy values.
             global_coding_style: CodingStyleDefault {

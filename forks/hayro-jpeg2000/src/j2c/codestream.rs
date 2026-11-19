@@ -18,6 +18,7 @@ pub(crate) struct Header<'a> {
     pub(crate) size_data: SizeData,
     pub(crate) global_coding_style: CodingStyleDefault,
     pub(crate) component_infos: Vec<ComponentInfo>,
+    pub(crate) main_progression: Option<ProgressionVolume>,
     pub(crate) ppm_packets: Vec<PpmPacket<'a>>,
     pub(crate) skipped_resolution_levels: u8,
     /// Whether strict mode is enabled for decoding.
@@ -52,6 +53,8 @@ pub(crate) fn read_header<'a>(
     let mut cod_components = vec![None; num_components as usize];
     let mut qcd_components = vec![None; num_components as usize];
     let mut ppm_markers = vec![];
+    let mut roi_shifts = vec![None; num_components as usize];
+    let mut main_progression = None;
 
     loop {
         match reader.peek_marker().ok_or(MarkerError::Invalid)? {
@@ -82,7 +85,17 @@ pub(crate) fn read_header<'a>(
             }
             markers::RGN => {
                 reader.read_marker()?;
-                rgn_marker(reader).ok_or(MarkerError::ParseFailure("RGN"))?;
+                let (index, shift) = rgn_marker(reader, num_components as usize)?;
+                if roi_shifts[index].replace(shift).is_some() {
+                    bail!(MarkerError::ParseFailure("RGN"));
+                }
+            }
+            markers::POC => {
+                reader.read_marker()?;
+                if main_progression.is_some() || num_components > 256 {
+                    bail!(MarkerError::Unsupported);
+                }
+                main_progression = Some(lrcp_volume(reader)?);
             }
             markers::TLM => {
                 reader.read_marker()?;
@@ -122,6 +135,7 @@ pub(crate) fn read_header<'a>(
         .enumerate()
         .map(|(idx, csi)| ComponentInfo {
             size_info: *csi,
+            roi_shift: roi_shifts[idx].unwrap_or(0),
             coding_style: cod_components[idx]
                 .clone()
                 .map(|mut c| {
@@ -166,6 +180,7 @@ pub(crate) fn read_header<'a>(
 
     let header = Header {
         size_data,
+        main_progression,
         global_coding_style: cod.clone(),
         component_infos,
         ppm_packets: ppm_markers
@@ -213,6 +228,7 @@ fn validate(header: &Header<'_>) -> Result<()> {
 #[derive(Debug, Clone)]
 pub(crate) struct ComponentInfo {
     pub(crate) size_info: ComponentSizeInfo,
+    pub(crate) roi_shift: u8,
     pub(crate) coding_style: CodingStyleComponent,
     pub(crate) quantization_info: QuantizationInfo,
 }
@@ -745,9 +761,51 @@ fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Option<PpmMarkerData<'a>> {
     })
 }
 
-/// RGN marker (A.6.3).
-fn rgn_marker(reader: &mut BitReader<'_>) -> Option<()> {
-    skip_marker_segment(reader)
+/// A single LRCP progression volume starting at layer, resolution and component zero.
+#[derive(Clone, Debug)]
+pub(crate) struct ProgressionVolume {
+    pub(crate) end_layer: u8,
+    pub(crate) end_resolution: u8,
+    pub(crate) end_component: u8,
+}
+
+pub(crate) fn lrcp_volume(reader: &mut BitReader<'_>) -> Result<ProgressionVolume> {
+    let invalid = MarkerError::ParseFailure("POC");
+    if reader.read_u16().ok_or(invalid)? != 9 {
+        bail!(MarkerError::Unsupported);
+    }
+    let [0, 0, 0, end_layer, end_resolution, end_component, 0] =
+        reader.read_bytes(7).ok_or(invalid)?
+    else {
+        bail!(MarkerError::Unsupported);
+    };
+    Ok(ProgressionVolume {
+        end_layer: *end_layer,
+        end_resolution: *end_resolution,
+        end_component: *end_component,
+    })
+}
+
+/// RGN marker (A.6.3), implicit ROI (Maxshift).
+pub(crate) fn rgn_marker(reader: &mut BitReader<'_>, components: usize) -> Result<(usize, u8)> {
+    let invalid = MarkerError::ParseFailure("RGN");
+    let index_bytes = if components <= 256 { 1 } else { 2 };
+    if reader.read_u16().ok_or(invalid)? != 4 + index_bytes {
+        bail!(invalid);
+    }
+    let bytes = reader.read_bytes(index_bytes as usize + 2).ok_or(invalid)?;
+    let (index, style, shift) = match bytes {
+        [index, style, shift] => (usize::from(*index), *style, *shift),
+        [hi, lo, style, shift] => (usize::from(u16::from_be_bytes([*hi, *lo])), *style, *shift),
+        _ => bail!(invalid),
+    };
+    if index >= components {
+        bail!(invalid);
+    }
+    if style != 0 || shift >= 31 {
+        bail!(MarkerError::Unsupported);
+    }
+    Ok((index, shift))
 }
 
 pub(crate) fn skip_marker_segment(reader: &mut BitReader<'_>) -> Option<()> {

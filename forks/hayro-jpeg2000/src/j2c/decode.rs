@@ -9,7 +9,9 @@ use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
 use super::build::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, SubBandType};
-use super::codestream::{ComponentInfo, Header, ProgressionOrder, QuantizationStyle};
+use super::codestream::{
+    ComponentInfo, Header, ProgressionOrder, QuantizationStyle, WaveletTransform,
+};
 use super::idwt::IDWTOutput;
 use super::progression::{
     IteratorInput, ProgressionData, component_position_resolution_layer_progression,
@@ -51,10 +53,25 @@ pub(crate) fn decode<'a>(
             tile.rect.height(),
         );
 
+        let progression_order = if let Some(volume) = &header.main_progression {
+            if volume.end_layer < tile.num_layers
+                || usize::from(volume.end_component) < tile.component_infos.len()
+                || tile
+                    .component_infos
+                    .iter()
+                    .any(|component| component.num_resolution_levels() > volume.end_resolution)
+            {
+                bail!(crate::error::MarkerError::Unsupported);
+            }
+            ProgressionOrder::LayerResolutionComponentPosition
+        } else {
+            tile.progression_order
+        };
+
         let iter_input = IteratorInput::new(tile);
 
         let progression_iterator: Box<dyn Iterator<Item = ProgressionData>> =
-            match tile.progression_order {
+            match progression_order {
                 ProgressionOrder::LayerResolutionComponentPosition => {
                     Box::new(layer_resolution_component_position_progression(iter_input))
                 }
@@ -335,6 +352,13 @@ fn decode_sub_band_bitplanes(
     header: &Header<'_>,
 ) -> Result<()> {
     let sub_band = &storage.sub_bands[sub_band_idx];
+    if component_info.roi_shift != 0
+        && (component_info.quantization_info.quantization_style
+            != QuantizationStyle::NoQuantization
+            || component_info.wavelet_transform() != WaveletTransform::Reversible53)
+    {
+        bail!(crate::error::MarkerError::Unsupported);
+    }
 
     let dequantization_step = {
         if component_info.quantization_info.quantization_style == QuantizationStyle::NoQuantization
@@ -365,9 +389,12 @@ fn decode_sub_band_bitplanes(
         let num_bitplanes = (component_info.quantization_info.guard_bits as u16)
             .checked_add(exponent)
             .and_then(|x| x.checked_sub(1))
+            .and_then(|x| x.checked_add(u16::from(component_info.roi_shift)))
             .ok_or(DecodingError::InvalidBitplaneCount)?;
 
-        if num_bitplanes > MAX_BITPLANE_COUNT as u16 {
+        if num_bitplanes > MAX_BITPLANE_COUNT as u16
+            || (component_info.roi_shift != 0 && num_bitplanes >= MAX_BITPLANE_COUNT as u16)
+        {
             bail!(DecodingError::TooManyBitplanes);
         }
 
@@ -407,7 +434,13 @@ fn decode_sub_band_bitplanes(
                 let out_row = &mut base_store[base_idx..];
 
                 for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    *output = coefficient.get() as f32;
+                    let mut value = coefficient.get();
+                    let magnitude = value.unsigned_abs();
+                    let shift = component_info.roi_shift;
+                    if shift != 0 && magnitude >= 1 << shift {
+                        value = value.signum() * (magnitude >> shift) as i32;
+                    }
+                    *output = value as f32;
                     *output *= dequantization_step;
                 }
 
