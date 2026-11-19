@@ -223,7 +223,7 @@ Docs はセルの中に編集可能な表を表示します。DOCX から Markdo
 | 文献引用 | [本文中の文献引用](#本文中の文献引用) の `{{cite:タグ}}`、`{{cite:タグ:ロケール}}`、`{{cite:タグ:ロケール#ページ範囲}}`、[参考文献一覧](#参考文献一覧) の `[[bibliography]]` と `[[bibliography:ロケール]]` |
 | 図・グラフ | `mermaid` と `chart` フェンス。対応する図種・グラフ種は下記を参照してください。 |
 | プレゼンテーション | `marp: true` / `slides: true` / `type: presentation` / `type: slides`、スライド区切り、`<!-- notes: 発表者ノート -->`。 |
-| スプレッドシート | CLI で複数の Markdown 表を XLSX に変換できます。見出しと表を使う経路で、一般文書のレイアウトとは別に扱います。 |
+| スプレッドシート | CLI で Markdown 表を XLSX に変換できます。`<!-- xlsx-sheet "シート名" -->` で表をシートに分けられます。 |
 
 ### 文書の front matter
 
@@ -435,6 +435,30 @@ ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-pptx/tests/
 法令標準 XML の取り込みでは、`Law` / `LawNum` / `LawBody` / `LawTitle`、`EnactStatement` / `Preamble`、`MainProvision`、編・章・節・款・目、`Article` / `ArticleCaption` / `ArticleTitle`、`Paragraph` / `Item` / `Subitem1` 以降、`SupplProvision`、`AppdxTable` と表の行・列を読み取ります。XML 内のすべての属性や要素が、Lawtext や Markdown への変換を往復して保持されるわけではありません。
 
 変換した Markdown の先頭には `type: lawtext` と法令情報（`law_title`、`law_num`、`era`、`year`、`num`、`law_type`）が入ります。法令形式で書き出すときは、条見出しや項・号の構造を編集後も保ってください。
+
+## XLSX のシート名と順序
+
+XLSX を Markdown に書き出すと、表示中の各ワークシートの冒頭に `<!-- xlsx-sheet "売上" -->` が付きます。名前は JSON 文字列として引用符で囲みます。この印がある Markdown を XLSX に変換すると、出現順に名前付きシートを作成します。表のないシートも作成できます。印のない Markdown の複数の表は、従来どおり一つのシートに並びます。
+
+```markdown
+<!-- xlsx-sheet "売上" -->
+
+## 売上
+
+| 区分 | 金額 |
+| --- | --- |
+| 国内 | 42 |
+
+<!-- xlsx-sheet "在庫" -->
+
+## 在庫
+
+| 品目 | 個数 |
+| --- | --- |
+| ノート | 5 |
+```
+
+データ範囲の開始セルと、非表示の行・列を挟んだ座標は保持しません。セルの型は引き続き文字列から推定します。
 
 ## AI 向け JSON 書き出し
 
