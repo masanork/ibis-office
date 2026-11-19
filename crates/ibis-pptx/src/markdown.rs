@@ -2186,6 +2186,18 @@ fn parse_table_alignments(sep: &str) -> Vec<Option<FlowAlign>> {
         .collect()
 }
 
+fn table_colspan<'a>(cell: &'a str, row: &[String], column: usize) -> (&'a str, usize) {
+    if let Some((text, marker)) = cell.strip_suffix(" -->").and_then(|cell| cell.rsplit_once("<!-- colspan:"))
+        && let Ok(span) = marker.parse::<u32>()
+        && span > 1
+        && let Some(end) = column.checked_add(span as usize)
+        && row.get(column + 1..end).is_some_and(|covered| covered.iter().all(String::is_empty))
+    {
+        return (text.trim_end(), span as usize);
+    }
+    (cell, 1)
+}
+
 fn build_table_block(
     header_cells: Vec<String>,
     alignments: Vec<Option<FlowAlign>>,
@@ -2212,8 +2224,10 @@ fn build_table_block(
 
     let build_row = |cells_text: Vec<String>, is_header: bool, ctx: &mut ParseContext<'_>| -> FlowRow {
         let mut cells = Vec::with_capacity(col_count);
-        for c_idx in 0..col_count {
+        let mut c_idx = 0;
+        while c_idx < col_count {
             let raw_cell = cells_text.get(c_idx).map(String::as_str).unwrap_or("");
+            let (raw_cell, span) = table_colspan(raw_cell, &cells_text, c_idx);
             let align = alignments.get(c_idx).copied().flatten();
             let base_fmt = if is_header {
                 RunFormat {
@@ -2250,7 +2264,7 @@ fn build_table_block(
             cells.push(FlowCell {
                 id: ctx.fresh_id(),
                 blocks: vec![Block::Paragraph(p)],
-                span: 1,
+                span: span as u32,
                 merge: VerticalMerge::None,
                 shading: is_header.then_some(Rgb(0xF2F4F8)),
                 borders: [Some(line), Some(line), Some(line), Some(line)],
@@ -2262,6 +2276,7 @@ fn build_table_block(
                 no_wrap: false,
                 ..FlowCell::default()
             });
+            c_idx += span;
         }
         FlowRow {
             id: ctx.fresh_id(),
@@ -4189,30 +4204,35 @@ fn serialize_table(
     if t.rows.is_empty() {
         return;
     }
-    let col_count = t.rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
+    let col_count = t.rows.iter().map(|row| row.cells.len()).max().unwrap_or(0)
+        .max(t.columns.len());
     if col_count == 0 {
         return;
     }
 
     let format_row = |row: &FlowRow| -> String {
         let mut cells = Vec::with_capacity(col_count);
-        for c_idx in 0..col_count {
-            if let Some(cell) = row.cells.get(c_idx) {
-                let mut cell_parts = Vec::new();
-                for b in &cell.blocks {
-                    if let Block::Paragraph(p) = b {
-                        cell_parts.push(
-                            serialize_runs(&p.runs, media, comments)
-                                .replace('\n', "<br>")
-                                .replace('|', "\\|"),
-                        );
-                    }
+        for (index, cell) in row.cells.iter().enumerate() {
+            let span = (cell.span.max(1) as usize).min(col_count - cells.len() - (row.cells.len() - index - 1));
+            let mut cell_parts = Vec::new();
+            for block in &cell.blocks {
+                if let Block::Paragraph(paragraph) = block {
+                    cell_parts.push(
+                        serialize_runs(&paragraph.runs, media, comments)
+                            .replace('\n', "<br>")
+                            .replace('|', "\\|"),
+                    );
                 }
-                cells.push(cell_parts.join("<br>"));
-            } else {
-                cells.push(String::new());
             }
+            let mut text = cell_parts.join("<br>");
+            if span > 1 {
+                use std::fmt::Write;
+                let _ = write!(text, " <!-- colspan:{span} -->");
+            }
+            cells.push(text);
+            cells.resize(cells.len() + span - 1, String::new());
         }
+        cells.resize(col_count, String::new());
         format!("| {} |\n", cells.join(" | "))
     };
 
@@ -4220,16 +4240,12 @@ fn serialize_table(
 
     // Alignment separator row
     let mut sep_cells = Vec::with_capacity(col_count);
-    for c_idx in 0..col_count {
-        let align = t
-            .rows
-            .first()
-            .and_then(|r| r.cells.get(c_idx))
-            .and_then(|c| c.blocks.first())
-            .and_then(|b| match b {
-                Block::Paragraph(p) => p.direct.align,
-                _ => None,
-            });
+    for (index, cell) in t.rows[0].cells.iter().enumerate() {
+        let span = (cell.span.max(1) as usize).min(col_count - sep_cells.len() - (t.rows[0].cells.len() - index - 1));
+        let align = match cell.blocks.first() {
+            Some(Block::Paragraph(paragraph)) => paragraph.direct.align,
+            _ => None,
+        };
         let marker = match align {
             Some(FlowAlign::Center) => ":---:",
             Some(FlowAlign::Right) => "---:",
@@ -4237,7 +4253,9 @@ fn serialize_table(
             _ => "---",
         };
         sep_cells.push(marker);
+        sep_cells.resize(sep_cells.len() + span - 1, "---");
     }
+    sep_cells.resize(col_count, "---");
     out.push_str(&format!("| {} |\n", sep_cells.join(" | ")));
 
     for row in &t.rows[1..] {
@@ -5153,6 +5171,14 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
     let cols = tbl.columns.len().max(1);
     let col_w = total_width / cols as i64;
     let columns = vec![col_w; cols];
+    let covered = ibis_doc_model::TableCell {
+        text: ibis_doc_model::TextBody::default(),
+        fill: Fill::None,
+        borders: ibis_doc_model::CellBorders::default(),
+        column_span: 1,
+        row_span: 1,
+        merged: true,
+    };
     let rows = tbl
         .rows
         .iter()
@@ -5161,7 +5187,7 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
             cells: row
                 .cells
                 .iter()
-                .map(|cell| {
+                .flat_map(|cell| {
                     let paras: Vec<ibis_doc_model::Paragraph> = cell
                         .blocks
                         .iter()
@@ -5170,17 +5196,21 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
                             _ => None,
                         })
                         .collect();
-                    ibis_doc_model::TableCell {
+                    let primary = ibis_doc_model::TableCell {
                         text: ibis_doc_model::TextBody {
                             paragraphs: paras,
                             ..ibis_doc_model::TextBody::default()
                         },
                         fill: Fill::None,
                         borders: ibis_doc_model::CellBorders::default(),
-                        column_span: 1,
+                        column_span: cell.span.max(1),
                         row_span: 1,
                         merged: false,
-                    }
+                    };
+                    std::iter::once(primary).chain(std::iter::repeat_n(
+                        covered.clone(),
+                        cell.span.saturating_sub(1) as usize,
+                    ))
                 })
                 .collect(),
             source: None,
@@ -5214,6 +5244,35 @@ fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn horizontal_table_merge_round_trips_through_docx() {
+        let input = b"| Group <!-- colspan:2 --> | | Total |
+| :---: | --- | ---: |
+| A | B | 2 |
+| Keep <!-- colspan:2 --> | Occupied | 3 |
+";
+        let original = import_markdown_to_docx_bytes(input).unwrap();
+        let markdown = export_docx_to_markdown(&original).unwrap();
+        assert!(markdown.contains("<!-- colspan:2 --> |  |"));
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        let Block::Table(table) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected a table");
+        };
+        assert_eq!(table.columns.len(), 3);
+        let spans = |row: usize| table.rows[row].cells.iter().map(|cell| cell.span).collect::<Vec<_>>();
+        assert_eq!(spans(0), [2, 1]);
+        assert_eq!(spans(1), [1, 1, 1]);
+        assert_eq!(spans(2), [1, 1, 1]);
+        assert!(matches!(&table.rows[2].cells[1].blocks[0], Block::Paragraph(p) if p.text() == "Occupied"));
+
+        let slide = flow_table_to_slide_table(table, 6 * EMU_PER_INCH);
+        assert_eq!(slide.rows[0].cells.len(), 3);
+        assert_eq!(slide.rows[0].cells[0].column_span, 2);
+        assert!(slide.rows[0].cells[1].merged);
+        assert!(!slide.rows[0].cells[2].merged);
+    }
 
     #[test]
     fn detects_markdown_vs_csv() {

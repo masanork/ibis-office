@@ -46,6 +46,17 @@ ibisOffice --export pptx --out-dir /tmp/docs-reference/pptx docs/markdown-refere
 ibisOffice --export md --out-dir /tmp/docs-reference/markdown /tmp/docs-reference/docx/markdown-reference-ja.docx
 ```
 
+## 表の横方向の結合
+
+結合するセルの末尾に `<!-- colspan:2 -->` を付け、続く列を空セルにします。数字は、結合する先頭のセルを含めた列数です。次の表を DOCX に保存して Markdown に戻すと、列の位置と結合の指定を保持します。
+
+| 集計対象 <!-- colspan:2 --> | | 件数 |
+| :--- | :--- | ---: |
+| 国内 | 文書 | 12 |
+| 海外 | 文書 | 8 |
+
+標準的な Markdown 表示ではコメントが隠れ、続く列には空セルが表示されます。結合範囲に値がある場合、Docs は各セルを個別に読み込みます。ここで扱うのは横方向の結合です。
+
 ## Markdown 構文一覧
 
 ここでの対応は、入力を読み取って Docs の文書モデルに反映できることを指します。保存形式や書き出し先によって保持される情報は異なります。Markdown に戻すと記法や空白が正規化されることがあります。
