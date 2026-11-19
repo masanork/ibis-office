@@ -10292,3 +10292,46 @@ fn record_match_range_spills_and_recalculates_after_reopen() {
         assert_eq!(value(document.presentation(), sheet_name, r as u32, 3), CellValue::Number(grade));
     }
 }
+
+#[test]
+fn record_match_guide_filters_rows_across_two_sheets() {
+    let source = concat!(
+        "id,name,kana,birth,address\n",
+        "1,山田太郎,ヤマダ タロウ,1985-04-15,千代田区霞が関2-1-2\n",
+        "2,山田太郎,ヤマダ タロー,1985-04-15,千代田区霞が関2-1-2\n",
+        "3,山田太郎,ヤマダ ジロウ,1985-04-15,千代田区霞が関2-1-2\n",
+        "4,山田太郎,,1985-04-15,千代田区霞が関2-1-2",
+    );
+    let bytes = ibis_pptx::csv::workbook_from_with_delimiter(source, "候補", ',').unwrap();
+    let opened = ibis_pptx::open(bytes).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let candidate = slide(document.presentation(), "候補");
+    let (reference, shape) = (document.ids().new_slide_id(), document.ids().new_shape_id());
+    document.execute(vec![Command::Sheet(SheetCommand::AddSheet { index: 1, name: "基準".into(), slide: reference, shape })]).unwrap();
+    set(&mut document, reference, vec![
+        (1, 1, CellInput::Value(CellValue::Text("山田太郎".into()))),
+        (1, 2, CellInput::Value(CellValue::Text("やまだたろう".into()))),
+        (1, 3, CellInput::Value(CellValue::Text("1985-04-15".into()))),
+        (1, 4, CellInput::Value(CellValue::Text("千代田区霞が関2-1-2".into()))),
+    ]);
+    let formulas = [
+        (5, r#"IBIS.FIELDMATCH(基準!$B$2,B2:B5,"name-with-kana",基準!$C$2,C2:C5)"#),
+        (6, r#"IBIS.FIELDMATCH(基準!$D$2,D2:D5,"date")"#),
+        (7, r#"IBIS.FIELDMATCH(基準!$E$2,E2:E5,"address")"#),
+        (8, "IBIS.RECORDMATCH(F2:H5)"),
+        (10, r#"FILTER(A2:E5,IFNA(I2#=1,FALSE),"候補なし")"#),
+    ];
+    set(&mut document, candidate, formulas.into_iter().map(|(column, formula)| (1, column, CellInput::Formula(formula.into()))).collect());
+
+    let check = |p: &Presentation| {
+        for (r, grade) in [2.0, 1.0, 0.0, 1.0].into_iter().enumerate() {
+            assert_eq!(value(p, "候補", r as u32 + 1, 8), CellValue::Number(grade));
+        }
+        assert_eq!(value(p, "候補", 1, 10), CellValue::Number(2.0));
+        assert_eq!(value(p, "候補", 2, 10), CellValue::Number(4.0));
+        assert_eq!(value(p, "候補", 3, 10), CellValue::Empty);
+    };
+    check(document.presentation());
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    check(&ibis_pptx::read(&saved).unwrap());
+}
