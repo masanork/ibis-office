@@ -508,3 +508,41 @@ fn names_and_readings_preserve_disagreements_and_missing_evidence() {
     check(r#""山田太郎","山田太郎","name-with-kana","ヤマダタロウ""#, CellValue::Error(CellError::Value));
     check(r#""山田太郎","山田太郎","name","","""#, CellValue::Error(CellError::Value));
 }
+
+#[test]
+fn record_match_keeps_conflicts_distinct_from_missing_evidence() {
+    let sheet = Sheet { date1904: false };
+    for (args, expected) in [
+        ("2,2,2", CellValue::Number(2.0)),
+        ("1,2,2", CellValue::Number(1.0)),
+        ("2,#N/A", CellValue::Number(1.0)),
+        ("C1,2", CellValue::Number(1.0)),
+        (r#"2,"""#, CellValue::Number(1.0)),
+        ("#N/A,1,0,2", CellValue::Number(0.0)),
+        ("0,#N/A", CellValue::Number(0.0)),
+        ("#N/A,C1", CellValue::Error(CellError::NA)),
+        ("0,1/0", CellValue::Error(CellError::Div0)),
+        ("2,3", CellValue::Error(CellError::Value)),
+        (r#"2,"1""#, CellValue::Error(CellError::Value)),
+        ("2,TRUE", CellValue::Error(CellError::Value)),
+    ] {
+        let formula = format!("IBIS.RECORDMATCH({args})");
+        let stored = to_file(&formula);
+        assert!(stored.starts_with("_xlfn.IBIS.RECORDMATCH("), "{stored}");
+        for expression in [&formula, &stored] {
+            assert_eq!(evaluate(&sheet, (0, 2, 0), expression), (expected.clone(), false), "{expression}");
+        }
+    }
+    let formula = r#"TEXTJOIN(",",FALSE,IBIS.RECORDMATCH({2,1,0,#N/A},2))"#;
+    assert_eq!(evaluate(&sheet, (0, 2, 0), formula), (CellValue::Text("2,1,0,1".into()), false));
+}
+
+#[test]
+fn record_match_combines_name_date_and_address_formulas() {
+    let sheet = Sheet { date1904: false };
+    let formula = concat!(
+        r#"IF(IBIS.RECORDMATCH(IBIS.FIELDMATCH("鈴木 花子","田中 花子","name"),"#,
+        r#"IBIS.FIELDMATCH("1990-12-15","1990-12-15","date"),IBIS.FIELDMATCH(A1,B1,"address"))=1,"要確認","")"#,
+    );
+    assert_eq!(evaluate(&sheet, (0, 2, 0), formula), (CellValue::Text("要確認".into()), false));
+}

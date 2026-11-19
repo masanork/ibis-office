@@ -10235,3 +10235,33 @@ fn name_and_kana_field_match_uses_both_reading_cells_after_reopen() {
     set(&mut document, s, vec![(0, 3, CellInput::Value(CellValue::Text("ヤマダジロウ".into())))]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(0.0));
 }
+
+#[test]
+fn record_match_recalculates_when_a_field_changes_after_reopen() {
+    let sheet_name = "行照合";
+    let bytes = ibis_pptx::csv::workbook_from_with_delimiter("1985-04,1985-04-15,060-0001,600001", sheet_name, ',').unwrap();
+    let opened = ibis_pptx::open(bytes).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let s = slide(document.presentation(), sheet_name);
+    let formula = r#"IBIS.RECORDMATCH(IBIS.FIELDMATCH(A1,B1,"date"),IBIS.FIELDMATCH(C1,D1,"postal"))"#;
+    set(&mut document, s, vec![
+        (0, 0, CellInput::Value(CellValue::Text("1985-04".into()))),
+        (0, 1, CellInput::Value(CellValue::Text("1985-04-15".into()))),
+        (0, 2, CellInput::Value(CellValue::Text("060-0001".into()))),
+        (0, 4, CellInput::Formula(formula.into())),
+    ]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(1.0));
+
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let package = ibis_ooxml::Package::open(saved.clone()).unwrap();
+    let xml = String::from_utf8(package.read("xl/worksheets/sheet1.xml").unwrap()).unwrap();
+    assert!(xml.contains("_xlfn.IBIS.RECORDMATCH(_xlfn.IBIS.FIELDMATCH("));
+    let reopened = ibis_pptx::read(&saved).unwrap();
+    assert_eq!(cell(&reopened, sheet_name, 0, 4).formula.as_deref(), Some(formula));
+    assert_eq!(value(&reopened, sheet_name, 0, 4), CellValue::Number(1.0));
+
+    let s = slide(&reopened, sheet_name);
+    let mut document = Document::new(reopened);
+    set(&mut document, s, vec![(0, 3, CellInput::Value(CellValue::Number(600002.0)))]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(0.0));
+}

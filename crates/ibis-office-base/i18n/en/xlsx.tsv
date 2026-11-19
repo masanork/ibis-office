@@ -2555,6 +2555,7 @@ xlsx.fndesc.counta	Counts the cells that are not empty
 xlsx.fndesc.max	Finds the largest number
 xlsx.fndesc.min	Finds the smallest number
 xlsx.fndesc.ibis.fieldmatch	Compares two values as date, address, gender, name, kana readings, name with readings (name-with-kana), phone, postal code (postal), email, Japanese corporate number (corporate-number), Japanese individual number (mynumber), Japanese driver’s license number (drivers-license) or Japanese passport number or two-line MRZ (passport-jp). Returns 2 for a normalized match, 1 for a possible match, 0 for no match, or #N/A when comparison is unavailable. For addresses and names, the fourth argument can specify extra wildcard characters.
+xlsx.fndesc.ibis.recordmatch	Combines several field match grades. Returns 0 if any field disagrees, 2 if all agree, 1 if review is needed, or #N/A if no field could be compared.
 xlsx.fndesc.if	Gives one value or another, by whether a condition holds
 xlsx.fndesc.iferror	Gives another value only when a formula ends in an error
 xlsx.fndesc.ifs	Tries several conditions in turn and gives the value of the first that holds

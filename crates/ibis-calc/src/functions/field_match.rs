@@ -87,6 +87,27 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
     })
 }
 
+/// Combine explicit field grades, retaining conflicts and missing evidence.
+pub(super) fn record_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
+    ctx.map_args(args, |_, values| {
+        let mut rank = 2.0_f64;
+        let mut compared = false;
+        for value in values {
+            match value {
+                Value::Number(n @ (0.0 | 1.0 | 2.0)) => {
+                    compared = true;
+                    rank = rank.min(*n);
+                }
+                Value::Empty | Value::Error(CellError::NA) => rank = rank.min(1.0),
+                Value::Text(text) if text.trim().is_empty() => rank = rank.min(1.0),
+                Value::Error(error) => return err(*error),
+                _ => return err(CellError::Value),
+            }
+        }
+        if compared { number(rank) } else { err(CellError::NA) }
+    })
+}
+
 fn compare_keys<T: Eq>(left: &Value, right: &Value, key: impl Fn(&Value) -> Option<T>) -> Option<u8> {
     Some(if key(left)? == key(right)? { 2 } else { 0 })
 }

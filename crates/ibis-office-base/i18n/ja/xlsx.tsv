@@ -2552,6 +2552,7 @@ xlsx.fndesc.counta	空でないセルの個数を数える
 xlsx.fndesc.max	数値の最大値を求める
 xlsx.fndesc.min	数値の最小値を求める
 xlsx.fndesc.ibis.fieldmatch	日付（date）、住所（address）、性別（gender）、氏名（name）、振り仮名（kana）、氏名＋振り仮名（name-with-kana）、電話番号（phone）、郵便番号（postal）、メール（email）、法人番号（corporate-number）、個人番号（mynumber）、運転免許証番号（drivers-license）、日本の旅券番号・2行のMRZ（passport-jp）を照合する。表記差を吸収した一致は2、曖昧一致は1、一致なしは0、比較できないときは#N/A。住所・氏名の第4引数には外字ワイルドカードを指定できる。
+xlsx.fndesc.ibis.recordmatch	複数の照合結果を1つにまとめる。不一致があれば0、全件一致なら2、それ以外で比較できた項目があれば1。全件比較できない場合は#N/A。
 xlsx.fndesc.if	条件が成り立つかで、返す値を切り替える
 xlsx.fndesc.iferror	式がエラーになったときだけ、代わりの値を返す
 xlsx.fndesc.ifs	複数の条件を順に調べ、最初に成り立つものの値を返す
