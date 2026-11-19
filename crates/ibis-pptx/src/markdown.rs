@@ -331,11 +331,22 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
     let template = presentation.slides.first().and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
         .ok_or_else(|| Error::new("白紙のシートが見つかりません"))?.clone();
 
-    for (index, (name, markdown)) in sections.into_iter().enumerate() {
+    for (index, (marker, markdown)) in sections.into_iter().enumerate() {
         let parsed = open_markdown(markdown.as_bytes().to_vec())?;
         let flow = parsed.presentation.flow.as_ref().ok_or_else(|| Error::new("Markdown のパースに失敗しました"))?;
         let mut content = (*template).clone();
-        content.cells = markdown_workbook_cells(flow, name.is_some()).into();
+        let mut cells = markdown_workbook_cells(flow, marker.is_some());
+        if let Some(origin) = marker.as_ref().and_then(|marker| marker.origin.as_deref()) {
+            let (row, column) = ibis_doc_model::ai_sheet::parse_cell_ref(origin)
+                .ok_or_else(|| Error::new(format!("xlsx-sheet の開始セルが不正です: {origin}")))?;
+            for cell in &mut cells {
+                cell.row = cell.row.checked_add(row).filter(|&value| value <= ibis_calc::formula::MAX_ROW)
+                    .ok_or_else(|| Error::new("Markdown の表がワークシートの行範囲を超えています"))?;
+                cell.column = cell.column.checked_add(column).filter(|&value| value <= ibis_calc::formula::MAX_COLUMN)
+                    .ok_or_else(|| Error::new("Markdown の表がワークシートの列範囲を超えています"))?;
+            }
+        }
+        content.cells = cells.into();
         if content.styles.len() < 2 {
             let base = content.styles.first().cloned().unwrap_or_default();
             if content.styles.is_empty() {
@@ -343,7 +354,7 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
             }
             content.styles.push(ibis_doc_model::CellStyle { bold: true, ..base });
         }
-        if let Some(name) = name {
+        if let Some(MarkdownSheetMarker { name, .. }) = marker {
             if !valid_sheet_name(presentation, &name, (index == 0).then_some(0)) {
                 return Err(Error::new(format!("無効または重複したシート名です: {name}")));
             }
@@ -368,7 +379,29 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
 
 const XLSX_SHEET_MARKER: &str = "<!-- xlsx-sheet ";
 
-fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<String>, &str)>, Error> {
+struct MarkdownSheetMarker {
+    name: String,
+    origin: Option<String>,
+}
+
+fn parse_markdown_sheet_marker(encoded: &str) -> Option<MarkdownSheetMarker> {
+    let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
+    if let Some(name) = value.as_str() {
+        return Some(MarkdownSheetMarker { name: name.to_owned(), origin: None });
+    }
+    let object = value.as_object()?;
+    if object.keys().any(|key| key != "name" && key != "origin") {
+        return None;
+    }
+    let name = object.get("name")?.as_str()?.to_owned();
+    let origin = match object.get("origin") {
+        Some(value) => Some(value.as_str()?.to_owned()),
+        None => None,
+    };
+    Some(MarkdownSheetMarker { name, origin })
+}
+
+fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMarker>, &str)>, Error> {
     let mut sections = Vec::new();
     let mut current = None;
     let mut fence = None;
@@ -378,9 +411,9 @@ fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<String>, &str)>,
         if !is_fenced_line(trimmed, &mut fence)
             && let Some(encoded) = trimmed.strip_prefix(XLSX_SHEET_MARKER)
         {
-            let name = encoded.strip_suffix(" -->").and_then(|value| serde_json::from_str::<String>(value).ok())
-                .ok_or_else(|| Error::new("xlsx-sheet のシート名が不正です"))?;
-            if let Some((previous, start)) = current.replace((name, offset + line.len())) {
+            let marker = encoded.strip_suffix(" -->").and_then(parse_markdown_sheet_marker)
+                .ok_or_else(|| Error::new("xlsx-sheet の指定が不正です"))?;
+            if let Some((previous, start)) = current.replace((marker, offset + line.len())) {
                 sections.push((Some(previous), &text[start..offset]));
             }
         }
@@ -534,32 +567,32 @@ fn export_workbook_markdown_with_positions(
             !sheet.hidden_columns.contains_key(&c)
                 && sheet.columns.get(c as usize).is_none_or(|v| *v != 0)
         };
-        let mut occupied = sheet
-            .cells
-            .iter()
-            .filter(|cell| row_vis(cell.row) && col_vis(cell.column));
+        let occupied = sheet.cells.iter().filter(|cell| row_vis(cell.row) && col_vis(cell.column));
+        let bounds = occupied
+            .map(|cell| (cell.row, cell.row, cell.column, cell.column))
+            .reduce(|(minr, maxr, minc, maxc), (row, _, column, _)| {
+                (minr.min(row), maxr.max(row), minc.min(column), maxc.max(column))
+            });
         if !out.is_empty() {
             out.push('\n');
         }
         out.push_str(XLSX_SHEET_MARKER);
-        let name = serde_json::to_string(&sheet_ref.name).expect("sheet name is a JSON string");
-        out.push_str(&name.replace("--", r"-\u002d"));
+        let encoded = match bounds {
+            Some((row, _, column, _)) if (row, column) != (0, 0) => serde_json::to_string(&serde_json::json!({
+                "name": sheet_ref.name,
+                "origin": ibis_doc_model::cell_name(column, row),
+            })),
+            _ => serde_json::to_string(&sheet_ref.name),
+        }.expect("sheet metadata is JSON serializable");
+        out.push_str(&encoded.replace("--", r"-\u002d"));
         out.push_str(" -->\n\n");
         out.push_str("## ");
         out.push_str(&sheet_ref.name);
         out.push_str("\n\n");
 
-        let Some(first) = occupied.next() else {
+        let Some((minr, maxr, minc, maxc)) = bounds else {
             continue;
         };
-        let (mut minr, mut maxr, mut minc, mut maxc) =
-            (first.row, first.row, first.column, first.column);
-        for c in occupied {
-            minr = minr.min(c.row);
-            maxr = maxr.max(c.row);
-            minc = minc.min(c.column);
-            maxc = maxc.max(c.column);
-        }
         let area = u64::from(maxr - minr + 1).saturating_mul(u64::from(maxc - minc + 1));
         total_cells = total_cells.saturating_add(area);
         if total_cells > 50_000 {
@@ -7664,6 +7697,29 @@ xychart-beta
         let rebuilt = import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap();
         assert_eq!(export_workbook_markdown(&crate::read(&rebuilt).unwrap()).unwrap(), markdown);
         assert!(import_markdown_to_xlsx_bytes(input.replace("空白", "売上").as_bytes()).is_err());
+    }
+
+    #[test]
+    fn workbook_sheet_origin_retains_coordinates_and_empty_rows() {
+        let input = br#"<!-- xlsx-sheet {"name":"Offset","origin":"B3"} -->
+
+| Code | Amount |
+| --- | --- |
+| | |
+| Local | 42 |
+"#;
+        let first = import_markdown_to_xlsx_bytes(input).unwrap();
+        let markdown = export_workbook_markdown(&crate::read(&first).unwrap()).unwrap();
+        assert!(markdown.contains(r#"<!-- xlsx-sheet {"name":"Offset","origin":"B3"} -->"#));
+        let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        assert_eq!(sheet.cell(2, 1).unwrap().text, "Code");
+        assert!(sheet.cell(3, 1).is_none());
+        assert_eq!(sheet.cell(4, 2).unwrap().text, "42");
+        for origin in ["XFE3", "XFD3", "B1048576", "B0"] {
+            let invalid = std::str::from_utf8(input).unwrap().replace("B3", origin);
+            assert!(import_markdown_to_xlsx_bytes(invalid.as_bytes()).is_err(), "{origin}");
+        }
     }
 
     #[test]
