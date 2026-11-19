@@ -9,6 +9,7 @@
 //! part that is changed is kept as a parsed [`xml::Document`] (which keeps
 //! what it does not change, see [`crate::xml`]) or as new bytes.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -114,9 +115,17 @@ impl Package {
 
     /// Part `name`, parsed (a copy: changes to it are not saved).
     pub fn xml(&self, name: &str) -> Result<Document, Error> {
+        Ok(self.xml_view(name)?.into_owned())
+    }
+
+    /// Inspect a parsed part, borrowing its tree if it is already in memory.
+    /// Reading an untouched part leaves its original ZIP entry intact.
+    pub fn xml_view(&self, name: &str) -> Result<Cow<'_, Document>, Error> {
         match &self.part(name)?.content {
-            Content::Xml(doc) => Ok((**doc).clone()),
-            _ => Document::parse(&self.read(name)?).map_err(|e| Error::new(format!("{name}: {e}"))),
+            Content::Xml(doc) => Ok(Cow::Borrowed(doc)),
+            _ => Document::parse(&self.read(name)?)
+                .map(Cow::Owned)
+                .map_err(|e| Error::new(format!("{name}: {e}"))),
         }
     }
 

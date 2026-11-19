@@ -524,6 +524,10 @@ This document lists all features implemented in ibisOffice across Word (.docx), 
 
 ### xlsx
 
+The fork includes `IBIS.FIELDMATCH` and `IBIS.RECORDMATCH` for comparing fields and filtering rows for manual review.
+See the [worked example for reconciling two lists](implemented-feature-ja.md#名簿を照合して要確認の行を取り出す) (Japanese).
+
+
 | # | Feature | Status |
 |---|---|---|
 | 1 | xlsx: Number, text, and boolean input | Completed |

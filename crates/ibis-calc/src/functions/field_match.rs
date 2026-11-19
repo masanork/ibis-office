@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{err, number};
+use super::{array_value, err, number};
 use crate::eval::convert::{date_from_serial, serial_from_date};
 use crate::eval::{Ctx, Value};
 use crate::formula::Expr;
@@ -21,8 +21,8 @@ const ENCODING_SUBSTITUTES: &[char] = &['\u{fffd}', '\u{001a}'];
 // including exports of Juki data. JPKI carries substitution positions separately.
 const LEGACY_JAPANESE_SUBSTITUTES: &[char] = &['\u{3013}', '\u{25cf}'];
 
-// Other conventional placeholders accepted specifically by the address matcher.
-const ADDRESS_PLACEHOLDERS: &[char] = &['\u{25a0}', '\u{003f}', '\u{ff1f}'];
+// Other conventional placeholders accepted by field matching.
+const FIELD_PLACEHOLDERS: &[char] = &['\u{25a0}', '\u{003f}', '\u{ff1f}'];
 
 pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
     ctx.map_args(args, |ctx, values| {
@@ -36,19 +36,50 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             return err(CellError::Value);
         };
         let (left, right) = (&values[0], &values[1]);
-        let result = if mode.eq_ignore_ascii_case("address") {
+        let result = if mode.eq_ignore_ascii_case("name-with-kana") {
+            let [_, _, _, left_kana, right_kana] = values else {
+                return err(CellError::Value);
+            };
+            let name = super::name_match::compare(left, right, is_default_wildcard, |c| ctx.book.name_variant_cluster(c));
+            let kana = super::kana_match::compare_optional(left_kana, right_kana);
+            name.zip(kana).map(|(name, kana)| name.min(kana))
+        } else if values.len() > 4 {
+            return err(CellError::Value);
+        } else if mode.eq_ignore_ascii_case("address") || mode.eq_ignore_ascii_case("name") {
             let extra = match values.get(3) {
                 None | Some(Value::Empty) => "",
                 Some(Value::Text(text)) => text,
                 _ => return err(CellError::Value),
             };
-            compare_addresses(left, right, extra)
+            let extra: HashSet<char> = extra.chars().collect();
+            let wildcard = |c| is_wildcard(c, &extra);
+            if mode.eq_ignore_ascii_case("name") {
+                super::name_match::compare(left, right, wildcard, |c| ctx.book.name_variant_cluster(c))
+            } else {
+                compare_addresses(left, right, wildcard)
+            }
         } else if values.len() > 3 {
             return err(CellError::Value);
         } else if mode.eq_ignore_ascii_case("date") {
             compare_dates(left, right, ctx.date1904())
+        } else if mode.eq_ignore_ascii_case("phone") {
+            super::contact_match::compare_phones(left, right)
+        } else if mode.eq_ignore_ascii_case("postal") {
+            super::contact_match::compare_postal_codes(left, right)
+        } else if mode.eq_ignore_ascii_case("email") {
+            compare_keys(left, right, |v| super::identifier_match::email_key(text_value(v)?))
+        } else if mode.eq_ignore_ascii_case("corporate-number") {
+            compare_keys(left, right, super::identifier_match::corporate_number)
+        } else if mode.eq_ignore_ascii_case("mynumber") {
+            compare_keys(left, right, super::identifier_match::mynumber)
+        } else if mode.eq_ignore_ascii_case("drivers-license") {
+            super::identifier_match::compare_drivers_licenses(left, right)
+        } else if mode.eq_ignore_ascii_case("passport-jp") {
+            compare_keys(left, right, super::identifier_match::japanese_passport_number)
+        } else if mode.eq_ignore_ascii_case("kana") {
+            text_value(left).zip(text_value(right)).and_then(|(a, b)| super::kana_match::compare(a, b))
         } else if mode.eq_ignore_ascii_case("gender") {
-            compare_keys(left, right, gender_key)
+            compare_keys(left, right, |v| gender_key(text_value(v)?))
         } else {
             return err(CellError::Value);
         };
@@ -56,11 +87,49 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
     })
 }
 
-fn compare_keys<T: Eq>(left: &Value, right: &Value, key: impl Fn(&str) -> Option<T>) -> Option<u8> {
-    let (Value::Text(left), Value::Text(right)) = (left, right) else {
-        return None;
-    };
+/// Combine explicit field grades, retaining conflicts and missing evidence.
+pub(super) fn record_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
+    if let [range] = args {
+        return match ctx.eval_array(range) {
+            Value::Array(a) if a.rows == 1 => record_grade(&a.data),
+            Value::Array(a) if a.columns != 0 => {
+                let grades = a.data.chunks_exact(a.columns).map(record_grade).collect();
+                array_value(a.rows, 1, grades)
+            }
+            Value::Array(_) => err(CellError::Calc),
+            value => record_grade(std::slice::from_ref(&value)),
+        };
+    }
+    ctx.map_args(args, |_, values| record_grade(values))
+}
+
+fn record_grade(values: &[Value]) -> Value {
+    let mut rank = 2.0_f64;
+    let mut compared = false;
+    for value in values {
+        match value {
+            Value::Number(n @ (0.0 | 1.0 | 2.0)) => {
+                compared = true;
+                rank = rank.min(*n);
+            }
+            Value::Empty | Value::Error(CellError::NA) => rank = rank.min(1.0),
+            Value::Text(text) if text.trim().is_empty() => rank = rank.min(1.0),
+            Value::Error(error) => return err(*error),
+            _ => return err(CellError::Value),
+        }
+    }
+    if compared { number(rank) } else { err(CellError::NA) }
+}
+
+fn compare_keys<T: Eq>(left: &Value, right: &Value, key: impl Fn(&Value) -> Option<T>) -> Option<u8> {
     Some(if key(left)? == key(right)? { 2 } else { 0 })
+}
+
+fn text_value(value: &Value) -> Option<&str> {
+    match value {
+        Value::Text(text) => Some(text),
+        _ => None,
+    }
 }
 
 fn compare_dates(left: &Value, right: &Value, date1904: bool) -> Option<u8> {
@@ -98,7 +167,7 @@ fn date_range(value: &Value, date1904: bool) -> Option<DateRange> {
     }
 }
 
-fn fold_ascii_width(c: char) -> char {
+pub(super) fn fold_ascii_width(c: char) -> char {
     match c {
         '！'..='～' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
         _ => c,
@@ -114,7 +183,16 @@ fn gender_key(text: &str) -> Option<bool> {
     }
 }
 
-fn compare_addresses(left: &Value, right: &Value, extra: &str) -> Option<u8> {
+fn is_default_wildcard(c: char) -> bool {
+    ENCODING_SUBSTITUTES.contains(&c) || LEGACY_JAPANESE_SUBSTITUTES.contains(&c) || FIELD_PLACEHOLDERS.contains(&c)
+}
+
+fn is_wildcard(c: char, extra: &HashSet<char>) -> bool {
+    is_default_wildcard(c)
+        || (c.is_alphabetic() || matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' | '\u{100000}'..='\u{10fffd}')) && extra.contains(&c)
+}
+
+fn compare_addresses(left: &Value, right: &Value, wildcard: impl Fn(char) -> bool + Copy) -> Option<u8> {
     let (Value::Text(left), Value::Text(right)) = (left, right) else {
         return None;
     };
@@ -122,13 +200,6 @@ fn compare_addresses(left: &Value, right: &Value, extra: &str) -> Option<u8> {
     let right = address_key(right)?;
     let (left_place, left_tail) = address_parts(&left);
     let (right_place, right_tail) = address_parts(&right);
-    let extra: HashSet<char> = extra.chars().collect();
-    let wildcard = |c: char| {
-        ENCODING_SUBSTITUTES.contains(&c)
-            || LEGACY_JAPANESE_SUBSTITUTES.contains(&c)
-            || ADDRESS_PLACEHOLDERS.contains(&c)
-            || (c.is_alphabetic() || matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' | '\u{100000}'..='\u{10fffd}')) && extra.contains(&c)
-    };
     if left == right && !left_place.chars().any(wildcard) {
         return Some(2);
     }

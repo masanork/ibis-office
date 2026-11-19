@@ -31,7 +31,6 @@ pub mod headless;
 #[cfg(target_family = "wasm")]
 pub mod web;
 pub mod app;
-#[cfg(not(target_family = "wasm"))]
 pub mod read_file;
 pub mod jtd_preview;
 #[cfg(not(target_family = "wasm"))]
@@ -160,6 +159,8 @@ pub(crate) mod input;
 pub mod plain_path;
 pub mod recent_files;
 pub(crate) mod status_bar;
+#[cfg(not(target_family = "wasm"))]
+mod image_sequence;
 pub mod spell_panel;
 pub mod symbols;
 pub mod user_name;

@@ -1726,6 +1726,7 @@ fn spill(sheet: &mut Sheet, anchor: (u32, u32), value: CellValue, spill: Option<
     // The rows and columns the spill reaches are not added to `sheet.rows`/`columns` (issue #137): they have no size of their own,
     // so they keep the default (`row_offsets` and `cell_bounds_emu` already measure past the end that way). Growing the list to a
     // million entries made every frame (and every key press) walk it, and it stayed that long after the formula was deleted.
+    let mut inserts = Vec::new();
     for (i, v) in values.iter().enumerate() {
         let (row, column) = (anchor.0 + i as u32 / columns, anchor.1 + i as u32 % columns);
         if (row, column) == anchor {
@@ -1737,8 +1738,33 @@ fn spill(sheet: &mut Sheet, anchor: (u32, u32), value: CellValue, spill: Option<
         }
         let style = existing.map_or(0, |c| c.style);
         let text = display_text(v, &sheet.styles[style as usize], d1904);
-        sheet.put_cell(row, column, Some(SheetCell { runs: None, phonetic: None, row, column, value: v.clone(), text, kind: CellKind::of(v), formula: None, style }));
+        let cell = SheetCell { runs: None, phonetic: None, row, column, value: v.clone(), text, kind: CellKind::of(v), formula: None, style };
+        if existing.is_some() {
+            sheet.put_cell(row, column, Some(cell));
+        } else {
+            inserts.push(cell);
+        }
         changed.push((row, column));
+    }
+    // Spill values arrive in row-major order. Merge new cells with the
+    // sorted sheet in one pass instead of shifting its tail per insertion.
+    if let Some(first) = inserts.first() {
+        let start = sheet.cells.partition_point(|c| (c.row, c.column) < (first.row, first.column));
+        let cells = &mut *sheet.cells;
+        if inserts.len() == 1 {
+            cells.insert(start, inserts.into_iter().next().unwrap());
+        } else {
+            let mut tail = cells.split_off(start).into_iter().peekable();
+            cells.reserve(tail.len() + inserts.len());
+            for cell in inserts {
+                let key = (cell.row, cell.column);
+                while let Some(previous) = tail.next_if(|c| (c.row, c.column) < key) {
+                    cells.push(previous);
+                }
+                cells.push(cell);
+            }
+            cells.extend(tail);
+        }
     }
     sheet.spills.insert(anchor, range);
     (values[0].clone(), changed)
@@ -2522,6 +2548,10 @@ pub enum SortBy {
 struct SheetBook<'a>(&'a Sheet);
 
 impl ibis_calc::eval::Book for SheetBook<'_> {
+    fn name_variant_cluster(&self, character: char) -> Option<u32> {
+        crate::variant_clusters::embedded()?.cluster_index(character)
+    }
+
     fn sheet_count(&self) -> usize {
         1
     }
@@ -7124,6 +7154,34 @@ mod tests {
         assert!(cell(&d, s, 4, 0).is_none_or(|c| c.value.is_empty()));
         while d.undo() {}
         assert!(*d.presentation() == start);
+    }
+
+    #[test]
+    fn spill_inserts_between_existing_cells_and_keeps_formats() {
+        let (mut d, s) = workbook();
+        for row in 0..12 {
+            set(&mut d, s, row, 0, CellInput::Value(CellValue::Number(100.0 + f64::from(row))));
+            set(&mut d, s, row, 3, CellInput::Value(CellValue::Number(200.0 + f64::from(row))));
+        }
+        let styled = CellRange { first_row: 2, last_row: 2, first_column: 2, last_column: 2 };
+        d.execute(vec![Command::Sheet(SheetCommand::SetFormat {
+            slide: s,
+            ranges: vec![styled],
+            change: StyleChange::NumberFormat("0.00".into()),
+        })]).unwrap();
+
+        let before = d.presentation().clone();
+        set(&mut d, s, 0, 1, CellInput::Formula("SEQUENCE(12,2)".into()));
+        for row in 0..12 {
+            for (column, expected) in [(0, 100 + row), (1, 2 * row + 1), (2, 2 * row + 2), (3, 200 + row)] {
+                assert_eq!(cell(&d, s, row, column).unwrap().value, CellValue::Number(f64::from(expected)));
+            }
+        }
+        assert_eq!(cell(&d, s, 2, 2).unwrap().text, "6.00");
+        assert!(d.undo());
+        assert!(*d.presentation() == before);
+        assert!(d.redo());
+        assert_eq!(cell(&d, s, 2, 2).unwrap().text, "6.00");
     }
 
     #[test]

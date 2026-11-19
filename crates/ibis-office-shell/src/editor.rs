@@ -266,11 +266,23 @@ impl RulerUnit {
 }
 
 // The ruler's unit is one setting for the three screens (each screen's menus call these).
-pub(crate) struct ExrExposureView {
+pub(crate) struct ProductionImageView {
     media: ibis_doc_model::MediaId,
-    samples: std::sync::Arc<ibis_pptx::production_image::ExrExposure>,
+    source: std::sync::Arc<ProductionImageSource>,
     pub(crate) ev: i8,
+    pub(crate) alpha: ibis_pptx::production_image::AlphaPreview,
     pub(crate) rendering: bool,
+}
+
+struct ProductionImageSource {
+    png: std::sync::Arc<[u8]>,
+    exposure: Option<ibis_pptx::production_image::ExrExposure>,
+}
+
+impl ProductionImageView {
+    pub(crate) fn has_exposure(&self) -> bool {
+        self.source.exposure.is_some()
+    }
 }
 
 impl SlideEditor {
@@ -583,7 +595,9 @@ pub struct SlideEditor {
     /// Preserve the original path even after creating an editable copy.
     #[cfg(not(target_family = "wasm"))]
     pub standard_source_path: Option<std::path::PathBuf>,
-    pub(crate) exr_exposure: Option<ExrExposureView>,
+    pub(crate) production_image_view: Option<ProductionImageView>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) image_sequence: Option<crate::image_sequence::ImageSequence>,
     /// Original JTD bytes: presence makes this document permanently read-only.
     pub jtd_original: Option<std::sync::Arc<[u8]>>,
     /// An auxiliary preview, not a reconstruction of the source document.
@@ -907,7 +921,9 @@ impl SlideEditor {
             #[cfg(not(target_family = "wasm"))]
             standard_source_path: None,
             jtd_original: None,
-            exr_exposure: None,
+            production_image_view: None,
+            #[cfg(not(target_family = "wasm"))]
+            image_sequence: None,
             jtd_gallery: false,
             jtd_gallery_body: None,
             jtd_thumbnail: false,
@@ -953,7 +969,11 @@ impl SlideEditor {
     }
 
     fn file_is_read_only(&self) -> bool {
-        self.read_only || self.standard_read_only || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+        self.read_only || self.standard_read_only || self.is_xdw() || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+    }
+
+    pub(crate) fn is_xdw(&self) -> bool {
+        self.presentation().pdf_bytes.as_deref().is_some_and(ibis_xdw::is_xdw)
     }
 
     pub(crate) fn phone_view_only(&self) -> bool {
@@ -1137,46 +1157,80 @@ impl SlideEditor {
         }
     }
 
-    fn set_exr_exposure(&mut self, exposure: Option<ibis_pptx::production_image::ExrExposure>) {
-        self.exr_exposure = exposure.and_then(|samples| {
-            let media = self.presentation().media.last()?.id;
-            Some(ExrExposureView { media, samples: std::sync::Arc::new(samples), ev: 0, rendering: false })
-        });
+    fn set_opened_source(
+        &mut self,
+        source: std::sync::Arc<ibis_pptx::Source>,
+        production_image: bool,
+    ) {
+        if production_image {
+            // The preview is an import into the source's blank DOCX package.
+            // Keep that package's baseline so saving writes the image and its relationship.
+            self.source = Some(source);
+        } else {
+            self.set_loaded_source(source);
+        }
+    }
+
+    fn set_production_image_view(&mut self, present: bool, exposure: Option<ibis_pptx::production_image::ExrExposure>) {
+        use ibis_pptx::production_image::AlphaPreview;
+        self.production_image_view = self.presentation().media.last()
+            .filter(|media| present && media.format == ibis_doc_model::MediaFormat::Png)
+            .map(|media| ProductionImageView {
+                media: media.id,
+                source: std::sync::Arc::new(ProductionImageSource { png: media.data.clone(), exposure }),
+                ev: 0,
+                alpha: AlphaPreview::Original,
+                rendering: false,
+            });
     }
 
     pub(crate) fn set_exr_ev(&mut self, ev: i8, window: &mut Window, cx: &mut Context<Self>) {
-        let ev = ev.clamp(-8, 8);
-        let Some(view) = self.exr_exposure.as_mut() else { return };
-        if view.rendering || view.ev == ev { return; }
-        if ev == 0 {
+        let Some(view) = self.production_image_view.as_ref().filter(|view| view.has_exposure()) else { return };
+        self.set_image_display(ev.clamp(-8, 8), view.alpha, window, cx);
+    }
+
+    pub(crate) fn set_image_alpha(&mut self, alpha: ibis_pptx::production_image::AlphaPreview, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.production_image_view.as_ref() else { return };
+        self.set_image_display(view.ev, alpha, window, cx);
+    }
+
+    fn set_image_display(&mut self, ev: i8, alpha: ibis_pptx::production_image::AlphaPreview, window: &mut Window, cx: &mut Context<Self>) {
+        use ibis_pptx::production_image::{AlphaPreview, display_preview_png};
+        let Some(view) = self.production_image_view.as_mut() else { return };
+        if view.rendering || (view.ev == ev && view.alpha == alpha) { return; }
+        if ev == 0 && alpha == AlphaPreview::Original {
             view.ev = 0;
+            view.alpha = alpha;
             self.resources.set_picture_preview(None);
             cx.notify();
             return;
         }
         view.rendering = true;
-        let samples = view.samples.clone();
+        let source = view.source.clone();
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             #[cfg(not(target_family = "wasm"))]
             let result = {
-                let samples = samples.clone();
-                cx.background_executor().spawn(async move { samples.preview_png(ev) }).await
+                let source = source.clone();
+                cx.background_executor().spawn(async move {
+                    display_preview_png(&source.png, source.exposure.as_ref(), ev, alpha)
+                }).await
             };
             #[cfg(target_family = "wasm")]
             let result = {
                 cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
-                samples.preview_png(ev)
+                display_preview_png(&source.png, source.exposure.as_ref(), ev, alpha)
             };
             this.update_in(cx, |this, _, cx| {
-                let Some(view) = this.exr_exposure.as_mut() else { return };
-                if !std::sync::Arc::ptr_eq(&view.samples, &samples) { return; }
+                let Some(view) = this.production_image_view.as_mut() else { return };
+                if !std::sync::Arc::ptr_eq(&view.source, &source) { return; }
                 view.rendering = false;
                 match result {
                     Ok(bytes) => {
                         let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, bytes);
                         this.resources.set_picture_preview(Some((view.media, std::sync::Arc::new(image))));
                         view.ev = ev;
+                        view.alpha = alpha;
                     }
                     Err(error) => this.set_status(error, cx),
                 }
@@ -1199,7 +1253,9 @@ impl SlideEditor {
         with_format!(self, show_end(self, window, cx));
         self.opened_from_legacy = presentation.opened_from_legacy;
         self.jtd_original = None;
-        self.exr_exposure = None;
+        self.production_image_view = None;
+        #[cfg(not(target_family = "wasm"))]
+        { self.image_sequence = None; }
         self.jtd_gallery = false;
         self.jtd_gallery_body = None;
         self.jtd_thumbnail = false;
@@ -1393,6 +1449,19 @@ impl SlideEditor {
             // Let the empty document show before reading the file, which
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            let is_xdw = name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("xdw"))
+                || ibis_xdw::is_xdw(&data);
+            if is_xdw {
+                let result = crate::read_file::read_xdw(data.into());
+                this.update_in(cx, |this, window, cx| {
+                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    match result {
+                        Ok(presentation) => this.load(presentation, name, window, cx),
+                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                    }
+                }).ok();
+                return;
+            }
             let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ibis_pptx::jtd::is_extension(ext)) || ibis_pptx::jtd::is_jtd(&data);
             if is_jtd {
                 let mut result = crate::jtd_preview::read(&data);
@@ -1430,10 +1499,14 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let mut result = match ibis_pptx::production_image::open_with_exposure(extension, &data) {
-                Ok(Some(result)) => Ok(result),
-                Ok(None) => ibis_pptx::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
-                Err(error) => Err(error),
+            let mut result = if extension.is_some_and(ibis_pptx::production_image::is_heic_extension) {
+                crate::web::open_heic(&data).await.map(|opened| (opened, None))
+            } else {
+                match ibis_pptx::production_image::open_with_exposure(extension, &data) {
+                    Ok(Some(result)) => Ok(result),
+                    Ok(None) => ibis_pptx::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
+                    Err(error) => Err(error),
+                }
             };
             if let Ok((opened, _)) = &result {
                 if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {
@@ -1452,8 +1525,8 @@ impl SlideEditor {
                         name
                     };
                     this.load(opened.presentation, doc_name, window, cx);
-                    this.set_exr_exposure(exposure);
-                    this.set_loaded_source(std::sync::Arc::new(opened.source));
+                    this.set_production_image_view(production_image, exposure);
+                    this.set_opened_source(std::sync::Arc::new(opened.source), production_image);
                     // (A presentation opens without the speaker notes, as a new one does.)
                     with_format!(this, file_opened(this));
                     if is_ppsx {
@@ -1515,7 +1588,18 @@ impl SlideEditor {
         self.watch.opening_path = Some(path.clone());
         let closed = self.closed;
         cx.spawn_in(window, async move |this, cx| {
-            let mut result = cx.background_executor().spawn(async move { read() }).await;
+            let sequence_path = path.clone();
+            let (mut result, sequence) = cx.background_executor().spawn(async move {
+                let result = read();
+                let sequence = if result.is_ok() && sequence_path.extension().and_then(|ext| ext.to_str())
+                    .is_some_and(ibis_pptx::production_image::supports_extension)
+                {
+                    crate::image_sequence::ImageSequence::discover(&sequence_path)
+                } else {
+                    None
+                };
+                (result, sequence)
+            }).await;
             let ambiguous = result.as_ref().ok().and_then(|loaded| loaded.source.original_csv_format())
                 .is_some_and(|format| matches!(format.encoding, ibis_pptx::csv::OriginalEncoding::AsciiAmbiguous | ibis_pptx::csv::OriginalEncoding::Utf8OrCp932));
             if ambiguous {
@@ -1550,14 +1634,17 @@ impl SlideEditor {
                     Ok(opened)
                 }).await;
             }
-            this.update(cx, |this, _| this.watch.opening_path = None).ok();
             this.update_in(cx, |this, window, cx| {
+            if this.closed != closed || this.watch.opening_path.as_deref() != Some(path.as_path()) {
+                return;
+            }
+            this.watch.opening_path = None;
             let restore = this.watch.restore_view.take().filter(|(p, _)| *p == path).map(|(_, view)| view);
             match result {
-                // Closed (ファイル > 閉じる) while it was read.
-                _ if this.closed != closed => {}
                 Ok(loaded) => {
                     let signature_presence = loaded.source.has_package_signatures();
+                    let production_image = path.extension().and_then(|ext| ext.to_str())
+                        .is_some_and(ibis_pptx::production_image::supports_extension);
                     let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
                     if let Some(bytes) = loaded.jtd_original {
                         this.load_jtd(loaded.presentation, name, bytes, loaded.jtd_gallery, window, cx);
@@ -1569,13 +1656,13 @@ impl SlideEditor {
                         this.set_loaded_source(loaded.source);
                         this.path = None;
                         this.document.set_file(None);
-                    } else if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::production_image::supports_extension)
+                    } else if production_image
                         || path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
                         // An old workbook or presentation (or an OpenDocument workbook) is read as a new .xlsx or .pptx: saving asks where, and leaves the old file as it is.
                         let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         let extension = crate::format::info(ibis_pptx::Kind::of(&loaded.presentation)).extension;
                         this.load(loaded.presentation, format!("{stem}.{extension}").into(), window, cx);
-                        this.set_loaded_source(loaded.source);
+                        this.set_opened_source(loaded.source, production_image);
                         this.path = None;
                         this.document.set_file(None);
                     } else {
@@ -1593,7 +1680,8 @@ impl SlideEditor {
                         this.watch.known = stamp_before_read;
                         this.protection_password = loaded.password.clone();
                     }
-                    this.set_exr_exposure(loaded.exr_exposure);
+                    this.set_production_image_view(production_image, loaded.exr_exposure);
+                    this.image_sequence = sequence;
                     if loaded.standard_encryption {
                         this.standard_read_only = true;
                         this.standard_source_path = Some(path.clone());
@@ -2003,6 +2091,9 @@ impl SlideEditor {
 
     /// The zoom shown, 1.0 being 100%.
     pub fn current_zoom(&self) -> f32 {
+        if self.kind() == ibis_pptx::Kind::Pdf {
+            return self.zoom.unwrap_or(1.0);
+        }
         self.zoom.or_else(|| self.slide_layout().map(|l| l.zoom(self.px_per_inch_at_100()))).unwrap_or(1.0)
     }
 

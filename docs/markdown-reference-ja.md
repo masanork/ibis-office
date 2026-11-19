@@ -46,6 +46,41 @@ ibisOffice --export pptx --out-dir /tmp/docs-reference/pptx docs/markdown-refere
 ibisOffice --export md --out-dir /tmp/docs-reference/markdown /tmp/docs-reference/docx/markdown-reference-ja.docx
 ```
 
+## 表のセル結合
+
+### 横方向
+
+結合するセルの末尾に `<!-- colspan:2 -->` を付け、続く列を空セルにします。数字は、結合する先頭のセルを含めた列数です。次の表を DOCX に保存して Markdown に戻すと、列の位置と結合の指定を保持します。
+
+| 集計対象 <!-- colspan:2 --> | | 件数 |
+| :--- | :--- | ---: |
+| 国内 | 文書 | 12 |
+| 海外 | 文書 | 8 |
+
+標準的な Markdown 表示ではコメントが隠れ、続く列には空セルが表示されます。結合範囲に値がある場合、Docs は各セルを個別に読み込みます。
+
+### 縦方向
+
+結合元に `<!-- vmerge:start -->`、直下の空セルに `<!-- vmerge:continue -->` を付けます。3行以上の結合は、対象の各行に継続マーカーを付けます。横方向にも結合する場合は、各行のセルに同じ `colspan` を先に書きます。
+
+| 分類 | 内訳 | 件数 |
+| :--- | :--- | ---: |
+| 国内 <!-- colspan:2 --> <!-- vmerge:start --> | | 12 |
+| <!-- colspan:2 --> <!-- vmerge:continue --> | | 8 |
+| 海外 | 文書 | 5 |
+
+DOCX との往復では列幅の範囲と結合の開始・継続を保持します。継続セルに内容がある場合や、直上のセルと開始列・結合列数が合わない場合は、そのセルを縦結合しません。
+
+### 入れ子表
+
+セル内のパイプ表を `<!-- nested-table: … -->` で囲みます。内側の表の行は `<br>` で区切り、内側のパイプには `\|` と書きます。内側の表に含まれる `&`、`<`、`>` はそれぞれ `&amp;`、`&lt;`、`&gt;` にします。
+
+| 分類 | 内訳 |
+| :--- | :--- |
+| 国内 | 紙と電子<br><!-- nested-table: \| 媒体 \| 件数 \|<br>\| --- \| ---: \|<br>\| 紙 \| 3 \|<br>\| 電子 \| 9 \| --><br>計12件 |
+
+Docs はセルの中に編集可能な表を表示します。DOCX から Markdown に戻すと、内側の表と前後の文章を保持します。Markdown の読み込みは外側の表を除いて最大8階層です。HTML コメントを非表示にする Markdown ビューアーでは、内側の表はソースで確認できます。
+
 ## Markdown 構文一覧
 
 ここでの対応は、入力を読み取って Docs の文書モデルに反映できることを指します。保存形式や書き出し先によって保持される情報は異なります。Markdown に戻すと記法や空白が正規化されることがあります。
@@ -281,9 +316,12 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 出力は `report.ai.json` です。`markdown` に本文、`sourceSha256` に入力ファイルの SHA-256 が入ります。`markdownBytes` は JSON を読み取った後の Markdown 文字列に対する UTF-8 バイト範囲です。開始位置を含み、終了位置は含みません。
 
 - DOCX の `blocks` は本文の段落・表と、ページ脚注・文末脚注を指します。本文の `index` は 0 始まり、`modelId` は読み込んだ時点の文書モデル内の ID です。注記の `id` は元の DOCX の値です。`part` が `footnotes` か `endnotes` かで、同じ ID の注記を区別できます。
+- DOCX の `tables` には本文の表の構造が入ります。`source` は `blocks` 内の表と共通です。`structure.rows` と各行の `cells` は文書順で、`row` と `column` は 1 始まりです。`header` は繰り返し見出し行の指定を表します。
+- セルの `columnSpan` は横方向の結合列数です。`verticalMerge` は `none`、`start`、`continue` のいずれかです。セル内の `blocks` には段落の Markdown と入れ子表の構造が、原文と同じ順番で入ります。段落やセルの `modelId` は同じ原本を参照するときに使います。
+- DOCX の `tableCells` は、本文のパイプ表に出力されたセル内容の UTF-8 範囲です。`source.tableModelId` と `source.modelId` は表とセルの ID、`row` と `column` は 1 始まりの開始位置です。結合列を数えた原本の列番号が入ります。空セル、結合指定、区切りのパイプにセル範囲は付きません。入れ子表の引用位置は外側のセルまで特定でき、内側の行・列は `tables` に含まれます。
 - XLSX の `cells` はシート名と 1 始まりの行列を持ちます。表示文字列、保存された値とその型、数式を別々に記録します。Markdown 出力と同じく表示中のシート・行・列を対象にします。
 - Lawtext と法令標準 XML の `articles` は法令番号、条番号、附則の位置と改正法令番号を記録します。本則の附則位置は `null` です。
-- `diagnostics` は、結合セルの構造、入れ子表、脚注内の表など、現在検出する変換上の差を示します。
+- `diagnostics` は Markdown 出力で検出した変換上の差を示します。結合セルや入れ子表の構造は `tables` で確認できます。
 
 位置情報は書き出し時の入力に対応します。改版後の照合や、AI の編集案の適用に使う場合は入力の SHA-256 を確認してください。
 
@@ -302,7 +340,7 @@ DOCX のページ脚注と文末脚注に同じ ID がある場合、Markdown �
 
 `--export ai-locate --ai-query citation.json report.docx` は、指定範囲と重なる段落・表・脚注、条文、セルを標準出力に JSON で返します。`citation.json` には `version: 1` に相当する JSON フィールドと、書き出し時の `sourceSha256`、引用した `markdownBytes`、その範囲と完全に一致する `quote` を入れます。入力のハッシュが変わっていた場合や、UTF-8 の文字境界・引用が一致しない場合はエラーになります。
 
-デスクトップ版では `ibisOffice --ai-query citation.json report.docx` で原本を開き、該当段落の先頭へ移動できます。対象は一つの本文段落に対応する引用です。複数段落をまたぐ引用、表や脚注、法令と表計算の位置は `ai-locate` で確認できます。
+デスクトップ版では `ibisOffice --ai-query citation.json report.docx` で原本を開き、該当段落の先頭へ移動できます。対象は一つの本文段落に対応する引用です。複数段落をまたぐ引用、表や脚注、法令と表計算の位置は `ai-locate` で確認できます。DOCX の表を引用したときは、`matches` に表全体、`tableCellMatches` に引用範囲が重なるセルが入ります。
 
 ### 段落の編集案を確認して適用する
 
@@ -316,6 +354,127 @@ ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed
 プレビューは変更前後の段落全体を JSON で返します。適用時にも照合を行い、新規ファイルに保存します。段落全体の置換は一つのテキストランからなる本文段落が対象です。保護・署名・変更履歴の記録が有効な文書や、リンク・ブックマークなどの注釈を含む対象段落は拒否します。
 
 引用箇所だけを置換するには、段落全体のプレーンテキスト `before` 上の範囲を `paragraphBytes` として追加します。どちらの範囲も UTF-8 のバイト単位で、開始を含み、終了を含みません。たとえばエクスポートされた Markdown の先頭が `前**旧**後` の場合、`before` は `前旧後`、`quote` は `旧`、`markdownBytes` は `[5, 8]`、`paragraphBytes` は `[3, 6]` です。`replacement` に `新` を指定すると、太字のまま `旧` が `新` に変わります。両方の範囲が同じ箇所を指し、引用が一つのテキストラン内に収まる必要があります。
+
+### 表のセルの編集案を確認して適用する
+
+`ai-preview` と `ai-apply` を使います。編集案の `target` は `"tableCell"` とし、`markdownBytes` は `tableCells` にあるセル全体の範囲を指定します。`quote` はその範囲の Markdown、`before` はセル全体のプレーンテキストです。たとえば太字のセルでは `quote` が `**東京**`、`before` が `東京` になります。`replacement` に `大阪` を指定すると、保存後も太字のままです。
+
+セルの一部を置換する場合は、`markdownBytes` と `quote` に該当箇所を指定し、`paragraphBytes` に同じ箇所の `before` 上の UTF-8 バイト範囲を追加します。`before` には引き続きセル全体のプレーンテキストを入れます。たとえば `東京と**東京**` の太字の「東京」だけを置換する場合、`before` は `東京と東京`、`paragraphBytes` は `[9, 15]` です。
+
+対象は一つの段落を持つ、本文の結合されていないセルです。全体の置換には単一のテキストランが必要です。部分置換は一つのテキストランに収まる引用を対象とし、他のランの書式とテキストを保持します。プレビューには表・セルの ID と行・列が入り、適用時は原本と照合して別の DOCX に保存します。
+
+### 引用箇所を削除する
+
+段落やセルで引用した箇所だけを削除するには、部分置換と同じように `paragraphBytes` を指定し、`replacement` に空文字列 `""` を入れます。たとえば `東京と**大阪**` から太字の「大阪」を削除する場合、`before` は `東京と大阪`、`paragraphBytes` は `[9, 15]` です。削除と置換は同じバッチに含められます。
+
+### 引用の直前・直後に挿入する
+
+挿入位置の目印となる引用を `markdownBytes` と `paragraphBytes` で指定し、`insert` に `"before"`（直前）または `"after"`（直後）を入れます。`replacement` は挿入する一行のテキストです。引用は残り、挿入したテキストは目印のテキストランの書式を引き継ぎます。たとえば太字の「東京」を目印に `insert: "after"` と `replacement: "支店"` を指定すると、太字の「東京支店」になります。
+
+一括編集では、同じ位置への複数の挿入や、置換・削除の範囲の内側または端への挿入を拒否します。
+
+### 複数の編集案をまとめる
+
+`ai-preview` と `ai-apply` には、同じ DOCX に対する複数の編集案も渡せます。JSON の最上位に `version: 1`、原本の `sourceSha256`、編集案の配列 `edits` を置きます。配列の各要素には単独の編集案と同じ `markdownBytes`、`quote`、`before`、`replacement` などを入れます。`version` と `sourceSha256` は最上位から引き継ぎます。
+
+すべての編集案を同じ原本に照合します。一件でも照合に失敗すると出力ファイルは作成されず、エラーには配列内の何件目かが表示されます。同じ段落やセルでも、原本上の範囲が重ならない部分置換をまとめられます。同じテキストラン内でも指定でき、置換後の文字数が変わっても他の範囲には影響しません。範囲が重複する場合は一括適用を拒否します。プレビューの `edits` は入力順に、各案を単独で原本に当てた場合の変更前後を返します。`targets` は段落・セルごとに全案を反映した変更前後を返します。対象は最初に現れた順で、`editIndices` は対応する案の入力順の番号（1 始まり）です。適用時は全件を反映した一つの新しい DOCX を作ります。
+
+### プレビューで変更位置を確認する
+
+単独プレビューと一括プレビューの各 `edits` 要素は、操作の種類を `operation`（`replace`、`delete`、`insert`）で返します。`markdownBytes` と `quote` は照合した引用です。`affectedParagraphBytes` は、原本の段落またはセルのプレーンテキスト `before` のうち、実際に変わる UTF-8 バイト範囲を指します。挿入の場合は開始と終了が同じ位置です。`replacement` はその範囲に入る文字列です。
+
+### 確認した編集案を指定して保存する
+
+`ai-preview` が返す `previewSha256` を編集案 JSON の最上位にコピーできます。`ai-apply` はこの値を指定した場合、照合済みの変更内容から再計算し、一致しなければ保存しません。一括編集では案の順番も照合します。編集案を変更したら、改めてプレビューして新しい値を取得します。
+
+`ai-apply` に `--require-preview` を付けると、`previewSha256` がない編集案も拒否します。
+
+この値は原本に対する編集内容を照合するためのものです。確認者の本人性や承認を証明する電子署名ではありません。
+
+### 保存結果を JSON に記録する
+
+`ai-apply` に `--ai-receipt` を付けると、DOCX の保存に成功した後で結果を標準出力に返します。結果には `outputPath` と `outputSha256`、原本の `sourceSha256`、編集件数 `editCount` が入ります。`previewSha256` は適用した案のハッシュです。`previewVerified` は、編集案にその値が指定され、一致を確認した場合に `true` になります。確認済みの案だけを保存するには `--require-preview` も付けます。
+
+### 編集案 JSON を検証する
+
+単独編集と一括編集の入力形式は [編集案 JSON Schema v1](schemas/ai-edit-proposal-v1.schema.json) で確認できます。Draft 2020-12 のバリデーターを使うと、項目名の誤り、必須項目の不足、空のバッチ、改行を含む置換などを事前に検出できます。
+
+ファイルの SHA-256、UTF-8 の文字境界、引用と原文の一致、編集範囲の重複は原本を使って確認します。スキーマの検証後も、保存する前に `ai-preview` で原本との照合結果を確認してください。
+
+### CLI で一括編集を試す
+
+macOS または Linux のシェルで、`ibisOffice` と `python3` を使います。合成文書を一時ディレクトリに作り、本文と書式付きの表セルをまとめて変更します。書き出された Markdown を UTF-8 に変換してから位置を求めます。
+
+```sh
+demo=$(mktemp -d)
+cat > "$demo/original.md" <<'EOF'
+出張先を確認する。
+
+| 支店 |
+| --- |
+| **東京**と*大阪* |
+EOF
+ibisOffice --export docx --out-dir "$demo" "$demo/original.md"
+ibisOffice --export ai-json --out-dir "$demo" "$demo/original.docx"
+python3 - "$demo" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+demo = Path(sys.argv[1])
+bundle = json.loads((demo / "original.ai.json").read_text(encoding="utf-8"))
+markdown = bundle["markdown"].encode("utf-8")
+
+def byte_range(text, quote):
+    encoded = quote.encode("utf-8")
+    start = text.index(encoded)
+    return [start, start + len(encoded)]
+
+def edit(quote, before, replacement, **fields):
+    return dict(markdownBytes=byte_range(markdown, quote), quote=quote,
+                before=before, replacement=replacement, **fields)
+
+cell = "東京と大阪"
+batch = {
+    "version": 1,
+    "sourceSha256": bundle["sourceSha256"],
+    "edits": [
+        edit("出張先を確認する。", "出張先を確認する。", "出張先を確定する。"),
+        edit("東京", cell, "横浜市", target="tableCell",
+             paragraphBytes=byte_range(cell.encode("utf-8"), "東京")),
+        edit("大阪", cell, "札幌", target="tableCell",
+             paragraphBytes=byte_range(cell.encode("utf-8"), "大阪")),
+    ],
+}
+(demo / "batch.json").write_text(json.dumps(batch, ensure_ascii=False), encoding="utf-8")
+PY
+ibisOffice --export ai-preview --ai-query "$demo/batch.json" "$demo/original.docx" > "$demo/preview.json"
+cat "$demo/preview.json"
+```
+
+プレビューを確認したら、次のコマンドで照合用のハッシュを編集案に追加して保存します。
+
+```sh
+python3 - "$demo" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+demo = Path(sys.argv[1])
+batch = json.loads((demo / "batch.json").read_text(encoding="utf-8"))
+preview = json.loads((demo / "preview.json").read_text(encoding="utf-8"))
+batch["previewSha256"] = preview["previewSha256"]
+(demo / "checked.json").write_text(json.dumps(batch, ensure_ascii=False), encoding="utf-8")
+PY
+ibisOffice --export ai-apply --require-preview --ai-query "$demo/checked.json" \
+  --out-file "$demo/reviewed.docx" "$demo/original.docx"
+ibisOffice --export md --out-dir "$demo" "$demo/reviewed.docx"
+cat "$demo/reviewed.md"
+```
+
+プレビューの `targets` には本文とセルの2件が入り、セルの適用後テキストは「横浜市と札幌」になります。保存後の `reviewed.md` では `**横浜市**と*札幌*` になり、太字と斜体を確認できます。`original.docx` は原本のままです。
+
+デスクトップ CI では macOS と Linux のビルド済みバイナリに対して、同じ操作と保存結果のハッシュ、照合失敗と上書き拒否を検証します。ローカルでも `python3 scripts/test-ai-edit-cli.py target/debug/ibisOffice` で実行できます。
 
 ## ステージング文書としての更新
 

@@ -26,6 +26,14 @@ jxl-oxide = { version = "0.12", default-features = false }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = "0.10"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = "0.24"
+foreign-types = "0.5"
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+ibis-heic-web = { path = "../ibis-heic-web" }
+
 [dev-dependencies]
 dicom-core = "0.10.1"
 ibis-emf.workspace = true

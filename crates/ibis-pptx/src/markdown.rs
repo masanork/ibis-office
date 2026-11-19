@@ -1630,7 +1630,7 @@ fn parse_blocks(
                 body_rows.push(split_table_row(lines[i].trim()));
                 i += 1;
             }
-            blocks.push(build_table_block(header_cells, alignments, body_rows, ctx));
+            blocks.push(build_table_block(header_cells, alignments, body_rows, ctx, 0));
             continue;
         }
 
@@ -2203,11 +2203,45 @@ fn parse_table_alignments(sep: &str) -> Vec<Option<FlowAlign>> {
         .collect()
 }
 
+fn table_colspan<'a>(cell: &'a str, row: &[String], column: usize) -> (&'a str, usize) {
+    if let Some((text, marker)) = cell.strip_suffix(" -->").and_then(|cell| cell.rsplit_once("<!-- colspan:"))
+        && let Ok(span) = marker.parse::<u32>()
+        && span > 1
+        && let Some(end) = column.checked_add(span as usize)
+        && row.get(column + 1..end).is_some_and(|covered| covered.iter().all(String::is_empty))
+    {
+        return (text.trim_end(), span as usize);
+    }
+    (cell, 1)
+}
+
+const NESTED_TABLE_START: &str = "<!-- nested-table: ";
+const NESTED_TABLE_END: &str = " -->";
+
+fn parse_nested_table(payload: &str, ctx: &mut ParseContext<'_>, depth: usize) -> Option<Block> {
+    let decode_line = |line: &str| line.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+    let rows: Vec<_> = payload.split("<br>").map(decode_line).collect();
+    let mut lines = rows.iter().map(String::as_str);
+    let header = lines.next()?;
+    let separator = lines.next()?;
+    if !is_table_row(header) || !is_table_separator(separator) || !lines.clone().all(is_table_row) {
+        return None;
+    }
+    Some(build_table_block(
+        split_table_row(header),
+        parse_table_alignments(separator),
+        lines.map(split_table_row).collect(),
+        ctx,
+        depth,
+    ))
+}
+
 fn build_table_block(
     header_cells: Vec<String>,
     alignments: Vec<Option<FlowAlign>>,
     body_rows: Vec<Vec<String>>,
     ctx: &mut ParseContext<'_>,
+    depth: usize,
 ) -> Block {
     let col_count = header_cells
         .len()
@@ -2227,10 +2261,29 @@ fn build_table_block(
         art: None,
     };
 
-    let build_row = |cells_text: Vec<String>, is_header: bool, ctx: &mut ParseContext<'_>| -> FlowRow {
+    let mut previous_merges = HashMap::new();
+    let mut build_row = |cells_text: Vec<String>, is_header: bool, ctx: &mut ParseContext<'_>| -> FlowRow {
         let mut cells = Vec::with_capacity(col_count);
-        for c_idx in 0..col_count {
+        let mut active_merges = HashMap::new();
+        let mut c_idx = 0;
+        while c_idx < col_count {
             let raw_cell = cells_text.get(c_idx).map(String::as_str).unwrap_or("");
+            let (raw_cell, requested_merge) = if let Some(cell) = raw_cell.strip_suffix("<!-- vmerge:start -->") {
+                (cell.trim_end(), VerticalMerge::Start)
+            } else if let Some(cell) = raw_cell.strip_suffix("<!-- vmerge:continue -->") {
+                (cell.trim_end(), VerticalMerge::Continue)
+            } else {
+                (raw_cell, VerticalMerge::None)
+            };
+            let (raw_cell, span) = table_colspan(raw_cell, &cells_text, c_idx);
+            let merge = match requested_merge {
+                VerticalMerge::Continue
+                    if !raw_cell.is_empty() || previous_merges.get(&c_idx) != Some(&span) => VerticalMerge::None,
+                merge => merge,
+            };
+            if merge != VerticalMerge::None {
+                active_merges.insert(c_idx, span);
+            }
             let align = alignments.get(c_idx).copied().flatten();
             let base_fmt = if is_header {
                 RunFormat {
@@ -2240,35 +2293,53 @@ fn build_table_block(
             } else {
                 RunFormat::default()
             };
-            let parts: Vec<&str> = raw_cell.split("<br>").collect();
-            let mut runs = Vec::new();
-            for (pi, part) in parts.iter().enumerate() {
-                if pi > 0 {
-                    runs.push(FlowRun::new(
-                        FlowRunKind::LineBreak,
-                        FlowRunStyle::default(),
-                    ));
+            let paragraph = |text: &str, ctx: &mut ParseContext<'_>| {
+                let parts: Vec<&str> = text.split("<br>").collect();
+                let mut runs = Vec::new();
+                for (pi, part) in parts.iter().enumerate() {
+                    if pi > 0 {
+                        runs.push(FlowRun::new(
+                            FlowRunKind::LineBreak,
+                            FlowRunStyle::default(),
+                        ));
+                    }
+                    runs.extend(parse_inlines(part.trim(), ctx, &base_fmt));
                 }
-                runs.extend(parse_inlines(part.trim(), ctx, &base_fmt));
-            }
-            let mut p = FlowParagraph {
-                id: ctx.fresh_id(),
-                style: ctx.styles.default_paragraph.clone(),
-                table_style: Some("TableGrid".to_string()),
-                direct: ParaFormat {
-                    align,
-                    ..ParaFormat::default()
-                },
-                runs,
-                ..FlowParagraph::default()
+                let mut p = FlowParagraph {
+                    id: ctx.fresh_id(),
+                    style: ctx.styles.default_paragraph.clone(),
+                    table_style: Some("TableGrid".to_string()),
+                    direct: ParaFormat {
+                        align,
+                        ..ParaFormat::default()
+                    },
+                    runs,
+                    ..FlowParagraph::default()
+                };
+                p.resolve(&ctx.styles);
+                p.normalize();
+                Block::Paragraph(p)
             };
-            p.resolve(&ctx.styles);
-            p.normalize();
+            let mut blocks = Vec::new();
+            let mut remaining = raw_cell;
+            while depth < 8 {
+                let Some((before, payload)) = remaining.split_once(NESTED_TABLE_START) else { break };
+                let Some((payload, after)) = payload.split_once(NESTED_TABLE_END) else { break };
+                let Some(table) = parse_nested_table(payload, ctx, depth + 1) else { break };
+                let before = before.strip_suffix("<br>").unwrap_or(before);
+                if !before.is_empty() {
+                    blocks.push(paragraph(before, ctx));
+                }
+                blocks.push(table);
+                remaining = after.strip_prefix("<br>").unwrap_or(after);
+            }
+            // Word requires a paragraph at the end of a table cell.
+            blocks.push(paragraph(remaining, ctx));
             cells.push(FlowCell {
                 id: ctx.fresh_id(),
-                blocks: vec![Block::Paragraph(p)],
-                span: 1,
-                merge: VerticalMerge::None,
+                blocks,
+                span: span as u32,
+                merge,
                 shading: is_header.then_some(Rgb(0xF2F4F8)),
                 borders: [Some(line), Some(line), Some(line), Some(line)],
                 own_borders: [None; 4],
@@ -2279,7 +2350,9 @@ fn build_table_block(
                 no_wrap: false,
                 ..FlowCell::default()
             });
+            c_idx += span;
         }
+        previous_merges = active_merges;
         FlowRow {
             id: ctx.fresh_id(),
             height: RowHeight::Auto,
@@ -3750,6 +3823,7 @@ pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
 enum MarkdownSource<'a> {
     Body(usize, &'a Block),
     Note { note: &'a Note, endnote: bool },
+    TableCell { index: usize, table: &'a FlowTable, row: usize, column: usize, cell: &'a FlowCell },
 }
 
 fn export_markdown_with_positions<'a>(
@@ -3805,7 +3879,12 @@ fn export_markdown_with_positions<'a>(
         }
 
         let start = out.len();
-        serialize_block(block, doc, media, &comments_by_id, &mut out);
+        match block {
+            Block::Table(table) => serialize_table(table, media, &comments_by_id, &mut out, &mut |row, column, cell, start, end| {
+                record(MarkdownSource::TableCell { index: i, table, row, column, cell }, start, end);
+            }),
+            Block::Paragraph(_) => serialize_block(block, doc, media, &comments_by_id, &mut out),
+        }
         record(MarkdownSource::Body(i, block), start, out.len());
         prev_was_list = is_list;
         i += 1;
@@ -3878,8 +3957,6 @@ pub fn export_ai_source(data: &[u8]) -> Result<serde_json::Value, Error> {
 
 /// Resolve an AI citation against a fresh export of the exact original input.
 pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_json::Value, Error> {
-    use serde_json::json;
-
     if query["version"].as_u64() != Some(1) {
         return Err(Error::new("AI citation version must be 1"));
     }
@@ -3887,9 +3964,22 @@ pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_
     if source_sha256(data) != expected {
         return Err(Error::new("Source SHA-256 differs from the AI citation"));
     }
+    let export = export_ai_source(data)?;
+    locate_ai_export(&export, query)
+}
+
+fn locate_ai_export(export: &serde_json::Value, query: &serde_json::Value) -> Result<serde_json::Value, Error> {
+    use serde_json::json;
+
+    if query["version"].as_u64() != Some(1) {
+        return Err(Error::new("AI citation version must be 1"));
+    }
+    let expected = query["sourceSha256"].as_str().ok_or_else(|| Error::new("AI citation requires sourceSha256"))?;
+    if export["sourceSha256"] != expected {
+        return Err(Error::new("Source SHA-256 differs from the AI citation"));
+    }
     let (start, end) = ai_byte_range(&query["markdownBytes"]).ok_or_else(|| Error::new("AI citation requires a nonempty markdownBytes range"))?;
     let quote = query["quote"].as_str().ok_or_else(|| Error::new("AI citation requires the exact Markdown quote"))?;
-    let export = export_ai_source(data)?;
     let markdown = export["markdown"].as_str().ok_or_else(|| Error::new("AI export has no Markdown"))?;
     if markdown.get(start..end) != Some(quote) {
         return Err(Error::new("Markdown range and quote do not match the regenerated export"));
@@ -3900,14 +3990,22 @@ pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_
         .filter(|entry| ai_byte_range(&entry["markdownBytes"])
             .is_some_and(|(left, right)| start < right && left < end))
         .collect();
-    Ok(json!({
+    let mut result = json!({
         "version": 1,
         "kind": export["kind"],
         "sourceSha256": expected,
         "markdownBytes": [start, end],
         "quote": quote,
         "matches": matches,
-    }))
+    });
+    if let Some(cells) = export["tableCells"].as_array() {
+        let cell_matches: Vec<_> = cells.iter()
+            .filter(|entry| ai_byte_range(&entry["markdownBytes"])
+                .is_some_and(|(left, right)| start < right && left < end))
+            .collect();
+        result["tableCellMatches"] = json!(cell_matches);
+    }
+    Ok(result)
 }
 
 /// A desktop jump requires a citation resolving to one body paragraph.
@@ -3930,35 +4028,152 @@ fn ai_body_paragraph_entry(citation: &serde_json::Value) -> Result<&serde_json::
     Ok(entry)
 }
 
-/// Validate a paragraph replacement and return its before/after text.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum AiEditTarget {
+    Paragraph(usize),
+    TableCell { table: usize, row: usize, cell: usize },
+}
+
+struct PreparedAiEdit {
+    target: AiEditTarget,
+    run_index: usize,
+    range: std::ops::Range<usize>,
+    paragraph_start: usize,
+    replacement: String,
+    preview: serde_json::Value,
+}
+
+fn ai_edit_preview_digest(proposal: &serde_json::Value, edits: &[PreparedAiEdit]) -> String {
+    let entries: Vec<_> = edits.iter().map(|edit| {
+        let preview = &edit.preview;
+        let source = &preview["source"];
+        serde_json::json!([
+            source["kind"], source["index"], source["modelId"],
+            preview["operation"], preview["markdownBytes"], preview["quote"],
+            preview["affectedParagraphBytes"], preview["before"], preview["replacement"],
+        ])
+    }).collect();
+    let snapshot = serde_json::json!([
+        "ibisOffice DOCX edit preview v1",
+        proposal["sourceSha256"],
+        entries,
+    ]);
+    source_sha256(snapshot.to_string().as_bytes())
+}
+
+/// Validate a single edit or a batch and return before/after text.
 pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serde_json::Value, Error> {
-    let (_, _, _, _, preview) = prepare_ai_edit(data, proposal)?;
-    Ok(preview)
+    let (_, mut edits) = prepare_ai_edits(data, proposal)?;
+    let digest = ai_edit_preview_digest(proposal, &edits);
+    if proposal.get("edits").is_none() {
+        let mut preview = edits.remove(0).preview;
+        preview["previewSha256"] = digest.into();
+        return Ok(preview);
+    }
+    let mut target_indices = HashMap::new();
+    let mut target_edits: Vec<Vec<(usize, &PreparedAiEdit)>> = Vec::new();
+    for (index, edit) in edits.iter().enumerate() {
+        let target_index = *target_indices.entry(edit.target).or_insert_with(|| {
+            target_edits.push(Vec::new());
+            target_edits.len() - 1
+        });
+        target_edits[target_index].push((index, edit));
+    }
+    let targets: Vec<_> = target_edits.into_iter().map(|mut group| {
+        let preview = &group[0].1.preview;
+        let before = preview["before"].as_str().unwrap();
+        let mut after = before.to_owned();
+        let edit_indices: Vec<_> = group.iter().map(|(index, _)| index + 1).collect();
+        group.sort_unstable_by_key(|(_, edit)| std::cmp::Reverse(edit.paragraph_start));
+        for (_, edit) in group {
+            let end = edit.paragraph_start + edit.range.len();
+            after.replace_range(edit.paragraph_start..end, &edit.replacement);
+        }
+        serde_json::json!({
+            "source": preview["source"],
+            "before": before,
+            "after": after,
+            "editIndices": edit_indices,
+        })
+    }).collect();
+    Ok(serde_json::json!({
+        "version": 1,
+        "sourceSha256": proposal["sourceSha256"],
+        "previewSha256": digest,
+        "edits": edits.into_iter().map(|edit| edit.preview).collect::<Vec<_>>(),
+        "targets": targets,
+    }))
 }
 
-/// Create an edited DOCX from the same checked proposal used by the preview.
+/// Validate every edit against the original snapshot and write one DOCX.
 pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8>, Error> {
-    let (mut opened, index, run_index, replacement, _) = prepare_ai_edit(data, proposal)?;
-    let doc = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
-    let Block::Paragraph(paragraph) = &mut doc.body[index] else { unreachable!() };
-    paragraph.runs[run_index].kind = FlowRunKind::Text(replacement.into());
-    opened.source.save(&opened.presentation, SaveOptions::default())
+    let (bytes, _) = apply_ai_edit_inner(data, proposal, false)?;
+    Ok(bytes)
 }
 
-fn prepare_ai_edit(
+/// Apply an edit and describe the generated bytes. The caller publishes the
+/// receipt only after it has successfully saved those bytes.
+pub fn apply_ai_edit_with_receipt(
     data: &[u8],
     proposal: &serde_json::Value,
-) -> Result<(Opened, usize, usize, String, serde_json::Value), Error> {
-    use serde_json::json;
+) -> Result<(Vec<u8>, serde_json::Value), Error> {
+    let (bytes, receipt) = apply_ai_edit_inner(data, proposal, true)?;
+    Ok((bytes, receipt.unwrap()))
+}
 
-    let citation = locate_ai_source(data, proposal)?;
-    let entry = ai_body_paragraph_entry(&citation)?;
-    let paragraph_id = entry["source"]["modelId"].as_u64().and_then(|id| u32::try_from(id).ok())
-        .ok_or_else(|| Error::new("The AI citation has no paragraph ID"))?;
-    let before = proposal["before"].as_str().ok_or_else(|| Error::new("AI edit requires the original paragraph text in before"))?;
-    let replacement = proposal["replacement"].as_str()
-        .filter(|text| !text.is_empty() && !text.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
-        .ok_or_else(|| Error::new("AI replacement must be nonempty text on one line"))?;
+fn apply_ai_edit_inner(
+    data: &[u8],
+    proposal: &serde_json::Value,
+    receipt: bool,
+) -> Result<(Vec<u8>, Option<serde_json::Value>), Error> {
+    let (mut opened, mut edits) = prepare_ai_edits(data, proposal)?;
+    let expected = proposal.get("previewSha256");
+    let digest = (receipt || expected.is_some()).then(|| ai_edit_preview_digest(proposal, &edits));
+    if let Some(expected) = expected
+        && expected.as_str() != digest.as_deref()
+    {
+        return Err(Error::new("AI edit differs from the checked preview SHA-256"));
+    }
+    // Each range refers to the original run. Changes to its right do not
+    // shift the offsets of changes to its left.
+    let edit_count = edits.len();
+    edits.sort_unstable_by_key(|edit| std::cmp::Reverse(edit.range.start));
+    let doc = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+    for PreparedAiEdit { target, run_index, range, replacement, .. } in edits {
+        let block = match target {
+            AiEditTarget::Paragraph(index) => &mut doc.body[index],
+            AiEditTarget::TableCell { table, row, cell } => {
+                let Block::Table(table) = &mut doc.body[table] else { unreachable!() };
+                &mut table.rows[row].cells[cell].blocks[0]
+            }
+        };
+        let Block::Paragraph(paragraph) = block else { unreachable!() };
+        let FlowRunKind::Text(text) = &mut paragraph.runs[run_index].kind else { unreachable!() };
+        text.replace_range(range, &replacement);
+    }
+    let bytes = opened.source.save(&opened.presentation, SaveOptions::default())?;
+    let report = receipt.then(|| serde_json::json!({
+        "version": 1,
+        "sourceSha256": proposal["sourceSha256"],
+        "previewSha256": digest,
+        "previewVerified": expected.is_some(),
+        "outputSha256": source_sha256(&bytes),
+        "editCount": edit_count,
+    }));
+    Ok((bytes, report))
+}
+
+fn prepare_ai_edits(data: &[u8], proposal: &serde_json::Value) -> Result<(Opened, Vec<PreparedAiEdit>), Error> {
+    let batch = proposal.get("edits");
+    let proposals = match batch {
+        Some(edits) => edits.as_array().filter(|edits| !edits.is_empty())
+            .map(Vec::as_slice).ok_or_else(|| Error::new("AI edit batch requires a nonempty edits array"))?,
+        None => std::slice::from_ref(proposal),
+    };
+    if proposal["version"].as_u64() != Some(1) || proposal["sourceSha256"] != source_sha256(data) {
+        return Err(Error::new("AI edit requires version 1 and the original source SHA-256"));
+    }
+    let export = export_ai_source(data)?;
     let opened = crate::open(data.to_vec())?;
     if opened.source.has_package_signatures().map_err(|error| Error::new(error.to_string()))? {
         return Err(Error::new("AI editing does not support signed documents"));
@@ -3967,12 +4182,113 @@ fn prepare_ai_edit(
     if doc.protection != ibis_doc_model::flow::DocumentProtection::None || doc.formatting_protection || doc.track_changes {
         return Err(Error::new("AI editing does not support protected documents or active change tracking"));
     }
-    let (index, paragraph) = doc.body.iter().enumerate().find_map(|(index, block)| {
-        match block {
-            Block::Paragraph(paragraph) if paragraph.id == paragraph_id => Some((index, paragraph)),
-            _ => None,
+
+    let mut ranges: HashMap<_, BTreeMap<usize, usize>> = HashMap::new();
+    let mut edits = Vec::with_capacity(proposals.len());
+    for (index, edit) in proposals.iter().enumerate() {
+        let prepared = if batch.is_some() {
+            let mut edit = edit.clone();
+            let entry = edit.as_object_mut().ok_or_else(|| Error::new(format!("Edit {} must be an object", index + 1)))?;
+            if entry.contains_key("previewSha256") {
+                return Err(Error::new("previewSha256 belongs on the batch, not on an individual edit"));
+            }
+            for key in ["version", "sourceSha256"] {
+                if entry.get(key).is_some_and(|value| value != &proposal[key]) {
+                    return Err(Error::new(format!("Edit {} conflicts with the batch {key}", index + 1)));
+                }
+                entry.insert(key.into(), proposal[key].clone());
+            }
+            prepare_ai_edit(&opened, doc, &export, &edit)
+                .map_err(|error| Error::new(format!("Edit {}: {error}", index + 1)))?
+        } else {
+            prepare_ai_edit(&opened, doc, &export, edit)?
+        };
+        let ranges = ranges.entry(prepared.target).or_default();
+        let start = prepared.paragraph_start;
+        let end = start + prepared.range.len();
+        let overlaps_previous = ranges.range(..start).next_back().is_some_and(|(_, &right)| {
+            right > start || (start == end && right == start)
+        });
+        let overlaps_next = ranges.range(start..=end).next().is_some_and(|(&left, &right)| {
+            left < end || left == right || start == end
+        });
+        if overlaps_previous || overlaps_next {
+            return Err(Error::new(format!("Edit {} overlaps or shares an insertion boundary with an earlier edit", index + 1)));
         }
-    }).ok_or_else(|| Error::new("AI edit paragraph was not found in the original document"))?;
+        ranges.insert(start, end);
+        edits.push(prepared);
+    }
+    Ok((opened, edits))
+}
+
+fn prepare_ai_edit(
+    opened: &Opened,
+    doc: &FlowDocument,
+    export: &serde_json::Value,
+    proposal: &serde_json::Value,
+) -> Result<PreparedAiEdit, Error> {
+    use serde_json::json;
+
+    let citation = locate_ai_export(export, proposal)?;
+    let cell_edit = match proposal.get("target") {
+        None => false,
+        Some(target) if target == "tableCell" => true,
+        Some(_) => return Err(Error::new("Unsupported AI edit target")),
+    };
+    let entry = if cell_edit {
+        let cells = citation["tableCellMatches"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let [entry] = cells else {
+            return Err(Error::new("AI cell editing requires exactly one cited table cell"));
+        };
+        if proposal.get("paragraphBytes").is_none() && entry["markdownBytes"] != citation["markdownBytes"] {
+            return Err(Error::new("AI cell editing requires the entire cell Markdown range"));
+        }
+        entry
+    } else {
+        ai_body_paragraph_entry(&citation)?
+    };
+    let before = proposal["before"].as_str().ok_or_else(|| Error::new("AI edit requires the original paragraph text in before"))?;
+    let replacement = proposal["replacement"].as_str()
+        .filter(|text| !text.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
+        .ok_or_else(|| Error::new("AI replacement must be a single-line string"))?;
+    if replacement.is_empty() && proposal.get("paragraphBytes").is_none() {
+        return Err(Error::new("AI deletion requires an explicit paragraphBytes range"));
+    }
+    let insert_before = match proposal.get("insert") {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some("before") => Some(true),
+            Some("after") => Some(false),
+            _ => return Err(Error::new("AI insert must be before or after")),
+        },
+    };
+    if insert_before.is_some() && (proposal.get("paragraphBytes").is_none() || replacement.is_empty()) {
+        return Err(Error::new("AI insertion requires an explicit paragraphBytes range and nonempty text"));
+    }
+    let source = &entry["source"];
+    let index = source["index"].as_u64().and_then(|index| usize::try_from(index).ok())
+        .ok_or_else(|| Error::new("The AI citation has no body block index"))?;
+    let (target, paragraph) = match doc.body.get(index) {
+        Some(Block::Paragraph(paragraph)) if !cell_edit && source["modelId"] == paragraph.id => {
+            (AiEditTarget::Paragraph(index), paragraph)
+        }
+        Some(Block::Table(table)) if cell_edit && source["tableModelId"] == table.id => {
+            let row = source["row"].as_u64().and_then(|row| row.checked_sub(1))
+                .and_then(|row| usize::try_from(row).ok())
+                .ok_or_else(|| Error::new("The AI citation has no row index"))?;
+            let (cell_index, cell) = table.rows.get(row).and_then(|row| {
+                row.cells.iter().enumerate().find(|(_, cell)| source["modelId"] == cell.id)
+            }).ok_or_else(|| Error::new("AI edit cell was not found in the original document"))?;
+            let [Block::Paragraph(paragraph)] = cell.blocks.as_slice() else {
+                return Err(Error::new("AI cell editing requires one paragraph in the cell"));
+            };
+            if cell.span != 1 || cell.merge != VerticalMerge::None {
+                return Err(Error::new("AI cell editing requires an unmerged cell"));
+            }
+            (AiEditTarget::TableCell { table: index, row, cell: cell_index }, paragraph)
+        }
+        _ => return Err(Error::new("AI edit target was not found in the original document")),
+    };
     if paragraph.runs.iter().any(|run| run.link.is_some() || run.control.is_some() || run.revision.is_some())
         || paragraph.mark_revision.is_some() || !paragraph.bookmarks.is_empty()
         || !paragraph.bookmark_ends.is_empty() || paragraph.field_start.is_some()
@@ -3992,11 +4308,18 @@ fn prepare_ai_edit(
     if plain != before {
         return Err(Error::new("Original paragraph text does not match before"));
     }
-    let (run_index, run_after, after) = if let Some(range) = proposal.get("paragraphBytes") {
+    let (run_index, range, paragraph_start, after) = if let Some(range) = proposal.get("paragraphBytes") {
         let (start, end) = ai_byte_range(range)
             .ok_or_else(|| Error::new("AI edit requires a nonempty paragraphBytes range"))?;
         let quote = citation["quote"].as_str().unwrap();
-        if before.get(start..end) != Some(quote) {
+        let selected = before.get(start..end)
+            .ok_or_else(|| Error::new("paragraphBytes must be within the original UTF-8 text"))?;
+        let matches_quote = if cell_edit {
+            escape_table_paragraph(selected.to_owned()) == quote
+        } else {
+            selected == quote
+        };
+        if !matches_quote {
             return Err(Error::new("paragraphBytes does not identify the exact cited text"));
         }
         let (run_index, &(run_start, text)) = runs.iter().enumerate()
@@ -4007,9 +4330,17 @@ fn prepare_ai_edit(
         // Compare the actual Markdown positions by substituting a marker in a
         // temporary paragraph. This disambiguates repeated text and rejects
         // citations of generated markup, even when it matches literal text.
-        let mut original = String::new();
         let media = &opened.presentation.media;
-        serialize_paragraph(paragraph, doc, media, &HashMap::new(), &mut original);
+        let comments = HashMap::new();
+        let render = |paragraph: &FlowParagraph| {
+            if cell_edit {
+                return serialize_table_paragraph(paragraph, media, &comments);
+            }
+            let mut out = String::new();
+            serialize_paragraph(paragraph, doc, media, &comments, &mut out);
+            out
+        };
+        let original = render(paragraph);
         let mut marker = String::from("IbisAiEditMarker");
         while original.contains(&marker) {
             marker.push('X');
@@ -4018,8 +4349,7 @@ fn prepare_ai_edit(
         let mut marked_text = text.to_owned();
         marked_text.replace_range(local.clone(), &marker);
         marked.runs[run_index].kind = FlowRunKind::Text(marked_text.into());
-        let mut rendered = String::new();
-        serialize_paragraph(&marked, doc, media, &HashMap::new(), &mut rendered);
+        let rendered = render(&marked);
         let (block_start, _) = ai_byte_range(&entry["markdownBytes"]).unwrap();
         let (citation_start, citation_end) = ai_byte_range(&citation["markdownBytes"]).unwrap();
         let expected = citation_start.checked_sub(block_start).zip(citation_end.checked_sub(block_start))
@@ -4031,28 +4361,45 @@ fn prepare_ai_edit(
             return Err(Error::new("paragraphBytes and markdownBytes point to different text"));
         }
 
-        let mut run_after = text.to_owned();
-        run_after.replace_range(local, replacement);
+        let paragraph_range = match insert_before {
+            Some(true) => start..start,
+            Some(false) => end..end,
+            None => start..end,
+        };
+        let local = paragraph_range.start - run_start..paragraph_range.end - run_start;
+        let paragraph_start = paragraph_range.start;
         let mut after = plain;
-        after.replace_range(start..end, replacement);
-        (run_index, run_after, after)
+        after.replace_range(paragraph_range, replacement);
+        (run_index, local, paragraph_start, after)
     } else {
         if runs.len() != 1 {
             return Err(Error::new("Replacing a whole paragraph requires a single text run"));
         }
-        (0, replacement.to_owned(), replacement.to_owned())
+        (0, 0..plain.len(), 0, replacement.to_owned())
     };
     if before == after {
         return Err(Error::new("AI replacement does not change the paragraph"));
     }
+    let operation = if insert_before.is_some() {
+        "insert"
+    } else if replacement.is_empty() {
+        "delete"
+    } else {
+        "replace"
+    };
     let preview = json!({
         "version": 1,
         "sourceSha256": proposal["sourceSha256"],
-        "source": {"part": "body", "kind": "paragraph", "index": index, "modelId": paragraph_id},
+        "source": source,
+        "operation": operation,
+        "markdownBytes": citation["markdownBytes"],
+        "quote": citation["quote"],
+        "affectedParagraphBytes": [paragraph_start, paragraph_start + range.len()],
+        "replacement": replacement,
         "before": before,
         "after": after,
     });
-    Ok((opened, index, run_index, run_after, preview))
+    Ok(PreparedAiEdit { target, run_index, range, paragraph_start, replacement: replacement.to_owned(), preview })
 }
 
 fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
@@ -4098,14 +4445,69 @@ pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> 
     }))
 }
 
-/// Markdown plus snapshot-relative locations for DOCX body blocks, footnotes, and endnotes.
+fn ai_table_structure(
+    table: &FlowTable,
+    media: &[Media],
+    comments: &HashMap<u32, &Comment>,
+) -> serde_json::Value {
+    use serde_json::json;
+
+    let rows: Vec<_> = table.rows.iter().enumerate().map(|(index, row)| {
+        let mut column = 1usize;
+        let cells: Vec<_> = row.cells.iter().map(|cell| {
+            let blocks: Vec<_> = cell.blocks.iter().map(|block| match block {
+                Block::Paragraph(p) => json!({
+                    "kind": "paragraph",
+                    "modelId": p.id,
+                    "markdown": serialize_runs(&p.runs, media, comments),
+                }),
+                Block::Table(table) => ai_table_structure(table, media, comments),
+            }).collect();
+            let merge = match cell.merge {
+                VerticalMerge::None => "none",
+                VerticalMerge::Start => "start",
+                VerticalMerge::Continue => "continue",
+            };
+            let span = cell.span.max(1);
+            let value = json!({
+                "modelId": cell.id,
+                "column": column,
+                "columnSpan": span,
+                "verticalMerge": merge,
+                "blocks": blocks,
+            });
+            column = column.saturating_add(span as usize);
+            value
+        }).collect();
+        json!({ "modelId": row.id, "row": index + 1, "header": row.header, "cells": cells })
+    }).collect();
+    json!({
+        "kind": "table",
+        "modelId": table.id,
+        "columnCount": table.columns.len(),
+        "rows": rows,
+    })
+}
+
+/// Markdown, table structure, and snapshot-relative locations for DOCX body blocks and notes.
 pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Value, Error> {
     use serde_json::json;
 
     let doc = presentation.flow.as_ref().ok_or_else(|| Error::new("AI document export requires a word-processing document"))?;
     let mut blocks = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut table_cells = Vec::new();
     let markdown = export_markdown_with_positions(doc, &presentation.media, |source, start, end| {
+        if let MarkdownSource::TableCell { index, table, row, column, cell } = source {
+            table_cells.push(json!({
+                "source": {
+                    "part": "body", "kind": "tableCell", "index": index, "tableModelId": table.id,
+                    "modelId": cell.id, "row": row, "column": column,
+                },
+                "markdownBytes": [start, end],
+            }));
+            return;
+        }
         let locator = match source {
             MarkdownSource::Body(index, Block::Paragraph(p)) =>
                 json!({ "part": "body", "kind": "paragraph", "index": index, "modelId": p.id }),
@@ -4115,20 +4517,18 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
                 json!({ "part": "footnotes", "kind": "footnote", "id": note.id }),
             MarkdownSource::Note { note, endnote: true } =>
                 json!({ "part": "endnotes", "kind": "endnote", "id": note.id }),
+            MarkdownSource::TableCell { .. } => unreachable!(),
         };
         blocks.push((locator.clone(), start, end));
         let mut warn = |code| diagnostics.push(json!({ "code": code, "source": locator }));
         match source {
+            MarkdownSource::TableCell { .. } => unreachable!(),
             MarkdownSource::Body(_, Block::Table(table)) => {
-                if table.rows.iter().flat_map(|row| &row.cells)
-                    .any(|cell| cell.span > 1 || cell.merge != VerticalMerge::None)
-                {
+                let columns = markdown_table_columns(table);
+                if table.rows.iter().any(|row| {
+                    row.cells.iter().map(|cell| cell.span.max(1) as usize).sum::<usize>() > columns
+                }) {
                     warn("table_merge_not_preserved");
-                }
-                if table.rows.iter().flat_map(|row| &row.cells).flat_map(|cell| &cell.blocks)
-                    .any(|block| matches!(block, Block::Table(_)))
-                {
-                    warn("nested_table_omitted");
                 }
             }
             MarkdownSource::Body(_, Block::Paragraph(p)) => {
@@ -4149,11 +4549,21 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
     let blocks: Vec<_> = blocks.into_iter().map(|(source, start, end)| {
         json!({ "source": source, "markdownBytes": [start.min(markdown.len()), end.min(markdown.len())] })
     }).collect();
+    let comments = doc.comments.iter().map(|comment| (comment.id, comment)).collect();
+    let tables: Vec<_> = doc.body.iter().enumerate().filter_map(|(index, block)| {
+        let Block::Table(table) = block else { return None };
+        Some(json!({
+            "source": { "part": "body", "kind": "table", "index": index, "modelId": table.id },
+            "structure": ai_table_structure(table, &presentation.media, &comments),
+        }))
+    }).collect();
     Ok(json!({
         "version": 1,
         "kind": "document",
         "markdown": markdown,
         "blocks": blocks,
+        "tables": tables,
+        "tableCells": table_cells,
         "diagnostics": diagnostics,
     }))
 }
@@ -4332,7 +4742,7 @@ fn serialize_block(
 ) {
     match block {
         Block::Paragraph(p) => serialize_paragraph(p, doc, media, comments, out),
-        Block::Table(t) => serialize_table(t, media, comments, out),
+        Block::Table(t) => serialize_table(t, media, comments, out, &mut |_, _, _, _, _| {}),
     }
 }
 
@@ -4528,56 +4938,97 @@ fn format_block_attrs(p: &FlowParagraph) -> String {
     }
 }
 
-fn serialize_table(
-    t: &FlowTable,
+fn escape_table_paragraph(text: String) -> String {
+    text.replace('\n', "<br>").replace('|', "\\|")
+}
+
+fn serialize_table_paragraph(p: &FlowParagraph, media: &[Media], comments: &HashMap<u32, &Comment>) -> String {
+    escape_table_paragraph(serialize_runs(&p.runs, media, comments))
+}
+
+fn markdown_table_columns(table: &FlowTable) -> usize {
+    table.rows.iter().map(|row| row.cells.len()).max().unwrap_or(0).max(table.columns.len())
+}
+
+fn serialize_table<'a>(
+    t: &'a FlowTable,
     media: &[Media],
     comments: &HashMap<u32, &Comment>,
     out: &mut String,
+    record_cell: &mut dyn FnMut(usize, usize, &'a FlowCell, usize, usize),
 ) {
     if t.rows.is_empty() {
         return;
     }
-    let col_count = t.rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
+    let col_count = markdown_table_columns(t);
     if col_count == 0 {
         return;
     }
 
-    let format_row = |row: &FlowRow| -> String {
-        let mut cells = Vec::with_capacity(col_count);
-        for c_idx in 0..col_count {
-            if let Some(cell) = row.cells.get(c_idx) {
-                let mut cell_parts = Vec::new();
-                for b in &cell.blocks {
-                    if let Block::Paragraph(p) = b {
-                        cell_parts.push(
-                            serialize_runs(&p.runs, media, comments)
-                                .replace('\n', "<br>")
-                                .replace('|', "\\|"),
-                        );
+    let mut write_row = |row_index: usize, row: &'a FlowRow, out: &mut String| {
+        out.push_str("| ");
+        let mut column = 0;
+        for (index, cell) in row.cells.iter().enumerate() {
+            let span = (cell.span.max(1) as usize).min(col_count - column - (row.cells.len() - index - 1));
+            let mut cell_parts = Vec::new();
+            for block in &cell.blocks {
+                match block {
+                    Block::Paragraph(paragraph) => cell_parts.push(serialize_table_paragraph(paragraph, media, comments)),
+                    Block::Table(table) => {
+                        let mut source = String::new();
+                        serialize_table(table, media, comments, &mut source, &mut |_, _, _, _, _| {});
+                        let payload = escape_table_paragraph(source.trim_end()
+                            .replace('&', "&amp;")
+                            .replace('<', "&lt;")
+                            .replace('>', "&gt;"));
+                        if !payload.is_empty() {
+                            cell_parts.push(format!("{NESTED_TABLE_START}{payload}{NESTED_TABLE_END}"));
+                        }
                     }
                 }
-                cells.push(cell_parts.join("<br>"));
-            } else {
-                cells.push(String::new());
+            }
+            let start = out.len();
+            out.push_str(&cell_parts.join("<br>"));
+            if start != out.len() {
+                record_cell(row_index, column + 1, cell, start, out.len());
+            }
+            if span > 1 {
+                use std::fmt::Write;
+                let _ = write!(out, " <!-- colspan:{span} -->");
+            }
+            match cell.merge {
+                VerticalMerge::Start => out.push_str(" <!-- vmerge:start -->"),
+                VerticalMerge::Continue => out.push_str(" <!-- vmerge:continue -->"),
+                VerticalMerge::None => {}
+            }
+            for _ in 0..span {
+                out.push_str(" |");
+                column += 1;
+                if column < col_count {
+                    out.push(' ');
+                }
             }
         }
-        format!("| {} |\n", cells.join(" | "))
+        while column < col_count {
+            out.push_str(" |");
+            column += 1;
+            if column < col_count {
+                out.push(' ');
+            }
+        }
+        out.push('\n');
     };
 
-    out.push_str(&format_row(&t.rows[0]));
+    write_row(1, &t.rows[0], out);
 
     // Alignment separator row
     let mut sep_cells = Vec::with_capacity(col_count);
-    for c_idx in 0..col_count {
-        let align = t
-            .rows
-            .first()
-            .and_then(|r| r.cells.get(c_idx))
-            .and_then(|c| c.blocks.first())
-            .and_then(|b| match b {
-                Block::Paragraph(p) => p.direct.align,
-                _ => None,
-            });
+    for (index, cell) in t.rows[0].cells.iter().enumerate() {
+        let span = (cell.span.max(1) as usize).min(col_count - sep_cells.len() - (t.rows[0].cells.len() - index - 1));
+        let align = match cell.blocks.first() {
+            Some(Block::Paragraph(paragraph)) => paragraph.direct.align,
+            _ => None,
+        };
         let marker = match align {
             Some(FlowAlign::Center) => ":---:",
             Some(FlowAlign::Right) => "---:",
@@ -4585,11 +5036,13 @@ fn serialize_table(
             _ => "---",
         };
         sep_cells.push(marker);
+        sep_cells.resize(sep_cells.len() + span - 1, "---");
     }
+    sep_cells.resize(col_count, "---");
     out.push_str(&format!("| {} |\n", sep_cells.join(" | ")));
 
-    for row in &t.rows[1..] {
-        out.push_str(&format_row(row));
+    for (index, row) in t.rows.iter().enumerate().skip(1) {
+        write_row(index + 1, row, out);
     }
     out.push('\n');
 }
@@ -5517,6 +5970,14 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
     let cols = tbl.columns.len().max(1);
     let col_w = total_width / cols as i64;
     let columns = vec![col_w; cols];
+    let covered = ibis_doc_model::TableCell {
+        text: ibis_doc_model::TextBody::default(),
+        fill: Fill::None,
+        borders: ibis_doc_model::CellBorders::default(),
+        column_span: 1,
+        row_span: 1,
+        merged: true,
+    };
     let rows = tbl
         .rows
         .iter()
@@ -5525,7 +5986,7 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
             cells: row
                 .cells
                 .iter()
-                .map(|cell| {
+                .flat_map(|cell| {
                     let paras: Vec<ibis_doc_model::Paragraph> = cell
                         .blocks
                         .iter()
@@ -5534,17 +5995,21 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
                             _ => None,
                         })
                         .collect();
-                    ibis_doc_model::TableCell {
+                    let primary = ibis_doc_model::TableCell {
                         text: ibis_doc_model::TextBody {
                             paragraphs: paras,
                             ..ibis_doc_model::TextBody::default()
                         },
                         fill: Fill::None,
                         borders: ibis_doc_model::CellBorders::default(),
-                        column_span: 1,
+                        column_span: cell.span.max(1),
                         row_span: 1,
                         merged: false,
-                    }
+                    };
+                    std::iter::once(primary).chain(std::iter::repeat_n(
+                        covered.clone(),
+                        cell.span.saturating_sub(1) as usize,
+                    ))
                 })
                 .collect(),
             source: None,
@@ -5578,6 +6043,101 @@ fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_table_round_trips_with_surrounding_text_and_combined_cells() {
+        let input = br"| Category | Details |
+| --- | --- |
+| Domestic | Before<br><!-- nested-table: \| Group &amp; type &lt; 2 &lt;!-- colspan:2 --&gt; \| \|<br>\| --- \| --- \|<br>\| X\\\|Y \| 12&lt;br&gt;8 \| --><br>After |
+";
+        let docx = import_markdown_to_docx_bytes(input).unwrap();
+        let exported = export_docx_to_markdown(&docx).unwrap();
+        let rebuilt = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&rebuilt).unwrap(), exported);
+
+        let presentation = crate::read(&rebuilt).unwrap();
+        let Block::Table(outer) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected an outer table");
+        };
+        let [Block::Paragraph(before), Block::Table(inner), Block::Paragraph(after)] =
+            outer.rows[1].cells[1].blocks.as_slice()
+        else {
+            panic!("expected a nested table between two paragraphs");
+        };
+        assert_eq!(before.text(), "Before");
+        assert_eq!(after.text(), "After");
+        assert_eq!(inner.rows[0].cells[0].span, 2);
+        assert!(matches!(&inner.rows[0].cells[0].blocks[0], Block::Paragraph(p) if p.text() == "Group & type < 2"));
+        assert!(matches!(&inner.rows[1].cells[0].blocks[0], Block::Paragraph(p) if p.text() == "X|Y"));
+        assert!(matches!(&inner.rows[1].cells[1].blocks[0], Block::Paragraph(p)
+            if p.runs.iter().any(|r| matches!(r.kind, FlowRunKind::LineBreak))));
+    }
+
+    #[test]
+    fn vertical_table_merges_round_trip_and_keep_occupied_cells() {
+        let markdown = b"| Group | Type | Count |
+| --- | --- | --- |
+| Domestic <!-- colspan:2 --> <!-- vmerge:start --> | | 12 |
+| <!-- colspan:2 --> <!-- vmerge:continue --> | | 8 |
+| <!-- vmerge:continue --> | Width mismatch | 3 |
+| Keep <!-- vmerge:start --> | Other | 4 |
+| Occupied <!-- vmerge:continue --> | Other | 5 |
+| <!-- vmerge:continue --> | Orphan | 6 |
+";
+        let docx = import_markdown_to_docx_bytes(markdown).unwrap();
+        let exported = export_docx_to_markdown(&docx).unwrap();
+        assert!(exported.contains("<!-- colspan:2 --> <!-- vmerge:continue -->"));
+        assert!(exported.contains("| Occupied |"));
+        let rebuilt = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&rebuilt).unwrap(), exported);
+
+        let presentation = crate::read(&rebuilt).unwrap();
+        let Block::Table(table) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected a table");
+        };
+        let merges: Vec<_> = table.rows.iter().map(|row| {
+            let cell = &row.cells[0];
+            (cell.span, cell.merge)
+        }).collect();
+        assert_eq!(merges, [
+            (1, VerticalMerge::None),
+            (2, VerticalMerge::Start),
+            (2, VerticalMerge::Continue),
+            (1, VerticalMerge::None),
+            (1, VerticalMerge::Start),
+            (1, VerticalMerge::None),
+            (1, VerticalMerge::None),
+        ]);
+    }
+
+    #[test]
+    fn horizontal_table_merge_round_trips_through_docx() {
+        let input = b"| Group <!-- colspan:2 --> | | Total |
+| :---: | --- | ---: |
+| A | B | 2 |
+| Keep <!-- colspan:2 --> | Occupied | 3 |
+";
+        let original = import_markdown_to_docx_bytes(input).unwrap();
+        let markdown = export_docx_to_markdown(&original).unwrap();
+        assert!(markdown.contains("<!-- colspan:2 --> |  |"));
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        let Block::Table(table) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected a table");
+        };
+        assert_eq!(table.columns.len(), 3);
+        let spans = |row: usize| table.rows[row].cells.iter().map(|cell| cell.span).collect::<Vec<_>>();
+        assert_eq!(spans(0), [2, 1]);
+        assert_eq!(spans(1), [1, 1, 1]);
+        assert_eq!(spans(2), [1, 1, 1]);
+        assert!(matches!(&table.rows[2].cells[1].blocks[0], Block::Paragraph(p) if p.text() == "Occupied"));
+
+        let slide = flow_table_to_slide_table(table, 6 * EMU_PER_INCH);
+        assert_eq!(slide.rows[0].cells.len(), 3);
+        assert_eq!(slide.rows[0].cells[0].column_span, 2);
+        assert!(slide.rows[0].cells[1].merged);
+        assert!(!slide.rows[0].cells[2].merged);
+    }
 
     #[test]
     fn detects_markdown_vs_csv() {

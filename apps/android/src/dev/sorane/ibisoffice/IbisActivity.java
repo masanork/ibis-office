@@ -106,21 +106,28 @@ public class IbisActivity extends NativeActivity {
 
         imeView = new ImeBridgeView(this);
         addContentView(imeView, new FrameLayout.LayoutParams(1, 1));
-        handleViewIntent(getIntent());
+        handleOpenIntent(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        handleViewIntent(intent);
+        handleOpenIntent(intent);
     }
 
-    private void handleViewIntent(Intent intent) {
-        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) {
+    private void handleOpenIntent(Intent intent) {
+        if (intent == null) return;
+        final Uri uri;
+        if (Intent.ACTION_VIEW.equals(intent.getAction())) {
+            uri = intent.getData();
+        } else if (Intent.ACTION_SEND.equals(intent.getAction())
+                && "application/vnd.fujixerox.docuworks".equals(intent.getType())) {
+            Object stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            uri = stream instanceof Uri ? (Uri) stream : null;
+        } else {
             return;
         }
-        Uri uri = intent.getData();
         if (uri == null) return;
         new Thread(() -> {
             String path = copyUriToStorage(uri);

@@ -311,17 +311,22 @@ impl Cells for Recalc<'_> {
         }
         drop(results);
         for (&(s, ar, ac), (rows, cols, values)) in self.spills.borrow().iter() {
-            if s == sheet {
-                for dr in 0..*rows as u32 {
-                    for dc in 0..*cols as u32 {
-                        let r = ar + dr;
-                        let c = ac + dc;
-                        if r >= r0 && r <= r1 && c >= c0 && c <= c1 {
-                            let idx = (dr as usize) * cols + (dc as usize);
-                            if let Some(v) = values.get(idx) {
-                                f(r, c, v);
-                            }
-                        }
+            if s != sheet {
+                continue;
+            }
+            // A BYROW lambda can read one row of a large spill on each call.
+            // Visit only the rectangle shared by the spill and the reference.
+            let row_start = r0.saturating_sub(ar) as usize;
+            let row_end = (r1.saturating_add(1).saturating_sub(ar) as usize).min(*rows);
+            let col_start = c0.saturating_sub(ac) as usize;
+            let col_end = (c1.saturating_add(1).saturating_sub(ac) as usize).min(*cols);
+            if col_start >= col_end {
+                continue;
+            }
+            for dr in row_start..row_end {
+                for dc in col_start..col_end {
+                    if let Some(v) = values.get(dr * cols + dc) {
+                        f(ar + dr as u32, ac + dc as u32, v);
                     }
                 }
             }
@@ -1729,6 +1734,25 @@ mod tests {
         assert_eq!(val((0, 1, 3)), CellValue::Number(15.0));
         assert_eq!(val((0, 0, 4)), CellValue::Number(70.0));
         assert_eq!(val((0, 1, 4)), CellValue::Number(15.0));
+    }
+
+    #[test]
+    fn lambda_helpers_read_only_the_intersecting_spill_cells() {
+        let mut book = MockBook::new(false);
+        book.dynamic = true;
+        let anchor = (0, 1, 1);
+        let by_row = (0, 0, 6);
+        let by_col = (0, 6, 0);
+        book.formulas.insert(anchor, "SEQUENCE(3,3)".into());
+        book.formulas.insert(by_row, "BYROW(C3:E5,LAMBDA(line,SUM(line)+0*B2))".into());
+        book.formulas.insert(by_col, "BYCOL(A1:C3,LAMBDA(line,SUM(line)+0*B2))".into());
+
+        let cells = [anchor, by_row, by_col];
+        let results = recalculate(&book, &cells, &cells);
+        for (cell, rows, cols, expected) in [(by_row, 3, 1, [11., 17., 0.]), (by_col, 1, 3, [0., 5., 7.])] {
+            let result = results.iter().find(|r| r.cell == cell).unwrap();
+            assert_eq!(result.spill, Some((rows, cols, expected.into_iter().map(CellValue::Number).collect())));
+        }
     }
 
     #[test]
