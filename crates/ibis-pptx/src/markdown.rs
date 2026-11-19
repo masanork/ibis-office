@@ -742,6 +742,10 @@ fn parse_markdown_into(
         apply_frontmatter(fm, doc, &mut ctx);
     }
 
+    while let Some((xml, rest)) = bibliography_fence(body_text) {
+        doc.bibliography_sources.push(xml.to_owned());
+        body_text = rest;
+    }
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
     let blocks = parse_blocks(body_text, &mut ctx, &mut footnote_defs)?;
 
@@ -2735,6 +2739,25 @@ fn build_mermaid_code_block(content: &str, ctx: &mut ParseContext<'_>) -> Block 
     build_code_block(fenced.trim_end_matches('\n'), ctx)
 }
 
+const BIBLIOGRAPHY_FENCE: &str = "word-bibliography";
+
+fn bibliography_fence(text: &str) -> Option<(&str, &str)> {
+    let (first, body) = text.trim_start_matches(['\n', '\r']).split_once('\n')?;
+    let (marker, info) = opening_fence(first.trim_end())?;
+    if info.trim() != BIBLIOGRAPHY_FENCE {
+        return None;
+    }
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        if closes_fence(line.trim(), marker) {
+            let xml = body[..offset].trim();
+            return crate::bibliography::is_sources(xml).then_some((xml, &body[offset + line.len()..]));
+        }
+        offset += line.len();
+    }
+    None
+}
+
 fn opening_fence(line: &str) -> Option<(&str, &str)> {
     let marker = *line.as_bytes().first()?;
     if !matches!(marker, b'`' | b'~') {
@@ -3928,6 +3951,10 @@ fn export_markdown_with_positions<'a>(
         out.push_str("---\n");
         out.push_str(&fm);
         out.push_str("---\n\n");
+    }
+
+    for xml in &doc.bibliography_sources {
+        write_named_fence(BIBLIOGRAPHY_FENCE, xml, &mut out);
     }
 
     let comments_by_id: HashMap<u32, &Comment> = doc.comments.iter().map(|c| (c.id, c)).collect();
@@ -5189,12 +5216,17 @@ fn mermaid_source_matches(chart: &Chart, source: &str) -> bool {
 }
 
 fn write_mermaid_fence(source: &str, out: &mut String) {
+    write_named_fence("mermaid", source, out);
+}
+
+fn write_named_fence(language: &str, source: &str, out: &mut String) {
     let longest = source.lines().map(|line| {
         line.trim_start().bytes().take_while(|&byte| byte == b'`').count()
     }).max().unwrap_or(0);
     let marker = "`".repeat(3.max(longest + 1));
     out.push_str(&marker);
-    out.push_str("mermaid\n");
+    out.push_str(language);
+    out.push('\n');
     out.push_str(source);
     if !source.ends_with('\n') {
         out.push('\n');
@@ -6237,6 +6269,38 @@ mod tests {
         assert_eq!(slide.rows[0].cells[0].column_span, 2);
         assert!(slide.rows[0].cells[1].merged);
         assert!(!slide.rows[0].cells[2].merged);
+    }
+
+    #[test]
+    fn word_bibliography_sources_round_trip_through_document_metadata() {
+        let xml = r#"<b:Sources xmlns:b="http://schemas.openxmlformats.org/officeDocument/2006/bibliography">
+<b:Source><b:Tag>Tanaka_2025</b:Tag><b:SourceType>Book</b:SourceType>
+<b:Author><b:Author><b:NameList><b:Person><b:Last>田中</b:Last></b:Person></b:NameList></b:Author></b:Author>
+<b:Title>研究と実践 &amp; 検証</b:Title><b:Year>2025</b:Year></b:Source>
+</b:Sources>"#;
+        let markdown = format!("```word-bibliography\n{xml}\n```\n\n参照 {{{{cite:Tanaka_2025:1041}}}}。\n");
+        let bytes = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let package = ibis_ooxml::Package::open(bytes.clone()).unwrap();
+        let main = "word/document.xml";
+        let source_part = package.relationships(main).unwrap().into_iter()
+            .filter(|rel| crate::bibliography::is_custom_xml(&rel.kind))
+            .filter_map(|rel| rel.target_part(main))
+            .find(|part| package.read(part).unwrap() == xml.as_bytes())
+            .expect("Word bibliography part linked to document");
+        let props = package.relationships(&source_part).unwrap().into_iter()
+            .find(|rel| rel.kind.ends_with("/customXmlProps")).unwrap()
+            .target_part(&source_part).unwrap();
+        assert!(String::from_utf8(package.read(&props).unwrap()).unwrap().contains("ds:schemaRef"));
+
+        let model = crate::read_docx(&bytes).unwrap();
+        let flow = model.flow.as_ref().unwrap();
+        assert_eq!(flow.bibliography_sources, [xml]);
+        assert_eq!(flow.body.len(), 1);
+        let exported = export_docx_to_markdown(&bytes).unwrap();
+        assert_eq!(exported, markdown);
+        let rebuilt = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&rebuilt).unwrap(), markdown);
+        assert!(bibliography_fence("```word-bibliography\n<Sources/>\n```").is_none());
     }
 
     #[test]

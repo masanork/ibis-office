@@ -4227,6 +4227,12 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
         mail_merge_field_map,
         lock_tracking,
         doc_variables,
+        bibliography_sources: package.ordered_relationships(&main)?.into_iter()
+            .filter(|(_, rel)| !rel.external && crate::bibliography::is_custom_xml(&rel.kind))
+            .filter_map(|(_, rel)| package.read_xml(&rel.target).ok())
+            .filter(|xml| crate::bibliography::is_sources(xml))
+            .map(|xml| xml.trim().to_owned())
+            .collect(),
         attached_template,
         link_styles,
         view_mode,

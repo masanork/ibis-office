@@ -61,6 +61,7 @@ pub mod machine_readability_xlsx;
 pub mod machine_readability_native;
 pub mod machine_readability_report;
 pub mod progress;
+mod bibliography;
 mod docx;
 pub mod docx_convert;
 pub mod html_export;

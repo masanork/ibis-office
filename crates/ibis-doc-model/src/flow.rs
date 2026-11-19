@@ -3187,6 +3187,8 @@ pub struct FlowDocument {
     pub lock_tracking: bool,
     /// 文書変数（Word の `w:settings/w:docVars/w:docVar`）。
     pub doc_variables: std::collections::BTreeMap<String, String>,
+    /// Word bibliography Sources parts referenced by the main document.
+    pub bibliography_sources: Vec<String>,
     /// 添付テンプレート（Word の `word/settings.xml` の `w:attachedTemplate`）。
     pub attached_template: Option<String>,
     /// 文書のスタイルを自動更新する（Word の `word/settings.xml` の `w:linkStyles`, DOCX-STYLE-017, DOCX-FILE-009）。

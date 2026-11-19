@@ -104,7 +104,25 @@ $$ {#eq_energy}
 
 `{{cite:Smith-2024}}` は Word の `CITATION Smith-2024` フィールドになります。日本語ロケールを指定する場合は `{{cite:Tanaka_2025:1041}}` と書きます。文献タグには半角英数字と `_`、`-`、`.` を使えます。
 
-本文の単一文献タグと任意のロケールを Markdown と DOCX の間で保持します。ページ指定や複数文献など、未対応のスイッチが付いた引用は、Word に保存された表示文字列を書き出します。Word の文献データと参考文献一覧の往復は今後の対応です。
+本文の単一文献タグと任意のロケールを Markdown と DOCX の間で保持します。ページ指定や複数文献など、未対応のスイッチが付いた引用は、Word に保存された表示文字列を書き出します。Word の文献データは、YAML フロントマターの直後（フロントマターがなければ文書の先頭）の `word-bibliography` フェンスに格納します。本文のタグ名は `b:Tag` と一致させます。フェンスは文書メタデータとして読み込み、本文からは除外します。
+
+````markdown
+```word-bibliography
+<b:Sources xmlns:b="http://schemas.openxmlformats.org/officeDocument/2006/bibliography">
+  <b:Source>
+    <b:Tag>Tanaka_2025</b:Tag>
+    <b:SourceType>Book</b:SourceType>
+    <b:Author><b:Author><b:NameList><b:Person><b:Last>田中</b:Last></b:Person></b:NameList></b:Author></b:Author>
+    <b:Title>研究の方法</b:Title>
+    <b:Year>2025</b:Year>
+  </b:Source>
+</b:Sources>
+```
+
+本文中の引用 {{cite:Tanaka_2025:1041}}。
+````
+
+この例の DOCX を Word for Mac で開き、引用を更新すると「[田中, 2025]」になることを確認しました。Word が文献データに追加した参照順も、Markdown を経由して DOCX に保持されます。参考文献一覧の往復は今後の対応です。
 
 ### 往復の確認範囲と実装順
 
@@ -115,7 +133,7 @@ $$ {#eq_energy}
 | 1 | 数式への文書内リンク | 合成 DOCX を Word で保存し、Markdown への変換と DOCX への再変換後も数式のブックマークと参照先が一致することを確認済み。 |
 | 2 | 式・図・表の番号と参照 | 合成 DOCX で、Word による式・図・表の連番と式番号参照の更新、および Markdown 経由の DOCX への往復を確認済み。 |
 | 3 | ページ脚注と文末脚注 | 同じ ID の両注記を区別し、参照・本文・種別の往復を確認済み。 |
-| 4 | 引用と参考文献 | 本文の引用タグとロケールの往復を確認済み。文献データとの結び付けと参考文献一覧の往復が残る。 |
+| 4 | 引用と参考文献 | 本文の引用タグ・ロケールと Word の文献データの往復を確認済み。参考文献一覧の往復が残る。 |
 | 5 | 複雑な表 | 横結合・縦結合・入れ子表の往復と原本のセル引用を確認済み。 |
 
 ### ファイル形式ごとの往復範囲
