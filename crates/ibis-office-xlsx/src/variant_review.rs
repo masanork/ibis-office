@@ -326,6 +326,50 @@ mod tests {
         assert_eq!(sheet.cells[0].value, CellValue::Text("AC".into()));
     }
     #[test]
+    fn bundled_gjs_dictionary_groups_high_variants_at_their_original_cells() {
+        if option_env!("IBIS_VARIANT_BITMAP").is_some() {
+            return;
+        }
+        let dict = ibis_doc_model::variant_clusters::embedded().expect("bundled gjs dictionary");
+        let mut sheet = Sheet::default();
+        sheet.cells = vec![
+            cell(0, "髙橋花子"),
+            SheetCell {
+                column: 1,
+                ..cell(0, "高橋花子")
+            },
+            cell(1, "山田花子"),
+            cell(2, "高\u{e0100}橋花子"),
+            SheetCell {
+                column: 2,
+                ..cell(2, "髙橋花子")
+            },
+        ]
+        .into();
+        let selection = CellRange {
+            last_column: 1,
+            ..range()
+        };
+        let (matches, skipped, truncated) = candidates(&sheet, selection, dict);
+
+        assert_eq!(skipped, 1);
+        assert!(!truncated);
+        assert_eq!(matches.len(), 1);
+        let forms: Vec<_> = matches[0]
+            .forms
+            .iter()
+            .map(|(text, form)| (text.as_str(), form.count, form.cells.as_slice()))
+            .collect();
+        assert_eq!(
+            forms,
+            [
+                ("高橋花子", 1, [(0, 1)].as_slice()),
+                ("髙橋花子", 1, [(0, 0)].as_slice()),
+            ]
+        );
+    }
+
+    #[test]
     fn total_character_limit_reports_incomplete_results() {
         let mut sheet = Sheet::default();
         sheet.cells = (0..246)
