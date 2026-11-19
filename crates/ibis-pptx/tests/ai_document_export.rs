@@ -203,3 +203,55 @@ fn ai_edit_binds_a_partial_replacement_to_the_cited_run() {
     proposal.as_object_mut().unwrap().remove("paragraphBytes");
     assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
 }
+
+#[test]
+fn docx_ai_export_keeps_table_grid_and_nested_blocks() {
+    use ibis_doc_model::{Block, flow::VerticalMerge};
+
+    let mut opened = markdown::open_markdown(
+        b"# Report\n\n| Group | Type | Count |\n| --- | --- | --- |\n| A | | 12 |\n| | | 8 |\n\n| Detail |\n| --- |\n| Nested value |\n".to_vec()
+    ).unwrap();
+    let flow = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+    let nested = flow.body.pop().unwrap();
+    assert!(matches!(nested, Block::Table(_)));
+    let Block::Table(outer) = &mut flow.body[1] else {
+        panic!("expected the outer table");
+    };
+    for (row, merge) in [(1, VerticalMerge::Start), (2, VerticalMerge::Continue)] {
+        let cells = &mut outer.rows[row].cells;
+        cells.remove(1);
+        cells[0].span = 2;
+        cells[0].merge = merge;
+    }
+    let cell = &mut outer.rows[1].cells[0];
+    let mut trailing = cell.blocks[0].clone();
+    let Block::Paragraph(paragraph) = &mut trailing else {
+        unreachable!()
+    };
+    paragraph.id = 10_000;
+    paragraph.runs.clear();
+    cell.blocks.extend([nested, trailing]);
+    let docx = opened
+        .source
+        .save(&opened.presentation, ibis_pptx::SaveOptions::default())
+        .unwrap();
+
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let table = &export["tables"][0];
+    assert_eq!(table["source"], export["blocks"][1]["source"]);
+    assert_eq!(table["structure"]["columnCount"], 3);
+    let rows = &table["structure"]["rows"];
+    assert_eq!(rows[0]["header"], true);
+    assert_eq!(rows[1]["row"], 2);
+    assert_eq!(rows[1]["cells"][0]["columnSpan"], 2);
+    assert_eq!(rows[1]["cells"][0]["verticalMerge"], "start");
+    assert_eq!(rows[1]["cells"][1]["column"], 3);
+    assert_eq!(rows[2]["cells"][0]["verticalMerge"], "continue");
+    let blocks = &rows[1]["cells"][0]["blocks"];
+    assert_eq!(blocks[0]["markdown"], "A");
+    assert_eq!(blocks[1]["kind"], "table");
+    assert_eq!(
+        blocks[1]["rows"][1]["cells"][0]["blocks"][0]["markdown"],
+        "Nested value",
+    );
+}

@@ -4079,7 +4079,51 @@ pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> 
     }))
 }
 
-/// Markdown plus snapshot-relative locations for DOCX body blocks and footnotes.
+fn ai_table_structure(
+    table: &FlowTable,
+    media: &[Media],
+    comments: &HashMap<u32, &Comment>,
+) -> serde_json::Value {
+    use serde_json::json;
+
+    let rows: Vec<_> = table.rows.iter().enumerate().map(|(index, row)| {
+        let mut column = 1usize;
+        let cells: Vec<_> = row.cells.iter().map(|cell| {
+            let blocks: Vec<_> = cell.blocks.iter().map(|block| match block {
+                Block::Paragraph(p) => json!({
+                    "kind": "paragraph",
+                    "modelId": p.id,
+                    "markdown": serialize_runs(&p.runs, media, comments),
+                }),
+                Block::Table(table) => ai_table_structure(table, media, comments),
+            }).collect();
+            let merge = match cell.merge {
+                VerticalMerge::None => "none",
+                VerticalMerge::Start => "start",
+                VerticalMerge::Continue => "continue",
+            };
+            let span = cell.span.max(1);
+            let value = json!({
+                "modelId": cell.id,
+                "column": column,
+                "columnSpan": span,
+                "verticalMerge": merge,
+                "blocks": blocks,
+            });
+            column = column.saturating_add(span as usize);
+            value
+        }).collect();
+        json!({ "modelId": row.id, "row": index + 1, "header": row.header, "cells": cells })
+    }).collect();
+    json!({
+        "kind": "table",
+        "modelId": table.id,
+        "columnCount": table.columns.len(),
+        "rows": rows,
+    })
+}
+
+/// Markdown, table structure, and snapshot-relative locations for DOCX body blocks and footnotes.
 pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Value, Error> {
     use serde_json::json;
 
@@ -4131,11 +4175,20 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
     if !doc.endnotes.is_empty() {
         diagnostics.push(json!({ "code": "endnote_definitions_omitted", "source": { "part": "endnotes" } }));
     }
+    let comments = doc.comments.iter().map(|comment| (comment.id, comment)).collect();
+    let tables: Vec<_> = doc.body.iter().enumerate().filter_map(|(index, block)| {
+        let Block::Table(table) = block else { return None };
+        Some(json!({
+            "source": { "part": "body", "kind": "table", "index": index, "modelId": table.id },
+            "structure": ai_table_structure(table, &presentation.media, &comments),
+        }))
+    }).collect();
     Ok(json!({
         "version": 1,
         "kind": "document",
         "markdown": markdown,
         "blocks": blocks,
+        "tables": tables,
         "diagnostics": diagnostics,
     }))
 }
