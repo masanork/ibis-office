@@ -46,6 +46,41 @@ ibisOffice --export pptx --out-dir /tmp/docs-reference/pptx docs/markdown-refere
 ibisOffice --export md --out-dir /tmp/docs-reference/markdown /tmp/docs-reference/docx/markdown-reference-ja.docx
 ```
 
+## 表のセル結合
+
+### 横方向
+
+結合するセルの末尾に `<!-- colspan:2 -->` を付け、続く列を空セルにします。数字は、結合する先頭のセルを含めた列数です。次の表を DOCX に保存して Markdown に戻すと、列の位置と結合の指定を保持します。
+
+| 集計対象 <!-- colspan:2 --> | | 件数 |
+| :--- | :--- | ---: |
+| 国内 | 文書 | 12 |
+| 海外 | 文書 | 8 |
+
+標準的な Markdown 表示ではコメントが隠れ、続く列には空セルが表示されます。結合範囲に値がある場合、Docs は各セルを個別に読み込みます。
+
+### 縦方向
+
+結合元に `<!-- vmerge:start -->`、直下の空セルに `<!-- vmerge:continue -->` を付けます。3行以上の結合は、対象の各行に継続マーカーを付けます。横方向にも結合する場合は、各行のセルに同じ `colspan` を先に書きます。
+
+| 分類 | 内訳 | 件数 |
+| :--- | :--- | ---: |
+| 国内 <!-- colspan:2 --> <!-- vmerge:start --> | | 12 |
+| <!-- colspan:2 --> <!-- vmerge:continue --> | | 8 |
+| 海外 | 文書 | 5 |
+
+DOCX との往復では列幅の範囲と結合の開始・継続を保持します。継続セルに内容がある場合や、直上のセルと開始列・結合列数が合わない場合は、そのセルを縦結合しません。
+
+### 入れ子表
+
+セル内のパイプ表を `<!-- nested-table: … -->` で囲みます。内側の表の行は `<br>` で区切り、内側のパイプには `\|` と書きます。内側の表に含まれる `&`、`<`、`>` はそれぞれ `&amp;`、`&lt;`、`&gt;` にします。
+
+| 分類 | 内訳 |
+| :--- | :--- |
+| 国内 | 紙と電子<br><!-- nested-table: \| 媒体 \| 件数 \|<br>\| --- \| ---: \|<br>\| 紙 \| 3 \|<br>\| 電子 \| 9 \| --><br>計12件 |
+
+Docs はセルの中に編集可能な表を表示します。DOCX から Markdown に戻すと、内側の表と前後の文章を保持します。Markdown の読み込みは外側の表を除いて最大8階層です。HTML コメントを非表示にする Markdown ビューアーでは、内側の表はソースで確認できます。
+
 ## Markdown 構文一覧
 
 ここでの対応は、入力を読み取って Docs の文書モデルに反映できることを指します。保存形式や書き出し先によって保持される情報は異なります。Markdown に戻すと記法や空白が正規化されることがあります。
@@ -283,7 +318,7 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 - DOCX の `blocks` は本文の段落・表と脚注を指します。本文の `index` は 0 始まり、`modelId` は読み込んだ時点の文書モデル内の ID です。
 - DOCX の `tables` には本文の表の構造が入ります。`source` は `blocks` 内の表と共通です。`structure.rows` と各行の `cells` は文書順で、`row` と `column` は 1 始まりです。`header` は繰り返し見出し行の指定を表します。
 - セルの `columnSpan` は横方向の結合列数です。`verticalMerge` は `none`、`start`、`continue` のいずれかです。セル内の `blocks` には段落の Markdown と入れ子表の構造が、原文と同じ順番で入ります。段落やセルの `modelId` は同じ原本を参照するときに使います。
-- DOCX の `tableCells` は、本文のパイプ表に出力されたセル内容の UTF-8 範囲です。`source.tableModelId` と `source.modelId` は表とセルの ID、`row` と `column` は 1 始まりの開始位置です。空セルや区切りのパイプにセル範囲は付きません。入れ子表の構造は `tables` に含まれます。
+- DOCX の `tableCells` は、本文のパイプ表に出力されたセル内容の UTF-8 範囲です。`source.tableModelId` と `source.modelId` は表とセルの ID、`row` と `column` は 1 始まりの開始位置です。結合列を数えた原本の列番号が入ります。空セル、結合指定、区切りのパイプにセル範囲は付きません。入れ子表の引用位置は外側のセルまで特定でき、内側の行・列は `tables` に含まれます。
 - XLSX の `cells` はシート名と 1 始まりの行列を持ちます。表示文字列、保存された値とその型、数式を別々に記録します。Markdown 出力と同じく表示中のシート・行・列を対象にします。
 - Lawtext と法令標準 XML の `articles` は法令番号、条番号、附則の位置と改正法令番号を記録します。本則の附則位置は `null` です。
 - `diagnostics` は Markdown 出力で検出した変換上の差を示します。結合セルや入れ子表の構造は `tables` で確認できます。
