@@ -307,3 +307,41 @@ fn postal_codes_preserve_the_evidence_of_leading_zeros() {
         check(args, CellValue::Error(CellError::NA));
     }
 }
+
+#[test]
+fn email_case_folding_is_limited_to_the_domain() {
+    for (args, rank) in [
+        (r#""  Billing@EXAMPLE.COM　","Billing@example.com","email""#, 2.0),
+        (r#""Billing@example.com","billing@example.com","email""#, 0.0),
+        (r#""billing+test@example.com","billing@example.com","email""#, 0.0),
+        (r#""bill.ing@example.com","billing@example.com","email""#, 0.0),
+        (r#""billing@EXAMPLE.ORG","billing@example.com","email""#, 0.0),
+    ] {
+        check(args, CellValue::Number(rank));
+    }
+    for args in [
+        r#""@example.com","billing@example.com","email""#,
+        r#""bill..ing@example.com","billing@example.com","email""#,
+        r#""billing@-example.com","billing@example.com","email""#,
+        r#""billing@@example.com","billing@example.com","email""#,
+        r#""billing@例.example","billing@example.com","email""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+}
+
+#[test]
+fn corporate_number_checks_both_inputs_before_comparison() {
+    // Public examples from soroe's corporate_number tests.
+    check(r#""１１８０－３０１０－１８７７１",1180301018771,"corporate-number""#, CellValue::Number(2.0));
+    check(r#"1180301018771,7010001065919,"corporate-number""#, CellValue::Number(0.0));
+    for args in [
+        r#"5180301018771,5180301018771,"corporate-number""#,
+        r#"1180301018771,5180301018771,"corporate-number""#,
+        r#"5180301018771,1180301018771,"corporate-number""#,
+        r#"1180301018771.5,1180301018771,"corporate-number""#,
+        r#""118030101877?","1180301018771","corporate-number""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+}

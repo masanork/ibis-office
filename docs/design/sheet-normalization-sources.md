@@ -43,7 +43,7 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 ## 属性の照合関数
 
 `=IBIS.FIELDMATCH(A2,B2,"address")` で2つの値を比較する。対応する種類は
-`"address"`、`"date"`、`"gender"`、`"name"`、`"phone"`、`"postal"`。セルの値はそのまま保持する。
+`"address"`、`"date"`、`"gender"`、`"name"`、`"phone"`、`"postal"`、`"email"`、`"corporate-number"`。セルの値はそのまま保持する。
 
 | 結果 | 意味 |
 | --- | --- |
@@ -97,3 +97,15 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
   〒、数字の全半角、3桁と4桁の間のハイフンや空白の違いを吸収する。
   5〜6桁の数値セルは、もう一方の完全な7桁と先頭ゼロを補って一致する場合に 1。
   短い文字列や双方が5〜6桁の数値なら `#N/A`。町域との対応は確認しない。
+
+### メールアドレスと法人番号
+
+- `=IBIS.FIELDMATCH(A2,B2,"email")` は前後の空白を除き、ドメインの大小文字をそろえる。
+  ユーザー部の大小文字、ピリオド、プラスタグは比較に残す。
+  通常の ASCII メールボックス形式を対象にし、引用符付きのユーザー部や Unicode アドレスは `#N/A`。
+  [RFC 5321 §2.4](https://datatracker.ietf.org/doc/html/rfc5321#section-2.4)
+- `=IBIS.FIELDMATCH(A2,B2,"corporate-number")` は日本の法人番号を比較する。
+  13桁の整数セルを受け付け、文字列セルでは全角数字・空白・ハイフンの差を吸収する。
+  検査用数字が合わない場合は `#N/A`。形式と検査用数字を確認できた値について、
+  一致は 2、不一致は 0 を返す。番号の割り当てや法人の現況は照会しない。
+  [国税庁の検査用数字の算式](https://www.houjin-bangou.nta.go.jp/documents/bangouhou_syorei.pdf)

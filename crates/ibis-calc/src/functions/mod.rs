@@ -19,6 +19,7 @@ mod ets;
 mod field_match;
 mod financial;
 mod groupby;
+mod identifier_match;
 mod info;
 mod logical;
 mod lookup;

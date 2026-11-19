@@ -57,6 +57,11 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             super::contact_match::compare_phones(left, right)
         } else if mode.eq_ignore_ascii_case("postal") {
             super::contact_match::compare_postal_codes(left, right)
+        } else if mode.eq_ignore_ascii_case("email") {
+            compare_keys(left, right, super::identifier_match::email_key)
+        } else if mode.eq_ignore_ascii_case("corporate-number") {
+            let same = super::identifier_match::corporate_number(left).zip(super::identifier_match::corporate_number(right));
+            same.map(|(a, b)| if a == b { 2 } else { 0 })
         } else if mode.eq_ignore_ascii_case("gender") {
             compare_keys(left, right, gender_key)
         } else {

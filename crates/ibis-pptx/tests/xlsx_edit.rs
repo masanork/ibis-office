@@ -10127,6 +10127,8 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     let name_formula = r#"IBIS.FIELDMATCH(A2,B2,"name")"#;
     let phone_formula = r#"IBIS.FIELDMATCH(A3,B3,"phone")"#;
     let postal_formula = r#"IBIS.FIELDMATCH(A4,B4,"postal")"#;
+    let email_formula = r#"IBIS.FIELDMATCH(A5,B5,"email")"#;
+    let corporate_formula = r#"IBIS.FIELDMATCH(A6,B6,"corporate-number")"#;
     set(&mut document, s, vec![
         (0, 2, CellInput::Formula(formula.into())),
         (1, 2, CellInput::Formula(name_formula.into())),
@@ -10136,6 +10138,12 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
         (3, 0, CellInput::Value(CellValue::Text("060-0001".into()))),
         (3, 1, CellInput::Value(CellValue::Number(600001.0))),
         (3, 2, CellInput::Formula(postal_formula.into())),
+        (4, 0, CellInput::Value(CellValue::Text("Billing@EXAMPLE.COM".into()))),
+        (4, 1, CellInput::Value(CellValue::Text("Billing@example.com".into()))),
+        (4, 2, CellInput::Formula(email_formula.into())),
+        (5, 0, CellInput::Value(CellValue::Text("1180-3010-18771".into()))),
+        (5, 1, CellInput::Value(CellValue::Number(1180301018771.0))),
+        (5, 2, CellInput::Formula(corporate_formula.into())),
     ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(2.0));
 
@@ -10149,6 +10157,10 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     assert_eq!(value(&reopened, sheet_name, 2, 2), CellValue::Number(1.0));
     assert_eq!(cell(&reopened, sheet_name, 3, 2).formula.as_deref(), Some(postal_formula));
     assert_eq!(value(&reopened, sheet_name, 3, 2), CellValue::Number(1.0));
+    assert_eq!(cell(&reopened, sheet_name, 4, 2).formula.as_deref(), Some(email_formula));
+    assert_eq!(value(&reopened, sheet_name, 4, 2), CellValue::Number(2.0));
+    assert_eq!(cell(&reopened, sheet_name, 5, 2).formula.as_deref(), Some(corporate_formula));
+    assert_eq!(value(&reopened, sheet_name, 5, 2), CellValue::Number(2.0));
 
     let s = slide(&reopened, sheet_name);
     let mut document = Document::new(reopened);
@@ -10157,9 +10169,13 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
         (1, 1, CellInput::Value(CellValue::Text("山田春子".into()))),
         (2, 1, CellInput::Value(CellValue::Text("+81 3 1234 5678 ext.124".into()))),
         (3, 1, CellInput::Value(CellValue::Number(600002.0))),
+        (4, 1, CellInput::Value(CellValue::Text("billing@example.com".into()))),
+        (5, 1, CellInput::Value(CellValue::Number(5180301018771.0))),
     ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(0.0));
     assert_eq!(value(document.presentation(), sheet_name, 1, 2), CellValue::Number(0.0));
     assert_eq!(value(document.presentation(), sheet_name, 2, 2), CellValue::Number(0.0));
     assert_eq!(value(document.presentation(), sheet_name, 3, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 4, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 5, 2), CellValue::Error(ibis_doc_model::CellError::NA));
 }
