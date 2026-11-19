@@ -375,6 +375,8 @@ struct Args {
     ai_query: Option<std::path::PathBuf>,
     /// Require a matching preview digest before applying an AI edit.
     require_preview: bool,
+    /// Emit a JSON receipt after saving the edit output.
+    ai_receipt: bool,
     width: Option<u32>,
     slides: Option<String>,
     layout: bool,
@@ -421,6 +423,7 @@ fn parse_args() -> Result<Args, String> {
             "--out-file" => args.out_file = Some(value()?.into()),
             "--ai-query" => args.ai_query = Some(value()?.into()),
             "--require-preview" => args.require_preview = true,
+            "--ai-receipt" => args.ai_receipt = true,
             "--out-dir" => args.out_dir = Some(value()?.into()),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
             "--slides" => args.slides = Some(value()?),
@@ -449,6 +452,9 @@ fn parse_args() -> Result<Args, String> {
     if args.require_preview && args.export.as_deref() != Some("ai-apply") {
         return Err("--require-preview requires --export ai-apply".into());
     }
+    if args.ai_receipt && args.export.as_deref() != Some("ai-apply") {
+        return Err("--ai-receipt requires --export ai-apply".into());
+    }
     Ok(args)
 }
 
@@ -476,11 +482,23 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             if !out.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
                 return Err("AI editing requires a new .docx output file".into());
             }
-            let bytes = ibis_pptx::markdown::apply_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
+            let (bytes, receipt) = if args.ai_receipt {
+                let (bytes, report) = ibis_pptx::markdown::apply_ai_edit_with_receipt(&data, &proposal)
+                    .map_err(|e| e.to_string())?;
+                (bytes, Some(report))
+            } else {
+                let bytes = ibis_pptx::markdown::apply_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
+                (bytes, None)
+            };
             let parent = out.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
             let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
             file.write_all(&bytes).map_err(|e| e.to_string())?;
             file.persist_noclobber(out).map_err(|e| format!("{}: {e}", out.display()))?;
+            if let Some(mut receipt) = receipt {
+                receipt["outputPath"] = out.to_string_lossy().into_owned().into();
+                writeln!(std::io::stdout().lock(), "{receipt:#}")
+                    .map_err(|e| format!("{} was saved, but writing the receipt failed: {e}", out.display()))?;
+            }
         }
         return Ok(());
     }

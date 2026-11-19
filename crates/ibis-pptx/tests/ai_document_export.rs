@@ -413,7 +413,18 @@ fn ai_batch_edits_validate_before_writing_and_keep_edit_order() {
     let mut checked = batch.clone();
     checked["previewSha256"] = preview["previewSha256"].clone();
     assert_eq!(checked["previewSha256"].as_str().unwrap().len(), 64);
-    let verified = markdown::apply_ai_edit(&docx, &checked).unwrap();
+    let (verified, receipt) = markdown::apply_ai_edit_with_receipt(&docx, &checked).unwrap();
+    assert_eq!(receipt["sourceSha256"], export["sourceSha256"]);
+    assert_eq!(receipt["previewSha256"], preview["previewSha256"]);
+    assert_eq!(receipt["previewVerified"], true);
+    assert_eq!(receipt["editCount"], 2);
+    assert_eq!(
+        receipt["outputSha256"],
+        markdown::export_ai_source(&verified).unwrap()["sourceSha256"]
+    );
+    let (_, unchecked_receipt) = markdown::apply_ai_edit_with_receipt(&docx, &batch).unwrap();
+    assert_eq!(unchecked_receipt["previewSha256"], preview["previewSha256"]);
+    assert_eq!(unchecked_receipt["previewVerified"], false);
     assert!(
         markdown::export_docx_to_markdown(&verified)
             .unwrap()

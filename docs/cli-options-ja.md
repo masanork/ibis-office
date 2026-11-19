@@ -72,6 +72,8 @@ ibisOffice --read-only report.docx
 
 `--require-preview` は `--export ai-apply` 専用です。編集案の `previewSha256` がプレビュー時に返された値と一致する場合に保存できます。
 
+`--ai-receipt` を `ai-apply` に付けると、保存後に出力先と SHA-256 を含む JSON を標準出力に返します。
+
 ウィンドウを一切表示せず、GPU / CPU レンダリングによりバックグラウンドで高速に出力を行い、完了後に即座に終了します。サーバー環境や自動化スクリプトに最適です。
 
 | オプション | 引数 | 説明 |

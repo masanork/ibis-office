@@ -345,6 +345,10 @@ ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed
 
 この値は原本に対する編集内容を照合するためのものです。確認者の本人性や承認を証明する電子署名ではありません。
 
+### 保存結果を JSON に記録する
+
+`ai-apply` に `--ai-receipt` を付けると、DOCX の保存に成功した後で結果を標準出力に返します。結果には `outputPath` と `outputSha256`、原本の `sourceSha256`、編集件数 `editCount` が入ります。`previewSha256` は適用した案のハッシュです。`previewVerified` は、編集案にその値が指定され、一致を確認した場合に `true` になります。確認済みの案だけを保存するには `--require-preview` も付けます。
+
 ### 編集案 JSON を検証する
 
 単独編集と一括編集の入力形式は [編集案 JSON Schema v1](schemas/ai-edit-proposal-v1.schema.json) で確認できます。Draft 2020-12 のバリデーターを使うと、項目名の誤り、必須項目の不足、空のバッチ、改行を含む置換などを事前に検出できます。
