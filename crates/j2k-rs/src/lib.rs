@@ -56,6 +56,25 @@ mod tests {
     }
 
     #[test]
+    fn decodes_a_complete_lrcp_tile_progression_volume() {
+        let pixels: Vec<u8> = (0..64).map(|i| (i * 13) as u8).collect();
+        let mut codestream =
+            encode_j2k(&pixels, 8, 8, PixelFormat::Gray8, &EncodeOptions::default()).unwrap();
+        let sot = codestream
+            .windows(2)
+            .position(|bytes| bytes == [0xff, 0x90])
+            .unwrap();
+        let length = u32::from_be_bytes(codestream[sot + 6..sot + 10].try_into().unwrap());
+        let poc = [0xff, 0x5f, 0, 9, 0, 0, 0, 1, 32, 1, 0];
+        codestream[sot + 6..sot + 10].copy_from_slice(&(length + poc.len() as u32).to_be_bytes());
+        codestream.splice(sot + 12..sot + 12, poc);
+
+        assert_eq!(decode(&codestream).unwrap().data, pixels);
+        codestream[sot + 12 + 8] = 0;
+        assert!(decode(&codestream).is_err());
+    }
+
+    #[test]
     fn roundtrips_rgb_j2k_and_jp2_losslessly() {
         let (w, h) = (29u32, 23u32);
         let mut rgb = Vec::with_capacity((w * h * 3) as usize);

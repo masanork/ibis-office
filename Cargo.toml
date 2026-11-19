@@ -46,6 +46,7 @@ gpui-kit = "=0.6.6"
 incremental = true
 
 [patch.crates-io]
+hayro-jpeg2000 = { path = "forks/hayro-jpeg2000" }
 gpui-component = { path = "forks/gpui-component" }
 gpui-base = { path = "forks/gpui-base" }
 gpui-pre = { path = "forks/gpui-pre" }
