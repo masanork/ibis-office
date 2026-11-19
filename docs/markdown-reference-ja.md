@@ -313,7 +313,9 @@ ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed
 
 `ai-preview` と `ai-apply` を使います。編集案の `target` は `"tableCell"` とし、`markdownBytes` は `tableCells` にあるセル全体の範囲を指定します。`quote` はその範囲の Markdown、`before` はセル全体のプレーンテキストです。たとえば太字のセルでは `quote` が `**東京**`、`before` が `東京` になります。`replacement` に `大阪` を指定すると、保存後も太字のままです。
 
-対象は、一つの段落に一つのテキストランだけを持つ、本文の結合されていないセルです。プレビューには表・セルの ID と行・列が入り、適用時は原本と照合して別の DOCX に保存します。
+セルの一部を置換する場合は、`markdownBytes` と `quote` に該当箇所を指定し、`paragraphBytes` に同じ箇所の `before` 上の UTF-8 バイト範囲を追加します。`before` には引き続きセル全体のプレーンテキストを入れます。たとえば `東京と**東京**` の太字の「東京」だけを置換する場合、`before` は `東京と東京`、`paragraphBytes` は `[9, 15]` です。
+
+対象は一つの段落を持つ、本文の結合されていないセルです。全体の置換には単一のテキストランが必要です。部分置換は一つのテキストランに収まる引用を対象とし、他のランの書式とテキストを保持します。プレビューには表・セルの ID と行・列が入り、適用時は原本と照合して別の DOCX に保存します。
 
 ## ステージング文書としての更新
 

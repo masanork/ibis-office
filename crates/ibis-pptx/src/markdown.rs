@@ -3969,7 +3969,7 @@ fn prepare_ai_edit(
         let [entry] = cells else {
             return Err(Error::new("AI cell editing requires exactly one cited table cell"));
         };
-        if entry["markdownBytes"] != citation["markdownBytes"] || proposal.get("paragraphBytes").is_some() {
+        if proposal.get("paragraphBytes").is_none() && entry["markdownBytes"] != citation["markdownBytes"] {
             return Err(Error::new("AI cell editing requires the entire cell Markdown range"));
         }
         entry
@@ -4035,7 +4035,14 @@ fn prepare_ai_edit(
         let (start, end) = ai_byte_range(range)
             .ok_or_else(|| Error::new("AI edit requires a nonempty paragraphBytes range"))?;
         let quote = citation["quote"].as_str().unwrap();
-        if before.get(start..end) != Some(quote) {
+        let selected = before.get(start..end)
+            .ok_or_else(|| Error::new("paragraphBytes must be within the original UTF-8 text"))?;
+        let matches_quote = if cell_edit {
+            escape_table_paragraph(selected.to_owned()) == quote
+        } else {
+            selected == quote
+        };
+        if !matches_quote {
             return Err(Error::new("paragraphBytes does not identify the exact cited text"));
         }
         let (run_index, &(run_start, text)) = runs.iter().enumerate()
@@ -4046,9 +4053,17 @@ fn prepare_ai_edit(
         // Compare the actual Markdown positions by substituting a marker in a
         // temporary paragraph. This disambiguates repeated text and rejects
         // citations of generated markup, even when it matches literal text.
-        let mut original = String::new();
         let media = &opened.presentation.media;
-        serialize_paragraph(paragraph, doc, media, &HashMap::new(), &mut original);
+        let comments = HashMap::new();
+        let render = |paragraph: &FlowParagraph| {
+            if cell_edit {
+                return serialize_table_paragraph(paragraph, media, &comments);
+            }
+            let mut out = String::new();
+            serialize_paragraph(paragraph, doc, media, &comments, &mut out);
+            out
+        };
+        let original = render(paragraph);
         let mut marker = String::from("IbisAiEditMarker");
         while original.contains(&marker) {
             marker.push('X');
@@ -4057,8 +4072,7 @@ fn prepare_ai_edit(
         let mut marked_text = text.to_owned();
         marked_text.replace_range(local.clone(), &marker);
         marked.runs[run_index].kind = FlowRunKind::Text(marked_text.into());
-        let mut rendered = String::new();
-        serialize_paragraph(&marked, doc, media, &HashMap::new(), &mut rendered);
+        let rendered = render(&marked);
         let (block_start, _) = ai_byte_range(&entry["markdownBytes"]).unwrap();
         let (citation_start, citation_end) = ai_byte_range(&citation["markdownBytes"]).unwrap();
         let expected = citation_start.checked_sub(block_start).zip(citation_end.checked_sub(block_start))
@@ -4635,6 +4649,14 @@ fn format_block_attrs(p: &FlowParagraph) -> String {
     }
 }
 
+fn escape_table_paragraph(text: String) -> String {
+    text.replace('\n', "<br>").replace('|', "\\|")
+}
+
+fn serialize_table_paragraph(p: &FlowParagraph, media: &[Media], comments: &HashMap<u32, &Comment>) -> String {
+    escape_table_paragraph(serialize_runs(&p.runs, media, comments))
+}
+
 fn serialize_table<'a>(
     t: &'a FlowTable,
     media: &[Media],
@@ -4662,11 +4684,7 @@ fn serialize_table<'a>(
                 let mut cell_parts = Vec::new();
                 for b in &cell.blocks {
                     if let Block::Paragraph(p) = b {
-                        cell_parts.push(
-                            serialize_runs(&p.runs, media, comments)
-                                .replace('\n', "<br>")
-                                .replace('|', "\\|"),
-                        );
+                        cell_parts.push(serialize_table_paragraph(p, media, comments));
                     }
                 }
                 out.push_str(&cell_parts.join("<br>"));

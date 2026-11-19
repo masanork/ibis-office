@@ -339,3 +339,38 @@ fn ai_cell_edit_checks_the_whole_cell_and_preserves_neighbors() {
     proposal["quote"] = serde_json::json!("東京");
     assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
 }
+
+#[test]
+fn ai_partial_cell_edit_targets_one_formatted_occurrence() {
+    let docx = markdown::import_markdown_to_docx_bytes(
+        "| 内容 | 隣のセル |\n| --- | --- |\n| 東京と**東京** | 東京 |\n".as_bytes(),
+    )
+    .unwrap();
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let text = export["markdown"].as_str().unwrap();
+    let before = "東京と東京";
+    let quote = "東京";
+    let start = text.find("**東京**").unwrap() + 2;
+    let local = before.rfind(quote).unwrap();
+    let mut proposal = serde_json::json!({
+        "version": 1,
+        "target": "tableCell",
+        "sourceSha256": export["sourceSha256"],
+        "markdownBytes": [start, start + quote.len()],
+        "paragraphBytes": [local, local + quote.len()],
+        "quote": quote,
+        "before": before,
+        "replacement": "大阪",
+    });
+    let preview = markdown::preview_ai_edit(&docx, &proposal).unwrap();
+    assert_eq!(preview["after"], "東京と大阪");
+    let edited = markdown::apply_ai_edit(&docx, &proposal).unwrap();
+    assert!(
+        markdown::export_docx_to_markdown(&edited)
+            .unwrap()
+            .contains("| 東京と**大阪** | 東京 |")
+    );
+
+    proposal["paragraphBytes"] = serde_json::json!([0, quote.len()]);
+    assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
+}
