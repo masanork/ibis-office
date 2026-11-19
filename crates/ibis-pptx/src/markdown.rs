@@ -3865,8 +3865,6 @@ pub fn export_ai_source(data: &[u8]) -> Result<serde_json::Value, Error> {
 
 /// Resolve an AI citation against a fresh export of the exact original input.
 pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_json::Value, Error> {
-    use serde_json::json;
-
     if query["version"].as_u64() != Some(1) {
         return Err(Error::new("AI citation version must be 1"));
     }
@@ -3874,9 +3872,22 @@ pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_
     if source_sha256(data) != expected {
         return Err(Error::new("Source SHA-256 differs from the AI citation"));
     }
+    let export = export_ai_source(data)?;
+    locate_ai_export(&export, query)
+}
+
+fn locate_ai_export(export: &serde_json::Value, query: &serde_json::Value) -> Result<serde_json::Value, Error> {
+    use serde_json::json;
+
+    if query["version"].as_u64() != Some(1) {
+        return Err(Error::new("AI citation version must be 1"));
+    }
+    let expected = query["sourceSha256"].as_str().ok_or_else(|| Error::new("AI citation requires sourceSha256"))?;
+    if export["sourceSha256"] != expected {
+        return Err(Error::new("Source SHA-256 differs from the AI citation"));
+    }
     let (start, end) = ai_byte_range(&query["markdownBytes"]).ok_or_else(|| Error::new("AI citation requires a nonempty markdownBytes range"))?;
     let quote = query["quote"].as_str().ok_or_else(|| Error::new("AI citation requires the exact Markdown quote"))?;
-    let export = export_ai_source(data)?;
     let markdown = export["markdown"].as_str().ok_or_else(|| Error::new("AI export has no Markdown"))?;
     if markdown.get(start..end) != Some(quote) {
         return Err(Error::new("Markdown range and quote do not match the regenerated export"));
@@ -3925,40 +3936,104 @@ fn ai_body_paragraph_entry(citation: &serde_json::Value) -> Result<&serde_json::
     Ok(entry)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum AiEditTarget {
     Paragraph(usize),
     TableCell { table: usize, row: usize, cell: usize },
 }
 
-/// Validate a paragraph or cell replacement and return its before/after text.
-pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serde_json::Value, Error> {
-    let (_, _, _, _, preview) = prepare_ai_edit(data, proposal)?;
-    Ok(preview)
+struct PreparedAiEdit {
+    target: AiEditTarget,
+    run_index: usize,
+    replacement: String,
+    preview: serde_json::Value,
 }
 
-/// Create an edited DOCX from the same checked proposal used by the preview.
+/// Validate a single edit or a batch and return before/after text.
+pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serde_json::Value, Error> {
+    let (_, mut edits) = prepare_ai_edits(data, proposal)?;
+    if proposal.get("edits").is_none() {
+        return Ok(edits.remove(0).preview);
+    }
+    Ok(serde_json::json!({
+        "version": 1,
+        "sourceSha256": proposal["sourceSha256"],
+        "edits": edits.into_iter().map(|edit| edit.preview).collect::<Vec<_>>(),
+    }))
+}
+
+/// Validate every edit against the original snapshot and write one DOCX.
 pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8>, Error> {
-    let (mut opened, target, run_index, replacement, _) = prepare_ai_edit(data, proposal)?;
+    let (mut opened, edits) = prepare_ai_edits(data, proposal)?;
     let doc = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
-    let block = match target {
-        AiEditTarget::Paragraph(index) => &mut doc.body[index],
-        AiEditTarget::TableCell { table, row, cell } => {
-            let Block::Table(table) = &mut doc.body[table] else { unreachable!() };
-            &mut table.rows[row].cells[cell].blocks[0]
-        }
-    };
-    let Block::Paragraph(paragraph) = block else { unreachable!() };
-    paragraph.runs[run_index].kind = FlowRunKind::Text(replacement.into());
+    for PreparedAiEdit { target, run_index, replacement, .. } in edits {
+        let block = match target {
+            AiEditTarget::Paragraph(index) => &mut doc.body[index],
+            AiEditTarget::TableCell { table, row, cell } => {
+                let Block::Table(table) = &mut doc.body[table] else { unreachable!() };
+                &mut table.rows[row].cells[cell].blocks[0]
+            }
+        };
+        let Block::Paragraph(paragraph) = block else { unreachable!() };
+        paragraph.runs[run_index].kind = FlowRunKind::Text(replacement.into());
+    }
     opened.source.save(&opened.presentation, SaveOptions::default())
 }
 
+fn prepare_ai_edits(data: &[u8], proposal: &serde_json::Value) -> Result<(Opened, Vec<PreparedAiEdit>), Error> {
+    let batch = proposal.get("edits");
+    let proposals = match batch {
+        Some(edits) => edits.as_array().filter(|edits| !edits.is_empty())
+            .map(Vec::as_slice).ok_or_else(|| Error::new("AI edit batch requires a nonempty edits array"))?,
+        None => std::slice::from_ref(proposal),
+    };
+    if proposal["version"].as_u64() != Some(1) || proposal["sourceSha256"] != source_sha256(data) {
+        return Err(Error::new("AI edit requires version 1 and the original source SHA-256"));
+    }
+    let export = export_ai_source(data)?;
+    let opened = crate::open(data.to_vec())?;
+    if opened.source.has_package_signatures().map_err(|error| Error::new(error.to_string()))? {
+        return Err(Error::new("AI editing does not support signed documents"));
+    }
+    let doc = opened.presentation.flow.as_ref().ok_or_else(|| Error::new("AI editing requires a DOCX document"))?;
+    if doc.protection != ibis_doc_model::flow::DocumentProtection::None || doc.formatting_protection || doc.track_changes {
+        return Err(Error::new("AI editing does not support protected documents or active change tracking"));
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut edits = Vec::with_capacity(proposals.len());
+    for (index, edit) in proposals.iter().enumerate() {
+        let prepared = if batch.is_some() {
+            let mut edit = edit.clone();
+            let entry = edit.as_object_mut().ok_or_else(|| Error::new(format!("Edit {} must be an object", index + 1)))?;
+            for key in ["version", "sourceSha256"] {
+                if entry.get(key).is_some_and(|value| value != &proposal[key]) {
+                    return Err(Error::new(format!("Edit {} conflicts with the batch {key}", index + 1)));
+                }
+                entry.insert(key.into(), proposal[key].clone());
+            }
+            prepare_ai_edit(&opened, doc, &export, &edit)
+                .map_err(|error| Error::new(format!("Edit {}: {error}", index + 1)))?
+        } else {
+            prepare_ai_edit(&opened, doc, &export, edit)?
+        };
+        if !seen.insert(prepared.target) {
+            return Err(Error::new(format!("Edit {} repeats a paragraph or cell target", index + 1)));
+        }
+        edits.push(prepared);
+    }
+    Ok((opened, edits))
+}
+
 fn prepare_ai_edit(
-    data: &[u8],
+    opened: &Opened,
+    doc: &FlowDocument,
+    export: &serde_json::Value,
     proposal: &serde_json::Value,
-) -> Result<(Opened, AiEditTarget, usize, String, serde_json::Value), Error> {
+) -> Result<PreparedAiEdit, Error> {
     use serde_json::json;
 
-    let citation = locate_ai_source(data, proposal)?;
+    let citation = locate_ai_export(export, proposal)?;
     let cell_edit = match proposal.get("target") {
         None => false,
         Some(target) if target == "tableCell" => true,
@@ -3980,14 +4055,6 @@ fn prepare_ai_edit(
     let replacement = proposal["replacement"].as_str()
         .filter(|text| !text.is_empty() && !text.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
         .ok_or_else(|| Error::new("AI replacement must be nonempty text on one line"))?;
-    let opened = crate::open(data.to_vec())?;
-    if opened.source.has_package_signatures().map_err(|error| Error::new(error.to_string()))? {
-        return Err(Error::new("AI editing does not support signed documents"));
-    }
-    let doc = opened.presentation.flow.as_ref().ok_or_else(|| Error::new("AI editing requires a DOCX document"))?;
-    if doc.protection != ibis_doc_model::flow::DocumentProtection::None || doc.formatting_protection || doc.track_changes {
-        return Err(Error::new("AI editing does not support protected documents or active change tracking"));
-    }
     let source = &entry["source"];
     let index = source["index"].as_u64().and_then(|index| usize::try_from(index).ok())
         .ok_or_else(|| Error::new("The AI citation has no body block index"))?;
@@ -4105,7 +4172,7 @@ fn prepare_ai_edit(
         "before": before,
         "after": after,
     });
-    Ok((opened, target, run_index, run_after, preview))
+    Ok(PreparedAiEdit { target, run_index, replacement: run_after, preview })
 }
 
 fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {

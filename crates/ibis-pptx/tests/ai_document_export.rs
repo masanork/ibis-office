@@ -374,3 +374,55 @@ fn ai_partial_cell_edit_targets_one_formatted_occurrence() {
     proposal["paragraphBytes"] = serde_json::json!([0, quote.len()]);
     assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
 }
+
+#[test]
+fn ai_batch_edits_validate_before_writing_and_keep_edit_order() {
+    let docx = markdown::import_markdown_to_docx_bytes(
+        b"Original sentence.\n\n| Heading |\n| --- |\n| Original cell |\n",
+    )
+    .unwrap();
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let text = export["markdown"].as_str().unwrap();
+    let start = text.find("Original sentence.").unwrap();
+    let mut batch = serde_json::json!({
+        "version": 1,
+        "sourceSha256": export["sourceSha256"],
+        "edits": [
+            {
+                "markdownBytes": [start, start + "Original sentence.".len()],
+                "quote": "Original sentence.",
+                "before": "Original sentence.",
+                "replacement": "Reviewed sentence.",
+            },
+            {
+                "target": "tableCell",
+                "markdownBytes": export["tableCells"][1]["markdownBytes"],
+                "quote": "Original cell",
+                "before": "Original cell",
+                "replacement": "Reviewed cell",
+            },
+        ],
+    });
+    let preview = markdown::preview_ai_edit(&docx, &batch).unwrap();
+    assert_eq!(preview["edits"][0]["after"], "Reviewed sentence.");
+    assert_eq!(preview["edits"][1]["after"], "Reviewed cell");
+    let edited = markdown::apply_ai_edit(&docx, &batch).unwrap();
+    let output = markdown::export_docx_to_markdown(&edited).unwrap();
+    assert!(output.contains("Reviewed sentence."));
+    assert!(output.contains("| Reviewed cell |"));
+
+    batch["edits"][1]["before"] = serde_json::json!("Wrong");
+    assert!(
+        markdown::apply_ai_edit(&docx, &batch)
+            .unwrap_err()
+            .to_string()
+            .contains("Edit 2")
+    );
+    batch["edits"][1] = batch["edits"][0].clone();
+    assert!(
+        markdown::preview_ai_edit(&docx, &batch)
+            .unwrap_err()
+            .to_string()
+            .contains("repeats")
+    );
+}
