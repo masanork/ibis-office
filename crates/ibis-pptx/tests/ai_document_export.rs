@@ -255,3 +255,46 @@ fn docx_ai_export_keeps_table_grid_and_nested_blocks() {
         "Nested value",
     );
 }
+
+#[test]
+fn docx_table_citations_distinguish_equal_text_in_different_cells() {
+    let docx = markdown::import_markdown_to_docx_bytes(
+        "本文\n\n| A | B | C |\n| --- | --- | --- |\n| 同じ語 | | 同じ語 |\n".as_bytes(),
+    )
+    .unwrap();
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let text = export["markdown"].as_str().unwrap();
+    let quote = "同じ語";
+    let start = text.rfind(quote).unwrap();
+    let citation = |start, end| {
+        serde_json::json!({
+            "version": 1,
+            "sourceSha256": export["sourceSha256"],
+            "markdownBytes": [start, end],
+            "quote": &text[start..end],
+        })
+    };
+    let result = markdown::locate_ai_source(&docx, &citation(start, start + quote.len())).unwrap();
+    let matches = result["tableCellMatches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(excerpt(&export, &matches[0]), quote);
+    assert_eq!(matches[0]["source"]["row"], 2);
+    assert_eq!(matches[0]["source"]["column"], 3);
+    assert_eq!(matches[0]["source"]["index"], 1);
+    assert_eq!(
+        matches[0]["source"]["tableModelId"],
+        result["matches"][0]["source"]["modelId"]
+    );
+    assert_eq!(
+        matches[0]["source"]["modelId"],
+        export["tables"][0]["structure"]["rows"][1]["cells"][2]["modelId"]
+    );
+    assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+
+    let first = text.find(quote).unwrap();
+    let across = markdown::locate_ai_source(&docx, &citation(first, start + quote.len())).unwrap();
+    assert_eq!(across["tableCellMatches"].as_array().unwrap().len(), 2);
+    let separators =
+        markdown::locate_ai_source(&docx, &citation(first + quote.len(), start)).unwrap();
+    assert_eq!(separators["tableCellMatches"], serde_json::json!([]));
+}

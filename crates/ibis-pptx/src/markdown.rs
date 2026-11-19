@@ -3740,6 +3740,7 @@ pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
 enum MarkdownSource<'a> {
     Body(usize, &'a Block),
     Footnote(&'a Note),
+    TableCell { index: usize, table: &'a FlowTable, row: usize, column: usize, cell: &'a FlowCell },
 }
 
 fn export_markdown_with_positions<'a>(
@@ -3795,7 +3796,12 @@ fn export_markdown_with_positions<'a>(
         }
 
         let start = out.len();
-        serialize_block(block, doc, media, &comments_by_id, &mut out);
+        match block {
+            Block::Table(table) => serialize_table(table, media, &comments_by_id, &mut out, |row, column, cell, start, end| {
+                record(MarkdownSource::TableCell { index: i, table, row, column, cell }, start, end);
+            }),
+            Block::Paragraph(_) => serialize_block(block, doc, media, &comments_by_id, &mut out),
+        }
         record(MarkdownSource::Body(i, block), start, out.len());
         prev_was_list = is_list;
         i += 1;
@@ -3881,14 +3887,22 @@ pub fn locate_ai_source(data: &[u8], query: &serde_json::Value) -> Result<serde_
         .filter(|entry| ai_byte_range(&entry["markdownBytes"])
             .is_some_and(|(left, right)| start < right && left < end))
         .collect();
-    Ok(json!({
+    let mut result = json!({
         "version": 1,
         "kind": export["kind"],
         "sourceSha256": expected,
         "markdownBytes": [start, end],
         "quote": quote,
         "matches": matches,
-    }))
+    });
+    if let Some(cells) = export["tableCells"].as_array() {
+        let cell_matches: Vec<_> = cells.iter()
+            .filter(|entry| ai_byte_range(&entry["markdownBytes"])
+                .is_some_and(|(left, right)| start < right && left < end))
+            .collect();
+        result["tableCellMatches"] = json!(cell_matches);
+    }
+    Ok(result)
 }
 
 /// A desktop jump requires a citation resolving to one body paragraph.
@@ -4130,7 +4144,18 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
     let doc = presentation.flow.as_ref().ok_or_else(|| Error::new("AI document export requires a word-processing document"))?;
     let mut blocks = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut table_cells = Vec::new();
     let markdown = export_markdown_with_positions(doc, &presentation.media, |source, start, end| {
+        if let MarkdownSource::TableCell { index, table, row, column, cell } = source {
+            table_cells.push(json!({
+                "source": {
+                    "part": "body", "kind": "tableCell", "index": index, "tableModelId": table.id,
+                    "modelId": cell.id, "row": row, "column": column,
+                },
+                "markdownBytes": [start, end],
+            }));
+            return;
+        }
         let locator = match source {
             MarkdownSource::Body(index, Block::Paragraph(p)) =>
                 json!({ "part": "body", "kind": "paragraph", "index": index, "modelId": p.id }),
@@ -4138,10 +4163,12 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
                 json!({ "part": "body", "kind": "table", "index": index, "modelId": t.id }),
             MarkdownSource::Footnote(n) =>
                 json!({ "part": "footnotes", "kind": "footnote", "id": n.id }),
+            MarkdownSource::TableCell { .. } => unreachable!(),
         };
         blocks.push((locator.clone(), start, end));
         let mut warn = |code| diagnostics.push(json!({ "code": code, "source": locator }));
         match source {
+            MarkdownSource::TableCell { .. } => unreachable!(),
             MarkdownSource::Body(_, Block::Table(table)) => {
                 if table.rows.iter().flat_map(|row| &row.cells)
                     .any(|cell| cell.span > 1 || cell.merge != VerticalMerge::None)
@@ -4189,6 +4216,7 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
         "markdown": markdown,
         "blocks": blocks,
         "tables": tables,
+        "tableCells": table_cells,
         "diagnostics": diagnostics,
     }))
 }
@@ -4367,7 +4395,7 @@ fn serialize_block(
 ) {
     match block {
         Block::Paragraph(p) => serialize_paragraph(p, doc, media, comments, out),
-        Block::Table(t) => serialize_table(t, media, comments, out),
+        Block::Table(t) => serialize_table(t, media, comments, out, |_, _, _, _, _| {}),
     }
 }
 
@@ -4563,11 +4591,12 @@ fn format_block_attrs(p: &FlowParagraph) -> String {
     }
 }
 
-fn serialize_table(
-    t: &FlowTable,
+fn serialize_table<'a>(
+    t: &'a FlowTable,
     media: &[Media],
     comments: &HashMap<u32, &Comment>,
     out: &mut String,
+    mut record_cell: impl FnMut(usize, usize, &'a FlowCell, usize, usize),
 ) {
     if t.rows.is_empty() {
         return;
@@ -4577,10 +4606,15 @@ fn serialize_table(
         return;
     }
 
-    let format_row = |row: &FlowRow| -> String {
-        let mut cells = Vec::with_capacity(col_count);
+    let mut write_row = |row_index: usize, row: &'a FlowRow, out: &mut String| {
+        out.push_str("| ");
+        let mut column = 1usize;
         for c_idx in 0..col_count {
+            if c_idx != 0 {
+                out.push_str(" | ");
+            }
             if let Some(cell) = row.cells.get(c_idx) {
+                let start = out.len();
                 let mut cell_parts = Vec::new();
                 for b in &cell.blocks {
                     if let Block::Paragraph(p) = b {
@@ -4591,15 +4625,17 @@ fn serialize_table(
                         );
                     }
                 }
-                cells.push(cell_parts.join("<br>"));
-            } else {
-                cells.push(String::new());
+                out.push_str(&cell_parts.join("<br>"));
+                if start != out.len() {
+                    record_cell(row_index, column, cell, start, out.len());
+                }
+                column = column.saturating_add(cell.span.max(1) as usize);
             }
         }
-        format!("| {} |\n", cells.join(" | "))
+        out.push_str(" |\n");
     };
 
-    out.push_str(&format_row(&t.rows[0]));
+    write_row(1, &t.rows[0], out);
 
     // Alignment separator row
     let mut sep_cells = Vec::with_capacity(col_count);
@@ -4623,8 +4659,8 @@ fn serialize_table(
     }
     out.push_str(&format!("| {} |\n", sep_cells.join(" | ")));
 
-    for row in &t.rows[1..] {
-        out.push_str(&format_row(row));
+    for (index, row) in t.rows.iter().enumerate().skip(1) {
+        write_row(index + 1, row, out);
     }
     out.push('\n');
 }

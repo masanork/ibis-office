@@ -283,6 +283,7 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 - DOCX の `blocks` は本文の段落・表と脚注を指します。本文の `index` は 0 始まり、`modelId` は読み込んだ時点の文書モデル内の ID です。
 - DOCX の `tables` には本文の表の構造が入ります。`source` は `blocks` 内の表と共通です。`structure.rows` と各行の `cells` は文書順で、`row` と `column` は 1 始まりです。`header` は繰り返し見出し行の指定を表します。
 - セルの `columnSpan` は横方向の結合列数です。`verticalMerge` は `none`、`start`、`continue` のいずれかです。セル内の `blocks` には段落の Markdown と入れ子表の構造が、原文と同じ順番で入ります。段落やセルの `modelId` は同じ原本を参照するときに使います。
+- DOCX の `tableCells` は、本文のパイプ表に出力されたセル内容の UTF-8 範囲です。`source.tableModelId` と `source.modelId` は表とセルの ID、`row` と `column` は 1 始まりの開始位置です。空セルや区切りのパイプにセル範囲は付きません。入れ子表の構造は `tables` に含まれます。
 - XLSX の `cells` はシート名と 1 始まりの行列を持ちます。表示文字列、保存された値とその型、数式を別々に記録します。Markdown 出力と同じく表示中のシート・行・列を対象にします。
 - Lawtext と法令標準 XML の `articles` は法令番号、条番号、附則の位置と改正法令番号を記録します。本則の附則位置は `null` です。
 - `diagnostics` は Markdown 出力で検出した変換上の差を示します。結合セルや入れ子表の構造は `tables` で確認できます。
@@ -293,7 +294,7 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 
 `--export ai-locate --ai-query citation.json report.docx` は、指定範囲と重なる段落・表・脚注、条文、セルを標準出力に JSON で返します。`citation.json` には `version: 1` に相当する JSON フィールドと、書き出し時の `sourceSha256`、引用した `markdownBytes`、その範囲と完全に一致する `quote` を入れます。入力のハッシュが変わっていた場合や、UTF-8 の文字境界・引用が一致しない場合はエラーになります。
 
-デスクトップ版では `ibisOffice --ai-query citation.json report.docx` で原本を開き、該当段落の先頭へ移動できます。対象は一つの本文段落に対応する引用です。複数段落をまたぐ引用、表や脚注、法令と表計算の位置は `ai-locate` で確認できます。
+デスクトップ版では `ibisOffice --ai-query citation.json report.docx` で原本を開き、該当段落の先頭へ移動できます。対象は一つの本文段落に対応する引用です。複数段落をまたぐ引用、表や脚注、法令と表計算の位置は `ai-locate` で確認できます。DOCX の表を引用したときは、`matches` に表全体、`tableCellMatches` に引用範囲が重なるセルが入ります。
 
 ### 段落の編集案を確認して適用する
 
