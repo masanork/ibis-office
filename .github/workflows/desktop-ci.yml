@@ -91,6 +91,7 @@ jobs:
           set -e
           test "$result" -eq 1
           python3 scripts/test-ai-edit-cli.py "$app/Contents/MacOS/ibisOffice"
+          python3 scripts/test-markdown-reference-render.py "$app/Contents/MacOS/ibisOffice"
           test -s "$app/Contents/Resources/Licenses/license.md"
           test -z "$(find "$app" -iname '*onnx*' -print -quit)"
           test -s "$app/Contents/Resources/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip"
@@ -164,7 +165,8 @@ jobs:
           apt_retry update
           apt_retry install -y ca-certificates curl git python3 build-essential pkg-config libssl-dev \
             libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+            libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            fonts-noto-cjk poppler-utils
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.EXPECTED_SOURCE_SHA }}
@@ -215,6 +217,7 @@ jobs:
           set -e
           test "$result" -eq 1
           python3 scripts/test-ai-edit-cli.py "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
+          python3 scripts/test-markdown-reference-render.py "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
           cp "$image" ci-artifact/desktop-linux-x64-ci.AppImage
       - name: Hash deliverables
         run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
