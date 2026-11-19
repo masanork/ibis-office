@@ -323,6 +323,62 @@ ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed
 
 すべての編集案を同じ原本に照合します。一件でも照合に失敗すると出力ファイルは作成されず、エラーには配列内の何件目かが表示されます。同じ段落やセルでも、原本上の範囲が重ならない部分置換をまとめられます。同じテキストラン内でも指定でき、置換後の文字数が変わっても他の範囲には影響しません。範囲が重複する場合は一括適用を拒否します。プレビューの `edits` は入力順に、各案を単独で原本に当てた場合の変更前後を返します。`targets` は段落・セルごとに全案を反映した変更前後を返します。対象は最初に現れた順で、`editIndices` は対応する案の入力順の番号（1 始まり）です。適用時は全件を反映した一つの新しい DOCX を作ります。
 
+### CLI で一括編集を試す
+
+macOS または Linux のシェルで、`ibisOffice` と `python3` を使います。合成文書を一時ディレクトリに作り、本文と書式付きの表セルをまとめて変更します。書き出された Markdown を UTF-8 に変換してから位置を求めます。
+
+```sh
+demo=$(mktemp -d)
+cat > "$demo/original.md" <<'EOF'
+出張先を確認する。
+
+| 支店 |
+| --- |
+| **東京**と*大阪* |
+EOF
+ibisOffice --export docx --out-dir "$demo" "$demo/original.md"
+ibisOffice --export ai-json --out-dir "$demo" "$demo/original.docx"
+python3 - "$demo" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+demo = Path(sys.argv[1])
+bundle = json.loads((demo / "original.ai.json").read_text(encoding="utf-8"))
+markdown = bundle["markdown"].encode("utf-8")
+
+def byte_range(text, quote):
+    encoded = quote.encode("utf-8")
+    start = text.index(encoded)
+    return [start, start + len(encoded)]
+
+def edit(quote, before, replacement, **fields):
+    return dict(markdownBytes=byte_range(markdown, quote), quote=quote,
+                before=before, replacement=replacement, **fields)
+
+cell = "東京と大阪"
+batch = {
+    "version": 1,
+    "sourceSha256": bundle["sourceSha256"],
+    "edits": [
+        edit("出張先を確認する。", "出張先を確認する。", "出張先を確定する。"),
+        edit("東京", cell, "横浜市", target="tableCell",
+             paragraphBytes=byte_range(cell.encode("utf-8"), "東京")),
+        edit("大阪", cell, "札幌", target="tableCell",
+             paragraphBytes=byte_range(cell.encode("utf-8"), "大阪")),
+    ],
+}
+(demo / "batch.json").write_text(json.dumps(batch, ensure_ascii=False), encoding="utf-8")
+PY
+ibisOffice --export ai-preview --ai-query "$demo/batch.json" "$demo/original.docx"
+ibisOffice --export ai-apply --ai-query "$demo/batch.json" \
+  --out-file "$demo/reviewed.docx" "$demo/original.docx"
+ibisOffice --export md --out-dir "$demo" "$demo/reviewed.docx"
+cat "$demo/reviewed.md"
+```
+
+プレビューの `targets` には本文とセルの2件が入り、セルの適用後テキストは「横浜市と札幌」になります。保存後の `reviewed.md` では `**横浜市**と*札幌*` になり、太字と斜体を確認できます。`original.docx` は原本のままです。
+
 ## ステージング文書としての更新
 
 Markdown の機能を追加または変更する PR では、利用者の表示や保存結果が変わる場合、関連する説明と最小の例を同じ PR で更新します。例には入力、期待する結果、確認した経路を添えます。既知の差は本文に残し、対応した時点で書き換えます。
