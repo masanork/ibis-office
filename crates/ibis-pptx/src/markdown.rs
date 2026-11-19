@@ -3925,7 +3925,12 @@ fn ai_body_paragraph_entry(citation: &serde_json::Value) -> Result<&serde_json::
     Ok(entry)
 }
 
-/// Validate a paragraph replacement and return its before/after text.
+enum AiEditTarget {
+    Paragraph(usize),
+    TableCell { table: usize, row: usize, cell: usize },
+}
+
+/// Validate a paragraph or cell replacement and return its before/after text.
 pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serde_json::Value, Error> {
     let (_, _, _, _, preview) = prepare_ai_edit(data, proposal)?;
     Ok(preview)
@@ -3933,9 +3938,16 @@ pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serd
 
 /// Create an edited DOCX from the same checked proposal used by the preview.
 pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8>, Error> {
-    let (mut opened, index, run_index, replacement, _) = prepare_ai_edit(data, proposal)?;
+    let (mut opened, target, run_index, replacement, _) = prepare_ai_edit(data, proposal)?;
     let doc = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
-    let Block::Paragraph(paragraph) = &mut doc.body[index] else { unreachable!() };
+    let block = match target {
+        AiEditTarget::Paragraph(index) => &mut doc.body[index],
+        AiEditTarget::TableCell { table, row, cell } => {
+            let Block::Table(table) = &mut doc.body[table] else { unreachable!() };
+            &mut table.rows[row].cells[cell].blocks[0]
+        }
+    };
+    let Block::Paragraph(paragraph) = block else { unreachable!() };
     paragraph.runs[run_index].kind = FlowRunKind::Text(replacement.into());
     opened.source.save(&opened.presentation, SaveOptions::default())
 }
@@ -3943,13 +3955,27 @@ pub fn apply_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<Vec<u8
 fn prepare_ai_edit(
     data: &[u8],
     proposal: &serde_json::Value,
-) -> Result<(Opened, usize, usize, String, serde_json::Value), Error> {
+) -> Result<(Opened, AiEditTarget, usize, String, serde_json::Value), Error> {
     use serde_json::json;
 
     let citation = locate_ai_source(data, proposal)?;
-    let entry = ai_body_paragraph_entry(&citation)?;
-    let paragraph_id = entry["source"]["modelId"].as_u64().and_then(|id| u32::try_from(id).ok())
-        .ok_or_else(|| Error::new("The AI citation has no paragraph ID"))?;
+    let cell_edit = match proposal.get("target") {
+        None => false,
+        Some(target) if target == "tableCell" => true,
+        Some(_) => return Err(Error::new("Unsupported AI edit target")),
+    };
+    let entry = if cell_edit {
+        let cells = citation["tableCellMatches"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let [entry] = cells else {
+            return Err(Error::new("AI cell editing requires exactly one cited table cell"));
+        };
+        if entry["markdownBytes"] != citation["markdownBytes"] || proposal.get("paragraphBytes").is_some() {
+            return Err(Error::new("AI cell editing requires the entire cell Markdown range"));
+        }
+        entry
+    } else {
+        ai_body_paragraph_entry(&citation)?
+    };
     let before = proposal["before"].as_str().ok_or_else(|| Error::new("AI edit requires the original paragraph text in before"))?;
     let replacement = proposal["replacement"].as_str()
         .filter(|text| !text.is_empty() && !text.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
@@ -3962,12 +3988,30 @@ fn prepare_ai_edit(
     if doc.protection != ibis_doc_model::flow::DocumentProtection::None || doc.formatting_protection || doc.track_changes {
         return Err(Error::new("AI editing does not support protected documents or active change tracking"));
     }
-    let (index, paragraph) = doc.body.iter().enumerate().find_map(|(index, block)| {
-        match block {
-            Block::Paragraph(paragraph) if paragraph.id == paragraph_id => Some((index, paragraph)),
-            _ => None,
+    let source = &entry["source"];
+    let index = source["index"].as_u64().and_then(|index| usize::try_from(index).ok())
+        .ok_or_else(|| Error::new("The AI citation has no body block index"))?;
+    let (target, paragraph) = match doc.body.get(index) {
+        Some(Block::Paragraph(paragraph)) if !cell_edit && source["modelId"] == paragraph.id => {
+            (AiEditTarget::Paragraph(index), paragraph)
         }
-    }).ok_or_else(|| Error::new("AI edit paragraph was not found in the original document"))?;
+        Some(Block::Table(table)) if cell_edit && source["tableModelId"] == table.id => {
+            let row = source["row"].as_u64().and_then(|row| row.checked_sub(1))
+                .and_then(|row| usize::try_from(row).ok())
+                .ok_or_else(|| Error::new("The AI citation has no row index"))?;
+            let (cell_index, cell) = table.rows.get(row).and_then(|row| {
+                row.cells.iter().enumerate().find(|(_, cell)| source["modelId"] == cell.id)
+            }).ok_or_else(|| Error::new("AI edit cell was not found in the original document"))?;
+            let [Block::Paragraph(paragraph)] = cell.blocks.as_slice() else {
+                return Err(Error::new("AI cell editing requires one paragraph in the cell"));
+            };
+            if cell.span != 1 || cell.merge != VerticalMerge::None {
+                return Err(Error::new("AI cell editing requires an unmerged cell"));
+            }
+            (AiEditTarget::TableCell { table: index, row, cell: cell_index }, paragraph)
+        }
+        _ => return Err(Error::new("AI edit target was not found in the original document")),
+    };
     if paragraph.runs.iter().any(|run| run.link.is_some() || run.control.is_some() || run.revision.is_some())
         || paragraph.mark_revision.is_some() || !paragraph.bookmarks.is_empty()
         || !paragraph.bookmark_ends.is_empty() || paragraph.field_start.is_some()
@@ -4043,11 +4087,11 @@ fn prepare_ai_edit(
     let preview = json!({
         "version": 1,
         "sourceSha256": proposal["sourceSha256"],
-        "source": {"part": "body", "kind": "paragraph", "index": index, "modelId": paragraph_id},
+        "source": source,
         "before": before,
         "after": after,
     });
-    Ok((opened, index, run_index, run_after, preview))
+    Ok((opened, target, run_index, run_after, preview))
 }
 
 fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {

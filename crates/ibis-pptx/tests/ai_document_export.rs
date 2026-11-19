@@ -298,3 +298,44 @@ fn docx_table_citations_distinguish_equal_text_in_different_cells() {
         markdown::locate_ai_source(&docx, &citation(first + quote.len(), start)).unwrap();
     assert_eq!(separators["tableCellMatches"], serde_json::json!([]));
 }
+
+#[test]
+fn ai_cell_edit_checks_the_whole_cell_and_preserves_neighbors() {
+    let docx = markdown::import_markdown_to_docx_bytes(
+        "| 対象 | 比較 |\n| --- | --- |\n| **東京** | **東京** |\n".as_bytes(),
+    )
+    .unwrap();
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let cells = export["tableCells"].as_array().unwrap();
+    let cell = &cells[2];
+    let quote = excerpt(&export, cell);
+    assert_eq!(quote, "**東京**");
+    let mut proposal = serde_json::json!({
+        "version": 1,
+        "target": "tableCell",
+        "sourceSha256": export["sourceSha256"],
+        "markdownBytes": cell["markdownBytes"],
+        "quote": quote,
+        "before": "東京",
+        "replacement": "大阪",
+    });
+    let preview = markdown::preview_ai_edit(&docx, &proposal).unwrap();
+    assert_eq!(preview["source"]["kind"], "tableCell");
+    assert_eq!(preview["source"]["row"], 2);
+    assert_eq!(preview["source"]["column"], 1);
+    assert_eq!(preview["before"], "東京");
+    assert_eq!(preview["after"], "大阪");
+
+    let edited = markdown::apply_ai_edit(&docx, &proposal).unwrap();
+    let exported = markdown::export_docx_to_markdown(&edited).unwrap();
+    assert!(exported.contains("| **大阪** | **東京** |"));
+    assert!(markdown::apply_ai_edit(&edited, &proposal).is_err());
+
+    proposal["before"] = serde_json::json!("名古屋");
+    assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
+    proposal["before"] = serde_json::json!("東京");
+    let start = cell["markdownBytes"][0].as_u64().unwrap() + 2;
+    proposal["markdownBytes"] = serde_json::json!([start, start + "東京".len() as u64]);
+    proposal["quote"] = serde_json::json!("東京");
+    assert!(markdown::preview_ai_edit(&docx, &proposal).is_err());
+}
