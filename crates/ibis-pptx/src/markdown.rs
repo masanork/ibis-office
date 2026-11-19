@@ -2222,12 +2222,29 @@ fn build_table_block(
         art: None,
     };
 
-    let build_row = |cells_text: Vec<String>, is_header: bool, ctx: &mut ParseContext<'_>| -> FlowRow {
+    let mut previous_merges = HashMap::new();
+    let mut build_row = |cells_text: Vec<String>, is_header: bool, ctx: &mut ParseContext<'_>| -> FlowRow {
         let mut cells = Vec::with_capacity(col_count);
+        let mut active_merges = HashMap::new();
         let mut c_idx = 0;
         while c_idx < col_count {
             let raw_cell = cells_text.get(c_idx).map(String::as_str).unwrap_or("");
+            let (raw_cell, requested_merge) = if let Some(cell) = raw_cell.strip_suffix("<!-- vmerge:start -->") {
+                (cell.trim_end(), VerticalMerge::Start)
+            } else if let Some(cell) = raw_cell.strip_suffix("<!-- vmerge:continue -->") {
+                (cell.trim_end(), VerticalMerge::Continue)
+            } else {
+                (raw_cell, VerticalMerge::None)
+            };
             let (raw_cell, span) = table_colspan(raw_cell, &cells_text, c_idx);
+            let merge = match requested_merge {
+                VerticalMerge::Continue
+                    if !raw_cell.is_empty() || previous_merges.get(&c_idx) != Some(&span) => VerticalMerge::None,
+                merge => merge,
+            };
+            if merge != VerticalMerge::None {
+                active_merges.insert(c_idx, span);
+            }
             let align = alignments.get(c_idx).copied().flatten();
             let base_fmt = if is_header {
                 RunFormat {
@@ -2265,7 +2282,7 @@ fn build_table_block(
                 id: ctx.fresh_id(),
                 blocks: vec![Block::Paragraph(p)],
                 span: span as u32,
-                merge: VerticalMerge::None,
+                merge,
                 shading: is_header.then_some(Rgb(0xF2F4F8)),
                 borders: [Some(line), Some(line), Some(line), Some(line)],
                 own_borders: [None; 4],
@@ -2278,6 +2295,7 @@ fn build_table_block(
             });
             c_idx += span;
         }
+        previous_merges = active_merges;
         FlowRow {
             id: ctx.fresh_id(),
             height: RowHeight::Auto,
@@ -4229,6 +4247,11 @@ fn serialize_table(
                 use std::fmt::Write;
                 let _ = write!(text, " <!-- colspan:{span} -->");
             }
+            match cell.merge {
+                VerticalMerge::Start => text.push_str(" <!-- vmerge:start -->"),
+                VerticalMerge::Continue => text.push_str(" <!-- vmerge:continue -->"),
+                VerticalMerge::None => {}
+            }
             cells.push(text);
             cells.resize(cells.len() + span - 1, String::new());
         }
@@ -5244,6 +5267,43 @@ fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vertical_table_merges_round_trip_and_keep_occupied_cells() {
+        let markdown = b"| Group | Type | Count |
+| --- | --- | --- |
+| Domestic <!-- colspan:2 --> <!-- vmerge:start --> | | 12 |
+| <!-- colspan:2 --> <!-- vmerge:continue --> | | 8 |
+| <!-- vmerge:continue --> | Width mismatch | 3 |
+| Keep <!-- vmerge:start --> | Other | 4 |
+| Occupied <!-- vmerge:continue --> | Other | 5 |
+| <!-- vmerge:continue --> | Orphan | 6 |
+";
+        let docx = import_markdown_to_docx_bytes(markdown).unwrap();
+        let exported = export_docx_to_markdown(&docx).unwrap();
+        assert!(exported.contains("<!-- colspan:2 --> <!-- vmerge:continue -->"));
+        assert!(exported.contains("| Occupied |"));
+        let rebuilt = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&rebuilt).unwrap(), exported);
+
+        let presentation = crate::read(&rebuilt).unwrap();
+        let Block::Table(table) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected a table");
+        };
+        let merges: Vec<_> = table.rows.iter().map(|row| {
+            let cell = &row.cells[0];
+            (cell.span, cell.merge)
+        }).collect();
+        assert_eq!(merges, [
+            (1, VerticalMerge::None),
+            (2, VerticalMerge::Start),
+            (2, VerticalMerge::Continue),
+            (1, VerticalMerge::None),
+            (1, VerticalMerge::Start),
+            (1, VerticalMerge::None),
+            (1, VerticalMerge::None),
+        ]);
+    }
 
     #[test]
     fn horizontal_table_merge_round_trips_through_docx() {

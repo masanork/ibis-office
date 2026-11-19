@@ -46,7 +46,9 @@ ibisOffice --export pptx --out-dir /tmp/docs-reference/pptx docs/markdown-refere
 ibisOffice --export md --out-dir /tmp/docs-reference/markdown /tmp/docs-reference/docx/markdown-reference-ja.docx
 ```
 
-## 表の横方向の結合
+## 表のセル結合
+
+### 横方向
 
 結合するセルの末尾に `<!-- colspan:2 -->` を付け、続く列を空セルにします。数字は、結合する先頭のセルを含めた列数です。次の表を DOCX に保存して Markdown に戻すと、列の位置と結合の指定を保持します。
 
@@ -55,7 +57,19 @@ ibisOffice --export md --out-dir /tmp/docs-reference/markdown /tmp/docs-referenc
 | 国内 | 文書 | 12 |
 | 海外 | 文書 | 8 |
 
-標準的な Markdown 表示ではコメントが隠れ、続く列には空セルが表示されます。結合範囲に値がある場合、Docs は各セルを個別に読み込みます。ここで扱うのは横方向の結合です。
+標準的な Markdown 表示ではコメントが隠れ、続く列には空セルが表示されます。結合範囲に値がある場合、Docs は各セルを個別に読み込みます。
+
+### 縦方向
+
+結合元に `<!-- vmerge:start -->`、直下の空セルに `<!-- vmerge:continue -->` を付けます。3行以上の結合は、対象の各行に継続マーカーを付けます。横方向にも結合する場合は、各行のセルに同じ `colspan` を先に書きます。
+
+| 分類 | 内訳 | 件数 |
+| :--- | :--- | ---: |
+| 国内 <!-- colspan:2 --> <!-- vmerge:start --> | | 12 |
+| <!-- colspan:2 --> <!-- vmerge:continue --> | | 8 |
+| 海外 | 文書 | 5 |
+
+DOCX との往復では列幅の範囲と結合の開始・継続を保持します。継続セルに内容がある場合や、直上のセルと開始列・結合列数が合わない場合は、そのセルを縦結合しません。
 
 ## Markdown 構文一覧
 
