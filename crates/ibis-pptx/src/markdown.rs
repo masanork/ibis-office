@@ -335,7 +335,7 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
         let parsed = open_markdown(markdown.as_bytes().to_vec())?;
         let flow = parsed.presentation.flow.as_ref().ok_or_else(|| Error::new("Markdown のパースに失敗しました"))?;
         let mut content = (*template).clone();
-        let mut cells = markdown_workbook_cells(flow, marker.is_some());
+        let mut cells = markdown_workbook_cells(flow, marker.is_some())?;
         if let Some(origin) = marker.as_ref().and_then(|marker| marker.origin.as_deref()) {
             let (row, column) = ibis_doc_model::ai_sheet::parse_cell_ref(origin)
                 .ok_or_else(|| Error::new(format!("xlsx-sheet の開始セルが不正です: {origin}")))?;
@@ -429,6 +429,13 @@ fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMar
 
 const XLSX_TEXT_CELL_MARKER: &str = "<!-- xlsx-text -->";
 
+const XLSX_NUMBER_CELL_MARKER: &str = "<!-- xlsx-number:";
+const XLSX_CELL_MARKER_END: &str = " -->";
+
+fn numeric_cell_marker(text: &str) -> Option<(&str, &str)> {
+    text.strip_suffix(XLSX_CELL_MARKER_END)?.rsplit_once(XLSX_NUMBER_CELL_MARKER)
+}
+
 fn infer_markdown_cell_value(text: &str) -> ibis_doc_model::CellValue {
     use ibis_doc_model::CellValue;
     if let Ok(number) = text.replace(',', "").parse::<f64>() {
@@ -442,7 +449,7 @@ fn infer_markdown_cell_value(text: &str) -> ibis_doc_model::CellValue {
     }
 }
 
-fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Vec<ibis_doc_model::SheetCell> {
+fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Result<Vec<ibis_doc_model::SheetCell>, Error> {
     use ibis_doc_model::{CellKind, CellValue, SheetCell};
 
     let mut cells: Vec<SheetCell> = Vec::new();
@@ -497,6 +504,10 @@ fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Vec<ibis_doc_mod
                         let (trimmed, value) = if let Some(text) = explicit_text {
                             let text = text.trim_end();
                             (text, CellValue::Text(text.to_owned()))
+                        } else if let Some((display, number)) = named.then(|| numeric_cell_marker(trimmed)).flatten() {
+                            let value = number.trim().parse::<f64>().ok().filter(|value| value.is_finite())
+                                .ok_or_else(|| Error::new(format!("xlsx-number の数値が不正です: {number}")))?;
+                            (display.trim_end(), CellValue::Number(value))
                         } else {
                             if trimmed.is_empty() {
                                 continue;
@@ -522,7 +533,7 @@ fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Vec<ibis_doc_mod
         }
     }
 
-    cells
+    Ok(cells)
 }
 
 /// Export a `.docx` file's bytes to deterministic Rich Markdown.
@@ -628,14 +639,25 @@ fn export_workbook_markdown_with_positions(
                 let start = out.len();
                 out.push_str(escaped.trim());
                 record(&sheet_ref.name, r, c, cell, start, out.len());
-                if cell.is_some_and(|cell| matches!(&cell.value, ibis_doc_model::CellValue::Text(_)))
-                    && (raw.trim_end().ends_with(XLSX_TEXT_CELL_MARKER)
-                        || !matches!(infer_markdown_cell_value(raw.trim()), ibis_doc_model::CellValue::Text(_)))
-                {
-                    if !raw.trim().is_empty() {
+                match cell.map(|cell| &cell.value) {
+                    Some(ibis_doc_model::CellValue::Text(_))
+                        if raw.trim_end().ends_with(XLSX_TEXT_CELL_MARKER)
+                            || numeric_cell_marker(raw.trim()).is_some()
+                            || !matches!(infer_markdown_cell_value(raw.trim()), ibis_doc_model::CellValue::Text(_)) =>
+                    {
                         out.push(' ');
+                        out.push_str(XLSX_TEXT_CELL_MARKER);
                     }
-                    out.push_str(XLSX_TEXT_CELL_MARKER);
+                    Some(ibis_doc_model::CellValue::Number(value))
+                        if value.is_finite() && !matches!(
+                            infer_markdown_cell_value(raw.trim()),
+                            ibis_doc_model::CellValue::Number(inferred) if inferred.to_bits() == value.to_bits()
+                        ) =>
+                    {
+                        use std::fmt::Write;
+                        let _ = write!(out, " {XLSX_NUMBER_CELL_MARKER}{value}{XLSX_CELL_MARKER_END}");
+                    }
+                    _ => {}
                 }
                 out.push_str(" |");
             }
@@ -7767,6 +7789,38 @@ xychart-beta
                 assert_eq!(sheet.cell(row, column).unwrap().value, value);
             }
         }
+    }
+
+    #[test]
+    fn formatted_workbook_numbers_keep_their_stored_values() {
+        use ibis_doc_model::CellValue;
+        let bytes = import_markdown_to_xlsx_bytes(br#"<!-- xlsx-sheet "Numbers" -->
+
+| Percentage | Rounded | Tiny | Plain |
+| --- | --- | --- | --- |
+| 0.25 | 1.234 | 1e-8 | 12 |
+"#).unwrap();
+        let mut workbook = crate::read(&bytes).unwrap();
+        let ShapeKind::Sheet(sheet) = &mut workbook.slides[0].shapes[0].kind else {
+            panic!("expected a sheet");
+        };
+        let sheet = Arc::make_mut(sheet);
+        let mut cells = sheet.cells.to_vec();
+        for (cell, display) in cells.iter_mut().filter(|cell| cell.row == 1)
+            .zip(["25%", "1.23", "0.00", "12"])
+        {
+            cell.text = display.into();
+        }
+        sheet.cells = cells.into();
+
+        let markdown = export_workbook_markdown(&workbook).unwrap();
+        assert!(markdown.contains("| 25% <!-- xlsx-number:0.25 --> | 1.23 <!-- xlsx-number:1.234 --> | 0.00 <!-- xlsx-number:0.00000001 --> | 12 |"));
+        let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        for (column, value) in (0..).zip([0.25, 1.234, 1e-8, 12.0]) {
+            assert_eq!(sheet.cell(1, column).unwrap().value, CellValue::Number(value));
+        }
+        assert!(import_markdown_to_xlsx_bytes(markdown.replace("xlsx-number:0.25", "xlsx-number:NaN").as_bytes()).is_err());
     }
 
     #[test]
