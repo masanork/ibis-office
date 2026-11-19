@@ -4092,8 +4092,11 @@ fn prepare_ai_edit(
     };
     let before = proposal["before"].as_str().ok_or_else(|| Error::new("AI edit requires the original paragraph text in before"))?;
     let replacement = proposal["replacement"].as_str()
-        .filter(|text| !text.is_empty() && !text.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
-        .ok_or_else(|| Error::new("AI replacement must be nonempty text on one line"))?;
+        .filter(|text| !text.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
+        .ok_or_else(|| Error::new("AI replacement must be a single-line string"))?;
+    if replacement.is_empty() && proposal.get("paragraphBytes").is_none() {
+        return Err(Error::new("AI deletion requires an explicit paragraphBytes range"));
+    }
     let source = &entry["source"];
     let index = source["index"].as_u64().and_then(|index| usize::try_from(index).ok())
         .ok_or_else(|| Error::new("The AI citation has no body block index"))?;

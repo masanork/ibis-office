@@ -484,6 +484,21 @@ fn ai_batch_combines_edits_to_distinct_runs_in_one_cell() {
             .contains("| **西東京都**と*大阪* |")
     );
 
+    batch["edits"] = serde_json::json!([edit("大阪", ""), edit("東京", "横浜市")]);
+    let preview = markdown::preview_ai_edit(&docx, &batch).unwrap();
+    assert_eq!(preview["targets"][0]["after"], "横浜市と");
+    let edited = markdown::apply_ai_edit(&docx, &batch).unwrap();
+    assert!(
+        markdown::export_docx_to_markdown(&edited)
+            .unwrap()
+            .contains("| **横浜市**と |")
+    );
+    batch["edits"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("paragraphBytes");
+    assert!(markdown::preview_ai_edit(&docx, &batch).is_err());
+
     batch["edits"] = serde_json::json!([edit("京", "都"), edit("東京", "札幌")]);
     assert!(
         markdown::apply_ai_edit(&docx, &batch)

@@ -317,6 +317,10 @@ ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed
 
 対象は一つの段落を持つ、本文の結合されていないセルです。全体の置換には単一のテキストランが必要です。部分置換は一つのテキストランに収まる引用を対象とし、他のランの書式とテキストを保持します。プレビューには表・セルの ID と行・列が入り、適用時は原本と照合して別の DOCX に保存します。
 
+### 引用箇所を削除する
+
+段落やセルで引用した箇所だけを削除するには、部分置換と同じように `paragraphBytes` を指定し、`replacement` に空文字列 `""` を入れます。たとえば `東京と**大阪**` から太字の「大阪」を削除する場合、`before` は `東京と大阪`、`paragraphBytes` は `[9, 15]` です。削除と置換は同じバッチに含められます。
+
 ### 複数の編集案をまとめる
 
 `ai-preview` と `ai-apply` には、同じ DOCX に対する複数の編集案も渡せます。JSON の最上位に `version: 1`、原本の `sourceSha256`、編集案の配列 `edits` を置きます。配列の各要素には単独の編集案と同じ `markdownBytes`、`quote`、`before`、`replacement` などを入れます。`version` と `sourceSha256` は最上位から引き継ぎます。
