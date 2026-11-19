@@ -61,6 +61,7 @@ ibisOffice は、Word・Excel・PowerPoint の文書を、表示し、編集し�
   [![ibisOffice の紹介動画](asset/video-ja.jpg)](https://www.youtube.com/watch?v=0yjHdK_Cb_8)
 
 - **コマンドライン操作**：ターミナルからの起動、ヘッドレスでの PDF/PNG 一括変換、印刷設定、起動ベンチマーク測定については [コマンドラインオプション](docs/cli-options-ja.md) をご覧ください。
+- **制作素材のプレビュー**　JPEG 2000・OpenEXR・DPX・Cineonなどの単体表示、透明度の確認、連番のコマ送りは [制作素材のプレビュー](docs/production-image-preview-ja.md) をご覧ください。
 - **ブラウザー版の組み込み**：閉じる・ダウンロードのボタンを出し、組み込んだ側のページにイベントで知らせる方法は [ブラウザー版の組み込み](docs/web-embedding-ja.md) をご覧ください。
 
 ## ゴール

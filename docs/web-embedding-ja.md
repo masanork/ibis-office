@@ -54,7 +54,9 @@ window.addEventListener('ibisoffice:download', (e) => {
 });
 ```
 
-`download` には、**今の内容**（編集を含む）が、そのファイルの形式のまま入っています（ファイル > 保存 で書かれるのと同じバイト列）。
+WordやExcelなどの文書では、`download` に**今の内容**（編集を含む）が元の文書形式で入ります（ファイル > 保存 で書かれるのと同じバイト列）。
+
+制作素材の画像を開いている場合、`download` のファイル名は `素材名.docx` になり、プレビュー画像を含むDOCXが渡ります。[制作素材のプレビュー](production-image-preview-ja.md)
 
 ### iframe の場合
 
