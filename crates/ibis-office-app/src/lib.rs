@@ -373,6 +373,8 @@ struct Args {
     /// `--export row-heights <file> [out.tsv]`: the second file name.
     out_file: Option<std::path::PathBuf>,
     ai_query: Option<std::path::PathBuf>,
+    /// Require a matching preview digest before applying an AI edit.
+    require_preview: bool,
     width: Option<u32>,
     slides: Option<String>,
     layout: bool,
@@ -418,6 +420,7 @@ fn parse_args() -> Result<Args, String> {
             "--export" => args.export = Some(value()?),
             "--out-file" => args.out_file = Some(value()?.into()),
             "--ai-query" => args.ai_query = Some(value()?.into()),
+            "--require-preview" => args.require_preview = true,
             "--out-dir" => args.out_dir = Some(value()?.into()),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
             "--slides" => args.slides = Some(value()?),
@@ -443,6 +446,9 @@ fn parse_args() -> Result<Args, String> {
             _ => args.path = Some(arg.into()),
         }
     }
+    if args.require_preview && args.export.as_deref() != Some("ai-apply") {
+        return Err("--require-preview requires --export ai-apply".into());
+    }
     Ok(args)
 }
 
@@ -457,7 +463,10 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         let proposal_path = args.ai_query.as_deref().ok_or("AI editing requires --ai-query")?;
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let proposal = std::fs::read(proposal_path).map_err(|e| format!("{}: {e}", proposal_path.display()))?;
-        let proposal = serde_json::from_slice(&proposal).map_err(|e| format!("{}: {e}", proposal_path.display()))?;
+        let proposal: serde_json::Value = serde_json::from_slice(&proposal).map_err(|e| format!("{}: {e}", proposal_path.display()))?;
+        if args.require_preview && proposal.get("previewSha256").is_none() {
+            return Err("--require-preview needs previewSha256 in the edit proposal".into());
+        }
         if format == "ai-preview" {
             let preview = ibis_pptx::markdown::preview_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
             println!("{preview:#}");

@@ -70,6 +70,8 @@ ibisOffice --read-only report.docx
 
 文書の AI 向け書き出し、引用照合、DOCX の編集プレビューと別名保存は、`ai-json`、`ai-locate`、`ai-preview`、`ai-apply` を使用します。`ai-locate`、`ai-preview`、`ai-apply` には `--ai-query <file>` を、`ai-apply` には新しい出力先として `--out-file <file.docx>` を指定します。[Markdown リファレンスの CLI 実演](markdown-reference-ja.md#cli-で一括編集を試す)
 
+`--require-preview` は `--export ai-apply` 専用です。編集案の `previewSha256` がプレビュー時に返された値と一致する場合に保存できます。
+
 ウィンドウを一切表示せず、GPU / CPU レンダリングによりバックグラウンドで高速に出力を行い、完了後に即座に終了します。サーバー環境や自動化スクリプトに最適です。
 
 | オプション | 引数 | 説明 |

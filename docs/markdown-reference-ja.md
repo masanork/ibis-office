@@ -341,6 +341,8 @@ ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed
 
 `ai-preview` が返す `previewSha256` を編集案 JSON の最上位にコピーできます。`ai-apply` はこの値を指定した場合、照合済みの変更内容から再計算し、一致しなければ保存しません。一括編集では案の順番も照合します。編集案を変更したら、改めてプレビューして新しい値を取得します。
 
+`ai-apply` に `--require-preview` を付けると、`previewSha256` がない編集案も拒否します。
+
 この値は原本に対する編集内容を照合するためのものです。確認者の本人性や承認を証明する電子署名ではありません。
 
 ### 編集案 JSON を検証する
@@ -396,8 +398,25 @@ batch = {
 }
 (demo / "batch.json").write_text(json.dumps(batch, ensure_ascii=False), encoding="utf-8")
 PY
-ibisOffice --export ai-preview --ai-query "$demo/batch.json" "$demo/original.docx"
-ibisOffice --export ai-apply --ai-query "$demo/batch.json" \
+ibisOffice --export ai-preview --ai-query "$demo/batch.json" "$demo/original.docx" > "$demo/preview.json"
+cat "$demo/preview.json"
+```
+
+プレビューを確認したら、次のコマンドで照合用のハッシュを編集案に追加して保存します。
+
+```sh
+python3 - "$demo" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+demo = Path(sys.argv[1])
+batch = json.loads((demo / "batch.json").read_text(encoding="utf-8"))
+preview = json.loads((demo / "preview.json").read_text(encoding="utf-8"))
+batch["previewSha256"] = preview["previewSha256"]
+(demo / "checked.json").write_text(json.dumps(batch, ensure_ascii=False), encoding="utf-8")
+PY
+ibisOffice --export ai-apply --require-preview --ai-query "$demo/checked.json" \
   --out-file "$demo/reviewed.docx" "$demo/original.docx"
 ibisOffice --export md --out-dir "$demo" "$demo/reviewed.docx"
 cat "$demo/reviewed.md"
