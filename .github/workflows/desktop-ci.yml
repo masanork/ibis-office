@@ -97,7 +97,11 @@ jobs:
           ditto -c -k --keepParent "$app" ci-artifact/desktop-macos-arm64-ci.zip
           mkdir -p "$RUNNER_TEMP/verify-app"
           ditto -x -k ci-artifact/desktop-macos-arm64-ci.zip "$RUNNER_TEMP/verify-app"
-          codesign --verify --deep --strict "$RUNNER_TEMP/verify-app/Docs.app"
+          verified_app="$RUNNER_TEMP/verify-app/Docs.app"
+          codesign --verify --deep --strict "$verified_app"
+          python3 scripts/check-bundled-variant-dictionary.py \
+            "$verified_app/Contents/MacOS/ibisOffice" \
+            "$verified_app/Contents/Resources/Licenses/license.md"
       - name: Build and verify Windows package
         if: matrix.platform == 'windows-x64'
         shell: pwsh
@@ -120,7 +124,9 @@ jobs:
           if ($proc.ExitCode -ne 1) { throw "unexpected smoke-test exit: $($proc.ExitCode)" }
           Compress-Archive -Path $dir -DestinationPath ci-artifact/desktop-windows-x64-ci.zip
           Expand-Archive ci-artifact/desktop-windows-x64-ci.zip "$env:RUNNER_TEMP/verify-windows"
-          if (!(Test-Path "$env:RUNNER_TEMP/verify-windows/ibisOffice/ibisOffice.exe")) { throw 'missing packaged executable' }
+          $verifiedApp = "$env:RUNNER_TEMP/verify-windows/ibisOffice"
+          python scripts/check-bundled-variant-dictionary.py "$verifiedApp/ibisOffice.exe" "$verifiedApp/Resources/Licenses/license.md"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Hash deliverables
         shell: bash
         run: ${{ matrix.python }} scripts/desktop-ci-info.py artifacts ci-artifact
@@ -200,7 +206,9 @@ jobs:
           test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOfficeUpdater"
           test -z "$(find "$RUNNER_TEMP/verify-linux/squashfs-root" -iname '*onnx*' -print -quit)"
           python3 scripts/test-appimage-recovery.py "$image"
-          test -s "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/third-party-licenses.md"
+          python3 scripts/check-bundled-variant-dictionary.py \
+            "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" \
+            "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/third-party-licenses.md"
           set +e
           "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" --export invalid
           result=$?
