@@ -4,13 +4,13 @@ title: "Docs Markdown Reference Manual"
 
 # Docs Markdown Reference Manual
 
-このファイルは Markdown の使い方を説明するリファレンスであり、Docs で開いて表示と保存を試せるデモです。対応状況はフォークの統合コミット `1cd79c2c` を基準にしています。
+このファイルは、日本語の Markdown リファレンスと、Docs で表示・保存・再読込を試せるデモを兼ねています。書式や構文を確認する場合は、使用するビルドと同じリビジョンのリファレンスを開いてください。
 
 ## 使い方
 
 1. このファイルを Docs で開きます。
 2. 表、数式、図とグラフを確認し、コピーを DOCX に保存します。
-3. DOCX を開き直して Markdown に書き出し、Mermaid のブロックを確認します。
+3. DOCX を開き直して Markdown に書き出し、数式や Mermaid のソースがどう戻るかを確認します。
    - PPTX の場合は CLI で変換し、スライドとして開きます。
    - Windows と macOS では利用するフォントによって改行位置が変わることがあります。
 
@@ -209,11 +209,11 @@ series:
 
 ## Mermaid
 
-Flowchart、sequence、ER、state、Gantt などは SVG として表示されます。`pie` と `xychart` は通常、編集可能な Office グラフになります。取り込み経路によっては SVG になります。グラフを編集すると、再書き出し時には編集結果を表す `chart` ブロックになる場合があります。[Mermaid の対応範囲](mermaid-compatibility.md)。
+`mermaid` フェンス内の flowchart、sequence、ER、state、Gantt、ZenUML などは SVG として表示されます。`pie` と `xychart` は通常、編集可能な Office グラフになります。取り込み経路によっては SVG になります。グラフを編集すると、再書き出し時には編集結果を表す `chart` ブロックになる場合があります。[Mermaid の対応範囲](mermaid-compatibility.md)
 
 ### デモを開く
 
-[図種別デモ](mermaid-demo-ja.md) は、そのまま Docs で開ける Markdown です。固定した公式コーパスの33図種に表示例があります。この Reference には日本語ラベル、双方向矢印、横棒グラフ、数値 x 軸の例もあります。
+[図種別デモ](mermaid-demo-ja.md) は、そのまま Docs で開ける Markdown です。代表例を図種ごとに確認できます。このリファレンスでも、日本語ラベル、双方向矢印、横棒グラフ、数値 x 軸を試せます。
 
 公式コーパスの全例を、図種別の Markdown として生成できます。目次には描画結果と、対応・未実装・対象外として追跡する構文の一覧が載ります。各例には、該当する既知の制約を表示します。
 
@@ -222,7 +222,7 @@ MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo \
   cargo test -p ibis-pptx --test mermaid_corpus
 ```
 
-[Web 版の図種別デモ](https://docs.sorane.dev/samples/mermaid/web.html) からも各ページを開けます。生成先の `index.md` が目次です。例の出典と MIT ライセンスも生成先に含まれます。Mermaid CI では `mermaid-markdown-demo` 成果物として取得できます。
+[Web 版の構文デモ集](https://docs.sorane.dev/samples/mermaid/web) には、固定した Mermaid 12.3.0 の公式例539件があります。ローカル生成先では `index.md` が目次です。出典と MIT ライセンスは生成先に含まれ、Mermaid CI では `mermaid-markdown-demo` 成果物として取得できます。
 
 ### 対応する図種と構文
 
@@ -287,7 +287,7 @@ sequenceDiagram
   D<<-->>A: 保存と再読込
 ```
 
-### DOCX 内で Mermaid ソースを編集
+### DOCX・PPTX 内で Mermaid ソースを編集
 
 Markdown から取り込んだ SVG の Mermaid 図を DOCX で選び、書式メニューの「Mermaid ソースを編集…」を開きます。上のフローチャートのラベルを変えて「適用」を押すと、図が更新されます。取り消しでは図とソースが一緒に戻ります。保存して開き直し、Markdown に書き出すと更新したソースを確認できます。
 
@@ -327,18 +327,26 @@ xychart
   line "目標" [10, 38]
 ```
 
-### 未対応の図
+### コード表示に戻る場合とフェンスの選び方
+
+未対応の構文や解釈できない図は `mermaid` のコードブロックとして表示します。DOCX・PPTX を経由しても Markdown に書き出すとコードが戻ります。SVG として描画された図でも、ラベルの見え方は実行環境で利用できるフォントによって変わります。
 
 本文にバッククォートやチルダだけの行がある場合は、その行より長いフェンスか、もう一方の記号を使います。Mermaid を書き出すときは、本文と衝突しない長さのフェンスを選びます。
 
 ### ZenUML
 
-次は ZenUML のシーケンス図です。メッセージに付いたコメントはプレーンテキストの注記として描画します。DOCX または PPTX に保存してから Markdown に戻し、言語指定 `mermaid` と本文が残ることを確認します。
+ZenUML は `mermaid` フェンスの先頭に `zenuml` と書きます。ibisOffice は対応する呼び出し、戻り値、分岐などをシーケンス図の SVG として描画します。次の例では、呼び出し前の `//` コメントが注記になり、呼び出しと戻り値が別々の矢印になります。
 
 ```mermaid
 zenuml
-  Author.review()
+  @Actor 執筆者
+  // 原稿を確認
+  執筆者->査読者.確認() {
+    return 確認済み
+  }
 ```
+
+DOCX・PPTX では図を選んで「Mermaid ソースを編集…」から修正できます。Markdown に書き戻すと、描画に使ったシーケンス図の内部表現ではなく、保存した ZenUML の本文が戻ります。[ZenUML の図種別デモ](mermaid-demo-ja.md#zenuml)
 
 ## 法令標準XML と Lawtext
 
