@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-#![cfg(target_family = "wasm")]
+//! Shared HEIC preview decoder for the browser worker and desktop.
 
-use wasm_bindgen::prelude::*;
 use zune_heic::{
     HeifDecoder,
     zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions},
@@ -13,7 +12,7 @@ const MAX_SIDE: usize = 8192;
 const MAX_PIXELS: usize = 32 * 1024 * 1024;
 const MAX_BYTES: usize = 128 * 1024 * 1024;
 
-#[wasm_bindgen]
+#[cfg_attr(target_family = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
 pub fn decode_heic_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
     if bytes.len() > MAX_BYTES {
         return Err("HEIC file exceeds the preview limits".into());

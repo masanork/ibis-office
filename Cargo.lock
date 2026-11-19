@@ -4246,6 +4246,7 @@ dependencies = [
  "ibis-calc",
  "ibis-doc-model",
  "ibis-emf",
+ "ibis-heic-web",
  "ibis-ooxml",
  "image",
  "j2k-rs",

@@ -64,9 +64,14 @@ pub fn open_with_exposure(
                     None,
                 )
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
-                return Err("HEIC preview is currently available on macOS".into());
+                validate_heic_still(bytes)?;
+                (ibis_heic_web::decode_heic_png(bytes)?, None)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+            {
+                return Err("HEIC decoding is unavailable on this platform".into());
             }
         }
         Format::Dpx => (
@@ -98,7 +103,6 @@ pub fn open_browser_heic_preview(png: &[u8]) -> Result<crate::Opened, String> {
     open_preview_png(png)
 }
 
-#[cfg(any(target_os = "macos", target_family = "wasm"))]
 pub fn validate_heic_still(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() > MAX_INPUT_BYTES {
         return Err("Image exceeds the preview file size limit".into());
@@ -416,12 +420,16 @@ mod tests {
             Err(error) if error.contains("Maximize Compatibility")));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn opens_heic_primary_image() {
         // ffmpeg testsrc=size=128x64:rate=1, converted to HEIC with sips.
         let sample = include_bytes!("../tests/fixtures/preview-chart.heic");
-        let decoded = heic::decode(sample).unwrap();
+        let opened = open(Some("HEIF"), sample).unwrap().unwrap();
+        let media = opened.presentation.media.last().unwrap();
+        let decoded = image::load_from_memory_with_format(&media.data, ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
         assert_eq!(decoded.dimensions(), (128, 64));
         for channel in 0..3 {
             let count = decoded
@@ -439,8 +447,6 @@ mod tests {
                 .count();
             assert!(count > 50, "expected saturated color in channel {channel}");
         }
-        let opened = open(Some("HEIF"), sample).unwrap().unwrap();
-        assert_eq!(preview_pixel(opened), decoded.get_pixel(0, 0).0);
         assert!(open(Some("heic"), &sample[..36]).is_err());
         assert!(open(Some("heic"), b"not an image").is_err());
     }
