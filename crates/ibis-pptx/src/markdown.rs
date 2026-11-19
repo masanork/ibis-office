@@ -427,6 +427,21 @@ fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMar
     Ok(sections)
 }
 
+const XLSX_TEXT_CELL_MARKER: &str = "<!-- xlsx-text -->";
+
+fn infer_markdown_cell_value(text: &str) -> ibis_doc_model::CellValue {
+    use ibis_doc_model::CellValue;
+    if let Ok(number) = text.replace(',', "").parse::<f64>() {
+        CellValue::Number(number)
+    } else if text.eq_ignore_ascii_case("true") {
+        CellValue::Bool(true)
+    } else if text.eq_ignore_ascii_case("false") {
+        CellValue::Bool(false)
+    } else {
+        CellValue::Text(text.to_owned())
+    }
+}
+
 fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Vec<ibis_doc_model::SheetCell> {
     use ibis_doc_model::{CellKind, CellValue, SheetCell};
 
@@ -478,17 +493,15 @@ fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Vec<ibis_doc_mod
                             .collect::<Vec<_>>()
                             .join(" ");
                         let trimmed = txt.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        let value = if let Ok(n) = trimmed.replace(',', "").parse::<f64>() {
-                            CellValue::Number(n)
-                        } else if trimmed.eq_ignore_ascii_case("true") {
-                            CellValue::Bool(true)
-                        } else if trimmed.eq_ignore_ascii_case("false") {
-                            CellValue::Bool(false)
+                        let explicit_text = named.then(|| trimmed.strip_suffix(XLSX_TEXT_CELL_MARKER)).flatten();
+                        let (trimmed, value) = if let Some(text) = explicit_text {
+                            let text = text.trim_end();
+                            (text, CellValue::Text(text.to_owned()))
                         } else {
-                            CellValue::Text(trimmed.to_string())
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            (trimmed, infer_markdown_cell_value(trimmed))
                         };
                         cells.push(SheetCell {
                             row: cur_row,
@@ -615,6 +628,15 @@ fn export_workbook_markdown_with_positions(
                 let start = out.len();
                 out.push_str(escaped.trim());
                 record(&sheet_ref.name, r, c, cell, start, out.len());
+                if cell.is_some_and(|cell| matches!(&cell.value, ibis_doc_model::CellValue::Text(_)))
+                    && (raw.trim_end().ends_with(XLSX_TEXT_CELL_MARKER)
+                        || !matches!(infer_markdown_cell_value(raw.trim()), ibis_doc_model::CellValue::Text(_)))
+                {
+                    if !raw.trim().is_empty() {
+                        out.push(' ');
+                    }
+                    out.push_str(XLSX_TEXT_CELL_MARKER);
+                }
                 out.push_str(" |");
             }
             out.push('\n');
@@ -7675,6 +7697,31 @@ xychart-beta
         for origin in ["XFE3", "XFD3", "B1048576", "B0"] {
             let invalid = std::str::from_utf8(input).unwrap().replace("B3", origin);
             assert!(import_markdown_to_xlsx_bytes(invalid.as_bytes()).is_err(), "{origin}");
+        }
+    }
+
+    #[test]
+    fn workbook_ambiguous_text_cells_keep_their_type() {
+        use ibis_doc_model::CellValue;
+        let input = br#"<!-- xlsx-sheet {"name":"Types","origin":"B3"} -->
+
+| Code | Count | Label | Flag |
+| --- | --- | --- | --- |
+| 0012 <!-- xlsx-text --> | 12 | TRUE <!-- xlsx-text --> | TRUE |
+| 1,200 <!-- xlsx-text --> | 1200 | FALSE <!-- xlsx-text --> | FALSE |
+"#;
+        let bytes = import_markdown_to_xlsx_bytes(input).unwrap();
+        let markdown = export_workbook_markdown(&crate::read(&bytes).unwrap()).unwrap();
+        assert!(markdown.contains("| 0012 <!-- xlsx-text --> | 12 | TRUE <!-- xlsx-text --> | TRUE |"));
+        let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        for (row, expected) in [
+            (3, [CellValue::Text("0012".into()), CellValue::Number(12.0), CellValue::Text("TRUE".into()), CellValue::Bool(true)]),
+            (4, [CellValue::Text("1,200".into()), CellValue::Number(1200.0), CellValue::Text("FALSE".into()), CellValue::Bool(false)]),
+        ] {
+            for (column, value) in (1..).zip(expected) {
+                assert_eq!(sheet.cell(row, column).unwrap().value, value);
+            }
         }
     }
 
