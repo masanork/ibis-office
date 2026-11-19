@@ -174,8 +174,12 @@ impl SlideEditor {
             self.status = Some(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").into());
             return cx.notify();
         };
+        let name = self.file_name.as_deref().unwrap_or("");
+        let docx_name = name.rsplit_once('.')
+            .filter(|(_, extension)| ibis_pptx::production_image::supports_extension(extension))
+            .map(|(stem, _)| format!("{stem}.docx"));
         match source.save(&self.presentation_for_save(), ibis_pptx::SaveOptions::default()) {
-            Ok(bytes) => embed_action_js("download", self.file_name.as_deref().unwrap_or(""), Some(bytes)),
+            Ok(bytes) => embed_action_js("download", docx_name.as_deref().unwrap_or(name), Some(bytes)),
             Err(err) => {
                 self.status = Some(crate::i18n::format("file.save-failed", &[("error", &err)]).into());
                 cx.notify();
