@@ -322,17 +322,80 @@ pub fn import_markdown_to_xlsx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
 
 /// Open a Markdown document's GFM tables as an Excel workbook (`.xlsx` model).
 pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
-    use ibis_doc_model::{CellKind, CellStyle, CellValue, SheetCell};
+    use ibis_doc_model::sheet_ops::{StructureEdit, apply_structure, valid_sheet_name};
 
-    let parsed = open_markdown(data)?;
-    let flow = parsed
-        .presentation
-        .flow
-        .as_ref()
-        .ok_or_else(|| Error::new("Markdown のパースに失敗しました"))?;
+    let text = std::str::from_utf8(&data).map_err(|_| Error::new("Markdown ファイルが UTF-8 ではありません"))?;
+    let sections = markdown_workbook_sections(text.strip_prefix('\u{feff}').unwrap_or(text))?;
+    let mut opened = crate::save::open(crate::blank::blank_file(crate::Kind::Workbook)?)?;
+    let presentation = &mut opened.presentation;
+    let template = presentation.slides.first().and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
+        .ok_or_else(|| Error::new("白紙のシートが見つかりません"))?.clone();
 
-    let blank = crate::blank::blank_file(crate::Kind::Workbook)?;
-    let mut opened = crate::save::open(blank)?;
+    for (index, (name, markdown)) in sections.into_iter().enumerate() {
+        let parsed = open_markdown(markdown.as_bytes().to_vec())?;
+        let flow = parsed.presentation.flow.as_ref().ok_or_else(|| Error::new("Markdown のパースに失敗しました"))?;
+        let mut content = (*template).clone();
+        content.cells = markdown_workbook_cells(flow, name.is_some()).into();
+        if content.styles.len() < 2 {
+            let base = content.styles.first().cloned().unwrap_or_default();
+            if content.styles.is_empty() {
+                content.styles.push(base.clone());
+            }
+            content.styles.push(ibis_doc_model::CellStyle { bold: true, ..base });
+        }
+        if let Some(name) = name {
+            if !valid_sheet_name(presentation, &name, (index == 0).then_some(0)) {
+                return Err(Error::new(format!("無効または重複したシート名です: {name}")));
+            }
+            let edit = if index == 0 {
+                StructureEdit::RenameSheet { sheet: 0, name }
+            } else {
+                let slide = presentation.new_slide_id();
+                let shape = presentation.new_shape_id();
+                StructureEdit::AddSheet { sheet: index, name, slide, shape, content: Arc::new(content.clone()) }
+            };
+            apply_structure(presentation, &edit);
+            Arc::make_mut(presentation.workbook.as_mut().unwrap()).structure.push(edit);
+        }
+        if index == 0 {
+            let shape = presentation.slides[0].shapes.iter_mut().find(|shape| matches!(shape.kind, ShapeKind::Sheet(_)))
+                .ok_or_else(|| Error::new("白紙のシートが見つかりません"))?;
+            shape.kind = ShapeKind::Sheet(Arc::new(content));
+        }
+    }
+    Ok(opened)
+}
+
+const XLSX_SHEET_MARKER: &str = "<!-- xlsx-sheet ";
+
+fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<String>, &str)>, Error> {
+    let mut sections = Vec::new();
+    let mut current = None;
+    let mut fence = None;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_end();
+        if !is_fenced_line(trimmed, &mut fence)
+            && let Some(encoded) = trimmed.strip_prefix(XLSX_SHEET_MARKER)
+        {
+            let name = encoded.strip_suffix(" -->").and_then(|value| serde_json::from_str::<String>(value).ok())
+                .ok_or_else(|| Error::new("xlsx-sheet のシート名が不正です"))?;
+            if let Some((previous, start)) = current.replace((name, offset + line.len())) {
+                sections.push((Some(previous), &text[start..offset]));
+            }
+        }
+        offset += line.len();
+    }
+    if let Some((name, start)) = current {
+        sections.push((Some(name), &text[start..]));
+    } else {
+        sections.push((None, text));
+    }
+    Ok(sections)
+}
+
+fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Vec<ibis_doc_model::SheetCell> {
+    use ibis_doc_model::{CellKind, CellValue, SheetCell};
 
     let mut cells: Vec<SheetCell> = Vec::new();
     let mut cur_row: u32 = 0;
@@ -342,7 +405,7 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
     for block in &flow.body {
         match block {
             Block::Paragraph(p) => {
-                if p.style.as_deref().is_some_and(|s| s.starts_with("Heading")) {
+                if !named && p.style.as_deref().is_some_and(|s| s.starts_with("Heading")) {
                     let t = flow_paragraph_plain_text(p);
                     if !t.trim().is_empty() {
                         pending_heading = Some(t.trim().to_string());
@@ -413,28 +476,7 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
         }
     }
 
-    if let Some(slide) = opened.presentation.slides.first_mut() {
-        for sh in &mut slide.shapes {
-            if let ShapeKind::Sheet(sheet_arc) = &mut sh.kind {
-                let mut sheet = (**sheet_arc).clone();
-                if sheet.styles.len() < 2 {
-                    let base = sheet.styles.first().cloned().unwrap_or_default();
-                    if sheet.styles.is_empty() {
-                        sheet.styles.push(base.clone());
-                    }
-                    sheet.styles.push(CellStyle {
-                        bold: true,
-                        ..base
-                    });
-                }
-                sheet.cells = cells.into();
-                *sheet_arc = Arc::new(sheet);
-                break;
-            }
-        }
-    }
-
-    Ok(opened)
+    cells
 }
 
 /// Export a `.docx` file's bytes to deterministic Rich Markdown.
@@ -496,6 +538,17 @@ fn export_workbook_markdown_with_positions(
             .cells
             .iter()
             .filter(|cell| row_vis(cell.row) && col_vis(cell.column));
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(XLSX_SHEET_MARKER);
+        let name = serde_json::to_string(&sheet_ref.name).expect("sheet name is a JSON string");
+        out.push_str(&name.replace("--", r"-\u002d"));
+        out.push_str(" -->\n\n");
+        out.push_str("## ");
+        out.push_str(&sheet_ref.name);
+        out.push_str("\n\n");
+
         let Some(first) = occupied.next() else {
             continue;
         };
@@ -512,13 +565,6 @@ fn export_workbook_markdown_with_positions(
         if total_cells > 50_000 {
             return Err(Error::new("ワークブックが大きすぎて Markdown に変換できません"));
         }
-
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str("## ");
-        out.push_str(&sheet_ref.name);
-        out.push_str("\n\n");
 
         let rows: Vec<u32> = (minr..=maxr).filter(|&r| row_vis(r)).collect();
         let cols: Vec<u32> = (minc..=maxc).filter(|&c| col_vis(c)).collect();
@@ -7536,6 +7582,44 @@ xychart-beta
         assert!(exported.contains("| Product | Qty | Price |"));
         assert!(exported.contains("| Apple | 10 | 120 |"));
         assert!(exported.contains("| Orange | 5 | 80 |"));
+    }
+
+    #[test]
+    fn named_markdown_sheets_round_trip_in_order() {
+        let input = r#"<!-- xlsx-sheet "売上" -->
+
+## 売上
+
+| 区分 | 金額 |
+| --- | --- |
+| 国内 | 42 |
+
+<!-- xlsx-sheet "Sheet1" -->
+
+## Sheet1
+
+| 区分 | 件数 |
+| --- | --- |
+| 海外 | 5 |
+
+<!-- xlsx-sheet "空白" -->
+
+## 空白
+"#;
+        let bytes = import_markdown_to_xlsx_bytes(input.as_bytes()).unwrap();
+        let workbook = crate::read(&bytes).unwrap();
+        let sheets = &workbook.workbook.as_ref().unwrap().sheets;
+        assert_eq!(sheets.iter().map(|sheet| sheet.name.as_str()).collect::<Vec<_>>(), ["売上", "Sheet1", "空白"]);
+        for (sheet, value) in sheets.iter().zip(["42", "5"]) {
+            let slide = workbook.slide(sheet.slide.unwrap()).unwrap();
+            let contents = ibis_doc_model::sheet_calc::sheet_of_slide(slide).unwrap();
+            assert_eq!(contents.cell(1, 1).unwrap().text, value);
+        }
+        let markdown = export_workbook_markdown(&workbook).unwrap();
+        assert!(markdown.contains(r#"<!-- xlsx-sheet "空白" -->"#));
+        let rebuilt = import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap();
+        assert_eq!(export_workbook_markdown(&crate::read(&rebuilt).unwrap()).unwrap(), markdown);
+        assert!(import_markdown_to_xlsx_bytes(input.replace("空白", "売上").as_bytes()).is_err());
     }
 
     #[test]
