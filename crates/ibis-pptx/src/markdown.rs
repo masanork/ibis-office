@@ -4050,13 +4050,17 @@ fn prepare_ai_edits(data: &[u8], proposal: &serde_json::Value) -> Result<(Opened
         } else {
             prepare_ai_edit(&opened, doc, &export, edit)?
         };
-        let ranges = ranges.entry((prepared.target, prepared.run_index)).or_default();
-        let start = prepared.range.start;
-        let end = prepared.range.end;
-        let overlaps_previous = ranges.range(..start).next_back().is_some_and(|(_, &right)| right > start);
-        let overlaps_next = ranges.range(start..end).next().is_some();
+        let ranges = ranges.entry(prepared.target).or_default();
+        let start = prepared.paragraph_start;
+        let end = start + prepared.range.len();
+        let overlaps_previous = ranges.range(..start).next_back().is_some_and(|(_, &right)| {
+            right > start || (start == end && right == start)
+        });
+        let overlaps_next = ranges.range(start..=end).next().is_some_and(|(&left, &right)| {
+            left < end || left == right || start == end
+        });
         if overlaps_previous || overlaps_next {
-            return Err(Error::new(format!("Edit {} overlaps an earlier edit in the same text run", index + 1)));
+            return Err(Error::new(format!("Edit {} overlaps or shares an insertion boundary with an earlier edit", index + 1)));
         }
         ranges.insert(start, end);
         edits.push(prepared);
@@ -4096,6 +4100,17 @@ fn prepare_ai_edit(
         .ok_or_else(|| Error::new("AI replacement must be a single-line string"))?;
     if replacement.is_empty() && proposal.get("paragraphBytes").is_none() {
         return Err(Error::new("AI deletion requires an explicit paragraphBytes range"));
+    }
+    let insert_before = match proposal.get("insert") {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some("before") => Some(true),
+            Some("after") => Some(false),
+            _ => return Err(Error::new("AI insert must be before or after")),
+        },
+    };
+    if insert_before.is_some() && (proposal.get("paragraphBytes").is_none() || replacement.is_empty()) {
+        return Err(Error::new("AI insertion requires an explicit paragraphBytes range and nonempty text"));
     }
     let source = &entry["source"];
     let index = source["index"].as_u64().and_then(|index| usize::try_from(index).ok())
@@ -4193,9 +4208,16 @@ fn prepare_ai_edit(
             return Err(Error::new("paragraphBytes and markdownBytes point to different text"));
         }
 
+        let paragraph_range = match insert_before {
+            Some(true) => start..start,
+            Some(false) => end..end,
+            None => start..end,
+        };
+        let local = paragraph_range.start - run_start..paragraph_range.end - run_start;
+        let paragraph_start = paragraph_range.start;
         let mut after = plain;
-        after.replace_range(start..end, replacement);
-        (run_index, local, start, after)
+        after.replace_range(paragraph_range, replacement);
+        (run_index, local, paragraph_start, after)
     } else {
         if runs.len() != 1 {
             return Err(Error::new("Replacing a whole paragraph requires a single text run"));

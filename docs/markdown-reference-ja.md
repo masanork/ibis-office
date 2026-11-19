@@ -321,6 +321,12 @@ ibisOffice --export ai-apply --ai-query proposal.json --out-file report-reviewed
 
 段落やセルで引用した箇所だけを削除するには、部分置換と同じように `paragraphBytes` を指定し、`replacement` に空文字列 `""` を入れます。たとえば `東京と**大阪**` から太字の「大阪」を削除する場合、`before` は `東京と大阪`、`paragraphBytes` は `[9, 15]` です。削除と置換は同じバッチに含められます。
 
+### 引用の直前・直後に挿入する
+
+挿入位置の目印となる引用を `markdownBytes` と `paragraphBytes` で指定し、`insert` に `"before"`（直前）または `"after"`（直後）を入れます。`replacement` は挿入する一行のテキストです。引用は残り、挿入したテキストは目印のテキストランの書式を引き継ぎます。たとえば太字の「東京」を目印に `insert: "after"` と `replacement: "支店"` を指定すると、太字の「東京支店」になります。
+
+一括編集では、同じ位置への複数の挿入や、置換・削除の範囲の内側または端への挿入を拒否します。
+
 ### 複数の編集案をまとめる
 
 `ai-preview` と `ai-apply` には、同じ DOCX に対する複数の編集案も渡せます。JSON の最上位に `version: 1`、原本の `sourceSha256`、編集案の配列 `edits` を置きます。配列の各要素には単独の編集案と同じ `markdownBytes`、`quote`、`before`、`replacement` などを入れます。`version` と `sourceSha256` は最上位から引き継ぎます。
