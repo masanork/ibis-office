@@ -238,6 +238,24 @@ fn docx_ai_export_keeps_table_grid_and_nested_blocks() {
 
     let export = markdown::export_ai_source(&docx).unwrap();
     let table = &export["tables"][0];
+    assert_eq!(export["diagnostics"], serde_json::json!([]));
+    let markdown = export["markdown"].as_str().unwrap();
+    assert!(markdown.contains("<!-- nested-table:"));
+    assert!(markdown.contains("<!-- colspan:2 --> <!-- vmerge:continue -->"));
+    let value_start = markdown.find("12").unwrap();
+    let citation = serde_json::json!({
+        "version": 1,
+        "sourceSha256": export["sourceSha256"],
+        "markdownBytes": [value_start, value_start + 2],
+        "quote": "12",
+    });
+    let result = markdown::locate_ai_source(&docx, &citation).unwrap();
+    let [cell] = result["tableCellMatches"].as_array().unwrap().as_slice() else {
+        panic!("expected a single cell citation");
+    };
+    assert_eq!(cell["source"]["row"], 2);
+    assert_eq!(cell["source"]["column"], 3);
+    assert_eq!(excerpt(&export, cell), "12");
     assert_eq!(table["source"], export["blocks"][1]["source"]);
     assert_eq!(table["structure"]["columnCount"], 3);
     let rows = &table["structure"]["rows"];
