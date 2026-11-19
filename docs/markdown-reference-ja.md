@@ -46,6 +46,14 @@ ibisOffice --export pptx --out-dir /tmp/docs-reference/pptx docs/markdown-refere
 ibisOffice --export md --out-dir /tmp/docs-reference/markdown /tmp/docs-reference/docx/markdown-reference-ja.docx
 ```
 
+## 引用と参考文献
+
+本文で [@knuth1984] と書くと、参考文献の項目に移動できます。本文の構文は `[@knuth1984]`、参考文献の段落末尾は `{#ref_knuth1984}` です。
+
+Knuth, D. E. (1984). *The TeXbook*. {#ref_knuth1984}
+
+キーは文書内で一意にし、36文字以内の英数字とアンダースコアを使います。DOCX では文書内リンクとブックマークとして保存され、Markdown に戻すと引用キーが復元されます。参考文献の本文と並び順は Markdown で編集します。Word の文献データベース、引用スタイルによる整形、複数キーをまとめた引用は今後の対応範囲です。
+
 ## Markdown 構文一覧
 
 ここでの対応は、入力を読み取って Docs の文書モデルに反映できることを指します。保存形式や書き出し先によって保持される情報は異なります。Markdown に戻すと記法や空白が正規化されることがあります。

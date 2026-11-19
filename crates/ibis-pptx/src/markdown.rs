@@ -2904,6 +2904,13 @@ fn parse_yaml_series_item(s: &str) -> Option<(String, Vec<Option<Number>>)> {
 // Inline parsing
 // ============================================================================
 
+fn is_bibliography_key(key: &str) -> bool {
+    // Leave room for the ref_ prefix in a Word bookmark.
+    !key.is_empty()
+        && key.len() <= 36
+        && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
 fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -> Vec<FlowRun> {
     let mut out = Vec::new();
     let mut plain = String::new();
@@ -3307,6 +3314,23 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                         i += 1 + close_bracket + 1 + 1 + close_paren + 1;
                         continue;
                     }
+                }
+
+                if let Some(key) = inner_text.strip_prefix('@').filter(|key| is_bibliography_key(key))
+                    && !after_bracket.starts_with(['(', '[', '{'])
+                {
+                    flush_plain(&mut plain, &mut out, base_fmt);
+                    let mut run = FlowRun::new(
+                        FlowRunKind::Text(format!("[{key}]")),
+                        FlowRunStyle::default(),
+                    );
+                    run.format = base_fmt.clone();
+                    run.format.color.get_or_insert(Rgb(0x0563C1));
+                    run.format.underline.get_or_insert(true);
+                    run.link = Some(Link::Anchor(format!("ref_{key}")));
+                    out.push(run);
+                    i += close_bracket + 2;
+                    continue;
                 }
             }
         }
@@ -4386,8 +4410,18 @@ fn serialize_runs(
 ) -> String {
     let mut out = String::new();
     for run in runs {
+        let citation_key = match (&run.kind, &run.link) {
+            (FlowRunKind::Text(text), Some(Link::Anchor(anchor))) => anchor
+                .strip_prefix("ref_")
+                .filter(|key| is_bibliography_key(key))
+                .filter(|key| text.strip_prefix('[').and_then(|text| text.strip_suffix(']')) == Some(*key)),
+            _ => None,
+        };
         let mut piece = match &run.kind {
-            FlowRunKind::Text(t) => format_text_run(t, &run.format, run.link.is_some()),
+            FlowRunKind::Text(t) => match citation_key {
+                Some(key) => format_text_run(&format!("[@{key}]"), &run.format, true),
+                None => format_text_run(t, &run.format, run.link.is_some()),
+            },
             FlowRunKind::LineBreak => "  \n".to_string(),
             FlowRunKind::Tab => "\t".to_string(),
             FlowRunKind::PageBreak => "\\newpage".to_string(),
@@ -4455,6 +4489,7 @@ fn serialize_runs(
         };
 
         if let Some(link) = &run.link
+            && citation_key.is_none()
             && !piece.is_empty()
         {
             let target = match link {
@@ -5214,6 +5249,32 @@ fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bibliography_link_round_trips_through_native_docx_bookmarks() {
+        let input = b"See [@knuth1984] and [@external](https://example.org/); **[@knuth1984]**.
+
+## References
+
+Knuth, D. E. (1984). The TeXbook. {#ref_knuth1984}
+";
+        let original = import_markdown_to_docx_bytes(input).unwrap();
+        let exported = export_docx_to_markdown(&original).unwrap();
+        assert!(exported.contains("See [@knuth1984] and [@external](https://example.org/); **[@knuth1984]**."));
+        assert!(exported.contains("The TeXbook. {#ref_knuth1984}"));
+
+        let rebuilt = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        let flow = presentation.flow.unwrap();
+        let [Block::Paragraph(body), _, Block::Paragraph(entry)] = flow.body.as_slice() else {
+            panic!("expected citation, heading and bibliography entry");
+        };
+        assert!(body.runs.iter().any(|run| {
+            matches!(&run.kind, FlowRunKind::Text(text) if text == "[knuth1984]")
+                && matches!(&run.link, Some(Link::Anchor(target)) if target == "ref_knuth1984")
+        }));
+        assert_eq!(entry.bookmarks, ["ref_knuth1984"]);
+    }
 
     #[test]
     fn detects_markdown_vs_csv() {
