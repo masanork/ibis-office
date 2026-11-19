@@ -1800,7 +1800,14 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                                 out.push(run);
                             }
                             if frame.toc {
-                                read.field_end = true;
+                                // A bibliography marker replaces whole paragraphs in Markdown.
+                                // Leave a mixed result as text when content follows its end
+                                // in the same paragraph.
+                                let mixed_bibliography = frame.instruction.split_whitespace().next() == Some("BIBLIOGRAPHY")
+                                    && read.p.descendants().skip_while(|candidate| *candidate != node).skip(1)
+                                        .any(|candidate| candidate.is_element()
+                                            && candidate.parent().is_some_and(|parent| parent.has_tag_name("r")));
+                                read.field_end = !mixed_bibliography;
                             }
                         }
                     }

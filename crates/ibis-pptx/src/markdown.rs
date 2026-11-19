@@ -110,6 +110,7 @@ pub fn is_markdown(data: &[u8]) -> bool {
             || l == "\\newpage"
             || l == "\\columnbreak"
             || l == "[[toc]]"
+            || markdown_bibliography_field(l).is_some()
             || l.starts_with("$$")
             || is_horizontal_rule(l)
             || is_ordered_list_line(l)
@@ -1507,11 +1508,16 @@ fn parse_blocks(
             i += 1;
             continue;
         }
-        if matches!(trimmed, "[[toc]]" | "[TOC]" | "::: toc") {
+        let field = if matches!(trimmed, "[[toc]]" | "[TOC]" | "::: toc") {
+            Some(r#"TOC \o "1-3" \h \z \u"#.to_owned())
+        } else {
+            markdown_bibliography_field(trimmed)
+        };
+        if let Some(instruction) = field {
             let p = FlowParagraph {
                 id: ctx.fresh_id(),
                 style: ctx.styles.default_paragraph.clone(),
-                field_start: Some("TOC \\o \"1-3\" \\h \\z \\u".to_string()),
+                field_start: Some(instruction),
                 field_end: true,
                 ..FlowParagraph::default()
             };
@@ -1729,6 +1735,7 @@ fn parse_blocks(
                 || l_trim == "\\columnbreak"
                 || l_trim == "[[toc]]"
                 || l_trim == "[TOC]"
+                || markdown_bibliography_field(l_trim).is_some()
                 || is_horizontal_rule(l_trim)
                 || parse_atx_heading(l_trim).is_some()
                 || parse_list_marker(l_raw).is_some()
@@ -3047,6 +3054,41 @@ fn markdown_sequence(name: &str) -> Option<(&'static str, &'static str)> {
         .find(|(markdown, _)| name.eq_ignore_ascii_case(markdown))
 }
 
+fn markdown_bibliography_field(line: &str) -> Option<String> {
+    if line == "[[bibliography]]" {
+        return Some("BIBLIOGRAPHY".into());
+    }
+    let locale = line.strip_prefix("[[bibliography:")?.strip_suffix("]]")?;
+    locale.parse::<u16>().ok()?;
+    Some(format!(r"BIBLIOGRAPHY \l {locale}"))
+}
+
+fn format_markdown_bibliography(instruction: &str) -> Option<String> {
+    let words = ibis_doc_model::flow_command::field_words(instruction);
+    let [command, switches @ ..] = words.as_slice() else { return None };
+    if !command.eq_ignore_ascii_case("BIBLIOGRAPHY") {
+        return None;
+    }
+    match switches {
+        [] => Some("[[bibliography]]".into()),
+        [r"\l", locale] if locale.parse::<u16>().is_ok() => Some(format!("[[bibliography:{locale}]]")),
+        _ => None,
+    }
+}
+
+fn generated_bibliography_end(body: &[Block], start: usize) -> Option<usize> {
+    for (index, block) in body.iter().enumerate().skip(start) {
+        let Block::Paragraph(paragraph) = block else { return None };
+        if index != start && paragraph.field_start.is_some() {
+            return None;
+        }
+        if paragraph.field_end {
+            return Some(index);
+        }
+    }
+    None
+}
+
 fn citation_tag(tag: &str) -> bool {
     !tag.is_empty() && tag.bytes().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-' | b'.'))
 }
@@ -3964,6 +4006,24 @@ fn export_markdown_with_positions<'a>(
     let mut i = 0;
     while i < doc.body.len() {
         let block = &doc.body[i];
+
+        // A bibliography result can span several paragraphs. Only consume
+        // a complete field so a malformed document cannot hide later text.
+        if let Block::Paragraph(paragraph) = block
+            && let Some(marker) = paragraph.field_start.as_deref().and_then(format_markdown_bibliography)
+            && let Some(end) = generated_bibliography_end(&doc.body, i)
+        {
+            if prev_was_list && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            let start = out.len();
+            out.push_str(&marker);
+            out.push_str("\n\n");
+            record(MarkdownSource::Body(i, block), start, out.len());
+            prev_was_list = false;
+            i = end + 1;
+            continue;
+        }
 
         // Collapse TOC field blocks back to `[[toc]]`
         if let Block::Paragraph(p) = block {
@@ -6269,6 +6329,36 @@ mod tests {
         assert_eq!(slide.rows[0].cells[0].column_span, 2);
         assert!(slide.rows[0].cells[1].merged);
         assert!(!slide.rows[0].cells[2].merged);
+    }
+
+    #[test]
+    fn bibliography_marker_round_trips_with_surrounding_paragraphs() {
+        let input = "Before.\n[[bibliography:1041]]\nAfter.\n\n[[bibliography]]\n";
+        let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        assert_eq!(markdown, "Before.\n\n[[bibliography:1041]]\n\nAfter.\n\n[[bibliography]]\n");
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let document = crate::read_docx(&rebuilt).unwrap();
+        let fields = document.flow.as_ref().unwrap().body.iter().filter_map(|block| {
+            match block {
+                Block::Paragraph(p) if p.field_end => p.field_start.as_deref(),
+                _ => None,
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(fields, [r"BIBLIOGRAPHY \l 1041", "BIBLIOGRAPHY"]);
+
+        let mut package = ibis_ooxml::Package::open(docx).unwrap();
+        let part = "word/document.xml";
+        let mut xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+        let field = xml.find("BIBLIOGRAPHY").unwrap();
+        let end = field + xml[field..].find("</w:p>").unwrap();
+        xml.insert_str(end, "<w:r><w:t>Inline suffix.</w:t></w:r>");
+        package.set_bytes(part, xml.into_bytes());
+        let mixed = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
+        let exported = export_docx_to_markdown(&mixed).unwrap();
+        assert!(!exported.contains("[[bibliography:1041]]"));
+        assert!(exported.contains("Inline suffix."));
+        assert!(exported.contains("[[bibliography]]"));
     }
 
     #[test]
