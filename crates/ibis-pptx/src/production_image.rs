@@ -3,6 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Import standalone production images into a document for preview.
 
+mod cineon;
 mod dpx;
 #[cfg(target_os = "macos")]
 mod heic;
@@ -20,12 +21,14 @@ enum Format {
     Photoshop,
     OpenExr,
     Dpx,
+    Cineon,
     Heic,
 }
 
 fn format(ext: &str) -> Option<Format> {
     match ext.to_ascii_lowercase().as_str() {
         "heic" | "heif" => Some(Format::Heic),
+        "cin" => Some(Format::Cineon),
         "dpx" => Some(Format::Dpx),
         "exr" => Some(Format::OpenExr),
         "psd" => Some(Format::Photoshop),
@@ -74,6 +77,10 @@ pub fn open_with_exposure(
                 return Err("HEIC decoding is unavailable on this platform".into());
             }
         }
+        Format::Cineon => (
+            encode_png(DynamicImage::ImageRgb8(cineon::decode(bytes)?))?,
+            None,
+        ),
         Format::Dpx => (
             encode_png(DynamicImage::ImageRgb8(dpx::decode(bytes)?))?,
             None,
