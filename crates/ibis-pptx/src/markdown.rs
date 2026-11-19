@@ -3024,19 +3024,30 @@ fn markdown_sequence(name: &str) -> Option<(&'static str, &'static str)> {
         .find(|(markdown, _)| name.eq_ignore_ascii_case(markdown))
 }
 
-fn markdown_number_field(rest: &str) -> Option<(usize, String)> {
+fn citation_tag(tag: &str) -> bool {
+    !tag.is_empty() && tag.bytes().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-' | b'.'))
+}
+
+fn markdown_inline_field(rest: &str) -> Option<(usize, String)> {
     let field = rest.strip_prefix("{{")?;
     let (token, _) = field.split_once("}}")?;
     let (kind, value) = token.split_once(':')?;
     let instruction = match kind {
         "seq" => format!("SEQ {}", markdown_sequence(value)?.1),
         "ref" if is_equation_bookmark(value) => format!("REF {value} \\h"),
+        "cite" => match value.split_once(':') {
+            Some((tag, locale)) if citation_tag(tag) && locale.parse::<u16>().is_ok() => {
+                format!("CITATION {tag} \\l {locale}")
+            }
+            None if citation_tag(value) => format!("CITATION {value}"),
+            _ => return None,
+        },
         _ => return None,
     };
     Some((token.len() + 4, instruction))
 }
 
-fn format_markdown_number_field(instruction: &str, shown: &str) -> String {
+fn format_markdown_inline_field(instruction: &str, shown: &str) -> String {
     let words = ibis_doc_model::flow_command::field_words(instruction);
     match words.as_slice() {
         [seq, name] if seq.eq_ignore_ascii_case("SEQ") => {
@@ -3044,6 +3055,17 @@ fn format_markdown_number_field(instruction: &str, shown: &str) -> String {
         }
         [reference, name, r"\h"] if reference.eq_ignore_ascii_case("REF") && is_equation_bookmark(name) => {
             format!("{{{{ref:{name}}}}}")
+        }
+        [citation, tag, switches @ ..] if citation.eq_ignore_ascii_case("CITATION") => {
+            let tag = tag.strip_prefix('"').and_then(|tag| tag.strip_suffix('"')).unwrap_or(tag);
+            if !citation_tag(tag) {
+                return shown.to_owned();
+            }
+            match switches {
+                [] => format!("{{{{cite:{tag}}}}}"),
+                [r"\l", locale] if locale.parse::<u16>().is_ok() => format!("{{{{cite:{tag}:{locale}}}}}"),
+                _ => shown.to_owned(),
+            }
         }
         _ => shown.to_owned(),
     }
@@ -3084,7 +3106,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
-        if let Some((consumed, instruction)) = markdown_number_field(rest) {
+        if let Some((consumed, instruction)) = markdown_inline_field(rest) {
             flush_plain(&mut plain, &mut out, base_fmt);
             let mut run = FlowRun::new(
                 FlowRunKind::Field { instruction, shown: "?".into() },
@@ -5280,7 +5302,7 @@ fn serialize_runs(
                 if run.field_locked {
                     shown.clone()
                 } else {
-                    format_markdown_number_field(instruction, shown)
+                    format_markdown_inline_field(instruction, shown)
                 }
             }
             FlowRunKind::LineBreak => "  \n".to_string(),
@@ -6215,6 +6237,27 @@ mod tests {
         assert_eq!(slide.rows[0].cells[0].column_span, 2);
         assert!(slide.rows[0].cells[1].merged);
         assert!(!slide.rows[0].cells[2].merged);
+    }
+
+    #[test]
+    fn citation_tags_and_locales_round_trip_as_word_fields() {
+        let input = "See {{cite:Smith-2024}} and {{cite:Tanaka_2025:1041}}.";
+        let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let presentation = crate::read(&docx).unwrap();
+        let Block::Paragraph(paragraph) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected a paragraph");
+        };
+        let fields = paragraph.runs.iter().filter_map(|run| match &run.kind {
+            FlowRunKind::Field { instruction, .. } => Some(instruction.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(fields, ["CITATION Smith-2024", r"CITATION Tanaka_2025 \l 1041"]);
+        assert_eq!(export_docx_to_markdown(&docx).unwrap().trim(), input);
+        assert_eq!(format_markdown_inline_field(r#"CITATION "Tanaka_2025" \l 1041"#, "(田中, 2025)"),
+                   "{{cite:Tanaka_2025:1041}}");
+        assert_eq!(format_markdown_inline_field(r"CITATION Tanaka_2025 \p 12", "(田中, 2025, p. 12)"),
+                   "(田中, 2025, p. 12)");
+        assert!(markdown_inline_field("{{cite:Tanaka_2025:invalid}}").is_none());
     }
 
     #[test]
