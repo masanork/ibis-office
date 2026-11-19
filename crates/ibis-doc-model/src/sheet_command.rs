@@ -1706,19 +1706,26 @@ fn spill(sheet: &mut Sheet, anchor: (u32, u32), value: CellValue, spill: Option<
     let Some(old) = sheet.spills.get(&anchor).copied() else { return (value, Vec::new()) };
     let was_blocked = sheet.cell(anchor.0, anchor.1).is_some_and(|c| c.value == CellValue::Error(crate::sheet::CellError::Spill));
     let (rows, columns, values) = match spill {
-        Some((r, c, v)) => (*r as u32, *c as u32, v.clone()),
-        None => (1, 1, vec![value.clone()]),
+        Some((r, c, v)) => (*r as u32, *c as u32, v.as_slice()),
+        None => (1, 1, std::slice::from_ref(&value)),
     };
     let range = CellRange { first_row: anchor.0, first_column: anchor.1, last_row: anchor.0 + rows - 1, last_column: anchor.1 + columns - 1 };
     let in_old = |row: u32, column: u32| !was_blocked && (old.first_row..=old.last_row).contains(&row) && (old.first_column..=old.last_column).contains(&column);
     let off_sheet = range.last_row >= 1_048_576 || range.last_column >= 16_384;
+    // If the existing spill still owns exactly this range, there are
+    // no new cells to check for blockers and no old cells to clear.
+    let same_range = old == range && !was_blocked && !off_sheet;
     let blocked = off_sheet
-        || (range.first_row..=range.last_row).any(|row| {
+        || (!same_range && (range.first_row..=range.last_row).any(|row| {
             (range.first_column..=range.last_column).any(|column| {
                 (row, column) != anchor && !in_old(row, column) && sheet.cell(row, column).is_some_and(|c| c.formula.is_some() || !c.value.is_empty())
             })
-        });
-    let mut changed = clear_spilled(sheet, anchor, old, (!blocked).then_some(range), d1904);
+        }));
+    let mut changed = if same_range {
+        Vec::new()
+    } else {
+        clear_spilled(sheet, anchor, old, (!blocked).then_some(range), d1904)
+    };
     if blocked {
         sheet.spills.insert(anchor, range);
         return (CellValue::Error(crate::sheet::CellError::Spill), changed);
@@ -1820,7 +1827,7 @@ fn recalculate(presentation: &mut Presentation, slide: SlideId, changed: &[(u32,
         }
         let sheet = sheet_mut(presentation, target)?;
         let Some(cell) = sheet.cell(row, column).cloned() else { continue };
-        let (value, spilled) = spill(sheet, (row, column), r.value.clone(), r.spill.as_ref(), d1904);
+        let (value, spilled) = spill(sheet, (row, column), r.value, r.spill.as_ref(), d1904);
         follow.extend(spilled.into_iter().map(|(a, b)| (sheet_index, a, b)));
         if cell.value == value && !edited {
             continue;
@@ -6118,7 +6125,7 @@ fn recalculate_cells_deep(presentation: &mut Presentation, changed: &[(usize, u3
             },
         };
         let Some(cell) = sheet.cell(row, column).cloned() else { continue };
-        let (value, spilled) = spill(sheet, (row, column), r.value.clone(), r.spill.as_ref(), d1904);
+        let (value, spilled) = spill(sheet, (row, column), r.value, r.spill.as_ref(), d1904);
         follow.extend(spilled.into_iter().map(|(a, b)| (sheet_index, a, b)));
         if cell.value == value {
             continue;
