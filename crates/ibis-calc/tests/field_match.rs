@@ -140,6 +140,19 @@ fn a_broadcast_address_keeps_per_cell_modes_and_errors() {
 }
 
 #[test]
+fn juki_gaiji_marker_requires_explicit_opt_in() {
+    for (left, right, mode) in [
+        ("山휀花子", "山田花子", "name"),
+        ("霞が휀2-1-2", "霞が関2-1-2", "address"),
+    ] {
+        let args = format!(r#""{left}","{right}","{mode}""#);
+        check(&args, CellValue::Number(0.0));
+        check(&format!("{args},UNICHAR(55040)"), CellValue::Number(1.0));
+        check(&format!(r#""{left}","{left}","{mode}""#), CellValue::Number(2.0));
+    }
+}
+
+#[test]
 fn address_place_variants_and_wildcards_are_possible_matches() {
     for (args, result) in [
         (r#""霞ケ関2-1-2","霞が関2-1-2","address""#, 1.0),
