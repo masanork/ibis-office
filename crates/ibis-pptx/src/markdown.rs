@@ -3093,6 +3093,62 @@ fn citation_tag(tag: &str) -> bool {
     !tag.is_empty() && tag.bytes().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-' | b'.'))
 }
 
+fn citation_pages(pages: &str) -> bool {
+    let number = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    match pages.split_once(['-', '–']) {
+        Some((first, last)) => number(first) && number(last),
+        None => number(pages),
+    }
+}
+
+fn markdown_citation_instruction(value: &str) -> Option<String> {
+    let (source, pages) = value.split_once('#').map_or((value, None), |(source, pages)| (source, Some(pages)));
+    let (tag, locale) = source.split_once(':').map_or((source, None), |(tag, locale)| (tag, Some(locale)));
+    if !citation_tag(tag) || locale.is_some_and(|value| value.parse::<u16>().is_err())
+        || pages.is_some_and(|value| !citation_pages(value))
+    {
+        return None;
+    }
+    let mut instruction = format!("CITATION {tag}");
+    if let Some(locale) = locale {
+        instruction.push_str(&format!(r" \l {locale}"));
+    }
+    if let Some(pages) = pages {
+        instruction.push_str(&format!(r#" \p "{pages}""#));
+    }
+    Some(instruction)
+}
+
+fn format_markdown_citation(tag: &str, switches: &[&str]) -> Option<String> {
+    fn unquote(value: &str) -> &str {
+        value.strip_prefix('"').and_then(|value| value.strip_suffix('"')).unwrap_or(value)
+    }
+    let tag = unquote(tag);
+    if !citation_tag(tag) {
+        return None;
+    }
+    let mut locale = None;
+    let mut pages = None;
+    for pair in switches.chunks(2) {
+        match pair {
+            [r"\l", value] if locale.is_none() && value.parse::<u16>().is_ok() => locale = Some(*value),
+            [r"\p", value] if pages.is_none() && citation_pages(unquote(value)) => pages = Some(unquote(value)),
+            _ => return None,
+        }
+    }
+    let mut marker = format!("{{{{cite:{tag}");
+    if let Some(locale) = locale {
+        marker.push(':');
+        marker.push_str(locale);
+    }
+    if let Some(pages) = pages {
+        marker.push('#');
+        marker.push_str(pages);
+    }
+    marker.push_str("}}");
+    Some(marker)
+}
+
 fn markdown_inline_field(rest: &str) -> Option<(usize, String)> {
     let field = rest.strip_prefix("{{")?;
     let (token, _) = field.split_once("}}")?;
@@ -3100,13 +3156,7 @@ fn markdown_inline_field(rest: &str) -> Option<(usize, String)> {
     let instruction = match kind {
         "seq" => format!("SEQ {}", markdown_sequence(value)?.1),
         "ref" if is_equation_bookmark(value) => format!("REF {value} \\h"),
-        "cite" => match value.split_once(':') {
-            Some((tag, locale)) if citation_tag(tag) && locale.parse::<u16>().is_ok() => {
-                format!("CITATION {tag} \\l {locale}")
-            }
-            None if citation_tag(value) => format!("CITATION {value}"),
-            _ => return None,
-        },
+        "cite" => markdown_citation_instruction(value)?,
         _ => return None,
     };
     Some((token.len() + 4, instruction))
@@ -3122,15 +3172,7 @@ fn format_markdown_inline_field(instruction: &str, shown: &str) -> String {
             format!("{{{{ref:{name}}}}}")
         }
         [citation, tag, switches @ ..] if citation.eq_ignore_ascii_case("CITATION") => {
-            let tag = tag.strip_prefix('"').and_then(|tag| tag.strip_suffix('"')).unwrap_or(tag);
-            if !citation_tag(tag) {
-                return shown.to_owned();
-            }
-            match switches {
-                [] => format!("{{{{cite:{tag}}}}}"),
-                [r"\l", locale] if locale.parse::<u16>().is_ok() => format!("{{{{cite:{tag}:{locale}}}}}"),
-                _ => shown.to_owned(),
-            }
+            format_markdown_citation(tag, switches).unwrap_or_else(|| shown.to_owned())
         }
         _ => shown.to_owned(),
     }
@@ -6394,8 +6436,8 @@ mod tests {
     }
 
     #[test]
-    fn citation_tags_and_locales_round_trip_as_word_fields() {
-        let input = "See {{cite:Smith-2024}} and {{cite:Tanaka_2025:1041}}.";
+    fn citation_tags_locales_and_pages_round_trip_as_word_fields() {
+        let input = "See {{cite:Smith-2024}}, {{cite:Smith-2024#12}}, and {{cite:Tanaka_2025:1041#12–15}}.";
         let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
         let presentation = crate::read(&docx).unwrap();
         let Block::Paragraph(paragraph) = &presentation.flow.as_ref().unwrap().body[0] else {
@@ -6405,12 +6447,19 @@ mod tests {
             FlowRunKind::Field { instruction, .. } => Some(instruction.as_str()),
             _ => None,
         }).collect::<Vec<_>>();
-        assert_eq!(fields, ["CITATION Smith-2024", r"CITATION Tanaka_2025 \l 1041"]);
+        assert_eq!(fields, [
+            "CITATION Smith-2024",
+            r#"CITATION Smith-2024 \p "12""#,
+            r#"CITATION Tanaka_2025 \l 1041 \p "12–15""#,
+        ]);
         assert_eq!(export_docx_to_markdown(&docx).unwrap().trim(), input);
         assert_eq!(format_markdown_inline_field(r#"CITATION "Tanaka_2025" \l 1041"#, "(田中, 2025)"),
                    "{{cite:Tanaka_2025:1041}}");
-        assert_eq!(format_markdown_inline_field(r"CITATION Tanaka_2025 \p 12", "(田中, 2025, p. 12)"),
-                   "(田中, 2025, p. 12)");
+        assert_eq!(format_markdown_inline_field(r"CITATION Tanaka_2025 \p 12-15 \l 1041", ""),
+                   "{{cite:Tanaka_2025:1041#12-15}}");
+        assert_eq!(format_markdown_inline_field(r"CITATION Tanaka_2025 \p 12 \m Smith-2024", "(田中, 2025)"),
+                   "(田中, 2025)");
+        assert!(markdown_inline_field("{{cite:Tanaka_2025#12-}}").is_none());
         assert!(markdown_inline_field("{{cite:Tanaka_2025:invalid}}").is_none());
     }
 
