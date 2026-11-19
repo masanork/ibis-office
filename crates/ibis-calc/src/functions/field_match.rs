@@ -53,6 +53,10 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             return err(CellError::Value);
         } else if mode.eq_ignore_ascii_case("date") {
             compare_dates(left, right, ctx.date1904())
+        } else if mode.eq_ignore_ascii_case("phone") {
+            super::contact_match::compare_phones(left, right)
+        } else if mode.eq_ignore_ascii_case("postal") {
+            super::contact_match::compare_postal_codes(left, right)
         } else if mode.eq_ignore_ascii_case("gender") {
             compare_keys(left, right, gender_key)
         } else {
@@ -104,7 +108,7 @@ fn date_range(value: &Value, date1904: bool) -> Option<DateRange> {
     }
 }
 
-fn fold_ascii_width(c: char) -> char {
+pub(super) fn fold_ascii_width(c: char) -> char {
     match c {
         '！'..='～' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
         _ => c,

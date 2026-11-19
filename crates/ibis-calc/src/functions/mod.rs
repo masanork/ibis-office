@@ -10,6 +10,7 @@
 
 pub mod table;
 
+mod contact_match;
 mod database;
 pub(crate) mod date;
 mod dist;

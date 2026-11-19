@@ -257,3 +257,53 @@ fn soroe_marriage_scenario_can_be_filtered_by_date_and_address() {
         );
     }
 }
+
+#[test]
+fn phone_formats_and_missing_extensions() {
+    // The domestic/international pair builds on soroe's basic-jp fixture.
+    for (args, rank) in [
+        (r#""03-1234-5678","+81312345678","phone""#, 2.0),
+        (r#""（０３）１２３４－５６７８","+81 (0)3 1234 5678","phone""#, 2.0),
+        (r#""03-1234-5678 内線012","+81-(0)3-1234-5678 EXT.012","phone""#, 2.0),
+        (r#""03-1234-5678#123","+81 3 1234 5678","phone""#, 1.0),
+        (r#""+81 3 1234 5678","03-1234-5678 x123","phone""#, 1.0),
+        (r#""03-1234-5678 内線012","03-1234-5678 内線12","phone""#, 0.0),
+        (r#""03-1234-5678","+81 3 1234 5679","phone""#, 0.0),
+        (r#""+1 (202) 555-0100","+12025550100","phone""#, 2.0),
+    ] {
+        check(args, CellValue::Number(rank));
+    }
+    for args in [
+        r#""1234-5678","03-1234-5678","phone""#,
+        r#""03-1234-5678 内線","03-1234-5678","phone""#,
+        r#""03--1234-5678","03-1234-5678","phone""#,
+        r#""03)1234-5678","03-1234-5678","phone""#,
+        r#""+81 03 1234 5678","03-1234-5678","phone""#,
+        r#"312345678,"03-1234-5678","phone""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+}
+
+#[test]
+fn postal_codes_preserve_the_evidence_of_leading_zeros() {
+    for (args, rank) in [
+        (r#""〒０６０－０００１","0600001","postal""#, 2.0),
+        (r#"600001,"060-0001","postal""#, 1.0),
+        (r#""001-0001",10001,"postal""#, 1.0),
+        (r#""100-0001",1000001,"postal""#, 2.0),
+        (r#"600001,"060-0002","postal""#, 0.0),
+        (r#""060-0001","060-0002","postal""#, 0.0),
+    ] {
+        check(args, CellValue::Number(rank));
+    }
+    for args in [
+        r#""600001","060-0001","postal""#,
+        r#"600001,600001,"postal""#,
+        r#""060","060-0001","postal""#,
+        r#""〒060-0001 札幌市","060-0001","postal""#,
+        r#"600001.5,"060-0001","postal""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+}

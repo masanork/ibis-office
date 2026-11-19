@@ -10125,7 +10125,18 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     let s = slide(document.presentation(), sheet_name);
     let formula = r#"IBIS.FIELDMATCH(A1,B1,"address")"#;
     let name_formula = r#"IBIS.FIELDMATCH(A2,B2,"name")"#;
-    set(&mut document, s, vec![(0, 2, CellInput::Formula(formula.into())), (1, 2, CellInput::Formula(name_formula.into()))]);
+    let phone_formula = r#"IBIS.FIELDMATCH(A3,B3,"phone")"#;
+    let postal_formula = r#"IBIS.FIELDMATCH(A4,B4,"postal")"#;
+    set(&mut document, s, vec![
+        (0, 2, CellInput::Formula(formula.into())),
+        (1, 2, CellInput::Formula(name_formula.into())),
+        (2, 0, CellInput::Value(CellValue::Text("03-1234-5678 内線123".into()))),
+        (2, 1, CellInput::Value(CellValue::Text("+81 (0)3 1234 5678".into()))),
+        (2, 2, CellInput::Formula(phone_formula.into())),
+        (3, 0, CellInput::Value(CellValue::Text("060-0001".into()))),
+        (3, 1, CellInput::Value(CellValue::Number(600001.0))),
+        (3, 2, CellInput::Formula(postal_formula.into())),
+    ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(2.0));
 
     let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
@@ -10134,13 +10145,21 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     assert_eq!(value(&reopened, sheet_name, 0, 2), CellValue::Number(2.0));
     assert_eq!(cell(&reopened, sheet_name, 1, 2).formula.as_deref(), Some(name_formula));
     assert_eq!(value(&reopened, sheet_name, 1, 2), CellValue::Number(1.0));
+    assert_eq!(cell(&reopened, sheet_name, 2, 2).formula.as_deref(), Some(phone_formula));
+    assert_eq!(value(&reopened, sheet_name, 2, 2), CellValue::Number(1.0));
+    assert_eq!(cell(&reopened, sheet_name, 3, 2).formula.as_deref(), Some(postal_formula));
+    assert_eq!(value(&reopened, sheet_name, 3, 2), CellValue::Number(1.0));
 
     let s = slide(&reopened, sheet_name);
     let mut document = Document::new(reopened);
     set(&mut document, s, vec![
         (0, 1, CellInput::Value(CellValue::Text("東京都千代田区霞が関2-1-3".into()))),
         (1, 1, CellInput::Value(CellValue::Text("山田春子".into()))),
+        (2, 1, CellInput::Value(CellValue::Text("+81 3 1234 5678 ext.124".into()))),
+        (3, 1, CellInput::Value(CellValue::Number(600002.0))),
     ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(0.0));
     assert_eq!(value(document.presentation(), sheet_name, 1, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 2, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 3, 2), CellValue::Number(0.0));
 }
