@@ -2399,7 +2399,14 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
         let (paper_w, _) = print.page_size();
         let [left, right, _, _] = print.margins;
         let page_room_emu = ((paper_w - left - right).max(EMU_PER_INCH / 2) as f64 / (print.scale.max(10) as f64 / 100.0)).floor() as i64;
-        let used_emu: i64 = (0..max_column).map(&col_emu).sum();
+        // Text cells often share the same columns. Compute their right
+        // edges once, including any hidden or custom-width columns.
+        let mut column_ends = Vec::with_capacity(max_column as usize);
+        let mut used_emu = 0;
+        for column in 0..max_column {
+            used_emu += col_emu(column);
+            column_ends.push(used_emu);
+        }
         let page_limit_emu = ((used_emu.max(1) + page_room_emu - 1) / page_room_emu) * page_room_emu;
         for cell in cells.iter().filter(|c| c.kind == CellKind::Text && !c.text.is_empty()) {
             let Some(style) = sheet_styles.get(cell.style as usize) else { continue };
@@ -2418,7 +2425,7 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
             let need = text_width + 2.0 * CELL_TEXT_PADDING_PT;
             let mut reach = cell.column;
             let mut room = width_of(cell.column);
-            let mut end_emu: i64 = (0..=cell.column).map(&col_emu).sum();
+            let mut end_emu = column_ends[cell.column as usize];
             while room < need && reach < 16_383 && !occupied.contains(&(cell.row, reach + 1)) && end_emu + col_emu(reach + 1) <= page_limit_emu {
                 reach += 1;
                 room += width_of(reach);
