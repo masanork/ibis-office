@@ -11,7 +11,7 @@ base64 = "0.22"
 chrono = "0.4"
 ibis-calc.workspace = true
 ibis-doc-model.workspace = true
-j2k-rs.workspace = true
+j2k-rs = { workspace = true, features = ["color-managed-preview"] }
 exr = { version = "1.74", default-features = false }
 ag-psd = "0.3.0"
 image = { version = "0.25", default-features = false, features = ["png", "tga", "tiff", "exr"] }

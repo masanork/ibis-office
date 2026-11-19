@@ -344,7 +344,7 @@ fn decode_psd(bytes: &[u8]) -> Result<DynamicImage, String> {
 fn decode_jpeg2000(bytes: &[u8]) -> Result<DynamicImage, String> {
     use j2k_rs::ColorSpace;
     let decoded =
-        j2k_rs::decode_with_pixel_limit(bytes, MAX_PIXELS).map_err(|error| error.to_string())?;
+        j2k_rs::decode::decode_srgb_preview(bytes, MAX_PIXELS).map_err(|error| error.to_string())?;
     let (width, height, data) = (decoded.width, decoded.height, decoded.data);
     match (decoded.color_space, decoded.channels) {
         (ColorSpace::Gray, 1) => {

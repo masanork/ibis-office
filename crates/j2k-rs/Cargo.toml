@@ -6,5 +6,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+color-managed-preview = ["dep:moxcms"]
+
 [dependencies]
 hayro-jpeg2000 = { version = "0.3", default-features = false, features = ["std"] }
+moxcms = { version = "0.8", optional = true }

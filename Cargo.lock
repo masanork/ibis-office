@@ -4627,6 +4627,7 @@ name = "j2k-rs"
 version = "0.8.0"
 dependencies = [
  "hayro-jpeg2000",
+ "moxcms",
 ]
 
 [[package]]
