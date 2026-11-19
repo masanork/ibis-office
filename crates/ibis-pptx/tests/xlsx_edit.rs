@@ -10211,3 +10211,27 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     assert_eq!(value(document.presentation(), sheet_name, 8, 2), CellValue::Error(ibis_doc_model::CellError::NA));
     assert_eq!(value(document.presentation(), sheet_name, 9, 2), CellValue::Number(0.0));
 }
+
+#[test]
+fn name_and_kana_field_match_uses_both_reading_cells_after_reopen() {
+    let sheet_name = "氏名照合";
+    let bytes = ibis_pptx::csv::workbook_from_with_delimiter("山田太郎,山田太郎,やまだたろう,ﾔﾏﾀﾞﾀﾛｳ", sheet_name, ',').unwrap();
+    let opened = ibis_pptx::open(bytes).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let s = slide(document.presentation(), sheet_name);
+    let formula = r#"IBIS.FIELDMATCH(A1,B1,"name-with-kana",C1,D1)"#;
+    set(&mut document, s, vec![(0, 4, CellInput::Formula(formula.into()))]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(2.0));
+
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let reopened = ibis_pptx::read(&saved).unwrap();
+    assert_eq!(cell(&reopened, sheet_name, 0, 4).formula.as_deref(), Some(formula));
+    assert_eq!(value(&reopened, sheet_name, 0, 4), CellValue::Number(2.0));
+
+    let s = slide(&reopened, sheet_name);
+    let mut document = Document::new(reopened);
+    set(&mut document, s, vec![(0, 3, CellInput::Clear)]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(1.0));
+    set(&mut document, s, vec![(0, 3, CellInput::Value(CellValue::Text("ヤマダジロウ".into())))]);
+    assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(0.0));
+}

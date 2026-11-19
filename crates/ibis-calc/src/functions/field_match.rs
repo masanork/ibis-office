@@ -36,7 +36,16 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             return err(CellError::Value);
         };
         let (left, right) = (&values[0], &values[1]);
-        let result = if mode.eq_ignore_ascii_case("address") || mode.eq_ignore_ascii_case("name") {
+        let result = if mode.eq_ignore_ascii_case("name-with-kana") {
+            let [_, _, _, left_kana, right_kana] = values else {
+                return err(CellError::Value);
+            };
+            let name = super::name_match::compare(left, right, is_default_wildcard, |c| ctx.book.name_variant_cluster(c));
+            let kana = super::kana_match::compare_optional(left_kana, right_kana);
+            name.zip(kana).map(|(name, kana)| name.min(kana))
+        } else if values.len() > 4 {
+            return err(CellError::Value);
+        } else if mode.eq_ignore_ascii_case("address") || mode.eq_ignore_ascii_case("name") {
             let extra = match values.get(3) {
                 None | Some(Value::Empty) => "",
                 Some(Value::Text(text)) => text,
@@ -140,10 +149,12 @@ fn gender_key(text: &str) -> Option<bool> {
     }
 }
 
+fn is_default_wildcard(c: char) -> bool {
+    ENCODING_SUBSTITUTES.contains(&c) || LEGACY_JAPANESE_SUBSTITUTES.contains(&c) || FIELD_PLACEHOLDERS.contains(&c)
+}
+
 fn is_wildcard(c: char, extra: &HashSet<char>) -> bool {
-    ENCODING_SUBSTITUTES.contains(&c)
-        || LEGACY_JAPANESE_SUBSTITUTES.contains(&c)
-        || FIELD_PLACEHOLDERS.contains(&c)
+    is_default_wildcard(c)
         || (c.is_alphabetic() || matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' | '\u{100000}'..='\u{10fffd}')) && extra.contains(&c)
 }
 

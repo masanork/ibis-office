@@ -2,18 +2,36 @@
 // Copyright (c) masanork
 
 use super::text::KANA;
+use crate::eval::Value;
 
 pub(super) fn compare(left: &str, right: &str) -> Option<u8> {
-    let left = kana_key(left)?;
-    let right = kana_key(right)?;
+    Some(compare_keys(&kana_key(left)?, &kana_key(right)?))
+}
+
+pub(super) fn compare_optional(left: &Value, right: &Value) -> Option<u8> {
+    fn key(value: &Value) -> Option<Option<Vec<char>>> {
+        match value {
+            Value::Empty => Some(None),
+            Value::Text(text) if text.trim().is_empty() => Some(None),
+            Value::Text(text) => kana_key(text).map(Some),
+            _ => None,
+        }
+    }
+    Some(match (key(left)?, key(right)?) {
+        (Some(a), Some(b)) => compare_keys(&a, &b),
+        _ => 1,
+    })
+}
+
+fn compare_keys(left: &[char], right: &[char]) -> u8 {
     let letters = |c: &&char| **c != ' ';
-    Some(if left.iter().filter(letters).eq(right.iter().filter(letters)) {
+    if left.iter().filter(letters).eq(right.iter().filter(letters)) {
         2
-    } else if long_vowel_key(&left) == long_vowel_key(&right) {
+    } else if long_vowel_key(left) == long_vowel_key(right) {
         1
     } else {
         0
-    })
+    }
 }
 
 fn kana_key(input: &str) -> Option<Vec<char>> {

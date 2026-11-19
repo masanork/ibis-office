@@ -43,7 +43,7 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 ## 属性の照合関数
 
 `=IBIS.FIELDMATCH(A2,B2,"address")` で2つの値を比較する。対応する種類は
-`"address"`、`"date"`、`"gender"`、`"name"`、`"kana"`、`"phone"`、`"postal"`、`"email"`、`"corporate-number"`、`"mynumber"`、`"drivers-license"`、`"passport-jp"`。セルの値はそのまま保持する。
+`"address"`、`"date"`、`"gender"`、`"name"`、`"kana"`、`"name-with-kana"`、`"phone"`、`"postal"`、`"email"`、`"corporate-number"`、`"mynumber"`、`"drivers-license"`、`"passport-jp"`。セルの値はそのまま保持する。
 
 | 結果 | 意味 |
 | --- | --- |
@@ -93,6 +93,11 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 長音表記だけが異なる場合（例「オオノ」と「オーノ」）は 1。
 小書きの仮名、濁音、中点の有無などの相違は 0。空欄や漢字を含む値は `#N/A`。
 読みの辞書による推定は行わない。
+
+`=IBIS.FIELDMATCH(A2,B2,"name-with-kana",C2,D2)` は氏名と各人の読みを合わせて確認する。
+氏名と読みが両方とも一致すれば 2。氏名または読みが不一致なら 0。
+不一致がなく、曖昧一致や読みの空欄があれば 1。氏名が空欄、または記入された読みが比較できない場合は `#N/A`。
+このモードの第4・第5引数は左と右の読み。氏名の伏字には既定の文字を使う。
 
 ### 電話番号と郵便番号
 

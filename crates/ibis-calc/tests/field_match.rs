@@ -482,3 +482,29 @@ fn kana_matches_script_and_width_but_flags_long_vowel_variants() {
         check(args, CellValue::Error(CellError::NA));
     }
 }
+
+#[test]
+fn names_and_readings_preserve_disagreements_and_missing_evidence() {
+    for (args, rank) in [
+        (r#""山田 太郎","山田太郎","name-with-kana","ﾔﾏﾀﾞ ﾀﾛｳ","やまだたろう""#, 2.0),
+        (r#""山田 太郎","山田太郎","name-with-kana","ヤマダ タロー","やまだたろう""#, 1.0),
+        (r#""山田 太郎","山田太郎","name-with-kana","ヤマダ タロウ","やまだじろう""#, 0.0),
+        (r#""小野 花子","尾野 花子","name-with-kana","オノ ハナコ","オノ ハナコ""#, 1.0),
+        (r#""小野花子","尾野花子","name-with-kana","オノハナコ","オノハナコ""#, 0.0),
+        (r#""山田太郎","山田太郎","name-with-kana",C1,"ヤマダタロウ""#, 1.0),
+        (r#""山田太郎","山田太郎","name-with-kana","ヤマダタロウ","　""#, 1.0),
+        (r#""山田太郎","山田太郎","name-with-kana","","""#, 1.0),
+        (r#""山田太郎","山本次郎","name-with-kana","","""#, 0.0),
+    ] {
+        check(args, CellValue::Number(rank));
+    }
+    for args in [
+        r#""山田太郎","山田太郎","name-with-kana","","山田太郎""#,
+        r#""山田太郎","山田太郎","name-with-kana",0,"ヤマダタロウ""#,
+        r#"C1,"山田太郎","name-with-kana","","ヤマダタロウ""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+    check(r#""山田太郎","山田太郎","name-with-kana","ヤマダタロウ""#, CellValue::Error(CellError::Value));
+    check(r#""山田太郎","山田太郎","name","","""#, CellValue::Error(CellError::Value));
+}
