@@ -242,6 +242,34 @@ fn docx_endnotes_export_and_resolve_separately_from_same_id_footnotes() {
     assert!(text.contains("[^endnote-1]: 文末注記"));
     assert_eq!(export["diagnostics"], serde_json::json!([]));
 
+    let rebuilt = markdown::import_markdown_to_docx_bytes(text.as_bytes()).unwrap();
+    let reread = ibis_pptx::read(&rebuilt).unwrap();
+    let flow = reread.flow.unwrap();
+    assert_eq!(
+        flow.footnotes
+            .iter()
+            .map(|note| note.id)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert_eq!(
+        flow.endnotes.iter().map(|note| note.id).collect::<Vec<_>>(),
+        [1]
+    );
+    let Block::Paragraph(body) = &flow.body[0] else {
+        panic!("expected the body paragraph");
+    };
+    let references: Vec<_> = body
+        .runs
+        .iter()
+        .filter_map(|run| match run.kind {
+            FlowRunKind::NoteRef { endnote, id } => Some((endnote, id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(references, [(false, 1), (true, 1)]);
+    assert_eq!(markdown::export_docx_to_markdown(&rebuilt).unwrap(), text);
+
     for (quote, part, kind) in [
         ("ページ脚注", "footnotes", "footnote"),
         ("文末注記", "endnotes", "endnote"),

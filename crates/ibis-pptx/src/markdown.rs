@@ -261,6 +261,7 @@ pub fn parse_markdown_fragment_blocks(
         ordered_num_id: None,
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
+        next_footnote_id: 1,
         comments: Vec::new(),
         media,
         source: None,
@@ -572,6 +573,7 @@ struct ParseContext<'a> {
     ordered_num_id: Option<u32>,
     footnote_ids: HashMap<String, u32>,
     footnote_order: Vec<(String, u32)>,
+    next_footnote_id: u32,
     comments: Vec<Comment>,
     media: &'a mut Vec<Media>,
     source: Option<&'a crate::Source>,
@@ -685,7 +687,11 @@ impl<'a> ParseContext<'a> {
         if let Some(&id) = self.footnote_ids.get(label) {
             return id;
         }
-        let id = self.footnote_ids.len() as u32 + 1;
+        let id = markdown_endnote_id(label).unwrap_or_else(|| {
+            let id = self.next_footnote_id;
+            self.next_footnote_id += 1;
+            id
+        });
         self.footnote_ids.insert(label.to_string(), id);
         self.footnote_order.push((label.to_string(), id));
         id
@@ -724,6 +730,7 @@ fn parse_markdown_into(
         ordered_num_id: None,
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
+        next_footnote_id: 1,
         comments: Vec::new(),
         media,
         source,
@@ -772,13 +779,13 @@ fn parse_markdown_into(
         }
     }
 
-    // Build footnotes in order of reference or definition.
+    // Build notes in order of reference or definition.
     for (label, _def_text) in &footnote_defs {
         let _ = ctx.footnote_id_for(label);
     }
     let order = ctx.footnote_order.clone();
-    let mut notes = Vec::new();
     for (label, note_id) in order {
+        let endnote = markdown_endnote_id(&label).is_some();
         let content = footnote_defs
             .get(&label)
             .map(String::as_str)
@@ -786,14 +793,17 @@ fn parse_markdown_into(
         let pid = ctx.fresh_id();
         let text_style = ctx
             .styles
-            .paragraph_style_named("footnote text")
+            .paragraph_style_named(if endnote { "endnote text" } else { "footnote text" })
             .map(str::to_string)
             .or_else(|| ctx.styles.default_paragraph.clone());
         let mark_style = ctx
             .styles
             .styles
             .iter()
-            .find(|(_, s)| s.kind == StyleKind::Character && s.name.eq_ignore_ascii_case("footnote reference"))
+            .find(|(_, s)| {
+                s.kind == StyleKind::Character
+                    && s.name.eq_ignore_ascii_case(if endnote { "endnote reference" } else { "footnote reference" })
+            })
             .map(|(id, _)| id.clone());
         let superscript = RunFormat {
             position: Some(VerticalPosition::Superscript),
@@ -828,12 +838,12 @@ fn parse_markdown_into(
         p.runs.extend(inline_runs);
         p.resolve(&doc.styles);
         p.normalize();
+        let notes = if endnote { &mut doc.endnotes } else { &mut doc.footnotes };
         notes.push(Note {
             id: note_id,
             blocks: vec![Block::Paragraph(p)],
         });
     }
-    doc.footnotes = notes;
 
     // Ensure watermark has a header part so saving to .docx succeeds.
     if doc.watermark.is_some() && doc.linked[0] {
@@ -3243,7 +3253,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     fmt.position = Some(VerticalPosition::Superscript);
                     out.push(FlowRun {
                         kind: FlowRunKind::NoteRef {
-                            endnote: false,
+                            endnote: markdown_endnote_id(label).is_some(),
                             id,
                         },
                         style: FlowRunStyle::default(),
@@ -4723,6 +4733,14 @@ fn markdown_note_label(id: u32, endnote: bool) -> String {
     } else {
         id.to_string()
     }
+}
+
+fn markdown_endnote_id(label: &str) -> Option<u32> {
+    let id = label.strip_prefix("endnote-")?;
+    if id.starts_with('0') || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    id.parse().ok()
 }
 
 fn serialize_runs(
