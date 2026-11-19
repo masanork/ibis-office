@@ -1613,7 +1613,7 @@ fn parse_blocks(
                 body_rows.push(split_table_row(lines[i].trim()));
                 i += 1;
             }
-            blocks.push(build_table_block(header_cells, alignments, body_rows, ctx));
+            blocks.push(build_table_block(header_cells, alignments, body_rows, ctx, 0));
             continue;
         }
 
@@ -2198,11 +2198,33 @@ fn table_colspan<'a>(cell: &'a str, row: &[String], column: usize) -> (&'a str, 
     (cell, 1)
 }
 
+const NESTED_TABLE_START: &str = "<!-- nested-table: ";
+const NESTED_TABLE_END: &str = " -->";
+
+fn parse_nested_table(payload: &str, ctx: &mut ParseContext<'_>, depth: usize) -> Option<Block> {
+    let decode_line = |line: &str| line.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+    let rows: Vec<_> = payload.split("<br>").map(decode_line).collect();
+    let mut lines = rows.iter().map(String::as_str);
+    let header = lines.next()?;
+    let separator = lines.next()?;
+    if !is_table_row(header) || !is_table_separator(separator) || !lines.clone().all(is_table_row) {
+        return None;
+    }
+    Some(build_table_block(
+        split_table_row(header),
+        parse_table_alignments(separator),
+        lines.map(split_table_row).collect(),
+        ctx,
+        depth,
+    ))
+}
+
 fn build_table_block(
     header_cells: Vec<String>,
     alignments: Vec<Option<FlowAlign>>,
     body_rows: Vec<Vec<String>>,
     ctx: &mut ParseContext<'_>,
+    depth: usize,
 ) -> Block {
     let col_count = header_cells
         .len()
@@ -2254,33 +2276,51 @@ fn build_table_block(
             } else {
                 RunFormat::default()
             };
-            let parts: Vec<&str> = raw_cell.split("<br>").collect();
-            let mut runs = Vec::new();
-            for (pi, part) in parts.iter().enumerate() {
-                if pi > 0 {
-                    runs.push(FlowRun::new(
-                        FlowRunKind::LineBreak,
-                        FlowRunStyle::default(),
-                    ));
+            let paragraph = |text: &str, ctx: &mut ParseContext<'_>| {
+                let parts: Vec<&str> = text.split("<br>").collect();
+                let mut runs = Vec::new();
+                for (pi, part) in parts.iter().enumerate() {
+                    if pi > 0 {
+                        runs.push(FlowRun::new(
+                            FlowRunKind::LineBreak,
+                            FlowRunStyle::default(),
+                        ));
+                    }
+                    runs.extend(parse_inlines(part.trim(), ctx, &base_fmt));
                 }
-                runs.extend(parse_inlines(part.trim(), ctx, &base_fmt));
-            }
-            let mut p = FlowParagraph {
-                id: ctx.fresh_id(),
-                style: ctx.styles.default_paragraph.clone(),
-                table_style: Some("TableGrid".to_string()),
-                direct: ParaFormat {
-                    align,
-                    ..ParaFormat::default()
-                },
-                runs,
-                ..FlowParagraph::default()
+                let mut p = FlowParagraph {
+                    id: ctx.fresh_id(),
+                    style: ctx.styles.default_paragraph.clone(),
+                    table_style: Some("TableGrid".to_string()),
+                    direct: ParaFormat {
+                        align,
+                        ..ParaFormat::default()
+                    },
+                    runs,
+                    ..FlowParagraph::default()
+                };
+                p.resolve(&ctx.styles);
+                p.normalize();
+                Block::Paragraph(p)
             };
-            p.resolve(&ctx.styles);
-            p.normalize();
+            let mut blocks = Vec::new();
+            let mut remaining = raw_cell;
+            while depth < 8 {
+                let Some((before, payload)) = remaining.split_once(NESTED_TABLE_START) else { break };
+                let Some((payload, after)) = payload.split_once(NESTED_TABLE_END) else { break };
+                let Some(table) = parse_nested_table(payload, ctx, depth + 1) else { break };
+                let before = before.strip_suffix("<br>").unwrap_or(before);
+                if !before.is_empty() {
+                    blocks.push(paragraph(before, ctx));
+                }
+                blocks.push(table);
+                remaining = after.strip_prefix("<br>").unwrap_or(after);
+            }
+            // Word requires a paragraph at the end of a table cell.
+            blocks.push(paragraph(remaining, ctx));
             cells.push(FlowCell {
                 id: ctx.fresh_id(),
-                blocks: vec![Block::Paragraph(p)],
+                blocks,
                 span: span as u32,
                 merge,
                 shading: is_header.then_some(Rgb(0xF2F4F8)),
@@ -4234,12 +4274,25 @@ fn serialize_table(
             let span = (cell.span.max(1) as usize).min(col_count - cells.len() - (row.cells.len() - index - 1));
             let mut cell_parts = Vec::new();
             for block in &cell.blocks {
-                if let Block::Paragraph(paragraph) = block {
-                    cell_parts.push(
+                match block {
+                    Block::Paragraph(paragraph) => cell_parts.push(
                         serialize_runs(&paragraph.runs, media, comments)
                             .replace('\n', "<br>")
                             .replace('|', "\\|"),
-                    );
+                    ),
+                    Block::Table(table) => {
+                        let mut source = String::new();
+                        serialize_table(table, media, comments, &mut source);
+                        let payload = source.trim_end()
+                            .replace('&', "&amp;")
+                            .replace('<', "&lt;")
+                            .replace('>', "&gt;")
+                            .replace('|', "\\|")
+                            .replace('\n', "<br>");
+                        if !payload.is_empty() {
+                            cell_parts.push(format!("{NESTED_TABLE_START}{payload}{NESTED_TABLE_END}"));
+                        }
+                    }
                 }
             }
             let mut text = cell_parts.join("<br>");
@@ -5267,6 +5320,35 @@ fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_table_round_trips_with_surrounding_text_and_combined_cells() {
+        let input = br"| Category | Details |
+| --- | --- |
+| Domestic | Before<br><!-- nested-table: \| Group &amp; type &lt; 2 &lt;!-- colspan:2 --&gt; \| \|<br>\| --- \| --- \|<br>\| X\\\|Y \| 12&lt;br&gt;8 \| --><br>After |
+";
+        let docx = import_markdown_to_docx_bytes(input).unwrap();
+        let exported = export_docx_to_markdown(&docx).unwrap();
+        let rebuilt = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&rebuilt).unwrap(), exported);
+
+        let presentation = crate::read(&rebuilt).unwrap();
+        let Block::Table(outer) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected an outer table");
+        };
+        let [Block::Paragraph(before), Block::Table(inner), Block::Paragraph(after)] =
+            outer.rows[1].cells[1].blocks.as_slice()
+        else {
+            panic!("expected a nested table between two paragraphs");
+        };
+        assert_eq!(before.text(), "Before");
+        assert_eq!(after.text(), "After");
+        assert_eq!(inner.rows[0].cells[0].span, 2);
+        assert!(matches!(&inner.rows[0].cells[0].blocks[0], Block::Paragraph(p) if p.text() == "Group & type < 2"));
+        assert!(matches!(&inner.rows[1].cells[0].blocks[0], Block::Paragraph(p) if p.text() == "X|Y"));
+        assert!(matches!(&inner.rows[1].cells[1].blocks[0], Block::Paragraph(p)
+            if p.runs.iter().any(|r| matches!(r.kind, FlowRunKind::LineBreak))));
+    }
 
     #[test]
     fn vertical_table_merges_round_trip_and_keep_occupied_cells() {
