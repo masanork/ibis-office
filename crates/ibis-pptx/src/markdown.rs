@@ -1536,7 +1536,7 @@ fn parse_blocks(
             let content = content_lines.join("\n");
             match lang.split_whitespace().next().unwrap_or("") {
                 "math" | "latex" | "tex" => {
-                    blocks.push(build_display_math_block(&content, ctx));
+                    blocks.push(build_display_math_block(&content, None, ctx));
                 }
                 "chart" => {
                     blocks.push(build_chart_block(&content, ctx)?);
@@ -1553,13 +1553,15 @@ fn parse_blocks(
 
         // Display math block: $$ ... $$
         if trimmed.starts_with("$$") {
-            if trimmed.len() > 4 && trimmed.ends_with("$$") {
-                let inner = trimmed[2..trimmed.len() - 2].trim();
-                blocks.push(build_display_math_block(inner, ctx));
+            if let Some((inner, bookmark)) = display_math_close(&trimmed[2..])
+                && !inner.trim().is_empty()
+            {
+                blocks.push(build_display_math_block(inner, bookmark, ctx));
                 i += 1;
                 continue;
             }
             let mut math_lines = Vec::new();
+            let mut bookmark = None;
             let first_after = trimmed.strip_prefix("$$").unwrap_or("").trim();
             if !first_after.is_empty() {
                 math_lines.push(first_after.to_string());
@@ -1567,7 +1569,8 @@ fn parse_blocks(
             i += 1;
             while i < lines.len() {
                 let l = lines[i].trim();
-                if let Some(before_close) = l.strip_suffix("$$") {
+                if let Some((before_close, id)) = display_math_close(l) {
+                    bookmark = id;
                     if !before_close.trim().is_empty() {
                         math_lines.push(before_close.trim().to_string());
                     }
@@ -1577,7 +1580,7 @@ fn parse_blocks(
                 math_lines.push(lines[i].to_string());
                 i += 1;
             }
-            blocks.push(build_display_math_block(&math_lines.join("\n"), ctx));
+            blocks.push(build_display_math_block(&math_lines.join("\n"), bookmark, ctx));
             continue;
         }
 
@@ -2007,7 +2010,23 @@ fn build_code_block(code: &str, ctx: &mut ParseContext<'_>) -> Block {
     Block::Paragraph(p)
 }
 
-fn build_display_math_block(latex: &str, ctx: &mut ParseContext<'_>) -> Block {
+/// Split a closing math delimiter from an optional Word-compatible bookmark.
+fn display_math_close(line: &str) -> Option<(&str, Option<&str>)> {
+    if let Some(math) = line.strip_suffix("$$") {
+        return Some((math, None));
+    }
+    let (math, label) = line.strip_suffix('}')?.rsplit_once("{#")?;
+    let math = math.trim_end().strip_suffix("$$")?;
+    is_equation_bookmark(label).then_some((math, Some(label)))
+}
+
+fn is_equation_bookmark(label: &str) -> bool {
+    label.len() <= 40
+        && label.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn build_display_math_block(latex: &str, bookmark: Option<&str>, ctx: &mut ParseContext<'_>) -> Block {
     let math = parse_latex(latex.trim());
     let mut p = FlowParagraph {
         id: ctx.fresh_id(),
@@ -2018,6 +2037,7 @@ fn build_display_math_block(latex: &str, ctx: &mut ParseContext<'_>) -> Block {
             after: Some(6 * EMU_PER_PT),
             ..ParaFormat::default()
         },
+        bookmarks: bookmark.map(str::to_owned).into_iter().collect(),
         runs: vec![FlowRun::new(
             FlowRunKind::Math {
                 math,
@@ -4009,7 +4029,11 @@ fn serialize_paragraph(
             FlowRunKind::Math { math, display: true } => {
                 out.push_str("$$\n");
                 out.push_str(&math.to_latex());
-                out.push_str("\n$$\n\n");
+                out.push_str("\n$$");
+                if let Some(bookmark) = p.bookmarks.iter().find(|name| is_equation_bookmark(name)) {
+                    out.push_str(&format!(" {{#{bookmark}}}"));
+                }
+                out.push_str("\n\n");
                 return;
             }
             FlowRunKind::Shape(shape) => {
@@ -5214,6 +5238,38 @@ fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equation_bookmarks_and_internal_links_survive_docx_round_trip() {
+        let input = br"See the [energy equation](#eq_energy).
+
+$$
+E=mc^2
+$$ {#eq_energy}
+
+$$a=b$$ {#eq_inline_source}
+
+Following paragraph.
+";
+        let docx = import_markdown_to_docx_bytes(input).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        assert!(markdown.contains("[energy equation](#eq_energy)"));
+        assert!(markdown.contains("$$ {#eq_energy}"));
+        assert!(markdown.contains("$$ {#eq_inline_source}"));
+        assert!(markdown.contains("Following paragraph."));
+
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        let flow = presentation.flow.unwrap();
+        let [Block::Paragraph(reference), Block::Paragraph(equation), ..] = flow.body.as_slice() else {
+            panic!("expected a reference followed by a display equation");
+        };
+        assert!(reference.runs.iter().any(|run| {
+            matches!(&run.link, Some(Link::Anchor(anchor)) if anchor == "eq_energy")
+        }));
+        assert_eq!(equation.bookmarks, ["eq_energy"]);
+        assert!(matches!(equation.runs[0].kind, FlowRunKind::Math { display: true, .. }));
+    }
 
     #[test]
     fn docx_markdown_round_trip_keeps_matrix_and_equation_array_structure() {
