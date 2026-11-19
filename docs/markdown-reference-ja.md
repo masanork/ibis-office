@@ -4,13 +4,13 @@ title: "Docs Markdown Reference Manual"
 
 # Docs Markdown Reference Manual
 
-このファイルは Markdown の使い方を説明するリファレンスであり、Docs で開いて表示と保存を試せるデモです。対応状況はフォークの統合コミット `1cd79c2c` を基準にしています。
+このファイルは、日本語の Markdown リファレンスと、Docs で表示・保存・再読込を試せるデモを兼ねています。書式や構文を確認する場合は、使用するビルドと同じリビジョンのリファレンスを開いてください。
 
 ## 使い方
 
 1. このファイルを Docs で開きます。
 2. 表、数式、図とグラフを確認し、コピーを DOCX に保存します。
-3. DOCX を開き直して Markdown に書き出し、Mermaid のブロックを確認します。
+3. DOCX を開き直して Markdown に書き出し、数式や Mermaid のソースがどう戻るかを確認します。
    - PPTX の場合は CLI で変換し、スライドとして開きます。
    - Windows と macOS では利用するフォントによって改行位置が変わることがあります。
 
@@ -38,6 +38,22 @@ $$
 E = mc^2
 $$
 
+インラインの分数 $\frac{a_1}{\sqrt{b}}$ や、別行の行列も表示できます。
+
+$$
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}
+$$
+
+演算子の上下限の配置は `\limits`（上下）または `\nolimits`（右側）で指定できます。次の式を DOCX に保存し、Markdown に書き戻しても、配置の指定を保持します。DOCX ではネイティブの数式として保存されます。
+
+$$
+\int\limits_{0}^{1} x^2\,dx = \frac{1}{3}
+$$
+
+$$
+\sum\nolimits_{i=1}^{n} i = \frac{n(n+1)}{2}
+$$
+
 次はコードブロックです。コマンドを実行する場合は、リポジトリのルートで `ibisOffice` を利用できるようにしてください。
 
 ```sh
@@ -45,6 +61,63 @@ ibisOffice --export docx --out-dir /tmp/docs-reference/docx docs/markdown-refere
 ibisOffice --export pptx --out-dir /tmp/docs-reference/pptx docs/markdown-reference-ja.md
 ibisOffice --export md --out-dir /tmp/docs-reference/markdown /tmp/docs-reference/docx/markdown-reference-ja.docx
 ```
+
+## Office Open Markdown の往復確認
+
+Office Open Markdown は、Office 文書の構造を人と AI が編集できる Markdown に移し、対応する構造を編集可能な OOXML に戻す取り組みです。数式は LaTeX 記法で書き、DOCX では Word の数式形式である OMML として保存します。
+
+次の複数行の式は、DOCX に変換してから Markdown に戻すと、各行と `&` の整列位置を保ちます。
+
+$$
+\begin{aligned}
+x &= 1 \\
+yy &= 2
+\end{aligned}
+$$
+
+行列の行・列と、複数行の式の整列位置は、OMML を入力にした往復テストでそれぞれ確認しています。OMML の整列用属性は Markdown の `&` に変換され、DOCX に戻すときは等式配列内の整列マーカーとして保存されます。
+
+### 式にリンクする
+
+本文から [エネルギーの式](#eq_energy) にリンクできます。
+
+$$
+E=mc^2
+$$ {#eq_energy}
+
+閉じる `$$` の後ろの `{#eq_energy}` は DOCX のブックマークになり、本文の `[エネルギーの式](#eq_energy)` は文書内リンクになります。ラベルは文書内で一意にし、英字で始まる40文字以内の英数字とアンダースコアを使います。リンクの表示文字列は指定したまま保持されます。
+
+### 式・図・表に番号を付ける
+
+本文から式 ({{ref:eq_energy_number}}) を参照します。参照は番号の段落より前にも置けます。
+
+{{seq:equation}} {#eq_energy_number align=right}
+
+`{{seq:equation}}` は DOCX の `SEQ Equation`、`{{ref:eq_energy_number}}` はブックマークを指す `REF` フィールドになります。数式にリンクするラベルと、番号を参照するラベルは別々に付けます。番号だけを参照したい場合は、番号フィールド専用の段落にします。
+
+`{{seq:figure}}` と `{{seq:table}}` は図と表の独立した連番です。たとえば `図 {{seq:figure}} {#fig_setup}` を参照すると、ラベル付きの「図 1」になります。番号を追加して Markdown を読み直すと、各連番と参照が再計算されます。
+
+Markdown に書き戻せるフィールドは、ここで示した書式の連番とリンク付きの単純な参照です。Word 固有の書式やスイッチを含むフィールドは表示文字列として書き出します。
+
+### 往復の確認範囲と実装順
+
+往復テストでは、Markdown と DOCX の間で変換した後の文書モデルを比較します。数式を例にすると、式の構造、インラインと別行の区別、整列位置、参照先を確認します。記法や XML は変換時に正規化される場合があります。
+
+| 順番 | 対象 | 確認すること |
+| :--- | :--- | :--- |
+| 1 | 数式への文書内リンク | 合成 DOCX を Word で保存し、Markdown への変換と DOCX への再変換後も数式のブックマークと参照先が一致することを確認済み。 |
+| 2 | 式・図・表の番号と参照 | 合成 DOCX で、Word による式・図・表の連番と式番号参照の更新、および Markdown 経由の DOCX への往復を確認済み。 |
+| 3 | ページ脚注と文末脚注 | 同じ ID の両注記を区別し、参照・本文・種別の往復を確認済み。 |
+| 4 | 引用と参考文献 | 本文中の引用を文献データに結び付け、編集後も参照できること。 |
+| 5 | 複雑な表 | 横結合・縦結合・入れ子表の往復と原本のセル引用を確認済み。 |
+
+### ファイル形式ごとの往復範囲
+
+| 形式 | Markdown で確認できる内容 | 往復で差が出る例 |
+| :--- | :--- | :--- |
+| DOCX | 本文、見出し、リスト、リンク、ページ脚注・文末脚注、結合・入れ子表、対応する数式と連番・参照 | 詳細なページ組版、任意の Word フィールド、注記内の表、数式内の文字色 |
+| PPTX | スライド区切り、本文、画像、表、グラフ、発表者ノート | 図形の配置やマスター、アニメーション、表の結合 |
+| XLSX | 表示対象のセルを表に変換。AI JSON では値の型と数式も確認可能 | Markdown 表から元の数式ブックや非表示部分、入力規則を再構成すること |
 
 ## 表のセル結合
 
@@ -91,9 +164,10 @@ Docs はセルの中に編集可能な表を表示します。DOCX から Markdo
 | 引用・通知 | `>`、`[!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]` |
 | リスト | `-` / `*` / `+`、`1.`、入れ子、`[ ]` / `[x]` のタスク項目 |
 | コード・数式 | バッククォートまたはチルダのコードフェンス、インラインコード、`$...$`、`$$...$$`、`math` / `latex` / `tex` フェンス |
-| 表 | パイプ区切り、`:---` / `:---:` / `---:` で列を左・中央・右揃え |
+| 表 | [横・縦結合と入れ子表](#表のセル結合)。パイプ区切り、`:---` / `:---:` / `---:` で列を左・中央・右揃え |
 | 区切り | `---` / `***` の水平線、`\newpage` / `::: pagebreak` / `<!-- pagebreak -->`、`\columnbreak` / `::: columnbreak` |
-| 目次・脚注 | `[[toc]]` / `::: toc`、`[^id]` と `[^id]: 本文` |
+| 目次・脚注 | `[[toc]]` / `::: toc`、`[^id]` と `[^id]: 本文`、文末脚注の `[^endnote-1]` |
+| 連番・相互参照 | [式・図・表の番号](#式図表に番号を付ける) の `{{seq:equation}}`、`{{seq:figure}}`、`{{seq:table}}`、`{{ref:名前}}` |
 | 強調・文字装飾 | `**太字**`、`*斜体*`、`***太字斜体***`、`~~削除線~~`、`++下線++`、`==強調表示==`、`^上付き^`、`~下付き~` |
 | 日本語組版 | `{漢字\|かんじ}` / `｜漢字《かんじ》` のルビ、`[25]{.tcy}` の縦中横、`《《傍点》》` / `[傍点]{.em}` |
 | リンク・画像 | `[名前](URL)`、`[名前](#anchor)`、`![代替テキスト](画像)`。画像には相対ファイルパスや Data URI、`{width=... height=...}` の寸法指定を利用できます。 |
@@ -144,11 +218,11 @@ series:
 
 ## Mermaid
 
-Flowchart、sequence、ER、state、Gantt などは SVG として表示されます。`pie` と `xychart` は通常、編集可能な Office グラフになります。取り込み経路によっては SVG になります。グラフを編集すると、再書き出し時には編集結果を表す `chart` ブロックになる場合があります。[Mermaid の対応範囲](mermaid-compatibility.md)。
+`mermaid` フェンス内の flowchart、sequence、ER、state、Gantt、ZenUML などは SVG として表示されます。`pie` と `xychart` は通常、編集可能な Office グラフになります。取り込み経路によっては SVG になります。グラフを編集すると、再書き出し時には編集結果を表す `chart` ブロックになる場合があります。[Mermaid の対応範囲](mermaid-compatibility.md)
 
 ### デモを開く
 
-[図種別デモ](mermaid-demo-ja.md) は、そのまま Docs で開ける Markdown です。固定した公式コーパスの33図種に表示例があります。この Reference には日本語ラベル、双方向矢印、横棒グラフ、数値 x 軸の例もあります。
+[図種別デモ](mermaid-demo-ja.md) は、そのまま Docs で開ける Markdown です。代表例を図種ごとに確認できます。このリファレンスでも、日本語ラベル、双方向矢印、横棒グラフ、数値 x 軸を試せます。
 
 公式コーパスの全例を、図種別の Markdown として生成できます。目次には描画結果と、対応・未実装・対象外として追跡する構文の一覧が載ります。各例には、該当する既知の制約を表示します。
 
@@ -157,7 +231,7 @@ MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo \
   cargo test -p ibis-pptx --test mermaid_corpus
 ```
 
-[Web 版の図種別デモ](https://docs.sorane.dev/samples/mermaid/web.html) からも各ページを開けます。生成先の `index.md` が目次です。例の出典と MIT ライセンスも生成先に含まれます。Mermaid CI では `mermaid-markdown-demo` 成果物として取得できます。
+[Web 版の構文デモ集](https://docs.sorane.dev/samples/mermaid/web) には、固定した Mermaid 12.3.0 の公式例539件があります。ローカル生成先では `index.md` が目次です。出典と MIT ライセンスは生成先に含まれ、Mermaid CI では `mermaid-markdown-demo` 成果物として取得できます。
 
 ### 対応する図種と構文
 
@@ -222,7 +296,7 @@ sequenceDiagram
   D<<-->>A: 保存と再読込
 ```
 
-### DOCX 内で Mermaid ソースを編集
+### DOCX・PPTX 内で Mermaid ソースを編集
 
 Markdown から取り込んだ SVG の Mermaid 図を DOCX で選び、書式メニューの「Mermaid ソースを編集…」を開きます。上のフローチャートのラベルを変えて「適用」を押すと、図が更新されます。取り消しでは図とソースが一緒に戻ります。保存して開き直し、Markdown に書き出すと更新したソースを確認できます。
 
@@ -262,18 +336,26 @@ xychart
   line "目標" [10, 38]
 ```
 
-### 未対応の図
+### コード表示に戻る場合とフェンスの選び方
+
+未対応の構文や解釈できない図は `mermaid` のコードブロックとして表示します。DOCX・PPTX を経由しても Markdown に書き出すとコードが戻ります。SVG として描画された図でも、ラベルの見え方は実行環境で利用できるフォントによって変わります。
 
 本文にバッククォートやチルダだけの行がある場合は、その行より長いフェンスか、もう一方の記号を使います。Mermaid を書き出すときは、本文と衝突しない長さのフェンスを選びます。
 
 ### ZenUML
 
-次は ZenUML のシーケンス図です。メッセージに付いたコメントはプレーンテキストの注記として描画します。DOCX または PPTX に保存してから Markdown に戻し、言語指定 `mermaid` と本文が残ることを確認します。
+ZenUML は `mermaid` フェンスの先頭に `zenuml` と書きます。ibisOffice は対応する呼び出し、戻り値、分岐などをシーケンス図の SVG として描画します。次の例では、呼び出し前の `//` コメントが注記になり、呼び出しと戻り値が別々の矢印になります。
 
 ```mermaid
 zenuml
-  Author.review()
+  @Actor 執筆者
+  // 原稿を確認
+  執筆者->査読者.確認() {
+    return 確認済み
+  }
 ```
+
+DOCX・PPTX では図を選んで「Mermaid ソースを編集…」から修正できます。Markdown に書き戻すと、描画に使ったシーケンス図の内部表現ではなく、保存した ZenUML の本文が戻ります。[ZenUML の図種別デモ](mermaid-demo-ja.md#zenuml)
 
 ## 法令標準XML と Lawtext
 

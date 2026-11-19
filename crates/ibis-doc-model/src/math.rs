@@ -222,7 +222,7 @@ impl Math {
                 None => format!(r"\sqrt{{{}}}", body.to_latex().trim()),
                 Some(d) => format!(r"\sqrt[{}]{{{}}}", d.to_latex().trim(), body.to_latex().trim()),
             },
-            Math::Nary { op, sub, sup, body, .. } => {
+            Math::Nary { op, sub, sup, body, stacked } => {
                 let op_cmd = match op.as_str() {
                     "∑" => r"\sum",
                     "∏" => r"\prod",
@@ -238,6 +238,12 @@ impl Math {
                     _ => op.as_str(),
                 };
                 let mut out = op_cmd.to_string();
+                if *stacked != stacked_by_default(op) {
+                    out.push_str(if *stacked { r"\limits" } else { r"\nolimits" });
+                    if sub.is_none() && sup.is_none() {
+                        out.push(' ');
+                    }
+                }
                 if let Some(s) = sub {
                     out.push_str(&format!(r"_{{{}}}", s.to_latex().trim()));
                 }

@@ -4796,7 +4796,22 @@ impl Writer<'_> {
         // After the paragraph's properties: where new first children go.
         let first_index = |doc: &XmlDocument| doc.children(p).iter().position(|&c| doc.is_element(c) && doc.local_name(c) == "pPr").map_or(0, |i| i + 1);
         for name in old.bookmarks.iter().filter(|b| !new.bookmarks.contains(b)) {
-            let starts: Vec<NodeId> = self.doc.descendants(p).into_iter().filter(|&n| self.doc.is_element(n) && self.doc.local_name(n) == "bookmarkStart" && self.doc.attr_local(n, "name") == Some(name.as_str())).collect();
+            let is_named_start = |n| self.doc.is_element(n) && self.doc.local_name(n) == "bookmarkStart" && self.doc.attr_local(n, "name") == Some(name.as_str());
+            let mut starts: Vec<NodeId> = self.doc.descendants(p).into_iter().filter(|&n| is_named_start(n)).collect();
+            if let Some(parent) = self.doc.parent(p) {
+                let siblings = self.doc.children(parent);
+                if let Some(index) = siblings.iter().position(|&node| node == p) {
+                    let end_ids: Vec<_> = self.doc.descendants(p).into_iter()
+                        .filter(|&node| self.doc.is_element(node) && self.doc.local_name(node) == "bookmarkEnd")
+                        .filter_map(|node| self.doc.attr_local(node, "id"))
+                        .collect();
+                    starts.extend(siblings[..index].iter().rev().copied()
+                        .filter(|&node| self.doc.is_element(node))
+                        .take_while(|&node| self.doc.local_name(node) == "bookmarkStart")
+                        .filter(|&node| is_named_start(node)
+                            && self.doc.attr_local(node, "id").is_some_and(|id| end_ids.contains(&id))));
+                }
+            }
             for start in starts {
                 let id = self.doc.attr_local(start, "id").map(str::to_string);
                 self.doc.detach(start);
