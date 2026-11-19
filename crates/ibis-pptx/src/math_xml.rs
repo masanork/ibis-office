@@ -33,6 +33,31 @@ fn row(n: Node) -> Math {
     if items.len() == 1 { items.remove(0) } else { Math::Row(items) }
 }
 
+fn equation_array_row(n: Node) -> Math {
+    let mut items = Vec::new();
+    for child in n.children().filter(|c| c.is_element()) {
+        let Some(math) = node(child) else { continue };
+        let alignment = match child.tag_name().name() {
+            "r" => m_child(child, "rPr").and_then(|pr| m_child(pr, "aln")),
+            "box" => m_child(child, "boxPr").and_then(|pr| {
+                math_flag_enabled(m_child(pr, "opEmu")).then(|| m_child(pr, "aln")).flatten()
+            }),
+            _ => None,
+        };
+        // Normalize explicit OMML alignment points to the same marker as
+        // equation-array ampersands and LaTeX aligned columns.
+        if math_flag_enabled(alignment) {
+            items.push(Math::Text("&".into()));
+        }
+        items.push(math);
+    }
+    if items.len() == 1 { items.remove(0) } else { Math::Row(items) }
+}
+
+fn math_flag_enabled(flag: Option<Node>) -> bool {
+    flag.is_some_and(|flag| matches!(flag.attribute((M, "val")), None | Some("1" | "true" | "on")))
+}
+
 /// An `m:oMath` or `m:oMathPara` as a node.
 pub fn read_math(n: Node) -> Math {
     row(n)
@@ -97,7 +122,7 @@ fn node(n: Node) -> Option<Math> {
         "groupChr" => Math::Mark { base: boxed(part(n, "e")), mark: pr_val(n, "chr").unwrap_or("⏟").to_string(), over: pr_val(n, "pos") == Some("top") },
         "limUpp" => Math::Mark { base: boxed(part(n, "e")), mark: part(n, "lim").linear(), over: true },
         "limLow" => Math::Mark { base: boxed(part(n, "e")), mark: part(n, "lim").linear(), over: false },
-        "eqArr" => Math::EqArray(n.children().filter(|c| c.is_element() && c.tag_name().name() == "e").map(row).collect()),
+        "eqArr" => Math::EqArray(n.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(M) && c.tag_name().name() == "e").map(equation_array_row).collect()),
         "m" => Math::Matrix(
             n.children()
                 .filter(|c| c.is_element() && c.tag_name().namespace() == Some(M) && c.tag_name().name() == "mr")

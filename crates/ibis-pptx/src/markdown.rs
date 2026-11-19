@@ -5216,6 +5216,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn docx_markdown_round_trip_keeps_matrix_and_equation_array_structure() {
+        // Inject independent OMML instead of using our Markdown or OMML writer
+        // to construct the input equations.
+        let equations = r#"
+<w:p><m:oMathPara><m:oMath><m:m>
+  <m:mr><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:mr>
+  <m:mr><m:e><m:r><m:t>c</m:t></m:r></m:e><m:e><m:r><m:t>d</m:t></m:r></m:e></m:mr>
+</m:m></m:oMath></m:oMathPara></w:p>
+<w:p><m:oMathPara><m:oMath><m:eqArr>
+  <m:e><m:r><m:t>x</m:t></m:r><m:r><m:rPr><m:aln/></m:rPr><m:t>=1</m:t></m:r></m:e>
+  <m:e><m:r><m:rPr><m:aln m:val="0"/></m:rPr><m:t>yy</m:t></m:r><m:box>
+    <m:boxPr><m:opEmu/><m:aln/></m:boxPr><m:e><m:r><m:t>=</m:t></m:r></m:e>
+  </m:box><m:r><m:t>2</m:t></m:r></m:e>
+</m:eqArr></m:oMath></m:oMathPara></w:p>"#;
+        let template = import_markdown_to_docx_bytes(b"Math\n").unwrap();
+        let mut package = ibis_ooxml::Package::open(template).unwrap();
+        let xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+        let xml = xml.replace(
+            "<w:body>",
+            &format!(
+                "<w:body xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\">{equations}"
+            ),
+        );
+        package.set_bytes("word/document.xml", xml.into_bytes());
+        let original = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
+
+        let markdown = export_docx_to_markdown(&original).unwrap();
+        assert!(markdown.contains(r"\begin{matrix}a & b \\ c & d\end{matrix}"));
+        assert!(markdown.contains(r"\begin{aligned}x&=1 \\ yy&=2\end{aligned}"));
+
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        let flow = presentation.flow.unwrap();
+        let formulas: Vec<_> = flow.body.iter().filter_map(|block| {
+            let Block::Paragraph(paragraph) = block else { return None };
+            let [run] = paragraph.runs.as_slice() else { return None };
+            let FlowRunKind::Math { math, display: true } = &run.kind else { return None };
+            Some(math)
+        }).collect();
+        use ibis_doc_model::math::Math;
+        let [Math::Matrix(matrix), Math::EqArray(rows)] = formulas.as_slice() else {
+            panic!("expected an editable matrix and equation array: {formulas:?}");
+        };
+        let cells: Vec<Vec<_>> = matrix.iter().map(|row| row.iter().map(Math::linear).collect()).collect();
+        assert_eq!(cells, [vec!["a", "b"], vec!["c", "d"]]);
+        assert_eq!(rows.iter().map(Math::linear).collect::<Vec<_>>(), ["x&=1", "yy&=2"]);
+    }
+
+    #[test]
     fn docx_markdown_round_trip_keeps_explicit_operator_limits() {
         fn limit_placement(data: &[u8]) -> Vec<(bool, bool, String, String)> {
             let presentation = crate::read(data).unwrap();
