@@ -623,15 +623,14 @@ fn export_workbook_markdown_with_positions(
             return Err(Error::new("ワークブックが大きすぎて Markdown に変換できません"));
         }
 
-        let rows: Vec<u32> = (minr..=maxr).filter(|&r| row_vis(r)).collect();
-        let cols: Vec<u32> = (minc..=maxc).filter(|&c| col_vis(c)).collect();
-        if rows.is_empty() || cols.is_empty() {
-            continue;
-        }
-
-        for (ri, &r) in rows.iter().enumerate() {
+        for r in minr..=maxr {
             out.push('|');
-            for &c in &cols {
+            let row_visible = row_vis(r);
+            for c in minc..=maxc {
+                if !row_visible || !col_vis(c) {
+                    out.push_str("  |");
+                    continue;
+                }
                 let cell = sheet.cell(r, c);
                 let raw = cell.map(|cell| cell.text.as_str()).unwrap_or("");
                 let escaped = raw.replace('|', "\\|").replace('\n', "<br>");
@@ -662,11 +661,10 @@ fn export_workbook_markdown_with_positions(
                 out.push_str(" |");
             }
             out.push('\n');
-            if ri == 0 {
+            if r == minr {
                 out.push('|');
-                for &c in &cols {
-                    let align = sheet
-                        .cell(r, c)
+                for c in minc..=maxc {
+                    let align = col_vis(c).then(|| sheet.cell(r, c)).flatten()
                         .and_then(|cell| sheet.styles.get(cell.style as usize))
                         .map(|st| match st.align {
                             CellAlign::Center | CellAlign::CenterAcross => " :---: |",
@@ -7777,6 +7775,40 @@ xychart-beta
             assert_eq!(sheet.cell(1, column).unwrap().value, CellValue::Number(value));
         }
         assert!(import_markdown_to_xlsx_bytes(markdown.replace("xlsx-number:0.25", "xlsx-number:NaN").as_bytes()).is_err());
+    }
+
+    #[test]
+    fn workbook_hidden_cells_leave_empty_slots_without_exporting_their_contents() {
+        let bytes = import_markdown_to_xlsx_bytes(br#"<!-- xlsx-sheet {"name":"Visible","origin":"B3"} -->
+
+| H1 | HIDDEN_COL | H3 |
+| --- | --- | --- |
+| HIDDEN_ROW | HIDDEN_BOTH | HIDDEN_ROW |
+| Left | HIDDEN_COL | Right |
+"#).unwrap();
+        let mut workbook = crate::read(&bytes).unwrap();
+        let ShapeKind::Sheet(sheet) = &mut workbook.slides[0].shapes[0].kind else {
+            panic!("expected a sheet");
+        };
+        let sheet = Arc::make_mut(sheet);
+        sheet.hidden_rows.insert(3, sheet.default_row);
+        sheet.hidden_columns.insert(2, sheet.default_column);
+
+        let ai = export_ai_workbook(&workbook).unwrap();
+        let markdown = ai["markdown"].as_str().unwrap();
+        assert!(!markdown.contains("HIDDEN"));
+        assert!(markdown.contains("| H1 |  | H3 |"));
+        assert!(markdown.contains("|  |  |  |"));
+        assert!(markdown.contains("| Left |  | Right |"));
+        assert!(ai["cells"].as_array().unwrap().iter().all(|cell|
+            cell["source"]["row"] != 4 && cell["source"]["column"] != 3
+        ));
+
+        let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        assert_eq!(sheet.cell(4, 3).unwrap().text, "Right");
+        assert!(sheet.cell(3, 1).is_none());
+        assert!(sheet.cell(4, 2).is_none());
     }
 
     #[test]
