@@ -1088,6 +1088,28 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                 content_paragraphs,
             })
         });
+        let bookmark_end_ids: Vec<_> = p.descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "bookmarkEnd")
+            .filter_map(|n| wattr(n, "id"))
+            .collect();
+        // Word may move a paragraph-wide bookmark start immediately before
+        // the paragraph while leaving its matching end inside the paragraph.
+        let mut bookmarks: Vec<_> = p.prev_siblings().skip(1)
+            .filter(|n| n.is_element())
+            .take_while(|n| n.tag_name().name() == "bookmarkStart")
+            .filter(|n| wattr(*n, "id").is_some_and(|id| bookmark_end_ids.contains(&id)))
+            .filter_map(|n| wattr(n, "name"))
+            .map(str::to_owned)
+            .collect();
+        bookmarks.reverse();
+        bookmarks.extend(p.descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "bookmarkStart")
+            .filter_map(|n| wattr(n, "name"))
+            .map(str::to_owned));
+        let bookmark_ends = bookmark_end_ids.into_iter().filter_map(|id| {
+            p.document().descendants().find(|s| s.is_element() && s.tag_name().name() == "bookmarkStart" && wattr(*s, "id") == Some(id))
+                .and_then(|s| wattr(s, "name"))
+        }).filter(|name| !bookmarks.iter().any(|bookmark| bookmark == *name)).map(str::to_owned).collect();
         let mut paragraph = FlowParagraph {
             id,
             para_id,
@@ -1097,10 +1119,8 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
             mark_format: ppr.and_then(|p| child(p, "rPr")).map(|r| run_format(r, self.theme)).unwrap_or_default(),
             mark_revision: ppr.and_then(|p| child(p, "rPr")).and_then(|r| child(r, "del")).map(|d| ibis_doc_model::flow::Revision { kind: RevisionKind::Delete, author: wattr(d, "author").unwrap_or_default().to_string(), date: wattr(d, "date").unwrap_or_default().to_string() }),
             runs,
-            bookmarks: p.descendants().filter(|n| n.is_element() && n.tag_name().name() == "bookmarkStart").filter_map(|n| wattr(n, "name")).map(str::to_string).collect(),
-            bookmark_ends: p.descendants().filter(|n| n.is_element() && n.tag_name().name() == "bookmarkEnd").filter_map(|n| wattr(n, "id")).filter_map(|id| {
-                p.document().descendants().find(|s| s.is_element() && s.tag_name().name() == "bookmarkStart" && wattr(*s, "id") == Some(id)).and_then(|s| wattr(s, "name")).map(str::to_string)
-            }).filter(|name| !p.descendants().any(|n| n.is_element() && n.tag_name().name() == "bookmarkStart" && wattr(n, "name") == Some(name.as_str()))).collect(),
+            bookmarks,
+            bookmark_ends,
             field_start: read.field_start.take(),
             field_end: read.field_end,
             field_dirty: read.field_dirty,

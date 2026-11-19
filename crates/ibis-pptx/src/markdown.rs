@@ -6285,11 +6285,33 @@ $$a=b$$ {#eq_inline_source}
 Following paragraph.
 ";
         let docx = import_markdown_to_docx_bytes(input).unwrap();
+        // Word can move a paragraph-wide bookmark start out of the paragraph.
+        let mut package = ibis_ooxml::Package::open(docx).unwrap();
+        let mut xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+        let name = xml.find("w:name=\"eq_energy\"").unwrap();
+        let start = xml[..name].rfind("<w:bookmarkStart ").unwrap();
+        let end = name + xml[name..].find("/>").unwrap() + 2;
+        let paragraph = xml[..start].rfind("<w:p ").or_else(|| xml[..start].rfind("<w:p>")).unwrap();
+        let bookmark = xml[start..end].to_owned();
+        xml.replace_range(start..end, "");
+        xml.insert_str(paragraph, &bookmark);
+        package.set_bytes("word/document.xml", xml.into_bytes());
+        let docx = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
         let markdown = export_docx_to_markdown(&docx).unwrap();
         assert!(markdown.contains("[energy equation](#eq_energy)"));
         assert!(markdown.contains("$$ {#eq_energy}"));
         assert!(markdown.contains("$$ {#eq_inline_source}"));
         assert!(markdown.contains("Following paragraph."));
+
+        let mut opened = crate::open(docx).unwrap();
+        let flow = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+        let Block::Paragraph(equation) = &mut flow.body[1] else { panic!("expected an equation") };
+        equation.bookmarks.clear();
+        let unbookmarked = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+        let package = ibis_ooxml::Package::open(unbookmarked).unwrap();
+        let xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+        assert!(!xml.contains("w:name=\"eq_energy\""));
+        assert!(xml.contains("w:name=\"eq_inline_source\""));
 
         let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
         let presentation = crate::read(&rebuilt).unwrap();
