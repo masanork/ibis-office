@@ -3946,6 +3946,7 @@ struct PreparedAiEdit {
     target: AiEditTarget,
     run_index: usize,
     range: std::ops::Range<usize>,
+    paragraph_start: usize,
     replacement: String,
     preview: serde_json::Value,
 }
@@ -3956,10 +3957,37 @@ pub fn preview_ai_edit(data: &[u8], proposal: &serde_json::Value) -> Result<serd
     if proposal.get("edits").is_none() {
         return Ok(edits.remove(0).preview);
     }
+    let mut target_indices = HashMap::new();
+    let mut target_edits: Vec<Vec<(usize, &PreparedAiEdit)>> = Vec::new();
+    for (index, edit) in edits.iter().enumerate() {
+        let target_index = *target_indices.entry(edit.target).or_insert_with(|| {
+            target_edits.push(Vec::new());
+            target_edits.len() - 1
+        });
+        target_edits[target_index].push((index, edit));
+    }
+    let targets: Vec<_> = target_edits.into_iter().map(|mut group| {
+        let preview = &group[0].1.preview;
+        let before = preview["before"].as_str().unwrap();
+        let mut after = before.to_owned();
+        let edit_indices: Vec<_> = group.iter().map(|(index, _)| index + 1).collect();
+        group.sort_unstable_by_key(|(_, edit)| std::cmp::Reverse(edit.paragraph_start));
+        for (_, edit) in group {
+            let end = edit.paragraph_start + edit.range.len();
+            after.replace_range(edit.paragraph_start..end, &edit.replacement);
+        }
+        serde_json::json!({
+            "source": preview["source"],
+            "before": before,
+            "after": after,
+            "editIndices": edit_indices,
+        })
+    }).collect();
     Ok(serde_json::json!({
         "version": 1,
         "sourceSha256": proposal["sourceSha256"],
         "edits": edits.into_iter().map(|edit| edit.preview).collect::<Vec<_>>(),
+        "targets": targets,
     }))
 }
 
@@ -4109,7 +4137,7 @@ fn prepare_ai_edit(
     if plain != before {
         return Err(Error::new("Original paragraph text does not match before"));
     }
-    let (run_index, range, after) = if let Some(range) = proposal.get("paragraphBytes") {
+    let (run_index, range, paragraph_start, after) = if let Some(range) = proposal.get("paragraphBytes") {
         let (start, end) = ai_byte_range(range)
             .ok_or_else(|| Error::new("AI edit requires a nonempty paragraphBytes range"))?;
         let quote = citation["quote"].as_str().unwrap();
@@ -4164,12 +4192,12 @@ fn prepare_ai_edit(
 
         let mut after = plain;
         after.replace_range(start..end, replacement);
-        (run_index, local, after)
+        (run_index, local, start, after)
     } else {
         if runs.len() != 1 {
             return Err(Error::new("Replacing a whole paragraph requires a single text run"));
         }
-        (0, 0..plain.len(), replacement.to_owned())
+        (0, 0..plain.len(), 0, replacement.to_owned())
     };
     if before == after {
         return Err(Error::new("AI replacement does not change the paragraph"));
@@ -4181,7 +4209,7 @@ fn prepare_ai_edit(
         "before": before,
         "after": after,
     });
-    Ok(PreparedAiEdit { target, run_index, range, replacement: replacement.to_owned(), preview })
+    Ok(PreparedAiEdit { target, run_index, range, paragraph_start, replacement: replacement.to_owned(), preview })
 }
 
 fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
