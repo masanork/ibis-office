@@ -68,3 +68,36 @@ pub(super) fn mynumber(value: &Value) -> Option<String> {
     let expected = if remainder <= 1 { 0 } else { 11 - remainder };
     (u32::from(check_digit[0] - b'0') == expected).then_some(digits)
 }
+
+fn modulus_11(body: &[u8]) -> u32 {
+    // From the right of the body, weights 2 through 7 repeat.
+    let sum: u32 = body
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, &digit)| u32::from(digit - b'0') * (2 + (i % 6) as u32))
+        .sum();
+    sum % 11
+}
+
+fn drivers_license(value: &Value) -> Option<String> {
+    let digits = fixed_width_digits(value, 12)?;
+    let bytes = digits.as_bytes();
+    // The NPA places the check digit at position 11 and the reissue
+    // digit at position 12. Only the first ten digits enter the sum.
+    // Take the units digit of the complement, including when it is 11.
+    let expected = (11 - modulus_11(&bytes[..10])) % 10;
+    (u32::from(bytes[10] - b'0') == expected).then_some(digits)
+}
+
+pub(super) fn compare_drivers_licenses(left: &Value, right: &Value) -> Option<u8> {
+    let left = drivers_license(left)?;
+    let right = drivers_license(right)?;
+    Some(if left == right {
+        2
+    } else if left[..11] == right[..11] {
+        1
+    } else {
+        0
+    })
+}

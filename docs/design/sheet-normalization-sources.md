@@ -43,7 +43,7 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 ## 属性の照合関数
 
 `=IBIS.FIELDMATCH(A2,B2,"address")` で2つの値を比較する。対応する種類は
-`"address"`、`"date"`、`"gender"`、`"name"`、`"phone"`、`"postal"`、`"email"`、`"corporate-number"`、`"mynumber"`。セルの値はそのまま保持する。
+`"address"`、`"date"`、`"gender"`、`"name"`、`"phone"`、`"postal"`、`"email"`、`"corporate-number"`、`"mynumber"`、`"drivers-license"`。セルの値はそのまま保持する。
 
 | 結果 | 意味 |
 | --- | --- |
@@ -114,3 +114,10 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
   検証した番号同士が一致すれば 2、相違すれば 0。短い値や検査用数字が合わない値は `#N/A`。
   個人番号の割り当ては照会しない。
   [検査用数字の算式（e-Gov 法令検索）](https://laws.e-gov.go.jp/law/426M60000008085/20260526_508M60004008006)
+- `=IBIS.FIELDMATCH(A2,B2,"drivers-license")` は日本の12桁の運転免許証番号を比較する。
+  全角数字・空白・ハイフンの差を吸収し、先頭10桁から11桁目の検査桁を確認する。
+  両方の検査桁が確認でき、12桁目の再交付記号だけが異なる場合は 1 を返す。
+  検査桁は、重み付き合計を11で割った余りを11から引き、その下一桁を使う。
+  [警察庁通達](https://www.npa.go.jp/laws/notification/menkyo20250310_76.pdf)
+  [重みの計算例（公開特許公報）](https://patents.google.com/patent/JP2013109736A/ja)
+  [下一桁の扱い（実測に基づく計算例）](https://tetsutalow.github.io/driversnumbercheckdigit/)

@@ -370,3 +370,26 @@ fn mynumber_preserves_leading_zeros_and_verifies_the_check_digit() {
         check(args, CellValue::Error(CellError::NA));
     }
 }
+
+#[test]
+fn drivers_license_checks_position_eleven_and_flags_reissue() {
+    for (args, rank) in [
+        (r#""１２３４－５６７８－９０３２",123456789032,"drivers-license""#, 2.0),
+        (r#""123456789032","123456789033","drivers-license""#, 1.0),
+        (r#""123456789033","123456789032","drivers-license""#, 1.0),
+        (r#""123456789032","309212345690","drivers-license""#, 0.0),
+        (r#""300000000400","300000000401","drivers-license""#, 1.0),
+        (r#""300000000910","300000000911","drivers-license""#, 1.0),
+    ] {
+        check(args, CellValue::Number(rank));
+    }
+    for args in [
+        r#""123456789042","123456789032","drivers-license""#,
+        r#""123456789042","123456789042","drivers-license""#,
+        r#""12345678903?","123456789032","drivers-license""#,
+        r#""012345678920",12345678920,"drivers-license""#,
+        r#""300000000900","300000000900","drivers-license""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+}

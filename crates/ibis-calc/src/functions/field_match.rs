@@ -63,6 +63,8 @@ pub(super) fn field_match(ctx: &mut Ctx, args: &[Expr]) -> Value {
             compare_keys(left, right, super::identifier_match::corporate_number)
         } else if mode.eq_ignore_ascii_case("mynumber") {
             compare_keys(left, right, super::identifier_match::mynumber)
+        } else if mode.eq_ignore_ascii_case("drivers-license") {
+            super::identifier_match::compare_drivers_licenses(left, right)
         } else if mode.eq_ignore_ascii_case("gender") {
             compare_keys(left, right, |v| gender_key(text_value(v)?))
         } else {
