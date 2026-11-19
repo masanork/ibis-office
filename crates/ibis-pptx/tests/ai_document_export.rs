@@ -602,3 +602,91 @@ fn ai_batch_combines_edits_to_distinct_runs_in_one_cell() {
             .contains("overlaps")
     );
 }
+
+#[test]
+fn docx_endnotes_export_and_resolve_separately_from_same_id_footnotes() {
+    use ibis_doc_model::{Block, flow::FlowRunKind};
+
+    let mut opened = markdown::open_markdown(
+        "本文[^1]と補足[^2]。\n\n[^1]: ページ脚注\n[^2]: 文末注記\n"
+            .as_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    let flow = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+    let Block::Paragraph(body) = &mut flow.body[0] else {
+        panic!("expected the body paragraph");
+    };
+    for run in &mut body.runs {
+        if matches!(run.kind, FlowRunKind::NoteRef { id: 2, .. }) {
+            run.kind = FlowRunKind::NoteRef {
+                endnote: true,
+                id: 1,
+            };
+        }
+    }
+    let mut endnote = flow.footnotes.remove(1);
+    endnote.id = 1;
+    flow.endnotes.push(endnote);
+    let docx = opened
+        .source
+        .save(&opened.presentation, ibis_pptx::SaveOptions::default())
+        .unwrap();
+
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let text = export["markdown"].as_str().unwrap();
+    assert_eq!(markdown::export_docx_to_markdown(&docx).unwrap(), text);
+    assert!(text.contains("本文[^1]と補足[^endnote-1]。"));
+    assert!(text.contains("[^1]: ページ脚注"));
+    assert!(text.contains("[^endnote-1]: 文末注記"));
+    assert_eq!(export["diagnostics"], serde_json::json!([]));
+
+    let rebuilt = markdown::import_markdown_to_docx_bytes(text.as_bytes()).unwrap();
+    let reread = ibis_pptx::read(&rebuilt).unwrap();
+    let flow = reread.flow.unwrap();
+    assert_eq!(
+        flow.footnotes
+            .iter()
+            .map(|note| note.id)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert_eq!(
+        flow.endnotes.iter().map(|note| note.id).collect::<Vec<_>>(),
+        [1]
+    );
+    let Block::Paragraph(body) = &flow.body[0] else {
+        panic!("expected the body paragraph");
+    };
+    let references: Vec<_> = body
+        .runs
+        .iter()
+        .filter_map(|run| match run.kind {
+            FlowRunKind::NoteRef { endnote, id } => Some((endnote, id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(references, [(false, 1), (true, 1)]);
+    assert_eq!(markdown::export_docx_to_markdown(&rebuilt).unwrap(), text);
+
+    for (quote, part, kind) in [
+        ("ページ脚注", "footnotes", "footnote"),
+        ("文末注記", "endnotes", "endnote"),
+    ] {
+        let start = text.find(quote).unwrap();
+        let query = serde_json::json!({
+            "version": 1,
+            "sourceSha256": export["sourceSha256"],
+            "markdownBytes": [start, start + quote.len()],
+            "quote": quote,
+        });
+        let found = markdown::locate_ai_source(&docx, &query).unwrap();
+        let matches = found["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0]["source"],
+            serde_json::json!({"part": part, "kind": kind, "id": 1}),
+        );
+        assert!(excerpt(&export, &matches[0]).ends_with(&format!("{quote}\n")));
+    }
+}

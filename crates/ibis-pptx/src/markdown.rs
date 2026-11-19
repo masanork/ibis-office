@@ -261,6 +261,7 @@ pub fn parse_markdown_fragment_blocks(
         ordered_num_id: None,
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
+        next_footnote_id: 1,
         comments: Vec::new(),
         media,
         source: None,
@@ -572,6 +573,7 @@ struct ParseContext<'a> {
     ordered_num_id: Option<u32>,
     footnote_ids: HashMap<String, u32>,
     footnote_order: Vec<(String, u32)>,
+    next_footnote_id: u32,
     comments: Vec<Comment>,
     media: &'a mut Vec<Media>,
     source: Option<&'a crate::Source>,
@@ -685,7 +687,11 @@ impl<'a> ParseContext<'a> {
         if let Some(&id) = self.footnote_ids.get(label) {
             return id;
         }
-        let id = self.footnote_ids.len() as u32 + 1;
+        let id = markdown_endnote_id(label).unwrap_or_else(|| {
+            let id = self.next_footnote_id;
+            self.next_footnote_id += 1;
+            id
+        });
         self.footnote_ids.insert(label.to_string(), id);
         self.footnote_order.push((label.to_string(), id));
         id
@@ -724,6 +730,7 @@ fn parse_markdown_into(
         ordered_num_id: None,
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
+        next_footnote_id: 1,
         comments: Vec::new(),
         media,
         source,
@@ -772,13 +779,13 @@ fn parse_markdown_into(
         }
     }
 
-    // Build footnotes in order of reference or definition.
+    // Build notes in order of reference or definition.
     for (label, _def_text) in &footnote_defs {
         let _ = ctx.footnote_id_for(label);
     }
     let order = ctx.footnote_order.clone();
-    let mut notes = Vec::new();
     for (label, note_id) in order {
+        let endnote = markdown_endnote_id(&label).is_some();
         let content = footnote_defs
             .get(&label)
             .map(String::as_str)
@@ -786,14 +793,17 @@ fn parse_markdown_into(
         let pid = ctx.fresh_id();
         let text_style = ctx
             .styles
-            .paragraph_style_named("footnote text")
+            .paragraph_style_named(if endnote { "endnote text" } else { "footnote text" })
             .map(str::to_string)
             .or_else(|| ctx.styles.default_paragraph.clone());
         let mark_style = ctx
             .styles
             .styles
             .iter()
-            .find(|(_, s)| s.kind == StyleKind::Character && s.name.eq_ignore_ascii_case("footnote reference"))
+            .find(|(_, s)| {
+                s.kind == StyleKind::Character
+                    && s.name.eq_ignore_ascii_case(if endnote { "endnote reference" } else { "footnote reference" })
+            })
             .map(|(id, _)| id.clone());
         let superscript = RunFormat {
             position: Some(VerticalPosition::Superscript),
@@ -828,12 +838,12 @@ fn parse_markdown_into(
         p.runs.extend(inline_runs);
         p.resolve(&doc.styles);
         p.normalize();
+        let notes = if endnote { &mut doc.endnotes } else { &mut doc.footnotes };
         notes.push(Note {
             id: note_id,
             blocks: vec![Block::Paragraph(p)],
         });
     }
-    doc.footnotes = notes;
 
     // Ensure watermark has a header part so saving to .docx succeeds.
     if doc.watermark.is_some() && doc.linked[0] {
@@ -3316,7 +3326,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     fmt.position = Some(VerticalPosition::Superscript);
                     out.push(FlowRun {
                         kind: FlowRunKind::NoteRef {
-                            endnote: false,
+                            endnote: markdown_endnote_id(label).is_some(),
                             id,
                         },
                         style: FlowRunStyle::default(),
@@ -3812,7 +3822,7 @@ pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
 
 enum MarkdownSource<'a> {
     Body(usize, &'a Block),
-    Footnote(&'a Note),
+    Note { note: &'a Note, endnote: bool },
     TableCell { index: usize, table: &'a FlowTable, row: usize, column: usize, cell: &'a FlowCell },
 }
 
@@ -3880,12 +3890,12 @@ fn export_markdown_with_positions<'a>(
         i += 1;
     }
 
-    // 3. Footnotes
-    if !doc.footnotes.is_empty() {
-        if !out.ends_with("\n\n") && !out.is_empty() {
-            out.push('\n');
-        }
-        for note in &doc.footnotes {
+    // 3. Footnotes and endnotes have independent OOXML ID spaces.
+    if !(doc.footnotes.is_empty() && doc.endnotes.is_empty()) && !out.ends_with("\n\n") && !out.is_empty() {
+        out.push('\n');
+    }
+    for (notes, endnote) in [(&doc.footnotes, false), (&doc.endnotes, true)] {
+        for note in notes {
             let mut note_md = String::new();
             for b in &note.blocks {
                 if let Block::Paragraph(p) = b {
@@ -3898,12 +3908,21 @@ fn export_markdown_with_positions<'a>(
                         })
                         .cloned()
                         .collect();
+                    if endnote && !note_md.is_empty() {
+                        note_md.push('\n');
+                    }
                     note_md.push_str(&serialize_runs(&runs, media, &comments_by_id));
                 }
             }
             let start = out.len();
-            out.push_str(&format!("[^{}]: {}\n", note.id, note_md.trim()));
-            record(MarkdownSource::Footnote(note), start, out.len());
+            let label = markdown_note_label(note.id, endnote);
+            if endnote {
+                let body = note_md.trim().replace('\n', "\n    ");
+                out.push_str(&format!("[^{label}]: {body}\n"));
+            } else {
+                out.push_str(&format!("[^{label}]: {}\n", note_md.trim()));
+            }
+            record(MarkdownSource::Note { note, endnote }, start, out.len());
         }
     }
 
@@ -4470,7 +4489,7 @@ fn ai_table_structure(
     })
 }
 
-/// Markdown, table structure, and snapshot-relative locations for DOCX body blocks and footnotes.
+/// Markdown, table structure, and snapshot-relative locations for DOCX body blocks and notes.
 pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Value, Error> {
     use serde_json::json;
 
@@ -4494,8 +4513,10 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
                 json!({ "part": "body", "kind": "paragraph", "index": index, "modelId": p.id }),
             MarkdownSource::Body(index, Block::Table(t)) =>
                 json!({ "part": "body", "kind": "table", "index": index, "modelId": t.id }),
-            MarkdownSource::Footnote(n) =>
-                json!({ "part": "footnotes", "kind": "footnote", "id": n.id }),
+            MarkdownSource::Note { note, endnote: false } =>
+                json!({ "part": "footnotes", "kind": "footnote", "id": note.id }),
+            MarkdownSource::Note { note, endnote: true } =>
+                json!({ "part": "endnotes", "kind": "endnote", "id": note.id }),
             MarkdownSource::TableCell { .. } => unreachable!(),
         };
         blocks.push((locator.clone(), start, end));
@@ -4517,9 +4538,9 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
                     warn("drawing_shape_omitted");
                 }
             }
-            MarkdownSource::Footnote(note) => {
+            MarkdownSource::Note { note, endnote } => {
                 if note.blocks.iter().any(|block| matches!(block, Block::Table(_))) {
-                    warn("footnote_table_omitted");
+                    warn(if endnote { "endnote_table_omitted" } else { "footnote_table_omitted" });
                 }
             }
         }
@@ -4528,9 +4549,6 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
     let blocks: Vec<_> = blocks.into_iter().map(|(source, start, end)| {
         json!({ "source": source, "markdownBytes": [start.min(markdown.len()), end.min(markdown.len())] })
     }).collect();
-    if !doc.endnotes.is_empty() {
-        diagnostics.push(json!({ "code": "endnote_definitions_omitted", "source": { "part": "endnotes" } }));
-    }
     let comments = doc.comments.iter().map(|comment| (comment.id, comment)).collect();
     let tables: Vec<_> = doc.body.iter().enumerate().filter_map(|(index, block)| {
         let Block::Table(table) = block else { return None };
@@ -5162,6 +5180,22 @@ fn serialize_chart(chart: &Chart, out: &mut String) {
     out.push_str("```\n\n");
 }
 
+fn markdown_note_label(id: u32, endnote: bool) -> String {
+    if endnote {
+        format!("endnote-{id}")
+    } else {
+        id.to_string()
+    }
+}
+
+fn markdown_endnote_id(label: &str) -> Option<u32> {
+    let id = label.strip_prefix("endnote-")?;
+    if id.starts_with('0') || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    id.parse().ok()
+}
+
 fn serialize_runs(
     runs: &[FlowRun],
     media: &[Media],
@@ -5186,7 +5220,7 @@ fn serialize_runs(
                 }
             }
             FlowRunKind::Ruby { base, text, .. } => format!("{{{base}|{text}}}"),
-            FlowRunKind::NoteRef { id, .. } => format!("[^{id}]"),
+            FlowRunKind::NoteRef { id, endnote } => format!("[^{}]", markdown_note_label(*id, *endnote)),
             FlowRunKind::CommentRef(cid) => {
                 if let Some(c) = comments.get(cid) {
                     let body: String = c

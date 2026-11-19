@@ -315,7 +315,7 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 
 出力は `report.ai.json` です。`markdown` に本文、`sourceSha256` に入力ファイルの SHA-256 が入ります。`markdownBytes` は JSON を読み取った後の Markdown 文字列に対する UTF-8 バイト範囲です。開始位置を含み、終了位置は含みません。
 
-- DOCX の `blocks` は本文の段落・表と脚注を指します。本文の `index` は 0 始まり、`modelId` は読み込んだ時点の文書モデル内の ID です。
+- DOCX の `blocks` は本文の段落・表と、ページ脚注・文末脚注を指します。本文の `index` は 0 始まり、`modelId` は読み込んだ時点の文書モデル内の ID です。注記の `id` は元の DOCX の値です。`part` が `footnotes` か `endnotes` かで、同じ ID の注記を区別できます。
 - DOCX の `tables` には本文の表の構造が入ります。`source` は `blocks` 内の表と共通です。`structure.rows` と各行の `cells` は文書順で、`row` と `column` は 1 始まりです。`header` は繰り返し見出し行の指定を表します。
 - セルの `columnSpan` は横方向の結合列数です。`verticalMerge` は `none`、`start`、`continue` のいずれかです。セル内の `blocks` には段落の Markdown と入れ子表の構造が、原文と同じ順番で入ります。段落やセルの `modelId` は同じ原本を参照するときに使います。
 - DOCX の `tableCells` は、本文のパイプ表に出力されたセル内容の UTF-8 範囲です。`source.tableModelId` と `source.modelId` は表とセルの ID、`row` と `column` は 1 始まりの開始位置です。結合列を数えた原本の列番号が入ります。空セル、結合指定、区切りのパイプにセル範囲は付きません。入れ子表の引用位置は外側のセルまで特定でき、内側の行・列は `tables` に含まれます。
@@ -324,6 +324,17 @@ ibisOffice --export ai-json --out-dir /tmp/docs-reference report.docx
 - `diagnostics` は Markdown 出力で検出した変換上の差を示します。結合セルや入れ子表の構造は `tables` で確認できます。
 
 位置情報は書き出し時の入力に対応します。改版後の照合や、AI の編集案の適用に使う場合は入力の SHA-256 を確認してください。
+
+DOCX のページ脚注と文末脚注に同じ ID がある場合、Markdown は別々のラベルで書き出します。
+
+```markdown
+本文[^1]と補足[^endnote-1]。
+
+[^1]: ページ脚注
+[^endnote-1]: 文末注記
+```
+
+`ai-locate` で注記本文を引用すると、元の DOCX の注記種別と ID が返ります。Markdown を DOCX に戻すと、`endnote-` に正の整数を続けたラベルは、その ID を持つ文末脚注になります。例の `[^1]` はページ脚注、`[^endnote-1]` は文末脚注として保存されます。Markdown を再取り込みすると、注記内の複数行は一つの段落にまとめられます。
 
 ### AI の指摘から原文の位置を引く
 
