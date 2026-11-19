@@ -393,3 +393,20 @@ fn drivers_license_checks_position_eleven_and_flags_reissue() {
         check(args, CellValue::Error(CellError::NA));
     }
 }
+
+#[test]
+fn japanese_passport_numbers_compare_only_complete_printed_numbers() {
+    check(r#"" ｔｋ－０１２３４５６ ","TK0123456","passport-jp""#, CellValue::Number(2.0));
+    check(r#""TK0123456","TM0123456","passport-jp""#, CellValue::Number(0.0));
+    check(r#""TK0123456","TK0123457","passport-jp""#, CellValue::Number(0.0));
+    for args in [
+        r#""T0123456","TK0123456","passport-jp""#,
+        r#""TK123456","TK0123456","passport-jp""#,
+        r#""TK0123456<","TK0123456","passport-jp""#,
+        r#""TKO123456","TK0123456","passport-jp""#,
+        r#""ＴＫ０１２３４５？","TK0123456","passport-jp""#,
+        r#"123456,"TK0123456","passport-jp""#,
+    ] {
+        check(args, CellValue::Error(CellError::NA));
+    }
+}

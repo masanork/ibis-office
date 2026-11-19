@@ -2554,7 +2554,7 @@ xlsx.fndesc.count	Counts the cells that hold numbers
 xlsx.fndesc.counta	Counts the cells that are not empty
 xlsx.fndesc.max	Finds the largest number
 xlsx.fndesc.min	Finds the smallest number
-xlsx.fndesc.ibis.fieldmatch	Compares two values as date, address, gender, name, phone, postal code (postal), email, Japanese corporate number (corporate-number), Japanese individual number (mynumber) or Japanese driver’s license number (drivers-license). Returns 2 for a normalized match, 1 for a possible match, 0 for no match, or #N/A when comparison is unavailable. For addresses and names, the fourth argument can specify extra wildcard characters.
+xlsx.fndesc.ibis.fieldmatch	Compares two values as date, address, gender, name, phone, postal code (postal), email, Japanese corporate number (corporate-number), Japanese individual number (mynumber), Japanese driver’s license number (drivers-license) or Japanese passport number (passport-jp). Returns 2 for a normalized match, 1 for a possible match, 0 for no match, or #N/A when comparison is unavailable. For addresses and names, the fourth argument can specify extra wildcard characters.
 xlsx.fndesc.if	Gives one value or another, by whether a condition holds
 xlsx.fndesc.iferror	Gives another value only when a formula ends in an error
 xlsx.fndesc.ifs	Tries several conditions in turn and gives the value of the first that holds

@@ -43,7 +43,7 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 ## 属性の照合関数
 
 `=IBIS.FIELDMATCH(A2,B2,"address")` で2つの値を比較する。対応する種類は
-`"address"`、`"date"`、`"gender"`、`"name"`、`"phone"`、`"postal"`、`"email"`、`"corporate-number"`、`"mynumber"`、`"drivers-license"`。セルの値はそのまま保持する。
+`"address"`、`"date"`、`"gender"`、`"name"`、`"phone"`、`"postal"`、`"email"`、`"corporate-number"`、`"mynumber"`、`"drivers-license"`、`"passport-jp"`。セルの値はそのまま保持する。
 
 | 結果 | 意味 |
 | --- | --- |
@@ -121,3 +121,10 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
   [警察庁通達](https://www.npa.go.jp/laws/notification/menkyo20250310_76.pdf)
   [重みの計算例（公開特許公報）](https://patents.google.com/patent/JP2013109736A/ja)
   [下一桁の扱い（実測に基づく計算例）](https://tetsutalow.github.io/driversnumbercheckdigit/)
+
+- `=IBIS.FIELDMATCH(A2,B2,"passport-jp")` は英字2文字・数字7桁の日本の旅券番号を比較する。
+  全半角、英字の大小文字、空白、ハイフンをそろえる。形式を満たす値が一致すれば 2、相違すれば 0。
+  形式外の値は `#N/A`。英字1文字の形やMRZの行全体は対象外。
+  番号の真正性・有効性は照会しない。更新後は番号が変わるため、同じ旅券の番号を照合する用途に使う。
+  [埼玉県パスポートセンターの券面説明](https://www.pref.saitama.lg.jp/passport/juryo/mikata.html)
+  [外務省の更新時の番号に関する説明](https://www.mofa.go.jp/mofaj/ca/pss/page23_003544.html)

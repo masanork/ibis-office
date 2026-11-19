@@ -101,3 +101,18 @@ pub(super) fn compare_drivers_licenses(left: &Value, right: &Value) -> Option<u8
         0
     })
 }
+
+/// The printed number of a Japanese passport: two letters and seven digits.
+/// Issuer selection is explicit in the formula's mode.
+pub(super) fn japanese_passport_number(value: &Value) -> Option<String> {
+    let Value::Text(text) = value else { return None };
+    let number: String = text
+        .trim()
+        .chars()
+        .map(fold_ascii_width)
+        .filter(|c| !matches!(c, ' ' | '　' | '-'))
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    let bytes = number.as_bytes();
+    (bytes.len() == 9 && bytes[..2].iter().all(u8::is_ascii_uppercase) && bytes[2..].iter().all(u8::is_ascii_digit)).then_some(number)
+}
