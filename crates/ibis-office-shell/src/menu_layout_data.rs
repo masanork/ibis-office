@@ -886,6 +886,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
             LayoutItem::Planned { key: "menu.planned.sheet.data.1" },
             LayoutItem::Cmd("xlsx.query-from-table"),
             LayoutItem::Cmd("xlsx.import-text"),
+            LayoutItem::Cmd("xlsx.query-from-parquet"),
             LayoutItem::Cmd("xlsx.query-blank"),
             LayoutItem::Planned { key: "menu.planned.sheet.data.2" },
         ] },
