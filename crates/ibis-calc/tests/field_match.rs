@@ -410,3 +410,35 @@ fn japanese_passport_numbers_compare_only_complete_printed_numbers() {
         check(args, CellValue::Error(CellError::NA));
     }
 }
+
+#[test]
+fn japanese_passport_mrz_verifies_the_issuer_and_number_check_digit() {
+    // Synthetic, two-line ICAO TD3 example.
+    const UPPER: &str = "P<JPNTEST<<SAMPLE<<<<<<<<<<<<<<<<<<<<<<<<<<<";
+    const LOWER: &str = "TK01234568JPN9001011<3012316<<<<<<<<<<<<<<02";
+    const DIFFERENT_NUMBER: &str = "TK01234579JPN9001011<3012316<<<<<<<<<<<<<<00";
+    let mrz = format!("{UPPER}\n{LOWER}");
+    let crlf = format!("{UPPER}\r\n{LOWER}");
+    let mismatch = format!("{UPPER}\n{DIFFERENT_NUMBER}");
+    let different_nationality = mrz.replacen("68JPN", "68USA", 1);
+    for (left, right, rank) in [
+        (mrz.as_str(), "TK0123456", 2.0),
+        ("TK0123456", crlf.as_str(), 2.0),
+        (mrz.as_str(), crlf.as_str(), 2.0),
+        (mrz.as_str(), mismatch.as_str(), 0.0),
+        (different_nationality.as_str(), "TK0123456", 2.0),
+    ] {
+        check(&format!(r#""{left}","{right}","passport-jp""#), CellValue::Number(rank));
+    }
+    for invalid in [
+        mrz.replacen("P<JPN", "P<USA", 1),
+        mrz.replacen("P<JPN", "V<JPN", 1),
+        mrz.replacen("TK01234568", "TK01234567", 1),
+        mrz.replacen("TK01234568", "TKO1234568", 1),
+        LOWER.to_owned(),
+        format!("{mrz}\nEXTRA"),
+        mrz[..mrz.len() - 1].to_owned(),
+    ] {
+        check(&format!(r#""{invalid}","TK0123456","passport-jp""#), CellValue::Error(CellError::NA));
+    }
+}

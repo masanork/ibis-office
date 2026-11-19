@@ -10153,7 +10153,7 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
         (7, 0, CellInput::Value(CellValue::Text("1234-5678-9032".into()))),
         (7, 1, CellInput::Value(CellValue::Number(123456789033.0))),
         (7, 2, CellInput::Formula(license_formula.into())),
-        (8, 0, CellInput::Value(CellValue::Text("ｔｋ－０１２３４５６".into()))),
+        (8, 0, CellInput::Value(CellValue::Text(concat!("P<JPNTEST<<SAMPLE<<<<<<<<<<<<<<<<<<<<<<<<<<<\n", "TK01234568JPN9001011<3012316<<<<<<<<<<<<<<02").into()))),
         (8, 1, CellInput::Value(CellValue::Text("TK0123456".into()))),
         (8, 2, CellInput::Formula(passport_formula.into())),
     ]);

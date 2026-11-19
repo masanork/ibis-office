@@ -102,17 +102,53 @@ pub(super) fn compare_drivers_licenses(left: &Value, right: &Value) -> Option<u8
     })
 }
 
-/// The printed number of a Japanese passport: two letters and seven digits.
+/// The printed number or two-line TD3 MRZ of a Japanese passport.
 /// Issuer selection is explicit in the formula's mode.
 pub(super) fn japanese_passport_number(value: &Value) -> Option<String> {
     let Value::Text(text) = value else { return None };
+    let text = text.trim();
+    if text.contains('\n') {
+        return td3_passport_number(text).map(str::to_owned);
+    }
     let number: String = text
-        .trim()
         .chars()
         .map(fold_ascii_width)
         .filter(|c| !matches!(c, ' ' | '　' | '-'))
         .map(|c| c.to_ascii_uppercase())
         .collect();
-    let bytes = number.as_bytes();
-    (bytes.len() == 9 && bytes[..2].iter().all(u8::is_ascii_uppercase) && bytes[2..].iter().all(u8::is_ascii_digit)).then_some(number)
+    is_japanese_passport_number(number.as_bytes()).then_some(number)
+}
+
+fn is_japanese_passport_number(bytes: &[u8]) -> bool {
+    bytes.len() == 9 && bytes[..2].iter().all(u8::is_ascii_uppercase) && bytes[2..].iter().all(u8::is_ascii_digit)
+}
+
+fn td3_passport_number(text: &str) -> Option<&str> {
+    let (upper, lower) = text.split_once('\n')?;
+    let upper = upper.strip_suffix('\r').unwrap_or(upper);
+    let upper_bytes = upper.as_bytes();
+    let lower_bytes = lower.as_bytes();
+    // ICAO Doc 9303 part 4: the issuer is on line 1. The nationality
+    // on line 2 cannot stand in for the issuer.
+    if upper_bytes.len() != 44
+        || lower_bytes.len() != 44
+        || upper_bytes[0] != b'P'
+        || !matches!(upper_bytes[1], b'A'..=b'Z' | b'<')
+        || &upper_bytes[2..5] != b"JPN"
+        || !upper_bytes[5..].iter().all(|c| matches!(c, b'A'..=b'Z' | b'<'))
+        || !lower_bytes.iter().all(|c| matches!(c, b'A'..=b'Z' | b'0'..=b'9' | b'<'))
+        || !is_japanese_passport_number(&lower_bytes[..9])
+    {
+        return None;
+    }
+    // ICAO Doc 9303 part 3: modulus 10, cyclic weights 7, 3, 1.
+    let sum: u32 = lower_bytes[..9]
+        .iter()
+        .zip([7, 3, 1].into_iter().cycle())
+        .map(|(&c, weight)| {
+            let value = if c.is_ascii_digit() { c - b'0' } else { c - b'A' + 10 };
+            u32::from(value) * weight
+        })
+        .sum();
+    (lower_bytes[9] == b'0' + (sum % 10) as u8).then_some(&lower[..9])
 }

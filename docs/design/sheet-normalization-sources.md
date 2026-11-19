@@ -124,7 +124,12 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 
 - `=IBIS.FIELDMATCH(A2,B2,"passport-jp")` は英字2文字・数字7桁の日本の旅券番号を比較する。
   全半角、英字の大小文字、空白、ハイフンをそろえる。形式を満たす値が一致すれば 2、相違すれば 0。
-  形式外の値は `#N/A`。英字1文字の形やMRZの行全体は対象外。
+  形式外の値は `#N/A`。英字1文字の形は対象外。
   番号の真正性・有効性は照会しない。更新後は番号が変わるため、同じ旅券の番号を照合する用途に使う。
   [埼玉県パスポートセンターの券面説明](https://www.pref.saitama.lg.jp/passport/juryo/mikata.html)
   [外務省の更新時の番号に関する説明](https://www.mofa.go.jp/mofaj/ca/pss/page23_003544.html)
+  日本旅券の TD3 MRZ は2行ともセルに入っていれば比較できる。各行44文字、上段の発行国 `JPN`、
+  下段の旅券番号とその直後の検査桁を確認して番号を取り出す。下段の国籍欄は発行国の代用にしない。
+  この照合で検証する検査桁は旅券番号のものに限る。
+  [ICAO Doc 9303 Part 4（フィールド位置）](https://www.icao.int/sites/default/files/publications/DocSeries/9303_p4_cons_en.pdf)
+  [Part 3（検査桁の算式）](https://www.icao.int/publications/documents/9303_p3_cons_en.pdf)
