@@ -51,6 +51,10 @@ RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo rustc -p ibis-office-app -
 
 WASM="target/dist/wasm32-unknown-unknown/$PROFILE/ibis_office_app.wasm"
 wasm-bindgen "$WASM" --out-dir www/pkg --target web
+RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo build --locked -p ibis-heic-web --lib \
+  --target wasm32-unknown-unknown ${FLAGS[@]+"${FLAGS[@]}"}
+wasm-bindgen "target/dist/wasm32-unknown-unknown/$PROFILE/ibis_heic_web.wasm" \
+  --out-dir www/pkg/heic --target web
 
 if [[ "$PROFILE" == release ]]; then
   if command -v wasm-opt >/dev/null; then

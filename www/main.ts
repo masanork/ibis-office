@@ -420,17 +420,50 @@ function downloadFile(name: string, bytes: Uint8Array, type: string): void {
 window.ibisOfficeDownloadDocx = (name, bytes) => downloadFile(name, bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 window.ibisOfficeDownloadHtml = (name, bytes) => downloadFile(name, bytes, 'text/html;charset=utf-8');
 
-/** Decode the HEIC still image supplied by Rust using the browser's image decoder. */
+function decodeHeicInWorker(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./heic-worker.js', import.meta.url), {type: 'module'});
+    const failure = ja ? 'HEIC画像をデコードできません。' : 'Could not decode the HEIC image.';
+    const finish = () => {
+      clearTimeout(timeout);
+      worker.terminate();
+    };
+    const fail = () => {
+      finish();
+      reject(failure);
+    };
+    const timeout = setTimeout(fail, 45_000);
+    worker.onerror = event => {
+      event.preventDefault();
+      fail();
+    };
+    worker.onmessageerror = fail;
+    worker.onmessage = ({data}: MessageEvent<{png?: Uint8Array}>) => {
+      if (!(data?.png instanceof Uint8Array)) return fail();
+      finish();
+      resolve(data.png);
+    };
+    try {
+      worker.postMessage(bytes, [bytes.buffer as ArrayBuffer]);
+    } catch {
+      fail();
+    }
+  });
+}
+
+/** Prefer the browser decoder and load the software decoder only if it fails. */
 async function decodeHeic(bytes: Uint8Array): Promise<Uint8Array> {
   // Blob snapshots the bytes before Rust can reuse its Wasm memory.
-  const url = URL.createObjectURL(new Blob([bytes as BlobPart], {type: 'image/heic'}));
+  const source = new Blob([bytes as BlobPart], {type: 'image/heic'});
+  const url = URL.createObjectURL(source);
   const image = new Image();
   try {
     image.src = url;
-    await image.decode().catch(() => {
-      throw ja ? 'このブラウザーではHEIC画像をデコードできません。'
-        : 'This browser could not decode the HEIC image.';
-    });
+    try {
+      await image.decode();
+    } catch {
+      return decodeHeicInWorker(new Uint8Array(await source.arrayBuffer()));
+    }
     const {naturalWidth: width, naturalHeight: height} = image;
     if (width < 1 || height < 1 || width > 8192 || height > 8192 || width * height > 32 * 1024 * 1024) {
       throw ja ? 'HEIC画像がプレビューの寸法上限を超えています。'

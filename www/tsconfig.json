@@ -10,5 +10,5 @@
     "noEmitOnError": true,
     "skipLibCheck": true
   },
-  "files": ["main.ts"]
+  "files": ["main.ts", "heic-worker.ts"]
 }
