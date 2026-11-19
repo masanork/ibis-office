@@ -1800,7 +1800,14 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                                 out.push(run);
                             }
                             if frame.toc {
-                                read.field_end = true;
+                                // A bibliography marker replaces whole paragraphs in Markdown.
+                                // Leave a mixed result as text when content follows its end
+                                // in the same paragraph.
+                                let mixed_bibliography = frame.instruction.split_whitespace().next() == Some("BIBLIOGRAPHY")
+                                    && read.p.descendants().skip_while(|candidate| *candidate != node).skip(1)
+                                        .any(|candidate| candidate.is_element()
+                                            && candidate.parent().is_some_and(|parent| parent.has_tag_name("r")));
+                                read.field_end = !mixed_bibliography;
                             }
                         }
                     }
@@ -4227,6 +4234,12 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
         mail_merge_field_map,
         lock_tracking,
         doc_variables,
+        bibliography_sources: package.ordered_relationships(&main)?.into_iter()
+            .filter(|(_, rel)| !rel.external && crate::bibliography::is_custom_xml(&rel.kind))
+            .filter_map(|(_, rel)| package.read_xml(&rel.target).ok())
+            .filter(|xml| crate::bibliography::is_sources(xml))
+            .map(|xml| xml.trim().to_owned())
+            .collect(),
         attached_template,
         link_styles,
         view_mode,

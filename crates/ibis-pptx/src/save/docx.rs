@@ -124,6 +124,7 @@ fn same_document(a: &FlowDocument, b: &FlowDocument) -> bool {
         mail_merge_field_map,
         lock_tracking,
         doc_variables,
+        bibliography_sources,
         attached_template,
         link_styles,
         view_mode,
@@ -194,6 +195,7 @@ fn same_document(a: &FlowDocument, b: &FlowDocument) -> bool {
         && *mail_merge_field_map == b.mail_merge_field_map
         && *lock_tracking == b.lock_tracking
         && *doc_variables == b.doc_variables
+        && *bibliography_sources == b.bibliography_sources
         && *attached_template == b.attached_template
         && *link_styles == b.link_styles
         && *view_mode == b.view_mode
@@ -639,6 +641,9 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         (None, None) => return Ok(()),
         _ => return Err(unsupported("文書の変更")),
     };
+    if base.bibliography_sources != cur.bibliography_sources {
+        crate::bibliography::write_sources(package, &map.body_part, &cur.bibliography_sources)?;
+    }
     let mut para_ids = paragraph_identities(package, map, cur)?;
     let theme_changed = baseline.theme_colors != current.theme_colors
         || baseline.theme_fonts != current.theme_fonts

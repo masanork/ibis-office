@@ -110,6 +110,7 @@ pub fn is_markdown(data: &[u8]) -> bool {
             || l == "\\newpage"
             || l == "\\columnbreak"
             || l == "[[toc]]"
+            || markdown_bibliography_field(l).is_some()
             || l.starts_with("$$")
             || is_horizontal_rule(l)
             || is_ordered_list_line(l)
@@ -742,6 +743,10 @@ fn parse_markdown_into(
         apply_frontmatter(fm, doc, &mut ctx);
     }
 
+    while let Some((xml, rest)) = bibliography_fence(body_text) {
+        doc.bibliography_sources.push(xml.to_owned());
+        body_text = rest;
+    }
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
     let blocks = parse_blocks(body_text, &mut ctx, &mut footnote_defs)?;
 
@@ -1503,11 +1508,16 @@ fn parse_blocks(
             i += 1;
             continue;
         }
-        if matches!(trimmed, "[[toc]]" | "[TOC]" | "::: toc") {
+        let field = if matches!(trimmed, "[[toc]]" | "[TOC]" | "::: toc") {
+            Some(r#"TOC \o "1-3" \h \z \u"#.to_owned())
+        } else {
+            markdown_bibliography_field(trimmed)
+        };
+        if let Some(instruction) = field {
             let p = FlowParagraph {
                 id: ctx.fresh_id(),
                 style: ctx.styles.default_paragraph.clone(),
-                field_start: Some("TOC \\o \"1-3\" \\h \\z \\u".to_string()),
+                field_start: Some(instruction),
                 field_end: true,
                 ..FlowParagraph::default()
             };
@@ -1725,6 +1735,7 @@ fn parse_blocks(
                 || l_trim == "\\columnbreak"
                 || l_trim == "[[toc]]"
                 || l_trim == "[TOC]"
+                || markdown_bibliography_field(l_trim).is_some()
                 || is_horizontal_rule(l_trim)
                 || parse_atx_heading(l_trim).is_some()
                 || parse_list_marker(l_raw).is_some()
@@ -2735,6 +2746,25 @@ fn build_mermaid_code_block(content: &str, ctx: &mut ParseContext<'_>) -> Block 
     build_code_block(fenced.trim_end_matches('\n'), ctx)
 }
 
+const BIBLIOGRAPHY_FENCE: &str = "word-bibliography";
+
+fn bibliography_fence(text: &str) -> Option<(&str, &str)> {
+    let (first, body) = text.trim_start_matches(['\n', '\r']).split_once('\n')?;
+    let (marker, info) = opening_fence(first.trim_end())?;
+    if info.trim() != BIBLIOGRAPHY_FENCE {
+        return None;
+    }
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        if closes_fence(line.trim(), marker) {
+            let xml = body[..offset].trim();
+            return crate::bibliography::is_sources(xml).then_some((xml, &body[offset + line.len()..]));
+        }
+        offset += line.len();
+    }
+    None
+}
+
 fn opening_fence(line: &str) -> Option<(&str, &str)> {
     let marker = *line.as_bytes().first()?;
     if !matches!(marker, b'`' | b'~') {
@@ -3024,19 +3054,65 @@ fn markdown_sequence(name: &str) -> Option<(&'static str, &'static str)> {
         .find(|(markdown, _)| name.eq_ignore_ascii_case(markdown))
 }
 
-fn markdown_number_field(rest: &str) -> Option<(usize, String)> {
+fn markdown_bibliography_field(line: &str) -> Option<String> {
+    if line == "[[bibliography]]" {
+        return Some("BIBLIOGRAPHY".into());
+    }
+    let locale = line.strip_prefix("[[bibliography:")?.strip_suffix("]]")?;
+    locale.parse::<u16>().ok()?;
+    Some(format!(r"BIBLIOGRAPHY \l {locale}"))
+}
+
+fn format_markdown_bibliography(instruction: &str) -> Option<String> {
+    let words = ibis_doc_model::flow_command::field_words(instruction);
+    let [command, switches @ ..] = words.as_slice() else { return None };
+    if !command.eq_ignore_ascii_case("BIBLIOGRAPHY") {
+        return None;
+    }
+    match switches {
+        [] => Some("[[bibliography]]".into()),
+        [r"\l", locale] if locale.parse::<u16>().is_ok() => Some(format!("[[bibliography:{locale}]]")),
+        _ => None,
+    }
+}
+
+fn generated_bibliography_end(body: &[Block], start: usize) -> Option<usize> {
+    for (index, block) in body.iter().enumerate().skip(start) {
+        let Block::Paragraph(paragraph) = block else { return None };
+        if index != start && paragraph.field_start.is_some() {
+            return None;
+        }
+        if paragraph.field_end {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn citation_tag(tag: &str) -> bool {
+    !tag.is_empty() && tag.bytes().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-' | b'.'))
+}
+
+fn markdown_inline_field(rest: &str) -> Option<(usize, String)> {
     let field = rest.strip_prefix("{{")?;
     let (token, _) = field.split_once("}}")?;
     let (kind, value) = token.split_once(':')?;
     let instruction = match kind {
         "seq" => format!("SEQ {}", markdown_sequence(value)?.1),
         "ref" if is_equation_bookmark(value) => format!("REF {value} \\h"),
+        "cite" => match value.split_once(':') {
+            Some((tag, locale)) if citation_tag(tag) && locale.parse::<u16>().is_ok() => {
+                format!("CITATION {tag} \\l {locale}")
+            }
+            None if citation_tag(value) => format!("CITATION {value}"),
+            _ => return None,
+        },
         _ => return None,
     };
     Some((token.len() + 4, instruction))
 }
 
-fn format_markdown_number_field(instruction: &str, shown: &str) -> String {
+fn format_markdown_inline_field(instruction: &str, shown: &str) -> String {
     let words = ibis_doc_model::flow_command::field_words(instruction);
     match words.as_slice() {
         [seq, name] if seq.eq_ignore_ascii_case("SEQ") => {
@@ -3044,6 +3120,17 @@ fn format_markdown_number_field(instruction: &str, shown: &str) -> String {
         }
         [reference, name, r"\h"] if reference.eq_ignore_ascii_case("REF") && is_equation_bookmark(name) => {
             format!("{{{{ref:{name}}}}}")
+        }
+        [citation, tag, switches @ ..] if citation.eq_ignore_ascii_case("CITATION") => {
+            let tag = tag.strip_prefix('"').and_then(|tag| tag.strip_suffix('"')).unwrap_or(tag);
+            if !citation_tag(tag) {
+                return shown.to_owned();
+            }
+            match switches {
+                [] => format!("{{{{cite:{tag}}}}}"),
+                [r"\l", locale] if locale.parse::<u16>().is_ok() => format!("{{{{cite:{tag}:{locale}}}}}"),
+                _ => shown.to_owned(),
+            }
         }
         _ => shown.to_owned(),
     }
@@ -3084,7 +3171,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
-        if let Some((consumed, instruction)) = markdown_number_field(rest) {
+        if let Some((consumed, instruction)) = markdown_inline_field(rest) {
             flush_plain(&mut plain, &mut out, base_fmt);
             let mut run = FlowRun::new(
                 FlowRunKind::Field { instruction, shown: "?".into() },
@@ -3908,6 +3995,10 @@ fn export_markdown_with_positions<'a>(
         out.push_str("---\n\n");
     }
 
+    for xml in &doc.bibliography_sources {
+        write_named_fence(BIBLIOGRAPHY_FENCE, xml, &mut out);
+    }
+
     let comments_by_id: HashMap<u32, &Comment> = doc.comments.iter().map(|c| (c.id, c)).collect();
 
     // 2. Body blocks
@@ -3915,6 +4006,24 @@ fn export_markdown_with_positions<'a>(
     let mut i = 0;
     while i < doc.body.len() {
         let block = &doc.body[i];
+
+        // A bibliography result can span several paragraphs. Only consume
+        // a complete field so a malformed document cannot hide later text.
+        if let Block::Paragraph(paragraph) = block
+            && let Some(marker) = paragraph.field_start.as_deref().and_then(format_markdown_bibliography)
+            && let Some(end) = generated_bibliography_end(&doc.body, i)
+        {
+            if prev_was_list && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            let start = out.len();
+            out.push_str(&marker);
+            out.push_str("\n\n");
+            record(MarkdownSource::Body(i, block), start, out.len());
+            prev_was_list = false;
+            i = end + 1;
+            continue;
+        }
 
         // Collapse TOC field blocks back to `[[toc]]`
         if let Block::Paragraph(p) = block {
@@ -5167,12 +5276,17 @@ fn mermaid_source_matches(chart: &Chart, source: &str) -> bool {
 }
 
 fn write_mermaid_fence(source: &str, out: &mut String) {
+    write_named_fence("mermaid", source, out);
+}
+
+fn write_named_fence(language: &str, source: &str, out: &mut String) {
     let longest = source.lines().map(|line| {
         line.trim_start().bytes().take_while(|&byte| byte == b'`').count()
     }).max().unwrap_or(0);
     let marker = "`".repeat(3.max(longest + 1));
     out.push_str(&marker);
-    out.push_str("mermaid\n");
+    out.push_str(language);
+    out.push('\n');
     out.push_str(source);
     if !source.ends_with('\n') {
         out.push('\n');
@@ -5280,7 +5394,7 @@ fn serialize_runs(
                 if run.field_locked {
                     shown.clone()
                 } else {
-                    format_markdown_number_field(instruction, shown)
+                    format_markdown_inline_field(instruction, shown)
                 }
             }
             FlowRunKind::LineBreak => "  \n".to_string(),
@@ -6215,6 +6329,89 @@ mod tests {
         assert_eq!(slide.rows[0].cells[0].column_span, 2);
         assert!(slide.rows[0].cells[1].merged);
         assert!(!slide.rows[0].cells[2].merged);
+    }
+
+    #[test]
+    fn bibliography_marker_round_trips_with_surrounding_paragraphs() {
+        let input = "Before.\n[[bibliography:1041]]\nAfter.\n\n[[bibliography]]\n";
+        let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        assert_eq!(markdown, "Before.\n\n[[bibliography:1041]]\n\nAfter.\n\n[[bibliography]]\n");
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let document = crate::read_docx(&rebuilt).unwrap();
+        let fields = document.flow.as_ref().unwrap().body.iter().filter_map(|block| {
+            match block {
+                Block::Paragraph(p) if p.field_end => p.field_start.as_deref(),
+                _ => None,
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(fields, [r"BIBLIOGRAPHY \l 1041", "BIBLIOGRAPHY"]);
+
+        let mut package = ibis_ooxml::Package::open(docx).unwrap();
+        let part = "word/document.xml";
+        let mut xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+        let field = xml.find("BIBLIOGRAPHY").unwrap();
+        let end = field + xml[field..].find("</w:p>").unwrap();
+        xml.insert_str(end, "<w:r><w:t>Inline suffix.</w:t></w:r>");
+        package.set_bytes(part, xml.into_bytes());
+        let mixed = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
+        let exported = export_docx_to_markdown(&mixed).unwrap();
+        assert!(!exported.contains("[[bibliography:1041]]"));
+        assert!(exported.contains("Inline suffix."));
+        assert!(exported.contains("[[bibliography]]"));
+    }
+
+    #[test]
+    fn word_bibliography_sources_round_trip_through_document_metadata() {
+        let xml = r#"<b:Sources xmlns:b="http://schemas.openxmlformats.org/officeDocument/2006/bibliography">
+<b:Source><b:Tag>Tanaka_2025</b:Tag><b:SourceType>Book</b:SourceType>
+<b:Author><b:Author><b:NameList><b:Person><b:Last>田中</b:Last></b:Person></b:NameList></b:Author></b:Author>
+<b:Title>研究と実践 &amp; 検証</b:Title><b:Year>2025</b:Year></b:Source>
+</b:Sources>"#;
+        let markdown = format!("```word-bibliography\n{xml}\n```\n\n参照 {{{{cite:Tanaka_2025:1041}}}}。\n");
+        let bytes = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let package = ibis_ooxml::Package::open(bytes.clone()).unwrap();
+        let main = "word/document.xml";
+        let source_part = package.relationships(main).unwrap().into_iter()
+            .filter(|rel| crate::bibliography::is_custom_xml(&rel.kind))
+            .filter_map(|rel| rel.target_part(main))
+            .find(|part| package.read(part).unwrap() == xml.as_bytes())
+            .expect("Word bibliography part linked to document");
+        let props = package.relationships(&source_part).unwrap().into_iter()
+            .find(|rel| rel.kind.ends_with("/customXmlProps")).unwrap()
+            .target_part(&source_part).unwrap();
+        assert!(String::from_utf8(package.read(&props).unwrap()).unwrap().contains("ds:schemaRef"));
+
+        let model = crate::read_docx(&bytes).unwrap();
+        let flow = model.flow.as_ref().unwrap();
+        assert_eq!(flow.bibliography_sources, [xml]);
+        assert_eq!(flow.body.len(), 1);
+        let exported = export_docx_to_markdown(&bytes).unwrap();
+        assert_eq!(exported, markdown);
+        let rebuilt = import_markdown_to_docx_bytes(exported.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&rebuilt).unwrap(), markdown);
+        assert!(bibliography_fence("```word-bibliography\n<Sources/>\n```").is_none());
+    }
+
+    #[test]
+    fn citation_tags_and_locales_round_trip_as_word_fields() {
+        let input = "See {{cite:Smith-2024}} and {{cite:Tanaka_2025:1041}}.";
+        let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let presentation = crate::read(&docx).unwrap();
+        let Block::Paragraph(paragraph) = &presentation.flow.as_ref().unwrap().body[0] else {
+            panic!("expected a paragraph");
+        };
+        let fields = paragraph.runs.iter().filter_map(|run| match &run.kind {
+            FlowRunKind::Field { instruction, .. } => Some(instruction.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(fields, ["CITATION Smith-2024", r"CITATION Tanaka_2025 \l 1041"]);
+        assert_eq!(export_docx_to_markdown(&docx).unwrap().trim(), input);
+        assert_eq!(format_markdown_inline_field(r#"CITATION "Tanaka_2025" \l 1041"#, "(田中, 2025)"),
+                   "{{cite:Tanaka_2025:1041}}");
+        assert_eq!(format_markdown_inline_field(r"CITATION Tanaka_2025 \p 12", "(田中, 2025, p. 12)"),
+                   "(田中, 2025, p. 12)");
+        assert!(markdown_inline_field("{{cite:Tanaka_2025:invalid}}").is_none());
     }
 
     #[test]
