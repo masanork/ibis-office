@@ -46,6 +46,7 @@ declare global {
   interface Window {
     /** Called from Rust for ファイル → 開く. */
     ibisOfficePickFile: () => Promise<PickedFile | null>;
+    ibisOfficeDecodeHeic: (bytes: Uint8Array) => Promise<Uint8Array>;
     /** Awaited by Rust after parsing the complete model, before layout. */
     ibisOfficePreloadFonts: (text: string) => Promise<void>;
     /** Download a locally generated DOCX without sending the document to a server. */
@@ -419,6 +420,42 @@ function downloadFile(name: string, bytes: Uint8Array, type: string): void {
 window.ibisOfficeDownloadDocx = (name, bytes) => downloadFile(name, bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 window.ibisOfficeDownloadHtml = (name, bytes) => downloadFile(name, bytes, 'text/html;charset=utf-8');
 
+/** Decode the HEIC still image supplied by Rust using the browser's image decoder. */
+async function decodeHeic(bytes: Uint8Array): Promise<Uint8Array> {
+  // Blob snapshots the bytes before Rust can reuse its Wasm memory.
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], {type: 'image/heic'}));
+  const image = new Image();
+  try {
+    image.src = url;
+    await image.decode().catch(() => {
+      throw ja ? 'このブラウザーではHEIC画像をデコードできません。'
+        : 'This browser could not decode the HEIC image.';
+    });
+    const {naturalWidth: width, naturalHeight: height} = image;
+    if (width < 1 || height < 1 || width > 8192 || height > 8192 || width * height > 32 * 1024 * 1024) {
+      throw ja ? 'HEIC画像がプレビューの寸法上限を超えています。'
+        : 'HEIC image exceeds the preview dimensions.';
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    try {
+      const context = canvas.getContext('2d', {colorSpace: 'srgb'});
+      if (!context) throw 'Cannot create the HEIC preview canvas';
+      context.drawImage(image, 0, 0);
+      const png = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(blob => blob ? resolve(blob) : reject('Cannot encode the HEIC preview'), 'image/png');
+      });
+      return new Uint8Array(await png.arrayBuffer());
+    } finally {
+      canvas.width = canvas.height = 0;
+    }
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+window.ibisOfficeDecodeHeic = decodeHeic;
 window.ibisOfficePickFile = () => pickFile();
 window.ibisOfficePickIcc = pickIcc;
 window.ibisOfficeIccSave = iccSave;

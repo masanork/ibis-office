@@ -1430,10 +1430,14 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let mut result = match ibis_pptx::production_image::open_with_exposure(extension, &data) {
-                Ok(Some(result)) => Ok(result),
-                Ok(None) => ibis_pptx::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
-                Err(error) => Err(error),
+            let mut result = if extension.is_some_and(ibis_pptx::production_image::is_heic_extension) {
+                crate::web::open_heic(&data).await.map(|opened| (opened, None))
+            } else {
+                match ibis_pptx::production_image::open_with_exposure(extension, &data) {
+                    Ok(Some(result)) => Ok(result),
+                    Ok(None) => ibis_pptx::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
+                    Err(error) => Err(error),
+                }
             };
             if let Ok((opened, _)) = &result {
                 if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {

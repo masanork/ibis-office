@@ -41,6 +41,23 @@ pub fn is_mac() -> bool {
 
 #[wasm_bindgen]
 extern "C" {
+    #[wasm_bindgen(catch, js_name = ibisOfficeDecodeHeic)]
+    fn decode_heic_js(bytes: &[u8]) -> Result<js_sys::Promise, JsValue>;
+}
+
+pub(crate) async fn open_heic(bytes: &[u8]) -> Result<ibis_pptx::Opened, String> {
+    ibis_pptx::production_image::validate_heic_still(bytes)?;
+    let describe = |error: JsValue| {
+        error.as_string().unwrap_or_else(|| "HEIC preview could not be decoded".into())
+    };
+    let png = wasm_bindgen_futures::JsFuture::from(decode_heic_js(bytes).map_err(describe)?)
+        .await
+        .map_err(describe)?;
+    ibis_pptx::production_image::open_browser_heic_preview(&js_sys::Uint8Array::new(&png).to_vec())
+}
+
+#[wasm_bindgen]
+extern "C" {
     /// Defined by `www/main.ts`: shows the browser's file picker and
     /// resolves to `{ name, bytes }`, or to `null` when cancelled.
     #[wasm_bindgen(catch, js_name = ibisOfficePickFile)]

@@ -60,21 +60,7 @@ unsafe extern "C" {
 const MAX_SIDE: i64 = 8192;
 
 pub(super) fn decode(bytes: &[u8]) -> Result<RgbaImage, String> {
-    // Require the HEVC still-image brand. Image I/O can also open unrelated formats.
-    let header = bytes.get(..16).ok_or("Missing HEIC file type box")?;
-    let box_size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
-    let file_type = bytes.get(0..box_size).filter(|box_bytes| {
-        box_bytes.len() >= 16 && box_bytes.len() % 4 == 0 && &header[4..8] == b"ftyp"
-    });
-    if !file_type.is_some_and(|file_type| {
-        &header[8..12] == b"heic"
-            || (&header[8..12] == b"mif1"
-                && file_type[16..]
-                    .chunks_exact(4)
-                    .any(|brand| brand == b"heic"))
-    }) {
-        return Err("HEIC preview requires an HEVC still image".into());
-    }
+    super::validate_heic_still(bytes)?;
 
     // The source and properties are retained Core Foundation objects. The
     // dictionary keys are process-lifetime Image I/O constants.

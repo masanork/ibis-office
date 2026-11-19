@@ -81,11 +81,50 @@ pub fn open_with_exposure(
         Format::Jpeg2000 => (encode_png(decode_jpeg2000(bytes)?)?, None),
         Format::Photoshop => (encode_png(decode_psd(bytes)?)?, None),
     };
+    open_preview_png(&png).map(|opened| Some((opened, exposure)))
+}
+
+fn open_preview_png(png: &[u8]) -> Result<crate::Opened, String> {
     let data_url = base64::engine::general_purpose::STANDARD.encode(png);
     let markdown = format!("![Image preview](data:image/png;base64,{data_url})\n");
-    crate::markdown::open_markdown(markdown.into_bytes())
-        .map(|opened| Some((opened, exposure)))
-        .map_err(|error| error.to_string())
+    crate::markdown::open_markdown(markdown.into_bytes()).map_err(|error| error.to_string())
+}
+
+#[cfg(target_family = "wasm")]
+pub fn open_browser_heic_preview(png: &[u8]) -> Result<crate::Opened, String> {
+    if png.len() > MAX_INPUT_BYTES {
+        return Err("HEIC preview exceeds the preview file size limit".into());
+    }
+    open_preview_png(png)
+}
+
+#[cfg(any(target_os = "macos", target_family = "wasm"))]
+pub fn validate_heic_still(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err("Image exceeds the preview file size limit".into());
+    }
+    // Require the HEVC still-image brand. Image I/O can also open unrelated formats.
+    let header = bytes.get(..16).ok_or("Missing HEIC file type box")?;
+    let box_size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+    let file_type = bytes.get(0..box_size).filter(|box_bytes| {
+        box_bytes.len() >= 16 && box_bytes.len() % 4 == 0 && &header[4..8] == b"ftyp"
+    });
+    if !file_type.is_some_and(|file_type| {
+        &header[8..12] == b"heic"
+            || (&header[8..12] == b"mif1"
+                && file_type[16..]
+                    .chunks_exact(4)
+                    .any(|brand| brand == b"heic"))
+    }) {
+        return Err("HEIC preview requires an HEVC still image".into());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+pub fn is_heic_extension(extension: &str) -> bool {
+    matches!(format(extension), Some(Format::Heic))
 }
 
 fn encode_png(image: DynamicImage) -> Result<Vec<u8>, String> {
