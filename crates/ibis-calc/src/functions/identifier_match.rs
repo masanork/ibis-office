@@ -141,14 +141,34 @@ fn td3_passport_number(text: &str) -> Option<&str> {
     {
         return None;
     }
-    // ICAO Doc 9303 part 3: modulus 10, cyclic weights 7, 3, 1.
-    let sum: u32 = lower_bytes[..9]
-        .iter()
+    let birth = &lower_bytes[13..19];
+    let expiry = &lower_bytes[21..27];
+    let optional = &lower_bytes[28..42];
+    let optional_digit = lower_bytes[42];
+    // Part 4, lower line positions 1–10, 14–20 and 22–43 (one-based).
+    let composite = lower_bytes[..10].iter().chain(&lower_bytes[13..20]).chain(&lower_bytes[21..43]);
+    let unused_optional = optional_digit == b'<' && optional.iter().all(|&c| c == b'<');
+    let valid = lower_bytes[9] == mrz_check_digit(&lower_bytes[..9])
+        && lower_bytes[19] == mrz_check_digit(birth)
+        && lower_bytes[27] == mrz_check_digit(expiry)
+        && (unused_optional || optional_digit == mrz_check_digit(optional))
+        && lower_bytes[43] == mrz_check_digit(composite);
+    valid.then_some(&lower[..9])
+}
+
+/// ICAO Doc 9303 part 3, after validating the MRZ character repertoire.
+fn mrz_check_digit<'a>(bytes: impl IntoIterator<Item = &'a u8>) -> u8 {
+    let sum: u32 = bytes
+        .into_iter()
         .zip([7, 3, 1].into_iter().cycle())
         .map(|(&c, weight)| {
-            let value = if c.is_ascii_digit() { c - b'0' } else { c - b'A' + 10 };
+            let value = match c {
+                b'0'..=b'9' => c - b'0',
+                b'A'..=b'Z' => c - b'A' + 10,
+                _ => 0, // Filler '<'.
+            };
             u32::from(value) * weight
         })
         .sum();
-    (lower_bytes[9] == b'0' + (sum % 10) as u8).then_some(&lower[..9])
+    b'0' + (sum % 10) as u8
 }

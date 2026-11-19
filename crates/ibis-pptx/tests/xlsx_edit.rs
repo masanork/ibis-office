@@ -10191,7 +10191,7 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
         (5, 1, CellInput::Value(CellValue::Number(5180301018771.0))),
         (6, 1, CellInput::Value(CellValue::Number(12345678903.0))),
         (7, 1, CellInput::Value(CellValue::Number(123456789043.0))),
-        (8, 1, CellInput::Value(CellValue::Text("TK0123457".into()))),
+        (8, 1, CellInput::Value(CellValue::Text(concat!("P<JPNTEST<<SAMPLE<<<<<<<<<<<<<<<<<<<<<<<<<<<\n", "TK01234568JPN9001011<3012316<<<<<<<<<<<<<<03").into()))),
     ]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 2), CellValue::Number(0.0));
     assert_eq!(value(document.presentation(), sheet_name, 1, 2), CellValue::Number(0.0));
@@ -10201,5 +10201,5 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     assert_eq!(value(document.presentation(), sheet_name, 5, 2), CellValue::Error(ibis_doc_model::CellError::NA));
     assert_eq!(value(document.presentation(), sheet_name, 6, 2), CellValue::Error(ibis_doc_model::CellError::NA));
     assert_eq!(value(document.presentation(), sheet_name, 7, 2), CellValue::Error(ibis_doc_model::CellError::NA));
-    assert_eq!(value(document.presentation(), sheet_name, 8, 2), CellValue::Number(0.0));
+    assert_eq!(value(document.presentation(), sheet_name, 8, 2), CellValue::Error(ibis_doc_model::CellError::NA));
 }

@@ -412,7 +412,7 @@ fn japanese_passport_numbers_compare_only_complete_printed_numbers() {
 }
 
 #[test]
-fn japanese_passport_mrz_verifies_the_issuer_and_number_check_digit() {
+fn japanese_passport_mrz_verifies_the_issuer_and_check_digits() {
     // Synthetic, two-line ICAO TD3 example.
     const UPPER: &str = "P<JPNTEST<<SAMPLE<<<<<<<<<<<<<<<<<<<<<<<<<<<";
     const LOWER: &str = "TK01234568JPN9001011<3012316<<<<<<<<<<<<<<02";
@@ -421,12 +421,16 @@ fn japanese_passport_mrz_verifies_the_issuer_and_number_check_digit() {
     let crlf = format!("{UPPER}\r\n{LOWER}");
     let mismatch = format!("{UPPER}\n{DIFFERENT_NUMBER}");
     let different_nationality = mrz.replacen("68JPN", "68USA", 1);
+    let unused_optional = format!("{UPPER}\nTK01234568JPN9001011<3012316<<<<<<<<<<<<<<<2");
+    let used_optional = format!("{UPPER}\nTK01234568JPN9001011<3012316A1<<<<<<<<<<<<38");
     for (left, right, rank) in [
         (mrz.as_str(), "TK0123456", 2.0),
         ("TK0123456", crlf.as_str(), 2.0),
         (mrz.as_str(), crlf.as_str(), 2.0),
         (mrz.as_str(), mismatch.as_str(), 0.0),
         (different_nationality.as_str(), "TK0123456", 2.0),
+        (unused_optional.as_str(), "TK0123456", 2.0),
+        (used_optional.as_str(), "TK0123456", 2.0),
     ] {
         check(&format!(r#""{left}","{right}","passport-jp""#), CellValue::Number(rank));
     }
@@ -435,6 +439,12 @@ fn japanese_passport_mrz_verifies_the_issuer_and_number_check_digit() {
         mrz.replacen("P<JPN", "V<JPN", 1),
         mrz.replacen("TK01234568", "TK01234567", 1),
         mrz.replacen("TK01234568", "TKO1234568", 1),
+        format!("{UPPER}\nTK01234568JPN9001011<3012316<<<<<<<<<<<<<<03"),
+        // The following have a correct composite check digit and a bad field check digit.
+        format!("{UPPER}\nTK01234568JPN9001012<3012316<<<<<<<<<<<<<<05"),
+        format!("{UPPER}\nTK01234568JPN9001011<3012317<<<<<<<<<<<<<<03"),
+        format!("{UPPER}\nTK01234568JPN9001011<3012316A1<<<<<<<<<<<<05"),
+        format!("{UPPER}\nTK01234568JPN9001011<3012316A1<<<<<<<<<<<<<5"),
         LOWER.to_owned(),
         format!("{mrz}\nEXTRA"),
         mrz[..mrz.len() - 1].to_owned(),

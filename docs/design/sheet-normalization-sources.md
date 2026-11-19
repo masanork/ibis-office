@@ -130,6 +130,6 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
   [外務省の更新時の番号に関する説明](https://www.mofa.go.jp/mofaj/ca/pss/page23_003544.html)
   日本旅券の TD3 MRZ は2行ともセルに入っていれば比較できる。各行44文字、上段の発行国 `JPN`、
   下段の旅券番号とその直後の検査桁を確認して番号を取り出す。下段の国籍欄は発行国の代用にしない。
-  この照合で検証する検査桁は旅券番号のものに限る。
+  生年月日・有効期限・任意データの検査桁と、下段の総合検査桁も確認する。任意データ欄が空の場合は検査桁の 0 とフィラーの両方を受け付ける。\n  総合検査桁の対象は下段の 1〜10、14〜20、22〜43 桁。氏名、国籍、性別はその対象に含まれない。
   [ICAO Doc 9303 Part 4（フィールド位置）](https://www.icao.int/sites/default/files/publications/DocSeries/9303_p4_cons_en.pdf)
   [Part 3（検査桁の算式）](https://www.icao.int/publications/documents/9303_p3_cons_en.pdf)
