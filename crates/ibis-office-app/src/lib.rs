@@ -372,6 +372,11 @@ struct Args {
     out_dir: Option<std::path::PathBuf>,
     /// `--export row-heights <file> [out.tsv]`: the second file name.
     out_file: Option<std::path::PathBuf>,
+    ai_query: Option<std::path::PathBuf>,
+    /// Require a matching preview digest before applying an AI edit.
+    require_preview: bool,
+    /// Emit a JSON receipt after saving the edit output.
+    ai_receipt: bool,
     width: Option<u32>,
     slides: Option<String>,
     layout: bool,
@@ -415,6 +420,10 @@ fn parse_args() -> Result<Args, String> {
             "--read-only" => args.read_only = true,
             "--slide" => args.slide = Some(value()?.parse().map_err(|_| "--slide needs a slide number".to_string())?),
             "--export" => args.export = Some(value()?),
+            "--out-file" => args.out_file = Some(value()?.into()),
+            "--ai-query" => args.ai_query = Some(value()?.into()),
+            "--require-preview" => args.require_preview = true,
+            "--ai-receipt" => args.ai_receipt = true,
             "--out-dir" => args.out_dir = Some(value()?.into()),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
             "--slides" => args.slides = Some(value()?),
@@ -440,13 +449,71 @@ fn parse_args() -> Result<Args, String> {
             _ => args.path = Some(arg.into()),
         }
     }
+    if args.require_preview && args.export.as_deref() != Some("ai-apply") {
+        return Err("--require-preview requires --export ai-apply".into());
+    }
+    if args.ai_receipt && args.export.as_deref() != Some("ai-apply") {
+        return Err("--ai-receipt requires --export ai-apply".into());
+    }
     Ok(args)
 }
 
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
-    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "lawxml" | "lawtext") {
+    if matches!(format, "ai-preview" | "ai-apply") {
+        let path = args.path.as_deref().ok_or("name the original DOCX file")?;
+        if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
+            return Err("AI editing requires the original .docx file".into());
+        }
+        let proposal_path = args.ai_query.as_deref().ok_or("AI editing requires --ai-query")?;
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let proposal = std::fs::read(proposal_path).map_err(|e| format!("{}: {e}", proposal_path.display()))?;
+        let proposal: serde_json::Value = serde_json::from_slice(&proposal).map_err(|e| format!("{}: {e}", proposal_path.display()))?;
+        if args.require_preview && proposal.get("previewSha256").is_none() {
+            return Err("--require-preview needs previewSha256 in the edit proposal".into());
+        }
+        if format == "ai-preview" {
+            let preview = ibis_pptx::markdown::preview_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
+            println!("{preview:#}");
+        } else {
+            use std::io::Write;
+            let out = args.out_file.as_deref().ok_or("--export ai-apply requires --out-file")?;
+            if !out.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
+                return Err("AI editing requires a new .docx output file".into());
+            }
+            let (bytes, receipt) = if args.ai_receipt {
+                let (bytes, report) = ibis_pptx::markdown::apply_ai_edit_with_receipt(&data, &proposal)
+                    .map_err(|e| e.to_string())?;
+                (bytes, Some(report))
+            } else {
+                let bytes = ibis_pptx::markdown::apply_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
+                (bytes, None)
+            };
+            let parent = out.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+            let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+            file.write_all(&bytes).map_err(|e| e.to_string())?;
+            file.persist_noclobber(out).map_err(|e| format!("{}: {e}", out.display()))?;
+            if let Some(mut receipt) = receipt {
+                receipt["outputPath"] = out.to_string_lossy().into_owned().into();
+                writeln!(std::io::stdout().lock(), "{receipt:#}")
+                    .map_err(|e| format!("{} was saved, but writing the receipt failed: {e}", out.display()))?;
+            }
+        }
+        return Ok(());
+    }
+    if format == "ai-locate" {
+        let path = args.path.as_deref().ok_or("name the original document")?;
+        let query_path = args.ai_query.as_deref().ok_or("--export ai-locate requires --ai-query")?;
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let query = std::fs::read(query_path).map_err(|e| format!("{}: {e}", query_path.display()))?;
+        let query = serde_json::from_slice(&query).map_err(|e| format!("{}: {e}", query_path.display()))?;
+        let result = ibis_pptx::markdown::locate_ai_source(&data, &query)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("{result:#}");
+        return Ok(());
+    }
+    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "lawxml" | "lawtext" | "ai-json") {
         let path = args
             .path
             .as_deref()
@@ -458,6 +525,14 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "document".into());
         let raw_data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if format == "ai-json" {
+            let export = ibis_pptx::markdown::export_ai_source(&raw_data)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let out_path = out_dir.join(format!("{stem}.ai.json"));
+            std::fs::write(&out_path, format!("{export:#}\n"))
+                .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            return Ok(());
+        }
         let data = match ibis_pptx::lawtext::input_to_markdown(&raw_data)
             .map_err(|e| format!("{}: {e}", path.display()))?
         {
@@ -666,11 +741,22 @@ pub fn run_native() {
     // The upstream executable name is shared; do not overwrite its Windows Open With registration.
     timing::enable(args.timing);
     timing::mark("main");
+    if args.ai_query.is_some() && args.path.is_none() {
+        eprintln!("ibisOffice: --ai-query needs the original DOCX file");
+        std::process::exit(2);
+    }
+    let initial_query = args.ai_query.clone();
     // The file named is read and parsed while the application starts.
     let early_read = args.path.clone().map(|path| {
         let (sender, receiver) = std::sync::mpsc::channel();
         let read_path = path.clone();
-        std::thread::spawn(move || sender.send(read_file(&read_path)).ok());
+        std::thread::spawn(move || {
+            let result = match initial_query {
+                Some(query) => read_file_at_ai_citation(&read_path, &query).map(|(loaded, id)| (loaded, Some(id))),
+                None => read_file(&read_path).map(|loaded| (loaded, None)),
+            };
+            sender.send(result).ok()
+        });
         (path, receiver)
     });
     let slide = args.slide;
@@ -713,7 +799,7 @@ pub fn run_native() {
                 (None, Some((first, rest))) => {
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let read_path = first.clone();
-                    std::thread::spawn(move || sender.send(read_file(&read_path)).ok());
+                    std::thread::spawn(move || sender.send(read_file(&read_path).map(|loaded| (loaded, None))).ok());
                     (Some((first.clone(), receiver)), rest.to_vec())
                 }
                 (None, None) => (None, Vec::new()),
@@ -723,8 +809,18 @@ pub fn run_native() {
             match first {
                 Some((path, receiver)) => open_window_with(cx, move |editor, window, cx| {
                     editor.read_only = read_only;
-                    let read = move || receiver.recv().unwrap_or_else(|_| Err(crate::shell::i18n::text("shell.read-stopped").to_string()));
-                    editor.open_read(path, read, slide, window, cx)
+                    let (position, destination) = std::sync::mpsc::channel();
+                    let read = move || {
+                        let (loaded, paragraph) = receiver.recv()
+                            .unwrap_or_else(|_| Err(crate::shell::i18n::text("shell.read-stopped").to_string()))?;
+                        let _ = position.send(paragraph);
+                        Ok(loaded)
+                    };
+                    editor.open_read_then(path, read, slide, window, cx, move |editor, cx| {
+                        if let Ok(Some(id)) = destination.try_recv() {
+                            docx::reveal_body_paragraph(editor, id, cx);
+                        }
+                    });
                 }),
                 None => open_window_with(cx, move |editor, _, _| editor.read_only = read_only),
             }

@@ -24,6 +24,7 @@ dicom-object = { version = "0.10.1", default-features = false, features = ["defl
 pure_jpegls = "2.1"
 jxl-oxide = { version = "0.12", default-features = false }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
+sha2 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

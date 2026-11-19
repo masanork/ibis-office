@@ -22,3 +22,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p ibis-pptx --lib lawtext
       - run: cargo test --locked -p ibis-pptx --test lawtext_corpus
+      - run: cargo test --locked -p ibis-pptx --test ai_document_export

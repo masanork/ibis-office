@@ -1584,6 +1584,15 @@ impl SlideEditor {
 }
 
 
+/// Scroll to a paragraph identified in the snapshot just loaded.
+pub fn reveal_body_paragraph(editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>) {
+    if editor.presentation().flow.as_ref().is_some_and(|flow| flow.body.iter()
+        .any(|block| matches!(block, ibis_doc_model::Block::Paragraph(p) if p.id == id)))
+    {
+        editor.jump_to(id, cx);
+    }
+}
+
 /// Rebuild document layout after browser fonts have been added.
 pub fn relayout_after_font_change(editor: &mut SlideEditor, cx: &mut Context<SlideEditor>) {
     editor.relayout_now(cx);

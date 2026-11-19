@@ -1083,6 +1083,13 @@ fn flush_all_divisions(div_stack: &mut Vec<LawNode>, doc: &mut LawDoc, in_suppl:
 /// Export a [`LawDoc`] to Markdown with YAML frontmatter so it can be edited
 /// in ibisOffice (DOCX / PPTX) and converted back to Lawtext or e-Gov 法令標準XML.
 pub fn to_markdown(doc: &LawDoc) -> String {
+    to_markdown_with_articles(doc, |_, _, _, _| {})
+}
+
+fn to_markdown_with_articles(
+    doc: &LawDoc,
+    mut record: impl FnMut(Option<usize>, &LawArticle, usize, usize),
+) -> String {
     let mut out = String::from("---\ntype: lawtext\n");
     if !doc.law_title.is_empty() {
         out.push_str(&format!("law_title: {}\n", doc.law_title));
@@ -1115,16 +1122,16 @@ pub fn to_markdown(doc: &LawDoc) -> String {
         out.push_str("\n\n");
     }
     for node in &doc.main_provision {
-        write_markdown_node(&mut out, node, 2);
+        write_markdown_node(&mut out, node, 2, &mut |article, start, end| record(None, article, start, end));
     }
-    for suppl in &doc.suppl_provisions {
+    for (index, suppl) in doc.suppl_provisions.iter().enumerate() {
         if let Some(amend) = suppl.amend_law_num.as_deref().filter(|s| !s.is_empty()) {
             out.push_str(&format!("## {}（{}）\n\n", suppl.label, amend));
         } else {
             out.push_str(&format!("## {}\n\n", suppl.label));
         }
         for node in &suppl.nodes {
-            write_markdown_node(&mut out, node, 3);
+            write_markdown_node(&mut out, node, 3, &mut |article, start, end| record(Some(index), article, start, end));
         }
     }
     for appdx in &doc.appdx_tables {
@@ -1156,7 +1163,38 @@ pub fn to_markdown(doc: &LawDoc) -> String {
     out.trim_end().to_string() + "\n"
 }
 
-fn write_markdown_node(out: &mut String, node: &LawNode, heading_level: usize) {
+/// Export recognized Lawtext or law XML with semantic article locators.
+pub fn export_ai_law(data: &[u8]) -> Result<Option<serde_json::Value>, Error> {
+    use serde_json::json;
+    let parser = if is_law_xml(data) { parse_law_xml } else if is_lawtext(data) { parse_lawtext } else { return Ok(None) };
+    let input = std::str::from_utf8(data).map_err(|_| Error::new("Law source is not UTF-8"))?;
+    let doc = parser(input)?;
+    let mut articles = Vec::new();
+    let markdown = to_markdown_with_articles(&doc, |supplement, article, start, end| {
+        articles.push((json!({
+            "lawNum": doc.law_num,
+            "supplementIndex": supplement,
+            "amendLawNum": supplement.and_then(|index| doc.suppl_provisions[index].amend_law_num.as_deref()),
+            "articleNum": article.num,
+            "title": article.title,
+        }), start, end));
+    });
+    let articles: Vec<_> = articles.into_iter().map(|(source, start, end)| {
+        json!({ "source": source, "markdownBytes": [start, end.min(markdown.len())] })
+    }).collect();
+    Ok(Some(json!({
+        "version": 1,
+        "kind": "law",
+        "markdown": markdown,
+        "articles": articles,
+        "diagnostics": [{ "code": "law_export_uses_supported_structure_only" }],
+    })))
+}
+
+fn write_markdown_node(
+    out: &mut String, node: &LawNode, heading_level: usize,
+    record: &mut impl FnMut(&LawArticle, usize, usize),
+) {
     match node {
         LawNode::Division {
             kind,
@@ -1170,10 +1208,11 @@ fn write_markdown_node(out: &mut String, node: &LawNode, heading_level: usize) {
             out.push_str(title);
             out.push_str("\n\n");
             for child in children {
-                write_markdown_node(out, child, (lvl + 1).min(6));
+                write_markdown_node(out, child, (lvl + 1).min(6), record);
             }
         }
         LawNode::Article(art) => {
+            let start = out.len();
             let lvl = heading_level.min(6);
             out.push_str(&"#".repeat(lvl));
             out.push(' ');
@@ -1203,6 +1242,7 @@ fn write_markdown_node(out: &mut String, node: &LawNode, heading_level: usize) {
                     out.push('\n');
                 }
             }
+            record(art, start, out.len());
         }
         LawNode::Paragraph(para) => {
             if para.num == "1" {
