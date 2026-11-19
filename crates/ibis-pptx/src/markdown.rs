@@ -4227,10 +4227,22 @@ fn prepare_ai_edit(
     if before == after {
         return Err(Error::new("AI replacement does not change the paragraph"));
     }
+    let operation = if insert_before.is_some() {
+        "insert"
+    } else if replacement.is_empty() {
+        "delete"
+    } else {
+        "replace"
+    };
     let preview = json!({
         "version": 1,
         "sourceSha256": proposal["sourceSha256"],
         "source": source,
+        "operation": operation,
+        "markdownBytes": citation["markdownBytes"],
+        "quote": citation["quote"],
+        "affectedParagraphBytes": [paragraph_start, paragraph_start + range.len()],
+        "replacement": replacement,
         "before": before,
         "after": after,
     });

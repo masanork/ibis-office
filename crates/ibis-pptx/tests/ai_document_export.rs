@@ -487,6 +487,14 @@ fn ai_batch_combines_edits_to_distinct_runs_in_one_cell() {
     batch["edits"] = serde_json::json!([edit("大阪", ""), edit("東京", "横浜市")]);
     let preview = markdown::preview_ai_edit(&docx, &batch).unwrap();
     assert_eq!(preview["targets"][0]["after"], "横浜市と");
+    assert_eq!(preview["edits"][0]["operation"], "delete");
+    assert_eq!(
+        preview["edits"][0]["affectedParagraphBytes"],
+        serde_json::json!([9, 15])
+    );
+    assert_eq!(preview["edits"][0]["quote"], "大阪");
+    assert_eq!(preview["edits"][0]["replacement"], "");
+    assert_eq!(preview["edits"][1]["operation"], "replace");
     let edited = markdown::apply_ai_edit(&docx, &batch).unwrap();
     assert!(
         markdown::export_docx_to_markdown(&edited)
@@ -506,6 +514,19 @@ fn ai_batch_combines_edits_to_distinct_runs_in_one_cell() {
     batch["edits"] = serde_json::json!([after_tokyo, before_osaka]);
     let preview = markdown::preview_ai_edit(&docx, &batch).unwrap();
     assert_eq!(preview["targets"][0]["after"], "東京支店と新大阪");
+    assert_eq!(preview["edits"][0]["operation"], "insert");
+    assert_eq!(
+        preview["edits"][0]["markdownBytes"],
+        batch["edits"][0]["markdownBytes"]
+    );
+    assert_eq!(
+        preview["edits"][0]["affectedParagraphBytes"],
+        serde_json::json!([6, 6])
+    );
+    assert_eq!(
+        preview["edits"][1]["affectedParagraphBytes"],
+        serde_json::json!([9, 9])
+    );
     let edited = markdown::apply_ai_edit(&docx, &batch).unwrap();
     assert!(
         markdown::export_docx_to_markdown(&edited)
