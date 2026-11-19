@@ -1507,10 +1507,14 @@ impl Writer<'_> {
     /// hidden from the editor, when appending or creating metadata.
     fn ensure_cell_metadata_index_unused(&self, index: usize) -> Result<(), Error> {
         for sheet_part in self.map.sheet_parts.iter().flatten() {
-            let sheet = self.package.xml(sheet_part)?;
+            let sheet = self.package.xml_view(sheet_part)?;
             if let Some(root) = sheet.root_element()
-                && sheet.descendants(root).into_iter().any(|c| sheet.local_name(c)=="c" && sheet.namespace(c)==Some(MAIN_NS)
-                    && sheet.attr(c,"cm").and_then(crate::xlsx::metadata_index).map(|v| v as usize)==Some(index)) {
+                && sheet.descendants(root).into_iter().any(|cell| {
+                    sheet.attr(cell, "cm").and_then(crate::xlsx::metadata_index).map(|v| v as usize) == Some(index)
+                        && sheet.local_name(cell) == "c"
+                        && sheet.namespace(cell) == Some(MAIN_NS)
+                })
+            {
                 return Err(unsupported("既存の範囲外cm参照と衝突する動的配列metadataの追加"));
             }
         }
