@@ -426,3 +426,49 @@ fn ai_batch_edits_validate_before_writing_and_keep_edit_order() {
             .contains("repeats")
     );
 }
+
+#[test]
+fn ai_batch_combines_edits_to_distinct_runs_in_one_cell() {
+    let docx = markdown::import_markdown_to_docx_bytes(
+        "| 支店 |\n| --- |\n| **東京**と*大阪* |\n".as_bytes(),
+    )
+    .unwrap();
+    let export = markdown::export_ai_source(&docx).unwrap();
+    let text = export["markdown"].as_str().unwrap();
+    let before = "東京と大阪";
+    let edit = |quote: &str, replacement: &str| {
+        let start = text.find(quote).unwrap();
+        let local = before.find(quote).unwrap();
+        serde_json::json!({
+            "target": "tableCell",
+            "markdownBytes": [start, start + quote.len()],
+            "paragraphBytes": [local, local + quote.len()],
+            "quote": quote,
+            "before": before,
+            "replacement": replacement,
+        })
+    };
+    let mut batch = serde_json::json!({
+        "version": 1,
+        "sourceSha256": export["sourceSha256"],
+        "edits": [edit("大阪", "札幌"), edit("東京", "横浜市")],
+    });
+    let preview = markdown::preview_ai_edit(&docx, &batch).unwrap();
+    assert_eq!(preview["edits"][0]["after"], "東京と札幌");
+    assert_eq!(preview["edits"][1]["after"], "横浜市と大阪");
+    let edited = markdown::apply_ai_edit(&docx, &batch).unwrap();
+    assert!(
+        markdown::export_docx_to_markdown(&edited)
+            .unwrap()
+            .contains("| **横浜市**と*札幌* |")
+    );
+
+    // Distinct slices of the same run still conflict.
+    batch["edits"] = serde_json::json!([edit("東", "西"), edit("京", "都")]);
+    assert!(
+        markdown::apply_ai_edit(&docx, &batch)
+            .unwrap_err()
+            .to_string()
+            .contains("repeats a text run")
+    );
+}

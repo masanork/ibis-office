@@ -4017,8 +4017,8 @@ fn prepare_ai_edits(data: &[u8], proposal: &serde_json::Value) -> Result<(Opened
         } else {
             prepare_ai_edit(&opened, doc, &export, edit)?
         };
-        if !seen.insert(prepared.target) {
-            return Err(Error::new(format!("Edit {} repeats a paragraph or cell target", index + 1)));
+        if !seen.insert((prepared.target, prepared.run_index)) {
+            return Err(Error::new(format!("Edit {} repeats a text run target", index + 1)));
         }
         edits.push(prepared);
     }
