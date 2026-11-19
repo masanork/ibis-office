@@ -1157,6 +1157,20 @@ impl SlideEditor {
         }
     }
 
+    fn set_opened_source(
+        &mut self,
+        source: std::sync::Arc<ibis_pptx::Source>,
+        production_image: bool,
+    ) {
+        if production_image {
+            // The preview is an import into the source's blank DOCX package.
+            // Keep that package's baseline so saving writes the image and its relationship.
+            self.source = Some(source);
+        } else {
+            self.set_loaded_source(source);
+        }
+    }
+
     fn set_production_image_view(&mut self, present: bool, exposure: Option<ibis_pptx::production_image::ExrExposure>) {
         use ibis_pptx::production_image::AlphaPreview;
         self.production_image_view = self.presentation().media.last()
@@ -1512,7 +1526,7 @@ impl SlideEditor {
                     };
                     this.load(opened.presentation, doc_name, window, cx);
                     this.set_production_image_view(production_image, exposure);
-                    this.set_loaded_source(std::sync::Arc::new(opened.source));
+                    this.set_opened_source(std::sync::Arc::new(opened.source), production_image);
                     // (A presentation opens without the speaker notes, as a new one does.)
                     with_format!(this, file_opened(this));
                     if is_ppsx {
@@ -1616,6 +1630,8 @@ impl SlideEditor {
             match result {
                 Ok(loaded) => {
                     let signature_presence = loaded.source.has_package_signatures();
+                    let production_image = path.extension().and_then(|ext| ext.to_str())
+                        .is_some_and(ibis_pptx::production_image::supports_extension);
                     let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
                     if let Some(bytes) = loaded.jtd_original {
                         this.load_jtd(loaded.presentation, name, bytes, loaded.jtd_gallery, window, cx);
@@ -1627,13 +1643,13 @@ impl SlideEditor {
                         this.set_loaded_source(loaded.source);
                         this.path = None;
                         this.document.set_file(None);
-                    } else if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::production_image::supports_extension)
+                    } else if production_image
                         || path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
                         // An old workbook or presentation (or an OpenDocument workbook) is read as a new .xlsx or .pptx: saving asks where, and leaves the old file as it is.
                         let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         let extension = crate::format::info(ibis_pptx::Kind::of(&loaded.presentation)).extension;
                         this.load(loaded.presentation, format!("{stem}.{extension}").into(), window, cx);
-                        this.set_loaded_source(loaded.source);
+                        this.set_opened_source(loaded.source, production_image);
                         this.path = None;
                         this.document.set_file(None);
                     } else {
@@ -1651,8 +1667,6 @@ impl SlideEditor {
                         this.watch.known = stamp_before_read;
                         this.protection_password = loaded.password.clone();
                     }
-                    let production_image = path.extension().and_then(|ext| ext.to_str())
-                        .is_some_and(ibis_pptx::production_image::supports_extension);
                     this.set_production_image_view(production_image, loaded.exr_exposure);
                     this.image_sequence = sequence;
                     if loaded.standard_encryption {

@@ -10,7 +10,10 @@
 use crate::shell::scenario::Scenario;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::open_and_save_without_an_edit_keeps_every_part", open_and_save_without_an_edit_keeps_every_part)]
+    vec![
+        ("shell::open_and_save_without_an_edit_keeps_every_part", open_and_save_without_an_edit_keeps_every_part),
+        ("shell::save_image_preview_keeps_transparent_pixels", save_image_preview_keeps_transparent_pixels),
+    ]
 }
 
 /// (file name, why it differs and where it is tracked): defects not mended yet.
@@ -97,4 +100,39 @@ fn open_and_save_without_an_edit_keeps_every_part() {
     assert!(checked >= 20 || std::env::var("IBIS_ROUNDTRIP_ONLY").is_ok(), "the public test files were found: {checked}");
     let new: Vec<String> = failures.iter().filter(|(n, _)| !KNOWN.iter().any(|(k, _)| k == n)).map(|(n, d)| format!("{n}: {d}")).collect();
     assert!(new.is_empty(), "files saved as other files without an edit:\n{}", new.join("\n"));
+}
+
+
+fn save_image_preview_keeps_transparent_pixels() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("preview.tga");
+    // A 1 by 1 uncompressed 32-bit TGA, with one semitransparent BGRA pixel.
+    let mut tga = vec![0; 18];
+    tga[2] = 2;
+    tga[12] = 1;
+    tga[14] = 1;
+    tga[16] = 32;
+    tga[17] = 0x28;
+    tga.extend([30, 20, 10, 128]);
+    std::fs::write(&path, &tga).unwrap();
+
+    let mut s = Scenario::start_view();
+    s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
+    for _ in 0..100 {
+        s.wait(50);
+        if s.with(|e, _| e.has_document && !e.presentation().media.is_empty()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(s.with(|e, _| e.has_document && !e.presentation().media.is_empty()));
+    let target = path.with_extension("docx");
+    s.update(|e, w, _| e.save_to(target.clone(), w)).unwrap();
+
+    let saved = ibis_pptx::read(&std::fs::read(target).unwrap()).unwrap();
+    let media = saved.media.last().expect("the saved DOCX contains the imported image");
+    let pixel = image::load_from_memory(&media.data).unwrap().to_rgba8();
+    assert_eq!(pixel.dimensions(), (1, 1));
+    assert_eq!(pixel.get_pixel(0, 0).0, [10, 20, 30, 128]);
+    assert_eq!(std::fs::read(path).unwrap(), tga);
 }
