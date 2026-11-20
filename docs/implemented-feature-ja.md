@@ -540,6 +540,7 @@ ibisOffice が実装している Word (.docx)・Excel (.xlsx)・PowerPoint (.ppt
 | 8 | 「霞が関2-1-2」と「霞が関二丁目１番２号」 | `2`（同じ番地表記に正規化） |
 
 「候補」シートの I 列に管理番号順で `2, 1, 0, 1, 1, #N/A, 2, 2` が並び、J 列に確認項目が表示されます。
+F〜I 列の条件付き書式は、判定が `2`（一致）なら緑、`1`（要確認）なら黄、`0`（不一致）なら赤で表示します。`#N/A` は比較不可です。
 取り込みを試す場合は、UTF-8 BOM 付きの [基準名簿 CSV](samples/field-match-reference.csv) と [候補名簿 CSV](samples/field-match-candidates.csv) を使えます。両方ともサンプル XLSX の A〜E 列と同じ入力データです。
 
 以下は、配列数式を使って自分で組み立てる例です。
