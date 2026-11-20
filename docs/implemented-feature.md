@@ -525,6 +525,7 @@ This document lists all features implemented in ibisOffice across Word (.docx), 
 ### xlsx
 
 The fork includes `IBIS.FIELDMATCH` and `IBIS.RECORDMATCH` for comparing fields and filtering rows for manual review.
+Open the [sample workbook](samples/field-match.xlsx) in ibisOffice to try the formulas, or import the synthetic [reference CSV](samples/field-match-reference.csv) and [candidate CSV](samples/field-match-candidates.csv).
 See the [worked example for reconciling two lists](implemented-feature-ja.md#名簿を照合して要確認の行を取り出す) (Japanese).
 
 
