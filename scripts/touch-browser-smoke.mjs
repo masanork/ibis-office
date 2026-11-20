@@ -300,6 +300,10 @@ try {
   await editing.waitForTimeout(300);
   const chooser = editing.waitForEvent('filechooser', { timeout: 15_000 });
   await editingTap(11, 60, 110); // Open
+  await editing.waitForTimeout(300);
+  // Downloading a copy leaves the edited file dirty. Acknowledge the save prompt
+  // before opening another local document in this browser tab.
+  await editingTap(61, 272, 477); // Don't Save
   await (await chooser).setFiles('www/samples/sorane-welcome.docx');
   await editing.waitForTimeout(3000);
   await editingTouch('touchStart', [pt(12, 300, 550)]);
