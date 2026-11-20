@@ -31,6 +31,8 @@ JPEG・PNG・TIFFを開き、ステータスバーの「素材の来歴」を選
 
 検証には同梱のC2PA信頼リストとタイムスタンプ局の信頼リストを使います。外部マニフェストの取得と失効状況のオンライン照会は行いません。確認用DOCXの作成は検証とは独立しており、原本のC2PAマニフェストをDOCXには付与しません。信頼リストはアプリ更新で配布します。[信頼リストの出所と更新手順](../crates/ibis-office-shell/data/c2pa/README.md)
 
+macOS（Apple Silicon）のローカル検証版では、公式リストで信頼される署名付きPNG、署名者の信頼を確認できないテストJPEG、原本とのハッシュ不一致、マニフェスト未検出のTIFF、外部マニフェストを参照するJPEGを開き、表示を確認しました。Cineonに切り替えると前の素材の来歴表示は消えます。署名付きPNGから保存したDOCXでは、全RGBA画素が原本と一致し、C2PAマニフェストは含まれていませんでした。[署名付きPNGの公開サンプル](https://c2paview.com/samples/enoggera-creek.png) [外部マニフェストの公開サンプル](https://contentauth.github.io/example-assets/images/crater-lake-cr.jpg)
+
 ## JPEG 2000の色と互換性
 
 - グレーおよびRGB系の画像を8ビット表示用に変換します。埋め込みのRGB・CMYK ICCプロファイルはsRGBに変換し、対応するストレートアルファは保持します。
