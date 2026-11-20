@@ -325,8 +325,15 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
     use ibis_doc_model::sheet_ops::{StructureEdit, apply_structure, valid_sheet_name};
 
     let text = std::str::from_utf8(&data).map_err(|_| Error::new("Markdown ファイルが UTF-8 ではありません"))?;
-    let sections = markdown_workbook_sections(text.strip_prefix('\u{feff}').unwrap_or(text))?;
-    let mut opened = crate::save::open(crate::blank::blank_file(crate::Kind::Workbook)?)?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let date1904 = text.lines().next().is_some_and(|line| line == XLSX_1904_MARKER);
+    let sections = markdown_workbook_sections(text)?;
+    let blank = if date1904 {
+        crate::csv::blank_workbook_with_1904_dates()?
+    } else {
+        crate::blank::blank_file(crate::Kind::Workbook)?
+    };
+    let mut opened = crate::save::open(blank)?;
     let presentation = &mut opened.presentation;
     let template = presentation.slides.first().and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
         .ok_or_else(|| Error::new("白紙のシートが見つかりません"))?.clone();
@@ -335,7 +342,14 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
         let parsed = open_markdown(markdown.as_bytes().to_vec())?;
         let flow = parsed.presentation.flow.as_ref().ok_or_else(|| Error::new("Markdown のパースに失敗しました"))?;
         let mut content = (*template).clone();
-        let mut cells = markdown_workbook_cells(flow, marker.is_some())?;
+        if content.styles.len() < 2 {
+            let base = content.styles.first().cloned().unwrap_or_default();
+            if content.styles.is_empty() {
+                content.styles.push(base.clone());
+            }
+            content.styles.push(ibis_doc_model::CellStyle { bold: true, ..base });
+        }
+        let mut cells = markdown_workbook_cells(flow, marker.is_some(), &mut content.styles, date1904)?;
         if let Some(origin) = marker.as_ref().and_then(|marker| marker.origin.as_deref()) {
             let (row, column) = ibis_doc_model::ai_sheet::parse_cell_ref(origin)
                 .ok_or_else(|| Error::new(format!("xlsx-sheet の開始セルが不正です: {origin}")))?;
@@ -347,13 +361,6 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
             }
         }
         content.cells = cells.into();
-        if content.styles.len() < 2 {
-            let base = content.styles.first().cloned().unwrap_or_default();
-            if content.styles.is_empty() {
-                content.styles.push(base.clone());
-            }
-            content.styles.push(ibis_doc_model::CellStyle { bold: true, ..base });
-        }
         if let Some(MarkdownSheetMarker { name, .. }) = marker {
             if !valid_sheet_name(presentation, &name, (index == 0).then_some(0)) {
                 return Err(Error::new(format!("無効または重複したシート名です: {name}")));
@@ -374,9 +381,11 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
             shape.kind = ShapeKind::Sheet(Arc::new(content));
         }
     }
+    ibis_doc_model::sheet_command::sync_sheet_book_context(presentation);
     Ok(opened)
 }
 
+const XLSX_1904_MARKER: &str = "<!-- xlsx-date-system:1904 -->";
 const XLSX_SHEET_MARKER: &str = "<!-- xlsx-sheet ";
 
 struct MarkdownSheetMarker {
@@ -430,8 +439,17 @@ fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMar
 const XLSX_TEXT_CELL_MARKER: &str = "<!-- xlsx-text -->";
 
 const XLSX_FORMULA_CELL_MARKER: &str = "<!-- xlsx-formula:";
+const XLSX_FORMAT_CELL_MARKER: &str = "<!-- xlsx-format:";
 const XLSX_NUMBER_CELL_MARKER: &str = "<!-- xlsx-number:";
 const XLSX_CELL_MARKER_END: &str = " -->";
+
+fn push_xlsx_string_marker(out: &mut String, marker: &str, value: &str) {
+    let encoded = serde_json::to_string(value).expect("a string is JSON serializable");
+    out.push(' ');
+    out.push_str(marker);
+    out.push_str(&encoded.replace('|', r"\u007c").replace('<', r"\u003c").replace('>', r"\u003e").replace("--", r"-\u002d"));
+    out.push_str(XLSX_CELL_MARKER_END);
+}
 
 fn numeric_cell_marker(text: &str) -> Option<(&str, &str)> {
     text.strip_suffix(XLSX_CELL_MARKER_END)?.rsplit_once(XLSX_NUMBER_CELL_MARKER)
@@ -450,10 +468,16 @@ fn infer_markdown_cell_value(text: &str) -> ibis_doc_model::CellValue {
     }
 }
 
-fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Result<Vec<ibis_doc_model::SheetCell>, Error> {
+fn markdown_workbook_cells(
+    flow: &FlowDocument,
+    named: bool,
+    styles: &mut Vec<ibis_doc_model::CellStyle>,
+    date1904: bool,
+) -> Result<Vec<ibis_doc_model::SheetCell>, Error> {
     use ibis_doc_model::{CellKind, CellValue, SheetCell};
 
     let mut cells: Vec<SheetCell> = Vec::new();
+    let mut formats = std::collections::HashMap::new();
     let mut cur_row: u32 = 0;
     let mut pending_heading: Option<String> = None;
     let mut table_count = 0usize;
@@ -514,6 +538,19 @@ fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Result<Vec<ibis_
                             formula = Some(expression);
                             trimmed = display.trim_end();
                         }
+                        let mut style = usize::from(ri == 0);
+                        let mut number_format = None;
+                        if named && !trimmed.ends_with(XLSX_TEXT_CELL_MARKER)
+                            && let Some((display, encoded)) = trimmed.strip_suffix(XLSX_CELL_MARKER_END)
+                                .and_then(|text| text.rsplit_once(XLSX_FORMAT_CELL_MARKER))
+                                .filter(|(_, encoded)| !encoded.contains(XLSX_CELL_MARKER_END))
+                        {
+                            let code = serde_json::from_str::<String>(encoded.trim()).ok()
+                                .filter(|code| !code.trim().is_empty() && !code.chars().any(char::is_control))
+                                .ok_or_else(|| Error::new("xlsx-format の表示形式が不正です"))?;
+                            trimmed = display.trim_end();
+                            number_format = Some(code);
+                        }
                         let explicit_text = named.then(|| trimmed.strip_suffix(XLSX_TEXT_CELL_MARKER)).flatten();
                         let (trimmed, value) = if let Some(text) = explicit_text {
                             let text = text.trim_end();
@@ -532,13 +569,27 @@ fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Result<Vec<ibis_
                                 (trimmed, infer_markdown_cell_value(trimmed))
                             }
                         };
+                        let text = if let Some(code) = number_format {
+                            let display = crate::xlsx::display(&value, &code, date1904);
+                            style = *formats.entry((style, code)).or_insert_with_key(|(base, code)| {
+                                let index = styles.len();
+                                styles.push(ibis_doc_model::CellStyle {
+                                    number_format: code.clone(),
+                                    ..styles[*base].clone()
+                                });
+                                index
+                            });
+                            display
+                        } else {
+                            trimmed.to_string()
+                        };
                         cells.push(SheetCell {
                             row: cur_row,
                             column: ci as u32,
                             kind: CellKind::of(&value),
                             value,
-                            text: trimmed.to_string(),
-                            style: if ri == 0 { 1 } else { 0 },
+                            text,
+                            style: style as u32,
                             formula,
                             phonetic: None,
                             runs: None,
@@ -589,6 +640,10 @@ fn export_workbook_markdown_with_positions(
         .as_ref()
         .ok_or_else(|| Error::new("ワークブックデータがありません"))?;
     let mut out = String::new();
+    if book.date1904 {
+        out.push_str(XLSX_1904_MARKER);
+        out.push('\n');
+    }
     let mut total_cells = 0u64;
 
     for sheet_ref in &book.sheets {
@@ -651,7 +706,7 @@ fn export_workbook_markdown_with_positions(
                 }
                 let cell = sheet.cell(r, c);
                 let raw = cell.map(|cell| cell.text.as_str()).unwrap_or("");
-                let escaped = raw.replace('|', "\\|").replace('\n', "<br>");
+                let escaped = raw.replace('|', "\\|").replace('$', "\\$").replace('\n', "<br>");
                 out.push(' ');
                 let start = out.len();
                 out.push_str(escaped.trim());
@@ -660,7 +715,7 @@ fn export_workbook_markdown_with_positions(
                     Some(ibis_doc_model::CellValue::Text(_))
                         if raw.trim_end().ends_with(XLSX_TEXT_CELL_MARKER)
                             || numeric_cell_marker(raw.trim()).is_some()
-                            || (raw.contains(XLSX_FORMULA_CELL_MARKER) && raw.trim_end().ends_with(XLSX_CELL_MARKER_END))
+                            || ((raw.contains(XLSX_FORMULA_CELL_MARKER) || raw.contains(XLSX_FORMAT_CELL_MARKER)) && raw.trim_end().ends_with(XLSX_CELL_MARKER_END))
                             || !matches!(infer_markdown_cell_value(raw.trim()), ibis_doc_model::CellValue::Text(_)) =>
                     {
                         out.push(' ');
@@ -677,13 +732,15 @@ fn export_workbook_markdown_with_positions(
                     }
                     _ => {}
                 }
+                if let Some(format) = cell.and_then(|cell| sheet.styles.get(cell.style as usize))
+                    .map(|style| style.number_format.as_str())
+                    .filter(|code| !code.is_empty() && !code.eq_ignore_ascii_case("General"))
+                {
+                    push_xlsx_string_marker(&mut out, XLSX_FORMAT_CELL_MARKER, format);
+                }
                 if let Some(formula) = cell.and_then(|cell| cell.formula.as_deref()) {
                     let formula = formula.strip_prefix('=').unwrap_or(formula);
-                    let encoded = serde_json::to_string(&format!("={formula}")).expect("formula is a JSON string");
-                    out.push(' ');
-                    out.push_str(XLSX_FORMULA_CELL_MARKER);
-                    out.push_str(&encoded.replace('|', r"\u007c").replace('<', r"\u003c").replace('>', r"\u003e").replace("--", r"-\u002d"));
-                    out.push_str(XLSX_CELL_MARKER_END);
+                    push_xlsx_string_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &format!("={formula}"));
                 }
                 out.push_str(" |");
             }
@@ -3611,10 +3668,12 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
     while i < text.len() {
         let rest = &text[i..];
 
-        if let Some((payload, _)) = rest.strip_prefix(XLSX_FORMULA_CELL_MARKER)
-            .and_then(|text| text.split_once(XLSX_CELL_MARKER_END))
+        if let Some(length) = [XLSX_FORMULA_CELL_MARKER, XLSX_FORMAT_CELL_MARKER].into_iter()
+            .find_map(|marker| {
+                let (payload, _) = rest.strip_prefix(marker)?.split_once(XLSX_CELL_MARKER_END)?;
+                Some(marker.len() + payload.len() + XLSX_CELL_MARKER_END.len())
+            })
         {
-            let length = XLSX_FORMULA_CELL_MARKER.len() + payload.len() + XLSX_CELL_MARKER_END.len();
             plain.push_str(&rest[..length]);
             i += length;
             continue;
@@ -8156,6 +8215,39 @@ xychart-beta
             for (column, value) in (1..).zip(expected) {
                 assert_eq!(sheet.cell(row, column).unwrap().value, value);
             }
+        }
+    }
+
+    #[test]
+    fn workbook_number_formats_and_date_system_round_trip() {
+        let body = r##"<!-- xlsx-sheet "Formats" -->
+
+| Percentage | Currency | Grouping | Date | Custom |
+| --- | --- | --- | --- | --- |
+| 25% <!-- xlsx-number:0.25 --> <!-- xlsx-format:"0%" --> | \$1,234.50 <!-- xlsx-number:1234.5 --> <!-- xlsx-format:"$#,##0.00" --> | 1,000 <!-- xlsx-format:"#,##0" --> <!-- xlsx-formula:"=500*2" --> | 2025-01-01 <!-- xlsx-number:45000 --> <!-- xlsx-format:"yyyy-mm-dd" --> | 5 <!-- xlsx-format:"0\u0022a\u007cb-\u002dc\u0022" --> |
+"##;
+        for date1904 in [false, true] {
+            let input = if date1904 { format!("{XLSX_1904_MARKER}\n{body}") } else { body.to_owned() };
+            let first = crate::read(&import_markdown_to_xlsx_bytes(input.as_bytes()).unwrap()).unwrap();
+            let markdown = export_workbook_markdown(&first).unwrap();
+            assert_eq!(markdown.starts_with(XLSX_1904_MARKER), date1904);
+            let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+            assert_eq!(rebuilt.workbook.as_ref().unwrap().date1904, date1904);
+            let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+            for (column, (value, format)) in [
+                (0.25, "0%"),
+                (1234.5, "$#,##0.00"),
+                (1000.0, "#,##0"),
+                (45000.0, "yyyy-mm-dd"),
+                (5.0, r#"0"a|b--c""#),
+            ].into_iter().enumerate() {
+                let cell = sheet.cell(1, column as u32).unwrap();
+                assert_eq!(cell.value, ibis_doc_model::CellValue::Number(value));
+                assert_eq!(sheet.styles[cell.style as usize].number_format, format);
+            }
+            assert_eq!(sheet.cell(1, 0).unwrap().text, "25%");
+            assert_eq!(sheet.cell(1, 2).unwrap().formula.as_deref(), Some("500*2"));
+            assert_eq!(sheet.cell(1, 3).unwrap().text, if date1904 { "2027-03-16" } else { "2023-03-15" });
         }
     }
 

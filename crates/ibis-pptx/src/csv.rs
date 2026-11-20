@@ -1670,6 +1670,21 @@ pub(crate) fn workbook_from_fields(
     delimiter: char,
     is_text: impl Fn(usize, usize) -> bool,
 ) -> Result<Vec<u8>, Error> {
+    build_workbook(text, name, delimiter, is_text, false)
+}
+
+pub(crate) fn blank_workbook_with_1904_dates() -> Result<Vec<u8>, Error> {
+    build_workbook("", "Sheet1", ',', |_, _| false, true)
+}
+
+fn build_workbook(
+    text: &str,
+    name: &str,
+    delimiter: char,
+    is_text: impl Fn(usize, usize) -> bool,
+    date1904: bool,
+) -> Result<Vec<u8>, Error> {
+    let workbook_properties = if date1904 { r#"<workbookPr date1904="1"/>"# } else { "" };
     let records = parse_with_delimiter(text, delimiter);
     // Number formats the values take (as typing them gives), by code.
     let mut formats: Vec<String> = Vec::new();
@@ -1724,7 +1739,7 @@ pub(crate) fn workbook_from_fields(
     let parts: Vec<(&str, String)> = vec![
         ("[Content_Types].xml", r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#.to_string()),
         ("_rels/.rels", r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#.to_string()),
-        ("xl/workbook.xml", format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets><sheet name="{}" sheetId="1" r:id="rId1"/></sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>"#, escape(name))),
+        ("xl/workbook.xml", format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">{workbook_properties}<bookViews><workbookView/></bookViews><sheets><sheet name="{}" sheetId="1" r:id="rId1"/></sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>"#, escape(name))),
         ("xl/_rels/workbook.xml.rels", r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#.to_string()),
         ("xl/worksheets/sheet1.xml", sheet),
         ("xl/styles.xml", styles),
