@@ -17,6 +17,7 @@ mod tools_docx;
 mod tools_pptx;
 mod tools_xlsx;
 mod tools_wallet;
+mod wallet_dcql;
 pub use tools_wallet::run_cli as compare_presentation;
 
 pub use catalog::{Access, Tool, catalog};

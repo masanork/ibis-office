@@ -22,6 +22,7 @@ pub enum ParsedCredentialFormat {
 /// A single claim extracted from an `.sd-jwt` or `.mdoc` credential.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedClaim {
+    pub mdoc_element: Option<(String, String)>,
     pub path: String,
     pub value: ClaimValue,
     pub selective: bool,
@@ -557,6 +558,7 @@ fn collect_sd_jwt_object(
             ClaimValue::Array(items) => {
                 let resolved = resolve_sd_jwt_array(items, disclosures, digests_verified, digests_total);
                 out.push(ParsedClaim {
+                    mdoc_element: None,
                     path: path.join("."),
                     value: ClaimValue::Array(resolved),
                     selective: false,
@@ -566,6 +568,7 @@ fn collect_sd_jwt_object(
             }
             other => {
                 out.push(ParsedClaim {
+                    mdoc_element: None,
                     path: path.join("."),
                     value: other.clone(),
                     selective: false,
@@ -606,6 +609,7 @@ fn collect_sd_jwt_object(
                             digests_total,
                         );
                         out.push(ParsedClaim {
+                            mdoc_element: None,
                             path: path.join("."),
                             value: ClaimValue::Array(resolved),
                             selective: true,
@@ -615,6 +619,7 @@ fn collect_sd_jwt_object(
                     }
                     other => {
                         out.push(ParsedClaim {
+                            mdoc_element: None,
                             path: path.join("."),
                             value: other.clone(),
                             selective: true,
@@ -970,6 +975,11 @@ pub fn parse_single_mdoc_text(
     {
         return Err("expected exactly one mDOC document".into());
     }
+    let document = root.map_get("documents").and_then(CborValue::as_array)
+        .map_or(&root, |docs| &docs[0]);
+    if document.map_get("docType").and_then(CborValue::as_text).is_none() {
+        return Err("missing mDOC docType".into());
+    }
     parse_mdoc_document(&root, issuer_jwk_json)
 }
 
@@ -1173,6 +1183,7 @@ fn parse_mdoc_document(
             };
 
             claims.push(ParsedClaim {
+                mdoc_element: Some((ns_name.to_string(), elem_id.to_string())),
                 path,
                 value: elem_val.to_claim_value(),
                 selective: true,

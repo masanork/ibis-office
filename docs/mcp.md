@@ -117,7 +117,7 @@ The server talks over standard input and output (stdio) today; SSE and streaming
 ## Wallet presentation diagnostics
 
 The read-only `presentation_compare` tool compares a single compact SD-JWT
-or hex/base64url mdoc with the caller's expected claim paths. For SD-JWT,
+or hex/base64url mdoc with explicit `expected_paths` or a `dcql_query`. Pass exactly one. For SD-JWT,
 `iss` and `vct` are treated as metadata. For mdoc the paths follow the
 worksheet importer, which qualifies repeated element identifiers with their
 namespace. Pass the token itself, rather than the enclosing OID4VP response.
@@ -126,8 +126,19 @@ The tool returns paths and diagnostic results without claim values.
 Supply a public issuer JWK to check the issuer signature. For SD-JWT, the
 report separates the holder signature, presentation hash, nonce and audience.
 `null` marks a check without sufficient input. The report does not evaluate
-issuer trust, time validity, DCQL policies or mdoc device authentication.
+issuer trust, time validity or mdoc device authentication.
 A match on claim paths alone is not a successful verification.
+
+The DCQL input supports one credential query with a concrete `vct_values` or
+`doctype_value` and a nonempty list of claims. The supported paths are one
+field name for SD-JWT and `[namespace, element]` for mdoc. The mdoc report
+uses JSON Pointer paths, for example `/org.iso.18013.5.1/age_over_18`.
+Optional `values` checks compare strings, booleans and signed integers
+without returning any values. The `dcql` result reports type and value
+mismatches separately from missing or unexpected paths. Alternatives such
+as `claim_sets`, arrays, wildcard paths, and other unsupported options
+return an error. Supply the request nonce and audience separately to check
+SD-JWT key binding.
 
 Run the offline synthetic Wallet through the CLI and real MCP stdio server:
 

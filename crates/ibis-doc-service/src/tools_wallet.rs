@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use ibis_doc_model::sd_jwt::{base64url_decode, verify_es256};
-use ibis_doc_model::sd_jwt_import::{parse_single_mdoc_text, parse_sd_jwt};
+use ibis_doc_model::sd_jwt_import::{parse_sd_jwt, parse_single_mdoc_text};
 use serde_json::{Value, json};
 
 use crate::catalog::{Access, Tool, object, string};
@@ -13,11 +13,11 @@ use crate::{Service, ToolError};
 pub(crate) fn tools() -> [Tool; 1] {
     [Tool {
         name: "presentation_compare",
-        description: "Compare one SD-JWT or mdoc presentation against expected attribute paths. Returns diagnostics, not a trust decision or claim values.",
+        description: "Compare one SD-JWT or mdoc presentation against explicit attribute paths or a supported DCQL query. Returns diagnostics, not a trust decision or claim values.",
         access: Access::Read,
         returns_content: true,
         schema: || {
-            object(
+            let mut schema = object(
                 &[
                     ("format", json!({"enum": ["sd-jwt", "mdoc"]})),
                     ("token", string("Compact SD-JWT or hex/base64url mdoc.")),
@@ -25,12 +25,16 @@ pub(crate) fn tools() -> [Tool; 1] {
                         "expected_paths",
                         json!({"type": "array", "items": {"type": "string"}}),
                     ),
+                    ("dcql_query", json!({"type": "object"})),
                     ("issuer_jwk", json!({"type": "object"})),
                     ("nonce", string("Expected SD-JWT key binding nonce.")),
                     ("audience", string("Expected SD-JWT key binding audience.")),
                 ],
-                &["format", "token", "expected_paths"],
-            )
+                &["format", "token"],
+            );
+            schema["oneOf"] =
+                json!([{"required": ["expected_paths"]}, {"required": ["dcql_query"]}]);
+            schema
         },
         run: |_, args| compare(args),
     }]
@@ -76,15 +80,6 @@ fn compare(args: &Value) -> Result<Value, ToolError> {
     if token.len() > 1024 * 1024 {
         return Err(ToolError::invalid("presentation exceeds 1 MiB"));
     }
-    let expected = args["expected_paths"]
-        .as_array()
-        .ok_or_else(|| ToolError::invalid("expected_paths must be an array"))?
-        .iter()
-        .map(|path| {
-            path.as_str()
-                .ok_or_else(|| ToolError::invalid("expected paths must be strings"))
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
     let nonce = args.opt_str("nonce")?;
     let audience = args.opt_str("audience")?;
     let jwk = match args.get("issuer_jwk") {
@@ -99,12 +94,53 @@ fn compare(args: &Value) -> Result<Value, ToolError> {
         _ => return Err(ToolError::invalid("unsupported presentation format")),
     }
     .map_err(|_| ToolError::invalid("could not parse presentation"))?;
-    let actual: BTreeSet<_> = parsed
-        .claims
-        .iter()
-        .filter(|claim| format == "mdoc" || !matches!(claim.path.as_str(), "iss" | "vct"))
-        .map(|claim| claim.path.as_str())
-        .collect();
+    let (expected, actual, dcql) = match (args.get("expected_paths"), args.get("dcql_query")) {
+        (Some(paths), None) => {
+            let expected = paths
+                .as_array()
+                .ok_or_else(|| ToolError::invalid("expected_paths must be an array"))?
+                .iter()
+                .map(|path| {
+                    path.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| ToolError::invalid("expected paths must be strings"))
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            let actual = parsed
+                .claims
+                .iter()
+                .filter(|claim| format == "mdoc" || !matches!(claim.path.as_str(), "iss" | "vct"))
+                .map(|claim| claim.path.clone())
+                .collect();
+            (expected, actual, Value::Null)
+        }
+        (None, Some(query)) => {
+            let issuer_payload = if format == "sd-jwt" {
+                token.split('.').nth(1).and_then(decode_segment)
+            } else {
+                None
+            };
+            let credential_type = if format == "mdoc" {
+                Some(parsed.vct_or_doctype.as_str())
+            } else {
+                issuer_payload
+                    .as_ref()
+                    .and_then(|payload| payload["vct"].as_str())
+            };
+            let result =
+                crate::wallet_dcql::compare(query, format, credential_type, &parsed.claims)?;
+            let diagnostics = json!({
+                "credential_type_matches": result.credential_type_matches,
+                "value_mismatch_paths": result.value_mismatches,
+            });
+            (result.expected, result.actual, diagnostics)
+        }
+        _ => {
+            return Err(ToolError::invalid(
+                "provide exactly one of expected_paths or dcql_query",
+            ));
+        }
+    };
     let kb = if format == "sd-jwt" {
         key_binding(token)
     } else {
@@ -127,6 +163,7 @@ fn compare(args: &Value) -> Result<Value, ToolError> {
     };
     Ok(json!({
         "format": format,
+        "dcql": dcql,
         "disclosed_paths": actual,
         "missing_paths": expected.difference(&actual).collect::<Vec<_>>(),
         "unexpected_paths": actual.difference(&expected).collect::<Vec<_>>(),

@@ -15,17 +15,7 @@ def run(program, *args, input_text=None):
     ).stdout
 
 
-cases = [
-    ("sd-jwt", "normal", [], True),
-    ("sd-jwt", "extra", ["birth_date"], True),
-    ("sd-jwt", "wrong-nonce", [], False),
-    ("mdoc", "normal", [], None),
-    ("mdoc", "extra", ["birth_date"], None),
-]
-for format_name, scenario, extra, nonce in cases:
-    wallet = run("examples/wallet_fixture", format_name, scenario)
-    args = json.loads(wallet)
-    cli = json.loads(run("examples/presentation_compare", input_text=wallet))
+def mcp_compare(args):
     requests = [
         {"id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
         {"id": 2, "method": "tools/list"},
@@ -37,6 +27,21 @@ for format_name, scenario, extra, nonce in cases:
     _, listed, response = map(json.loads, run("ibisOffice-mcp", "--read-only", input_text=messages).splitlines())
     assert "presentation_compare" in {tool["name"] for tool in listed["result"]["tools"]}
     result = response["result"]
+    return result
+
+
+cases = [
+    ("sd-jwt", "normal", [], True),
+    ("sd-jwt", "extra", ["birth_date"], True),
+    ("sd-jwt", "wrong-nonce", [], False),
+    ("mdoc", "normal", [], None),
+    ("mdoc", "extra", ["birth_date"], None),
+]
+for format_name, scenario, extra, nonce in cases:
+    wallet = run("examples/wallet_fixture", format_name, scenario)
+    args = json.loads(wallet)
+    cli = json.loads(run("examples/presentation_compare", input_text=wallet))
+    result = mcp_compare(args)
     assert not result["isError"], result
     assert cli == result["structuredContent"], result
     assert cli["missing_paths"] == [] and cli["unexpected_paths"] == extra, cli
@@ -72,3 +77,46 @@ for format_name, token in [
     invalid, ping = map(json.loads, replies.splitlines())
     assert invalid["result"]["isError"], invalid
     assert ping["result"] == {}, ping
+
+for format_name in ("sd-jwt", "mdoc"):
+    args = json.loads(run("examples/wallet_fixture", format_name, "extra"))
+    del args["expected_paths"]
+    mdoc = format_name == "mdoc"
+    ns = "org.iso.18013.5.1"
+    path = [ns, "age_over_18"] if mdoc else ["age_over_18"]
+    prefix = f"/{ns}/" if mdoc else ""
+    meta = {"doctype_value": f"{ns}.mDL"} if mdoc else {
+        "vct_values": ["https://credentials.example.com/identity_credential"],
+    }
+    claim = {"path": path, "values": [True]}
+    credential = {"id": "age", "format": "mso_mdoc" if mdoc else "dc+sd-jwt",
+                  "meta": meta, "claims": [claim]}
+    args["dcql_query"] = {"credentials": [credential]}
+    result = mcp_compare(args)
+    assert not result["isError"], result
+    report = result["structuredContent"]
+    cli = json.loads(run("examples/presentation_compare", input_text=json.dumps(args)))
+    assert cli == report, report
+    assert report["dcql"] == {"credential_type_matches": True, "value_mismatch_paths": []}, report
+    assert report["missing_paths"] == [] and report["unexpected_paths"] == [prefix + "birth_date"], report
+
+    claim["values"] = [False]
+    report = mcp_compare(args)["structuredContent"]
+    assert report["dcql"]["value_mismatch_paths"] == [prefix + "age_over_18"], report
+    if mdoc:
+        claim["path"] = ["another.namespace", "age_over_18"]
+        report = mcp_compare(args)["structuredContent"]
+        assert report["missing_paths"] == ["/another.namespace/age_over_18"], report
+        assert report["unexpected_paths"] == [prefix + "age_over_18", prefix + "birth_date"], report
+    else:
+        claim["path"] = ["unknown_claim"]
+        report = mcp_compare(args)["structuredContent"]
+        assert report["missing_paths"] == ["unknown_claim"], report
+
+    credential["meta"] = {"doctype_value": "another.type"} if mdoc else {"vct_values": ["urn:example:other"]}
+    report = mcp_compare(args)["structuredContent"]
+    assert report["dcql"]["credential_type_matches"] is False, report
+    credential["claim_sets"] = [["some-claim"]]
+    result = mcp_compare(args)
+    assert result["isError"], result
+    print(f"{format_name} / DCQL type, values, paths and unsupported query: OK")
