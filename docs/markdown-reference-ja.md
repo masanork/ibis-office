@@ -4,6 +4,12 @@ title: "Docs Markdown Reference Manual"
 
 # Docs Markdown Reference Manual
 
+## ibisOffice と Docs
+
+ibisOffice は、Word（DOCX）、Excel（XLSX）、PowerPoint（PPTX）のファイルを開き、編集して保存できるオフィススイートです。Docs は ibisOffice の文書編集機能で、Word ファイルや Markdown を開けます。製品全体については [ibisOffice の日本語 README](../README-ja.md) を参照してください。
+
+このリファレンスでは、Markdown で文書を作り、Office 形式に変換し、ふたたび Markdown に戻したときにどの情報が残るかを確認できます。たとえば、文章に加えて、見出しや表、数式、図のソースを、テキストとして読み直したり編集したりできます。
+
 このファイルは、日本語の Markdown リファレンスと、Docs で表示・保存・再読込を試せるデモを兼ねています。書式や構文を確認する場合は、使用するビルドと同じリビジョンのリファレンスを開いてください。
 
 ## 使い方
