@@ -103,14 +103,27 @@ mod tests {
 
     #[test]
     fn reads_a_snappy_table() {
-        use parquet::basic::Compression;
+        assert_reads_compressed_table(parquet::basic::Compression::SNAPPY, "snappy");
+    }
+
+    #[test]
+    fn reads_a_zstandard_table() {
+        assert_reads_compressed_table(
+            parquet::basic::Compression::ZSTD(Default::default()),
+            "zstd",
+        );
+    }
+
+    fn assert_reads_compressed_table(compression: parquet::basic::Compression, codec: &str) {
         use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
         use parquet::file::{properties::WriterProperties, writer::SerializedFileWriter};
         use parquet::schema::parser::parse_message_type;
         use std::sync::Arc;
 
-        let file =
-            std::env::temp_dir().join(format!("ibis-parquet-{}.parquet", std::process::id()));
+        let file = std::env::temp_dir().join(format!(
+            "ibis-parquet-{codec}-{}.parquet",
+            std::process::id()
+        ));
         let output = File::options()
             .write(true)
             .create_new(true)
@@ -123,7 +136,7 @@ mod tests {
             .unwrap(),
         );
         let properties = WriterProperties::builder()
-            .set_compression(Compression::SNAPPY)
+            .set_compression(compression)
             .build();
         let mut writer = SerializedFileWriter::new(output, schema, Arc::new(properties)).unwrap();
         let mut group = writer.next_row_group().unwrap();
