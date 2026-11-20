@@ -185,4 +185,3 @@ ibisOffice に CLA に沿って提供した異体字クラスターマップを�
 ローカル実験には Python の `fonttools` と、利用条件を確認した IPAmj フォントおよび PUP 対応 CSV を別途用意する。`python3 scripts/build-local-pup-alias.py IPAMJ_TTF PUP_CSV OUTPUT_TTF [PUP_COMBINED_CSV]` で試作フォントを作成し、起動時に `IBIS_PUP_ALIAS_FONT` にそのパスを指定する。結合文字の対応表を指定するときは `hb-shape` も必要。生成時に単一字形・位置と幅を検証し、単純な alias で表現できない場合は中止する。別途、`IBIS_VARIANT_BITMAP` による照合辞書入りビルドが必要。IPAmj／CSV／生成フォントは同梱していない。配布する場合は対応表の出典、フォントのライセンスと派生物の条件を確認する。現時点ではローカル試作であり、Windows、Linux、Web、実プリンターでの表示は未検証。PDF へのフォント埋め込みも配布にあたり利用条件を確認する。PDF から通常の結合文字列・IVS を抽出すると、元の符号を保持できない既存の問題がある。
 
 観測した gjs の `data/sources/custom/pup_to_ivs.csv`（SHA-256 `0dd259bc4fc21501f8984bdf267560f7612e21da387221bbf9f5b12e023b0d85`）は各行の値に基底字と二つの VS が続いていた。gjs の取込処理と同じ最初の VS を使用し、cmap14 の記載がない場合は生成を失敗させる。二つ目の VS が常に同じ字形だとは仮定しない。手元の IPAmj によるローカル実験では10,207の対応すべてについて、出力フォントの輪郭と元の IVS 字形の輪郭が一致した。
-
