@@ -8547,7 +8547,8 @@ fn paragraph_id_split_and_copy_are_fresh() {
     let out = scenario_data("split paragraph identities", data.clone(), BODY, |doc| vec![FlowCommand::InsertText { at: FlowPos::new(body_paragraphs(doc)[0].id, 2), text: "\n".into(), format: None }]);
     let ids = body_para_ids(&out.saved);
     assert_eq!(ids.len(), 2);
-    assert_eq!(ids[0], "00000010");
+    // Word keeps the original ID on the second paragraph for a middle split.
+    assert_eq!(ids[1], "00000010");
     assert_valid_para_ids(&ids);
     let opened = ibis_formats::open(data).unwrap();
     let mut edited = opened.presentation.clone();
