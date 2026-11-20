@@ -546,7 +546,7 @@ ibisOffice が実装している Word (.docx)・Excel (.xlsx)・PowerPoint (.ppt
 
 「●」を含む例は [soroe の表記揺れサンプル](https://github.com/digital-go-jp/soroe/blob/2a91560671a74ba81004601f2df82253d73ce09d/apps/web/static/samples/edgy-roster.csv) を参考にしています。この例の「●」は、氏名や地名で欠けた1文字の代わりです。
 「候補」シートの I 列に管理番号順で `2, 1, 0, 1, 1, #N/A, 2, 2, 1, 1, 1, 0, 1` が並び、J 列に確認項目が表示されます。
-F〜I 列の条件付き書式は、判定が `2`（一致）なら緑、`1`（要確認）なら黄、`0`（不一致）なら赤で表示します。`#N/A` は比較不可です。
+候補の氏名・振り仮名・生年月日・住所のセルを項目別に色分けします。緑は一致（`2`）、黄は要確認（`1`）、赤は不一致（`0`）を表します。比較不可（`#N/A`）には色が付きません。I 列の総合判定も同じ配色です。
 取り込みを試す場合は、UTF-8 BOM 付きの [基準名簿 CSV](samples/field-match-reference.csv) と [候補名簿 CSV](samples/field-match-candidates.csv) を使えます。両方ともサンプル XLSX の A〜E 列と同じ入力データです。
 
 以下は、配列数式を使って自分で組み立てる例です。
