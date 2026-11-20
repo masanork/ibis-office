@@ -81,7 +81,8 @@ fn resolution_volumes<'a>(
     for change in changes {
         let end_resolution = change.end_resolution.min(max_resolution);
         let end_component = usize::from(change.end_component);
-        if end_resolution <= start_resolution
+        if change.start_resolution > start_resolution
+            || end_resolution <= start_resolution
             || tile.num_layers == 0
             || change.end_layer < tile.num_layers
             || end_component < components

@@ -761,11 +761,12 @@ fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Option<PpmMarkerData<'a>> {
     })
 }
 
-/// A single progression volume starting at layer, resolution and component zero.
+/// A progression volume spanning all layers and components in a resolution range.
 #[derive(Clone, Debug)]
 pub(crate) struct ProgressionVolume {
     pub(crate) order: ProgressionOrder,
     pub(crate) end_layer: u8,
+    pub(crate) start_resolution: u8,
     pub(crate) end_resolution: u8,
     pub(crate) end_component: u8,
 }
@@ -789,12 +790,22 @@ pub(crate) fn progression_volumes(
         .ok_or(invalid)?
         .chunks_exact(7)
         .map(|entry| {
-            let [0, 0, 0, end_layer, end_resolution, end_component, order] = entry else {
+            let [
+                start_resolution,
+                0,
+                0,
+                end_layer,
+                end_resolution,
+                end_component,
+                order,
+            ] = entry
+            else {
                 bail!(MarkerError::Unsupported);
             };
             Ok(ProgressionVolume {
                 order: ProgressionOrder::from_u8(*order)?,
                 end_layer: *end_layer,
+                start_resolution: *start_resolution,
                 end_resolution: *end_resolution,
                 end_component: *end_component,
             })

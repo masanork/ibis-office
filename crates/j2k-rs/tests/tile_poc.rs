@@ -24,6 +24,35 @@ fn main_header_orders_span_tile_parts() {
 }
 
 #[test]
+fn accepts_explicit_starts_and_rejects_gaps_in_main_header_ranges() {
+    let mut source = include_bytes!("fixtures/mixed-main-poc.j2k").to_vec();
+    let marker = source.windows(2).position(|m| m == [0xff, 0x5f]).unwrap();
+    let second_start_resolution = marker + 11;
+    source[second_start_resolution] = 1;
+    assert_eq!(j2k_rs::decode(&source).unwrap().data, expected_pixels());
+    source[second_start_resolution] = 2;
+    assert!(j2k_rs::decode(&source).is_err());
+}
+
+#[test]
+fn accepts_explicit_starts_in_tile_part_ranges() {
+    let mut source = include_bytes!("fixtures/mixed-tile-poc.j2k").to_vec();
+    let mut offset = source.windows(2).position(|m| m == [0xff, 0x90]).unwrap();
+    let mut second_parts = 0;
+    while source[offset..].starts_with(&[0xff, 0x90]) {
+        let length = u32::from_be_bytes(source[offset + 6..offset + 10].try_into().unwrap());
+        if source[offset + 10] == 1 {
+            assert_eq!(&source[offset + 12..offset + 14], &[0xff, 0x5f]);
+            source[offset + 16] = 1;
+            second_parts += 1;
+        }
+        offset += length as usize;
+    }
+    assert_eq!(second_parts, 4);
+    assert_eq!(j2k_rs::decode(&source).unwrap().data, expected_pixels());
+}
+
+#[test]
 fn rejects_non_increasing_main_header_ranges() {
     let mut source = include_bytes!("fixtures/mixed-main-poc.j2k").to_vec();
     let marker = source.windows(2).position(|m| m == [0xff, 0x5f]).unwrap();
