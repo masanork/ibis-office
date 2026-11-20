@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 """Split a wasm-bindgen output into content-addressed static assets."""
+import argparse
 import hashlib
 import json
-import sys
 import subprocess
 import tempfile
 from pathlib import Path
@@ -58,7 +58,7 @@ def strip_name_section(data: bytes) -> bytes:
     return bytes(out)
 
 
-def split_wasm(path: Path) -> None:
+def split_wasm(path: Path, compress: bool = True) -> None:
     original = path.read_bytes()
     stripped = strip_name_section(original)
     if stripped != original:
@@ -79,23 +79,24 @@ def split_wasm(path: Path) -> None:
     # Keep a content-addressed single Brotli asset when it fits the static
     # host's 25 MiB limit. The chunks remain available for other hosts and
     # clients that cannot use this representation.
-    temp = tempfile.NamedTemporaryFile(prefix='wasm-brotli-', suffix='.tmp', dir=path.parent, delete=False)
-    temp_path = Path(temp.name)
-    temp.close()
-    temp_path.unlink()
-    try:
-        subprocess.run(['node', str(Path(__file__).with_name('compress-web-wasm.mjs')), str(path), str(temp_path)], check=True)
-        compressed = temp_path.read_bytes()
-        manifest = {'size': total, 'sha256': digest.hexdigest(), 'chunks': chunks}
-        if len(compressed) <= 25 * 1024 * 1024:
-            encoded_hash = hashlib.sha256(compressed).hexdigest()
-            encoded_name = f'wasm-br.{encoded_hash}.bin'
-            temp_path.replace(path.parent / encoded_name)
-            manifest['single'] = {'sha256': encoded_hash, 'size': len(compressed)}
-        else:
-            print(f'Brotli asset is {len(compressed):,} bytes; retaining split-only delivery')
-    finally:
-        temp_path.unlink(missing_ok=True)
+    manifest = {'size': total, 'sha256': digest.hexdigest(), 'chunks': chunks}
+    if compress:
+        temp = tempfile.NamedTemporaryFile(prefix='wasm-brotli-', suffix='.tmp', dir=path.parent, delete=False)
+        temp_path = Path(temp.name)
+        temp.close()
+        temp_path.unlink()
+        try:
+            subprocess.run(['node', str(Path(__file__).with_name('compress-web-wasm.mjs')), str(path), str(temp_path)], check=True)
+            compressed = temp_path.read_bytes()
+            if len(compressed) <= 25 * 1024 * 1024:
+                encoded_hash = hashlib.sha256(compressed).hexdigest()
+                encoded_name = f'wasm-br.{encoded_hash}.bin'
+                temp_path.replace(path.parent / encoded_name)
+                manifest['single'] = {'sha256': encoded_hash, 'size': len(compressed)}
+            else:
+                print(f'Brotli asset is {len(compressed):,} bytes; retaining split-only delivery')
+        finally:
+            temp_path.unlink(missing_ok=True)
     (path.parent / 'ibis_office_app_bg.manifest.json').write_text(
         json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     # The output directory belongs to this build; remove stale chunks and the
@@ -115,4 +116,8 @@ def split_wasm(path: Path) -> None:
 
 
 if __name__ == '__main__':
-    split_wasm(Path(sys.argv[1]))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", type=Path)
+    parser.add_argument("--chunks-only", action="store_true")
+    args = parser.parse_args()
+    split_wasm(args.path, compress=not args.chunks_only)

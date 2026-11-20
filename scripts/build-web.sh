@@ -71,7 +71,11 @@ if [[ "$PROFILE" == release ]]; then
 fi
 
 # Split the optimized module for static hosts with per-file limits.
-python3 scripts/split-web-wasm.py www/pkg/ibis_office_app_bg.wasm
+if [[ "$PROFILE" == release ]]; then
+  python3 scripts/split-web-wasm.py www/pkg/ibis_office_app_bg.wasm
+else
+  python3 scripts/split-web-wasm.py www/pkg/ibis_office_app_bg.wasm --chunks-only
+fi
 
 # main.ts imports the typings wasm-bindgen just wrote.
 if [[ ! -x node_modules/.bin/tsc ]]; then
