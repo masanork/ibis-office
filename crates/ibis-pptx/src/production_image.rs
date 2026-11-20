@@ -32,6 +32,8 @@ fn format(ext: &str) -> Option<Format> {
         "dpx" => Some(Format::Dpx),
         "exr" => Some(Format::OpenExr),
         "psd" => Some(Format::Photoshop),
+        "jpg" | "jpeg" => Some(Format::Raster(ImageFormat::Jpeg)),
+        "png" => Some(Format::Raster(ImageFormat::Png)),
         "tga" => Some(Format::Raster(ImageFormat::Tga)),
         "tif" | "tiff" => Some(Format::Raster(ImageFormat::Tiff)),
         "jp2" | "j2k" | "j2c" => Some(Format::Jpeg2000),

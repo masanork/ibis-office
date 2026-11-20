@@ -16,6 +16,7 @@ pub struct Loaded {
     pub standard_encryption: bool,
     pub jtd_original: Option<Vec<u8>>,
     pub jtd_gallery: bool,
+    pub(crate) image_provenance: Option<crate::image_provenance::Report>,
     pub(crate) exr_exposure: Option<ibis_pptx::production_image::ExrExposure>,
     pub(crate) csv_stream: Option<std::sync::mpsc::Receiver<ibis_pptx::CsvProgressiveChunk>>,
 }
@@ -182,18 +183,20 @@ fn read_file_data(
         };
         let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, exr_exposure: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, exr_exposure: None, image_provenance: None });
     }
-    if let Some((opened, exr_exposure)) = ibis_pptx::production_image::open_with_exposure(path.extension().and_then(|e| e.to_str()), &data)? {
+    let extension = path.extension().and_then(|e| e.to_str());
+    if let Some((opened, exr_exposure)) = ibis_pptx::production_image::open_with_exposure(extension, &data)? {
+        let image_provenance = extension.and_then(|ext| crate::image_provenance::inspect(ext, &data));
         crate::render::preload::Preload::start_for_next(&opened.presentation);
-        return Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, exr_exposure });
+        return Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, exr_exposure, image_provenance });
     }
     if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::jtd::is_extension) || ibis_pptx::jtd::is_jtd(&data) {
         let (presentation, jtd_gallery) = crate::jtd_preview::read(&data)?;
         let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
         crate::render::preload::Preload::start_for_next(&presentation);
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: Some(data), jtd_gallery, exr_exposure: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: Some(data), jtd_gallery, exr_exposure: None, image_provenance: None });
     }
     let standard_encryption = ibis_pptx::ibis_ooxml::encryption::is_standard_encrypted(&data);
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
@@ -249,7 +252,7 @@ fn read_file_data(
     let total_file_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     eprintln!("ibisOffice timing: read_file total: {total_file_ms:.1} ms (fs::read: {read_fs_ms:.1} ms, open: {open_ms:.1} ms)");
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, jtd_original: None, jtd_gallery: false, exr_exposure: None })
+    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, jtd_original: None, jtd_gallery: false, exr_exposure: None, image_provenance: None })
 }
 
 /// Tell every format that the file at `path` could not be parsed (in the order of their registration, as they were told

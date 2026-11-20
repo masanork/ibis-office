@@ -1304,6 +1304,21 @@ view.sequence-next	Next image frame
 view.sequence-missing	{direction} (skips {count} missing)
 view.sequence-frame	Frame {number}
 view.sequence-gap	 · {count} missing nearby
+view.provenance	Content credentials
+view.provenance-trusted	The credentials match this source file. The signing certificate is trusted by the bundled C2PA Trust List.
+view.provenance-untrusted	The credentials match this source file. Trust in the signing certificate could not be established.
+view.provenance-mismatch	The content hash in the credentials does not match this source file.
+view.provenance-invalid	These credentials did not pass C2PA validation.
+view.provenance-absent	No C2PA manifest was found in the source file.
+view.provenance-external	This file refers to an external C2PA manifest. It was not retrieved.
+view.provenance-error	C2PA validation could not be completed.
+view.provenance-signer	Signing certificate name: {value}
+view.provenance-issuer	Certificate issuer: {value}
+view.provenance-actions	Recorded actions (up to 8): {value}
+view.provenance-ingredients	Recorded source assets (up to 8): {value}
+view.provenance-not-recorded	No entries
+view.provenance-untitled	Untitled
+view.provenance-offline	Verification applies to the original file. Online revocation checking was skipped.
 view.image-background-page	Page background
 view.image-background-checker	Checkerboard
 view.image-background-black	Black background

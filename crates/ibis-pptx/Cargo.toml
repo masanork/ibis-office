@@ -14,7 +14,7 @@ ibis-doc-model.workspace = true
 j2k-rs = { workspace = true, features = ["color-managed-preview"] }
 exr = { version = "1.74", default-features = false }
 ag-psd = "0.3.0"
-image = { version = "0.25", default-features = false, features = ["png", "tga", "tiff", "exr"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "tiff", "exr"] }
 ibis-ooxml.workspace = true
 miniz_oxide = "0.8"
 roxmltree = "0.21"

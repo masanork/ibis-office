@@ -597,6 +597,8 @@ pub struct SlideEditor {
     pub standard_source_path: Option<std::path::PathBuf>,
     pub(crate) production_image_view: Option<ProductionImageView>,
     #[cfg(not(target_family = "wasm"))]
+    pub(crate) image_provenance: Option<crate::image_provenance::Report>,
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) image_sequence: Option<crate::image_sequence::ImageSequence>,
     /// Original JTD bytes: presence makes this document permanently read-only.
     pub jtd_original: Option<std::sync::Arc<[u8]>>,
@@ -922,6 +924,8 @@ impl SlideEditor {
             standard_source_path: None,
             jtd_original: None,
             production_image_view: None,
+            #[cfg(not(target_family = "wasm"))]
+            image_provenance: None,
             #[cfg(not(target_family = "wasm"))]
             image_sequence: None,
             jtd_gallery: false,
@@ -1255,7 +1259,10 @@ impl SlideEditor {
         self.jtd_original = None;
         self.production_image_view = None;
         #[cfg(not(target_family = "wasm"))]
-        { self.image_sequence = None; }
+        {
+            self.image_sequence = None;
+            self.image_provenance = None;
+        }
         self.jtd_gallery = false;
         self.jtd_gallery_body = None;
         self.jtd_thumbnail = false;
@@ -1682,6 +1689,7 @@ impl SlideEditor {
                     }
                     this.set_production_image_view(production_image, loaded.exr_exposure);
                     this.image_sequence = sequence;
+                    this.image_provenance = loaded.image_provenance;
                     if loaded.standard_encryption {
                         this.standard_read_only = true;
                         this.standard_source_path = Some(path.clone());

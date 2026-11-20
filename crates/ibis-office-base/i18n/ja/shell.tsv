@@ -1302,6 +1302,21 @@ view.sequence-next	次のコマ
 view.sequence-missing	{direction}（欠番{count}コマをスキップ）
 view.sequence-frame	コマ {number}
 view.sequence-gap	・前後に欠番{count}コマ
+view.provenance	素材の来歴
+view.provenance-trusted	原本と来歴情報が一致し、署名証明書は同梱のC2PA信頼リストで信頼されています。
+view.provenance-untrusted	原本と来歴情報は一致しますが、署名証明書の信頼は確認できません。
+view.provenance-mismatch	来歴情報に記録されたハッシュが原本と一致しません。
+view.provenance-invalid	来歴情報はC2PAの検証に合格しませんでした。
+view.provenance-absent	原本にC2PAマニフェストが見つかりませんでした。
+view.provenance-external	原本は外部のC2PAマニフェストを参照しています。外部取得は行っていません。
+view.provenance-error	C2PAの検証を完了できませんでした。
+view.provenance-signer	署名証明書の名前　{value}
+view.provenance-issuer	証明書の発行者　{value}
+view.provenance-actions	記録された操作（最大8件）　{value}
+view.provenance-ingredients	記録された元素材（最大8件）　{value}
+view.provenance-not-recorded	記録なし
+view.provenance-untitled	タイトルなし
+view.provenance-offline	検証対象は元のファイルです。失効状況のオンライン照会は行っていません。
 view.image-background-page	ページ背景
 view.image-background-checker	市松模様
 view.image-background-black	黒背景
