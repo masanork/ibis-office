@@ -1908,6 +1908,7 @@ xlsx.links-banner.close	Dismiss
 xlsx.links-banner.updated	Updated the values of {count} link(s).
 xlsx.links-banner.partly	Updated {count} link(s). Files not found: {missing}
 xlsx.query-from-table	From Table/Range…
+xlsx.query-from-arrow-ipc	From Arrow IPC File
 xlsx.query-from-json-lines	From JSON Lines File
 xlsx.query-from-parquet	From Parquet File
 xlsx.query-blank	Blank Query…

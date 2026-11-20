@@ -385,7 +385,7 @@ fn m_code_reads_back_as_the_steps() {
         Step::AddConditionalColumn { name: s("区分"), clauses: vec![Clause { column: s("数量"), op: Op::Greater, value: s("5"), output: s("多") }, Clause { column: s("店"), op: Op::Equals, value: s("北"), output: s("北") }], otherwise: s("少") },
         Step::AddIndexColumn { name: s("番号"), start: 1, step: 1 },
     ];
-    for source in [Source::Blank, Source::Table(s("売上")), Source::Range { sheet: s("Sheet1"), range: s("A1:D9") }, Source::Parquet { names: vec![s("transactions.parquet")], columns: vec![s("amount")] }, Source::JsonLines { name: s("取引.ndjson") }] {
+    for source in [Source::Blank, Source::Table(s("売上")), Source::Range { sheet: s("Sheet1"), range: s("A1:D9") }, Source::Parquet { names: vec![s("transactions.parquet")], columns: vec![s("amount")] }, Source::JsonLines { name: s("取引.ndjson") }, Source::ArrowIpc { name: s("取引.arrow") }] {
         let query = Query { name: s("Q"), source, steps: steps.clone(), output: None };
         let code = query_to_m(&query);
         match m_to_query(&code, &query) {
@@ -426,9 +426,14 @@ fn parquet_query_saves_its_source_without_granting_file_access() {
 }
 
 #[test]
-fn json_lines_query_saves_its_source_without_granting_file_access() {
-    let query = Query::new("Records", Source::JsonLines { name: "取引\t記録.ndjson".into() });
-    let (saved, _) = decode_queries(&encode_queries(std::slice::from_ref(&query), &[]));
-    assert_eq!(saved, [query]);
-    assert!(read_source(&Presentation::default(), &saved[0].source).is_err());
+fn single_file_query_saves_its_source_without_granting_file_access() {
+    for source in [
+        Source::JsonLines { name: "取引\t記録.ndjson".into() },
+        Source::ArrowIpc { name: "取引\t記録.arrow".into() },
+    ] {
+        let query = Query::new("Records", source);
+        let (saved, _) = decode_queries(&encode_queries(std::slice::from_ref(&query), &[]));
+        assert_eq!(saved, [query]);
+        assert!(read_source(&Presentation::default(), &saved[0].source).is_err());
+    }
 }

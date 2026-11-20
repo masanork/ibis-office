@@ -90,6 +90,13 @@ fn input(text: &str, placeholder: &str, window: &mut Window, cx: &mut Context<Sl
     state
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Clone, Copy)]
+pub(crate) enum SingleFileQuery {
+    JsonLines,
+    ArrowIpc,
+}
+
 #[ibis_office_macros::editor_ext(QueryEditorExt)]
 impl SlideEditor {
     /// The sheet's name a slide has.
@@ -250,10 +257,14 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    pub(crate) fn pick_json_lines_query(&mut self, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn pick_single_file_query(&mut self, format: SingleFileQuery, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_cell_edit(cx);
+        let extensions: &[&str] = match format {
+            SingleFileQuery::JsonLines => &["jsonl", "ndjson"],
+            SingleFileQuery::ArrowIpc => &["arrow", "ipc", "feather"],
+        };
         let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
-            files: true, directories: false, extensions: vec!["jsonl".into(), "ndjson".into()],
+            files: true, directories: false, extensions: extensions.iter().map(|extension| (*extension).into()).collect(),
             multiple: false, prompt: None,
         });
         let document_id = self.file_id;
@@ -261,10 +272,19 @@ impl SlideEditor {
             let Ok(Ok(Some(paths))) = picked.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
             let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let result = cx.background_executor().spawn(async move { query::read_json_lines(&path) }).await;
+            let definition = match format {
+                SingleFileQuery::JsonLines => Source::JsonLines { name },
+                SingleFileQuery::ArrowIpc => Source::ArrowIpc { name },
+            };
+            let result = cx.background_executor().spawn(async move {
+                match format {
+                    SingleFileQuery::JsonLines => query::read_json_lines(&path),
+                    SingleFileQuery::ArrowIpc => query::read_arrow_ipc(&path),
+                }
+            }).await;
             this.update_in(cx, |this, window, cx| {
                 if this.file_id == document_id {
-                    this.finish_external_query(Source::JsonLines { name }, result, existing, refresh, window, cx);
+                    this.finish_external_query(definition, result, existing, refresh, window, cx);
                 }
             }).ok();
         }).detach();
@@ -390,7 +410,7 @@ impl SlideEditor {
         let mut base = ed.query.clone();
         base.name = ed.name.read(cx).value().to_string();
         let result = query::m_to_query(&code, &base).map_err(|e| crate::shell::i18n::format(&format!("query.code-error.{}", e.key), &[("detail", &e.detail)]));
-        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. }) && q.source == ed.query.source {
+        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. }) && q.source == ed.query.source {
             Ok(ed.source.clone())
         } else {
             query::read_source(self.presentation(), &q.source)
@@ -638,8 +658,10 @@ impl SlideEditor {
             return self.pick_parquet_query(Some(query), false, window, cx);
         }
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if matches!(query.source, Source::JsonLines { .. }) {
-            return self.pick_json_lines_query(Some(query), false, window, cx);
+        match query.source {
+            Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), false, window, cx),
+            Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), false, window, cx),
+            _ => {}
         }
         self.open_query_editor(query, window, cx);
     }
@@ -667,8 +689,10 @@ impl SlideEditor {
             return self.pick_parquet_query(Some(query), true, _window, cx);
         }
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if matches!(query.source, Source::JsonLines { .. }) {
-            return self.pick_json_lines_query(Some(query), true, _window, cx);
+        match query.source {
+            Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), true, _window, cx),
+            Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), true, _window, cx),
+            _ => {}
         }
         let table = match query::result_of(self.presentation(), &query, &wb.queries, &wb.query_parameters, 0) {
             Ok(t) => t,
@@ -712,6 +736,7 @@ impl SlideEditor {
         for (i, q) in queries.iter().enumerate() {
             let source = match &q.source {
                 Source::JsonLines { name } => format!("JSON Lines · {name}"),
+                Source::ArrowIpc { name } => format!("Arrow IPC · {name}"),
                 Source::Parquet { names, .. } => format!("Parquet · {}", names.join(", ")),
                 Source::Blank => crate::shell::i18n::text("query.source-blank").to_string(),
                 Source::Table(t) => t.clone(),

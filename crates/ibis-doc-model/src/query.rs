@@ -15,6 +15,10 @@ use std::collections::HashMap;
 use ibis_calc::input::{parse_date_in_order, DateOrder};
 use ibis_calc::{CellError, CellValue};
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod arrow_ipc_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use arrow_ipc_source::read_arrow_ipc;
 mod book;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod parquet_source;
@@ -317,6 +321,8 @@ pub struct Parameter {
 /// What a query starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
+    /// A local Arrow IPC file. Only the display name is stored.
+    ArrowIpc { name: String },
     /// A local JSON Lines file. Only the display name is stored.
     JsonLines { name: String },
     /// Local Parquet files selected by the user. Only the display names are stored.
