@@ -21,8 +21,8 @@ fn collects_offscreen_nested_tables_headers_sections_notes_ruby_and_inline_shape
     }], ..FlowRow::default() }], ..FlowTable::default() }));
     doc.header_even.push(paragraph("偶数頁眉"));
     doc.footer_first.push(paragraph("初頁脚"));
-    doc.footnotes.push(Note { id: 1, blocks: vec![paragraph("注釈") ] });
-    doc.endnotes.push(Note { id: 2, blocks: vec![paragraph("後註") ] });
+    doc.footnotes.push(Note { id: 1, blocks: vec![paragraph("注釈")], custom_mark: false });
+    doc.endnotes.push(Note { id: 2, blocks: vec![paragraph("後註")], custom_mark: false });
     doc.comments.push(Comment { blocks: vec![paragraph("評言")], ..Comment::default() });
     let mut section = SectionSetup::default(); section.parts[0] = Some(vec![paragraph("節固有")]);
     doc.body.push(Block::Paragraph(FlowParagraph {
