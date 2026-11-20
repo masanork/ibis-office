@@ -429,6 +429,7 @@ fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMar
 
 const XLSX_TEXT_CELL_MARKER: &str = "<!-- xlsx-text -->";
 
+const XLSX_FORMULA_CELL_MARKER: &str = "<!-- xlsx-formula:";
 const XLSX_NUMBER_CELL_MARKER: &str = "<!-- xlsx-number:";
 const XLSX_CELL_MARKER_END: &str = " -->";
 
@@ -499,7 +500,20 @@ fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Result<Vec<ibis_
                             })
                             .collect::<Vec<_>>()
                             .join(" ");
-                        let trimmed = txt.trim();
+                        let mut trimmed = txt.trim();
+                        let mut formula = None;
+                        if named && !trimmed.ends_with(XLSX_TEXT_CELL_MARKER)
+                            && let Some((display, encoded)) = trimmed.strip_suffix(XLSX_CELL_MARKER_END)
+                            .and_then(|text| text.rsplit_once(XLSX_FORMULA_CELL_MARKER))
+                            .filter(|(_, encoded)| !encoded.contains(XLSX_CELL_MARKER_END))
+                        {
+                            let expression = serde_json::from_str::<String>(encoded.trim()).ok()
+                                .and_then(|text| text.strip_prefix('=').map(str::to_owned))
+                                .filter(|text| !text.trim().is_empty())
+                                .ok_or_else(|| Error::new("xlsx-formula の数式が不正です"))?;
+                            formula = Some(expression);
+                            trimmed = display.trim_end();
+                        }
                         let explicit_text = named.then(|| trimmed.strip_suffix(XLSX_TEXT_CELL_MARKER)).flatten();
                         let (trimmed, value) = if let Some(text) = explicit_text {
                             let text = text.trim_end();
@@ -510,9 +524,13 @@ fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Result<Vec<ibis_
                             (display.trim_end(), CellValue::Number(value))
                         } else {
                             if trimmed.is_empty() {
-                                continue;
+                                if formula.is_none() {
+                                    continue;
+                                }
+                                (trimmed, CellValue::Empty)
+                            } else {
+                                (trimmed, infer_markdown_cell_value(trimmed))
                             }
-                            (trimmed, infer_markdown_cell_value(trimmed))
                         };
                         cells.push(SheetCell {
                             row: cur_row,
@@ -521,7 +539,7 @@ fn markdown_workbook_cells(flow: &FlowDocument, named: bool) -> Result<Vec<ibis_
                             value,
                             text: trimmed.to_string(),
                             style: if ri == 0 { 1 } else { 0 },
-                            formula: None,
+                            formula,
                             phonetic: None,
                             runs: None,
                         });
@@ -642,6 +660,7 @@ fn export_workbook_markdown_with_positions(
                     Some(ibis_doc_model::CellValue::Text(_))
                         if raw.trim_end().ends_with(XLSX_TEXT_CELL_MARKER)
                             || numeric_cell_marker(raw.trim()).is_some()
+                            || (raw.contains(XLSX_FORMULA_CELL_MARKER) && raw.trim_end().ends_with(XLSX_CELL_MARKER_END))
                             || !matches!(infer_markdown_cell_value(raw.trim()), ibis_doc_model::CellValue::Text(_)) =>
                     {
                         out.push(' ');
@@ -657,6 +676,14 @@ fn export_workbook_markdown_with_positions(
                         let _ = write!(out, " {XLSX_NUMBER_CELL_MARKER}{value}{XLSX_CELL_MARKER_END}");
                     }
                     _ => {}
+                }
+                if let Some(formula) = cell.and_then(|cell| cell.formula.as_deref()) {
+                    let formula = formula.strip_prefix('=').unwrap_or(formula);
+                    let encoded = serde_json::to_string(&format!("={formula}")).expect("formula is a JSON string");
+                    out.push(' ');
+                    out.push_str(XLSX_FORMULA_CELL_MARKER);
+                    out.push_str(&encoded.replace('|', r"\u007c").replace('<', r"\u003c").replace('>', r"\u003e").replace("--", r"-\u002d"));
+                    out.push_str(XLSX_CELL_MARKER_END);
                 }
                 out.push_str(" |");
             }
@@ -916,7 +943,14 @@ fn parse_markdown_into(
             .get(&label)
             .map(String::as_str)
             .unwrap_or(&label);
-        let pid = ctx.fresh_id();
+        let mut blocks = if let Some(markdown) = content.strip_prefix('\n') {
+            // Note bodies use the same block grammar as the main story.
+            parse_blocks(markdown, &mut ctx, &mut HashMap::new())?
+        } else {
+            let mut paragraph = FlowParagraph { id: ctx.fresh_id(), ..FlowParagraph::default() };
+            paragraph.runs = parse_inlines(content, &mut ctx, &RunFormat::default());
+            vec![Block::Paragraph(paragraph)]
+        };
         let text_style = ctx
             .styles
             .paragraph_style_named(if endnote { "endnote text" } else { "footnote text" })
@@ -940,12 +974,17 @@ fn parse_markdown_into(
         } else {
             superscript
         };
-        let mut p = FlowParagraph {
-            id: pid,
-            style: text_style,
-            ..FlowParagraph::default()
-        };
-        p.runs.push(FlowRun {
+        if !matches!(blocks.first(), Some(Block::Paragraph(_))) {
+            blocks.insert(0, Block::Paragraph(FlowParagraph {
+                id: ctx.fresh_id(),
+                ..FlowParagraph::default()
+            }));
+        }
+        let Block::Paragraph(p) = &mut blocks[0] else { unreachable!() };
+        if p.style.is_none() || p.style == ctx.styles.default_paragraph {
+            p.style = text_style;
+        }
+        let mark = FlowRun {
             kind: FlowRunKind::NoteMark,
             style: FlowRunStyle::default(),
             format: mark_format,
@@ -955,19 +994,14 @@ fn parse_markdown_into(
             show_field_code: false,
             field_locked: false,
             control: None,
-        });
-        p.runs.push(FlowRun::new(
-            FlowRunKind::Text(" ".into()),
-            FlowRunStyle::default(),
-        ));
-        let inline_runs = parse_inlines(content, &mut ctx, &RunFormat::default());
-        p.runs.extend(inline_runs);
-        p.resolve(&doc.styles);
+        };
+        p.runs.splice(0..0, [mark, FlowRun::new(FlowRunKind::Text(" ".into()), FlowRunStyle::default())]);
+        p.resolve(&ctx.styles);
         p.normalize();
         let notes = if endnote { &mut doc.endnotes } else { &mut doc.footnotes };
         notes.push(Note {
             id: note_id,
-            blocks: vec![Block::Paragraph(p)],
+            blocks,
         });
     }
 
@@ -1551,6 +1585,10 @@ fn parse_hex_rgb(s: &str) -> Option<Rgb> {
 // Block parsing
 // ============================================================================
 
+fn note_body_line(line: &str) -> Option<&str> {
+    line.strip_prefix("    ").or_else(|| line.strip_prefix('\t'))
+}
+
 fn parse_blocks(
     body_text: &str,
     ctx: &mut ParseContext<'_>,
@@ -1576,16 +1614,32 @@ fn parse_blocks(
                 if !label.is_empty() && !label.contains(' ') {
                     let mut def = rest.trim().to_string();
                     i += 1;
-                    while i < lines.len() {
-                        let next_raw = lines[i];
-                        if next_raw.starts_with("  ") || next_raw.starts_with('\t') {
+                    if def.is_empty() && lines.get(i).is_some_and(|line| note_body_line(line).is_some()) {
+                        while let Some(raw) = lines.get(i) {
+                            if let Some(line) = note_body_line(raw) {
+                                def.push('\n');
+                                def.push_str(line);
+                                i += 1;
+                            } else if raw.trim().is_empty() {
+                                let start = i;
+                                while lines.get(i).is_some_and(|line| line.trim().is_empty()) {
+                                    i += 1;
+                                }
+                                if lines.get(i).and_then(|line| note_body_line(line)).is_none() {
+                                    break;
+                                }
+                                def.extend(std::iter::repeat_n('\n', i - start));
+                            } else {
+                                break;
+                            }
+                        }
+                    } else {
+                        while let Some(next_raw) = lines.get(i).filter(|line| line.starts_with("  ") || line.starts_with('\t')) {
                             if !def.is_empty() {
                                 def.push(' ');
                             }
                             def.push_str(next_raw.trim());
                             i += 1;
-                        } else {
-                            break;
                         }
                     }
                     footnote_defs.insert(label.to_string(), def);
@@ -3351,6 +3405,15 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
     while i < text.len() {
         let rest = &text[i..];
 
+        if let Some((payload, _)) = rest.strip_prefix(XLSX_FORMULA_CELL_MARKER)
+            .and_then(|text| text.split_once(XLSX_CELL_MARKER_END))
+        {
+            let length = XLSX_FORMULA_CELL_MARKER.len() + payload.len() + XLSX_CELL_MARKER_END.len();
+            plain.push_str(&rest[..length]);
+            i += length;
+            continue;
+        }
+
         // Escape sequence `\*`, `\[`, etc.
         if bytes[i] == b'\\' && i + 1 < text.len() {
             let next_ch = text[i + 1..].chars().next().unwrap();
@@ -4262,31 +4325,43 @@ fn export_markdown_with_positions<'a>(
     }
     for (notes, endnote) in [(&doc.footnotes, false), (&doc.endnotes, true)] {
         for note in notes {
-            let mut note_md = String::new();
-            for b in &note.blocks {
-                if let Block::Paragraph(p) = b {
-                    let runs: Vec<FlowRun> = p
-                        .runs
-                        .iter()
-                        .skip_while(|r| {
-                            matches!(r.kind, FlowRunKind::NoteMark)
-                                || matches!(&r.kind, FlowRunKind::Text(t) if t == " ")
-                        })
-                        .cloned()
-                        .collect();
-                    if endnote && !note_md.is_empty() {
-                        note_md.push('\n');
-                    }
-                    note_md.push_str(&serialize_runs(&runs, media, &comments_by_id));
-                }
-            }
             let start = out.len();
             let label = markdown_note_label(note.id, endnote);
-            if endnote {
-                let body = note_md.trim().replace('\n', "\n    ");
-                out.push_str(&format!("[^{label}]: {body}\n"));
-            } else {
-                out.push_str(&format!("[^{label}]: {}\n", note_md.trim()));
+            let mut blocks = note.blocks.clone();
+            if let Some(Block::Paragraph(paragraph)) = blocks.first_mut() {
+                let marker_runs = paragraph.runs.iter().take_while(|run| {
+                    matches!(run.kind, FlowRunKind::NoteMark)
+                        || matches!(&run.kind, FlowRunKind::Text(text) if text == " ")
+                }).count();
+                paragraph.runs.drain(..marker_runs);
+                if paragraph.runs.is_empty() && paragraph.list.is_none() && blocks.len() > 1 {
+                    blocks.remove(0);
+                }
+            }
+
+            if let [Block::Paragraph(paragraph)] = blocks.as_slice()
+                && paragraph.list.is_none()
+                && !paragraph.runs.iter().any(|run| matches!(run.kind, FlowRunKind::LineBreak | FlowRunKind::Math { display: true, .. }))
+            {
+                let text = serialize_runs(&paragraph.runs, media, &comments_by_id);
+                if !text.contains('\n') {
+                    out.push_str(&format!("[^{label}]: {}\n", text.trim()));
+                    record(MarkdownSource::Note { note, endnote }, start, out.len());
+                    continue;
+                }
+            }
+
+            out.push_str(&format!("[^{label}]:\n"));
+            let mut body = String::new();
+            for block in &blocks {
+                serialize_block(block, doc, media, &comments_by_id, &mut body);
+            }
+            for line in body.trim_end().lines() {
+                if !line.is_empty() {
+                    out.push_str("    ");
+                    out.push_str(line);
+                }
+                out.push('\n');
             }
             record(MarkdownSource::Note { note, endnote }, start, out.len());
         }
@@ -7853,6 +7928,67 @@ xychart-beta
         assert_eq!(sheet.cell(4, 3).unwrap().text, "Right");
         assert!(sheet.cell(3, 1).is_none());
         assert!(sheet.cell(4, 2).is_none());
+    }
+
+    #[test]
+    fn workbook_formulas_round_trip_and_recalculate_across_sheets() {
+        use ibis_doc_model::{CellValue, sheet_calc::{BookView, sheet_of_slide}};
+        let input = r#"<!-- xlsx-sheet {"name":"売上","origin":"C3"} -->
+
+| 金額 |
+| --- |
+| 2 |
+| 3 |
+| 5 <!-- xlsx-formula:"=SUM($C$4:C5)" --> |
+
+<!-- xlsx-sheet "集計" -->
+
+| 合計 | 文字列 |
+| --- | --- |
+| 5 <!-- xlsx-formula:"='売上'!C6" --> | a <!-- xlsx-formula:"=LEFT(\"a\u007cb\",1)" --> |
+"#;
+        let bytes = import_markdown_to_xlsx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_workbook_markdown(&crate::read(&bytes).unwrap()).unwrap();
+        assert!(markdown.contains(r#"5 <!-- xlsx-formula:"='売上'!C6" -->"#));
+        let mut rebuilt = crate::read(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let summary = sheet_of_slide(&rebuilt.slides[1]).unwrap();
+        assert_eq!(summary.cell(1, 0).unwrap().formula.as_deref(), Some("'売上'!C6"));
+        assert_eq!(summary.cell(1, 1).unwrap().formula.as_deref(), Some(r#"LEFT("a|b",1)"#));
+        assert_eq!(summary.cell(1, 0).unwrap().value, CellValue::Number(5.0));
+
+        let ShapeKind::Sheet(sheet) = &mut rebuilt.slides[0].shapes[0].kind else {
+            panic!("expected a sheet");
+        };
+        let sheet = Arc::make_mut(sheet);
+        let mut cells = sheet.cells.to_vec();
+        cells.iter_mut().find(|cell| (cell.row, cell.column) == (3, 2)).unwrap().value = CellValue::Number(7.0);
+        sheet.cells = cells.into();
+        let recalculated = BookView::new(&rebuilt).recalculate(&[(0, 3, 2)]);
+        for position in [(0, 5, 2), (1, 1, 0)] {
+            assert!(recalculated.iter().any(|cell| cell.cell == position && cell.value == CellValue::Number(10.0)));
+        }
+    }
+
+    #[test]
+    fn rich_footnotes_and_endnotes_round_trip_blocks() {
+        let input = "本文[^1]と補足[^endnote-1]。\n\n[^1]:\n    最初の段落\n\n    次の段落\n\n    - 項目\n\n    | 項目 | 値 |\n    | --- | --- |\n    | 表の本文 | 42 |\n[^endnote-1]:\n    文末注記\n    \n    1. 手順\n";
+        let original = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_docx_to_markdown(&original).unwrap();
+        assert!(markdown.contains("本文[^1]と補足[^endnote-1]。"));
+        assert!(markdown.contains("    | 表の本文 | 42 |"));
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let doc = crate::read_docx(&rebuilt).unwrap();
+        let flow = doc.flow.as_ref().unwrap();
+        let note = &flow.footnotes[0];
+        assert_eq!(note.id, 1);
+        assert!(matches!(&note.blocks[..], [
+            Block::Paragraph(first), Block::Paragraph(second), Block::Paragraph(item), Block::Table(_)
+        ] if first.text().trim_end().ends_with("最初の段落") && second.text() == "次の段落" && item.list.is_some()),
+            "{markdown}");
+        assert_eq!(flow.endnotes[0].id, 1);
+        assert!(matches!(&flow.endnotes[0].blocks[..], [
+            Block::Paragraph(_), Block::Paragraph(item)
+        ] if item.list.is_some()));
     }
 
     #[test]
