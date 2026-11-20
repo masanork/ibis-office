@@ -896,7 +896,36 @@ fn parse_markdown_into(
         body_text = rest;
     }
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
-    let blocks = parse_blocks(body_text, &mut ctx, &mut footnote_defs)?;
+    let mut blocks = parse_blocks(body_text, &mut ctx, &mut footnote_defs)?;
+    if let Some(Block::Paragraph(paragraph)) = blocks.last()
+        && paragraph.section_break == ibis_doc_model::SectionBreak::None
+        && let Some(section) = &paragraph.section
+    {
+        doc.page = PageSetup {
+            size: section.page.size,
+            top: section.page.top,
+            right: section.page.right,
+            bottom: section.page.bottom,
+            left: section.page.left,
+            header: section.page.header,
+            footer: section.page.footer,
+            gutter: section.page.gutter,
+            columns: section.page.columns,
+            first_page: section.page.first_page,
+            ..doc.page
+        };
+        doc.restart_numbering = section.restart_numbering;
+        for (index, target) in [&mut doc.header, &mut doc.footer].into_iter().enumerate() {
+            doc.linked[index] = section.parts[index].is_none();
+            *target = section.parts[index].clone().unwrap_or_default();
+        }
+        blocks.pop();
+    }
+    if blocks.iter().any(|block| matches!(block, Block::Paragraph(p)
+        if p.section.is_some() && p.section_break == ibis_doc_model::SectionBreak::None))
+    {
+        return Err(Error::new("最後のセクション設定は本文の末尾に置いてください"));
+    }
 
     let first_existing_para_id = doc.body.iter().find_map(|b| match b {
         Block::Paragraph(p) => Some(p.id),
@@ -1585,6 +1614,108 @@ fn parse_hex_rgb(s: &str) -> Option<Rgb> {
 // Block parsing
 // ============================================================================
 
+const SECTION_MARKER: &str = "::: section ";
+
+fn parse_section_marker(
+    input: &str,
+    ctx: &mut ParseContext<'_>,
+) -> Result<(ibis_doc_model::SectionBreak, ibis_doc_model::SectionSetup), Error> {
+    use ibis_doc_model::{PageColumns, SectionBreak, SectionSetup};
+    let invalid = || Error::new("Markdown の section 指定が不正です");
+    let data: serde_json::Value = serde_json::from_str(input).map_err(|_| invalid())?;
+    let kind = match data["break"].as_str() {
+        Some("end") => SectionBreak::None,
+        Some("next-page") => SectionBreak::NextPage,
+        Some("continuous") => SectionBreak::Continuous,
+        Some("next-column") => SectionBreak::NextColumn,
+        Some("odd-page") => SectionBreak::OddPage,
+        Some("even-page") => SectionBreak::EvenPage,
+        _ => return Err(invalid()),
+    };
+    let mut section = SectionSetup::default();
+    let twips = |value: &serde_json::Value| value.as_i64()
+        .filter(|value| (-31680..=31680).contains(value)).map(|value| value * 635);
+    if let Some(size) = data.get("size") {
+        let [width, height] = size.as_array().map(Vec::as_slice).ok_or_else(invalid)? else { return Err(invalid()); };
+        let size = [width, height].map(|value| twips(value).filter(|value| *value > 0).ok_or_else(invalid));
+        let [width, height] = size;
+        section.page.size = EmuSize::new(width?, height?);
+    }
+    if let Some(margins) = data.get("margins") {
+        let [top, right, bottom, left, header, footer, gutter] = margins.as_array().map(Vec::as_slice).ok_or_else(invalid)? else { return Err(invalid()); };
+        section.page.top = twips(top).ok_or_else(invalid)?;
+        section.page.right = twips(right).ok_or_else(invalid)?;
+        section.page.bottom = twips(bottom).ok_or_else(invalid)?;
+        section.page.left = twips(left).ok_or_else(invalid)?;
+        section.page.header = twips(header).ok_or_else(invalid)?;
+        section.page.footer = twips(footer).ok_or_else(invalid)?;
+        section.page.gutter = twips(gutter).ok_or_else(invalid)?;
+    }
+    if let Some(count) = data.get("columns") {
+        section.page.columns.count = count.as_u64().filter(|value| (1..=PageColumns::MAX as u64).contains(value))
+            .ok_or_else(invalid)? as u8;
+    }
+    if let Some(gap) = data.get("column_gap") {
+        section.page.columns.space = twips(gap).filter(|value| *value >= 0).ok_or_else(invalid)?;
+    }
+    if let Some(separator) = data.get("column_separator") {
+        section.page.columns.separator = separator.as_bool().ok_or_else(invalid)?;
+    }
+    if let Some(first_page) = data.get("first_page") {
+        section.page.first_page = first_page.as_u64().and_then(|value| u32::try_from(value).ok()).ok_or_else(invalid)?;
+        section.restart_numbering = true;
+    }
+    for (index, key) in ["header", "footer"].into_iter().enumerate() {
+        if let Some(part) = data.get(key) {
+            let text = part.as_str().ok_or_else(invalid)?;
+            section.parts[index] = Some(vec![Block::Paragraph(build_header_footer_paragraph(text, index == 1, ctx))]);
+        }
+    }
+    Ok((kind, section))
+}
+
+fn write_section_marker(
+    out: &mut String,
+    kind: ibis_doc_model::SectionBreak,
+    page: &PageSetup,
+    restart_numbering: bool,
+    header: Option<&[Block]>,
+    footer: Option<&[Block]>,
+) {
+    use ibis_doc_model::SectionBreak;
+    let kind = match kind {
+        SectionBreak::None => "end",
+        SectionBreak::NextPage => "next-page",
+        SectionBreak::Continuous => "continuous",
+        SectionBreak::NextColumn => "next-column",
+        SectionBreak::OddPage => "odd-page",
+        SectionBreak::EvenPage => "even-page",
+    };
+    let mut data = serde_json::json!({
+        "break": kind,
+        "size": [page.size.width / 635, page.size.height / 635],
+        "margins": ([page.top, page.right, page.bottom, page.left, page.header, page.footer, page.gutter]
+            .map(|value| value / 635)),
+        "columns": page.columns.count,
+        "column_gap": page.columns.space / 635,
+        "column_separator": page.columns.separator,
+    });
+    if restart_numbering {
+        data["first_page"] = page.first_page.into();
+    }
+    for (key, blocks) in [("header", header), ("footer", footer)] {
+        if let Some(blocks) = blocks {
+            data[key] = serialize_header_footer(blocks).into();
+        }
+    }
+    if !out.is_empty() && !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    out.push_str(SECTION_MARKER);
+    out.push_str(&data.to_string());
+    out.push_str("\n\n");
+}
+
 fn note_body_line(line: &str) -> Option<&str> {
     line.strip_prefix("    ").or_else(|| line.strip_prefix('\t'))
 }
@@ -1647,6 +1778,29 @@ fn parse_blocks(
                     continue;
                 }
             }
+        }
+
+        if let Some(input) = trimmed.strip_prefix(SECTION_MARKER) {
+            let (kind, setup) = parse_section_marker(input, ctx)?;
+            if kind != ibis_doc_model::SectionBreak::None
+                && let Some(Block::Paragraph(previous)) = blocks.last_mut()
+                && previous.section.is_none()
+                && previous.field_start.is_none()
+                && !previous.field_end
+            {
+                previous.section_break = kind;
+                previous.section = Some(Arc::new(setup));
+            } else {
+                blocks.push(Block::Paragraph(FlowParagraph {
+                    id: ctx.fresh_id(),
+                    style: ctx.styles.default_paragraph.clone(),
+                    section_break: kind,
+                    section: Some(Arc::new(setup)),
+                    ..FlowParagraph::default()
+                }));
+            }
+            i += 1;
+            continue;
         }
 
         // Page break & Column break & TOC directives
@@ -2446,8 +2600,10 @@ fn parse_nested_table(payload: &str, ctx: &mut ParseContext<'_>, depth: usize) -
     ))
 }
 
+const PPTX_NO_TABLE_HEADER: &str = "<!-- pptx-no-header -->";
+
 fn build_table_block(
-    header_cells: Vec<String>,
+    mut header_cells: Vec<String>,
     alignments: Vec<Option<FlowAlign>>,
     body_rows: Vec<Vec<String>>,
     ctx: &mut ParseContext<'_>,
@@ -2458,6 +2614,12 @@ fn build_table_block(
         .max(alignments.len())
         .max(body_rows.iter().map(Vec::len).max().unwrap_or(0))
         .max(1);
+
+    let first_row_header = !header_cells.first_mut().is_some_and(|cell| {
+        let Some(text) = cell.strip_prefix(PPTX_NO_TABLE_HEADER) else { return false };
+        *cell = text.trim_start().to_owned();
+        true
+    });
 
     let total_width: Emu = 6 * EMU_PER_INCH;
     let col_w = (total_width / col_count as Emu) / 635 * 635;
@@ -2574,7 +2736,7 @@ fn build_table_block(
     };
 
     let mut rows = Vec::with_capacity(1 + body_rows.len());
-    rows.push(build_row(header_cells, true, ctx));
+    rows.push(build_row(header_cells, first_row_header, ctx));
     for r in body_rows {
         rows.push(build_row(r, false, ctx));
     }
@@ -2590,7 +2752,7 @@ fn build_table_block(
         style: Some(TableStyleRef {
             id: "TableGrid".to_string(),
             look: TableLook {
-                first_row: true,
+                first_row: first_row_header,
                 last_row: false,
                 first_column: false,
                 last_column: false,
@@ -4256,6 +4418,7 @@ fn export_markdown_with_positions<'a>(
 
     // 2. Body blocks
     let mut prev_was_list = false;
+    let mut has_sections = false;
     let mut i = 0;
     while i < doc.body.len() {
         let block = &doc.body[i];
@@ -4316,7 +4479,20 @@ fn export_markdown_with_positions<'a>(
         }
         record(MarkdownSource::Body(i, block), start, out.len());
         prev_was_list = is_list;
+        if let Block::Paragraph(paragraph) = block
+            && let Some(section) = &paragraph.section
+        {
+            write_section_marker(&mut out, paragraph.section_break, &section.page, section.restart_numbering,
+                section.parts[0].as_deref(), section.parts[1].as_deref());
+            has_sections = true;
+            prev_was_list = false;
+        }
         i += 1;
+    }
+
+    if has_sections {
+        write_section_marker(&mut out, ibis_doc_model::SectionBreak::None, &doc.page, doc.restart_numbering,
+            (!doc.linked[0]).then_some(doc.header.as_slice()), (!doc.linked[1]).then_some(doc.footer.as_slice()));
     }
 
     // 3. Footnotes and endnotes have independent OOXML ID spaces.
@@ -6153,39 +6329,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         serialize_slide_paragraph(para, &mut out);
                     }
                 }
-                ShapeKind::Table(tbl) => {
-                    if !tbl.rows.is_empty() {
-                        for (ri, row) in tbl.rows.iter().enumerate() {
-                            out.push('|');
-                            for cell in &row.cells {
-                                if cell.merged {
-                                    continue;
-                                }
-                                let cell_txt: String = cell
-                                    .text
-                                    .paragraphs
-                                    .iter()
-                                    .map(|para| para.runs.iter().map(|r| r.text.as_str()).collect::<String>())
-                                    .collect::<Vec<_>>()
-                                    .join(" ");
-                                out.push(' ');
-                                out.push_str(cell_txt.trim());
-                                out.push_str(" |");
-                            }
-                            out.push('\n');
-                            if ri == 0 {
-                                out.push('|');
-                                for cell in &row.cells {
-                                    if !cell.merged {
-                                        out.push_str(" --- |");
-                                    }
-                                }
-                                out.push('\n');
-                            }
-                        }
-                        out.push('\n');
-                    }
-                }
+                ShapeKind::Table(tbl) => serialize_slide_table(tbl, &mut out),
                 ShapeKind::Picture(pic) => {
                     let alt = slide
                         .shape_alt_texts
@@ -6423,10 +6567,60 @@ fn flow_paragraph_to_slide_paragraph(p: &FlowParagraph) -> Option<ibis_doc_model
     })
 }
 
+fn serialize_slide_table(table: &ibis_doc_model::Table, out: &mut String) {
+    if table.rows.is_empty() || table.columns.is_empty() {
+        return;
+    }
+    let columns = table.columns.len();
+    let mut vertical = HashMap::new();
+    for (r, row) in table.rows.iter().enumerate() {
+        out.push('|');
+        for c in 0..columns {
+            out.push(' ');
+            if (r, c) == (0, 0) && !table.style_options.first_row {
+                out.push_str(PPTX_NO_TABLE_HEADER);
+                out.push(' ');
+            }
+            if let Some(cell) = row.cells.get(c).filter(|cell| !cell.merged) {
+                let text = cell.text.paragraphs.iter()
+                    .map(|paragraph| paragraph.runs.iter().map(|run| run.text.as_str()).collect::<String>())
+                    .collect::<Vec<_>>().join(" ");
+                out.push_str(&text.trim().replace('|', "\\|").replace('\n', "<br>"));
+                let span = (cell.column_span as usize).max(1).min(columns - c);
+                let row_span = (cell.row_span as usize).max(1).min(table.rows.len() - r);
+                if span > 1 {
+                    out.push_str(&format!(" <!-- colspan:{span} -->"));
+                }
+                if row_span > 1 {
+                    vertical.insert(c, (r + row_span, span));
+                    out.push_str(" <!-- vmerge:start -->");
+                }
+            } else if let Some(&(end, span)) = vertical.get(&c).filter(|&&(end, _)| r < end) {
+                if span > 1 {
+                    out.push_str(&format!("<!-- colspan:{span} --> "));
+                }
+                out.push_str("<!-- vmerge:continue -->");
+                if r + 1 == end {
+                    vertical.remove(&c);
+                }
+            }
+            out.push_str(" |");
+        }
+        out.push('\n');
+        if r == 0 {
+            out.push('|');
+            for _ in 0..columns {
+                out.push_str(" --- |");
+            }
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+}
+
 fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_model::Table {
     let cols = tbl.columns.len().max(1);
-    let col_w = total_width / cols as i64;
-    let columns = vec![col_w; cols];
+    let columns = vec![total_width / cols as i64; cols];
     let covered = ibis_doc_model::TableCell {
         text: ibis_doc_model::TextBody::default(),
         fill: Fill::None,
@@ -6435,48 +6629,50 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
         row_span: 1,
         merged: true,
     };
-    let rows = tbl
-        .rows
-        .iter()
-        .map(|row| ibis_doc_model::TableRow {
-            height: 370_840,
-            cells: row
-                .cells
-                .iter()
-                .flat_map(|cell| {
-                    let paras: Vec<ibis_doc_model::Paragraph> = cell
-                        .blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            Block::Paragraph(p) => flow_paragraph_to_slide_paragraph(p),
-                            _ => None,
-                        })
-                        .collect();
-                    let primary = ibis_doc_model::TableCell {
-                        text: ibis_doc_model::TextBody {
-                            paragraphs: paras,
-                            ..ibis_doc_model::TextBody::default()
-                        },
-                        fill: Fill::None,
-                        borders: ibis_doc_model::CellBorders::default(),
-                        column_span: cell.span.max(1),
-                        row_span: 1,
-                        merged: false,
-                    };
-                    std::iter::once(primary).chain(std::iter::repeat_n(
-                        covered.clone(),
-                        cell.span.saturating_sub(1) as usize,
-                    ))
-                })
-                .collect(),
-            source: None,
-        })
-        .collect();
+    let mut vertical: HashMap<usize, usize> = HashMap::new();
+    let mut rows: Vec<ibis_doc_model::TableRow> = Vec::new();
+    for row in &tbl.rows {
+        let mut cells = Vec::new();
+        let mut continuing = HashMap::new();
+        for cell in &row.cells {
+            let column = cells.len();
+            let span = cell.span.max(1);
+            if cell.merge == VerticalMerge::Continue && let Some(&origin) = vertical.get(&column) {
+                rows[origin].cells[column].row_span += 1;
+                continuing.insert(column, origin);
+                cells.extend(std::iter::repeat_n(covered.clone(), span as usize));
+                continue;
+            }
+            if cell.merge == VerticalMerge::Start {
+                continuing.insert(column, rows.len());
+            }
+            cells.push(ibis_doc_model::TableCell {
+                text: ibis_doc_model::TextBody {
+                    paragraphs: cell.blocks.iter().filter_map(|block| match block {
+                        Block::Paragraph(paragraph) => flow_paragraph_to_slide_paragraph(paragraph),
+                        _ => None,
+                    }).collect(),
+                    ..ibis_doc_model::TextBody::default()
+                },
+                fill: Fill::None,
+                borders: ibis_doc_model::CellBorders::default(),
+                column_span: span,
+                row_span: 1,
+                merged: false,
+            });
+            cells.extend(std::iter::repeat_n(covered.clone(), (span - 1) as usize));
+        }
+        rows.push(ibis_doc_model::TableRow { height: 370_840, cells, source: None });
+        vertical = continuing;
+    }
     ibis_doc_model::Table {
         columns,
         rows,
         column_sources: Vec::new(),
-        style_options: ibis_doc_model::TableStyleOptions::default(),
+        style_options: ibis_doc_model::TableStyleOptions {
+            first_row: tbl.rows.first().is_some_and(|row| row.header),
+            ..Default::default()
+        },
         style_id: None,
     }
 }
@@ -7441,6 +7637,46 @@ xychart-beta
     }
 
     #[test]
+    fn pptx_markdown_tables_keep_rectangular_merges_and_header_options() {
+        let input = r#"---
+marp: true
+---
+# 見出し行なし
+
+| <!-- pptx-no-header --> 結合 <!-- colspan:2 --> <!-- vmerge:start --> | | 一 |
+| --- | --- | --- |
+| <!-- colspan:2 --> <!-- vmerge:continue --> | | 二 |
+| 左 | 中 | 右\|端 |
+
+---
+
+# 見出し行あり
+
+| 見出し | 値 |
+| --- | --- |
+| 項目 | 12 |
+"#;
+        let pptx = import_markdown_to_pptx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_presentation_markdown(&crate::read(&pptx).unwrap());
+        assert!(markdown.contains("<!-- pptx-no-header --> 結合 <!-- colspan:2 --> <!-- vmerge:start -->"));
+        assert!(markdown.contains("<!-- colspan:2 --> <!-- vmerge:continue -->"));
+        let rebuilt = crate::read(&import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let tables = rebuilt.slides.iter().flat_map(|slide| &slide.shapes).filter_map(|shape| {
+            if let ShapeKind::Table(table) = &shape.kind { Some(table) } else { None }
+        }).collect::<Vec<_>>();
+        assert_eq!(tables.len(), 2);
+        assert!(!tables[0].style_options.first_row);
+        assert!(tables[1].style_options.first_row);
+        let rows = &tables[0].rows;
+        assert!(rows.iter().all(|row| row.cells.len() == 3));
+        assert_eq!((rows[0].cells[0].column_span, rows[0].cells[0].row_span), (2, 2));
+        assert!(rows[0].cells[1].merged && rows[1].cells[0].merged && rows[1].cells[1].merged);
+        assert!(!rows[1].cells[2].merged);
+        let text = rows[2].cells[2].text.paragraphs[0].runs.iter().map(|run| run.text.as_str()).collect::<String>();
+        assert_eq!(text, "右|端");
+    }
+
+    #[test]
     fn markdown_presentation_roundtrips_slides_mermaid_charts_and_tables() {
         let md = "\
 # AI 連携ロードマップ
@@ -7989,6 +8225,41 @@ xychart-beta
         assert!(matches!(&flow.endnotes[0].blocks[..], [
             Block::Paragraph(_), Block::Paragraph(item)
         ] if item.list.is_some()));
+    }
+
+    #[test]
+    fn docx_sections_round_trip_page_geometry_break_and_headers() {
+        let input = r#"縦向きの本文。
+
+::: section {"break":"next-page","size":[11906,16838],"margins":[1440,1300,1200,1100,720,720,0],"columns":2,"column_gap":300,"column_separator":true,"header":"前半 {page}"}
+
+横向きの本文。
+
+::: section {"break":"end","size":[16838,11906],"columns":1,"first_page":4,"header":"後半","footer":"頁 {page}"}
+"#;
+        let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let parsed = crate::read_docx(&rebuilt).unwrap();
+        let flow = parsed.flow.as_ref().unwrap();
+        let [Block::Paragraph(first), Block::Paragraph(last)] = flow.body.as_slice() else {
+            panic!("expected the two original body paragraphs: {markdown}");
+        };
+        let section = first.section.as_ref().unwrap();
+        assert_eq!(first.section_break, ibis_doc_model::SectionBreak::NextPage);
+        assert_eq!(section.page.size, EmuSize::new(11906 * 635, 16838 * 635));
+        assert_eq!(section.page.right, 1300 * 635);
+        assert_eq!(section.page.columns.count, 2);
+        assert_eq!(section.page.columns.space, 300 * 635);
+        assert!(section.page.columns.separator);
+        assert_eq!(serialize_header_footer(section.parts[0].as_deref().unwrap()), "前半 {page}");
+        assert_eq!(flow.page.size, EmuSize::new(16838 * 635, 11906 * 635));
+        assert!(flow.restart_numbering);
+        assert_eq!(flow.page.first_page, 4);
+        assert_eq!(last.text(), "横向きの本文。");
+        assert_eq!(serialize_header_footer(&flow.header), "後半");
+        assert_eq!(serialize_header_footer(&flow.footer), "頁 {page}");
+        assert!(import_markdown_to_docx_bytes(input.replace("11906,16838", "0,16838").as_bytes()).is_err());
     }
 
     #[test]
