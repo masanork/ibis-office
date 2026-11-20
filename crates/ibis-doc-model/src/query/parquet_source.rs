@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::{QColumn, QTable, QType};
 use crate::CellValue;
+use parquet::basic::{ConvertedType, LogicalType, Repetition, Type as PhysicalType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::Field;
+use parquet::schema::types::Type;
 use std::{fs::File, path::Path};
 
 fn number(value: f64, ty: QType) -> Result<(CellValue, QType), String> {
@@ -44,23 +46,103 @@ fn cell(field: Field) -> Result<(CellValue, QType), String> {
     }
 }
 
-/// Materialize a user-selected local Parquet file in the query editor.
-pub fn read_parquet(path: &Path) -> Result<QTable, String> {
+/// A top-level field and its spreadsheet type, if the reader can import it.
+pub struct ParquetColumn {
+    pub name: String,
+    pub ty: Option<QType>,
+}
+
+fn column_type(field: &Type) -> Option<QType> {
+    let info = field.get_basic_info();
+    if !field.is_primitive() || info.repetition() == Repetition::REPEATED {
+        return None;
+    }
+    use ConvertedType as C;
+    use PhysicalType as P;
+    Some(match (field.get_physical_type(), info.converted_type()) {
+        (P::BOOLEAN, C::NONE) => QType::Logical,
+        (P::FLOAT | P::DOUBLE, C::NONE) => QType::Decimal,
+        (P::FIXED_LEN_BYTE_ARRAY, C::NONE)
+            if info.logical_type_ref() == Some(&LogicalType::Float16) =>
+        {
+            QType::Decimal
+        }
+        (P::BYTE_ARRAY, C::UTF8 | C::ENUM | C::JSON) => QType::Text,
+        (P::INT32, C::DATE) => QType::Date,
+        (P::INT32, C::TIME_MILLIS) | (P::INT64, C::TIME_MICROS) => QType::Time,
+        (P::INT96, C::NONE) | (P::INT64, C::TIMESTAMP_MILLIS | C::TIMESTAMP_MICROS) => {
+            QType::DateTime
+        }
+        (P::INT32 | P::INT64, C::NONE) if info.logical_type_ref().is_none() => QType::Whole,
+        (P::INT32, C::INT_8 | C::INT_16 | C::INT_32 | C::UINT_8 | C::UINT_16 | C::UINT_32)
+        | (P::INT64, C::INT_64 | C::UINT_64) => QType::Whole,
+        _ => return None,
+    })
+}
+
+fn open(path: &Path) -> Result<SerializedFileReader<File>, String> {
     if !path.is_file() {
         return Err("Select a local Parquet file".into());
     }
     let file = File::open(path).map_err(|e| e.to_string())?;
-    let reader = SerializedFileReader::new(file).map_err(|e| e.to_string())?;
-    let meta = reader.metadata().file_metadata();
-    let schema = meta.schema_descr();
-    if schema
-        .columns()
+    SerializedFileReader::new(file).map_err(|e| e.to_string())
+}
+
+/// Read only the schema, without decoding column data.
+pub fn parquet_columns(path: &Path) -> Result<Vec<ParquetColumn>, String> {
+    let reader = open(path)?;
+    Ok(reader
+        .metadata()
+        .file_metadata()
+        .schema()
+        .get_fields()
         .iter()
-        .any(|c| c.path().parts().len() != 1 || c.max_rep_level() != 0)
-    {
-        return Err("Nested Parquet columns are unsupported".into());
-    }
-    let width = schema.num_columns();
+        .map(|field| ParquetColumn {
+            name: field.name().into(),
+            ty: column_type(field),
+        })
+        .collect())
+}
+
+pub fn read_parquet(path: &Path) -> Result<QTable, String> {
+    read_parquet_columns(path, &[])
+}
+
+/// Materialize selected top-level fields. An empty selection means the legacy whole-table source.
+pub fn read_parquet_columns(path: &Path, selected: &[String]) -> Result<QTable, String> {
+    let reader = open(path)?;
+    let meta = reader.metadata().file_metadata();
+    let schema = meta.schema();
+    let fields = schema.get_fields();
+    let projected = if selected.is_empty() {
+        fields.to_vec()
+    } else {
+        let mut by_name = std::collections::HashMap::new();
+        for field in fields {
+            by_name
+                .entry(field.name())
+                .and_modify(|slot| *slot = None)
+                .or_insert(Some(field));
+        }
+        selected
+            .iter()
+            .map(|name| match by_name.remove(name.as_str()) {
+                Some(Some(field)) => Ok(field.clone()),
+                Some(None) => Err(format!("Ambiguous Parquet column: {name}")),
+                None => Err(format!("Missing or duplicate Parquet column: {name}")),
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    };
+    let columns = projected
+        .iter()
+        .map(|field| {
+            let name = field.name().to_string();
+            let ty =
+                column_type(field).ok_or_else(|| format!("Unsupported Parquet column: {name}"))?;
+            Ok(QColumn { name, ty })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let width = columns.len();
     if width > 16_384
         || meta.num_rows() >= 1_048_576
         || (width as u64).saturating_mul(meta.num_rows() as u64) > 5_000_000
@@ -68,28 +150,20 @@ pub fn read_parquet(path: &Path) -> Result<QTable, String> {
         return Err("Parquet source exceeds the query editor's size limit".into());
     }
     let mut table = QTable {
-        columns: schema
-            .columns()
-            .iter()
-            .map(|c| QColumn {
-                name: c.name().to_string(),
-                ty: QType::Any,
-            })
-            .collect(),
+        columns,
         rows: Vec::new(),
     };
-    for row in reader.get_row_iter(None).map_err(|e| e.to_string())? {
+    let projection = Type::group_type_builder(schema.name())
+        .with_fields(projected)
+        .build()
+        .map_err(|e| e.to_string())?;
+    for row in reader
+        .get_row_iter(Some(projection))
+        .map_err(|e| e.to_string())?
+    {
         let mut values = Vec::with_capacity(width);
-        for ((name, field), col) in row
-            .map_err(|e| e.to_string())?
-            .into_columns()
-            .into_iter()
-            .zip(&mut table.columns)
-        {
-            let (value, ty) = cell(field).map_err(|e| format!("{name}: {e}"))?;
-            if col.ty == QType::Any {
-                col.ty = ty;
-            }
+        for (name, field) in row.map_err(|e| e.to_string())?.into_columns() {
+            let (value, _) = cell(field).map_err(|e| format!("{name}: {e}"))?;
             values.push(value);
         }
         table.rows.push(values);
@@ -103,7 +177,7 @@ mod tests {
 
     #[test]
     fn reads_a_snappy_table() {
-        assert_reads_compressed_table(parquet::basic::Compression::SNAPPY, "snappy");
+        assert_reads_compressed_table(parquet::basic::Compression::SNAPPY, "snappy", false);
     }
 
     #[test]
@@ -111,17 +185,27 @@ mod tests {
         assert_reads_compressed_table(
             parquet::basic::Compression::ZSTD(Default::default()),
             "zstd",
+            false,
         );
     }
 
-    fn assert_reads_compressed_table(compression: parquet::basic::Compression, codec: &str) {
-        use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
+    #[test]
+    fn projects_scalar_columns_around_nested_data() {
+        assert_reads_compressed_table(parquet::basic::Compression::SNAPPY, "nested", true);
+    }
+
+    fn assert_reads_compressed_table(
+        compression: parquet::basic::Compression,
+        fixture: &str,
+        nested: bool,
+    ) {
+        use parquet::data_type::{ByteArray, ByteArrayType, Int32Type, Int64Type};
         use parquet::file::{properties::WriterProperties, writer::SerializedFileWriter};
         use parquet::schema::parser::parse_message_type;
         use std::sync::Arc;
 
         let file = std::env::temp_dir().join(format!(
-            "ibis-parquet-{codec}-{}.parquet",
+            "ibis-parquet-{fixture}-{}.parquet",
             std::process::id()
         ));
         let output = File::options()
@@ -129,10 +213,15 @@ mod tests {
             .create_new(true)
             .open(&file)
             .unwrap();
+        let extra = if nested {
+            " OPTIONAL GROUP extra { REQUIRED INT32 item; }"
+        } else {
+            ""
+        };
         let schema = Arc::new(
-            parse_message_type(
-                "message example { REQUIRED BINARY code (UTF8); OPTIONAL INT64 amount; }",
-            )
+            parse_message_type(&format!(
+                "message example {{ REQUIRED BINARY code (UTF8); OPTIONAL INT64 amount;{extra} }}"
+            ))
             .unwrap(),
         );
         let properties = WriterProperties::builder()
@@ -155,10 +244,35 @@ mod tests {
             .write_batch(&[7], Some(&[1, 0]), None)
             .unwrap();
         amount.close().unwrap();
+        if nested {
+            let mut extra = group.next_column().unwrap().unwrap();
+            extra
+                .typed::<Int32Type>()
+                .write_batch(&[8], Some(&[1, 0]), None)
+                .unwrap();
+            extra.close().unwrap();
+        }
         group.close().unwrap();
         writer.close().unwrap();
 
-        let result = read_parquet(&file);
+        let result = if nested {
+            let schema = parquet_columns(&file).unwrap();
+            assert_eq!(schema[0].ty, Some(QType::Text));
+            assert_eq!(schema[1].ty, Some(QType::Whole));
+            assert_eq!(schema[2].name, "extra");
+            assert_eq!(schema[2].ty, None);
+            assert!(read_parquet_columns(&file, &["extra".into()]).is_err());
+            assert!(read_parquet_columns(&file, &["missing".into()]).is_err());
+            let reordered = read_parquet_columns(&file, &["amount".into(), "code".into()]).unwrap();
+            assert_eq!(reordered.names(), ["amount", "code"]);
+            assert_eq!(
+                reordered.rows[0],
+                [CellValue::Number(7.), CellValue::Text("01202".into())]
+            );
+            read_parquet_columns(&file, &["code".into(), "amount".into()])
+        } else {
+            read_parquet(&file)
+        };
         std::fs::remove_file(file).unwrap();
         let table = result.unwrap();
         assert_eq!(table.names(), ["code", "amount"]);

@@ -19,7 +19,7 @@ mod book;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod parquet_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use parquet_source::read_parquet;
+pub use parquet_source::{parquet_columns, read_parquet, read_parquet_columns, ParquetColumn};
 mod codec;
 mod expr;
 mod m_parse;
@@ -314,7 +314,7 @@ pub struct Parameter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
     /// A local Parquet file selected by the user. Only the display name is stored.
-    Parquet(String),
+    Parquet { name: String, columns: Vec<String> },
     /// A blank query starting with an empty table (`#table({}, {})`).
     Blank,
     /// A table of the book, or a named range (`Excel.CurrentWorkbook(){[Name="Table1"]}[Content]`).

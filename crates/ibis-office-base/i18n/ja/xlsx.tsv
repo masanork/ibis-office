@@ -2029,6 +2029,9 @@ query.field.start	開始値
 query.field.step	増分
 query.field.parameter-name	パラメーター名
 query.field.parameter-value	現在の値
+query.parquet-columns	Parquet の列を選択
+query.parquet-unsupported	取り込み対象外
+query.parquet-select-column	取り込む列を1つ以上選択してください。
 query.type.any	任意
 query.type.text	テキスト
 query.type.whole	整数

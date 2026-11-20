@@ -70,6 +70,13 @@ pub(crate) struct QueriesPanel {
     pub(crate) ui: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<String, Bounds<Pixels>>>>,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) struct ParquetSelection {
+    path: std::path::PathBuf,
+    columns: Vec<query::ParquetColumn>,
+    selected: Vec<bool>,
+}
+
 impl QueryEditor {
     /// The table shown.
     pub(crate) fn shown(&self) -> &QTable {
@@ -141,13 +148,115 @@ impl SlideEditor {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
-            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let source = cx.background_executor().spawn(async move { query::read_parquet(&path) }).await;
+            if existing.is_some() {
+                this.update_in(cx, |this, window, cx| {
+                    if this.file_id != document_id {
+                        return;
+                    }
+                    let columns = match existing.as_ref().map(|q| &q.source) {
+                        Some(Source::Parquet { columns, .. }) => columns.clone(),
+                        _ => return,
+                    };
+                    this.read_parquet_query(path, columns, existing, refresh, window, cx);
+                }).ok();
+                return;
+            }
+            let schema = cx.background_executor().spawn({
+                let path = path.clone();
+                async move { query::parquet_columns(&path) }
+            }).await;
+            this.update_in(cx, |this, _, cx| {
+                if this.file_id != document_id {
+                    return;
+                }
+                match schema {
+                    Ok(columns) => this.choose_parquet_columns(path, columns, cx),
+                    Err(error) => this.set_status(error, cx),
+                }
+            }).ok();
+        }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn choose_parquet_columns(&mut self, path: std::path::PathBuf, columns: Vec<query::ParquetColumn>, cx: &mut Context<Self>) {
+        let selected = columns.iter().map(|column| column.ty.is_some()).collect();
+        let state = self.wb_mut();
+        state.close_settings();
+        state.panels.parquet_selection = Some(ParquetSelection { path, columns, selected });
+        self.sidebar_open = true;
+        cx.notify();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn parquet_columns_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        use gpui_kit::component::checkbox::Checkbox;
+        let p = self.sheet_state()?.panels.parquet_selection.as_ref()?;
+        let text = crate::shell::i18n::text;
+        let mut body = v_flex().gap_2().px(px(18.)).py(px(8.));
+        for (index, column) in p.columns.iter().enumerate() {
+            let kind = column.ty
+                .and_then(|ty| query::QType::ALL.iter().position(|&candidate| candidate == ty))
+                .map(|index| text(query_ops::TYPES[index]))
+                .unwrap_or_else(|| text("query.parquet-unsupported"));
+            let label = format!("{}  ·  {kind}", column.name);
+            if column.ty.is_some() {
+                body = body.child(Checkbox::new(("parquet-column", index))
+                    .label(label)
+                    .checked(p.selected[index])
+                    .on_change(cx.listener(move |this, checked, _, cx| {
+                        if let Some(p) = this.wb_mut().panels.parquet_selection.as_mut() {
+                            p.selected[index] = *checked;
+                            cx.notify();
+                        }
+                    })));
+            } else {
+                body = body.child(div().child(label));
+            }
+        }
+        let has_selection = p.selected.iter().any(|checked| *checked);
+        if !has_selection {
+            body = body.child(text("query.parquet-select-column"));
+        }
+        let actions = crate::shell::chrome::action_bar().action(
+            crate::shell::chrome::ActionDefinition::new("parquet-columns-cancel", "", crate::shell::chrome::ActionButtonKind::Normal)
+                .label(text("_shell.close"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.wb_mut().panels.parquet_selection = None;
+                    cx.notify();
+                }))
+        );
+        let actions = if has_selection {
+            actions.action(crate::shell::chrome::ActionDefinition::new("parquet-columns-load", "", crate::shell::chrome::ActionButtonKind::Primary)
+                .label(text("_xlsx.load"))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let Some(p) = this.wb_mut().panels.parquet_selection.take() else { return };
+                    let columns = p.columns.into_iter().zip(p.selected)
+                        .filter(|(_, checked)| *checked)
+                        .map(|(column, _)| column.name)
+                        .collect();
+                    this.read_parquet_query(p.path, columns, None, false, window, cx);
+                    cx.notify();
+                })))
+        } else {
+            actions
+        };
+        Some(SidebarPanel::with_footer(text("query.parquet-columns"), body.into_any_element(), actions))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn read_parquet_query(&mut self, path: std::path::PathBuf, columns: Vec<String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let document_id = self.file_id;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn({
+                let columns = columns.clone();
+                async move { query::read_parquet_columns(&path, &columns) }
+            }).await;
             this.update_in(cx, |this, window, cx| {
                 if this.file_id != document_id {
                     return;
                 }
-                let source = match source {
+                let source = match result {
                     Ok(source) => source,
                     Err(error) => {
                         this.set_status(error, cx);
@@ -160,20 +269,20 @@ impl SlideEditor {
                     let query_name = (1..).map(|n| format!("{base}{n}"))
                         .find(|name| workbook.is_none_or(|book| !book.queries.iter().any(|q| q.name == *name)))
                         .unwrap_or(base);
-                    Query::new(&query_name, Source::Parquet(name.clone()))
+                    Query::new(&query_name, Source::Parquet { name: name.clone(), columns: columns.clone() })
                 });
                 if refresh {
                     let Some(book) = workbook else { return };
                     if !book.queries.contains(&q) {
                         return;
                     }
-                    q.source = Source::Parquet(name);
+                    q.source = Source::Parquet { name, columns };
                     match query::result_from_source(this.presentation(), &q, &book.queries, &book.query_parameters, 0, source) {
                         Ok(table) => this.load_refreshed_query(q, table, cx),
                         Err(error) => this.queries_message(error, cx),
                     }
                 } else {
-                    q.source = Source::Parquet(name);
+                    q.source = Source::Parquet { name, columns };
                     this.open_query_editor_with_source(q, source, window, cx);
                 }
             }).ok();
@@ -247,7 +356,7 @@ impl SlideEditor {
         let mut base = ed.query.clone();
         base.name = ed.name.read(cx).value().to_string();
         let result = query::m_to_query(&code, &base).map_err(|e| crate::shell::i18n::format(&format!("query.code-error.{}", e.key), &[("detail", &e.detail)]));
-        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet(_)) && q.source == ed.query.source {
+        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. }) && q.source == ed.query.source {
             Ok(ed.source.clone())
         } else {
             query::read_source(self.presentation(), &q.source)
@@ -491,7 +600,7 @@ impl SlideEditor {
     pub(crate) fn edit_query(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(query) = self.presentation().workbook.as_ref().and_then(|w| w.queries.get(index)).cloned() else { return };
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if matches!(query.source, Source::Parquet(_)) {
+        if matches!(query.source, Source::Parquet { .. }) {
             return self.pick_parquet_query(Some(query), false, window, cx);
         }
         self.open_query_editor(query, window, cx);
@@ -516,7 +625,7 @@ impl SlideEditor {
         let Some(wb) = self.presentation().workbook.as_ref() else { return };
         let Some(query) = wb.queries.get(index).cloned() else { return };
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if matches!(query.source, Source::Parquet(_)) {
+        if matches!(query.source, Source::Parquet { .. }) {
             return self.pick_parquet_query(Some(query), true, _window, cx);
         }
         let table = match query::result_of(self.presentation(), &query, &wb.queries, &wb.query_parameters, 0) {
@@ -560,7 +669,7 @@ impl SlideEditor {
         }
         for (i, q) in queries.iter().enumerate() {
             let source = match &q.source {
-                Source::Parquet(name) => format!("Parquet · {name}"),
+                Source::Parquet { name, .. } => format!("Parquet · {name}"),
                 Source::Blank => crate::shell::i18n::text("query.source-blank").to_string(),
                 Source::Table(t) => t.clone(),
                 Source::Range { sheet, range } => format!("{sheet}!{range}"),

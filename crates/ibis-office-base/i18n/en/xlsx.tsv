@@ -2032,6 +2032,9 @@ query.field.start	Start
 query.field.step	Step
 query.field.parameter-name	Parameter name
 query.field.parameter-value	Current value
+query.parquet-columns	Select Parquet Columns
+query.parquet-unsupported	Unsupported
+query.parquet-select-column	Select at least one supported column.
 query.type.any	Any
 query.type.text	Text
 query.type.whole	Whole number
