@@ -95,6 +95,7 @@ fn input(text: &str, placeholder: &str, window: &mut Window, cx: &mut Context<Sl
 pub(crate) enum SingleFileQuery {
     JsonLines,
     ArrowIpc,
+    Avro,
 }
 
 #[ibis_office_macros::editor_ext(QueryEditorExt)]
@@ -262,6 +263,7 @@ impl SlideEditor {
         let extensions: &[&str] = match format {
             SingleFileQuery::JsonLines => &["jsonl", "ndjson"],
             SingleFileQuery::ArrowIpc => &["arrow", "ipc", "feather"],
+            SingleFileQuery::Avro => &["avro"],
         };
         let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
             files: true, directories: false, extensions: extensions.iter().map(|extension| (*extension).into()).collect(),
@@ -275,11 +277,13 @@ impl SlideEditor {
             let definition = match format {
                 SingleFileQuery::JsonLines => Source::JsonLines { name },
                 SingleFileQuery::ArrowIpc => Source::ArrowIpc { name },
+                SingleFileQuery::Avro => Source::Avro { name },
             };
             let result = cx.background_executor().spawn(async move {
                 match format {
                     SingleFileQuery::JsonLines => query::read_json_lines(&path),
                     SingleFileQuery::ArrowIpc => query::read_arrow_ipc(&path),
+                    SingleFileQuery::Avro => query::read_avro(&path),
                 }
             }).await;
             this.update_in(cx, |this, window, cx| {
@@ -410,7 +414,7 @@ impl SlideEditor {
         let mut base = ed.query.clone();
         base.name = ed.name.read(cx).value().to_string();
         let result = query::m_to_query(&code, &base).map_err(|e| crate::shell::i18n::format(&format!("query.code-error.{}", e.key), &[("detail", &e.detail)]));
-        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. }) && q.source == ed.query.source {
+        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. } | Source::Avro { .. }) && q.source == ed.query.source {
             Ok(ed.source.clone())
         } else {
             query::read_source(self.presentation(), &q.source)
@@ -661,6 +665,7 @@ impl SlideEditor {
         match query.source {
             Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), false, window, cx),
             Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), false, window, cx),
+            Source::Avro { .. } => return self.pick_single_file_query(SingleFileQuery::Avro, Some(query), false, window, cx),
             _ => {}
         }
         self.open_query_editor(query, window, cx);
@@ -692,6 +697,7 @@ impl SlideEditor {
         match query.source {
             Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), true, _window, cx),
             Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), true, _window, cx),
+            Source::Avro { .. } => return self.pick_single_file_query(SingleFileQuery::Avro, Some(query), true, _window, cx),
             _ => {}
         }
         let table = match query::result_of(self.presentation(), &query, &wb.queries, &wb.query_parameters, 0) {
@@ -737,6 +743,7 @@ impl SlideEditor {
             let source = match &q.source {
                 Source::JsonLines { name } => format!("JSON Lines · {name}"),
                 Source::ArrowIpc { name } => format!("Arrow IPC · {name}"),
+                Source::Avro { name } => format!("Avro · {name}"),
                 Source::Parquet { names, .. } => format!("Parquet · {}", names.join(", ")),
                 Source::Blank => crate::shell::i18n::text("query.source-blank").to_string(),
                 Source::Table(t) => t.clone(),

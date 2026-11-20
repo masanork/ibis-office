@@ -19,6 +19,10 @@ use ibis_calc::{CellError, CellValue};
 mod arrow_ipc_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use arrow_ipc_source::read_arrow_ipc;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod avro_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use avro_source::read_avro;
 mod book;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod parquet_source;
@@ -321,6 +325,8 @@ pub struct Parameter {
 /// What a query starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
+    /// A local Avro object container file. Only the display name is stored.
+    Avro { name: String },
     /// A local Arrow IPC file. Only the display name is stored.
     ArrowIpc { name: String },
     /// A local JSON Lines file. Only the display name is stored.

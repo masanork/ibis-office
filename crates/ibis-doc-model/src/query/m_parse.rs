@@ -612,6 +612,7 @@ pub fn m_to_query(code: &str, base: &Query) -> Result<Query, CodeError> {
         if names.is_empty() {
             source = Some(if matches!((body, &base.source),
                 ("Ibis.ParquetSource()", Source::Parquet { .. }) | ("Ibis.JsonLinesSource()", Source::JsonLines { .. })
+                | ("Ibis.AvroSource()", Source::Avro { .. })
                 | ("Ibis.ArrowIpcSource()", Source::ArrowIpc { .. })
             ) {
                 base.source.clone()

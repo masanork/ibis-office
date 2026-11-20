@@ -2595,7 +2595,8 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
         let json_lines = MenuItem::tr("xlsx.query-from-json-lines").icon("table_chart").on(|this, window, cx| this.pick_single_file_query(crate::query_editor::SingleFileQuery::JsonLines, None, false, window, cx));
         let parquet = MenuItem::tr("xlsx.query-from-parquet").icon("table_chart").on(|this, window, cx| this.pick_parquet_query(None, false, window, cx));
         let arrow = MenuItem::tr("xlsx.query-from-arrow-ipc").icon("table_chart").on(|this, window, cx| this.pick_single_file_query(crate::query_editor::SingleFileQuery::ArrowIpc, None, false, window, cx));
-        for mut source in [arrow.into(), json_lines.into(), parquet.into()] {
+        let avro = MenuItem::tr("xlsx.query-from-avro").icon("table_chart").on(|this, window, cx| this.pick_single_file_query(crate::query_editor::SingleFileQuery::Avro, None, false, window, cx));
+        for mut source in [avro.into(), arrow.into(), json_lines.into(), parquet.into()] {
             for (_, entries) in menus.menus.iter_mut() {
                 match insert_after(entries, "xlsx.import-text", source) {
                     Ok(()) => break,

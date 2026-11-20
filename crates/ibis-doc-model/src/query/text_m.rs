@@ -155,6 +155,7 @@ pub fn step_m(step: &Step, prev: &str) -> (String, String) {
 /// The M code of `query`: `let Source = …, step = …  in step`.
 pub fn query_to_m(query: &Query) -> String {
     let source = match &query.source {
+        Source::Avro { .. } => "Ibis.AvroSource()".to_string(),
         Source::ArrowIpc { .. } => "Ibis.ArrowIpcSource()".to_string(),
         Source::JsonLines { .. } => "Ibis.JsonLinesSource()".to_string(),
         Source::Parquet { .. } => "Ibis.ParquetSource()".to_string(),
