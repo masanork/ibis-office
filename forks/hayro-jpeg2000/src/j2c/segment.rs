@@ -1,14 +1,10 @@
 //! Parsing of layers and their segments, as specified in Annex B.
 
-use alloc::boxed::Box;
-
 use super::build::Segment;
 use super::codestream::markers::{EPH, SOP};
-use super::codestream::{ComponentInfo, Header};
+use super::codestream::{ComponentInfo, Header, ProgressionOrder};
 use super::decode::DecompositionStorage;
-use super::progression::{
-    IteratorInput, ProgressionData, layer_resolution_component_position_progression,
-};
+use super::progression::{IteratorInput, ProgressionData};
 use super::tile::{Tile, TilePart};
 use crate::error::{MarkerError, Result, TileError, bail};
 use crate::reader::BitReader;
@@ -17,7 +13,7 @@ pub(crate) const MAX_BITPLANE_COUNT: u8 = 32;
 
 pub(crate) fn parse<'a, 'b>(
     tile: &'b Tile<'a>,
-    mut progression_iterator: Box<dyn Iterator<Item = ProgressionData> + '_>,
+    progression_order: ProgressionOrder,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
 ) -> Result<()> {
@@ -46,7 +42,7 @@ pub(crate) fn parse<'a, 'b>(
                 (0, tile.num_layers),
                 (0, change.end_component),
             );
-            let mut packets = layer_resolution_component_position_progression(input);
+            let mut packets = input.packets(change.order)?;
             if parse_inner(part.clone(), &mut packets, &tile.component_infos, storage).is_none()
                 || packets.next().is_some()
             {
@@ -60,6 +56,7 @@ pub(crate) fn parse<'a, 'b>(
         return Ok(());
     }
 
+    let mut progression_iterator = IteratorInput::new(tile).packets(progression_order)?;
     for tile_part in &tile.tile_parts {
         if parse_inner(
             tile_part.clone(),

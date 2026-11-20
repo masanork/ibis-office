@@ -75,6 +75,28 @@ mod tests {
     }
 
     #[test]
+    fn accepts_all_part_one_tile_part_progressions() {
+        // With one packet, all five orders describe the same encoded bytes.
+        let mut codestream =
+            encode_j2k(&[143], 1, 1, PixelFormat::Gray8, &EncodeOptions::default()).unwrap();
+        let sot = codestream
+            .windows(2)
+            .position(|m| m == [0xff, 0x90])
+            .unwrap();
+        let length = u32::from_be_bytes(codestream[sot + 6..sot + 10].try_into().unwrap());
+        let poc = [0xff, 0x5f, 0, 9, 0, 0, 0, 1, 1, 1, 0];
+        codestream[sot + 6..sot + 10].copy_from_slice(&(length + poc.len() as u32).to_be_bytes());
+        let poc_start = sot + 12;
+        codestream.splice(poc_start..poc_start, poc);
+        for order in 0..5 {
+            codestream[poc_start + 10] = order;
+            assert_eq!(decode(&codestream).unwrap().data, [143]);
+        }
+        codestream[poc_start + 10] = 5;
+        assert!(decode(&codestream).is_err());
+    }
+
+    #[test]
     fn main_header_lrcp_overrides_the_cod_progression() {
         let pixels: Vec<u8> = (0..192).map(|i| (i * 13) as u8).collect();
         let mut codestream =

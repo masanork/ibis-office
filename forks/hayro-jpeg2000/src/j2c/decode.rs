@@ -4,7 +4,6 @@
 //! stages in such a way that a given codestream is decoded into its
 //! component channels.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
@@ -13,13 +12,6 @@ use super::codestream::{
     ComponentInfo, Header, ProgressionOrder, QuantizationStyle, WaveletTransform,
 };
 use super::idwt::IDWTOutput;
-use super::progression::{
-    IteratorInput, ProgressionData, component_position_resolution_layer_progression,
-    layer_resolution_component_position_progression,
-    position_component_resolution_layer_progression,
-    resolution_layer_component_position_progression,
-    resolution_position_component_layer_progression,
-};
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use super::{ComponentData, bitplane, build, idwt, mct, segment, tile};
@@ -68,34 +60,10 @@ pub(crate) fn decode<'a>(
             tile.progression_order
         };
 
-        let iter_input = IteratorInput::new(tile);
-
-        let progression_iterator: Box<dyn Iterator<Item = ProgressionData>> =
-            match progression_order {
-                ProgressionOrder::LayerResolutionComponentPosition => {
-                    Box::new(layer_resolution_component_position_progression(iter_input))
-                }
-                ProgressionOrder::ResolutionLayerComponentPosition => {
-                    Box::new(resolution_layer_component_position_progression(iter_input))
-                }
-                ProgressionOrder::ResolutionPositionComponentLayer => Box::new(
-                    resolution_position_component_layer_progression(iter_input)
-                        .ok_or(DecodingError::InvalidProgressionIterator)?,
-                ),
-                ProgressionOrder::PositionComponentResolutionLayer => Box::new(
-                    position_component_resolution_layer_progression(iter_input)
-                        .ok_or(DecodingError::InvalidProgressionIterator)?,
-                ),
-                ProgressionOrder::ComponentPositionResolutionLayer => Box::new(
-                    component_position_resolution_layer_progression(iter_input)
-                        .ok_or(DecodingError::InvalidProgressionIterator)?,
-                ),
-            };
-
         decode_tile(
             tile,
             header,
-            progression_iterator,
+            progression_order,
             &mut ctx.tile_decode_context,
             &mut ctx.channel_data,
             &mut ctx.storage,
@@ -145,7 +113,7 @@ impl DecoderContext<'_> {
 fn decode_tile<'a, 'b>(
     tile: &'b Tile<'a>,
     header: &Header<'_>,
-    progression_iterator: Box<dyn Iterator<Item = ProgressionData> + '_>,
+    progression_order: ProgressionOrder,
     tile_ctx: &mut TileDecodeContext,
     channel_data: &mut [ComponentData],
     storage: &mut DecompositionStorage<'a>,
@@ -158,7 +126,7 @@ fn decode_tile<'a, 'b>(
     // and code blocks.
     build::build(tile, storage)?;
     // Next, we parse the layers/segments for each code block.
-    segment::parse(tile, progression_iterator, header, storage)?;
+    segment::parse(tile, progression_order, header, storage)?;
     // We then decode the bitplanes of each code block, yielding the
     // (possibly dequantized) coefficients of each code block.
     decode_component_tile_bit_planes(tile, tile_ctx, storage, header)?;

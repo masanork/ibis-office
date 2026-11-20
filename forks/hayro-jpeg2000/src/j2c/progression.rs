@@ -4,10 +4,13 @@
 //! (`layer_num`, resolution, component, precinct) in a specific order that
 //! determines in which order the data appears in the codestream.
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use super::codestream::ProgressionOrder;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
+use crate::error::{DecodingError, Result};
 use core::cmp::Ordering;
 use core::iter;
 
@@ -67,6 +70,32 @@ impl<'a> IteratorInput<'a> {
             resolutions,
             components,
         }
+    }
+
+    pub(crate) fn packets(
+        self,
+        order: ProgressionOrder,
+    ) -> Result<Box<dyn Iterator<Item = ProgressionData> + 'a>> {
+        Ok(match order {
+            ProgressionOrder::LayerResolutionComponentPosition => {
+                Box::new(layer_resolution_component_position_progression(self))
+            }
+            ProgressionOrder::ResolutionLayerComponentPosition => {
+                Box::new(resolution_layer_component_position_progression(self))
+            }
+            ProgressionOrder::ResolutionPositionComponentLayer => Box::new(
+                resolution_position_component_layer_progression(self)
+                    .ok_or(DecodingError::InvalidProgressionIterator)?,
+            ),
+            ProgressionOrder::PositionComponentResolutionLayer => Box::new(
+                position_component_resolution_layer_progression(self)
+                    .ok_or(DecodingError::InvalidProgressionIterator)?,
+            ),
+            ProgressionOrder::ComponentPositionResolutionLayer => Box::new(
+                component_position_resolution_layer_progression(self)
+                    .ok_or(DecodingError::InvalidProgressionIterator)?,
+            ),
+        })
     }
 
     fn min_layer(&self) -> u8 {
@@ -178,9 +207,9 @@ pub(crate) fn resolution_layer_component_position_progression<'a>(
 ) -> impl Iterator<Item = ProgressionData> + 'a {
     let component_tiles = input.component_tiles();
 
-    let mut layer = 0;
-    let mut resolution = 0;
-    let mut component_idx = 0;
+    let mut layer = input.min_layer();
+    let mut resolution = input.min_resolution();
+    let mut component_idx = input.min_comp();
     let mut resolution_tile =
         ResolutionTile::new(component_tiles[component_idx as usize], resolution);
     let mut precinct = 0;
@@ -196,11 +225,11 @@ pub(crate) fn resolution_layer_component_position_progression<'a>(
                 component_idx += 1;
 
                 if component_idx == input.max_comp() {
-                    component_idx = 0;
+                    component_idx = input.min_comp();
                     layer += 1;
 
                     if layer == input.max_layer() {
-                        layer = 0;
+                        layer = input.min_layer();
                         resolution += 1;
 
                         if resolution == input.total_max_resolution() {
