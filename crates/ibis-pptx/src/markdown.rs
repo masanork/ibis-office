@@ -245,6 +245,39 @@ pub fn open_markdown_with_base_dir(data: Vec<u8>, base_dir: Option<&std::path::P
     Ok(opened)
 }
 
+/// Re-parse a full Markdown document (including optional YAML frontmatter) into a fresh
+/// [`FlowDocument`], preserving the caller's `view_mode` and `interaction_mode` and appending any
+/// newly decoded inline/Mermaid/local images to `media`.
+pub fn reparse_markdown_document(
+    text: &str,
+    current_doc: &FlowDocument,
+    media: &mut Vec<Media>,
+    source: Option<&crate::Source>,
+    baseline_pres: Option<&Presentation>,
+    base_dir: Option<&std::path::Path>,
+) -> Result<FlowDocument, Error> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let opened = crate::save::open(crate::blank::blank_file(crate::Kind::Document)?)?;
+    let fallback_baseline = opened.presentation;
+    let mut doc = (**fallback_baseline
+        .flow
+        .as_ref()
+        .ok_or_else(|| Error::new("白紙文書を開けません"))?)
+    .clone();
+    doc.view_mode = current_doc.view_mode;
+    doc.interaction_mode = current_doc.interaction_mode;
+
+    parse_markdown_into(
+        text,
+        &mut doc,
+        media,
+        source.or(Some(&opened.source)),
+        baseline_pres.or(Some(&fallback_baseline)),
+        base_dir,
+    )?;
+    Ok(doc)
+}
+
 /// Parse a Markdown text fragment into [`Block`]s using `doc`'s styles/numbering (e.g. for clipboard paste).
 pub fn parse_markdown_fragment_blocks(
     text: &str,
@@ -5579,5 +5612,49 @@ xychart-beta
         assert!(is_presentation_markdown(b"---\r\ntype: slides\r\n---\r\n# Intro\n"));
         assert!(!is_presentation_markdown(b"---\ntitle: Notes\n---\n\n# Document\n"));
         assert!(!is_presentation_markdown(b"# Plain document\n\n---\n\nSecond section\n"));
+    }
+
+    #[test]
+    fn reparse_markdown_document_preserves_view_mode_and_supports_undo() {
+        let initial = "# Original\n\nHello world.\n";
+        let mut opened = open_markdown(initial.as_bytes().to_vec()).expect("open_markdown");
+        {
+            let flow = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+            flow.view_mode = ibis_doc_model::DocumentViewMode::Web;
+        }
+        let current_doc = opened.presentation.flow.as_ref().unwrap().clone();
+        let mut media = opened.presentation.media.clone();
+        let updated_md = "---\ntitle: Updated\n---\n\n# Revised\n\nUpdated **body**.\n";
+        let new_doc = reparse_markdown_document(
+            updated_md,
+            &current_doc,
+            &mut media,
+            Some(&opened.source),
+            Some(&opened.presentation),
+            None,
+        )
+        .expect("reparse_markdown_document");
+        assert_eq!(new_doc.view_mode, ibis_doc_model::DocumentViewMode::Web);
+
+        let inverse = opened
+            .presentation
+            .apply(ibis_doc_model::Command::Flow(
+                ibis_doc_model::FlowCommand::ReplaceDocument(Box::new(new_doc)),
+            ))
+            .expect("apply ReplaceDocument");
+        let exported_after = export_markdown(
+            opened.presentation.flow.as_ref().unwrap(),
+            &opened.presentation.media,
+        );
+        assert!(exported_after.contains("# Revised"));
+        assert!(exported_after.contains("Updated **body**."));
+
+        opened.presentation.apply(inverse).expect("undo ReplaceDocument");
+        let exported_undone = export_markdown(
+            opened.presentation.flow.as_ref().unwrap(),
+            &opened.presentation.media,
+        );
+        assert!(exported_undone.contains("# Original"));
+        assert!(exported_undone.contains("Hello world."));
     }
 }

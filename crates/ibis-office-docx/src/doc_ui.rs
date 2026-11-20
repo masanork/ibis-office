@@ -1190,6 +1190,7 @@ impl SlideEditor {
             .on_action(cx.listener(|this, _: &ed::OutlineDemote, _, cx| { this.change_heading_level(1, cx); }))
             .on_action(cx.listener(|this, _: &ed::OutlineMoveUp, _, cx| { this.move_heading(true, cx); }))
             .on_action(cx.listener(|this, _: &ed::OutlineMoveDown, _, cx| { this.move_heading(false, cx); }))
+            .on_action(cx.listener(|this, _: &ed::ToggleMarkdownSource, window, cx| { this.toggle_markdown_source_mode(window, cx); }))
     }
 
     /// Word's horizontal ruler over the pages: the page's width with its

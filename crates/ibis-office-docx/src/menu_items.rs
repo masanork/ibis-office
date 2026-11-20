@@ -39,6 +39,7 @@ fn view_start(editor: &SlideEditor) -> Vec<MenuEntry> {
         item("docx.view.web-layout", "web").into(),
         item("docx.view.outline", "view_list").into(),
         item("docx.view.draft", "article").into(),
+        item("docx.view.markdown-source", "code").shortcut("⌘⇧M").into(),
         item("docx.view.focus", "center_focus_strong").into(),
         SEP,
         item("docx.ruler", "rule").into(),

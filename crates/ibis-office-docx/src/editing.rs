@@ -183,6 +183,8 @@ actions!(
         InsertFootnote,
         InsertEndnote,
         ToggleBulletList,
+        /// Markdown ソースコード表示の切替 (⌘⇧M, Ctrl+Shift+M).
+        ToggleMarkdownSource,
     ]
 );
 
@@ -212,6 +214,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(&(if cfg!(target_os = "macos") { "alt-cmd-f" } else { "alt-ctrl-f" }), InsertFootnote, c),
         KeyBinding::new(&(if cfg!(target_os = "macos") { "alt-cmd-e" } else { "alt-ctrl-e" }), InsertEndnote, c),
         KeyBinding::new(&m("shift-l"), ToggleBulletList, c),
+        KeyBinding::new(&m("shift-m"), ToggleMarkdownSource, c),
+        KeyBinding::new(&m("shift-m"), ToggleMarkdownSource, Some(crate::markdown_source::MARKDOWN_SOURCE_CONTEXT)),
         KeyBinding::new(&outline("left"), OutlinePromote, c),
         KeyBinding::new(&outline("right"), OutlineDemote, c),
         KeyBinding::new(&outline("up"), OutlineMoveUp, c),

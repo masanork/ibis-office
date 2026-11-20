@@ -260,6 +260,10 @@ docx.view.read-mode	Read Mode
 docx.view.web-layout	Web Layout
 docx.view.outline	Outline
 docx.view.draft	Draft
+docx.view.markdown-source	Markdown Source
+docx.markdown-source.modified	Modified (syncs on return or save)
+docx.markdown-source.synced	Synced
+docx.markdown-source.back-to-preview	Back to Preview
 docx.view.focus	Focus
 docx.ruler	Ruler
 docx.vertical-ruler	Vertical Ruler
@@ -726,6 +730,7 @@ docx.status.read-mode	Read Mode
 docx.status.web-layout	Web Layout
 docx.status.outline	Outline
 docx.status.draft	Draft
+docx.status.markdown-source	Markdown Source
 docx.table.sort	Sort
 docx.table.sort.asc	Sort Ascending (Header excluded)
 docx.table.sort.desc	Sort Descending (Header excluded)

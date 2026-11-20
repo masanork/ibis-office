@@ -41,6 +41,7 @@ pub mod comments;
 pub(crate) mod link_panel;
 pub(crate) mod picture_crop;
 pub(crate) mod view_mode;
+pub(crate) mod markdown_source;
 pub(crate) mod replace_fonts;
 pub(crate) mod view_state;
 pub(crate) mod prefs;
@@ -323,6 +324,8 @@ pub struct State {
     pub(crate) focus_mode: bool,
     /// ページの左右移動モード (DOCX-VIEW-008). false = 縦方向スクロール (既定), true = 左右ページ移動 (Side to Side).
     pub(crate) page_movement_side_to_side: bool,
+    /// Markdown ソースコード表示モードの状態 (レンダリング ⇄ ソース切替).
+    pub(crate) markdown_source: Option<markdown_source::MarkdownSourceState>,
 }
 
 /// A document's editor: its pages are laid out from the text and shown
@@ -526,6 +529,9 @@ impl FormatEditor for Document {
             return Some(ibis_pptx::docx_convert::export_docx_to_odt(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
         }
         if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
+            if let Some(raw_md) = editor.markdown_source_text() {
+                return Some(Ok(FileBytes { bytes: raw_md.as_bytes().to_vec(), protect: false, note: None }));
+            }
             return Some(
                 ibis_pptx::docx_convert::export_docx_format(editor.presentation(), ibis_pptx::docx_convert::DocxConvertFormat::Markdown)
                     .map(|bytes| FileBytes { bytes, protect: false, note: None })
@@ -588,6 +594,10 @@ impl FormatEditor for Document {
 
     fn relayout_if_changed(editor: &mut SlideEditor) {
         editor.relayout_if_changed();
+    }
+
+    fn enter_pending_edit(editor: &mut SlideEditor, cx: &mut Context<SlideEditor>) {
+        editor.sync_markdown_source_if_dirty(cx);
     }
 
     fn view_from_model(editor: &mut SlideEditor) {
@@ -920,6 +930,9 @@ impl FormatEditor for Document {
         }
         if editor.is_repaired {
             pages = pages.child(editor.render_docx_repair_banner(cx));
+        }
+        if editor.is_markdown_source_mode() {
+            return pages.child(editor.render_markdown_source_view(cx)).into_any_element();
         }
         let show_v_ruler = !is_focus && editor.doc_prefs().vertical_ruler_open;
         let theme = cx.theme().clone();
@@ -1417,12 +1430,16 @@ impl FormatEditor for Document {
             }
             ibis_doc_model::DocumentInteractionMode::Editing => {}
         }
-        match editor.document_view_mode() {
-            ibis_doc_model::DocumentViewMode::Reading => items.push(crate::shell::i18n::text("docx.status.read-mode")),
-            ibis_doc_model::DocumentViewMode::Web => items.push(crate::shell::i18n::text("docx.status.web-layout")),
-            ibis_doc_model::DocumentViewMode::Outline => items.push(crate::shell::i18n::text("docx.status.outline")),
-            ibis_doc_model::DocumentViewMode::Draft => items.push(crate::shell::i18n::text("docx.status.draft")),
-            ibis_doc_model::DocumentViewMode::Print => {}
+        if editor.is_markdown_source_mode() {
+            items.push(crate::shell::i18n::text("docx.status.markdown-source"));
+        } else {
+            match editor.document_view_mode() {
+                ibis_doc_model::DocumentViewMode::Reading => items.push(crate::shell::i18n::text("docx.status.read-mode")),
+                ibis_doc_model::DocumentViewMode::Web => items.push(crate::shell::i18n::text("docx.status.web-layout")),
+                ibis_doc_model::DocumentViewMode::Outline => items.push(crate::shell::i18n::text("docx.status.outline")),
+                ibis_doc_model::DocumentViewMode::Draft => items.push(crate::shell::i18n::text("docx.status.draft")),
+                ibis_doc_model::DocumentViewMode::Print => {}
+            }
         }
         items
     }
