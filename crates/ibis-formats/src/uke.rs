@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/246)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Pure-Rust Japanese Electronic Receipt (`RECEIPTC.UKE` / `.uke`) parser and
 //! leading-zero-safe workbook builder for ibisOffice.
@@ -30,30 +30,34 @@ const KNOWN_TAGS: &[&str] = &[
     "RI", "RO", "GO", "SK", "MK", "ZK", "SH", "SI", "CZ", "UK",
 ];
 
-/// Human-readable Japanese label for a receipt record tag.
-pub fn record_label(tag: &str) -> &'static str {
+/// The words of a receipt record tag (what the screen's language says for it).
+pub fn record_label(tag: &str) -> String {
+    crate::words::text(record_id(tag))
+}
+
+fn record_id(tag: &str) -> &'static str {
     match tag {
-        "IR" => "医療機関情報",
-        "RS" => "レセプト共通(歯科/調剤)",
-        "RE" => "レセプト共通",
-        "HO" => "保険者",
-        "KO" => "公費",
-        "KH" => "公費(補足)",
-        "SN" => "資格確認",
-        "JD" => "受診日",
-        "MF" => "窓口負担",
-        "SY" => "傷病名",
-        "SI" => "診療行為",
-        "IY" => "医薬品",
-        "TO" => "特定器材",
-        "CO" => "コメント",
-        "SJ" => "症状詳記",
-        "RI" => "入院基本料等",
-        "RO" => "老人医療",
-        "CZ" => "調剤",
-        "GO" => "診療報酬請求書",
-        "UK" => "受付情報",
-        _ => "その他レコード",
+        "IR" => "medical.uke.record.information",
+        "RS" => "medical.uke.record.common-dental",
+        "RE" => "medical.uke.record.common",
+        "HO" => "medical.uke.record.insurer",
+        "KO" => "medical.uke.record.public",
+        "KH" => "medical.uke.record.public-extra",
+        "SN" => "medical.uke.record.eligibility",
+        "JD" => "medical.uke.record.visit-date",
+        "MF" => "medical.uke.record.copay",
+        "SY" => "medical.uke.record.diagnosis",
+        "SI" => "medical.uke.record.procedure",
+        "IY" => "medical.uke.record.medicine",
+        "TO" => "medical.uke.record.material",
+        "CO" => "medical.uke.record.comment",
+        "SJ" => "medical.uke.record.symptoms",
+        "RI" => "medical.uke.record.inpatient",
+        "RO" => "medical.uke.record.elderly",
+        "CZ" => "medical.uke.record.dispensing",
+        "GO" => "medical.uke.record.claim-total",
+        "UK" => "medical.uke.record.reception",
+        _ => "medical.uke.record.other",
     }
 }
 
@@ -282,7 +286,7 @@ pub fn open_uke_with_master(
     if let Some(wb_arc) = opened.presentation.workbook.as_mut()
         && let Some(first_meta) = Arc::make_mut(wb_arc).sheets.first_mut()
     {
-        first_meta.name = "レセプト明細".to_string();
+        first_meta.name = crate::words::text("medical.uke.sheet-detail");
     }
     if let Some(slide) = opened.presentation.slides.first_mut() {
         attach_cells_to_slide(slide, detail_cells);
@@ -325,7 +329,7 @@ pub fn open_uke_with_master(
     opened.presentation.slides.push(summary_slide);
     if let Some(wb_arc) = opened.presentation.workbook.as_mut() {
         Arc::make_mut(wb_arc).sheets.push(WorkbookSheet {
-            name: "レセプトサマリー".to_string(),
+            name: crate::words::text("medical.uke.sheet-summary"),
             state: SheetState::Visible,
             slide: Some(summary_slide_id),
             hidden: None,
@@ -360,19 +364,9 @@ fn ensure_bold_style(sheet: &mut Sheet) {
 
 fn build_detail_cells(doc: &UkeDocument, master: &MedicalMasterIndex) -> Vec<SheetCell> {
     let mut cells = Vec::new();
-    let headers = [
-        "行",
-        "種別",
-        "レコード名",
-        "レセプト番号",
-        "主要コード",
-        "マスター解決名称",
-        "点数",
-        "回数",
-        "原文フィールド...",
-    ];
+    let headers = ["line", "kind", "record", "receipt-no", "main-code", "master-name", "points", "count", "raw"];
     for (c, h) in headers.iter().enumerate() {
-        cells.push(text_cell(0, c as u32, h, 1));
+        cells.push(text_cell(0, c as u32, &crate::words::text(&format!("medical.uke.detail.{h}")), 1));
     }
 
     let mut cur_receipt = String::new();
@@ -403,7 +397,7 @@ fn build_detail_cells(doc: &UkeDocument, master: &MedicalMasterIndex) -> Vec<She
 
         cells.push(num_cell(r, 0, (idx + 1) as f64, 0));
         cells.push(text_cell(r, 1, tag, 0));
-        cells.push(text_cell(r, 2, record_label(tag), 0));
+        cells.push(text_cell(r, 2, &record_label(tag), 0));
         if !cur_receipt.is_empty() {
             cells.push(text_cell(r, 3, &cur_receipt, 0));
         }
@@ -433,28 +427,17 @@ fn build_detail_cells(doc: &UkeDocument, master: &MedicalMasterIndex) -> Vec<She
 fn build_summary_cells(doc: &UkeDocument) -> Vec<SheetCell> {
     let mut cells = Vec::new();
     // Top metadata block
-    cells.push(text_cell(0, 0, "医療機関コード", 1));
+    cells.push(text_cell(0, 0, &crate::words::text("medical.uke.summary.facility-code"), 1));
     cells.push(text_cell(0, 1, &doc.facility_code, 0));
-    cells.push(text_cell(0, 2, "医療機関名称", 1));
+    cells.push(text_cell(0, 2, &crate::words::text("medical.uke.summary.facility-name"), 1));
     cells.push(text_cell(0, 3, &doc.facility_name, 0));
-    cells.push(text_cell(0, 4, "診療年月", 1));
+    cells.push(text_cell(0, 4, &crate::words::text("medical.uke.summary.billing-month"), 1));
     cells.push(text_cell(0, 5, &doc.billing_ym, 0));
 
-    let headers = [
-        "レセプト番号",
-        "患者氏名",
-        "男女",
-        "生年月日",
-        "保険者番号",
-        "請求点数(HO)",
-        "積算点数(SI/IY/TO)",
-        "検算差分",
-        "傷病名数",
-        "明細行数",
-    ];
+    let headers = ["receipt-no", "patient", "sex", "birth", "insurer-no", "claimed", "computed", "difference", "diseases", "items"];
     let header_row = 2u32;
     for (c, h) in headers.iter().enumerate() {
-        cells.push(text_cell(header_row, c as u32, h, 1));
+        cells.push(text_cell(header_row, c as u32, &crate::words::text(&format!("medical.uke.summary.{h}")), 1));
     }
 
     let mut total_reported = 0.0f64;
@@ -477,12 +460,12 @@ fn build_summary_cells(doc: &UkeDocument) -> Vec<SheetCell> {
     }
 
     let total_row = header_row + 1 + doc.summaries.len() as u32;
-    cells.push(text_cell(total_row, 0, "合計", 1));
+    cells.push(text_cell(total_row, 0, &crate::words::text("medical.uke.summary.total"), 1));
     cells.push(num_cell(total_row, 5, total_reported, 1));
     cells.push(num_cell(total_row, 6, total_computed, 1));
     cells.push(num_cell(total_row, 7, total_reported - total_computed, 1));
     if let Some(go_pts) = doc.go_total_points {
-        cells.push(text_cell(total_row + 1, 0, "GOレコード合計点数", 1));
+        cells.push(text_cell(total_row + 1, 0, &crate::words::text("medical.uke.summary.go-total"), 1));
         cells.push(num_cell(total_row + 1, 5, go_pts, 0));
         cells.push(num_cell(total_row + 1, 7, go_pts - total_computed, 0));
     }

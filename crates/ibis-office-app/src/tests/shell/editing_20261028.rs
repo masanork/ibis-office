@@ -93,15 +93,11 @@ fn shape_click() {
             let commands = [1000000, 3500000]
                 .into_iter()
                 .enumerate()
-                .map(|(i, x)| Command::InsertShape {
-                    slide: e.current_slide,
-                    index: first + i,
-                    shape: Shape::text_box(
+                .map(|(i, x)| Command::InsertShape { slide: e.current_slide, shapes: vec![(first + i, Shape::text_box(
                         e.document.ids().new_shape_id(),
                         EmuRect::new(x, 1000000, 1500000, 800000),
                         "Text",
-                    ),
-                })
+                    ))] })
                 .collect();
             e.run(commands, cx);
             e.set_selection(Vec::new());
@@ -466,10 +462,13 @@ fn insert_text() {
             e.new_file(kind, w, cx);
         });
         s.menu("insert.text-box");
-        if kind == ibis_formats::Kind::Presentation {
-            let at=s.with(|e,_|{let layout=e.slide_layout().unwrap();(f32::from(layout.origin.x)+150.,f32::from(layout.origin.y)+150.)});
-            s.drag(at,(at.0+140.,at.1+70.));
-        }
+        // The insert mode (K0035 on the sheet): the drag on the page makes the box.
+        let at = if kind == ibis_formats::Kind::Presentation {
+            s.with(|e,_|{let layout=e.slide_layout().unwrap();(f32::from(layout.origin.x)+150.,f32::from(layout.origin.y)+150.)})
+        } else {
+            (500., 400.)
+        };
+        s.drag(at,(at.0+140.,at.1+70.));
         assert!(
             s.with(|e, _| if kind == ibis_formats::Kind::Workbook {
                 e.editing.is_some()
@@ -527,15 +526,11 @@ fn live_handles() {
         let commands = [1000000, 3500000]
             .into_iter()
             .enumerate()
-            .map(|(i, x)| Command::InsertShape {
-                slide: e.current_slide,
-                index: first + i,
-                shape: Shape::text_box(
+            .map(|(i, x)| Command::InsertShape { slide: e.current_slide, shapes: vec![(first + i, Shape::text_box(
                     e.document.ids().new_shape_id(),
                     EmuRect::new(x, 1000000, 1500000, 800000),
                     "Text",
-                ),
-            })
+                ))] })
             .collect();
         e.run(commands, cx);
         e.set_selection(Vec::new());
@@ -584,7 +579,7 @@ fn frame_band_press() {
             e.zoom = Some(1.);
             let index = e.slide().shapes.len();
             let shape = Shape::text_box(e.document.ids().new_shape_id(), EmuRect::new(2000000, 3000000, 2400000, 1200000), "Text");
-            e.run(vec![Command::InsertShape { slide: e.current_slide, index, shape }], cx);
+            e.run(vec![Command::InsertShape { slide: e.current_slide, shapes: vec![(index, shape)] }], cx);
             e.set_selection(Vec::new());
             index
         });
@@ -657,7 +652,7 @@ fn frame_band_right_click() {
             e.zoom = Some(1.);
             let index = e.slide().shapes.len();
             let shape = Shape::text_box(e.document.ids().new_shape_id(), EmuRect::new(2000000, 3000000, 2400000, 1200000), "Text");
-            e.run(vec![Command::InsertShape { slide: e.current_slide, index, shape }], cx);
+            e.run(vec![Command::InsertShape { slide: e.current_slide, shapes: vec![(index, shape)] }], cx);
             e.set_selection(Vec::new());
             index
         });

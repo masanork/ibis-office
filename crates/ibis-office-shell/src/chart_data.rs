@@ -163,7 +163,7 @@ impl SlideEditor {
         if chart.ex.is_some() {
             let current = self.presentation().clone();
             match source.chart_ex_with_data(&current, slide, shape, data) {
-                Ok(read) if self.presentation().slide(slide).and_then(|s| s.shape(shape)).is_some_and(|s| s.kind != read.kind) => self.run(vec![Command::SetKind { slide, shape, kind: Box::new(read.kind) }], cx),
+                Ok(read) if self.presentation().slide(slide).and_then(|s| s.shape(shape)).is_some_and(|s| s.kind != read.kind) => self.run(vec![Command::SetShapeKind { slide, shape, kind: Box::new(read.kind) }], cx),
                 Ok(_) => {}
                 Err(err) => self.set_status(format!("{}: {err}", crate::i18n::text("pptx.chart-data.cannot-apply-chart-data")), cx),
             }
@@ -197,7 +197,7 @@ impl SlideEditor {
             }
         };
         if self.presentation().slide(slide).and_then(|s| s.shape(shape)).is_some_and(|s| s.kind != kind) {
-            self.run(vec![Command::SetKind { slide, shape, kind: Box::new(kind) }], cx);
+            self.run(vec![Command::SetShapeKind { slide, shape, kind: Box::new(kind) }], cx);
         }
     }
 

@@ -113,7 +113,9 @@ impl SlideEditor {
         if self.ink_release(cx) {
             return true;
         }
-        let _ = &window;
+        if self.finish_sheet_insert(event, window, cx) {
+            return true;
+        }
         if self.end_ruler_margin_drag(cx) {
             return true;
         }
@@ -178,6 +180,10 @@ impl SlideEditor {
         if self.cancel_cell_jump(window, cx) {
             return true;
         }
+        // Esc while the box of the insert mode is dragged: the drag is dropped (the mode stays; a second Esc leaves it).
+        if self.drag.is_some() && self.cancel_pointer_drag(cx) {
+            return true;
+        }
         // Esc takes the copied cells' dashed outline away (Excel's; K0011).
         if let Some(state) = self.sheet_state_mut()
             && state.copy_outline
@@ -219,7 +225,7 @@ impl SlideEditor {
             return Some(Ok(plain(ibis_formats::csv::sheet_to_tsv(self.presentation(), index))));
         }
         if is(&["ods"]) {
-            return Some(ibis_formats::write_ods_with_source(self.presentation(), source).map(plain).map_err(|e| e.to_string()));
+            return Some(ibis_odf::write_ods_with_source(self.presentation(), source).map(plain).map_err(|e| e.to_string()));
         }
         if is(&["md", "markdown"]) {
             return Some(
@@ -241,7 +247,6 @@ impl SlideEditor {
     }
 
     /// What the PDF of the workbook is made from: the active sheet, the whole workbook or the selection (印刷する対象).
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn xlsx_pdf_job(&self) -> Result<crate::shell::format::PdfJob, String> {
         let print_what = self.wb().print_what;
         let current_idx = self.presentation().slide_index(self.current_slide).unwrap_or(0);

@@ -675,12 +675,12 @@ impl SlideEditor {
         let edits: Vec<CellEdit> = output.cells.iter().map(|(r, c, input)| CellEdit { row: origin.0 + r, column: origin.1 + c, input: input.clone() }).collect();
         let mut commands = Vec::new();
         if let Some((index, name, slide, shape)) = add_sheet {
-            commands.push(Command::Sheet(SheetCommand::AddSheet { index, name, slide, shape }));
+            commands.push(Command::Sheet(SheetCommand::AddSheet { index, name, sheet: slide, shape }));
         }
-        commands.push(Command::Sheet(SheetCommand::SetCells { slide, edits }));
+        commands.push(Command::Sheet(SheetCommand::SetCells { sheet: slide, edits }));
         for (range, code) in &output.formats {
             let abs = CellRange { first_row: origin.0 + range.first_row, first_column: origin.1 + range.first_column, last_row: origin.0 + range.last_row, last_column: origin.1 + range.last_column };
-            commands.push(Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![abs], change: StyleChange::NumberFormat(code.clone()) }));
+            commands.push(Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![abs], change: StyleChange::NumberFormat(code.clone()) }));
         }
         if let Err(err) = self.document.execute(commands) {
             return Err(format("edit.refused", &[("error", &err)]));
@@ -794,7 +794,7 @@ impl SlideEditor {
             let id = self.document.ids().new_shape_id();
             if let Ok(chart) = source.new_sheet_chart(&current, slide, id, ibis_doc_model::EmuRect::new(x, y, 4_572_000, 2_743_200), kind, refs) {
                 let index = self.presentation().slide(slide).map_or(0, |s| s.shapes.len());
-                let _ = self.document.amend_last(vec![Command::InsertShape { slide, index, shape: chart }]);
+                let _ = self.document.amend_last(vec![Command::InsertShape { slide, shapes: vec![(index, chart)] }]);
             }
         }
 

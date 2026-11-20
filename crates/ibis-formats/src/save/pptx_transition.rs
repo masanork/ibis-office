@@ -19,7 +19,6 @@ const NS_P14: &str = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 const NS_P15: &str = "http://schemas.microsoft.com/office/powerpoint/2012/main";
 const NS_P159: &str = "http://schemas.microsoft.com/office/powerpoint/2015/09/main";
 const REL_AUDIO: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/audio";
-const SOUND_PART: &str = "ppt/media/transition_sound.wav";
 
 // 最小の無音 WAV データ（RIFF PCM 16-bit 8000Hz mono、0.01秒 = 80サンプル = 160バイトのゼロ）
 // ヘッダ 44 バイト + データ 160 バイト = 204 バイト
@@ -159,23 +158,50 @@ fn prefix(doc: &mut XmlDocument, node: NodeId, ns: &str, fallback: &str) -> Stri
     doc.set_attr(node,&format!("xmlns:{name}"),ns);format!("{name}:")
 }
 
+/// The relationship id the slide's current transition sound named `name` embeds (`p:snd/@r:embed`), when it is an audio
+/// relationship of the slide that exists.
+fn existing_sound_embed(package: &Package, part: &str, name: &str) -> Result<Option<String>, Error> {
+    let doc = package.xml(part)?;
+    let Some(root) = doc.root_element() else { return Ok(None) };
+    let rels = package.relationships(part)?;
+    for n in doc.descendants(root) {
+        if !doc.is_element(n) || doc.namespace(n) != Some(super::pptx_new::NS_P) || doc.local_name(n) != "snd" || doc.attr(n, "name") != Some(name) {
+            continue;
+        }
+        let embed = doc.attributes(n).iter().find(|a| a.name.rsplit_once(':').is_some_and(|(p, l)| l == "embed" && doc.resolve_prefix(n, Some(p)) == Some(super::pptx_new::NS_R))).map(|a| a.value.clone());
+        if let Some(rid) = embed {
+            if rels.iter().any(|r| r.id == rid && r.kind == REL_AUDIO) {
+                return Ok(Some(rid));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Write `transition` as slide part `part`'s.
 pub(crate) fn write_transition(package: &mut Package, part: &str, before: Option<&Transition>, transition: Option<&Transition>) -> Result<(), Error> {
     if transition.is_some_and(|t|t.after.is_some_and(|v|v>i32::MAX as u32)) {return Err(unsupported("自動送り時間の範囲"));}
 
-    // 音声ファイルが指定されている場合、無音 WAV を配置しリレーションシップを解決（doc 借用前に実行）
-    let sound_rid = if let Some(Some(ibis_doc_model::TransitionSound::Play { .. })) = transition.map(|t| &t.sound) {
-        if !package.contains(SOUND_PART) {
-            package.set_bytes(SOUND_PART, SILENT_WAV.to_vec());
-        }
-        if package.content_type(SOUND_PART)?.is_none() {
-            super::pptx_shapes::add_default_content_type(package, "wav", "audio/wav")?;
-        }
-        let rel_target = super::pptx::relative(part, SOUND_PART);
-        let existing = package.relationships(part)?.into_iter().find(|r| r.kind == REL_AUDIO && r.target == rel_target);
-        match existing {
-            Some(r) => Some(r.id),
-            None => Some(package.add_relationship(part, REL_AUDIO, &rel_target, false)?),
+    // 音声が指定されている場合、元の切り替えが同じ名前の音声を埋め込みで参照していれば、そのリレーションをそのまま使う
+    // （効果だけを変えても、音は同じ実体を指す。PowerPoint も同じ）。無ければ無音 WAV を置いて参照する。
+    let sound_rid = if let Some(Some(ibis_doc_model::TransitionSound::Play { name, .. })) = transition.map(|t| &t.sound) {
+        if let Some(rid) = existing_sound_embed(package, part, name)? {
+            Some(rid)
+        } else {
+            // The sound itself, one of the menu's (the shipped Ogg Vorbis as WAV, what PowerPoint embeds); a name that is not one of them (the browser version carries none) a silent one.
+            let sound_part = format!("ppt/media/transition_sound_{}.wav", crate::transition_sounds::id_of(name).replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"));
+            if !package.contains(&sound_part) {
+                package.set_bytes(&sound_part, crate::transition_sounds::wav(name).unwrap_or_else(|| SILENT_WAV.to_vec()));
+            }
+            if package.content_type(&sound_part)?.is_none() {
+                super::pptx_shapes::add_default_content_type(package, "wav", "audio/wav")?;
+            }
+            let rel_target = super::pptx::relative(part, &sound_part);
+            let existing = package.relationships(part)?.into_iter().find(|r| r.kind == REL_AUDIO && r.target == rel_target);
+            match existing {
+                Some(r) => Some(r.id),
+                None => Some(package.add_relationship(part, REL_AUDIO, &rel_target, false)?),
+            }
         }
     } else {
         None

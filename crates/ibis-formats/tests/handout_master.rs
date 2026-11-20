@@ -38,9 +38,9 @@ fn the_places_are_a_slide_and_come_back_edited() {
     let moved = EmuRect::new(header.frame.x + 500_000, header.frame.y + 100_000, header.frame.width, header.frame.height);
     document
         .execute(vec![
-            Command::SetFrame { slide: slide.id, shape: header.id, frame: moved },
+            Command::SetFrame { slide: slide.id, frames: vec![(header.id, moved)], with_attached: true },
             Command::SetCharacterFormat { slide: slide.id, shape: header.id, start: 0, end: 4, format: ibis_doc_model::CharacterFormat { font_size: Some(2000), color: Some(ibis_doc_model::Rgb(0xC00000)), ..Default::default() } },
-            Command::RemoveShape { slide: slide.id, shape: footer },
+            Command::DeleteShape { slide: slide.id, shapes: vec![footer], with_attached: true },
         ])
         .unwrap();
     let edited = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();

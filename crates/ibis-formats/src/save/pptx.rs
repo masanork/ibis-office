@@ -219,7 +219,8 @@ pub(crate) struct Target<'a> {
 pub(crate) fn write_changes<'a>(package: &mut Package, map: &SourceMap, baseline: &'a Presentation, current: &Presentation, new_slides: &'a HashMap<SlideId, NewSlide>, new_charts: &HashMap<ShapeId, super::NewChartEntry>, chart_data: &super::pptx_chart_data::ChartDataEdits) -> Result<(), Error> {
     // A chartEx chart is drawn from its part as written, so a data edit leaves the model as it is.
     let ex_data_edited = |slide: &Slide| slide.shapes.iter().any(|s| matches!(&s.kind, ShapeKind::Chart(c) if c.ex.is_some() && super::pptx_chart_data::matching(chart_data, s.id, c).is_some()));
-    if same_content(baseline, current) && !current.slides.iter().any(|s| ex_data_edited(s)) {
+    let zoom_changed = baseline.view_zoom != current.view_zoom;
+    if same_content(baseline, current) && !zoom_changed && !current.slides.iter().any(|s| ex_data_edited(s)) {
         return Ok(());
     }
     if baseline.slide_size != current.slide_size {
@@ -246,6 +247,10 @@ pub(crate) fn write_changes<'a>(package: &mut Package, map: &SourceMap, baseline
     // as it was above); what the user did to the notes pane is written into it.
     let notes_pane = if baseline.notes_pane_save != current.notes_pane_save { current.notes_pane_save } else { None };
     super::pptx_guides::write_notes_pane(package, &map.presentation, notes_pane)?;
+    // The zoom of the slide pane (GitHub issue #237: the file keeps it, as PowerPoint's does).
+    if baseline.view_zoom != current.view_zoom {
+        super::pptx_guides::write_view_scale(package, &map.presentation, current.view_zoom)?;
+    }
     if baseline.layout_scale != current.layout_scale {
         scale_layout_parts(package, map, current.layout_scale)?;
     }

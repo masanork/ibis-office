@@ -26,23 +26,14 @@ pub struct RecommendedChartsPanel {
 /// item's id, its icon and the kind (`None` for a separator).
 pub(crate) fn chart_items() -> Vec<MenuEntry> {
     // 「おすすめグラフ...」 first, then every kind as a picture (a 4:3 chart of the selected cells over its name),
-    // two to a row (`menu_tiles.rs`).
+    // three to a row (K0032, `menu_tiles.rs`).
     let mut items = vec![
         MenuItem::new("xlsx.recommended-charts", crate::shell::i18n::text("xlsx.recommended-charts.menu")).icon("insert_chart").on(|this: &mut SlideEditor, window, cx| this.open_recommended_charts(window, cx)).into(),
         MenuEntry::Separator,
     ];
     items.extend(crate::shell::chart_insert::chart_items_with_thumbs(SlideEditor::insert_sheet_chart, Some(SlideEditor::chart_kind_thumbnail)));
     // The kinds of Excel 2016 (chartEx), a workbook's only: over the selected cells.
-    let item = |id: &'static str, icon: &'static str, kind: NewChartKind| -> MenuEntry {
-        MenuItem::tr(id).icon(icon).on(move |this: &mut SlideEditor, window, cx| this.insert_sheet_chart(kind, window, cx)).thumb(move |editor, width| editor.chart_kind_thumbnail(kind, width)).into()
-    };
-    items.push(item("pptx.insert-chart.waterfall", "waterfall_chart", NewChartKind::Waterfall));
-    items.push(item("pptx.insert-chart.histogram", "bar_chart", NewChartKind::Histogram));
-    items.push(item("pptx.insert-chart.pareto", "bar_chart", NewChartKind::Pareto));
-    items.push(item("pptx.insert-chart.funnel", "filter_alt", NewChartKind::Funnel));
-    items.push(item("pptx.insert-chart.box-whisker", "bar_chart", NewChartKind::BoxWhisker));
-    items.push(item("pptx.insert-chart.treemap", "grid_view", NewChartKind::Treemap));
-    items.push(item("pptx.insert-chart.sunburst", "donut_large", NewChartKind::Sunburst));
+    items.extend(crate::shell::chart_insert::chart_ex_items_with_thumbs(SlideEditor::insert_sheet_chart, SlideEditor::chart_kind_thumbnail));
     items
 }
 
@@ -166,6 +157,10 @@ fn fallback_series_refs(
     }
 }
 
+/// The most rows and columns a picture of a chart reads (`chart_preview_range`).
+const PREVIEW_ROWS: u32 = 24;
+const PREVIEW_COLUMNS: u32 = 12;
+
 type PreviewKey = (String, u32, u64);
 thread_local! {
     /// The charts of `chart_preview`, by kind, shape and cells.
@@ -255,6 +250,51 @@ impl SlideEditor {
         Some(candidate)
     }
 
+    /// The cells a picture of a chart (the menu's tiles, the recommended-charts panel) is made of: the start of what
+    /// `chart_source_range` would give, at most `PREVIEW_ROWS` rows by `PREVIEW_COLUMNS` columns. A picture of a kind
+    /// of chart needs a few points of the data, as Excel's thumbnails do, not a million rows; the chart that is
+    /// inserted still reads all of them (#203).
+    pub(crate) fn chart_preview_range(&self) -> CellRange {
+        let origin = CellRange { first_row: 0, first_column: 0, last_row: 0, last_column: 0 };
+        let Some(range) = self.selected_range().or_else(|| self.current_cell().map(|(c, r)| CellRange { first_row: r, first_column: c, last_row: r, last_column: c })) else { return origin };
+        let Some((_, sheet)) = self.current_sheet() else { return range };
+        let clip = |r: CellRange| CellRange {
+            last_row: r.last_row.min(r.first_row.saturating_add(PREVIEW_ROWS - 1)),
+            last_column: r.last_column.min(r.first_column.saturating_add(PREVIEW_COLUMNS - 1)),
+            ..r
+        };
+        let occupied = |r: u32, c: u32| sheet.cell(r, c).is_some_and(|x| !x.value.is_empty() || x.formula.is_some());
+        let mut candidate = clip(range);
+        if range.first_row == range.last_row && range.first_column == range.last_column {
+            // The table around the cell, grown inside the window of the start of it.
+            let mut region = range;
+            let (max_row, max_column) = (range.first_row.saturating_add(PREVIEW_ROWS - 1), range.first_column.saturating_add(PREVIEW_COLUMNS - 1));
+            loop {
+                let old = region;
+                if old.first_row > 0 && old.last_row - (old.first_row - 1) < PREVIEW_ROWS && (old.first_column..=old.last_column).any(|c| occupied(old.first_row - 1, c)) { region.first_row -= 1; }
+                if old.last_row < max_row && (old.first_column..=old.last_column).any(|c| occupied(old.last_row + 1, c)) { region.last_row += 1; }
+                if old.first_column > 0 && old.last_column - (old.first_column - 1) < PREVIEW_COLUMNS && (old.first_row..=old.last_row).any(|r| occupied(r, old.first_column - 1)) { region.first_column -= 1; }
+                if old.last_column < max_column && (old.first_row..=old.last_row).any(|r| occupied(r, old.last_column + 1)) { region.last_column += 1; }
+                if old == region { break; }
+            }
+            candidate = region;
+        }
+        let has_num = (candidate.first_row..=candidate.last_row)
+            .any(|r| (candidate.first_column..=candidate.last_column).any(|c| matches!(sheet.cell(r, c).map(|x| &x.value), Some(CellValue::Number(_)))));
+        if !has_num {
+            // The numbers nearest the top of the sheet, as `chart_source_range` falls back to the sheet's numeric region.
+            let cells = sheet.cells_in_rows(0, PREVIEW_ROWS - 1).iter().filter(|c| c.column < PREVIEW_COLUMNS && !matches!(c.value, CellValue::Empty)).collect::<Vec<_>>();
+            if cells.iter().any(|c| matches!(c.value, CellValue::Number(_))) {
+                let first_row = cells.iter().map(|c| c.row).min().unwrap_or(0);
+                let first_column = cells.iter().map(|c| c.column).min().unwrap_or(0);
+                let last_row = cells.iter().map(|c| c.row).max().unwrap_or(0);
+                let last_column = cells.iter().map(|c| c.column).max().unwrap_or(0);
+                return CellRange { first_row, first_column, last_row, last_column };
+            }
+        }
+        candidate
+    }
+
     /// 挿入 > グラフ: a chart of `kind` over the selected cells, below them.
     pub(crate) fn insert_sheet_chart(&mut self, kind: NewChartKind, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_cell_edit(cx);
@@ -303,7 +343,7 @@ impl SlideEditor {
 
         }
         let index = self.slide().shapes.len();
-        self.run_sheet(vec![Command::InsertShape { slide, index, shape }], cx);
+        self.run_sheet(vec![Command::InsertShape { slide, shapes: vec![(index, shape)] }], cx);
         self.selection = Some(id);
         let _ = window;
         cx.notify();
@@ -321,10 +361,19 @@ impl SlideEditor {
         }
     }
 
-    /// The 4:3 picture of the chart `kind` in the 挿入 > グラフ menu: the chart of the selected cells.
+    /// The 4:3 picture of the chart `kind` in the 挿入 > グラフ menu. Nothing chosen, or a single cell: the same picture as the presentation's
+    /// and the document's menus (the kind's own look over the fixed data, `shell::chart_insert::kind_thumbnail`). Cells chosen that draw it: the
+    /// chart of those cells, without the title, legend and data table that the other screens' pictures leave out (K0032).
     pub(crate) fn chart_kind_thumbnail(&self, kind: NewChartKind, width: f32) -> AnyElement {
-        let range = self.chart_source_range().unwrap_or(CellRange { first_row: 0, first_column: 0, last_row: 0, last_column: 0 });
-        self.chart_preview_element(kind, range, width, 3.0 / 4.0)
+        let single = self.selected_range().is_none_or(|r| r.first_row == r.last_row && r.first_column == r.last_column);
+        if !single {
+            let range = self.chart_preview_range();
+            // A kind the cells do not draw (a Pareto chart of text) is the fixed picture, not an empty one.
+            if let Some(chart) = self.chart_preview(kind, range, EmuRect::new(0, 0, 4_572_000, 3_429_000), 3.0 / 4.0).filter(|c| c.groups.iter().any(|g| g.series.iter().any(|s| !s.values.is_empty()))) {
+                return crate::shell::chart_insert::chart_preview_view(self, &crate::shell::chart_insert::chart_without_preview_chrome((*chart).clone()), width, 3.0 / 4.0);
+            }
+        }
+        crate::shell::chart_insert::kind_thumbnail(self, "xlsx", kind, width, || crate::shell::chart_insert::blank_presentation_chart(kind))
     }
 
     /// The chart `kind` makes of `range` (kept while the cells, the kind and the shape do not change: the menu draws
@@ -338,7 +387,7 @@ impl SlideEditor {
         }
         let sheet = ibis_formats::quote_sheet(&name);
         let refs = refs_for_new_chart(self.presentation(), &sheet, range, kind);
-        let made = source.new_sheet_chart(self.presentation(), self.current_slide, ibis_doc_model::ShapeId(u64::MAX), frame, kind, refs).ok();
+        let made = source.new_sheet_chart_preview(self.presentation(), self.current_slide, ibis_doc_model::ShapeId(u64::MAX), frame, kind, refs, range.last_row).ok();
         let chart = match made {
             Some(ibis_doc_model::Shape { kind: ibis_doc_model::ShapeKind::Chart(chart), .. }) => Some(std::rc::Rc::new(*chart)),
             _ => None,
@@ -380,7 +429,7 @@ impl SlideEditor {
 
     /// Returns the list of recommended chart types `(NewChartKind, label_id, icon_name)` for the current selection (#128).
     pub(crate) fn recommended_chart_candidates(&self) -> Vec<(NewChartKind, &'static str, &'static str)> {
-        let range = self.chart_source_range().unwrap_or(CellRange { first_row: 0, first_column: 0, last_row: 0, last_column: 0 });
+        let range = self.chart_preview_range();
         let rows = (range.last_row - range.first_row).max(1);
         let cols = (range.last_column - range.first_column).max(1);
         // A time axis (dates or times down the first column, or across the first row) makes the line chart the first
@@ -450,7 +499,7 @@ impl SlideEditor {
         let p = self.sheet_state()?.panels.recommended_charts.as_ref()?;
         let selected = p.selected;
         let candidates = self.recommended_chart_candidates();
-        let range = self.chart_source_range().unwrap_or(CellRange { first_row: 0, first_column: 0, last_row: 0, last_column: 0 });
+        let range = self.chart_preview_range();
         let has_num = self.current_sheet().is_some_and(|(_, sheet)| {
             (range.first_row..=range.last_row)
                 .any(|r| (range.first_column..=range.last_column).any(|c| matches!(sheet.cell(r, c).map(|x| &x.value), Some(CellValue::Number(_)))))

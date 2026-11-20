@@ -211,7 +211,7 @@ fn read_file_data(
     // An old binary file (.xls, .ppt, .doc): read by its content, not by its extension.
     let is_legacy_binary = ibis_formats::is_legacy_binary(&data);
     let external_document_format = ibis_formats::docx_convert::DocxConvertFormat::from_path(path);
-    let open_result = if let Some(law_md) = ibis_formats::lawtext::input_to_markdown(&data).map_err(|e| {
+    let open_result = if let Some(law_md) = ibis_formats::lawtext::path_input_to_markdown(path, &data).map_err(|e| {
         note_open_failed(path);
         e.to_string()
     })? {
@@ -233,10 +233,13 @@ fn read_file_data(
             ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
         }
     } else if let Some(format) = external_document_format {
-        ibis_formats::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
+        (if format == ibis_formats::docx_convert::DocxConvertFormat::Odt { ibis_odf::import_odt(&data) } else { ibis_formats::docx_convert::import_docx_format(&data, format) }).map(|opened| (opened, None))
     } else {
         // The volatile cells calculated again on open (CELL("filename") among them) need the file's path.
-        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || ibis_formats::open_progressive_with_csv_encoding(data,100_000,csv_encoding))
+        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || {
+            let data = ibis_odf::to_ooxml(&data)?.unwrap_or(data);
+            ibis_formats::open_progressive_with_options(data, 100_000, crate::settings_dialog::csv_font().as_ref(), csv_encoding)
+        })
     };
     let (opened, csv_stream) = open_result.map_err(|e| {
         note_open_failed(path);
@@ -262,4 +265,11 @@ fn note_open_failed(path: &std::path::Path) {
     for (_, driver) in crate::format::drivers() {
         driver.note_open_failed(path);
     }
+}
+
+/// Let the queries of a workbook read the files their sources name (`Excel.Workbook(File.Contents(path))`): the model has no file reader of
+/// its own, so it is given this one (the app's, which reads every format). Called once at start; the browser reads no files.
+#[cfg(not(target_family = "wasm"))]
+pub fn register_query_workbook_loader() {
+    ibis_doc_model::query::set_workbook_loader(|path| read_file(std::path::Path::new(path)).map(|loaded| loaded.presentation));
 }

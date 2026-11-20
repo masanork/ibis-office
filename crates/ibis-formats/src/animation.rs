@@ -231,12 +231,16 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
     );
     // The effect lasts as long as its longest behaviour (and its delay).
     let behaviours: Vec<Node> = child(e, "childTnLst").into_iter().flat_map(elements).collect();
-    let duration = behaviours
-        .iter()
-        .filter_map(|b| child(*b, "cBhvr").and_then(ctn))
-        .map(|c| delay(c) + c.attribute("dur").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0) * if is_true(c.attribute("autoRev")) { 2 } else { 1 })
-        .max()
-        .unwrap_or(0);
+    // (A behaviour that runs forward and back takes twice its `dur`. A preset played as its behaviours keeps that in the behaviours;
+    // for the other looks the effect's own `auto_reverse` carries it, and `duration` is the one pass.)
+    let longest = |doubled: bool| {
+        behaviours
+            .iter()
+            .filter_map(|b| child(*b, "cBhvr").and_then(ctn))
+            .map(|c| delay(c) + c.attribute("dur").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0) * if doubled && is_true(c.attribute("autoRev")) { 2 } else { 1 })
+            .max()
+            .unwrap_or(0)
+    };
     let has = |name: &str| behaviours.iter().any(|b| b.tag_name().name() == name);
     let side = |subtype: u32| match subtype {
         1 => Some(AnimationSide::Top),
@@ -297,7 +301,8 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
         AnimationClass::Emphasis => {
             // スピン and 拡大／収縮 as one behaviour alone; every other emphasis effect (シマー, ウェーブ…) is its behaviours.
             let only = |name: &str| behaviours.len() == 1 && behaviours[0].tag_name().name() == name;
-            if only("animRot") && behaviours[0].attribute("by").is_some() {
+            let turns_3d = behaviours.first().is_some_and(|b| b.descendants().filter(|n| n.tag_name().name() == "attrName").any(|n| n.text().is_some_and(|t| t.trim().starts_with("3d."))));
+            if only("animRot") && !turns_3d && behaviours[0].attribute("by").is_some() {
                 AnimationLook::Spin(behaviours[0].attribute("by").and_then(|v| v.parse().ok()).unwrap_or(0))
             } else if let Some(by) = behaviours.iter().find(|b| only(b.tag_name().name()) && b.tag_name().name() == "animScale").and_then(|b| child(*b, "by")) {
                 let v = |a: &str| by.attribute(a).and_then(|v| v.parse().ok()).unwrap_or(100_000);
@@ -326,12 +331,18 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
     let _ = group_delay;
     // A preset played as its behaviours say keeps their time options (smooth start, auto-reverse…) on the behaviours.
     let preset_look = look == AnimationLook::Preset;
+    let duration = longest(preset_look);
+    // `repeatCount="indefinite"` stops at the next click (`endCondLst`, the default here) or at the end of the slide (`endSync`).
+    let until_end_of_slide = child(e, "endSync").is_some();
     let parse_repeat = |val: &str| -> AnimationRepeat {
         if val == "indefinite" {
-            AnimationRepeat::UntilNextClick
+            if until_end_of_slide { AnimationRepeat::UntilEndOfSlide } else { AnimationRepeat::UntilNextClick }
         } else if let Ok(n) = val.parse::<u32>() {
             let count = if n >= 1000 { n / 1000 } else { n };
-            if count <= 1 {
+            if n > 1000 && n % 1000 != 0 {
+                // 2.5 times: the last one stops half way.
+                AnimationRepeat::Thousandths(n)
+            } else if count <= 1 {
                 AnimationRepeat::None
             } else {
                 AnimationRepeat::Count(count)
@@ -354,16 +365,29 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
         .or_else(|| behaviours.iter().filter(|_| !preset_look).filter_map(|b| child(*b, "cBhvr").and_then(ctn)).find_map(|c| c.attribute("decel")))
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    // 巻き戻し is `fill="remove"` on the effect (what PowerPoint writes; measured on its files, 2026-11-15); `rewind="1"` is how ibisOffice wrote it.
     let rewind = e.attribute("rewind")
         .or_else(|| behaviours.iter().filter(|_| !preset_look).filter_map(|b| child(*b, "cBhvr").and_then(ctn)).find_map(|c| c.attribute("rewind")))
-        .is_some_and(|v| v == "1" || v == "true");
-    let parse_after_effect = |fill: &str| match fill {
-        "remove" => AnimationAfterEffect::Hide,
-        _ => AnimationAfterEffect::Hold,
-    };
-    let after_effect = e.attribute("fill")
-        .or_else(|| behaviours.iter().filter(|_| !preset_look).filter_map(|b| child(*b, "cBhvr").and_then(ctn)).find_map(|c| c.attribute("fill")))
-        .map_or(AnimationAfterEffect::Hold, parse_after_effect);
+        .is_some_and(|v| v == "1" || v == "true")
+        || e.attribute("fill") == Some("remove");
+    // The effect's behaviours that run at a click (`p:subTnLst`): 淡色表示 is a colour (`ppt_c`) taken at the next click, 非表示 a `style.visibility`
+    // of hidden at the end of the effect (`masterRel="sameClick"`) or at the next click.
+    let after_effect = child(e, "subTnLst")
+        .and_then(|list| {
+            list.children().filter(|n| n.is_element()).find_map(|b| {
+                let master = child(b, "cBhvr").and_then(ctn)?.attribute("masterRel")?;
+                let to = child(b, "to")?;
+                match b.tag_name().name() {
+                    "set" if child(to, "strVal").and_then(|v| v.attribute("val")) == Some("hidden") => Some(if master == "sameClick" { AnimationAfterEffect::Hide } else { AnimationAfterEffect::HideOnNextClick }),
+                    "animClr" if master == "nextClick" => {
+                        let rgb = child(to, "srgbClr").and_then(|c| c.attribute("val")).and_then(|v| u32::from_str_radix(v, 16).ok())?;
+                        Some(AnimationAfterEffect::Dim(ibis_doc_model::Rgb(rgb)))
+                    }
+                    _ => None,
+                }
+            })
+        })
+        .unwrap_or(AnimationAfterEffect::Hold);
     // The text a word or a letter at a time (`p:iterate`).
     let text_unit = child(e, "iterate").and_then(|it| {
         let unit = match it.attribute("type") {
@@ -414,10 +438,17 @@ fn parse_behaviors(nodes: &[Node], inherit_hold: bool) -> Vec<ibis_doc_model::An
         out.push_str(rest);
         Some(BehaviorKind::Opaque(out))
     };
+    // When the last of the behaviours ends: a change of size that says nothing of its fill takes its effect's only if it lasts to there (one that
+    // ends before is gone from then on: the Zipper exit's scale of 1.23 s in an effect of 2 s is back to the shape's size after it, #89 against
+    // PowerPoint's video, 5 settings at 2 s and 4 s).
+    let end_of = |b: &Node| child(*b, "cBhvr").and_then(|c| ctn(c)).map_or(0, |t| delay(t) + t.attribute("dur").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0));
+    let last_end = nodes.iter().map(end_of).max().unwrap_or(0);
     let mut out = Vec::new();
     for b in nodes {
         let Some(bhvr) = child(*b, "cBhvr") else { continue };
         let time = ctn(bhvr);
+        // Only a change of size (`p:animScale`) goes back at its end; the others' values stay (the Zipper's `ppt_y` of 1.23 s in 2 s does).
+        let lasts = end_of(b) >= last_end || b.tag_name().name() != "animScale";
         let begin = time.map_or(0, delay);
         let dur = time.and_then(|c| c.attribute("dur")).and_then(|d| d.parse::<u32>().ok()).unwrap_or(0);
         let time_node = time;
@@ -430,7 +461,7 @@ fn parse_behaviors(nodes: &[Node], inherit_hold: bool) -> Vec<ibis_doc_model::An
             sum: bhvr.attribute("additive") == Some("sum") || (b.tag_name().name() == "anim" && b.attribute("by").is_some() && b.attribute("from").is_none() && b.attribute("to").is_none()),
             // Held to the end of the effect by `fill="hold"` (or by running as long as the effect does, `dur="indefinite"`); a behaviour
             // that says nothing of it takes its effect's (PowerPoint's exit 43 writes `fill="hold"` on the effect only).
-            remove: !(time_node.is_some_and(|c| c.attribute("fill") == Some("hold") || c.attribute("dur") == Some("indefinite") || (c.attribute("fill").is_none() && inherit_hold))),
+            remove: !(time_node.is_some_and(|c| c.attribute("fill") == Some("hold") || c.attribute("dur") == Some("indefinite") || (c.attribute("fill").is_none() && inherit_hold && lasts))),
             filter: time_node.and_then(|c| c.attribute("tmFilter")).map(ibis_doc_model::animation_preset::BehaviorTime::parse_filter).unwrap_or_default(),
         };
         let attr = child(bhvr, "attrNameLst").and_then(|l| child(l, "attrName")).and_then(|n| n.text()).map(|t| t.trim().to_string());
@@ -476,6 +507,12 @@ fn parse_behaviors(nodes: &[Node], inherit_hold: bool) -> Vec<ibis_doc_model::An
                 BehaviorKind::Effect { filter: filter.to_string(), enter: b.attribute("transition") != Some("out") }
             }
             "animScale" => BehaviorKind::Scale { from: pair(child(*b, "from")), to: pair(child(*b, "to")), by: pair(child(*b, "by")) },
+            // A turn of the 3D view (`3d.view.rotation.y`…) is kept as written: PowerPoint's own video of it (a 360 degree turn about
+            // the vertical axis over 20 s) shows the shape not moving at all (#89, 3 views of 6 times against the video).
+            "animRot" if attr.as_deref().is_some_and(|a| a.starts_with("3d.")) => match opaque(*b) {
+                Some(kind) => kind,
+                None => continue,
+            },
             "animRot" => {
                 let v = |a: &str| b.attribute(a).and_then(|v| v.parse::<i32>().ok());
                 BehaviorKind::Rotate { from: v("from"), to: v("to"), by: v("by") }

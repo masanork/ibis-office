@@ -324,11 +324,11 @@ impl SlideEditor {
             };
             slide = self.document.ids().new_slide_id();
             let shape = self.document.ids().new_shape_id();
-            commands.push(Command::Sheet(SheetCommand::AddSheet { index, name, slide, shape }));
+            commands.push(Command::Sheet(SheetCommand::AddSheet { index, name, sheet: slide, shape }));
         }
-        commands.push(Command::Sheet(SheetCommand::SetCells { slide, edits }));
+        commands.push(Command::Sheet(SheetCommand::SetCells { sheet: slide, edits }));
         for (range, code) in formats {
-            commands.push(Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![range], change: StyleChange::NumberFormat(code) }));
+            commands.push(Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![range], change: StyleChange::NumberFormat(code) }));
         }
         if let Err(error) = self.document.execute(commands) {
             return self.import_text_message(error.to_string(), cx);

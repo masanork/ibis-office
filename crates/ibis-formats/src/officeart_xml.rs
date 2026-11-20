@@ -25,13 +25,61 @@ pub(crate) trait ArtContext {
 }
 
 /// The geometry of a shape of type `spt` (`a:prstGeom`, or `a:custGeom` for a freeform).
-pub(crate) fn geometry_xml(spt: u16, p: &Props) -> String {
+pub(crate) fn geometry_xml(spt: u16, p: &Props, size: Option<(i64, i64)>) -> String {
     let prst = preset(spt).unwrap_or("rect");
     let mut av = String::new();
     if spt == 2 {
         if let Some(adj) = p.int(0x147) {
             // The corner radius: the file's 21600ths of the shorter side, as the preset's 100000ths.
             let _ = write!(av, r#"<a:gd name="adj" fmla="val {}"/>"#, (i64::from(adj) * 100_000 * 2 / 3 / 21_600 * 3 / 2).clamp(0, 50_000) * 2 / 3 * 3 / 2);
+        }
+    }
+    // The adjust values of a shape (`adjustValue`, 21600ths of its width or height: MS-ODRAW 2.2.2) as the preset's `adj`s (100000ths of its shorter
+    // side `ss` or of the percentages the preset names). Each formula is the preset's geometry stated with the legacy shape's coordinates and agrees
+    // with PowerPoint's own pptx of the corpus' .ppt files (plaque 015; home plate 021 and 053 to the digit; can 011; chevron 150; the arrows 006, 071, 083).
+    if let (Some((w, h)), Some(v1)) = (size, p.int(0x147)) {
+        let (w, h) = (w as f64, h as f64);
+        let ss = w.min(h).max(1.0);
+        let v1 = f64::from(v1);
+        let v2 = p.int(0x148).map(f64::from);
+        let gd = |av: &mut String, name: &str, v: f64| {
+            let _ = write!(av, r#"<a:gd name="{name}" fmla="val {}"/>"#, v.round() as i64);
+        };
+        match spt {
+            // plaque: the corner depth, of the shorter side.
+            21 => gd(&mut av, "adj", v1 * 100_000.0 / 21_600.0),
+            // home plate and chevron: where the point begins, from the left; the preset's is the length of the point.
+            15 | 55 => gd(&mut av, "adj", (21_600.0 - v1) / 21_600.0 * w / ss * 100_000.0),
+            // can: the depth of the top ellipse, of the height.
+            22 => gd(&mut av, "adj", v1 * 100_000.0 / 21_600.0 * h / ss),
+            // arrows: adjust1 is where the head begins, adjust2 where the shaft's edge is (its thickness is what is left on both sides).
+            13 | 66 | 67 | 68 => {
+                let shaft = |v2: f64| (21_600.0 - 2.0 * v2) / 21_600.0 * 100_000.0;
+                let head = match spt {
+                    13 => (21_600.0 - v1) / 21_600.0 * w / ss,
+                    66 => v1 / 21_600.0 * w / ss,
+                    67 => (21_600.0 - v1) / 21_600.0 * h / ss,
+                    _ => v1 / 21_600.0 * h / ss,
+                } * 100_000.0;
+                if let Some(v2) = v2 {
+                    gd(&mut av, "adj1", shaft(v2));
+                }
+                gd(&mut av, "adj2", head);
+            }
+            // elbow and curved connectors: the adjust values are where the middle segments run, 21600ths of the width (adjust1 and 3) or of the
+            // height (adjust2), as the preset's `adj`s in 100000ths of them.
+            34 | 38 => gd(&mut av, "adj1", v1 * 100_000.0 / 21_600.0),
+            35 | 39 | 36 | 40 => {
+                let (a1, a2) = (v1 * 100_000.0 / 21_600.0, v2.map(|v| v * 100_000.0 / 21_600.0));
+                gd(&mut av, "adj1", a1);
+                if let Some(a2) = a2 {
+                    gd(&mut av, "adj2", a2);
+                }
+                if matches!(spt, 36 | 40) && let Some(v3) = p.int(0x149) {
+                    gd(&mut av, "adj3", f64::from(v3) * 100_000.0 / 21_600.0);
+                }
+            }
+            _ => {}
         }
     }
     if matches!(spt, 61..=63) && (p.int(0x147).is_some() || p.int(0x148).is_some()) {
@@ -45,7 +93,7 @@ pub(crate) fn geometry_xml(spt: u16, p: &Props) -> String {
 }
 
 /// The preset geometry of a shape type (`MSOSPT`).
-pub(crate) fn preset(spt: u16) -> Option<&'static str> {
+pub fn preset(spt: u16) -> Option<&'static str> {
     Some(match spt {
         1 | 202 => "rect",
         2 => "roundRect",
@@ -319,10 +367,14 @@ pub(crate) fn fill_xml(ctx: &mut dyn ArtContext, p: &Props, has_text_or_placehol
     let alpha = get(0x182).map(|v| (f64::from(v) / 65536.0 * 100_000.0).round() as u32).filter(|a| *a < 100_000);
     let alpha_xml = alpha.map(|a| format!(r#"<a:alpha val="{a}"/>"#)).unwrap_or_default();
     match fill_type {
-        // A picture fill.
+        // A picture fill (3, msofillPicture: stretched) or a texture (2, msofillTexture: tiled at the picture's own size, from the top left:
+        // PowerPoint's own pptx of 072's woven background and 092's boxes has `a:tile sx="100000" sy="100000" algn="tl"` for these).
         2 | 3 => {
             if let Some(index) = p.get(0x186).map(|v| v as usize).filter(|i| *i > 0) {
                 if let Some(rid) = ctx.picture(index) {
+                    if fill_type == 2 {
+                        return format!(r#"<a:blipFill dpi="0" rotWithShape="1"><a:blip r:embed="{rid}"/><a:srcRect/><a:tile tx="0" ty="0" sx="100000" sy="100000" flip="none" algn="tl"/></a:blipFill>"#);
+                    }
                     return format!(r#"<a:blipFill rotWithShape="1"><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></a:blipFill>"#);
                 }
             }
@@ -410,15 +462,19 @@ pub(crate) fn line_xml(ctx: &dyn ArtContext, p: &Props, default_on: bool) -> Str
     }
     let width = get(0x1CB).map_or(9525, |v| i64::from(v as i32));
     let color = ctx.color(get(0x1C0).unwrap_or(0));
+    // [MS-ODRAW] msoLineDashing: 1 DashSys, 2 DotSys, 3 DashDotSys, 4 DashDotDotSys, 5 DotGEL, 6 DashGEL, 7 LongDashGEL, 8 DashDotGEL,
+    // 9 LongDashDotGEL, 10 LongDashDotDotGEL (077's dotted rule: 5, which PowerPoint's own pptx has as `dot`).
     let dash = match get(0x1CE).unwrap_or(0) {
         1 => "sysDash",
         2 => "sysDot",
-        3 => "dashDot",
-        4 => "lgDashDotDot",
-        5 => "dash",
-        6 => "lgDash",
-        7 => "lgDashDot",
-        8 => "lgDashDotDot",
+        3 => "sysDashDot",
+        4 => "sysDashDotDot",
+        5 => "dot",
+        6 => "dash",
+        7 => "lgDash",
+        8 => "dashDot",
+        9 => "lgDashDot",
+        10 => "lgDashDotDot",
         _ => "solid",
     };
     let arrow = |id: u16, tag: &str| -> String {
@@ -432,8 +488,15 @@ pub(crate) fn line_xml(ctx: &dyn ArtContext, p: &Props, default_on: bool) -> Str
         };
         format!(r#"<a:{tag} type="{kind}"/>"#)
     };
+    // [MS-ODRAW] lineJoinStyle (0x01D6): 0 bevel, 1 miter, 2 round, and the default is round (PowerPoint draws a line with no join of its pptx as
+    // round too: a 6 pt rectangle's outer corner is round with no join element, square with `a:miter`).
+    let join = match get(0x1D6) {
+        Some(0) => "<a:bevel/>",
+        Some(1) => r#"<a:miter lim="800000"/>"#,
+        _ => "<a:round/>",
+    };
     format!(
-        r#"<a:ln w="{width}"><a:solidFill><a:srgbClr val="{color:06X}"/></a:solidFill><a:prstDash val="{dash}"/>{}{}</a:ln>"#,
+        r#"<a:ln w="{width}"><a:solidFill><a:srgbClr val="{color:06X}"/></a:solidFill><a:prstDash val="{dash}"/>{join}{}{}</a:ln>"#,
         arrow(0x1D0, "headEnd"),
         arrow(0x1D1, "tailEnd")
     )

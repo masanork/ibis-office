@@ -11,7 +11,7 @@ use crate::docx::ext::*;
 use crate::xlsx::ext::*;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![("shell::i8_language_switch_and_kept", i8_language_switch_and_kept), ("shell::i8_panels_and_status_in_english", i8_panels_and_status_in_english), ("shell::fix16_font_names_in_english", fix16_font_names_in_english), ("shell::i8_docx_panels_in_english", i8_docx_panels_in_english), ("shell::fix34_start_view_in_english", fix34_start_view_in_english), ("shell::fix34_new_file_names_in_english", fix34_new_file_names_in_english), ("shell::fix36_font_lists_from_the_system", fix36_font_lists_from_the_system), ("shell::split_buttons_in_english", split_buttons_in_english), ("shell::fix_font_dialog_item_leads_the_list", fix_font_dialog_item_leads_the_list), ("shell::replace_fonts_document_and_workbook", replace_fonts_document_and_workbook)]
+    vec![("shell::i8_language_switch_and_kept", i8_language_switch_and_kept), ("shell::i8_panels_and_status_in_english", i8_panels_and_status_in_english), ("shell::fix16_font_names_in_english", fix16_font_names_in_english), ("shell::i8_docx_panels_in_english", i8_docx_panels_in_english), ("shell::fix34_start_view_in_english", fix34_start_view_in_english), ("shell::fix34_new_file_names_in_english", fix34_new_file_names_in_english), ("shell::issue206_new_file_numbers", issue206_new_file_numbers), ("shell::fix36_font_lists_from_the_system", fix36_font_lists_from_the_system), ("shell::split_buttons_in_english", split_buttons_in_english), ("shell::fix_font_dialog_item_leads_the_list", fix_font_dialog_item_leads_the_list), ("shell::replace_fonts_document_and_workbook", replace_fonts_document_and_workbook)]
 }
 
 /// The label of the menu item `id` and of the ファイル menu, as shown now.
@@ -314,8 +314,8 @@ fn replace_fonts_document_and_workbook() {
         let slide = e.current_slide;
         let range = CellRange { first_row: 0, first_column: 0, last_row: 0, last_column: 1 };
         e.run(vec![
-            Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 0, column: 0, input: CellInput::Value(ibis_doc_model::CellValue::Text("a".into())) }, CellEdit { row: 0, column: 1, input: CellInput::Value(ibis_doc_model::CellValue::Text("b".into())) }] }),
-            Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![range], change: StyleChange::Font(Some("Courier New".into())) }),
+            Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 0, column: 0, input: CellInput::Value(ibis_doc_model::CellValue::Text("a".into())) }, CellEdit { row: 0, column: 1, input: CellInput::Value(ibis_doc_model::CellValue::Text("b".into())) }] }),
+            Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![range], change: StyleChange::Font(Some("Courier New".into())) }),
         ], cx);
     });
     s.menu("edit.replace-fonts");
@@ -330,4 +330,26 @@ fn replace_fonts_document_and_workbook() {
     let fonts = s.with(|e, _| e.used_fonts());
     assert_eq!(fonts, vec!["Georgia".to_string()]);
     s.screenshot("replace-fonts-xlsx");
+}
+
+/// #206: the new files of one kind are numbered 1, 2, 3 over the session (window title and the Save dialog's default name both come from the
+/// file's name), each kind counted on its own, and a number is not given back.
+fn issue206_new_file_numbers() {
+    use crate::shell::file_actions::next_new_file_name as next;
+    use ibis_formats::Kind;
+    let mut s = Scenario::start_view();
+    s.update(|e, w, cx| e.new_file(Kind::Document, w, cx));
+    s.with(|e, _| assert_eq!(e.file_name.as_deref(), Some("文書 1.docx"), "the first document"));
+    // The second and third go to windows of their own.
+    s.update(|e, w, cx| e.new_file(Kind::Document, w, cx));
+    s.update(|e, w, cx| e.new_file(Kind::Document, w, cx));
+    drop(s);
+    assert_eq!(next(Kind::Document), "文書 4.docx", "three documents were made");
+    assert_eq!(next(Kind::Workbook), "Book1.xlsx", "another kind is counted on its own");
+    assert_eq!(next(Kind::Workbook), "Book2.xlsx");
+    assert_eq!(next(Kind::Presentation), "プレゼンテーション 1.pptx");
+    i18n::show(Language::English);
+    assert_eq!(next(Kind::Document), "Document5.docx");
+    assert_eq!(next(Kind::Presentation), "Presentation2.pptx");
+    i18n::show(Language::Japanese);
 }

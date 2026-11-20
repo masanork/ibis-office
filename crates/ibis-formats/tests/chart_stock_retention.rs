@@ -147,7 +147,7 @@ fn stock_chart_settings_edit_and_save() {
         drop_lines: true,
     };
 
-    doc.execute(vec![Command::SetKind {
+    doc.execute(vec![Command::SetShapeKind {
         slide: slide_id,
         shape: shape_id,
         kind: Box::new(ShapeKind::Chart(Box::new(modified))),
@@ -295,7 +295,7 @@ fn stock_chart_volume_settings_edit_and_save() {
         overlap: 0,
     };
 
-    doc.execute(vec![Command::SetKind {
+    doc.execute(vec![Command::SetShapeKind {
         slide: slide_id,
         shape: shape_id,
         kind: Box::new(ShapeKind::Chart(Box::new(modified))),

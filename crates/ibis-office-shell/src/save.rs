@@ -163,6 +163,14 @@ impl SlideEditor {
         if self.refuse_save(cx) {
             return;
         }
+        // A signed file that was edited: asked first (キャンセル stops here; OK comes back).
+        if crate::host::is_connected() && self.confirm_signature_loss(crate::signature::SignatureWay::Save, window, cx, |this, window, cx| this.save(&Save, window, cx)) {
+            return;
+        }
+        // A host that keeps the file takes the save (`saveFile`, or the file window for a document that is not its own).
+        if self.host_save(crate::host::SaveTrigger::User, window, cx, &mut None) {
+            return;
+        }
         #[cfg(not(target_family = "wasm"))]
         self.confirm_signature_output(RefusedWay::Save, window, cx, |this, window, cx| {
             // A file opened read-only for its password to modify is not overwritten.
@@ -193,6 +201,23 @@ impl SlideEditor {
         self.commit_pending_edit(window, cx);
         if self.refuse_save(cx) {
             return;
+        }
+        // A host that keeps the files: the file window asks where (in its storage), and the bytes go to `saveFileAs`.
+        if crate::host::capabilities().list_folder && crate::host::capabilities().save_file_as {
+            // A signed file that was edited: asked first; `then` goes on after the answer OK and the save.
+            let then = std::rc::Rc::new(std::cell::RefCell::new(Some(then)));
+            let later = then.clone();
+            if crate::host::is_connected() && self.confirm_signature_loss(crate::signature::SignatureWay::Save, window, cx, move |this, window, cx| {
+                if let Some(then) = later.borrow_mut().take() {
+                    this.save_as_then(window, cx, then);
+                }
+            }) {
+                return;
+            }
+            let Some(then) = then.borrow_mut().take() else { return };
+
+                self.open_host_file_dialog(crate::host_file_dialog::Mode::SaveAs, Some(Box::new(then)), window, cx);
+                return;
         }
         #[cfg(not(target_family = "wasm"))]
         { self.confirm_signature_output(RefusedWay::Save, window, cx, move |this, window, cx| this.save_as_then_confirmed(window, cx, then)); }
@@ -254,6 +279,23 @@ impl SlideEditor {
         if self.refuse_save(cx) {
             return;
         }
+        // A signed file that was edited: asked first; `then` goes on after the answer OK and the save.
+        let then = std::rc::Rc::new(std::cell::RefCell::new(Some(then)));
+        let later = then.clone();
+        if crate::host::is_connected() && self.confirm_signature_loss(crate::signature::SignatureWay::Save, window, cx, move |this, window, cx| {
+            if let Some(then) = later.borrow_mut().take() {
+                this.save_then(window, cx, then);
+            }
+        }) {
+            return;
+        }
+        let Some(then) = then.borrow_mut().take() else { return };
+        // A host that keeps the file: `saveFile` (or the file window), and `then` once it accepted.
+        let mut then: Option<Box<dyn FnOnce(&mut Self, &mut Window, &mut Context<Self>)>> = Some(Box::new(then));
+        if self.host_save(crate::host::SaveTrigger::User, window, cx, &mut then) {
+            return;
+        }
+        let then = then.take().expect("kept when the host did not take the save");
         #[cfg(not(target_family = "wasm"))]
         { self.confirm_signature_output(RefusedWay::Save, window, cx, move |this, window, cx| this.save_then_confirmed(window, cx, then)); }
         #[cfg(target_family = "wasm")]
@@ -382,6 +424,9 @@ impl SlideEditor {
                 None => (source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())?, true),
             }
         };
+        // A signed file that was edited (or is written as another kind of file): written without the signatures, as Office does.
+        let other_kind = self.path.as_deref().and_then(|own| own.extension()).map(|e| e.to_ascii_lowercase()) != path.extension().map(|e| e.to_ascii_lowercase());
+        let (bytes, signatures_removed) = self.without_signatures(bytes, other_kind);
         // 常にバックアップ コピーを作成する: what the file is now is kept, where the format has the option.
         crate::format::with_format!(self, backup_before_write(self, &path));
         // Protected with the password the file has (パスワードを使用して暗号化).
@@ -422,6 +467,9 @@ impl SlideEditor {
         // The file as written here: the watching for other apps' changes (shell/file_watch.rs) does not take it for one.
         self.watch.known = crate::file_watch::DiskStamp::after_write(&path, &bytes);
         self.watch.asked = None;
+        if signatures_removed {
+            self.signatures_removed();
+        }
         self.document.mark_clean();
         self.cleanup_active_autorecover_file();
         self.is_recovered = false;
@@ -431,6 +479,10 @@ impl SlideEditor {
 
     #[cfg(not(target_family = "wasm"))]
     fn report_save(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        // A file saved for the first time is among the recent files: the system's menu lists them (macOS).
+        if result.is_ok() {
+            crate::app::set_app_menus(cx);
+        }
         self.status = Some(match result {
             Ok(()) => self.save_note.take().unwrap_or_else(|| crate::i18n::text("_shell.saved").into()),
             Err(err) => crate::i18n::format("file.save-failed", &[("error", &err)]).into(),

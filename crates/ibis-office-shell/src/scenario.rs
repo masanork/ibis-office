@@ -72,6 +72,10 @@ pub mod title_buttons_scenarios;
 pub mod popup_guard_scenarios;
 #[path = "tests/settings_dialog.rs"]
 pub mod settings_dialog_scenarios;
+#[path = "tests/toolbar_overflow.rs"]
+pub mod toolbar_overflow_scenarios;
+#[path = "tests/start_menu.rs"]
+pub mod start_menu_scenarios;
 #[path = "tests/segment_control_ui.rs"]
 pub mod segment_control_ui;
 #[path = "tests/input_components_rendering.rs"]
@@ -221,6 +225,14 @@ pub fn run(args: &[String], all: fn() -> Vec<(&'static str, fn())>, ignored: fn(
     if !missing.is_empty() {
         failed.push("i18n: ids missing from the tables");
     }
+    // Every icon the scenarios drew is bundled: a name with no file under icons/material/ is a 404 in the Web version (K0037).
+    let lost_icons = crate::icons::missing_icon_requests();
+    for path in &lost_icons {
+        println!("scenario icons: {path:?} is not bundled (add it to icons/material/, see its README)");
+    }
+    if !lost_icons.is_empty() {
+        failed.push("icons: names with no bundled file");
+    }
     if let Some(path) = std::env::var_os("IBIS_I18N_LOG") {
         let _ = std::fs::write(path, crate::i18n::log::lines().join("\n") + "\n");
     }
@@ -359,7 +371,10 @@ impl Scenario {
         let mut s = Self::start_sized(width);
         let full = s.dir().join(original.file_name().expect("a file name"));
         std::fs::copy(&original, &full).unwrap_or_else(|e| panic!("{path}: {e}"));
-        let loaded = crate::read_file::read_file(&full).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let mut loaded = crate::read_file::read_file(&full).unwrap_or_else(|e| panic!("{path}: {e}"));
+        // The scenarios' points are for the zoom a format opens at (fit the slide, 141% for a page): the zoom a file was saved at (GitHub issue #237) is
+        // not used here, so that the scenarios do not depend on how the test files were last zoomed; it has a scenario of its own.
+        loaded.presentation.view_zoom = None;
         let name: SharedString = full.file_name().unwrap().to_string_lossy().into_owned().into();
         let is_tmpl = full.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::is_template);
         let is_old_presentation = full.extension().and_then(|e| e.to_str()).is_some_and(|x| ["ppt", "pps", "pot", "odp", "otp"].iter().any(|o| x.eq_ignore_ascii_case(o)));
@@ -411,6 +426,11 @@ impl Scenario {
     }
 
     fn start_sized(width: f32) -> Self {
+        // Each scenario counts its new files from 1 (as a fresh session does).
+        crate::file_actions::reset_new_file_numbers();
+        // The zoom the last window was at is kept in the scenarios' own settings file, which stays between runs: a file with no zoom of its own would
+        // open at what an earlier scenario left (337% made the points of pptx scenarios miss the slide; GitHub issue #237). Each scenario starts from none.
+        crate::settings::remove(crate::editor::LAST_ZOOM_KEY);
         // A second Scenario opened while the first is alive (in one test) waits for it for ever: say so after 30 s.
         let mut waits = 0u32;
         let lock = loop {
@@ -478,7 +498,7 @@ impl Scenario {
     #[allow(dead_code)] // For the formats' scenarios.
     pub fn press_close_button(&mut self) -> bool {
         let editor = self.editor.clone();
-        let close = self.cx.update(|app| editor.update(app, |e, cx| e.window_should_close(cx)));
+        let close = self.cx.update_window(self.window.into(), |_, w, app| editor.update(app, |e, cx| e.window_should_close(w, cx))).expect("the window");
         if close {
             self.cx.update_window(self.window.into(), |_, w, _| w.remove_window()).expect("the window");
         }
@@ -570,7 +590,7 @@ impl Scenario {
         self.with_app(|app| {
             view.update(app, |d, cx| {
                 let slide = d.current_slide;
-                d.run(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row, column, input: CellInput::Value(value) }] })], cx);
+                d.run(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row, column, input: CellInput::Value(value) }] })], cx);
             })
         });
         self.settle();
@@ -699,6 +719,15 @@ impl Scenario {
             PlatformInput::MouseMove(MouseMoveEvent { position: to, pressed_button: Some(MouseButton::Left), modifiers, ..Default::default() }),
             PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: to, click_count: 1, modifiers, ..Default::default() }),
         ]);
+    }
+
+    /// With an insert mode armed (Insert > a shape, a line or a text box on the sheet), the click that places the object at its usual
+    /// size, a little inside the workspace. Nothing when no mode is on.
+    pub fn place_armed(&mut self) {
+        let at = self.with(|e, _| (e.tool != crate::editor::Tool::Select).then(|| e.workspace_bounds.map(|b| (f32::from(b.origin.x) + 160.0, f32::from(b.origin.y) + 90.0))).flatten());
+        if let Some(at) = at {
+            self.click(at);
+        }
     }
 
     /// Press at the first point, move through the others (the button down) and
@@ -909,7 +938,7 @@ impl Scenario {
     pub fn reopen(&mut self) -> ibis_doc_model::Presentation {
         let path = self.with(|e, _| e.path.clone()).expect("the file has a path");
         let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        ibis_formats::read(&data).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        ibis_odf::read(&data).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
     fn dir(&self) -> PathBuf {

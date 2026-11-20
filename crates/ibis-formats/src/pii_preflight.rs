@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/246)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Pure-Rust pre-export PII preflight and sanitization for Office documents
 //! (`DOCX`, `XLSX`, `PPTX`) before external / academic / inter-hospital sharing.
@@ -64,24 +64,24 @@ pub fn inspect_presentation_pii(presentation: &Presentation) -> PiiPreflightRepo
             report.hidden_slides += 1;
             report.findings.push(PiiFinding {
                 kind: PiiFindingKind::HiddenSlide,
-                location: format!("スライド {slide_no}"),
-                detail: "非表示スライドが含まれています".to_string(),
+                location: crate::words::format("medical.pii.location.slide", &[("no", &slide_no)]),
+                detail: crate::words::text("medical.pii.detail.hidden-slide"),
             });
         }
         if !slide.notes.trim().is_empty() {
             report.notes_count += 1;
             report.findings.push(PiiFinding {
                 kind: PiiFindingKind::SpeakerNotes,
-                location: format!("スライド {slide_no} ノート"),
-                detail: "発表者ノートにテキストが含まれています".to_string(),
+                location: crate::words::format("medical.pii.location.notes", &[("no", &slide_no)]),
+                detail: crate::words::text("medical.pii.detail.notes"),
             });
         }
         if !slide.comments.is_empty() {
             report.comments_count += slide.comments.len();
             report.findings.push(PiiFinding {
                 kind: PiiFindingKind::SlideComment,
-                location: format!("スライド {slide_no} コメント"),
-                detail: format!("{} 件のコメントが含まれています", slide.comments.len()),
+                location: crate::words::format("medical.pii.location.comments", &[("no", &slide_no)]),
+                detail: crate::words::format("medical.pii.detail.comments", &[("count", &slide.comments.len())]),
             });
         }
 
@@ -93,8 +93,8 @@ pub fn inspect_presentation_pii(presentation: &Presentation) -> PiiPreflightRepo
                             report.sensitive_pattern_hits += 1;
                             report.findings.push(PiiFinding {
                                 kind: PiiFindingKind::SensitiveNumericPattern,
-                                location: format!("シート {} (R{}C{})", slide_no, cell.row + 1, cell.column + 1),
-                                detail: reason.to_string(),
+                                location: crate::words::format("medical.pii.location.sheet-cell", &[("no", &slide_no), ("row", &(cell.row + 1)), ("column", &(cell.column + 1))]),
+                                detail: reason,
                             });
                         }
                     }
@@ -106,8 +106,8 @@ pub fn inspect_presentation_pii(presentation: &Presentation) -> PiiPreflightRepo
                             report.sensitive_pattern_hits += 1;
                             report.findings.push(PiiFinding {
                                 kind: PiiFindingKind::SensitiveNumericPattern,
-                                location: format!("スライド {slide_no} テキスト"),
-                                detail: reason.to_string(),
+                                location: crate::words::format("medical.pii.location.text", &[("no", &slide_no)]),
+                                detail: reason,
                             });
                         }
                     }
@@ -123,8 +123,8 @@ pub fn inspect_presentation_pii(presentation: &Presentation) -> PiiPreflightRepo
                 report.hidden_sheets += 1;
                 report.findings.push(PiiFinding {
                     kind: PiiFindingKind::HiddenWorksheet,
-                    location: format!("シート `{}`", sheet_ref.name),
-                    detail: "非表示ワークシートが含まれています".to_string(),
+                    location: crate::words::format("medical.pii.location.hidden-sheet", &[("name", &sheet_ref.name)]),
+                    detail: crate::words::text("medical.pii.detail.hidden-sheet"),
                 });
             }
         }
@@ -174,19 +174,19 @@ pub fn sanitize_presentation_pii(presentation: &mut Presentation) -> PiiSanitize
     summary
 }
 
-fn detect_sensitive_text(text: &str) -> Option<&'static str> {
+fn detect_sensitive_text(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
     }
     let digits_only: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits_only.len() == 12 && trimmed.chars().all(|c| c.is_ascii_digit() || c == '-') {
-        return Some("12桁の個人番号（マイナンバー）様式の数字列を検出");
+        return Some(crate::words::text("medical.pii.detail.personal-number"));
     }
     if (trimmed.contains("患者ID") || trimmed.contains("被保険者番号"))
         && digits_only.len() >= 6
     {
-        return Some("患者ID／被保険者番号を含むテキストを検出");
+        return Some(crate::words::text("medical.pii.detail.patient-id"));
     }
     None
 }

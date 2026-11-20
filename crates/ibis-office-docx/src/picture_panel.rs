@@ -225,6 +225,7 @@ impl SlideEditor {
                             clear: pic.clear,
                             effects: pic.effects,
                             geometry: pic.geometry.clone(),
+                            effect_extent: [0; 4],
                         });
                     }
                 }

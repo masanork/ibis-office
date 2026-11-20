@@ -24,6 +24,8 @@ sha2 = { version = "0.10", features = ["oid"] }
 hmac = "0.12"
 sha1 = { version = "0.10", features = ["oid"] }
 md-5 = "0.10"
+# Checking the RSA signature value of a digital signature (RSASSA-PKCS1-v1_5 verification; no signing, no new crypto crate).
+num-bigint = "0.4"
 # Independent XML canonicalization implementation (MIT), used as a dependency.
 ua-cryptography-xml-c14n = "=0.1.6"
 rsa = { version = "0.9.8", default-features = false, features = ["std", "sha2", "u64_digit"] }

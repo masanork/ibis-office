@@ -339,7 +339,7 @@ impl SlideEditor {
         let commands = vec![
             FlowCommand::SetMailMergeType(Some("envelopes".to_string())),
             FlowCommand::SetPage { page: preset.page_setup() },
-            FlowCommand::ReplaceBlocks { container: Container::Body, index: 0, remove: body_len, blocks },
+            FlowCommand::ReplaceBlockRange { container: Container::Body, index: 0, remove: body_len, blocks },
         ];
         self.run_flow(commands, cx);
     }
@@ -374,7 +374,7 @@ impl SlideEditor {
         let commands = vec![
             FlowCommand::SetMailMergeType(Some("mailingLabels".to_string())),
             FlowCommand::SetPage { page: preset.page_setup() },
-            FlowCommand::ReplaceBlocks { container: Container::Body, index: 0, remove: body_len, blocks },
+            FlowCommand::ReplaceBlockRange { container: Container::Body, index: 0, remove: body_len, blocks },
         ];
         self.run_flow(commands, cx);
     }

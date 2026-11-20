@@ -5,7 +5,7 @@
 use ibis_doc_model::{Presentation, Sheet, sheet_calc::sheet_of_slide};
 
 fn read(path: &str) -> Presentation {
-    ibis_formats::read(&std::fs::read(format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR"))).unwrap()).unwrap()
+    ibis_odf::read(&std::fs::read(format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR"))).unwrap()).unwrap()
 }
 
 fn sheets(p: &Presentation) -> Vec<std::sync::Arc<Sheet>> {

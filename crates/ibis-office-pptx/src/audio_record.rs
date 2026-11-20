@@ -150,7 +150,7 @@ impl SlideEditor {
         let slide = self.current_slide;
         let index = self.slide().shapes.len();
         self.run(vec![
-            Command::InsertShape { slide, index, shape },
+            Command::InsertShape { slide, shapes: vec![(index, shape)] },
             Command::SetShapeName { slide, shape: id, name: clean_name.clone() },
             Command::SetAspectLocked { slide, shape: id, locked: true },
         ], cx);

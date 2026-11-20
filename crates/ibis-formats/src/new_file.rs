@@ -102,7 +102,7 @@ pub(crate) fn theme_colours() -> Vec<(String, ibis_doc_model::Rgb)> {
     out
 }
 
-pub(crate) fn theme() -> String {
+pub fn theme() -> String {
     let fonts = |latin: &str, ea: &str| format!(r#"<a:latin typeface="{latin}" panose="020F0302020204030204"/><a:ea typeface="{ea}"/><a:cs typeface=""/>"#);
     theme_of("Office テーマ", &THEME_COLOURS, &fonts("Calibri Light", "游ゴシック Light"), &fonts("Calibri", "游ゴシック"))
 }

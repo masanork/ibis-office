@@ -162,11 +162,11 @@ pub(crate) fn write(clip: &Clip, merges: &[CellRange]) -> Option<Vec<u8>> {
         };
         cells.push(PutCell { row: c.orig_row, column: c.orig_column, input, style: Some(c.style.clone()) });
     }
-    let mut commands = vec![Command::Sheet(SheetCommand::PutCells { slide, cells })];
+    let mut commands = vec![Command::Sheet(SheetCommand::PasteCells { sheet: slide, cells })];
     for (rel, width) in &clip.col_widths {
         if *width != default_column {
             let column = left + rel;
-            commands.push(Command::Sheet(SheetCommand::SetSize { slide, axis: ibis_doc_model::sheet_command::Axis::Columns, first: column, last: column, size: *width }));
+            commands.push(Command::Sheet(SheetCommand::SetSize { sheet: slide, axis: ibis_doc_model::sheet_command::Axis::Columns, first: column, last: column, size: *width }));
         }
     }
     for (rel_r, rel_c, comment) in &clip.comments {
@@ -174,17 +174,17 @@ pub(crate) fn write(clip: &Clip, merges: &[CellRange]) -> Option<Vec<u8>> {
         let mut comment = comment.clone();
         comment.row = row;
         comment.column = column;
-        commands.push(Command::Sheet(SheetCommand::SetComment { slide, row, column, comment: Some(comment) }));
+        commands.push(Command::Sheet(SheetCommand::SetComment { sheet: slide, row, column, comment: Some(comment) }));
     }
     for (rel, rule) in &clip.validations {
         let target = CellRange { first_row: top + rel.first_row, first_column: left + rel.first_column, last_row: top + rel.last_row, last_column: left + rel.last_column };
         let mut rule = rule.clone();
         rule.ranges = vec![target];
-        commands.push(Command::Sheet(SheetCommand::SetValidation { slide, ranges: vec![target], rule: Some(rule) }));
+        commands.push(Command::Sheet(SheetCommand::SetValidation { sheet: slide, ranges: vec![target], rule: Some(rule) }));
     }
     for m in merges {
         let range = CellRange { first_row: top + m.first_row, first_column: left + m.first_column, last_row: top + m.last_row, last_column: left + m.last_column };
-        commands.push(Command::Sheet(SheetCommand::PasteMerge { slide, range }));
+        commands.push(Command::Sheet(SheetCommand::PasteMerge { sheet: slide, range }));
     }
     let mut document = Document::new(opened.presentation.clone());
     document.execute(commands).ok()?;

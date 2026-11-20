@@ -293,11 +293,7 @@ fn font_sizes() {
                 ];
                 let index = e.slide().shapes.len();
                 e.run(
-                    vec![Command::InsertShape {
-                        slide: e.current_slide,
-                        index,
-                        shape,
-                    }],
+                    vec![Command::InsertShape { slide: e.current_slide, shapes: vec![(index, shape)] }],
                     cx,
                 );
                 e.set_selection(vec![id]);
@@ -562,15 +558,11 @@ fn additive_selection() {
             let mut commands = Vec::new();
             for (i, x) in [1000000, 3500000].into_iter().enumerate() {
                 let id = e.document.ids().new_shape_id();
-                commands.push(Command::InsertShape {
-                    slide: e.current_slide,
-                    index: first + i,
-                    shape: Shape::text_box(
+                commands.push(Command::InsertShape { slide: e.current_slide, shapes: vec![(first + i, Shape::text_box(
                         id,
                         EmuRect::new(x, 1000000, 1500000, 800000),
                         "Selection",
-                    ),
-                });
+                    ))] });
             }
             e.run(commands, cx);
             e.set_selection(Vec::new());

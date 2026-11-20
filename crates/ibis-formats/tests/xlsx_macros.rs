@@ -26,7 +26,7 @@ fn xlsm() -> Vec<u8> {
 fn edited(opened: &ibis_formats::Opened) -> ibis_doc_model::Presentation {
     let mut d = Document::new(opened.presentation.clone());
     let slide = d.presentation().slides[0].id;
-    d.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 40, column: 0, input: CellInput::Value(CellValue::Number(7.0)) }] })]).unwrap();
+    d.execute(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 40, column: 0, input: CellInput::Value(CellValue::Number(7.0)) }] })]).unwrap();
     d.presentation().clone()
 }
 

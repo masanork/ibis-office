@@ -79,13 +79,13 @@ impl SlideEditor {
         let changes = if key == "normal" {
             use ibis_doc_model::{Edge, StyleChange as C};
             let d = self.presentation().workbook.as_ref().and_then(|w| w.default_style.clone()).unwrap_or_default();
-            let mut changes = vec![C::NumberFormat("General".into()), C::Font(d.font.clone()), C::FontSize(d.font_size), C::Bold(d.bold), C::Italic(d.italic), C::UnderlineKind(d.underline), C::Strike(d.strike), C::Color(d.color), C::Fill(None)];
+            let mut changes = vec![C::NumberFormat("General".into()), C::Font(d.font.clone()), C::FontSize(d.font_size), C::Bold(d.bold), C::Italic(d.italic), C::UnderlineKind(d.underline), C::Strikethrough(d.strike), C::Color(d.color), C::Fill(None)];
             changes.extend([Edge::Left, Edge::Right, Edge::Top, Edge::Bottom].map(|e| C::Border(e, None)));
             changes
         } else {
             style.changes
         };
-        let commands: Vec<Command> = changes.into_iter().map(|change| Command::Sheet(SheetCommand::SetFormat { slide, ranges: ranges.clone(), change })).collect();
+        let commands: Vec<Command> = changes.into_iter().map(|change| Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: ranges.clone(), change })).collect();
         if let Err(err) = self.document.execute(commands) {
             self.status = Some(crate::shell::i18n::format("_xlsx.this-action-is-unavailable-err", &[("err", &err)]).into());
         }
@@ -112,7 +112,7 @@ impl SlideEditor {
         let changes = custom_style.to_style_changes();
         let commands: Vec<Command> = changes
             .into_iter()
-            .map(|change| Command::Sheet(SheetCommand::SetFormat { slide, ranges: ranges.clone(), change }))
+            .map(|change| Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: ranges.clone(), change }))
             .collect();
         if let Err(err) = self.document.execute(commands) {
             self.status = Some(crate::shell::i18n::format("_xlsx.this-action-is-unavailable-err", &[("err", &err)]).into());

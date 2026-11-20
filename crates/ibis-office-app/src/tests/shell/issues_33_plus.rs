@@ -120,7 +120,7 @@ fn phonetic_reopen() {
     );
     s.update(|e, w, cx| e.close_dialog(w, cx));
     if !s.with(|e, _| sheet_of_slide(e.slide()).unwrap().show_phonetic) {
-        s.menu("xlsx.phonetic-toggle");
+        s.menu("xlsx.toggle-phonetic");
     }
     assert!(s.with(|e, _| sheet_of_slide(e.slide()).unwrap().show_phonetic));
     s.screenshot("phonetic-layout");
@@ -513,7 +513,7 @@ fn series_headers() {
     s.update(|e, w, cx| e.new_file(ibis_formats::Kind::Workbook, w, cx));
     s.update(|e, _, cx| {
         let slide=e.current_slide;
-        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::RenameSheet { slide, name:"O'Brien 売上".into() })],cx); // i18n-ok: Japanese document fixture content and expected values, not UI labels.
+        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::RenameSheet { sheet: slide, name:"O'Brien 売上".into() })],cx); // i18n-ok: Japanese document fixture content and expected values, not UI labels.
     });
     for (cell, value) in [
         ("A1", "項目"), // i18n-ok: Japanese document fixture content and expected values, not UI labels.
@@ -723,7 +723,7 @@ fn large_font_multiple_spacing() {
                 FlowCommand::SetParagraphFormat {
                     first: id,
                     last: id,
-                    change: ParaChange::Line(LineHeight::Auto(240)),
+                    change: ParaChange::LineSpacing(LineHeight::Auto(240)),
                 },
             ],
             cx,
@@ -741,7 +741,7 @@ fn large_font_multiple_spacing() {
             vec![FlowCommand::SetParagraphFormat {
                 first: id,
                 last: id,
-                change: ParaChange::Line(LineHeight::Auto(360)),
+                change: ParaChange::LineSpacing(LineHeight::Auto(360)),
             }],
             cx,
         );

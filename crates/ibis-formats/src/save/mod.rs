@@ -144,7 +144,17 @@ pub fn open_progressive(
     data: impl Into<Arc<[u8]>>,
     first_chunk_rows: usize,
 ) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
-    open_progressive_with_csv_encoding(data, first_chunk_rows, crate::csv::TextEncoding::Auto)
+    open_progressive_with(data, first_chunk_rows, None)
+}
+
+/// As `open_progressive`; a text file (.csv, .tsv, .txt) is shown in `csv_font` (the family and size the user chose, #243) instead of
+/// the usual 游ゴシック 12 pt.
+pub fn open_progressive_with(
+    data: impl Into<Arc<[u8]>>,
+    first_chunk_rows: usize,
+    csv_font: Option<&crate::csv::CsvFont>,
+) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
+    open_progressive_with_options(data, first_chunk_rows, csv_font, crate::csv::TextEncoding::Auto)
 }
 
 /// Read a CSV with an explicitly selected encoding; non-CSV formats are unchanged.
@@ -153,8 +163,21 @@ pub fn open_progressive_with_csv_encoding(
     first_chunk_rows: usize,
     csv_encoding: crate::csv::TextEncoding,
 ) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
+    open_progressive_with_options(data, first_chunk_rows, None, csv_encoding)
+}
+
+/// Load with an optional CSV font and an explicit text encoding.
+pub fn open_progressive_with_options(
+    data: impl Into<Arc<[u8]>>,
+    first_chunk_rows: usize,
+    csv_font: Option<&crate::csv::CsvFont>,
+    csv_encoding: crate::csv::TextEncoding,
+) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
     let mut data: Arc<[u8]> = data.into();
     crate::progress::reset();
+    if crate::is_opendocument(&data) {
+        return Err(Error::new(crate::ODF_MESSAGE));
+    }
     // An old workbook (.xls): read into the .xlsx the rest reads.
     if crate::ppt::is_ppt(&data) {
         data = crate::ppt_write::to_pptx(&data)?.into();
@@ -162,25 +185,13 @@ pub fn open_progressive_with_csv_encoding(
     if crate::xls::is_xls(&data) {
         data = crate::xls::to_xlsx(&data)?.into();
     }
-    // An OpenDocument spreadsheet (.ods) likewise.
-    if crate::ods::is_ods(&data) {
-        data = crate::ods::to_xlsx(&data)?.into();
-    }
     // A binary workbook (.xlsb) likewise.
     if crate::xlsb::is_xlsb(&data) {
         data = crate::xlsb::to_xlsx(&data)?.into();
     }
-    // An OpenDocument presentation (.odp) likewise.
-    if crate::odp::is_odp(&data) {
-        data = crate::odp::to_pptx(&data)?.into();
-    }
     // An old Word document (.doc) likewise.
     if crate::docx_convert::is_doc(&data) {
         data = crate::docx_convert::import_doc_to_docx_bytes(&data)?.into();
-    }
-    // An OpenDocument text (.odt) likewise.
-    if crate::docx_convert::is_odt(&data) {
-        data = crate::docx_convert::import_odt_to_docx_bytes(&data)?.into();
     }
     if crate::markdown::is_markdown(&data) {
         let opened = crate::markdown::open_markdown(data.to_vec())?;
@@ -261,12 +272,18 @@ pub fn open_progressive_with_csv_encoding(
                 csv_rx = Some(rx);
 
                 let text_clone = text.clone();
+                let csv_font = csv_font.cloned();
                 std::thread::spawn(move || {
                     let mut iter = crate::csv::CsvRecordIter::new(&text_clone[remaining_offset..], delimiter);
                     const BATCH_SIZE: usize = 100_000;
                     let mut batch = Vec::with_capacity(BATCH_SIZE);
                     let mut processed = first_chunk_rows;
-                    let base_style = ibis_doc_model::CellStyle { vertical: ibis_doc_model::CellVerticalAlign::Top, vertical_set: true, ..Default::default() };
+                    let mut base_style = ibis_doc_model::CellStyle { vertical: ibis_doc_model::CellVerticalAlign::Top, vertical_set: true, ..Default::default() };
+                    // The rows after the first chunk are shown in the chosen font as the first ones are (#243).
+                    if let Some(f) = &csv_font {
+                        base_style.font = Some(f.name.clone());
+                        base_style.font_size = (f.size_pt * 100.0).round() as _;
+                    }
                     let mut sheet_styles = Vec::new();
                     let mut all_cells: Vec<ibis_doc_model::SheetCell> = Vec::with_capacity(estimated_cells + first_cells_hint);
                     let mut all_heights = Vec::new();
@@ -318,7 +335,7 @@ pub fn open_progressive_with_csv_encoding(
         }
 
         csv_records = Some(first);
-        data = crate::csv::workbook_from("", "Sheet1")?.into();
+        data = crate::csv::workbook_from_with_font("", "Sheet1", ',', csv_font)?.into();
     }
 
     let package = Package::open(data.clone())?;
@@ -382,6 +399,17 @@ impl Source {
 
     pub fn kind(&self) -> Kind {
         self.kind
+    }
+
+    /// Whether the file as it was read has digital signatures (the OPC `digital-signature/origin` relationship, issue #232).
+    pub fn has_signature(&self) -> bool {
+        ibis_ooxml::signature::has_signature(&self.package)
+    }
+
+    /// What the digital signatures of the file as it was read are (`ibis_ooxml::signature::inspect`: the digests and the
+    /// signature value only; nothing about the certificate).
+    pub fn inspect_signatures(&self) -> ibis_ooxml::signature::Inspection {
+        ibis_ooxml::signature::inspect(&self.package)
     }
 
     /// This source with `current` as the model it was read as: what the window
@@ -912,6 +940,17 @@ impl Source {
     /// own. Written and read back for its look, then valued from the cells.
     /// Saving writes its chart part and the changes made to it since.
     pub fn new_sheet_chart(&self, current: &Presentation, slide: ibis_doc_model::SlideId, id: ibis_doc_model::ShapeId, frame: ibis_doc_model::EmuRect, kind: NewChartKind, refs: Vec<pptx_chart_data::SeriesRefs>) -> Result<ibis_doc_model::Shape, Error> {
+        self.new_sheet_chart_rows(current, slide, id, frame, kind, refs, None)
+    }
+
+    /// [`Source::new_sheet_chart`] for a picture of the chart (the 挿入 > グラフ menu's tiles): the workbook that is
+    /// written and read back for the chart's look holds only the rows up to `last_row` of each sheet, so the cost
+    /// follows the rows the picture shows and not the size of the sheets (#203). `refs` must lie within them.
+    pub fn new_sheet_chart_preview(&self, current: &Presentation, slide: ibis_doc_model::SlideId, id: ibis_doc_model::ShapeId, frame: ibis_doc_model::EmuRect, kind: NewChartKind, refs: Vec<pptx_chart_data::SeriesRefs>, last_row: u32) -> Result<ibis_doc_model::Shape, Error> {
+        self.new_sheet_chart_rows(current, slide, id, frame, kind, refs, Some(last_row))
+    }
+
+    fn new_sheet_chart_rows(&self, current: &Presentation, slide: ibis_doc_model::SlideId, id: ibis_doc_model::ShapeId, frame: ibis_doc_model::EmuRect, kind: NewChartKind, refs: Vec<pptx_chart_data::SeriesRefs>, last_row: Option<u32>) -> Result<ibis_doc_model::Shape, Error> {
         if !matches!(self.map, SourceMap::Workbook(_)) {
             return Err(Error::new("ブックではありません"));
         }
@@ -942,6 +981,16 @@ impl Source {
             mermaid_source: ibis_doc_model::MermaidFence::default(),
         };
         let mut changed = current.clone();
+        if let Some(last_row) = last_row {
+            for shape in changed.slides.iter_mut().flat_map(|s| s.shapes.iter_mut()) {
+                if let ibis_doc_model::ShapeKind::Sheet(sheet) = &mut shape.kind
+                    && sheet.cells.last().is_some_and(|c| c.row > last_row)
+                {
+                    let kept = sheet.cells_in_rows(0, last_row).to_vec();
+                    std::sync::Arc::make_mut(sheet).cells = kept.into();
+                }
+            }
+        }
         changed.slides[index].shapes.push(ibis_doc_model::Shape { id, frame, rotation: 0, flip_h: false, flip_v: false, kind: ibis_doc_model::ShapeKind::Chart(Box::new(empty)), floating: None });
         let lock = || self.new_charts.lock().unwrap_or_else(|e| e.into_inner());
         lock().insert(id, NewChartEntry { kind, template: None, refs: refs.clone() });
@@ -1330,7 +1379,7 @@ mod pup_export_tests {
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
         doc.execute(vec![Command::Sheet(SheetCommand::SetCells {
-            slide,
+            sheet: slide,
             edits: vec![CellEdit {
                 row: 0,
                 column: 0,

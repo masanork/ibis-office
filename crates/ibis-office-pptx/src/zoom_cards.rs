@@ -102,7 +102,7 @@ impl SlideEditor {
         std::fs::write(&file, bytes).ok()?;
         let program = crate::shell::file_actions::export_program().ok()?;
         let status = std::process::Command::new(program)
-            .args(["--export", "png", "--width", &width.to_string(), "--slides", &number.to_string(), "--out-dir"])
+            .args(["--export", "png", "--width", &width.to_string(), "--range", &number.to_string(), "--out-dir"])
             .arg(&out)
             .arg(&file)
             .stdout(std::process::Stdio::null())
@@ -140,7 +140,7 @@ impl SlideEditor {
         let shape = Shape::new(id, frame, ShapeKind::Picture(picture));
         let object = ZoomObject { target, id: new_guid(id.0 as u128 + extra as u128), return_to_parent: returns, transition_dur: Some(1000), show_bg: true, cover_image: false };
         let mut commands = vec![
-            Command::InsertShape { slide: on, index, shape },
+            Command::InsertShape { slide: on, shapes: vec![(index, shape)] },
             Command::SetShapeLink { slide: on, shape: id, link: Some(SlideLink::Slide(shows)) },
             Command::SetShapeLinkTooltip { slide: on, shape: id, tooltip: Some(tooltip) },
             Command::SetAspectLocked { slide: on, shape: id, locked: true },
@@ -264,7 +264,7 @@ impl SlideEditor {
                 match first {
                     None => {
                         commands.push(Command::SetZoomObject { slide: slide.id, shape: *shape, zoom: None });
-                        commands.push(Command::RemoveShape { slide: slide.id, shape: *shape });
+                        commands.push(Command::DeleteShape { slide: slide.id, shapes: vec![*shape], with_attached: true });
                     }
                     Some(first) => {
                         if slide.shape_links.get(shape) != Some(&SlideLink::Slide(first)) {
@@ -283,7 +283,7 @@ impl SlideEditor {
             let Some(ShapeKind::Picture(old)) = self.presentation().slide(on).and_then(|s| s.shape(shape)).map(|s| s.kind.clone()) else { continue };
             let mut picture = old;
             picture.media = media;
-            commands.push(Command::SetKind { slide: on, shape, kind: Box::new(ShapeKind::Picture(picture)) });
+            commands.push(Command::SetShapeKind { slide: on, shape, kind: Box::new(ShapeKind::Picture(picture)) });
             commands.push(Command::SetShapeLink { slide: on, shape, link: Some(SlideLink::Slide(first)) });
         }
         // Order the removals so a shape id is removed once.

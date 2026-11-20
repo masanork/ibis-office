@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/229)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Pure-Rust Lawtext / e-Gov 法令標準XML ⇄ Markdown bidirectional converter and
 //! 新旧対照表 (side-by-side amendment comparison) generator.
@@ -223,7 +223,24 @@ pub fn is_lawtext(data: &[u8]) -> bool {
     has_header && has_article
 }
 
-/// If `data` is e-Gov 法令標準XML or Lawtext, convert it to Lawtext-flavoured Markdown.
+/// The file `path` as Lawtext-flavoured Markdown, when it is a law and only then: a `.lawtext` or `.law.txt` file (read as Lawtext), or a `.xml` file whose content is
+/// e-Gov 法令標準XML (`<Law` ...). Any other file, whatever its content (a CSV or a text file whose first line has （）and which has a line of 第一条), gives `None` and is
+/// never looked at, so it opens as it always did; a `.xml` that is not a law (Office 2003 XML and the others) gives `None` too. An `.md` is Markdown already.
+pub fn path_input_to_markdown(path: &std::path::Path, data: &[u8]) -> Result<Option<String>, Error> {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if name.ends_with(".lawtext") || name.ends_with(".law.txt") {
+        let text = std::str::from_utf8(data).map_err(|_| Error::new("Lawtext が有効な UTF-8 ではありません"))?;
+        return parse_lawtext(text).map(|doc| Some(to_markdown(&doc)));
+    }
+    if name.ends_with(".xml") && is_law_xml(data) {
+        let text = std::str::from_utf8(data).map_err(|_| Error::new("法令XMLが有効な UTF-8 ではありません"))?;
+        return parse_law_xml(text).map(|doc| Some(to_markdown(&doc)));
+    }
+    Ok(None)
+}
+
+/// If `data` is e-Gov 法令標準XML or Lawtext, convert it to Lawtext-flavoured Markdown (by its content; a caller that has the file's name uses
+/// [`path_input_to_markdown`], which does not take a CSV for Lawtext).
 pub fn input_to_markdown(data: &[u8]) -> Result<Option<String>, Error> {
     if is_law_xml(data) {
         let text = std::str::from_utf8(data)
@@ -1636,7 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn generates_shinkyu_markdown_and_opens_as_docx_and_pptx() {
+    fn generates_shinkyu_markdown_and_opens_as_docx() {
         let old = parse_law_xml(SAMPLE_LAW_XML).expect("old");
         let mut new = old.clone();
         if let LawNode::Division { children, .. } = &mut new.main_provision[0] {
@@ -1666,10 +1683,23 @@ mod tests {
         let docx = crate::markdown::open_markdown(shinkyu_md.as_bytes().to_vec())
             .expect("open shinkyu markdown as docx");
         assert!(docx.presentation.flow.is_some());
+    }
 
-        let pptx = crate::markdown::open_markdown_presentation(shinkyu_md.into_bytes())
-            .expect("open shinkyu markdown as pptx");
-        assert!(!pptx.presentation.slides.is_empty());
+    #[test]
+    fn only_law_files_are_read_as_law() {
+        use std::path::Path;
+        // A CSV and a text file that look like Lawtext by their content (（）in the first line, a line of 第一条) are not laws.
+        let looks = "名簿（令和七年）,a,b\n第一条,c,d\n".as_bytes();
+        for name in ["list.csv", "memo.txt", "notes.md", "plain.xml", "x.docx"] {
+            assert!(path_input_to_markdown(Path::new(name), looks).unwrap().is_none(), "{name}");
+        }
+        // A .xml that is not a law (Office 2003 XML) is left to the other readers, and a broken .xml of a non-law does not fail.
+        assert!(path_input_to_markdown(Path::new("a.xml"), b"<?xml version=\"1.0\"?><Workbook/>").unwrap().is_none());
+        assert!(path_input_to_markdown(Path::new("a.xml"), b"\xff\xfe not utf-8").unwrap().is_none());
+        // A .lawtext and a law .xml are read.
+        let lt = "行政手続法（平成五年法律第八十八号）\n\n第一条　この法律は、目的を定める。\n";
+        assert!(path_input_to_markdown(Path::new("a.lawtext"), lt.as_bytes()).unwrap().is_some());
+        assert!(path_input_to_markdown(Path::new("a.law.txt"), lt.as_bytes()).unwrap().is_some());
     }
 
     #[test]

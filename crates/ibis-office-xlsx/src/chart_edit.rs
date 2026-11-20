@@ -357,7 +357,7 @@ impl SlideEditor {
         super::chart_style::inherit_new_text(&before,&mut chart);
         if chart == before { return; }
         let slide = self.current_slide;
-        if let Err(err) = self.document.execute(vec![Command::SetKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(chart))) }]) {
+        if let Err(err) = self.document.execute(vec![Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(chart))) }]) {
             log::warn!("chart edit rejected: {err}");
         }
         cx.notify();
@@ -374,7 +374,7 @@ impl SlideEditor {
         next.ex_source = Some(ibis_doc_model::ExSourceRef(changed.0, source.1));
         let next = ibis_doc_model::chart_refresh::rebuilt_ex(self.presentation(), &next);
         let slide = self.current_slide;
-        if let Err(err) = self.document.execute(vec![Command::SetKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(next))) }]) {
+        if let Err(err) = self.document.execute(vec![Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(next))) }]) {
             log::warn!("chart edit rejected: {err}");
         }
         cx.notify();
@@ -505,7 +505,7 @@ impl SlideEditor {
         }
         source.set_chart_data(shape, target.clone(), ibis_formats::ChartData { workbook: Vec::new(), series: refs });
         let slide = self.current_slide;
-        if let Err(err) = self.document.execute(vec![Command::SetKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(target))) }]) {
+        if let Err(err) = self.document.execute(vec![Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(target))) }]) {
             log::warn!("chart data edit rejected: {err}");
         }
         let input = self.wb().chart_edit.as_ref().map(|p| p.range.clone());
@@ -566,7 +566,7 @@ impl SlideEditor {
         let target = ibis_formats::sheet_chart_from_data(&chart, self.presentation(), &refs);
         source.set_chart_data(shape, target.clone(), ibis_formats::ChartData { workbook: Vec::new(), series: refs });
         let slide = self.current_slide;
-        if let Err(err) = self.document.execute(vec![Command::SetKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(target))) }]) {
+        if let Err(err) = self.document.execute(vec![Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(target))) }]) {
             log::warn!("chart series move rejected: {err}");
         }
         if let Some(p) = self.wb_mut().chart_edit.as_mut() {
@@ -611,7 +611,7 @@ impl SlideEditor {
         let target = ibis_formats::sheet_chart_from_data(&chart, self.presentation(), &refs);
         source.set_chart_data(shape, target.clone(), ibis_formats::ChartData { workbook: Vec::new(), series: refs.clone() });
         let slide = self.current_slide;
-        if let Err(err) = self.document.execute(vec![Command::SetKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(target))) }]) {
+        if let Err(err) = self.document.execute(vec![Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(target))) }]) {
             log::warn!("chart series delete rejected: {err}");
         }
         if let Some(input) = self.wb().chart_edit.as_ref().map(|p| p.range.clone()) {
@@ -709,7 +709,7 @@ impl SlideEditor {
         let target = ibis_formats::sheet_chart_from_data(&chart, self.presentation(), &refs);
         source.set_chart_data(shape, target.clone(), ibis_formats::ChartData { workbook: Vec::new(), series: refs.clone() });
         let slide = self.current_slide;
-        if let Err(err) = self.document.execute(vec![Command::SetKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(target))) }]) {
+        if let Err(err) = self.document.execute(vec![Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(target))) }]) {
             log::warn!("chart series add rejected: {err}");
         }
         if let Some(input) = self.wb().chart_edit.as_ref().map(|p| p.range.clone()) {

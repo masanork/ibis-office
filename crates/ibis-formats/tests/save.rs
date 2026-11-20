@@ -91,7 +91,7 @@ fn a_text_edit_is_saved_end_to_end() {
     let replacement = if first == 'Z' { "Y" } else { "Z" };
 
     let mut document = Document::new(opened.presentation.clone());
-    document.execute(vec![Command::EditText { slide: slide_id, shape: shape_id, at: 0, remove: 1, insert: replacement.into() }]).unwrap();
+    document.execute(vec![Command::ReplaceTextRange { slide: slide_id, shape: shape_id, at: 0, remove: 1, insert: replacement.into() }]).unwrap();
     let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
 
     let report = diff_packages(&data, &saved, &[]).unwrap();

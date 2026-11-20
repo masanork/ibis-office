@@ -519,7 +519,7 @@ impl SlideEditor {
             },
         );
         self.document
-            .execute(vec![Command::SetKind {
+            .execute(vec![Command::SetShapeKind {
                 slide: self.current_slide,
                 shape,
                 kind: Box::new(ShapeKind::Chart(Box::new(chart))),
@@ -987,7 +987,7 @@ impl SlideEditor {
         }
         source.set_chart_data(shape,rebuilt.clone(),ibis_formats::ChartData {workbook:vec![],series:allrefs.clone()});
         if rebuilt != before {
-            self.document.execute(vec![Command::SetKind {slide:owner_slide,shape,kind:Box::new(ShapeKind::Chart(Box::new(rebuilt.clone())))}]).ok();
+            self.document.execute(vec![Command::SetShapeKind {slide:owner_slide,shape,kind:Box::new(ShapeKind::Chart(Box::new(rebuilt.clone())))}]).ok();
         }
         // A type/axis change may move this series to a new group. Keep the live editor bound to it.
         let mut draft = rebuilt.clone();

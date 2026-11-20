@@ -14,7 +14,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use crate::palette::rgb;
 
-use crate::actions::OpenFile;
+use crate::actions::Open;
 use crate::editor::SlideEditor;
 use crate::icons::Material;
 use gpui_kit::component::Icon;
@@ -127,7 +127,7 @@ impl SlideEditor {
             .hover(|s| s.underline())
             .child(Icon::new(Material("folder_open")).size(px(20.)).text_color(rgb(LINK_COLOR)))
             .child(crate::i18n::text("start.open"))
-            .on_click(cx.listener(|this, _, window, cx| this.open_file(&OpenFile, window, cx)));
+            .on_click(cx.listener(|this, _, window, cx| this.open_file(&Open, window, cx)));
         // The first badge's left edge under 新規作成's.
         let new_files = div()
             .flex()
@@ -258,7 +258,7 @@ impl SlideEditor {
     #[cfg(not(target_family="wasm"))]
     pub(crate) fn recent_file_actions(&self,path:std::path::PathBuf)->Vec<crate::chrome::MenuEntry>{
         vec![crate::chrome::MenuItem::tr("start.recent.remove").icon("delete").on(move|e,_,cx|{
-            e.recent_files=crate::recent_files::remove(&path);cx.notify();
+            e.recent_files=crate::recent_files::remove(&path);crate::app::set_app_menus(cx);cx.notify();
         }).into()]
     }
 

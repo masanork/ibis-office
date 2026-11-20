@@ -216,6 +216,9 @@ def write(build):
         bundled.append(("IBM Plex Sans", "UI の文字（Web 版）", "SIL Open Font License 1.1"))
     else:
         bundled.append(("Carlito", "Calibri が入っていないときの代わりの文字", "SIL Open Font License 1.1"))
+    if build != "web":
+        # The transition sounds (crates/ibis-formats/sounds/): CC0 sounds of Kenney and of OpenGameArt's authors, and five of ibis inc.'s own; the web version carries none (it fetches them).
+        bundled.append(("画面切り替えの音 18 種（Kenney・OpenGameArt の作者の音と ibis inc. の音）", "プレゼンテーションの画面切り替えの音（実行ファイルに埋め込み）", "CC0-1.0（ibis inc. 自作の 5 種は本体と同じ）"))
     bundled.append(("Lucide", "アイコン（`assets/icons/`）" if build == "web" else "アイコン（実行ファイルに埋め込み）", "ISC"))
     # Material Symbols: the chrome's icons (crates/ibis-office-shell/icons/material/),
     # embedded in the binary on both builds.
@@ -244,6 +247,7 @@ def write(build):
           *rows,
           "",
           "MPL-2.0 の部品は、ソースを改変せずに使っています。ソースは上の入手先と crates.io から入手できます。",
+          *(["", "Independent JPEG Group（IJG）のライセンスの部品（libjpeg 由来の DCT を含むもの）を使っています。This software is based in part on the work of the Independent JPEG Group."] if any("IJG" in r for r in rows) else []),
           "",
           "## 著作権表示",
           "",
@@ -267,6 +271,9 @@ def write(build):
           "",
           "```text", gjs, "```",
           "",
+          *(["### 画面切り替えの音（Kenney・OpenGameArt の作者の CC0 の音）", "",
+             "Sounds of Kenney Vleugels (https://www.kenney.nl) and of qubodup and Cassie-OrbitGames on OpenGameArt, released as CC0 1.0 Universal (public domain dedication); changed only by "
+             "cutting, fading, normalising and encoding as Ogg Vorbis. Sources, files and licence text: `crates/ibis-formats/sounds/`.", ""] if build != "web" else []),
           "### Lucide",
           "",
           "```text", lucide, "```",

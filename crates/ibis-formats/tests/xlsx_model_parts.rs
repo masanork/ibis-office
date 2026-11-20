@@ -39,7 +39,7 @@ fn model_connection_and_query_parts_survive_an_edit_and_save() {
     assert!(!sheet.cells.is_empty());
     let mut d = Document::new(opened.presentation.clone());
     let slide = d.presentation().slides[0].id;
-    d.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 30, column: 3, input: CellInput::Value(CellValue::Number(42.0)) }] })]).unwrap();
+    d.execute(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 30, column: 3, input: CellInput::Value(CellValue::Number(42.0)) }] })]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
 
     let after = ibis_ooxml::Package::open(saved.clone()).unwrap();

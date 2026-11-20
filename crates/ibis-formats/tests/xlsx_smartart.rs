@@ -115,7 +115,7 @@ fn a_smartart_graphic_on_a_sheet_shows_its_shapes_and_is_kept() {
     // An edit and a save keep the graphic's parts.
     let mut d = Document::new(opened.presentation.clone());
     let id = d.presentation().slides[0].id;
-    d.execute(vec![Command::Sheet(SheetCommand::SetCells { slide: id, edits: vec![CellEdit { row: 40, column: 0, input: CellInput::Value(CellValue::Number(1.0)) }] })]).unwrap();
+    d.execute(vec![Command::Sheet(SheetCommand::SetCells { sheet: id, edits: vec![CellEdit { row: 40, column: 0, input: CellInput::Value(CellValue::Number(1.0)) }] })]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
     let after = ibis_ooxml::Package::open(saved.clone()).unwrap();
     assert!(after.contains("xl/diagrams/data1.xml") && after.contains("xl/diagrams/drawing1.xml") && after.contains("xl/media/vector1.svg"));

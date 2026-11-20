@@ -439,7 +439,7 @@ pub(crate) fn index_commands(doc: &FlowDocument, before: u32, replace: bool, ins
             entries.insert(0, lead);
         }
     }
-    commands.push(ibis_doc_model::FlowCommand::SetToc { before, replace, entries, bookmarks: Vec::new() });
+    commands.push(ibis_doc_model::FlowCommand::SetTableOfContents { before, replace, entries, bookmarks: Vec::new() });
     commands
 }
 

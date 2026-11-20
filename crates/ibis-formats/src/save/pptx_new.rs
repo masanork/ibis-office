@@ -348,13 +348,14 @@ pub(crate) fn line_xml(x: &Prefixes, stroke: Option<&Stroke>) -> String {
     }
 }
 
-/// `a:round` / `a:bevel` for a line join (`None` for default miter).
+/// `a:round` / `a:bevel` / `a:miter` for a line join. A line with no join element is round when it is read (PowerPoint's: a 6 pt rect's outer corner is round with no join element, square with
+/// `a:miter`), so a miter is written out.
 pub(crate) fn join_element(x: &Prefixes, join: ibis_doc_model::LineJoin) -> Option<String> {
     let a = &x.a;
     match join {
         ibis_doc_model::LineJoin::Round => Some(format!("<{a}round/>")),
         ibis_doc_model::LineJoin::Bevel => Some(format!("<{a}bevel/>")),
-        ibis_doc_model::LineJoin::Miter => None,
+        ibis_doc_model::LineJoin::Miter => Some(format!("<{a}miter lim=\"800000\"/>")),
     }
 }
 
@@ -684,8 +685,13 @@ fn paragraph_xml(x: &Prefixes, body: &TextStyle, p: &Paragraph, seed: u64, field
                 let start = if auto.start_at > 1 { format!(" startAt=\"{}\"", auto.start_at) } else { String::new() };
                 write!(children, "<{a}buFont typeface=\"+mj-lt\"/><{a}buAutoNum type=\"{}\"{start}/>", escape(&auto.scheme)).unwrap();
             } else {
-                let c: String = bullet.text.chars().take(1).collect();
-                write!(children, "<{a}buFont typeface=\"Arial\"/><{a}buChar char=\"{}\"/>", escape(&c)).unwrap();
+                let c: String = bullet.symbol.as_ref().map_or_else(|| bullet.text.chars().take(1).collect(), |sym| sym.code.clone());
+                match (&bullet.symbol, &bullet.font) {
+                    (Some(sym), _) => write!(children, "<{a}buFont typeface=\"{}\"/>", escape(&sym.font)).unwrap(),
+                    (None, Some(font)) => write!(children, "<{a}buFont typeface=\"{}\"/>", escape(font)).unwrap(),
+                    (None, None) => write!(children, "<{a}buFontTx/>").unwrap(),
+                }
+                write!(children, "<{a}buChar char=\"{}\"/>", escape(&c)).unwrap();
             }
         }
         Some(_) => {}
@@ -707,7 +713,7 @@ fn paragraph_xml(x: &Prefixes, body: &TextStyle, p: &Paragraph, seed: u64, field
     let mut s = format!("<{a}p><{a}pPr{attrs}>{children}</{a}pPr>");
     for run in &p.runs {
         match &run.style.math {
-            Some(math) => s.push_str(&crate::math_xml::write_math_content(math, a, run.style.math_inline)),
+            Some(math) => s.push_str(&crate::math_xml::write_math_content(math, a, run.style.math_inline, run.style.color)),
             None => s.push_str(&run_xml(x, body, run, seed, field)),
         }
     }

@@ -31,11 +31,11 @@ fn check(xlsx: bool, legend: &str, expected: Option<Option<P>>) {
  let mut doc=Document::new(opened.presentation.clone());
         let command = if xlsx {
             let slide = doc.presentation().slides.iter().find(|s| s.shapes.iter().any(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
-            Command::Sheet(SheetCommand::SetCells { slide: slide.id, edits: vec![CellEdit { row: 40, column: 20, input: CellInput::Value(CellValue::Number(42.0)) }] })
+            Command::Sheet(SheetCommand::SetCells { sheet: slide.id, edits: vec![CellEdit { row: 40, column: 20, input: CellInput::Value(CellValue::Number(42.0)) }] })
         } else {
             let slide = &doc.presentation().slides[0];
             let shape = slide.shapes.iter().find(|s| s.text_body().is_some_and(|b| !b.text().is_empty())).unwrap();
-            Command::EditText { slide: slide.id, shape: shape.id, at: 0, remove: 1, insert: "Z".into() }
+            Command::ReplaceTextRange { slide: slide.id, shape: shape.id, at: 0, remove: 1, insert: "Z".into() }
         };
  doc.execute(vec![command]).unwrap();let saved=opened.source.save(doc.presentation(),SaveOptions::default()).unwrap();assert_eq!(Package::open(saved.clone()).unwrap().read(part).unwrap(),original);assert_eq!(chart(&ibis_formats::read(&saved).unwrap()),&retained);
  assert!(doc.undo());assert_eq!(opened.source.save(doc.presentation(),SaveOptions::default()).unwrap(),data);assert!(doc.redo());let saved=opened.source.save(doc.presentation(),SaveOptions::default()).unwrap();assert_eq!(chart(&ibis_formats::read(&saved).unwrap()),&retained);assert_eq!(Package::open(saved).unwrap().read(part).unwrap(),original);

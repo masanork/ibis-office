@@ -194,6 +194,71 @@ pub fn layout(data: &[u8]) -> Result<HandoutLayout, Error> {
     Ok(HandoutLayout { page, places })
 }
 
+
+/// Which of the four places of the handout master are on (its `p:hf`: each of `hdr`, `dt`, `ftr` and `sldNum` is on unless it says
+/// `0`; a file with no handout master, or no `p:hf`, has them all on, as PowerPoint makes one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeaderFooterFlags {
+    pub header: bool,
+    pub date: bool,
+    pub footer: bool,
+    pub number: bool,
+}
+
+pub fn header_footer_flags(data: &[u8]) -> Result<HeaderFooterFlags, Error> {
+    let package = Package::open(data.to_vec())?;
+    let main = main_part(&package)?;
+    let doc = master_doc(&package, &main)?;
+    let hf = doc.root_element().and_then(|root| doc.child(root, "hf"));
+    let on = |name: &str| !hf.and_then(|n| doc.attr(n, name)).is_some_and(|v| v == "0" || v == "false");
+    Ok(HeaderFooterFlags { header: on("hdr"), date: on("dt"), footer: on("ftr"), number: on("sldNum") })
+}
+
+/// Where a notes page puts the slide's picture and the notes' text, in EMU of the notes page (`page`), as the notes master says.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotesFrames {
+    pub page: (i64, i64),
+    /// The slide image placeholder (`sldImg`).
+    pub image: (i64, i64, i64, i64),
+    /// The notes' body placeholder.
+    pub body: (i64, i64, i64, i64),
+}
+
+/// The slide image and the body of the notes master of `data`. A file without a notes master gets what PowerPoint makes: the image
+/// 5486400 EMU wide at (685800, 1143000) with the slide's proportions, the body under it.
+pub fn notes_frames(data: &[u8]) -> Result<NotesFrames, Error> {
+    let package = Package::open(data.to_vec())?;
+    let main = main_part(&package)?;
+    let page = notes_size(&package, &main)?;
+    let slide = {
+        let doc = package.xml(&main)?;
+        let root = doc.root_element().ok_or_else(|| err("プレゼンテーションが空です"))?;
+        let get = |a: &str| doc.child(root, "sldSz").and_then(|n| doc.attr(n, a)).and_then(|v| v.parse::<i64>().ok());
+        (get("cx").unwrap_or(9144000), get("cy").unwrap_or(6858000))
+    };
+    let image_default = (685800, 1143000, 5486400, (5486400.0 * slide.1 as f64 / slide.0.max(1) as f64).round() as i64);
+    let body_default = (685800, 4400550, 5486400, 3600450);
+    let mut frames = NotesFrames { page, image: image_default, body: body_default };
+    let master = package.relationships(&main)?.into_iter().find(|r| r.kind == REL_NOTES_MASTER && !r.external).and_then(|r| r.target_part(&main)).filter(|p| package.contains(p));
+    if let Some(part) = master {
+        let doc = package.xml(&part)?;
+        let tree = doc.root_element().and_then(|root| doc.path(root, &["cSld", "spTree"]));
+        for sp in tree.into_iter().flat_map(|t| doc.children_named(t, "sp").collect::<Vec<_>>()) {
+            let Some(ph) = doc.path(sp, &["nvSpPr", "nvPr", "ph"]) else { continue };
+            let num = |n: Option<NodeId>, a: &str| n.and_then(|n| doc.attr(n, a)).and_then(|v| v.parse::<i64>().ok());
+            let xfrm = doc.path(sp, &["spPr", "xfrm"]);
+            let (off, ext) = (xfrm.and_then(|x| doc.child(x, "off")), xfrm.and_then(|x| doc.child(x, "ext")));
+            let (Some(x), Some(y), Some(w), Some(h)) = (num(off, "x"), num(off, "y"), num(ext, "cx"), num(ext, "cy")) else { continue };
+            match doc.attr(ph, "type") {
+                Some("sldImg") => frames.image = (x, y, w, h),
+                Some("body") => frames.body = (x, y, w, h),
+                _ => {}
+            }
+        }
+    }
+    Ok(frames)
+}
+
 /// A file like `data` with one slide of the notes page's size, the places of its handout master as its text boxes.
 pub fn build(data: &[u8]) -> Result<Vec<u8>, Error> {
     let mut package = Package::open(data.to_vec())?;

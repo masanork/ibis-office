@@ -152,6 +152,7 @@ fn same_document(a: &FlowDocument, b: &FlowDocument) -> bool {
         show_field_codes: _,
         form_design_mode: _,
         compress_punctuation: _,
+        compress_kana: _,
         font_table: _,
         balance_single_double_byte_width: _,
         ul_trail_space: _,
@@ -651,6 +652,13 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     if theme_changed {
         write_theme(package, &map.body_part, &current.theme_colors, current.theme_fonts.as_ref(), current.theme_effects.as_deref())?;
     }
+    if baseline.cmyk != current.cmyk {
+        write_cmyk_setting(package, map, &current.cmyk)?;
+    }
+    // The zoom of the window (GitHub issue #237: the file keeps it, as Word's does).
+    if baseline.view_zoom != current.view_zoom && (current.view_zoom.is_some() || baseline.view_zoom.is_some()) {
+        write_zoom(package, map, current.view_zoom)?;
+    }
     let rethemed_base;
     let base = if baseline.theme_colors != current.theme_colors {
         let mut cloned = (**base).clone();
@@ -835,7 +843,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         let pristine = package.xml(&part)?;
         let doc = package.xml_mut(&part)?;
         let root = doc.root_element();
-        let mut writer = Writer { para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures: &pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: if fresh { root } else { None }, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &base.shape_groups, new_shape_groups: &cur.shape_groups };
+        let mut writer = Writer { ids: CopyParaIds::default(), para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures: &pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: if fresh { root } else { None }, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &base.shape_groups, new_shape_groups: &cur.shape_groups };
         writer.resolve_nodes();
         writer.list(old, new)?;
         if body {
@@ -992,7 +1000,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         let doc = package.xml_mut(&part)?;
         let root = doc.root_element().ok_or_else(|| unsupported("空の脚注のパーツ"))?;
         let element = if endnote { "endnote" } else { "footnote" };
-        let mut writer = Writer { para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_notes, new_blocks: &new_notes, pictures: &pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
+        let mut writer = Writer { ids: CopyParaIds::default(), para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_notes, new_blocks: &new_notes, pictures: &pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
         writer.resolve_nodes();
         let find = |w: &Writer, id: u32| {
             w.doc.elements(root).find(|&e| {
@@ -1062,6 +1070,7 @@ fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model:
     for c in new {
         index_blocks(&c.blocks, &mut new_blocks);
     }
+    let mut effective: HashMap<u32, String> = HashMap::new();
     {
         let added = HashMap::new();
         let svg_media = HashSet::new();
@@ -1070,7 +1079,7 @@ fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model:
         let doc = package.xml_mut(&part)?;
         let root = doc.root_element().ok_or_else(|| unsupported("空の comments.xml"))?;
         let w14 = ensure_w14_prefix(doc, root);
-        let mut writer = Writer { para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
+        let mut writer = Writer { ids: CopyParaIds::default(), para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &old_blocks, new_blocks: &new_blocks, pictures, nodes: HashMap::new(), added: &added, svg_media: &svg_media, empty_parent: None, link_rels: &link_rels, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
         writer.resolve_nodes();
         let find = |w: &Writer, id: u32| w.doc.elements(root).find(|&e| w.doc.local_name(e) == "comment" && w.doc.attr_local(e, "id") == Some(id.to_string().as_str()));
         for c in old {
@@ -1099,19 +1108,31 @@ fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model:
             writer.empty_parent = Some(e);
             writer.list(was.map_or(&[][..], |w| w.blocks.as_slice()), &c.blocks)?;
             // Its last paragraph's id, which commentsExtended.xml names.
+            // The id must be on that paragraph and nowhere else in the comments part: a comment's paragraph split in two leaves
+            // the id on the first one, so the new last paragraph's own id is what commentsExtended.xml gets.
             if let Some(id) = &c.para_id
                 && let Some(last) = writer.doc.elements(e).filter(|&n| writer.doc.local_name(n) == "p").last()
                 && writer.doc.attr_local(last, "paraId") != Some(id.as_str())
             {
-                writer.doc.set_attr(last, &format!("{w14}:paraId"), id);
+                let taken = writer.doc.descendants(root).into_iter().any(|n| n != last && writer.doc.is_element(n) && writer.doc.local_name(n) == "p" && writer.doc.attr_local(n, "paraId") == Some(id.as_str()));
+                if !taken {
+                    writer.doc.set_attr(last, &format!("{w14}:paraId"), id);
+                } else if let Some(own) = writer.doc.attr_local(last, "paraId").map(str::to_string) {
+                    effective.insert(c.id, own);
+                } else {
+                    let fresh = format!("{:08X}", writer.fresh_para_id());
+                    writer.doc.set_attr(last, &format!("{w14}:paraId"), &fresh);
+                    effective.insert(c.id, fresh);
+                }
             }
         }
     }
     // commentsExtended.xml, from the comments now.
-    let ext = |cs: &[ibis_doc_model::Comment]| -> Vec<(Option<String>, Option<String>, bool)> {
-        cs.iter().map(|c| (c.para_id.clone(), c.parent.and_then(|p| cs.iter().find(|x| x.id == p)).and_then(|p| p.para_id.clone()), c.done)).collect()
+    let ext = |cs: &[ibis_doc_model::Comment], eff: &HashMap<u32, String>| -> Vec<(Option<String>, Option<String>, bool)> {
+        let para = |c: &ibis_doc_model::Comment| eff.get(&c.id).cloned().or_else(|| c.para_id.clone());
+        cs.iter().map(|c| (para(c), c.parent.and_then(|p| cs.iter().find(|x| x.id == p)).and_then(para), c.done)).collect()
     };
-    if ext(old) != ext(new) {
+    if ext(old, &HashMap::new()) != ext(new, &effective) {
         let part = match &map.comments_extended_part {
             Some(p) => p.clone(),
             None => {
@@ -1124,7 +1145,7 @@ fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model:
         let mut doc = XmlDocument::new_with_declaration();
         let root = doc.append_element(XmlDocument::ROOT, "w15:commentsEx");
         doc.set_attr(root, "xmlns:w15", W15_NS);
-        for (para, parent, done) in ext(new) {
+        for (para, parent, done) in ext(new, &effective) {
             let Some(para) = para else { continue };
             let e = doc.append_element(root, "w15:commentEx");
             doc.set_attr(e, "w15:paraId", &para);
@@ -1214,6 +1235,17 @@ fn new_part(package: &mut Package, map: &SourceMap, footer: bool) -> Result<Stri
     Ok(part)
 }
 
+/// The file's CMYK mode (ibisOffice's own) in `settings.xml`: `ibis:cmyk`, ignorable for Word (`save/pptx_cmyk.rs`).
+fn write_cmyk_setting(package: &mut Package, map: &SourceMap, mode: &ibis_doc_model::CmykMode) -> Result<(), Error> {
+    const SETTINGS_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
+    let main = map.body_part.clone();
+    let part = package.relationships(&main)?.into_iter().find(|r| r.kind == SETTINGS_REL && !r.external).and_then(|r| r.target_part(&main)).ok_or_else(|| unsupported("settings.xml の無い文書の設定の変更"))?;
+    let doc = package.xml_mut(&part)?;
+    let root = doc.root_element().ok_or_else(|| unsupported("空の settings.xml"))?;
+    super::pptx_cmyk::write_cmyk_in_settings(doc, root, mode);
+    Ok(())
+}
+
 /// Set an on/off setting of `settings.xml` (`w:evenAndOddHeaders`).
 fn write_setting(package: &mut Package, map: &SourceMap, name: &str, on: bool) -> Result<(), Error> {
     const SETTINGS_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
@@ -1245,6 +1277,44 @@ fn write_setting(package: &mut Package, map: &SourceMap, name: &str, on: bool) -
             }
         }
         (None, false) => {}
+    }
+    Ok(())
+}
+
+/// Set the zoom of `settings.xml`: `w:zoom` with `w:percent` (the element is among the first of the settings, after `w:view`).
+fn write_zoom(package: &mut Package, map: &SourceMap, percent: Option<u16>) -> Result<(), Error> {
+    const SETTINGS_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
+    let main = map.body_part.clone();
+    let Some(part) = package.relationships(&main)?.into_iter().find(|r| r.kind == SETTINGS_REL && !r.external).and_then(|r| r.target_part(&main)) else { return Ok(()) };
+    let doc = package.xml_mut(&part)?;
+    let root = doc.root_element().ok_or_else(|| unsupported("空の settings.xml"))?;
+    let existing = doc.elements(root).find(|&c| doc.local_name(c) == "zoom");
+    // A zoom the user put the window at is `w:percent` (and no `w:val`); the window fitted again is `w:val="bestFit"` (the percent stays).
+    let set = |doc: &mut ibis_ooxml::XmlDocument, e| match percent {
+        Some(p) => {
+            doc.set_attr(e, "w:percent", &p.to_string());
+            doc.remove_attr(e, "w:val");
+        }
+        None => {
+            doc.set_attr(e, "w:val", "bestFit");
+            if doc.attr(e, "w:percent").is_none() {
+                doc.set_attr(e, "w:percent", "100");
+            }
+        }
+    };
+    match existing {
+        Some(e) => set(doc, e),
+        None => {
+            let e = doc.append_element(root, "w:zoom");
+            set(doc, e);
+            doc.detach(e);
+            // After writeProtection, readOnlyRecommended and view, before the rest.
+            let after = doc.elements(root).filter(|&c| matches!(doc.local_name(c), "writeProtection" | "readOnlyRecommended" | "view")).last();
+            match after {
+                Some(a) => doc.insert_after(a, e),
+                None => doc.insert(root, 0, e),
+            }
+        }
     }
     Ok(())
 }
@@ -1946,6 +2016,145 @@ struct Writer<'a> {
     old_shape_groups: &'a [ibis_doc_model::ShapeGroup],
     new_shape_groups: &'a [ibis_doc_model::ShapeGroup],
     para_ids: &'a mut ParaIds,
+    /// The `w14:paraId` values in use in the part (for the ones new paragraphs get).
+    ids: CopyParaIds,
+}
+
+/// The `w14:paraId` values of a part's paragraphs and rows, loaded when the first copy needs a new one.
+#[derive(Default)]
+struct CopyParaIds {
+    used: Option<HashSet<u32>>,
+    next: u32,
+}
+
+/// The `w14:textId` Word gives what it makes new (an empty new paragraph, a cell of a new row).
+const NEW_TEXT_ID: &str = "77777777";
+
+/// `w14:paraId` / `w14:textId` of an element: the attribute's name as written and its value.
+fn para_id_attr(doc: &XmlDocument, n: NodeId, local: &str) -> Option<(String, String)> {
+    doc.attributes(n).iter().find(|a| a.name.rsplit(':').next() == Some(local) && a.name.contains(':') && !a.name.starts_with("xmlns")).map(|a| (a.name.clone(), a.value.clone()))
+}
+
+/// A `w14:paraId` is valid when it is greater than 0 and less than 0x80000000 (MS-DOCX, paraId).
+fn parse_para_id(v: &str) -> Option<u32> {
+    u32::from_str_radix(v, 16).ok().filter(|&n| n > 0 && n < 0x8000_0000)
+}
+
+impl Writer<'_> {
+    /// The paragraphs and rows (`w:p`, `w:tr`) of a copy (`node`, detached or not) get new `w14:paraId`s, unique in the part
+    /// (MS-DOCX: unique within the document part), and lose `w14:textId`. An element that had no paraId gets none (the document
+    /// does not use them). Elements of the copy that shared one value (the choice and fallback of an `mc:AlternateContent`,
+    /// which the specification allows) still share one new value.
+    fn renew_para_ids(&mut self, node: NodeId) {
+        let targets: Vec<NodeId> = self
+            .doc
+            .descendants(node)
+            .into_iter()
+            .filter(|&n| self.doc.is_element(n) && matches!(self.doc.local_name(n), "p" | "tr"))
+            .collect();
+        // (A copy not attached yet cannot resolve its prefixes: a `w14:` attribute is what marks a paragraph or row of WordprocessingML.)
+        if targets.is_empty() {
+            return;
+        }
+        self.load_para_ids();
+        let mut renamed: HashMap<String, String> = HashMap::new();
+        for t in targets {
+            let Some((name, old)) = para_id_attr(self.doc, t, "paraId") else {
+                if let Some((name, _)) = para_id_attr(self.doc, t, "textId") {
+                    self.doc.remove_attr(t, &name);
+                }
+                continue;
+            };
+            // A new paragraph's textId is 77777777, which Word writes for what it makes new (#221).
+            self.set_para_attr(t, "textId", NEW_TEXT_ID);
+            let fresh = match renamed.get(&old) {
+                Some(f) => f.clone(),
+                None => {
+                    let f = format!("{:08X}", self.fresh_para_id());
+                    renamed.insert(old, f.clone());
+                    f
+                }
+            };
+            self.doc.set_attr(t, &name, &fresh);
+        }
+    }
+
+    /// Loads the paraIds in use in the part (once).
+    fn load_para_ids(&mut self) {
+        if self.ids.used.is_some() {
+            return;
+        }
+        let mut used = HashSet::new();
+        if let Some(root) = self.doc.root_element() {
+            for n in self.doc.descendants(root) {
+                if self.doc.is_element(n)
+                    && let Some((_, v)) = para_id_attr(self.doc, n, "paraId")
+                    && let Some(v) = parse_para_id(&v)
+                {
+                    used.insert(v);
+                }
+            }
+        }
+        self.ids.next = 0x2F4A_7C15 ^ used.len() as u32;
+        self.ids.used = Some(used);
+    }
+
+    /// Sets `w14:paraId` / `w14:textId` of an element, with the prefix the element's other id attribute is written with.
+    fn set_para_attr(&mut self, n: NodeId, local: &str, value: &str) {
+        let name = para_id_attr(self.doc, n, local)
+            .map(|(name, _)| name)
+            .or_else(|| {
+                let other = if local == "paraId" { "textId" } else { "paraId" };
+                para_id_attr(self.doc, n, other).map(|(name, _)| format!("{}{local}", &name[..name.len() - other.len()]))
+            })
+            .unwrap_or_else(|| format!("w14:{local}"));
+        self.doc.set_attr(n, &name, value);
+    }
+
+    /// A new `w14:textId` for a paragraph whose text Word has changed (a split's second part, the paragraph a join leaves).
+    fn fresh_text_id(&mut self) -> String {
+        self.load_para_ids();
+        loop {
+            let f = format!("{:08X}", self.fresh_para_id());
+            if f != NEW_TEXT_ID {
+                return f;
+            }
+        }
+    }
+
+    /// The paragraph's `w14:paraId` and `w14:textId` after a split (#221, Word's measured rule): the id stays with the part that
+    /// keeps the text: the second part when the text is cut in the middle, the first when the cut is at the end (the new
+    /// paragraph is empty); the other part gets a new id. `holder` has the id now (the first part, or an earlier copy of it),
+    /// `copy` is the new paragraph (renew_para_ids gave it a new paraId and textId 77777777). When the new paragraph is empty, or
+    /// the first part is as it was (a paragraph inserted after it), no text is cut and the holder keeps the id. A first part with
+    /// no text (the cut at the start; not measured) is the new paragraph. Returns the node that has the original id afterwards.
+    fn split_para_ids(&mut self, holder: NodeId, copy: NodeId, copy_empty: bool, holder_empty: bool, holder_unchanged: bool) -> NodeId {
+        if copy_empty || holder_unchanged {
+            return holder;
+        }
+        let Some((_, original)) = para_id_attr(self.doc, holder, "paraId") else { return holder };
+        let Some((_, copy_new)) = para_id_attr(self.doc, copy, "paraId") else { return holder };
+        self.set_para_attr(holder, "paraId", &copy_new);
+        self.set_para_attr(copy, "paraId", &original);
+        if holder_empty {
+            self.set_para_attr(holder, "textId", NEW_TEXT_ID);
+        }
+        let fresh = self.fresh_text_id();
+        self.set_para_attr(copy, "textId", &fresh);
+        copy
+    }
+
+    /// A `w14:paraId` value not used in the part yet.
+    fn fresh_para_id(&mut self) -> u32 {
+        let used = self.ids.used.get_or_insert_with(HashSet::new);
+        loop {
+            self.ids.next = self.ids.next.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let v = (self.ids.next ^ (self.ids.next >> 7)) & 0x7FFF_FFFF;
+            if v > 0 && used.insert(v) {
+                return v;
+            }
+        }
+    }
 }
 
 /// CT_RPr's children in order.
@@ -1957,6 +2166,8 @@ const RPR_ORDER: &[&str] = &[
 ];
 
 /// CT_PPr's children in order.
+const TC_PR_ORDER: &[&str] = &["cnfStyle", "tcW", "gridSpan", "hMerge", "vMerge", "tcBorders", "shd", "noWrap", "tcMar", "textDirection", "tcFitText", "vAlign", "hideMark", "headers", "cellIns", "cellDel", "cellMerge", "tcPrChange"];
+
 const PPR_ORDER: &[&str] = &[
     "pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr", "widowControl", "numPr", "suppressLineNumbers", "pBdr", "shd", "tabs",
     "suppressAutoHyphens", "kinsoku", "wordWrap", "overflowPunct", "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd",
@@ -2294,13 +2505,28 @@ impl Writer<'_> {
     fn list(&mut self, old: &[Block], new: &[Block]) -> Result<(), Error> {
         // Blocks gone.
         let new_ids: HashSet<u32> = new.iter().map(block_id).collect();
-        for b in old {
+        for (j, b) in old.iter().enumerate() {
             let id = block_id(b);
             if !new_ids.contains(&id) {
                 if self.new_blocks.contains_key(&id) {
                     return Err(unsupported("段落の移動"));
                 }
                 let node = *self.nodes.get(&id).ok_or_else(|| unsupported("元の場所が分からない段落の削除"))?;
+                // A join (#221, Word's measured rule): the paragraph before is kept with the text of this one after its own, and the
+                // paragraph left has this one's paraId (the one before is gone) and a new textId. A paragraph with no text is deleted,
+                // not joined (not measured).
+                if let (Block::Paragraph(gone), Some(Block::Paragraph(before))) = (b, j.checked_sub(1).map(|j| &old[j]))
+                    && !gone.runs.is_empty()
+                    && let Some(Block::Paragraph(after)) = new.iter().find(|n| block_id(n) == before.id)
+                    && after.text() == before.text() + &gone.text()
+                    && let Some(&kept) = self.nodes.get(&before.id)
+                    && let Some((_, gone_id)) = para_id_attr(self.doc, node, "paraId")
+                    && para_id_attr(self.doc, kept, "paraId").is_some()
+                {
+                    self.set_para_attr(kept, "paraId", &gone_id);
+                    let fresh = self.fresh_text_id();
+                    self.set_para_attr(kept, "textId", &fresh);
+                }
                 self.doc.detach(node);
             }
         }
@@ -2314,6 +2540,7 @@ impl Writer<'_> {
             return Err(unsupported("段落をすべて置き換える変更"));
         }
         let mut previous: Option<NodeId> = None;
+        let mut holders: HashMap<u32, NodeId> = HashMap::new();
         for (i, block) in new.iter().enumerate() {
             let id = block_id(block);
             let node = match (self.old_blocks.get(&id).copied().filter(|_| old_order.contains_key(&id)), block) {
@@ -2409,6 +2636,17 @@ impl Writer<'_> {
                         return Err(unsupported("複雑なセル内段落の移動"));
                     }
                     let node = self.doc.import(self.pristine, original);
+                    self.renew_para_ids(node);
+                    // A split (#221): which of the parts keeps the paragraph's paraId. `holders` has, for each paragraph copied from,
+                    // the element that has its paraId now (a paragraph split into several).
+                    if let Some(&first) = self.nodes.get(&template.id)
+                        && let Some(Block::Paragraph(first_now)) = new.iter().find(|n| block_id(n) == template.id)
+                    {
+                        let holder = holders.get(&template.id).copied().unwrap_or(first);
+                        let holder_text_empty = if holder == first { first_now.text().is_empty() } else { false };
+                        let kept = self.split_para_ids(holder, node, p.text().is_empty(), holder_text_empty, first_now.text() == template.text());
+                        holders.insert(template.id, kept);
+                    }
                     match previous {
                         Some(prev) => self.doc.insert_after(prev, node),
                         None => {
@@ -2916,6 +3154,16 @@ impl Writer<'_> {
         }
         if was.columns != t.columns {
             self.grid(node, &t.columns);
+            // A fixed table's width in twips (`w:tblW`) stretches or shrinks the columns when the file is read (#178): the columns' new
+            // total is its width, or the columns read back at the old one.
+            if t.autofit.is_none()
+                && let Some(width) = self.doc.child(node, "tblPr").and_then(|pr| self.doc.child(pr, "tblW"))
+                && matches!(self.doc.attr(width, "w:type"), None | Some("dxa"))
+                && self.doc.attr(width, "w:w").and_then(|v| v.parse::<i64>().ok()).is_some_and(|w| w > 0)
+            {
+                let total: i64 = t.columns.iter().sum();
+                self.doc.set_attr(width, "w:w", &(total / 635).to_string());
+            }
         }
         // 表スタイル (w:tblStyle)
         let was_style_id = was.style.as_ref().map(|s| s.id.as_str());
@@ -3049,6 +3297,7 @@ impl Writer<'_> {
                     let template = t.rows[..i].iter().rev().chain(t.rows[i + 1..].iter()).find_map(|r| old_rows.get(&r.id).copied());
                     let Some(template) = template else { return Err(unsupported("行をすべて置き換える表の変更")) };
                     let tr = self.doc.import(self.pristine, pristine_rows[template].0);
+                    self.renew_para_ids(tr);
                     for attr in ["w14:paraId", "w14:textId"] {
                         self.doc.remove_attr(tr, attr);
                     }
@@ -3069,6 +3318,7 @@ impl Writer<'_> {
                             None => {
                                 let last = *clone_cells.last().ok_or_else(|| unsupported("表の行の追加"))?;
                                 let tc = self.doc.deep_clone(last);
+                                self.renew_para_ids(tc);
                                 self.doc.insert_after(last, tc);
                                 tc
                             }
@@ -3139,6 +3389,7 @@ impl Writer<'_> {
                     let template = row.cells[..j].iter().rev().chain(row.cells[j + 1..].iter()).find_map(|c| old_cells.get(&c.id).copied());
                     let Some(template) = template else { return Err(unsupported("セルをすべて置き換える行の変更")) };
                     let tc = self.doc.import(self.pristine, pristine_cells[template]);
+                    self.renew_para_ids(tc);
                     match previous {
                         Some(prev) => self.doc.insert_after(prev, tc),
                         None => {
@@ -3202,6 +3453,7 @@ impl Writer<'_> {
             match block {
                 Block::Paragraph(p) => {
                     let node = self.doc.import(self.pristine, original);
+                    self.renew_para_ids(node);
                     let end = self.doc.children(tc).len();
                     self.doc.insert(tc, end, node);
                     self.write_copy(node, template_para, p, &source.atoms)?;
@@ -3256,8 +3508,21 @@ impl Writer<'_> {
     }
 
     /// Write a cell's properties (`w:tcPr`) that differ from `old`'s.
+    /// A cell's `w:vMerge` as `merge` says (`restart` for the one that starts, none for the one that continues): the same for a cell of an old table and of a new one.
+    fn vertical_merge(&mut self, pr: NodeId, merge: VerticalMerge) {
+        const ORDER: &[&str] = TC_PR_ORDER;
+        match merge {
+            VerticalMerge::None => self.remove_child(pr, "vMerge"),
+            VerticalMerge::Start => self.val(pr, "vMerge", Some("restart"), ORDER),
+            VerticalMerge::Continue => {
+                let e = self.ensure(pr, "vMerge", ORDER);
+                self.doc.remove_attr(e, "w:val");
+            }
+        }
+    }
+
     fn cell_props(&mut self, tc: NodeId, old: &FlowCell, was: &FlowTable, new: &FlowCell, t: &FlowTable) {
-        const ORDER: &[&str] = &["cnfStyle", "tcW", "gridSpan", "hMerge", "vMerge", "tcBorders", "shd", "noWrap", "tcMar", "textDirection", "tcFitText", "vAlign", "hideMark", "headers", "cellIns", "cellDel", "cellMerge", "tcPrChange"];
+        const ORDER: &[&str] = TC_PR_ORDER;
         let width = |table: &FlowTable, row_cell: &FlowCell| -> i64 {
             // The cell's grid columns: found by its span only (the start
             // column is not kept), so the width is written when it changed.
@@ -3277,14 +3542,7 @@ impl Writer<'_> {
             self.val(pr, "gridSpan", v.as_deref(), ORDER);
         }
         if old.merge != new.merge {
-            match new.merge {
-                VerticalMerge::None => self.remove_child(pr, "vMerge"),
-                VerticalMerge::Start => self.val(pr, "vMerge", Some("restart"), ORDER),
-                VerticalMerge::Continue => {
-                    let e = self.ensure(pr, "vMerge", ORDER);
-                    self.doc.remove_attr(e, "w:val");
-                }
-            }
+            self.vertical_merge(pr, new.merge);
         }
         if old.shading != new.shading {
             match new.shading {
@@ -3320,14 +3578,7 @@ impl Writer<'_> {
             self.val(pr, "vAlign", v, ORDER);
         }
         if old.direction != new.direction {
-            let v = match new.direction {
-                ibis_doc_model::CellDirection::LrTb => None,
-                ibis_doc_model::CellDirection::TbRl => Some("tbRl"),
-                ibis_doc_model::CellDirection::TbRlV => Some("tbRlV"),
-                ibis_doc_model::CellDirection::BtLr => Some("btLr"),
-                ibis_doc_model::CellDirection::LrTbV => Some("lrTbV"),
-                ibis_doc_model::CellDirection::TbLrV => Some("tbLrV"),
-            };
+            let v = (new.direction != ibis_doc_model::CellDirection::LrTb).then(|| new.direction.name());
             self.val(pr, "textDirection", v, ORDER);
         }
         if old.margins != new.margins {
@@ -3441,6 +3692,16 @@ impl Writer<'_> {
                 None => self.doc.set_attr(e, "w:val", "nil"),
             }
         }
+        // The cell margins at the sides the table's cells have (Word's 108 twips): written in the table, so that a file whose styles have no default table style (or none of the
+        // named one), which would give none, reads them back (#227).
+        if let Some(first) = t.rows.first().and_then(|r| r.cells.first()).filter(|c| c.margins == [0, 108 * 635, 0, 108 * 635]) {
+            let mar = self.doc.append_element(pr, &w("tblCellMar"));
+            for (name, val) in [("left", first.margins[3]), ("right", first.margins[1])] {
+                let e = self.doc.append_element(mar, &w(name));
+                self.doc.set_attr(e, "w:w", &(val / 635).to_string());
+                self.doc.set_attr(e, "w:type", "dxa");
+            }
+        }
         // The last child of tblPr (the schema's order): the look of the table style.
         let look = self.doc.append_element(pr, &w("tblLook"));
         if let Some(ref st) = t.style {
@@ -3468,16 +3729,7 @@ impl Writer<'_> {
                     let e = self.doc.append_element(tc_pr, &w("gridSpan"));
                     self.doc.set_attr(e, "w:val", &cell.span.to_string());
                 }
-                match cell.merge {
-                    VerticalMerge::None => {}
-                    VerticalMerge::Start => {
-                        let e = self.doc.append_element(tc_pr, &w("vMerge"));
-                        self.doc.set_attr(e, "w:val", "restart");
-                    }
-                    VerticalMerge::Continue => {
-                        self.doc.append_element(tc_pr, &w("vMerge"));
-                    }
-                }
+                self.vertical_merge(tc_pr, cell.merge);
                 // A newly constructed table may have per-cell rules even
                 // when its table-level grid is absent (for example, an
                 // imported document with different borders on each row).
@@ -3489,16 +3741,8 @@ impl Writer<'_> {
                     }
                 }
                 if cell.direction != ibis_doc_model::CellDirection::LrTb {
-                    let d = match cell.direction {
-                        ibis_doc_model::CellDirection::TbRl => "tbRl",
-                        ibis_doc_model::CellDirection::TbRlV => "tbRlV",
-                        ibis_doc_model::CellDirection::BtLr => "btLr",
-                        ibis_doc_model::CellDirection::LrTbV => "lrTbV",
-                        ibis_doc_model::CellDirection::TbLrV => "tbLrV",
-                        ibis_doc_model::CellDirection::LrTb => "",
-                    };
                     let e = self.doc.append_element(tc_pr, &w("textDirection"));
-                    self.doc.set_attr(e, "w:val", d);
+                    self.doc.set_attr(e, "w:val", cell.direction.name());
                 }
                 if cell.no_wrap {
                     self.doc.append_element(tc_pr, &w("noWrap"));
@@ -3516,6 +3760,7 @@ impl Writer<'_> {
                         Block::Paragraph(p) => match &copied {
                             Some((template, atoms, original)) => {
                                 let node = self.doc.import(self.pristine, *original);
+                                self.renew_para_ids(node);
                                 let end = self.doc.children(tc).len();
                                 self.doc.insert(tc, end, node);
                                 self.write_copy(node, template, p, atoms)?;
@@ -3958,7 +4203,12 @@ impl Writer<'_> {
             let end = |tag: &str, e: Option<(u64, u32)>| e.map(|(id, idx)| format!(r#"<a:{tag} id="{id}" idx="{idx}"/>"#)).unwrap_or_default();
             format!("<wps:cNvCnPr>{}{}</wps:cNvCnPr>", end("stCxn", glue.start), end("endCxn", glue.end))
         };
-        let flips = format!("{}{}", if shape.flip_h { r#" flipH="1""# } else { "" }, if shape.flip_v { r#" flipV="1""# } else { "" });
+        let flips = format!(
+            "{}{}{}",
+            if shape.rotation != 0 { format!(r#" rot="{}""#, shape.rotation) } else { String::new() },
+            if shape.flip_h { r#" flipH="1""# } else { "" },
+            if shape.flip_v { r#" flipV="1""# } else { "" },
+        );
         let root = self.doc.root_element().unwrap_or(XmlDocument::ROOT);
         let used_ids: std::collections::HashSet<u64> = self.doc.descendants(root).into_iter().filter(|&n| self.doc.is_element(n) && matches!(self.doc.local_name(n), "docPr" | "cNvPr")).filter_map(|n| self.doc.attr(n, "id").and_then(|v| v.parse::<u64>().ok())).collect();
         // The shape's own number when it is free (connectors name the shapes they are glued to by it), else the next one.
@@ -4308,11 +4558,28 @@ impl Writer<'_> {
     /// paragraphs and runs kept as far as they go.
     fn update_shape(&mut self, node: NodeId, shape: &Shape, body: Option<&ibis_doc_model::TextBody>, old: Option<&Shape>) {
         let old_body = old.and_then(shape_body);
+        self.update_shape_rotation(node, shape, old);
         self.update_shape_look(node, shape, old);
         if let Some(body) = body {
             self.update_text_box(node, shape, body, old_body);
         } else {
             self.update_shape_frame(node, shape);
+        }
+    }
+
+    /// A shape's rotation (`a:xfrm rot`, 60000ths of a degree) of its `wps:spPr`, when it differs from the old shape's (図形の書式 > 回転).
+    fn update_shape_rotation(&mut self, node: NodeId, shape: &Shape, old: Option<&Shape>) {
+        let Some(old) = old else { return };
+        if old.rotation == shape.rotation || matches!(shape.kind, ShapeKind::Picture(_)) {
+            return;
+        }
+        let Some(xfrm) = self.doc.descendants(node).into_iter().find(|&n| {
+            self.doc.is_element(n) && self.doc.local_name(n) == "xfrm" && self.doc.parent(n).is_some_and(|p| self.doc.local_name(p) == "spPr" && self.doc.parent(p).is_some_and(|g| matches!(self.doc.local_name(g), "wsp" | "sp")))
+        }) else { return };
+        if shape.rotation == 0 {
+            self.doc.remove_attr(xfrm, "rot");
+        } else {
+            self.doc.set_attr(xfrm, "rot", &shape.rotation.to_string());
         }
     }
 
@@ -4385,6 +4652,7 @@ impl Writer<'_> {
         }
         while old.len() < groups.len() {
             let copy = self.doc.deep_clone(last);
+            self.renew_para_ids(copy);
             let end = self.doc.children(content).len();
             self.doc.insert(content, end, copy);
             old.push(copy);
@@ -4898,9 +5166,13 @@ impl Writer<'_> {
     /// Remove from a copied paragraph what must be unique or belongs to the
     /// original (bookmarks, comment ranges, ids, a section break).
     fn clean_copy(&mut self, p: NodeId) {
-        let id = self.para_ids.fresh();
-        set_para_id(self.doc, p, &id);
-        for attr in ["w14:textId", "w:rsidR", "w:rsidRPr", "w:rsidRDefault", "w:rsidP"] {
+        // (`w14:paraId` and `w14:textId` stay: `renew_para_ids` gave the copy its own when it was made.)
+        if para_id_attr(self.doc, p, "paraId").is_none()
+            && let Some((name, _)) = para_id_attr(self.doc, p, "textId")
+        {
+            self.doc.remove_attr(p, &name);
+        }
+        for attr in ["w:rsidR", "w:rsidRPr", "w:rsidRDefault", "w:rsidP"] {
             self.doc.remove_attr(p, attr);
         }
         for node in self.doc.descendants(p) {
@@ -5263,7 +5535,9 @@ impl Writer<'_> {
                         if self.doc.local_name(e) == "r" {
                             runs.push(e);
                         } else {
-                            runs.extend(self.doc.descendants(e).into_iter().filter(|&n| self.doc.local_name(n) == "r"));
+                            // A formula (`m:oMath`) kept as it is: its runs, and the control properties (`m:ctrlPr`) of its structures (a fraction bar, brackets...: their
+                            // colour is theirs, GitHub issue #197) take the formatting as well.
+                            runs.extend(self.doc.descendants(e).into_iter().filter(|&n| matches!(self.doc.local_name(n), "r" | "ctrlPr")));
                         }
                     }
                     for r in runs {
@@ -6541,6 +6815,7 @@ impl Writer<'_> {
                             clear: pic.clear,
                             effects: pic.effects,
                             geometry: pic.geometry.clone(),
+                            effect_extent: [0; 4],
                         };
                         let node = match original {
                             Some(n) => self.doc.deep_clone(n),
@@ -7307,6 +7582,10 @@ impl Writer<'_> {
             });
             self.val(rpr, "vertAlign", v, o);
         }
+        if f0.raise != f1.raise {
+            let v = f1.raise.map(|r| r.to_string());
+            self.val(rpr, "position", v.as_deref(), o);
+        }
         if f0.border != f1.border {
             self.border_property(rpr, "bdr", f1.border, o);
         }
@@ -7804,7 +8083,7 @@ fn write_styles(package: &mut Package, map: &SourceMap, old: &ibis_doc_model::Fl
     let none_svg = HashSet::new();
     let none_links = HashMap::new();
     let mut para_ids = ParaIds::default();
-    let mut writer = Writer { para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &none_blocks, new_blocks: &none_blocks, pictures: &none_pictures, nodes: HashMap::new(), added: &none_added, svg_media: &none_svg, empty_parent: None, link_rels: &none_links, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
+    let mut writer = Writer { ids: CopyParaIds::default(), para_ids: &mut para_ids, doc, pristine: &pristine, map, part: &part, old_blocks: &none_blocks, new_blocks: &none_blocks, pictures: &none_pictures, nodes: HashMap::new(), added: &none_added, svg_media: &none_svg, empty_parent: None, link_rels: &none_links, written: HashMap::new(), shape_nodes: HashMap::new(), shape_olds: HashMap::new(), old_shape_groups: &[], new_shape_groups: &[] };
     let element_of = |doc: &XmlDocument, id: &str| doc.children_named(root, "style").find(|&e| doc.attr(e, "w:styleId") == Some(id));
     if old.defaults_run != new.defaults_run {
         let defaults = writer.ensure(root, "docDefaults", &["docDefaults", "latentStyles", "style"]);

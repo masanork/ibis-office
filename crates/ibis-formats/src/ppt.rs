@@ -311,7 +311,7 @@ pub fn dump(data: &[u8]) -> Result<String, Error> {
             kinds.sort_by_key(|(k, _)| **k);
             for (kind, style) in kinds {
                 if let Some((pf, cf)) = style.levels.first() {
-                    out += &format!("{label} text style {kind} level 1: align {:?} left_margin {:?} indent {:?} font {:?} ea {:?} ansi {:?} size {:?} space_before per level {:?}\n", pf.align, pf.left_margin, pf.indent, cf.font, cf.east_asian_font, cf.ansi_font, cf.size, style.levels.iter().map(|(p, _)| p.space_before).collect::<Vec<_>>());
+                    out += &format!("{label} text style {kind} level 1: align {:?} left_margin {:?} indent {:?} bullet {:?} font {:?} ea {:?} ansi {:?} size {:?} space_before per level {:?} sizes {:?}\n", pf.align, pf.left_margin, pf.indent, pf.has_bullet, cf.font, cf.east_asian_font, cf.ansi_font, cf.size, style.levels.iter().map(|(p, _)| p.space_before).collect::<Vec<_>>(), style.levels.iter().map(|(_, c)| c.size).collect::<Vec<_>>());
                 }
             }
         }
@@ -320,8 +320,12 @@ pub fn dump(data: &[u8]) -> Result<String, Error> {
                 for s in shapes {
                     let mut props: Vec<_> = s.props.values.iter().collect();
                     props.sort();
-                    *out += &format!("  shape {} spt={} ph={:?}/{:?} frame={:?} props={:X?}
-", s.id, s.spt, s.placeholder, s.unplaced_kind, s.frame, props);
+                    *out += &format!("  shape {} spt={} ph={:?}/{:?} frame={:?} abs={:?} space={:?} props={:X?}
+", s.id, s.spt, s.placeholder, s.unplaced_kind, s.frame, s.abs_frame, s.child_space, props);
+                    if let Some(x) = s.props.complex(0x03A9).and_then(shape_xml_xfrm_text) {
+                        *out += &format!("    shapexml xfrm {x}
+");
+                    }
                     for (id, data) in &s.props.complex {
                         if data.len() < 200 {
                             *out += &format!("    complex {:X}: {:02X?}\n", id, data);
@@ -444,6 +448,10 @@ pub(crate) struct Cf {
     pub(crate) pp9rt: Option<u8>,
     /// A click on the characters does this.
     pub(crate) link: Option<Interactive>,
+    /// The size from which the font is kerned (`kern` of `a:rPr`, hundredths of a point), from the master's DrawingML (`master_kern`).
+    pub(crate) kern: Option<i32>,
+    /// The language and the alternative language of the characters (Windows language ids, `TextSpecialInfoAtom`'s `lang` and `altLang`).
+    pub(crate) lang: Option<(u16, u16)>,
 }
 
 impl Cf {
@@ -468,6 +476,8 @@ impl Cf {
             spacing: self.spacing.or(base.spacing),
             pp9rt: self.pp9rt.or(base.pp9rt),
             link: self.link.or(base.link),
+            kern: self.kern.or(base.kern),
+            lang: self.lang.or(base.lang),
         }
     }
 }
@@ -644,6 +654,9 @@ pub(crate) enum Field {
 pub(crate) struct TextIr {
     pub(crate) kind: u32,
     pub(crate) paragraphs: Vec<ParaIr>,
+    /// The space before the first paragraph and after the last counts (`spcFirstLastPara` of the shape's DrawingML; the binary format has no
+    /// field for it, PowerPoint reads it from the DrawingML kept in the file).
+    pub(crate) space_first_last: Option<bool>,
 }
 
 /// The text records of one text (after a `TextHeaderAtom`): its characters, formatting and fields.
@@ -652,6 +665,8 @@ struct TextAtoms<'a> {
     kind: u32,
     chars: Option<String>,
     style: Option<Rec<'a>>,
+    /// The language runs of the text (`TextSpecialInfoAtom`): characters, language id, alternative language id.
+    languages: Vec<(usize, u16, u16)>,
     fields: Vec<(usize, Field)>,
     /// The additional text properties of the shape (`StyleTextProp9Atom`'s data).
     style9: Option<&'a [u8]>,
@@ -659,6 +674,10 @@ struct TextAtoms<'a> {
     links: Vec<(usize, usize, Interactive)>,
     /// The ruler of the text (`TextRulerAtom`): the left margin and the indent each of the five levels has, if it gives them.
     ruler: [(Option<i16>, Option<i16>); 5],
+    /// The tab stops of the ruler: position (master units), kind.
+    ruler_tabs: Vec<(i16, u16)>,
+    /// The default tab size of the ruler (master units), if it gives one.
+    ruler_default_tab: Option<i16>,
 }
 
 /// A `TextRulerAtom` (MS-PPT 2.9.76 `TextRuler`): the flags say which of the following fields are there (the count of levels,
@@ -693,6 +712,42 @@ fn parse_ruler(d: &[u8]) -> [(Option<i16>, Option<i16>); 5] {
     out
 }
 
+/// The default tab size of a `TextRulerAtom` (master units): flag 0x1, after the count of levels (flag 0x2). Seen in 057: flags F1 with
+/// the value 0x0120 = 288 units = half an inch, which PowerPoint writes as `defTabSz="457200"` when it saves the file as .pptx.
+fn parse_ruler_default_tab(d: &[u8]) -> Option<i16> {
+    let mut c = Cur { d, at: 0 };
+    let flags = c.u32()?;
+    if flags & 0x1 == 0 {
+        return None;
+    }
+    if flags & 0x2 != 0 {
+        c.u16()?;
+    }
+    c.i16()
+}
+
+/// The tab stops of a `TextRulerAtom` (position in master units, kind), in the order the file has them.
+fn parse_ruler_tabs(d: &[u8]) -> Vec<(i16, u16)> {
+    let mut c = Cur { d, at: 0 };
+    let Some(flags) = c.u32() else { return Vec::new() };
+    if flags & 0x4 == 0 {
+        return Vec::new();
+    }
+    if flags & 0x2 != 0 && c.u16().is_none() {
+        return Vec::new();
+    }
+    if flags & 0x1 != 0 && c.u16().is_none() {
+        return Vec::new();
+    }
+    let Some(count) = c.u16() else { return Vec::new() };
+    let mut tabs = Vec::new();
+    for _ in 0..count {
+        let (Some(position), Some(kind)) = (c.i16(), c.u16()) else { break };
+        tabs.push((position, kind));
+    }
+    tabs
+}
+
 /// The spacing between characters of each paragraph of the shape's DrawingML: per paragraph, per run (the characters it has, its `spc`).
 /// PowerPoint 2007 and later keeps the shape as DrawingML in the file (the `drs/shapexml.xml` of a zip in the shape's property 0x03A9,
 /// `metroBlob` of [MS-ODRAW] "Group Shape / Shape Properties" (a complex property; section number not looked up), in the OfficeArtTertiaryFOPT), because the binary format has no field for the spacing (031.ppt: `spc="300"` on a title in HG Maru Gothic).
@@ -718,6 +773,41 @@ fn shape_xml_spacing(blob: &[u8]) -> Option<Vec<Vec<(usize, Option<i32>, Option<
     Some(paragraphs)
 }
 
+/// The `kern` of each run of each paragraph of the shape's DrawingML (the characters it has, its `kern`): 0 on the runs PowerPoint wrote with
+/// kerning off (136's and 138's titles, which PowerPoint's PDF does not kern although the master's title style says 1200).
+fn shape_xml_kern(blob: &[u8]) -> Option<Vec<Vec<(usize, Option<i32>)>>> {
+    let archive = crate::zip::Archive::new(blob).ok()?;
+    let xml = String::from_utf8_lossy(&archive.read("drs/shapexml.xml").ok()??).into_owned();
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let mut paragraphs = Vec::new();
+    for p in doc.descendants().filter(|n| n.has_tag_name("p") && n.parent().is_some_and(|b| b.has_tag_name("txBody"))) {
+        let mut runs = Vec::new();
+        for r in p.children().filter(|n| n.has_tag_name("r") || n.has_tag_name("br") || n.has_tag_name("fld")) {
+            let kern = r.children().find(|n| n.has_tag_name("rPr")).and_then(|n| n.attribute("kern")).and_then(|v| v.parse::<i32>().ok());
+            let len = if r.has_tag_name("br") { 1 } else { r.children().find(|n| n.has_tag_name("t")).and_then(|t| t.text()).map_or(0, |t| t.chars().count()) };
+            runs.push((len, kern));
+        }
+        paragraphs.push(runs);
+    }
+    Some(paragraphs)
+}
+
+/// The style of the placeholder (`p:ph`) a shape's DrawingML is: title 0, body 1, any other kind 2; None when its root is not a `p:sp` with one.
+fn shape_xml_placeholder_style(blob: &[u8]) -> Option<u8> {
+    let archive = crate::zip::Archive::new(blob).ok()?;
+    let xml = String::from_utf8_lossy(&archive.read("drs/shapexml.xml").ok()??).into_owned();
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    if !doc.root_element().has_tag_name("sp") {
+        return None;
+    }
+    let ph = doc.descendants().find(|n| n.has_tag_name("ph"))?;
+    Some(match ph.attribute("type") {
+        Some("title" | "ctrTitle") => 0,
+        None | Some("body" | "subTitle" | "obj") => 1,
+        _ => 2,
+    })
+}
+
 /// The left margin and the indent (`marL`, `indent` of `a:pPr`, EMU) of each paragraph of the shape's DrawingML.
 fn shape_xml_margins(blob: &[u8]) -> Option<Vec<(Option<i64>, Option<i64>)>> {
     let archive = crate::zip::Archive::new(blob).ok()?;
@@ -735,6 +825,70 @@ fn shape_xml_margins(blob: &[u8]) -> Option<Vec<(Option<i64>, Option<i64>)>> {
     )
 }
 
+/// Whether the shape's DrawingML has `spcFirstLastPara="1"` on its `a:bodyPr` (the first paragraph's space before and the last one's space
+/// after count; 155.ppt: Google Slides' text boxes, 8 pt before the first line in PowerPoint's PDF).
+fn shape_xml_space_first_last(blob: &[u8]) -> bool {
+    let Some(archive) = crate::zip::Archive::new(blob).ok() else { return false };
+    let Some(Some(bytes)) = archive.read("drs/shapexml.xml").ok() else { return false };
+    let xml = String::from_utf8_lossy(&bytes).into_owned();
+    let Ok(doc) = roxmltree::Document::parse(&xml) else { return false };
+    doc.descendants().find(|n| n.has_tag_name("bodyPr")).and_then(|n| n.attribute("spcFirstLastPara")).is_some_and(|v| v == "1" || v == "true")
+}
+
+/// The layout of a master kept as DrawingML (the zip of record 0x041E, `drs/slideLayouts/slideLayoutN.xml`): for each of its placeholders,
+/// its `p:ph type` (`body` when it has none) and whether its `a:bodyPr` has `spcFirstLastPara`.
+fn layout_first_last(zip: &[u8]) -> Vec<(String, bool)> {
+    let Ok(archive) = crate::zip::Archive::new(zip) else { return Vec::new() };
+    let Some(name) = archive.names().into_iter().find(|n| n.starts_with("drs/slideLayouts/") && n.ends_with(".xml") && !n.contains("_rels")) else { return Vec::new() };
+    let Some(Some(bytes)) = archive.read(&name).ok() else { return Vec::new() };
+    let xml = String::from_utf8_lossy(&bytes).into_owned();
+    let Ok(doc) = roxmltree::Document::parse(&xml) else { return Vec::new() };
+    doc.descendants()
+        .filter(|n| n.has_tag_name("sp"))
+        .filter_map(|sp| {
+            let ph = sp.descendants().find(|n| n.has_tag_name("ph"))?;
+            let body = sp.descendants().find(|n| n.has_tag_name("bodyPr"))?;
+            let flag = body.attribute("spcFirstLastPara").is_some_and(|v| v == "1" || v == "true");
+            Some((ph.attribute("type").unwrap_or("body").to_string(), flag))
+        })
+        .collect()
+}
+
+/// The `kern` (hundredths of a point: the size from which a font is kerned) of each level of the master's text styles (title 0, body 1, other
+/// 2), from the DrawingML of the master the file keeps (`drs/slideMasters/slideMasterN.xml` in the zip of record 0x0423). The binary format has
+/// no field for it. PowerPoint's own pptx of the file (`office_truth_win.ps1 -SaveAs topptx`) has it per style and level (154's title and body
+/// styles have none, its other style 1200), and its PDF is kerned from that size (122: the text is narrower than without). None when the
+/// file has no such master.
+fn master_kern(zip: &[u8]) -> Option<HashMap<(u8, u8), i32>> {
+    master_defrpr(zip, "kern")
+}
+
+/// The `spc` (character spacing, hundredths of a point) of each level of the master's text styles, as `master_kern` reads `kern`: the binary
+/// format has no field for it, and PowerPoint's PDF has the spacing (092's title style says 200: its titles are wider than the .ppt's characters).
+fn master_spacing(zip: &[u8]) -> Option<HashMap<(u8, u8), i32>> {
+    master_defrpr(zip, "spc")
+}
+
+fn master_defrpr(zip: &[u8], attr: &str) -> Option<HashMap<(u8, u8), i32>> {
+    let archive = crate::zip::Archive::new(zip).ok()?;
+    let name = archive.names().into_iter().find(|n| n.starts_with("drs/slideMasters/") && n.ends_with(".xml") && !n.contains("_rels"))?;
+    let bytes = archive.read(&name).ok()??;
+    let xml = String::from_utf8_lossy(&bytes).into_owned();
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let styles = doc.descendants().find(|n| n.has_tag_name("txStyles"))?;
+    let mut out = HashMap::new();
+    for (style, tag) in ["titleStyle", "bodyStyle", "otherStyle"].into_iter().enumerate() {
+        let Some(node) = styles.children().find(|n| n.has_tag_name(tag)) else { continue };
+        for level in node.children().filter(|n| n.is_element()) {
+            let Some(n) = level.tag_name().name().strip_prefix("lvl").and_then(|r| r.strip_suffix("pPr")).and_then(|r| r.parse::<u8>().ok()) else { continue };
+            if let Some(k) = level.children().find(|c| c.has_tag_name("defRPr")).and_then(|d| d.attribute(attr)).and_then(|v| v.parse().ok()) {
+                out.insert((style as u8, n - 1), k);
+            }
+        }
+    }
+    Some(out)
+}
+
 /// One master unit (1/576 inch) in EMU, rounded up: the binary format keeps positions in master units, so a frame that is the DrawingML's
 /// differs from it by the rounding to a unit at most (measured on 031 and 147: 304 and 189 EMU).
 const MASTER_UNIT_EMU: i64 = 1588;
@@ -743,14 +897,80 @@ const MASTER_UNIT_EMU: i64 = 1588;
 /// first written, so a shape moved or resized since has a stale one. (Not enough: 038.ppt's text boxes agree in frame, yet PowerPoint draws
 /// them without the DrawingML's negative spacing; what it checks beyond the frame is not known.)
 pub(crate) fn shape_xml_is_current(blob: &[u8], frame: Option<(i64, i64, i64, i64)>) -> bool {
+    shape_xml_frame_agrees(blob, frame, true)
+}
+
+/// Whether the shape's DrawingML is as large as the shape (its width and height agree). A shape moved only (into a group, say) keeps its
+/// DrawingML's size, and its geometry (the preset and its adjust values) depends on the size alone (109.ppt: the snipped-corner boxes, whose
+/// DrawingML has the position of before they were grouped).
+pub(crate) fn shape_xml_is_same_size(blob: &[u8], frame: Option<(i64, i64, i64, i64)>) -> bool {
+    shape_xml_frame_agrees(blob, frame, false)
+}
+
+fn shape_xml_frame_agrees(blob: &[u8], frame: Option<(i64, i64, i64, i64)>, with_position: bool) -> bool {
     let Some(frame) = frame else { return false };
-    let Some(xml) = crate::zip::Archive::new(blob).ok().and_then(|a| a.read("drs/shapexml.xml").ok().flatten()) else { return false };
+    let Some(xml) = shape_or_connector_xml(blob) else { return false };
     let xml = String::from_utf8_lossy(&xml).into_owned();
     let Ok(doc) = roxmltree::Document::parse(&xml) else { return false };
     let num = |n: roxmltree::Node, a: &str| n.attribute(a).and_then(|v| v.parse::<i64>().ok());
     let (Some(off), Some(ext)) = (doc.descendants().find(|n| n.has_tag_name("off")), doc.descendants().find(|n| n.has_tag_name("ext") && n.attribute("cx").is_some())) else { return false };
     let (Some(x), Some(y), Some(w), Some(h)) = (num(off, "x"), num(off, "y"), num(ext, "cx"), num(ext, "cy")) else { return false };
-    [(x, frame.0), (y, frame.1), (w, frame.2), (h, frame.3)].iter().all(|(a, b)| (a - b).abs() <= MASTER_UNIT_EMU)
+    // The transform is in EMU, or in master units (1/576 inch) as the binary format has it: a child of a group has the group's child
+    // coordinates, which a shape of the binary file's own writing (034's table: off=(1790,1570) ext=(2230,1798), 2230 * 1587.5 =
+    // 3540125 = the frame's width) states in master units. The same shape, in either unit, agrees with the frame.
+    [1.0, 1587.5].iter().any(|scale| {
+        let pairs = [(x, frame.0), (y, frame.1), (w, frame.2), (h, frame.3)];
+        pairs[if with_position { 0 } else { 2 }..].iter().all(|(a, b)| (*a as f64 * scale - *b as f64).abs() <= MASTER_UNIT_EMU as f64)
+    })
+}
+
+/// The DrawingML a shape's property 0x03A9 holds: `drs/shapexml.xml`, or `drs/connectorxml.xml` for a connector (014's lines).
+fn shape_or_connector_xml(blob: &[u8]) -> Option<Vec<u8>> {
+    let archive = crate::zip::Archive::new(blob).ok()?;
+    ["drs/shapexml.xml", "drs/connectorxml.xml"].iter().find_map(|name| archive.read(name).ok().flatten())
+}
+
+/// The transform of the shape's DrawingML as text, for the dump: `off`, `ext`, and a group's `chOff`, `chExt`.
+fn shape_xml_xfrm_text(blob: &[u8]) -> Option<String> {
+    let xml = crate::zip::Archive::new(blob).ok().and_then(|a| a.read("drs/shapexml.xml").ok().flatten())?;
+    let xml = String::from_utf8_lossy(&xml).into_owned();
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let xfrm = doc.descendants().find(|n| n.has_tag_name("xfrm"))?;
+    let pair = |tag: &str, a: &str, b: &str| {
+        xfrm.children().find(|n| n.has_tag_name(tag)).map(|n| format!("{tag}=({},{})", n.attribute(a).unwrap_or("?"), n.attribute(b).unwrap_or("?")))
+    };
+    Some([pair("off", "x", "y"), pair("ext", "cx", "cy"), pair("chOff", "x", "y"), pair("chExt", "cx", "cy")].into_iter().flatten().collect::<Vec<_>>().join(" "))
+}
+
+/// Whether the shape's DrawingML draws no outline (`a:spPr/a:ln` with `a:noFill`).
+pub(crate) fn shape_xml_line_is_none(blob: &[u8]) -> bool {
+    let Some(xml) = shape_or_connector_xml(blob) else { return false };
+    let xml = String::from_utf8_lossy(&xml).into_owned();
+    let Ok(doc) = roxmltree::Document::parse(&xml) else { return false };
+    let Some(sp_pr) = doc.descendants().find(|n| n.has_tag_name("spPr")) else { return false };
+    sp_pr.children().find(|n| n.has_tag_name("ln")).is_some_and(|ln| ln.children().any(|c| c.has_tag_name("noFill")))
+}
+
+/// The preset geometry the shape's DrawingML names (`a:prstGeom` with its `a:gd` adjust values), as written back. A shape the older format
+/// has only as a freeform (the 2007 shapes: snip1Rect, round1Rect, ...) is the preset to PowerPoint, which draws its text in the preset's text
+/// rectangle (109.ppt: the box of a single snipped corner has its text lower by half the cut, 3.4 to 4.6 pt, in PowerPoint's PDF).
+/// None for `rect` (nothing to add) or when there is no DrawingML.
+pub(crate) fn shape_xml_geometry(blob: &[u8]) -> Option<String> {
+    let archive = crate::zip::Archive::new(blob).ok()?;
+    let bytes = archive.read("drs/shapexml.xml").ok()??;
+    let xml = String::from_utf8_lossy(&bytes).into_owned();
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let geom = doc.descendants().find(|n| n.has_tag_name("prstGeom"))?;
+    let prst = geom.attribute("prst").filter(|p| *p != "rect" && p.chars().all(|c| c.is_ascii_alphanumeric()))?;
+    let mut av = String::new();
+    for gd in geom.descendants().filter(|n| n.has_tag_name("gd")) {
+        let (name, fmla) = (gd.attribute("name")?, gd.attribute("fmla")?);
+        if !name.chars().all(|c| c.is_ascii_alphanumeric()) || !fmla.starts_with("val ") || !fmla[4..].chars().all(|c| c.is_ascii_digit() || c == '-') {
+            return None;
+        }
+        av += &format!(r#"<a:gd name="{name}" fmla="{fmla}"/>"#);
+    }
+    Some(format!(r#"<a:prstGeom prst="{prst}"><a:avLst>{av}</a:avLst></a:prstGeom>"#))
 }
 
 /// The text of a shape that has none in the binary format, from its DrawingML (`p:txBody` as written): a text in columns (`numCol`) has only
@@ -829,6 +1049,34 @@ fn apply_shape_xml_spacing(text: &mut TextIr, blob: &[u8]) {
             at += n;
         }
     }
+    // The runs the DrawingML has kerning off for (kern="0").
+    if let Some(kerns) = shape_xml_kern(blob).filter(|k| k.len() == text.paragraphs.len()) {
+        for (x, para) in kerns.iter().zip(text.paragraphs.iter_mut()) {
+            let per_char: Vec<Option<i32>> = x.iter().flat_map(|(n, k)| std::iter::repeat_n(*k, *n)).collect();
+            let mut at = 0usize;
+            let mut runs = Vec::new();
+            for (t, cf, field) in std::mem::take(&mut para.runs) {
+                let chars: Vec<char> = t.chars().collect();
+                let mut start = 0;
+                while start < chars.len() {
+                    let kern = per_char.get(at + start).copied().flatten().filter(|k| *k == 0);
+                    let mut end = start + 1;
+                    while end < chars.len() && per_char.get(at + end).copied().flatten().filter(|k| *k == 0) == kern {
+                        end += 1;
+                    }
+                    let mut cf = cf.clone();
+                    cf.kern = kern.or(cf.kern);
+                    runs.push((chars[start..end].iter().collect::<String>(), cf, if start == 0 { field } else { None }));
+                    start = end;
+                }
+                if chars.is_empty() {
+                    runs.push((t, cf, field));
+                }
+                at += chars.len();
+            }
+            para.runs = runs;
+        }
+    }
     if !has_spacing {
         return;
     }
@@ -858,6 +1106,28 @@ fn apply_shape_xml_spacing(text: &mut TextIr, blob: &[u8]) {
         }
         para.runs = runs;
     }
+}
+
+/// The language runs of a `TextSpecialInfoAtom` (MS-PPT 2.9.46, `TextSIRun`): the character count, then `si` flags (bit 0 `spell`, 1 `lang`, 2 `altLang`,
+/// 5 `pp10ext`, 6 `bidi`) and the 16-bit `spellInfo`, `lang`, `altLang`, `bidi` and the 32-bit `pp10runid` each when its flag is set. A run without a
+/// language has 0 (the default). Stops at a flag it does not know the size of. (Measured on a text of lang en-US and altLang zh-CN: `17010000 07000000
+/// 0000 0904 0408`, 279 characters, flags 7, spellInfo 0, lang 0x0409, altLang 0x0804.)
+fn parse_special_info(data: &[u8]) -> Vec<(usize, u16, u16)> {
+    let mut out = Vec::new();
+    let mut c = Cur { d: data, at: 0 };
+    while let (Some(count), Some(si)) = (c.u32(), c.u32()) {
+        if si & !0x67 != 0 {
+            break;
+        }
+        let spell = if si & 1 != 0 { c.u16() } else { Some(0) };
+        let lang = if si & 2 != 0 { c.u16() } else { Some(0) };
+        let alt = if si & 4 != 0 { c.u16() } else { Some(0) };
+        let bidi = if si & 0x40 != 0 { c.u16() } else { Some(0) };
+        let pp10 = if si & 0x20 != 0 { c.u32().map(|_| 0u16) } else { Some(0) };
+        let (Some(_), Some(lang), Some(alt), Some(_), Some(_)) = (spell, lang, alt, bidi, pp10) else { break };
+        out.push((count as usize, lang, alt));
+    }
+    out
 }
 
 fn decode_text(rec: &Rec) -> String {
@@ -917,6 +1187,14 @@ fn build_text(atoms: &TextAtoms) -> Option<TextIr> {
         if let Some((_, _, link)) = atoms.links.iter().find(|(a, b, _)| index >= *a && index < *b) {
             found.link = Some(*link);
         }
+        let mut from = 0;
+        for (count, lid, alt) in &atoms.languages {
+            if index < from + count {
+                found.lang = Some((*lid, *alt));
+                break;
+            }
+            from += count;
+        }
         found
     };
     // The automatic numbering at each character: the items of the additional properties go to the runs that share a grouping.
@@ -956,6 +1234,13 @@ fn build_text(atoms: &TextAtoms) -> Option<TextIr> {
                 pf.left_margin = pf.left_margin.or(*margin);
                 pf.indent = pf.indent.or(*indent);
             }
+            pf.default_tab = pf.default_tab.or(atoms.ruler_default_tab);
+            // The tab stops of the ruler are the paragraph's unless it gives its own.
+            // (Only left stops: the text layout has no right, centre or decimal stop yet, and a TOC's right stop with a leader (032) would only wrap
+            // its page number.)
+            if pf.tabs.as_ref().is_none_or(|t| t.is_empty()) && !atoms.ruler_tabs.is_empty() && atoms.ruler_tabs.iter().all(|(_, kind)| *kind == 0) {
+                pf.tabs = Some(atoms.ruler_tabs.clone());
+            }
             let mut para = ParaIr { level, pf, auto_number: auto_at(start), end_cf: at_cf(i), runs: Vec::new() };
             // Runs: stretches with the same formatting (and a field is a run of its own).
             let mut run_start = start;
@@ -975,7 +1260,7 @@ fn build_text(atoms: &TextAtoms) -> Option<TextIr> {
         }
         i += 1;
     }
-    Some(TextIr { kind: atoms.kind, paragraphs })
+    Some(TextIr { kind: atoms.kind, paragraphs, space_first_last: None })
 }
 
 /// The automatic numbering of each item of a `StyleTextProp9Atom` (MS-PPT 2.9.67): the scheme and first number, if it has one.
@@ -1011,7 +1296,9 @@ fn parse_style9(d: &[u8]) -> Vec<Option<(u16, u16)>> {
             let Some(count) = c.u32() else { break };
             c.at += count as usize * 4;
         }
-        out.push(if has_number == Some(true) { scheme } else { None });
+        // A numbered item that gives no scheme is numbered 1., 2., ... (ANSIArabicPeriod from 1: 138's table of contents, whose PowerPoint pptx has
+        // buAutoNum arabicPeriod while the item has the flag and no scheme).
+        out.push(if has_number == Some(true) { Some(scheme.unwrap_or((3, 1))) } else { None });
     }
     out
 }
@@ -1036,7 +1323,12 @@ fn read_textbox<'a>(textbox: &Rec<'a>, style9: Option<&'a [u8]>) -> Result<Optio
             }
             rt::TEXT_CHARS_ATOM | rt::TEXT_BYTES_ATOM => atoms.chars = Some(decode_text(&r)),
             rt::STYLE_TEXT_PROP_ATOM => atoms.style = Some(r),
-            0x0FA6 => atoms.ruler = parse_ruler(r.data),
+            0x0FAA => atoms.languages = parse_special_info(r.data),
+            0x0FA6 => {
+                atoms.ruler = parse_ruler(r.data);
+                atoms.ruler_tabs = parse_ruler_tabs(r.data);
+                atoms.ruler_default_tab = parse_ruler_default_tab(r.data);
+            }
             0x0FD8 => {
                 if let Some(p) = u32_at(r.data, 0) {
                     atoms.fields.push((p as usize, Field::SlideNumber));
@@ -1274,6 +1566,12 @@ pub(crate) struct ShapeIr {
     /// A group's children and the space they are in (`x, y, width, height`, EMU).
     pub(crate) children: Vec<ShapeIr>,
     pub(crate) child_space: Option<(i64, i64, i64, i64)>,
+    /// The frame on the slide (`x, y, width, height`, EMU): `frame` for a shape of the slide, that taken through its groups' child spaces for a
+    /// shape in a group (`assign_absolute_frames`). The DrawingML of a shape is on the slide's coordinates.
+    pub(crate) abs_frame: Option<(i64, i64, i64, i64)>,
+    /// A group that stands for a placeholder of PowerPoint 2007 and later (its DrawingML, property 0x03A9, is a `p:sp` with a `p:ph`): the style
+    /// of the text in it (title 0, body 1, other 2). PowerPoint draws its text as the placeholder's (154's "Title 1" group of a picture and a text box).
+    pub(crate) placeholder_style: Option<u8>,
 }
 
 /// The shape `rec` (an `OfficeArtSpContainer`) is, with the anchor it was given.
@@ -1354,6 +1652,7 @@ pub(crate) fn read_shape(rec: &Rec, in_group: bool, group_space: Option<(i64, i6
             Ok(mut text) => {
                 if let (Some(text), Some(blob)) = (text.as_mut(), shape.props.complex.get(&0x03A9)) {
                     if shape_xml_is_current(blob, shape.frame) {
+                        text.space_first_last = Some(shape_xml_space_first_last(blob));
                         apply_shape_xml_spacing(text, blob);
                     }
                 }
@@ -1406,10 +1705,48 @@ pub(crate) fn read_group(rec: &Rec, patriarch: bool) -> Vec<ShapeIr> {
         out = members;
     } else if let Some(mut g) = group_shape {
         g.is_group = true;
+        g.placeholder_style = g.props.complex.get(&0x03A9).and_then(|b| shape_xml_placeholder_style(b));
         g.children = members;
         out.push(g);
     }
     out
+}
+
+/// Sets the `abs_frame` of the shapes and of those in their groups: a group's children are in its child space, which its frame maps on the slide.
+fn assign_absolute_frames(shapes: &mut [ShapeIr], group: Option<((i64, i64, i64, i64), (i64, i64, i64, i64))>) {
+    for s in shapes {
+        s.abs_frame = match (s.frame, group) {
+            (frame, None) => frame,
+            (Some((x, y, w, h)), Some(((gx, gy, gw, gh), (cx, cy, cw, ch)))) if cw > 0 && ch > 0 => {
+                let map = |v: i64, origin: i64, from: i64, to: i64, size: i64| (i128::from(origin) + i128::from(v - from) * i128::from(to) / i128::from(size)) as i64;
+                Some((map(x, gx, cx, gw, cw), map(y, gy, cy, gh, ch), (i128::from(w) * i128::from(gw) / i128::from(cw)) as i64, (i128::from(h) * i128::from(gh) / i128::from(ch)) as i64))
+            }
+            _ => None,
+        };
+        if s.is_group {
+            let next = s.abs_frame.zip(s.child_space);
+            assign_absolute_frames(&mut s.children, next);
+        }
+    }
+}
+
+/// The DrawingML of a shape in a group (its spacing between characters, `spcFirstLastPara`) is taken as the one of a shape of the slide is: its
+/// frame is in the group's child space, so it could not be compared with the DrawingML's (`read_shape`); the size, through the groups, is.
+fn apply_group_child_shape_xml(shapes: &mut [ShapeIr]) {
+    for s in shapes {
+        if s.is_group {
+            apply_group_child_shape_xml(&mut s.children);
+        } else if s.abs_frame != s.frame {
+            if let (Some(text), Some(blob)) = (s.text.as_mut(), s.props.complex.get(&0x03A9)) {
+                // The DrawingML is in the slide's coordinates (the size through the groups) or, as the binary file's own writing states it, in
+                // the child coordinates of the group (034's table: the DrawingML's size in master units is the child frame's).
+                if shape_xml_is_same_size(blob, s.abs_frame) || shape_xml_is_same_size(blob, s.frame) {
+                    text.space_first_last = Some(shape_xml_space_first_last(blob));
+                    apply_shape_xml_spacing(text, blob);
+                }
+            }
+        }
+    }
 }
 
 /// The shapes of a drawing (`DrawingContainer` / PPDrawing) and its background shape.
@@ -1419,7 +1756,11 @@ pub(crate) fn read_drawing(drawing: &Rec) -> (Vec<ShapeIr>, Option<ShapeIr>) {
     let mut background = None;
     for r in dg.children() {
         match r.ty {
-            rt::SPGR_CONTAINER => shapes = read_group(&r, true),
+            rt::SPGR_CONTAINER => {
+                shapes = read_group(&r, true);
+                assign_absolute_frames(&mut shapes, None);
+                apply_group_child_shape_xml(&mut shapes);
+            }
             rt::SP_CONTAINER => {
                 let s = read_shape(&r, false, None);
                 if s.background {
@@ -1462,6 +1803,13 @@ pub(crate) struct PageIr {
     pub(crate) background: Option<ShapeIr>,
     /// The texts the slide list (`SlideListWithText`) holds for this slide, which its placeholders point to.
     pub(crate) outline: Vec<TextIr>,
+    /// A master's layout as PowerPoint 2007 and later keeps it in the file (`RoundTrip...12` zip, record 0x041E): per placeholder type
+    /// (`p:ph type`), whether its `a:bodyPr` has `spcFirstLastPara`.
+    pub(crate) layout_first_last: Vec<(String, bool)>,
+    /// The `kern` of the master's text styles in PowerPoint 2007's DrawingML of it (`master_kern`): the size from which a font is kerned.
+    pub(crate) kern: Option<HashMap<(u8, u8), i32>>,
+    /// The `spc` of the master's text styles (`master_spacing`).
+    pub(crate) spacing: Option<HashMap<(u8, u8), i32>>,
     /// The notes page this slide has (`SlideAtom.notesIdRef`).
     pub(crate) notes_ref: u32,
     /// The slide show information (`SlideShowSlideInfoAtom`): transition, timing and whether the slide is hidden.
@@ -1495,6 +1843,10 @@ pub(crate) struct PptIr {
     pub(crate) font_charsets: Vec<u8>,
     pub(crate) defaults: HashMap<u16, MasterStyle>,
     pub(crate) masters: Vec<PageIr>,
+    /// The `kern` of the master's text styles (see `master_kern`), from the first master that has the DrawingML of it.
+    pub(crate) kern: Option<HashMap<(u8, u8), i32>>,
+    /// The `spc` of the master's text styles (`master_spacing`).
+    pub(crate) spacing: Option<HashMap<(u8, u8), i32>>,
     pub(crate) slides: Vec<PageIr>,
     /// The targets of the hyperlinks, by their identifiers.
     pub(crate) hyperlinks: HashMap<u32, String>,
@@ -1530,6 +1882,12 @@ fn read_page(rec: &Rec) -> PageIr {
                 page.follow_master_background = flags & 0x4 != 0;
             }
             rt::COLOR_SCHEME_ATOM if r.inst == 1 => page.scheme = scheme_of(&r),
+            0x041E => page.layout_first_last = layout_first_last(r.data),
+            // The DrawingML of the master (record type found by looking for `drs/slideMasters` in 122.ppt).
+            0x0423 => {
+                page.kern = page.kern.take().or_else(|| master_kern(r.data));
+                page.spacing = page.spacing.take().or_else(|| master_spacing(r.data));
+            }
             // The programmable tags: the one named ___PPT10 holds the animation.
             0x1388 => {
                 for tag in r.children().iter().filter(|t| t.ty == 0x138A) {
@@ -1721,7 +2079,8 @@ pub(crate) fn read_ppt_streams(doc: &[u8], current: &[u8], pictures: &[u8]) -> R
         for link in list.children().iter().filter(|r| r.ty == 0x0FD7) {
             let parts = link.children();
             let id = parts.iter().find(|r| r.ty == 0x0FD3).and_then(|r| u32_at(r.data, 0));
-            let target = parts.iter().find(|r| r.ty == 0x0FBA && r.inst == 1).map(|r| utf16_string(r.data));
+            // The target is the address (CString instance 1); a jump to a slide has none, only the location (instance 3, "slideId,slideNumber,title").
+            let target = parts.iter().find(|r| r.ty == 0x0FBA && r.inst == 1).or_else(|| parts.iter().find(|r| r.ty == 0x0FBA && r.inst == 3)).map(|r| utf16_string(r.data));
             if let (Some(id), Some(target)) = (id, target) {
                 ir.hyperlinks.insert(id, target);
             }
@@ -1743,7 +2102,15 @@ pub(crate) fn read_ppt_streams(doc: &[u8], current: &[u8], pictures: &[u8]) -> R
             page.id = slide_id;
             page.outline = outline;
             match (list.inst, rec.ty) {
-                (1, rt::MAIN_MASTER) => ir.masters.push(page),
+                (1, rt::MAIN_MASTER) => {
+                    if ir.kern.is_none() {
+                        ir.kern = page.kern.clone();
+                    }
+                    if ir.spacing.is_none() {
+                        ir.spacing = page.spacing.clone();
+                    }
+                    ir.masters.push(page)
+                }
                 (0, rt::SLIDE) => ir.slides.push(page),
                 (2, rt::NOTES) => {
                     ir.notes.insert(slide_id, page);

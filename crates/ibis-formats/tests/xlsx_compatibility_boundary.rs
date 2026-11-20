@@ -48,7 +48,7 @@ fn compatibility_requires_correct_ancestors_uri_and_attributes() {
         let mut d=Document::new(opened.presentation.clone());let slide=d.presentation().slides[0].id;
         let sh=ibis_doc_model::sheet_calc::sheet_of_slide(&d.presentation().slides[0]).unwrap();
         let was_bold=sh.styles[sh.cell(0,0).unwrap().style as usize].bold;
-        d.execute(vec![Command::Sheet(SheetCommand::SetFormat {slide,ranges:vec![CellRange {first_row:0,last_row:0,first_column:0,last_column:0}],change:StyleChange::Bold(!was_bold)})]).unwrap();
+        d.execute(vec![Command::Sheet(SheetCommand::SetFormat {sheet: slide,ranges:vec![CellRange {first_row:0,last_row:0,first_column:0,last_column:0}],change:StyleChange::Bold(!was_bold)})]).unwrap();
         let bytes=opened.source.save(d.presentation(),SaveOptions::default()).unwrap();
         assert_eq!(ibis_ooxml::Package::open(bytes.clone()).unwrap().read("xl/workbook.xml").unwrap(),original_xml,"{kind} extension untouched");
         assert_eq!(ibis_formats::read(&bytes).unwrap().workbook.as_deref().unwrap().compatibility_version,expected);
@@ -73,7 +73,7 @@ fn compatibility_selection_preserves_foreign_payload_and_validates_minimum() {
         }
         let original=package.save(Default::default()).unwrap();let opened=ibis_formats::open(original.clone()).unwrap();let mut d=Document::new(opened.presentation.clone());
         let version=if matches!(kind,"future7"|"warn3_set2") {ibis_doc_model::CalculationCompatibilityVersion::V1} else {ibis_doc_model::CalculationCompatibilityVersion::V2};
-        d.execute(vec![Command::Sheet(SheetCommand::SetCompatibilityVersion {version})]).unwrap();
+        d.execute(vec![Command::Sheet(SheetCommand::SetCalculationCompatibilityVersion {version})]).unwrap();
         let result=opened.source.save(d.presentation(),SaveOptions::default());
         if matches!(kind,"warn0_set2"|"duplicate") {
             assert!(result.is_err(),"{kind} must not silently rewrite malformed metadata");assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);continue;
@@ -117,7 +117,7 @@ fn compatibility_attributes_ignore_foreign_shadows_in_both_orders() {
             assert_eq!(evaluate_cell(&view, &Stored, 0, 0, 0, &ibis_calc::formula::parse("LEN(\"😀x\")").unwrap()), CellValue::Number(if expected == Some(2) { 2. } else { 3. }), "{label} calculation");
             assert_eq!(opened.source.save(&opened.presentation, SaveOptions::default()).unwrap(), original);
             let mut d = Document::new(opened.presentation.clone());
-            d.execute(vec![Command::Sheet(SheetCommand::SetCompatibilityVersion { version: ibis_doc_model::CalculationCompatibilityVersion::V1 })]).unwrap();
+            d.execute(vec![Command::Sheet(SheetCommand::SetCalculationCompatibilityVersion { version: ibis_doc_model::CalculationCompatibilityVersion::V1 })]).unwrap();
             let bytes = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
             assert_eq!(ibis_formats::read(&bytes).unwrap().workbook.as_deref().unwrap().compatibility_version, Some(1), "{label} selected version survives save");
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/xlsx-edit");
@@ -145,9 +145,9 @@ fn compatibility_integer_attributes_use_xml_whitespace_without_rewriting_opaque_
             assert_eq!(opened.source.save(&opened.presentation,SaveOptions::default()).unwrap(),original);
             let mut d=Document::new(opened.presentation.clone());let slide=d.presentation().slides[0].id;
             let sh=ibis_doc_model::sheet_calc::sheet_of_slide(&d.presentation().slides[0]).unwrap();let bold=sh.styles[sh.cell(0,0).unwrap().style as usize].bold;
-            d.execute(vec![Command::Sheet(SheetCommand::SetFormat {slide,ranges:vec![CellRange {first_row:0,last_row:0,first_column:0,last_column:0}],change:StyleChange::Bold(!bold)})]).unwrap();
+            d.execute(vec![Command::Sheet(SheetCommand::SetFormat {sheet: slide,ranges:vec![CellRange {first_row:0,last_row:0,first_column:0,last_column:0}],change:StyleChange::Bold(!bold)})]).unwrap();
             assert_eq!(ibis_ooxml::Package::open(opened.source.save(d.presentation(),SaveOptions::default()).unwrap()).unwrap().read("xl/workbook.xml").unwrap(),original_xml);assert!(d.undo());
-            d.execute(vec![Command::Sheet(SheetCommand::SetCompatibilityVersion {version:ibis_doc_model::CalculationCompatibilityVersion::V1})]).unwrap();let result=opened.source.save(d.presentation(),SaveOptions::default());
+            d.execute(vec![Command::Sheet(SheetCommand::SetCalculationCompatibilityVersion {version:ibis_doc_model::CalculationCompatibilityVersion::V1})]).unwrap();let result=opened.source.save(d.presentation(),SaveOptions::default());
             if field=="warnBelowVersion"&&!valid {assert!(result.is_err(),"{field}-{label}");assert!(d.undo());assert_eq!(opened.source.save(d.presentation(),SaveOptions::default()).unwrap(),original);assert!(d.redo());assert!(opened.source.save(d.presentation(),SaveOptions::default()).is_err());continue;}
             let bytes=result.unwrap();let reread=ibis_formats::read(&bytes).unwrap();assert_eq!(reread.workbook.as_deref().unwrap().compatibility_version,Some(1));let view=BookView::new(&reread);assert_eq!(evaluate_cell(&view,&Stored,0,0,0,&ibis_calc::formula::parse("LEN(\"😀x\")").unwrap()),CellValue::Number(3.));
             let pkg=ibis_ooxml::Package::open(bytes.clone()).unwrap();let xml=pkg.xml("xl/workbook.xml").unwrap();let root=xml.root_element().unwrap();let node=xml.descendants(root).into_iter().find(|&n|xml.attr(n,"probe:token")==Some("keep")).unwrap();assert_eq!(xml.attr(node,"setVersion"),Some("1"));assert_eq!(xml.attr(node,"warnBelowVersion"),Some("1"));

@@ -36,6 +36,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
 /// A sample of each kind, and another sample of the kind to stand for what the other app wrote.
 fn samples(kind: Kind) -> (&'static str, &'static str) {
     match kind {
+        Kind::Pdf => unreachable!("a PDF is only viewed: the scenarios do not make one"),
         Kind::Document => ("test/editing/docx-report.docx", "test/editing/docx-index-basic.docx"),
         Kind::Workbook => ("test/editing/xlsx-sales.xlsx", "test/editing/xlsx-cell-images-excel.xlsx"),
         Kind::Presentation => ("test/editing/pptx-comments-modern.pptx", "test/editing/pptx-footer-by-powerpoint.pptx"),
@@ -91,6 +92,7 @@ fn dialog_open(s: &mut Scenario) -> bool {
 
 fn edit(s: &mut Scenario, kind: Kind) {
     match kind {
+        Kind::Pdf => unreachable!("a PDF is only viewed: the scenarios do not make one"),
         Kind::Document => {
             let (id, _) = s.paragraph(0);
             s.click_text(ibis_doc_model::FlowPos::new(id, 0));
@@ -104,7 +106,7 @@ fn edit(s: &mut Scenario, kind: Kind) {
         Kind::Presentation => s.update(|e, _, cx| {
             let id = e.document.ids().new_shape_id();
             let frame = ibis_doc_model::EmuRect::new(0, 0, 914_400, 914_400);
-            e.execute(vec![ibis_doc_model::Command::InsertShape { slide: e.current_slide, index: 0, shape: ibis_doc_model::Shape::text_box(id, frame, "unsaved") }], cx);
+            e.execute(vec![ibis_doc_model::Command::InsertShape { slide: e.current_slide, shapes: vec![(0, ibis_doc_model::Shape::text_box(id, frame, "unsaved"))] }], cx);
         }),
         Kind::Pdf => unreachable!("PDF is not part of file_watch scenarios"),
     }

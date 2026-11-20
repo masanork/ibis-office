@@ -38,7 +38,7 @@ fn changed_cell_rewrites_the_chart_cache_only() {
     let mut doc = Document::new(opened.presentation.clone());
     let slide = doc.presentation().slides.iter().find(|s| s.shapes.iter().any(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap().id;
     // B4 (北町店, 4月): 1,250,000 → 1,260,000, as in xsc37.
-    doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 3, column: 1, input: CellInput::Value(CellValue::Number(1_260_000.0)) }] })]).unwrap();
+    doc.execute(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 3, column: 1, input: CellInput::Value(CellValue::Number(1_260_000.0)) }] })]).unwrap();
     let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
     let chart = Package::open(saved).unwrap().read(CHART).unwrap();
     let text = String::from_utf8_lossy(&chart);

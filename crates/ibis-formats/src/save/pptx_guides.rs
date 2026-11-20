@@ -137,6 +137,63 @@ pub(crate) fn read_notes_pane(text: &str) -> ibis_doc_model::NotesPaneOpening {
     ibis_doc_model::NotesPaneOpening::from_view(top, normal.attribute("horzBarState"))
 }
 
+/// Write the zoom of the slide pane (`percent`) into the `scale` of `viewProps.xml` (as `sx` and `sy`, `n` percent over 100), as PowerPoint
+/// keeps what the user zoomed to; a file with no slide view gets one. The part is there (`write_notes_pane` makes it).
+pub(crate) fn write_view_scale(package: &mut ibis_ooxml::Package, presentation: &str, percent: Option<u16>) -> Result<(), Error> {
+    let Some(part) = view_props_part(package, presentation) else { return Ok(()) };
+    let doc = package.xml_mut(&part)?;
+    let root = doc.root_element().ok_or_else(|| Error::new("viewProps.xml が空です"))?;
+    let x = Prefixes::at(doc, root);
+    let find = |doc: &XmlDocument, from: NodeId, name: &str| doc.elements(from).find(|&n| doc.local_name(n) == name);
+    // The window is fitted again: `varScale="1"` (the scale stays as the file had it). A file with no slide view says nothing.
+    let Some(percent) = percent else {
+        if let Some(view) = find(doc, root, "slideViewPr").and_then(|n| find(doc, n, "cSldViewPr")).and_then(|n| find(doc, n, "cViewPr")) {
+            doc.set_attr(view, "varScale", "1");
+        }
+        return Ok(());
+    };
+    let slide_view = match find(doc, root, "slideViewPr") {
+        Some(n) => n,
+        None => {
+            let node = x.import(doc, &format!("<{p}slideViewPr><{p}cSldViewPr><{p}cViewPr varScale=\"0\"><{p}scale><{a}sx n=\"{percent}\" d=\"100\"/><{a}sy n=\"{percent}\" d=\"100\"/></{p}scale><{p}origin x=\"0\" y=\"0\"/></{p}cViewPr></{p}cSldViewPr></{p}slideViewPr>", p = x.p, a = x.a))?;
+            let next = doc.elements(root).find(|&n| matches!(doc.local_name(n), "outlineViewPr" | "notesTextViewPr" | "sorterViewPr" | "notesViewPr" | "gridSpacing" | "extLst"));
+            match next {
+                Some(next) => doc.insert_before(next, node),
+                None => {
+                    let end = doc.children(root).len();
+                    doc.insert(root, end, node);
+                }
+            }
+            return Ok(());
+        }
+    };
+    let Some(common) = find(doc, slide_view, "cSldViewPr") else { return Ok(()) };
+    let Some(view) = find(doc, common, "cViewPr") else { return Ok(()) };
+    doc.set_attr(view, "varScale", "0");
+    let scale = match find(doc, view, "scale") {
+        Some(n) => n,
+        None => {
+            let node = x.import(doc, &format!("<{p}scale><{a}sx n=\"{percent}\" d=\"100\"/><{a}sy n=\"{percent}\" d=\"100\"/></{p}scale>", p = x.p, a = x.a))?;
+            doc.insert(view, 0, node);
+            return Ok(());
+        }
+    };
+    for name in ["sx", "sy"] {
+        match find(doc, scale, name) {
+            Some(n) => {
+                doc.set_attr(n, "n", &percent.to_string());
+                doc.set_attr(n, "d", "100");
+            }
+            None => {
+                let node = x.import(doc, &format!("<{a}{name} n=\"{percent}\" d=\"100\"/>", a = x.a))?;
+                let end = doc.children(scale).len();
+                doc.insert(scale, end, node);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The view properties as PowerPoint 365 writes them for a file that has none (tasks/doc/m114-pptx-notes-pane-save.md, (c)): the normal view at
 /// its defaults (`restoredLeft` 15620, `restoredTop` 94660), the slide and notes views and the grid.
 const NEW_VIEW_PROPS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:viewPr xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:normalViewPr><p:restoredLeft sz="15620"/><p:restoredTop sz="94660"/></p:normalViewPr><p:slideViewPr><p:cSldViewPr><p:cViewPr varScale="1"><p:scale><a:sx n="100" d="100"/><a:sy n="100" d="100"/></p:scale><p:origin x="0" y="0"/></p:cViewPr><p:guideLst/></p:cSldViewPr></p:slideViewPr><p:notesTextViewPr><p:cViewPr><p:scale><a:sx n="1" d="1"/><a:sy n="1" d="1"/></p:scale><p:origin x="0" y="0"/></p:cViewPr></p:notesTextViewPr><p:gridSpacing cx="76200" cy="76200"/></p:viewPr>"#;

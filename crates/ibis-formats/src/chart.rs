@@ -658,6 +658,7 @@ fn stroke(ln: Node, colors: &Colors) -> Option<Stroke> {
         compound: ibis_doc_model::LineCompound::Single,
         alignment: ibis_doc_model::LineAlignment::Center,
         fill: None,
+        min_drawn_width: 0,
     })
 }
 
@@ -679,6 +680,7 @@ fn run_style(rpr: Node, base: &ChartText, colors: &Colors) -> ChartText {
         // other script's.
         font: run.latin.clone().or_else(|| base.font.clone()),
         east_asian_font: run.east_asian.clone().or_else(|| base.east_asian_font.clone()),
+        spacing: run.spacing.unwrap_or(base.spacing),
     }
 }
 
@@ -954,6 +956,7 @@ fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &Char
         point_fills,
         point_strokes,
         explosion,
+        inner_shadow: child(ser, "spPr").and_then(|p| child(p, "effectLst")).and_then(|e| crate::drawing_props::effects(colors, Some(e), None).inner_shadow),
         point_explosions,
         marker,
         labels,
@@ -1211,6 +1214,7 @@ fn read_axis(node: Node, base: &ChartText, colors: &Colors, legacy: bool, legacy
         show_labels: val(node, "tickLblPos") != Some("none"),
         labels_high: val(node, "tickLblPos") == Some("high"),
         labels_low: val(node, "tickLblPos") == Some("low"),
+        label_offset: val(node, "lblOffset").and_then(|v| v.parse().ok()).unwrap_or(100),
         // −60 000 000 is "not set"; the chart's own layout decides.
         label_rotation: path(node, &["txPr", "bodyPr"])
             .and_then(|b| attr_i64(b, "rot"))

@@ -407,6 +407,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("docx::form016_018_legacy_form_fields", form016_018_legacy_form_fields),
         ("docx::sec014_print_markup", sec014_print_markup),
         ("docx::para019_drop_cap", para019_drop_cap),
+        ("docx::issue191_drop_cap_is_saved_in_words_form", drop_cap_word_form),
         ("docx::shape001_align_text", shape001_align_text),
         ("docx::design002_theme_fonts", design002_theme_fonts),
         ("docx::design003_set_as_default", design003_set_as_default),
@@ -453,7 +454,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     all.extend(issues116_117::all());
     #[cfg(target_os = "macos")]
     all.extend(super::corpus_report::all());
-    all.into_iter().chain(super::typeset68::all()).chain(super::fallback_carry::all()).chain(super::crop_mode::all()).chain(super::tate_chu_yoko_layout_tests::all()).chain(super::vertical_underline_tests::all()).chain(super::shy_hang_tests::all()).chain(super::kinsoku_across_space_tests::all()).chain(super::math_color_tests::all()).chain(super::autospace_letters_tests::all()).chain(super::ms_fixed_advance_tests::all()).chain(super::deleted_marks_tests::all()).chain(super::ivs_tests::all()).collect()
+    all.into_iter().chain(super::typeset68::all()).chain(super::fallback_carry::all()).chain(super::crop_mode::all()).chain(super::tate_chu_yoko_layout_tests::all()).chain(super::vertical_underline_tests::all()).chain(super::shy_hang_tests::all()).chain(super::kinsoku_across_space_tests::all()).chain(super::math_color_tests::all()).chain(super::autospace_letters_tests::all()).chain(super::ms_fixed_advance_tests::all()).chain(super::deleted_marks_tests::all()).chain(super::ivs_tests::all()).chain(super::issue178_tests::all()).chain(super::issue179_tests::all()).chain(super::issue223_tests::all()).chain(super::issue180_tests::all()).chain(super::issue188_tests::all()).chain(super::issue191_tests::all()).chain(super::issue192_tests::all()).chain(super::issue193_tests::all()).chain(super::issue196_tests::all()).chain(super::squeeze_share_tests::all()).chain(super::issue54_punct_tests::all()).chain(super::issue200_tests::all()).chain(super::issue228_tests::all()).chain(super::issue234_tests::all()).chain(super::issue204_tests::all()).chain(super::issue54_pitch_tests::all()).chain(super::issue192_script_tests::all()).chain(super::issue54_mark_room_tests::all()).chain(super::issue54_meiryo_tests::all()).chain(super::issue179_180_rest_tests::all()).chain(super::issue157_fonts_tests::all()).chain(super::issue179_multiple_tests::all()).chain(super::justify_squeeze_tests::all()).collect()
 }
 
 /// The paragraphs directly in the body.
@@ -535,7 +536,7 @@ fn para(doc: &FlowDocument, id: u32) -> &FlowParagraph {
 }
 
 /// The first body paragraph of plain text at least `min` long, by index.
-fn text_paragraph(s: &mut Scenario, min: usize) -> (usize, u32, String) {
+pub(super) fn text_paragraph(s: &mut Scenario, min: usize) -> (usize, u32, String) {
     let doc = s.document();
     let (i, p) = body(&doc).into_iter().enumerate().find(|(_, p)| p.len() >= min && !p.text().contains('\u{fffc}') && p.list.is_none()).expect("a paragraph of text");
     (i, p.id, p.text())
@@ -803,12 +804,12 @@ fn c4_table_style_options() {
     // The caret in the table; the heading row off: the bands start at the top.
     let first = match &t.rows[1].cells[0].blocks[0] { Block::Paragraph(p) => p.id, _ => unreachable!() };
     s.click_text(FlowPos::new(first, 0));
-    s.menu("docx.table.look.first-row");
+    s.menu("table.header-row");
     let t = table(&s.document());
     assert_eq!(fills(&t), vec![Some(0xE2EFDA), None, Some(0xE2EFDA)]);
     assert!(!bold(&t));
     // The bands off too.
-    s.menu("docx.table.look.row-bands");
+    s.menu("table.banded-rows");
     assert_eq!(fills(&table(&s.document())), vec![None, None, None]);
     s.screenshot("options-off");
     s.save_as("c4.docx");
@@ -954,7 +955,7 @@ fn i8_english_ui() {
             for entry in entries {
                 match entry {
                     MenuEntry::Item(i) => {
-                        let own = ["docx.font.", "docx.style.doc.", "docx.cstyle.", "docx.xref.", "docx.date.0", "docx.date.1", "docx.date.2", "docx.date.3", "docx.date.4", "docx.date.5", "docx.date.6", "docx.date.7", "file.recent.", "window.open."].iter().any(|p| i.id.starts_with(p));
+                        let own = ["docx.font.", "docx.style.doc.", "docx.cstyle.", "docx.cross-reference.", "docx.date.0", "docx.date.1", "docx.date.2", "docx.date.3", "docx.date.4", "docx.date.5", "docx.date.6", "docx.date.7", "file.recent.", "window.open."].iter().any(|p| i.id.starts_with(p));
                         if !own {
                             out.push(format!("{}={}", i.id, i18n::text(&i.label)));
                         }
@@ -1599,7 +1600,7 @@ fn a2_table_of_contents() {
     let chapter2 = find(&s.document(), "第2章 計画").expect("the heading");
     // The table of contents at the document's start.
     s.key("cmd-up");
-    s.menu("docx.toc");
+    s.menu("docx.table-of-contents");
     let toc = |doc: &FlowDocument| -> Vec<(u32, String)> {
         let ps = body(doc);
         let start = ps.iter().position(|p| p.field_start.is_some()).expect("a table of contents");
@@ -1640,10 +1641,10 @@ fn a2_table_of_contents() {
     // The heading changed, the table updated.
     s.key("end");
     s.type_text("の実行");
-    s.menu("docx.toc.update-entire-table");
+    s.menu("docx.table-of-contents.update-entire-table");
     assert!(toc(&s.document()).iter().any(|(_, t)| t.starts_with("第2章 計画の実行")));
     // Headings 1 to 2 only.
-    s.menu("docx.toc.levels-2");
+    s.menu("docx.table-of-contents.levels-2");
     let entries = toc(&s.document());
     assert!(!entries.iter().any(|(_, t)| t.starts_with("1.1.1 背景")), "{entries:?}");
     assert!(entries.iter().any(|(_, t)| t.starts_with("1.1 目的")));
@@ -1681,7 +1682,7 @@ fn h3_changing_a_style() {
         }
     }
     s.key("cmd-up");
-    s.menu("docx.toc");
+    s.menu("docx.table-of-contents");
     let find = |doc: &FlowDocument, text: &str| body(doc).iter().rev().find(|p| p.text() == text).map(|p| p.id).expect("the heading");
     let doc = s.document();
     let (h1, h2, plain) = (find(&doc, "第1章 概要"), find(&doc, "第2章 計画"), find(&doc, "本文の段落"));
@@ -1923,7 +1924,7 @@ fn h1_numbered_headings_and_contents() {
     let want = |parts: &[&str]| -> Vec<String> { parts.iter().map(|p| p.replace("N1", &(n + 1).to_string()).replace('N', &n.to_string())).collect() };
     assert_eq!(got, want(&["N", "N.1", "N.1.1", "N.2", "N1"]));
     s.key("cmd-up");
-    s.menu("docx.toc");
+    s.menu("docx.table-of-contents");
     let entries = |doc: &FlowDocument| -> Vec<String> {
         let ps = body(doc);
         let start = ps.iter().position(|p| p.field_start.as_deref().is_some_and(|f| f.contains("TOC"))).expect("a table of contents");
@@ -1943,7 +1944,7 @@ fn h1_numbered_headings_and_contents() {
     s.toolbar_menu("style", "docx.style.heading2");
     assert_eq!(label_of(&s.document(), "範囲"), want(&["N.2"])[0]);
     assert_eq!(label_of(&s.document(), "計画"), want(&["N.3"])[0]);
-    s.menu("docx.toc.update-entire-table");
+    s.menu("docx.table-of-contents.update-entire-table");
     let toc = entries(&s.document());
     let (range, plan) = (want(&["N.2 範囲"]).remove(0), want(&["N.3 計画"]).remove(0));
     assert!(toc.contains(&range) && toc.contains(&plan), "{toc:?}");
@@ -1955,7 +1956,7 @@ fn h1_numbered_headings_and_contents() {
     s.toolbar_menu("style", "docx.style.heading3");
     assert_eq!(label_of(&s.document(), "詳細"), want(&["N.2.1"])[0]);
     assert_eq!(label_of(&s.document(), "計画"), want(&["N.3"])[0]);
-    s.menu("docx.toc.update-entire-table");
+    s.menu("docx.table-of-contents.update-entire-table");
     let toc = entries(&s.document());
     let detail = want(&["N.2.1 詳細"]).remove(0);
     assert!(toc.contains(&detail), "{detail} in {toc:?}");
@@ -1972,7 +1973,7 @@ fn h1_numbered_headings_and_contents() {
 /// 分離しない and 段落を分割しない switched; saved and read back.
 fn h8_headings_and_page_breaks() {
     let mut s = Scenario::open(REPORT);
-    s.menu("docx.toc");
+    s.menu("docx.table-of-contents");
     let page_of = |s: &mut Scenario, id: u32| s.with(|e, _| e.flow_lines().iter().find(|l| l.para == id).map(|l| l.page)).unwrap();
     // A heading after the first, on the same page as the one before it.
     let doc = s.document();
@@ -1987,22 +1988,22 @@ fn h8_headings_and_page_breaks() {
     };
     let shown_before = toc_page(&s.document(), &text);
     s.click_text(FlowPos::new(id, 0));
-    assert_eq!(s.menu_state("docx.para.page-break-before"), Some((true, false)));
-    s.menu("docx.para.page-break-before");
-    assert_eq!(s.menu_state("docx.para.page-break-before"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.page-break-before"), Some((true, false)));
+    s.menu("docx.paragraph.page-break-before");
+    assert_eq!(s.menu_state("docx.paragraph.page-break-before"), Some((true, true)));
     assert_eq!(page_of(&mut s, id), before + 1, "the heading starts the next page");
-    s.menu("docx.toc.update-entire-table");
+    s.menu("docx.table-of-contents.update-entire-table");
     let shown = toc_page(&s.document(), &text);
     assert_eq!(shown.parse::<u32>().unwrap(), shown_before.parse::<u32>().unwrap() + 1, "the table of contents shows the new page");
     s.screenshot("page-break-before");
     // The heading's keep with next (from its style) off, and kept whole.
     let id = s.with(|e, _| body(flow(e.presentation())).iter().find(|p| p.text() == text && p.field_start.is_none() && !p.runs.iter().any(|r| matches!(r.kind, FlowRunKind::PageRef { .. }))).map(|p| p.id)).unwrap();
     s.click_text(FlowPos::new(id, 0));
-    let keep = s.menu_state("docx.para.keep-next").unwrap().1;
-    s.menu("docx.para.keep-next");
-    assert_eq!(s.menu_state("docx.para.keep-next").map(|m| m.1), Some(!keep));
-    let whole = s.menu_state("docx.para.keep-lines").unwrap().1;
-    s.menu("docx.para.keep-lines");
+    let keep = s.menu_state("docx.paragraph.keep-next").unwrap().1;
+    s.menu("docx.paragraph.keep-next");
+    assert_eq!(s.menu_state("docx.paragraph.keep-next").map(|m| m.1), Some(!keep));
+    let whole = s.menu_state("docx.paragraph.keep-lines").unwrap().1;
+    s.menu("docx.paragraph.keep-lines");
     s.save_as("h8.docx");
     let saved = s.reopen();
     let p = body(flow(&saved)).into_iter().find(|p| p.text() == text && !p.runs.iter().any(|r| matches!(r.kind, FlowRunKind::PageRef { .. }))).unwrap().clone();
@@ -2010,7 +2011,7 @@ fn h8_headings_and_page_breaks() {
     // One undo each.
     s.update(|e, window, cx| e.undo(&crate::Undo, window, cx));
     s.update(|e, window, cx| e.undo(&crate::Undo, window, cx));
-    assert_eq!(s.menu_state("docx.para.keep-next").map(|m| m.1), Some(keep));
+    assert_eq!(s.menu_state("docx.paragraph.keep-next").map(|m| m.1), Some(keep));
 }
 
 /// H13: a table changed (a new table, a row, a fill) → a picture inserted
@@ -2079,7 +2080,7 @@ fn h4_captions_and_cross_references() {
     s.key("enter");
     s.type_text("詳しくは");
     let xref_items = s.with(|e, _| ibis_doc_model::flow_command::captions(flow(e.presentation())).len());
-    s.menu(&format!("docx.xref.{xref_items}"));
+    s.menu(&format!("docx.cross-reference.{xref_items}"));
     s.type_text("を参照。");
     let reference = |doc: &FlowDocument| body(doc).iter().find(|p| p.text().starts_with("詳しくは")).map(|p| p.runs.iter().find_map(|r| if let FlowRunKind::Field { shown, .. } = &r.kind { Some(shown.clone()) } else { None }).unwrap_or_default()).unwrap();
     assert_eq!(reference(&s.document()), "図 2");
@@ -9220,11 +9221,11 @@ fn float002_picture_wrap_and_floating() {
 
     // 6d. 重なり順（Z-order: front, backward, back, forward）の検証
     let h_init = anchor_fixed.relative_height;
-    s.menu("docx.picture.zorder.front");
+    s.menu("arrange.bring-to-front");
     let anchor_front = s.with(|e, _| e.picture_floating_at_caret()).expect("floating anchor");
     assert!(anchor_front.relative_height > h_init, "最前面へ移動で relative_height が増加");
     let h_front = anchor_front.relative_height;
-    s.menu("docx.picture.zorder.backward");
+    s.menu("arrange.send-backward");
     let anchor_back = s.with(|e, _| e.picture_floating_at_caret()).expect("floating anchor");
     assert!(anchor_back.relative_height < h_front, "背面へ移動で relative_height が減少");
     let h_target = anchor_back.relative_height;
@@ -9533,7 +9534,7 @@ fn ja011_overflow_punct() {
     let mut s = Scenario::open(REPORT);
 
     // 1. 初期状態：句読点のぶら下げは有効（既定値 true）
-    assert_eq!(s.menu_state("docx.para.overflow-punct"), Some((true, true)), "初期状態は句読点のぶら下げ有効");
+    assert_eq!(s.menu_state("docx.paragraph.overflow-punct"), Some((true, true)), "初期状態は句読点のぶら下げ有効");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9541,8 +9542,8 @@ fn ja011_overflow_punct() {
     }
 
     // 2. トグル切替で無効化
-    s.menu("docx.para.overflow-punct");
-    assert_eq!(s.menu_state("docx.para.overflow-punct"), Some((true, false)), "トグルで無効化");
+    s.menu("docx.paragraph.overflow-punct");
+    assert_eq!(s.menu_state("docx.paragraph.overflow-punct"), Some((true, false)), "トグルで無効化");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9552,14 +9553,14 @@ fn ja011_overflow_punct() {
 
     // 3. Undo / Redo 検証
     s.key("cmd-z");
-    assert_eq!(s.menu_state("docx.para.overflow-punct"), Some((true, true)), "Undo で有効に復帰");
+    assert_eq!(s.menu_state("docx.paragraph.overflow-punct"), Some((true, true)), "Undo で有効に復帰");
     {
         let doc = s.document();
         let p = body(&doc)[0];
         assert!(p.overflow_punct);
     }
     s.key("cmd-shift-z");
-    assert_eq!(s.menu_state("docx.para.overflow-punct"), Some((true, false)), "Redo で無効に復帰");
+    assert_eq!(s.menu_state("docx.paragraph.overflow-punct"), Some((true, false)), "Redo で無効に復帰");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9575,8 +9576,8 @@ fn ja011_overflow_punct() {
     assert_eq!(p_saved.direct.overflow_punct, Some(false));
 
     // 5. 再度トグル切替で有効化
-    s.menu("docx.para.overflow-punct");
-    assert_eq!(s.menu_state("docx.para.overflow-punct"), Some((true, true)), "再度トグルで有効化");
+    s.menu("docx.paragraph.overflow-punct");
+    assert_eq!(s.menu_state("docx.paragraph.overflow-punct"), Some((true, true)), "再度トグルで有効化");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9597,8 +9598,8 @@ fn ja013_auto_space() {
     let mut s = Scenario::open(REPORT);
 
     // 1. 初期状態：日本語と英字／数字の間隔自動調整は有効（既定値 true）
-    assert_eq!(s.menu_state("docx.para.auto-space-de"), Some((true, true)), "初期状態はautoSpaceDE有効");
-    assert_eq!(s.menu_state("docx.para.auto-space-dn"), Some((true, true)), "初期状態はautoSpaceDN有効");
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-de"), Some((true, true)), "初期状態はautoSpaceDE有効");
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-dn"), Some((true, true)), "初期状態はautoSpaceDN有効");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9607,10 +9608,10 @@ fn ja013_auto_space() {
     }
 
     // 2. トグル切替で両方無効化
-    s.menu("docx.para.auto-space-de");
-    assert_eq!(s.menu_state("docx.para.auto-space-de"), Some((true, false)), "トグルでautoSpaceDE無効化");
-    s.menu("docx.para.auto-space-dn");
-    assert_eq!(s.menu_state("docx.para.auto-space-dn"), Some((true, false)), "トグルでautoSpaceDN無効化");
+    s.menu("docx.paragraph.auto-space-de");
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-de"), Some((true, false)), "トグルでautoSpaceDE無効化");
+    s.menu("docx.paragraph.auto-space-dn");
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-dn"), Some((true, false)), "トグルでautoSpaceDN無効化");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9622,9 +9623,9 @@ fn ja013_auto_space() {
 
     // 3. Undo / Redo 検証
     s.key("cmd-z");
-    assert_eq!(s.menu_state("docx.para.auto-space-dn"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-dn"), Some((true, true)));
     s.key("cmd-z");
-    assert_eq!(s.menu_state("docx.para.auto-space-de"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-de"), Some((true, true)));
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9633,8 +9634,8 @@ fn ja013_auto_space() {
     }
     s.key("cmd-shift-z");
     s.key("cmd-shift-z");
-    assert_eq!(s.menu_state("docx.para.auto-space-de"), Some((true, false)));
-    assert_eq!(s.menu_state("docx.para.auto-space-dn"), Some((true, false)));
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-de"), Some((true, false)));
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-dn"), Some((true, false)));
 
     // 4. 保存と再読込による永続化検証（false の保存）
     s.save_as("ja013_auto_space_off.docx");
@@ -9647,10 +9648,10 @@ fn ja013_auto_space() {
     assert_eq!(p_saved.direct.auto_space_digits, Some(false));
 
     // 5. 再度トグル切替で有効化
-    s.menu("docx.para.auto-space-de");
-    s.menu("docx.para.auto-space-dn");
-    assert_eq!(s.menu_state("docx.para.auto-space-de"), Some((true, true)));
-    assert_eq!(s.menu_state("docx.para.auto-space-dn"), Some((true, true)));
+    s.menu("docx.paragraph.auto-space-de");
+    s.menu("docx.paragraph.auto-space-dn");
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-de"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.auto-space-dn"), Some((true, true)));
 
     // 6. 保存と再読込による永続化検証（true の保存）
     s.save_as("ja013_auto_space_on.docx");
@@ -9667,8 +9668,8 @@ fn ja009_kinsoku_word_wrap() {
     let mut s = Scenario::open(REPORT);
 
     // 1. 初期状態：禁則処理・単語途中改行禁止は有効（既定値 true）
-    assert_eq!(s.menu_state("docx.para.kinsoku"), Some((true, true)), "初期状態はkinsoku有効");
-    assert_eq!(s.menu_state("docx.para.word-wrap"), Some((true, true)), "初期状態はwordWrap有効");
+    assert_eq!(s.menu_state("docx.paragraph.kinsoku"), Some((true, true)), "初期状態はkinsoku有効");
+    assert_eq!(s.menu_state("docx.paragraph.word-wrap"), Some((true, true)), "初期状態はwordWrap有効");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9677,10 +9678,10 @@ fn ja009_kinsoku_word_wrap() {
     }
 
     // 2. トグル切替で両方無効化
-    s.menu("docx.para.kinsoku");
-    assert_eq!(s.menu_state("docx.para.kinsoku"), Some((true, false)), "トグルでkinsoku無効化");
-    s.menu("docx.para.word-wrap");
-    assert_eq!(s.menu_state("docx.para.word-wrap"), Some((true, false)), "トグルでwordWrap無効化");
+    s.menu("docx.paragraph.kinsoku");
+    assert_eq!(s.menu_state("docx.paragraph.kinsoku"), Some((true, false)), "トグルでkinsoku無効化");
+    s.menu("docx.paragraph.word-wrap");
+    assert_eq!(s.menu_state("docx.paragraph.word-wrap"), Some((true, false)), "トグルでwordWrap無効化");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9692,9 +9693,9 @@ fn ja009_kinsoku_word_wrap() {
 
     // 3. Undo / Redo 検証
     s.key("cmd-z"); // wordWrap が戻る
-    assert_eq!(s.menu_state("docx.para.word-wrap"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.word-wrap"), Some((true, true)));
     s.key("cmd-z"); // kinsoku が戻る
-    assert_eq!(s.menu_state("docx.para.kinsoku"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.kinsoku"), Some((true, true)));
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9703,8 +9704,8 @@ fn ja009_kinsoku_word_wrap() {
     }
     s.key("cmd-shift-z");
     s.key("cmd-shift-z");
-    assert_eq!(s.menu_state("docx.para.kinsoku"), Some((true, false)));
-    assert_eq!(s.menu_state("docx.para.word-wrap"), Some((true, false)));
+    assert_eq!(s.menu_state("docx.paragraph.kinsoku"), Some((true, false)));
+    assert_eq!(s.menu_state("docx.paragraph.word-wrap"), Some((true, false)));
 
     // 4. 保存と再読込による永続化検証（false の保存）
     s.save_as("ja009_kinsoku_word_wrap_off.docx");
@@ -9717,10 +9718,10 @@ fn ja009_kinsoku_word_wrap() {
     assert_eq!(p_saved.direct.word_wrap, Some(false));
 
     // 5. 再度トグル切替で有効化
-    s.menu("docx.para.kinsoku");
-    s.menu("docx.para.word-wrap");
-    assert_eq!(s.menu_state("docx.para.kinsoku"), Some((true, true)));
-    assert_eq!(s.menu_state("docx.para.word-wrap"), Some((true, true)));
+    s.menu("docx.paragraph.kinsoku");
+    s.menu("docx.paragraph.word-wrap");
+    assert_eq!(s.menu_state("docx.paragraph.kinsoku"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.word-wrap"), Some((true, true)));
 
     // 6. 保存と再読込による永続化検証（true の保存）
     s.save_as("ja009_kinsoku_word_wrap_on.docx");
@@ -9737,7 +9738,7 @@ fn ja017_bidi() {
     let mut s = Scenario::open(REPORT);
 
     // 1. 初期状態：右から左へ記述は無効（既定値 false）
-    assert_eq!(s.menu_state("docx.para.bidi"), Some((true, false)), "初期状態はbidi無効");
+    assert_eq!(s.menu_state("docx.paragraph.bidi"), Some((true, false)), "初期状態はbidi無効");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9745,8 +9746,8 @@ fn ja017_bidi() {
     }
 
     // 2. トグル切替で有効化
-    s.menu("docx.para.bidi");
-    assert_eq!(s.menu_state("docx.para.bidi"), Some((true, true)), "トグルでbidi有効化");
+    s.menu("docx.paragraph.bidi");
+    assert_eq!(s.menu_state("docx.paragraph.bidi"), Some((true, true)), "トグルでbidi有効化");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9756,14 +9757,14 @@ fn ja017_bidi() {
 
     // 3. Undo / Redo 検証
     s.key("cmd-z");
-    assert_eq!(s.menu_state("docx.para.bidi"), Some((true, false)));
+    assert_eq!(s.menu_state("docx.paragraph.bidi"), Some((true, false)));
     {
         let doc = s.document();
         let p = body(&doc)[0];
         assert!(!p.bidi);
     }
     s.key("cmd-shift-z");
-    assert_eq!(s.menu_state("docx.para.bidi"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.bidi"), Some((true, true)));
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9779,8 +9780,8 @@ fn ja017_bidi() {
     assert_eq!(p_saved.direct.bidi, Some(true));
 
     // 5. 再度トグル切替で無効化
-    s.menu("docx.para.bidi");
-    assert_eq!(s.menu_state("docx.para.bidi"), Some((true, false)));
+    s.menu("docx.paragraph.bidi");
+    assert_eq!(s.menu_state("docx.paragraph.bidi"), Some((true, false)));
 
     // 6. 保存と再読込による永続化検証（false の保存）
     s.save_as("ja017_bidi_off.docx");
@@ -9795,7 +9796,7 @@ fn ja016_snap_to_grid() {
     let mut s = Scenario::open(REPORT);
 
     // 1. 初期状態：行グリッド線に合わせるは有効（既定値 true）
-    assert_eq!(s.menu_state("docx.para.snap-to-grid"), Some((true, true)), "初期状態はsnapToGrid有効");
+    assert_eq!(s.menu_state("docx.paragraph.snap-to-grid"), Some((true, true)), "初期状態はsnapToGrid有効");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9803,8 +9804,8 @@ fn ja016_snap_to_grid() {
     }
 
     // 2. トグル切替で無効化
-    s.menu("docx.para.snap-to-grid");
-    assert_eq!(s.menu_state("docx.para.snap-to-grid"), Some((true, false)), "トグルでsnapToGrid無効化");
+    s.menu("docx.paragraph.snap-to-grid");
+    assert_eq!(s.menu_state("docx.paragraph.snap-to-grid"), Some((true, false)), "トグルでsnapToGrid無効化");
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9814,14 +9815,14 @@ fn ja016_snap_to_grid() {
 
     // 3. Undo / Redo 検証
     s.key("cmd-z");
-    assert_eq!(s.menu_state("docx.para.snap-to-grid"), Some((true, true)));
+    assert_eq!(s.menu_state("docx.paragraph.snap-to-grid"), Some((true, true)));
     {
         let doc = s.document();
         let p = body(&doc)[0];
         assert!(p.snap_to_grid);
     }
     s.key("cmd-shift-z");
-    assert_eq!(s.menu_state("docx.para.snap-to-grid"), Some((true, false)));
+    assert_eq!(s.menu_state("docx.paragraph.snap-to-grid"), Some((true, false)));
     {
         let doc = s.document();
         let p = body(&doc)[0];
@@ -9837,8 +9838,8 @@ fn ja016_snap_to_grid() {
     assert_eq!(p_saved.direct.snap, Some(false));
 
     // 5. 再度トグル切替で有効化
-    s.menu("docx.para.snap-to-grid");
-    assert_eq!(s.menu_state("docx.para.snap-to-grid"), Some((true, true)));
+    s.menu("docx.paragraph.snap-to-grid");
+    assert_eq!(s.menu_state("docx.paragraph.snap-to-grid"), Some((true, true)));
 
     // 6. 保存と再読込による永続化検証（true の保存）
     s.save_as("ja016_snap_to_grid_on.docx");
@@ -9865,7 +9866,7 @@ fn field010_author_title_docproperty() {
 
     // 1. プロパティの設定
     s.update(|e, _, cx| {
-        e.execute(vec![Command::Flow(FlowCommand::SetDocProperties(props.clone()))], cx);
+        e.execute(vec![Command::Flow(FlowCommand::SetDocumentProperties(props.clone()))], cx);
     });
 
     {
@@ -10035,7 +10036,7 @@ fn ref010_cross_reference_dialog() {
     let mut s = Scenario::open(REPORT);
 
     // 1. メニュー「挿入 > 相互参照…」でダイアログ/サイドバーを開く
-    s.menu("docx.xref.dialog");
+    s.menu("docx.cross-reference.dialog");
     assert!(s.with(|e, _| e.sidebar_open), "sidebar is opened for cross reference");
     assert!(s.with(|e, _| e.doc_state().is_some_and(|st| st.helper.cross_reference.is_some())), "cross_reference panel is present");
 
@@ -10049,7 +10050,7 @@ fn ref010_cross_reference_dialog() {
     s.key("cmd-down");
     s.key("enter");
     s.type_text("参照先：");
-    s.menu("docx.xref.dialog");
+    s.menu("docx.cross-reference.dialog");
     s.update(|e, _, cx| e.apply_cross_reference(cx));
 
     let doc = s.document();
@@ -10070,7 +10071,7 @@ fn ref010_cross_reference_dialog() {
     close_modal(&mut s);
     s.key("enter");
     s.type_text("ページ：");
-    s.menu("docx.xref.dialog");
+    s.menu("docx.cross-reference.dialog");
     s.update(|e, _, cx| {
         e.choose_cross_reference_type(ibis_doc_model::CrossReferenceType::Bookmark, cx);
         e.choose_cross_reference_kind(ibis_doc_model::CrossReferenceKind::PageNumber, cx);
@@ -10100,7 +10101,7 @@ fn ref010_cross_reference_dialog() {
     s.key("cmd-down");
     s.key("enter");
     s.type_text("参照注：");
-    s.menu("docx.xref.dialog");
+    s.menu("docx.cross-reference.dialog");
     s.update(|e, _, cx| {
         e.choose_cross_reference_type(ibis_doc_model::CrossReferenceType::Footnote, cx);
     });
@@ -10362,7 +10363,7 @@ fn ref011_cross_reference_relative_and_captions() {
     s.key("cmd-down");
     s.key("enter");
     s.type_text("参照：");
-    s.menu("docx.xref.dialog");
+    s.menu("docx.cross-reference.dialog");
 
     // 3. 参照する項目で「図表」を選択し、「説明文のみ」を挿入
     s.update(|e, _, cx| {
@@ -10376,7 +10377,7 @@ fn ref011_cross_reference_relative_and_captions() {
     // The dialog is modal: the text is typed with it closed, and it is opened again to insert.
     close_modal(&mut s);
     s.type_text(" (位置: ");
-    s.menu("docx.xref.dialog");
+    s.menu("docx.cross-reference.dialog");
     s.update(|e, _, cx| {
         e.choose_cross_reference_type(ibis_doc_model::CrossReferenceType::Caption, cx);
         e.choose_cross_reference_kind(ibis_doc_model::CrossReferenceKind::RelativePosition, cx);
@@ -10389,7 +10390,7 @@ fn ref011_cross_reference_relative_and_captions() {
     // 5. ドキュメント先頭から相互参照を挿入（上から下への参照なので「下」）
     s.key("cmd-up");
     s.type_text("下記参照 (位置: ");
-    s.menu("docx.xref.dialog");
+    s.menu("docx.cross-reference.dialog");
     s.update(|e, _, cx| {
         e.choose_cross_reference_type(ibis_doc_model::CrossReferenceType::Caption, cx);
         e.choose_cross_reference_kind(ibis_doc_model::CrossReferenceKind::RelativePosition, cx);
@@ -10613,7 +10614,7 @@ fn access001_check_accessibility() {
     let mut s = Scenario::open(REPORT);
 
     // 1. メニュー「ツール > アクセシビリティ チェック…」（docx.accessibility-check）を実行
-    s.menu("docx.accessibility-check");
+    s.menu("review.accessibility-check");
     assert!(
         s.with(|e, _| e.sidebar_open && e.doc_state().is_some_and(|st| st.accessibility_panel)),
         "accessibility panel should be open"
@@ -10648,7 +10649,7 @@ fn access001_check_accessibility() {
     });
 
     // 5. アクセシビリティパネルを再確認し、該当代替テキスト欠落エラーが解消されていることを確認
-    s.menu("docx.accessibility-check");
+    s.menu("review.accessibility-check");
     let issues_after = s.with(|e, _| e.accessibility_issues());
     assert!(
         !issues_after.iter().any(|i| i.at == alt_pos && i.title.contains("代替テキスト")),
@@ -10825,7 +10826,7 @@ fn toc006_update_toc_options() {
 
     // 文書冒頭に移動して目次を挿入
     s.key("cmd-up");
-    s.menu("docx.toc");
+    s.menu("docx.table-of-contents");
 
     let toc_entries = |doc: &FlowDocument| -> Vec<(u32, String)> {
         let ps = body(doc);
@@ -10883,7 +10884,7 @@ fn toc006_update_toc_options() {
     s.toolbar_menu("style", "docx.style.heading1");
 
     // 4. 「目次の更新」ダイアログを開く
-    s.menu("docx.toc.update-dialog");
+    s.menu("docx.table-of-contents.update-dialog");
     assert!(s.with(|e, _| e.sidebar_open), "sidebar should be open for update toc dialog");
     assert_eq!(
         s.with(|e, _| e.update_toc_kind()),
@@ -10895,7 +10896,7 @@ fn toc006_update_toc_options() {
     assert!(!s.with(|e, _| e.sidebar_open), "sidebar should close on cancel");
 
     // 再度ダイアログを開いて「ページ番号だけを更新する」を実行
-    s.menu("docx.toc.update-dialog");
+    s.menu("docx.table-of-contents.update-dialog");
     s.update(|e, _, cx| {
         e.set_update_toc_kind(crate::help_panels::UpdateTocKind::PageNumbersOnly, cx);
         e.apply_update_toc_panel(cx);
@@ -10915,7 +10916,7 @@ fn toc006_update_toc_options() {
     );
 
     // 5. 次に「目次をすべて更新する」を実行
-    s.menu("docx.toc.update-dialog");
+    s.menu("docx.table-of-contents.update-dialog");
     s.update(|e, _, cx| {
         e.set_update_toc_kind(crate::help_panels::UpdateTocKind::EntireTable, cx);
         e.apply_update_toc_panel(cx);
@@ -10935,7 +10936,7 @@ fn toc006_update_toc_options() {
     );
 
     // 6. メニュー直接アクション「docx.toc.update-page-numbers-only」も検証
-    s.menu("docx.toc.update-page-numbers-only");
+    s.menu("docx.table-of-contents.update-page-numbers-only");
 
     // 7. Undo/Redo の検証
     s.key("cmd-z"); // entire update を Undo
@@ -11067,7 +11068,7 @@ fn sec011_018_inspect_document_and_compatibility() {
             name: "ProjectCode".to_string(),
             value: ibis_doc_model::flow::CustomPropertyValue::Text("SECRET-007".to_string()),
         });
-        e.run_flow(vec![ibis_doc_model::FlowCommand::SetDocProperties(props)], cx);
+        e.run_flow(vec![ibis_doc_model::FlowCommand::SetDocumentProperties(props)], cx);
     });
 
     // (b) コメントを追加
@@ -11110,7 +11111,7 @@ fn sec011_018_inspect_document_and_compatibility() {
             q.runs.push(rev_run);
             q.normalize();
             if let Some((container, index)) = ibis_doc_model::flow_command::locate(doc, p.id) {
-                e.run_flow(vec![ibis_doc_model::FlowCommand::ReplaceBlocks { container, index, remove: 1, blocks: vec![ibis_doc_model::Block::Paragraph(q)] }], cx);
+                e.run_flow(vec![ibis_doc_model::FlowCommand::ReplaceBlockRange { container, index, remove: 1, blocks: vec![ibis_doc_model::Block::Paragraph(q)] }], cx);
             }
         }
     });
@@ -11128,7 +11129,7 @@ fn sec011_018_inspect_document_and_compatibility() {
             q.runs.push(hidden_run);
             q.normalize();
             if let Some((container, index)) = ibis_doc_model::flow_command::locate(doc, p.id) {
-                e.run_flow(vec![ibis_doc_model::FlowCommand::ReplaceBlocks { container, index, remove: 1, blocks: vec![ibis_doc_model::Block::Paragraph(q)] }], cx);
+                e.run_flow(vec![ibis_doc_model::FlowCommand::ReplaceBlockRange { container, index, remove: 1, blocks: vec![ibis_doc_model::Block::Paragraph(q)] }], cx);
             }
         }
     });
@@ -11210,13 +11211,13 @@ fn sec011_018_inspect_document_and_compatibility() {
             q.runs.insert(0, math_run);
             q.normalize();
             if let Some((container, index)) = ibis_doc_model::flow_command::locate(doc, p.id) {
-                e.run_flow(vec![ibis_doc_model::FlowCommand::ReplaceBlocks { container, index, remove: 1, blocks: vec![ibis_doc_model::Block::Paragraph(q)] }], cx);
+                e.run_flow(vec![ibis_doc_model::FlowCommand::ReplaceBlockRange { container, index, remove: 1, blocks: vec![ibis_doc_model::Block::Paragraph(q)] }], cx);
             }
         }
     });
 
     // (b) 互換性チェックパネルを開く
-    s.menu("docx.compatibility-check");
+    s.menu("review.compatibility-check");
     assert!(s.with(|e, _| e.sidebar_open), "sidebar is opened for compatibility panel");
     assert!(s.with(|e, _| e.doc_state().and_then(|st| st.compatibility_panel.as_ref()).is_some()), "compatibility_panel state is active");
 
@@ -11614,7 +11615,7 @@ fn toc004_custom_styles_in_toc() {
     assert!(f_start.contains("CustomSection"), "field_start should mention CustomSection: {f_start}");
 
     // 5. 目次の更新（docx.toc.update）を実行し、\t が維持されることを確認
-    s.menu("docx.toc.update-entire-table");
+    s.menu("docx.table-of-contents.update-entire-table");
     let after_update_entries = toc_entries(&s.document());
     assert!(after_update_entries.iter().any(|(_, t)| t.contains(&custom_text)), "TOC after update should contain custom styled paragraph: {after_update_entries:?}");
 
@@ -12021,7 +12022,7 @@ fn field007_format_switches() {
     props.title = Some("quarterly business review".to_string());
     props.creator = Some("jane doe".to_string());
     s.update(|e, _, cx| {
-        e.execute(vec![Command::Flow(FlowCommand::SetDocProperties(props))], cx);
+        e.execute(vec![Command::Flow(FlowCommand::SetDocumentProperties(props))], cx);
     });
 
     let insert_field = |s: &mut Scenario, code: &str| {
@@ -12081,7 +12082,7 @@ fn field007_format_switches() {
     updated_props.title = Some("annual financial report".to_string());
     updated_props.creator = Some("john smith".to_string());
     s.update(|e, _, cx| {
-        e.execute(vec![Command::Flow(FlowCommand::SetDocProperties(updated_props))], cx);
+        e.execute(vec![Command::Flow(FlowCommand::SetDocumentProperties(updated_props))], cx);
         e.update_fields(false, cx);
     });
 
@@ -12210,7 +12211,7 @@ fn field_doc_variable_and_user_fields() {
         let mut vars = std::collections::BTreeMap::new();
         vars.insert("ReleaseVer".to_string(), "v3.5.0".to_string());
         vars.insert("DeptName".to_string(), "engineering dev team".to_string());
-        e.run_flow(vec![ibis_doc_model::flow_command::FlowCommand::SetDocVariables(vars)], cx);
+        e.run_flow(vec![ibis_doc_model::flow_command::FlowCommand::SetDocumentVariables(vars)], cx);
     });
 
     s.key("cmd-down");
@@ -12270,7 +12271,7 @@ fn field_doc_variable_and_user_fields() {
     s.update(|e, _, cx| {
         let mut props = e.flow().unwrap().properties.clone();
         props.creator = Some("Alice Smith".to_string());
-        e.run_flow(vec![ibis_doc_model::flow_command::FlowCommand::SetDocProperties(props)], cx);
+        e.run_flow(vec![ibis_doc_model::flow_command::FlowCommand::SetDocumentProperties(props)], cx);
         e.update_fields(false, cx);
     });
 
@@ -12498,7 +12499,7 @@ fn field_nested_and_info_fields() {
         let mut props = e.flow().unwrap().properties.clone();
         props.creator = Some("Scenario Author".to_string());
         props.title = Some("Scenario Title".to_string());
-        e.run_flow(vec![ibis_doc_model::FlowCommand::SetDocProperties(props)], cx);
+        e.run_flow(vec![ibis_doc_model::FlowCommand::SetDocumentProperties(props)], cx);
     });
 
     // 先頭（1ページ目）に移動して段落を作成
@@ -12776,7 +12777,7 @@ fn para018_suppress_auto_hyphens() {
     assert!(!para(&s.document(), p.id).suppress_auto_hyphens);
 
     // 2. メニューから「単語の途中で改行しない（ハイフネーションを行わない）」を実行
-    menu_closing(&mut s,"docx.para.suppress-auto-hyphens");
+    menu_closing(&mut s,"docx.paragraph.suppress-auto-hyphens");
     assert!(s.with(|e, _| e.caret_suppress_auto_hyphens()));
     assert!(para(&s.document(), p.id).suppress_auto_hyphens);
     assert_eq!(para(&s.document(), p.id).direct.suppress_auto_hyphens, Some(true));
@@ -12796,7 +12797,7 @@ fn para018_suppress_auto_hyphens() {
     assert_eq!(para(&s.document(), p.id).direct.suppress_auto_hyphens, Some(false));
 
     // 5. 再度メニューから true に切り替え
-    menu_closing(&mut s,"docx.para.suppress-auto-hyphens");
+    menu_closing(&mut s,"docx.paragraph.suppress-auto-hyphens");
     assert!(s.with(|e, _| e.caret_suppress_auto_hyphens()));
     assert!(para(&s.document(), p.id).suppress_auto_hyphens);
 
@@ -13385,7 +13386,7 @@ fn opt003_user_name_and_author() {
         e.apply_user_info_panel(cx);
     });
     assert_eq!(s.with(|e, _| e.user_name()), crate::shell::user_name::default_user_name());
-    assert_eq!(s.with(|e, _| e.user_initials()), crate::shell::user_name::initials(crate::shell::user_name::default_user_name()));
+    assert_eq!(s.with(|e, _| e.user_initials()), crate::shell::user_name::initials(&crate::shell::user_name::default_user_name()));
 
     // 8. 保存と再読込によるコメントと変更履歴 author の永続化検証
     s.save_as("opt003_user_info.docx");
@@ -13456,7 +13457,7 @@ fn opt009_update_fields_before_printing() {
     let mut initial_props = ibis_doc_model::DocProperties::default();
     initial_props.creator = Some("Original Author".to_string());
     s.update(|e, _, cx| {
-        e.run_flow(vec![FlowCommand::SetDocProperties(initial_props)], cx);
+        e.run_flow(vec![FlowCommand::SetDocumentProperties(initial_props)], cx);
     });
 
     let p_field_id = s.with(|e, _| e.flow().unwrap().new_id());
@@ -13473,14 +13474,14 @@ fn opt009_update_fields_before_printing() {
             ..Default::default()
         };
         let body_len = e.flow().unwrap().body.len();
-        e.run_flow(vec![FlowCommand::ReplaceBlocks { container: ibis_doc_model::flow_command::Container::Body, index: body_len, remove: 0, blocks: vec![Block::Paragraph(para)] }], cx);
+        e.run_flow(vec![FlowCommand::ReplaceBlockRange { container: ibis_doc_model::flow_command::Container::Body, index: body_len, remove: 0, blocks: vec![Block::Paragraph(para)] }], cx);
     });
 
     // プロパティを変更 (AUTHOR -> "New Printed Author")
     let mut updated_props = ibis_doc_model::DocProperties::default();
     updated_props.creator = Some("New Printed Author".to_string());
     s.update(|e, _, cx| {
-        e.run_flow(vec![FlowCommand::SetDocProperties(updated_props)], cx);
+        e.run_flow(vec![FlowCommand::SetDocumentProperties(updated_props)], cx);
     });
 
     // prepare_print_or_export 実行前は shown は "Original Author" のまま
@@ -13610,7 +13611,7 @@ fn opt010_print_backgrounds_and_hidden_text() {
             ..Default::default()
         };
         let body_len = e.flow().unwrap().body.len();
-        e.run_flow(vec![FlowCommand::ReplaceBlocks {
+        e.run_flow(vec![FlowCommand::ReplaceBlockRange {
             container: ibis_doc_model::flow_command::Container::Body,
             index: body_len,
             remove: 0,
@@ -13751,7 +13752,7 @@ fn review005_filter_by_author() {
             ..Default::default()
         };
         let body_len = e.flow().unwrap().body.len();
-        e.run_flow(vec![FlowCommand::ReplaceBlocks {
+        e.run_flow(vec![FlowCommand::ReplaceBlockRange {
             container: ibis_doc_model::flow_command::Container::Body,
             index: body_len,
             remove: 0,
@@ -13925,7 +13926,7 @@ fn review009_resolve_shown_revisions() {
             ..Default::default()
         };
         let body_len = e.flow().unwrap().body.len();
-        e.run_flow(vec![FlowCommand::ReplaceBlocks {
+        e.run_flow(vec![FlowCommand::ReplaceBlockRange {
             container: ibis_doc_model::flow_command::Container::Body,
             index: body_len,
             remove: 0,
@@ -14035,7 +14036,7 @@ fn review009_resolve_shown_revisions() {
             ..Default::default()
         };
         let body_len = e.flow().unwrap().body.len();
-        e.run_flow(vec![FlowCommand::ReplaceBlocks {
+        e.run_flow(vec![FlowCommand::ReplaceBlockRange {
             container: ibis_doc_model::flow_command::Container::Body,
             index: body_len,
             remove: 0,
@@ -14073,7 +14074,7 @@ fn review009_resolve_shown_revisions() {
             ..Default::default()
         };
         let body_len = e.flow().unwrap().body.len();
-        e.run_flow(vec![FlowCommand::ReplaceBlocks {
+        e.run_flow(vec![FlowCommand::ReplaceBlockRange {
             container: ibis_doc_model::flow_command::Container::Body,
             index: body_len,
             remove: 0,
@@ -14288,7 +14289,7 @@ fn find010_go_to() {
     let mut s = Scenario::open(REPORT);
 
     // 1. 編集 > ジャンプ… メニューからジャンプパネルを開く
-    s.menu("docx.go-to");
+    s.menu("edit.go-to");
     assert!(
         s.with(|e, _| e.sidebar_open && e.doc_state().is_some_and(|st| st.helper.go_to.is_some())),
         "go_to panel must be open in sidebar"
@@ -14869,7 +14870,7 @@ fn view009_zoom_page_modes() {
     assert!(!s.with(|e, _| e.is_zoom_one_page()), "one-page should not be checked initially");
     assert!(!s.with(|e, _| e.is_zoom_multiple_pages()), "multiple-pages should not be checked initially");
     assert_eq!(s.with(|e, _| e.zoom), Some(1.41));
-    assert_eq!(s.menu_state("docx.view.zoom-100"), Some((true, false)));
+    assert_eq!(s.menu_state("view.zoom-100"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.page-width"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.one-page"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.multiple-pages"), Some((true, false)));
@@ -14882,7 +14883,7 @@ fn view009_zoom_page_modes() {
     assert!(!s.with(|e, _| e.is_zoom_one_page()));
     assert!(!s.with(|e, _| e.is_zoom_multiple_pages()));
     assert_eq!(s.menu_state("docx.view.page-width"), Some((true, true)));
-    assert_eq!(s.menu_state("docx.view.zoom-100"), Some((true, false)));
+    assert_eq!(s.menu_state("view.zoom-100"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.one-page"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.multiple-pages"), Some((true, false)));
 
@@ -14894,7 +14895,7 @@ fn view009_zoom_page_modes() {
     assert!(!s.with(|e, _| e.is_zoom_multiple_pages()));
     assert_eq!(s.menu_state("docx.view.one-page"), Some((true, true)));
     assert_eq!(s.menu_state("docx.view.page-width"), Some((true, false)));
-    assert_eq!(s.menu_state("docx.view.zoom-100"), Some((true, false)));
+    assert_eq!(s.menu_state("view.zoom-100"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.multiple-pages"), Some((true, false)));
     let zoom_1 = s.with(|e, _| e.zoom.expect("one-page zoom factor"));
     assert!(zoom_1 < 1.0, "one-page zoom factor should be less than 1.0 to fit whole page: {zoom_1}");
@@ -14908,15 +14909,15 @@ fn view009_zoom_page_modes() {
     assert_eq!(s.menu_state("docx.view.multiple-pages"), Some((true, true)));
     assert_eq!(s.menu_state("docx.view.one-page"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.page-width"), Some((true, false)));
-    assert_eq!(s.menu_state("docx.view.zoom-100"), Some((true, false)));
+    assert_eq!(s.menu_state("view.zoom-100"), Some((true, false)));
     let zoom_multi = s.with(|e, _| e.zoom.expect("multiple-pages zoom factor"));
     assert!(zoom_multi < zoom_1, "multiple pages zoom should be smaller than 1 page zoom: {zoom_multi} vs {zoom_1}");
 
     // 5. Switch back to "100%" via View menu
-    s.menu("docx.view.zoom-100");
+    s.menu("view.zoom-100");
     assert!(s.with(|e, _| e.is_zoom_100()), "zoom should be restored to 100%");
     assert_eq!(s.with(|e, _| e.zoom), Some(1.0));
-    assert_eq!(s.menu_state("docx.view.zoom-100"), Some((true, true)));
+    assert_eq!(s.menu_state("view.zoom-100"), Some((true, true)));
     assert_eq!(s.menu_state("docx.view.one-page"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.multiple-pages"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.page-width"), Some((true, false)));
@@ -17189,7 +17190,7 @@ fn sec003_protect_formatting() {
         e.run_flow(vec![FlowCommand::SetParagraphFormat {
             first: para_id,
             last: para_id,
-            change: ibis_doc_model::ParaChange::Align(FlowAlign::Center),
+            change: ibis_doc_model::ParaChange::Alignment(FlowAlign::Center),
         }], cx)
     });
     assert!(!align_applied, "paragraph alignment change must be rejected under formatting protection");
@@ -18021,7 +18022,7 @@ fn edit004_typing_paste_and_paragraph_format_in_ranges() {
     assert_eq!(s.document(), before);
     // The alignment of the paragraphs of the ranges: here the one paragraph, centred; the ranges stay.
     select(&mut s);
-    s.update(|e, _, cx| e.apply_para_change(ibis_doc_model::ParaChange::Align(ibis_doc_model::FlowAlign::Center), cx));
+    s.update(|e, _, cx| e.apply_para_change(ibis_doc_model::ParaChange::Alignment(ibis_doc_model::FlowAlign::Center), cx));
     assert_eq!(para(&s.document(), id).align, ibis_doc_model::FlowAlign::Center);
     assert_eq!(s.with(|e, _| e.selection_ranges().len()), 2, "the ranges stay selected");
     s.menu("edit.undo");
@@ -18036,7 +18037,7 @@ fn toc002_manual_toc() {
     s.click_text(FlowPos::new(id, 2));
     let before = s.document();
     let count = body(&before).len();
-    s.menu("docx.toc.manual");
+    s.menu("docx.table-of-contents.manual");
     let after = s.document();
     let paragraphs = body(&after);
     assert_eq!(paragraphs.len(), count + 3);
@@ -19473,7 +19474,7 @@ fn merge001_mail_merge() {
     let (_, id, _) = text_paragraph(&mut s, 10);
     s.click_text(FlowPos::new(id, 3));
     let before = s.document();
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     s.update(|e, window, cx| {
         let input = e.doc_state().unwrap().merge.as_ref().unwrap().text.clone();
         input.update(cx, |a, cx| a.set_value("氏名,住所\n山田太郎,東京都港区\n鈴木花子,\"大阪府, 北区\"\n", window, cx));
@@ -19593,7 +19594,7 @@ fn merge001_mail_merge() {
 /// comparisons), and the preview goes to the first, last, a numbered or a found recipient.
 fn merge003_recipient_list_edit_filter_and_find() {
     let mut s = Scenario::open(REPORT);
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     let state = |s: &mut Scenario| s.with(|e, _| e.doc_state().unwrap().merge.as_ref().map(|m| (m.fields.clone(), m.records.clone(), m.included.clone())).unwrap());
     let selected = |s: &mut Scenario| s.with(|e, _| e.doc_state().unwrap().merge.as_ref().unwrap().selected());
     s.update(|e, window, cx| {
@@ -19669,7 +19670,7 @@ fn merge003_recipient_list_edit_filter_and_find() {
 /// (settings.xml), read again, undone and taken away (通常の文書).
 fn merge001_document_type_saved() {
     let mut s = Scenario::open(REPORT);
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     let kind = |s: &mut Scenario| s.with(|e, _| e.flow().unwrap().mail_merge_type.clone());
     assert_eq!(kind(&mut s), None);
     s.update(|e, _, cx| e.set_mail_merge_type(Some("formLetters"), cx));
@@ -19784,6 +19785,7 @@ fn image006_extended_picture_corrections() {
                         clear: pic.clear.clone(),
                         reflection: pic.reflection.clone(),
                         shadow: pic.shadow.clone(),
+                        effect_extent: [0; 4],
                     })
                 } else {
                     None
@@ -19921,7 +19923,7 @@ fn merge006_address_and_greeting() {
     let mut s = Scenario::open(REPORT);
     let (_, id, _) = text_paragraph(&mut s, 10);
     s.click_text(FlowPos::new(id, 0));
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     s.update(|e, window, cx| {
         let input = e.doc_state().unwrap().merge.as_ref().unwrap().text.clone();
         input.update(cx, |a, cx| a.set_value("郵便番号,住所,氏名\n100-0001,東京都千代田区,山田太郎\n530-0001,,鈴木花子\n", window, cx));
@@ -19966,7 +19968,7 @@ fn merge010_rules_and_separate_files() {
     let mut s = Scenario::open(REPORT);
     let (_, id, _) = text_paragraph(&mut s, 10);
     s.click_text(FlowPos::new(id, 0));
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     s.update(|e, window, cx| {
         let input = e.doc_state().unwrap().merge.as_ref().unwrap().text.clone();
         input.update(cx, |a, cx| a.set_value("氏名,年齢\n山田,30\n鈴木,15\n佐藤,5\n", window, cx));
@@ -20180,7 +20182,7 @@ fn merge011_next_record() {
     let mut s = Scenario::open(REPORT);
     let (_, id, _) = text_paragraph(&mut s, 10);
     s.click_text(FlowPos::new(id, 0));
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     s.update(|e, window, cx| {
         let input = e.doc_state().unwrap().merge.as_ref().unwrap().text.clone();
         input.update(cx, |a, cx| a.set_value("氏名\n山田\n鈴木\n佐藤\n高橋\n", window, cx));
@@ -20215,7 +20217,7 @@ fn merge011_next_record() {
 /// 封筒設定による PageSetup 更新・差出人/受取人ブロック生成・1ステップUndo/Redo・保存再読込・個別文書作成を検証。
 fn merge016_envelope_setup() {
     let mut s = Scenario::open(REPORT);
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     // Setup recipient list
     s.update(|e, window, cx| {
         let input = e.doc_state().unwrap().merge.as_ref().unwrap().text.clone();
@@ -20281,7 +20283,7 @@ fn merge016_envelope_setup() {
 /// ラベル設定による表生成・NEXTフィールド配置・1ステップUndo/Redo・保存再読込・個別文書作成（シートへの連続展開）を検証。
 fn merge017_label_sheet_setup() {
     let mut s = Scenario::open(REPORT);
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     // Setup recipient list with 5 recipients
     s.update(|e, window, cx| {
         let input = e.doc_state().unwrap().merge.as_ref().unwrap().text.clone();
@@ -20360,7 +20362,7 @@ fn merge009_match_fields() {
     let mut s = Scenario::open(REPORT);
     let (_, id, _) = text_paragraph(&mut s, 10);
     s.click_text(FlowPos::new(id, 0));
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
 
     // Recipient list with Japanese column headers
     s.update(|e, window, cx| {
@@ -20468,7 +20470,7 @@ fn merge014_print_merged_documents() {
     let mut s = Scenario::open(REPORT);
     let (_, id, _) = text_paragraph(&mut s, 10);
     s.click_text(FlowPos::new(id, 0));
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
 
     // 1. Verify menu states for merge print and PDF export
     assert_eq!(s.menu_state("docx.merge.print"), Some((true, false)));
@@ -20912,19 +20914,19 @@ fn fcode066_tc_entries_and_toc_f() {
         word
     }
     let mut s = Scenario::open(REPORT);
-    let first = mark(&mut s, 0, 3, "docx.toc.mark-level-1");
-    let second = mark(&mut s, 1, 2, "docx.toc.mark-level-2");
+    let first = mark(&mut s, 0, 3, "docx.table-of-contents.mark-level-1");
+    let second = mark(&mut s, 1, 2, "docx.table-of-contents.mark-level-2");
     let doc = s.document();
     let tcs: Vec<String> = body(&doc).iter().flat_map(|p| p.runs.iter()).filter_map(|r| match &r.kind { FlowRunKind::Field { instruction, .. } if instruction.starts_with("TC") => Some(instruction.clone()), _ => None }).collect();
     assert_eq!(tcs.len(), 2, "{tcs:?}");
     assert!(tcs[1].contains("\\l 2"), "{tcs:?}");
     s.key("cmd-up");
-    s.menu("docx.toc.from-entries");
+    s.menu("docx.table-of-contents.from-entries");
     let made = entries(&s.document());
     assert_eq!(made.len(), 2, "{made:?}");
     assert!(made[0].starts_with(&first) && made[1].starts_with(&second) && made.iter().all(|t| t.chars().last().is_some_and(|c| c.is_ascii_digit())), "{made:?}");
     // A third entry; the table updated.
-    let third = mark(&mut s, 2, 2, "docx.toc.mark-level-1");
+    let third = mark(&mut s, 2, 2, "docx.table-of-contents.mark-level-1");
     s.update(|e, _, cx| e.update_toc(None, cx));
     let again = entries(&s.document());
     assert_eq!(again.len(), 3, "{again:?}");
@@ -20956,13 +20958,13 @@ fn fcode065_citations_and_table_of_authorities() {
         word
     }
     let mut s = Scenario::open(REPORT);
-    let case = mark(&mut s, 3, "docx.toa.mark-category-1");
-    let statute = mark(&mut s, 2, "docx.toa.mark-category-2");
+    let case = mark(&mut s, 3, "docx.table-of-authorities.mark-category-1");
+    let statute = mark(&mut s, 2, "docx.table-of-authorities.mark-category-2");
     let doc = s.document();
     let tas = body(&doc).iter().flat_map(|p| p.runs.iter()).filter(|r| matches!(&r.kind, FlowRunKind::Field { instruction, .. } if instruction.starts_with("TA"))).count();
     assert_eq!(tas, 2);
     s.key("cmd-up");
-    s.menu("docx.toa");
+    s.menu("docx.table-of-authorities");
     let made = table(&s.document());
     assert_eq!(made.len(), 4, "{made:?}");
     assert_eq!(made[0], "判例");
@@ -20970,7 +20972,7 @@ fn fcode065_citations_and_table_of_authorities() {
     assert_eq!(made[2], "法令");
     assert!(made[3].starts_with(&statute), "{made:?}");
     // A third citation (of the first category); the table made again.
-    let third = mark(&mut s, 2, "docx.toa.mark-category-1");
+    let third = mark(&mut s, 2, "docx.table-of-authorities.mark-category-1");
     s.update(|e, _, cx| e.update_toa(cx));
     let again = table(&s.document());
     assert_eq!(again.len(), 5, "{again:?}");
@@ -22359,7 +22361,7 @@ fn review017_view_side_by_side_and_sync_scrolling() {
     let mut s = Scenario::open(REPORT);
 
     // 1. Initial menu state with 1 window
-    assert_eq!(s.menu_state("docx.view-side-by-side"), Some((true, false)));
+    assert_eq!(s.menu_state("view.side-by-side"), Some((true, false)));
     assert_eq!(s.menu_state("docx.sync-scrolling"), Some((false, false)));
     assert_eq!(s.menu_state("docx.reset-window-position"), Some((false, false)));
 
@@ -22377,7 +22379,7 @@ fn review017_view_side_by_side_and_sync_scrolling() {
     });
 
     // 3. Activate View Side by Side via menu
-    s.menu("docx.view-side-by-side");
+    s.menu("view.side-by-side");
     s.settle();
 
     // Verify both windows are in side-by-side mode with sync scrolling ON
@@ -22387,7 +22389,7 @@ fn review017_view_side_by_side_and_sync_scrolling() {
     assert!(s.with(|_, app| ed1.read(app).sync_scrolling));
 
     // Verify menu items updated
-    assert_eq!(s.menu_state("docx.view-side-by-side"), Some((true, true)));
+    assert_eq!(s.menu_state("view.side-by-side"), Some((true, true)));
     assert_eq!(s.menu_state("docx.sync-scrolling"), Some((true, true)));
     assert_eq!(s.menu_state("docx.reset-window-position"), Some((true, false)));
 
@@ -22458,19 +22460,19 @@ fn review017_view_side_by_side_and_sync_scrolling() {
     s.settle();
 
     // 7. Deactivate View Side by Side via menu
-    s.menu("docx.view-side-by-side");
+    s.menu("view.side-by-side");
     s.settle();
 
     assert!(!s.with(|e, _| e.side_by_side));
     assert!(!s.with(|e, _| e.sync_scrolling));
     assert!(!s.with(|_, app| ed1.read(app).side_by_side));
     assert!(!s.with(|_, app| ed1.read(app).sync_scrolling));
-    assert_eq!(s.menu_state("docx.view-side-by-side"), Some((true, false)));
+    assert_eq!(s.menu_state("view.side-by-side"), Some((true, false)));
     assert_eq!(s.menu_state("docx.sync-scrolling"), Some((false, false)));
     assert_eq!(s.menu_state("docx.reset-window-position"), Some((false, false)));
 
     // 8. Re-enable side-by-side, then close peer window -> cleans up side-by-side on window 0
-    s.menu("docx.view-side-by-side");
+    s.menu("view.side-by-side");
     s.settle();
     assert!(s.with(|e, _| e.side_by_side));
 
@@ -23121,6 +23123,81 @@ fn para019_drop_cap() {
     assert_eq!(s.with(|e, _| e.caret_drop_cap()), None);
 }
 
+/// #191: the editor's drop cap is Word's form: the capital is a paragraph of its own (`w:framePr w:dropCap`), the rest of the paragraph the one after it.
+/// Making it, saving and reading it again keep that form and the look; one undo takes it back; taking it away puts one paragraph back.
+fn drop_cap_word_form() {
+    use ibis_doc_model::DropCapLocation;
+    let mut s = Scenario::open(REPORT);
+    let (id0, count, text0) = s.with(|e, _| {
+        let b = body(e.flow().unwrap());
+        (b[0].id, b.len(), b[0].text())
+    });
+    assert!(text0.chars().count() > 3, "the first paragraph has text");
+    let first: String = text0.chars().take(1).collect();
+    let rest: String = text0.chars().skip(1).collect();
+    s.click_text(FlowPos::new(id0, 2));
+    s.menu("docx.drop-cap.drop");
+    // Two paragraphs: the capital with the frame, then the rest; the caret is on the same character (offset 2 of the paragraph is 1 of the rest).
+    let (frame_text, body_text, frame_dc, n) = s.with(|e, _| {
+        let b = body(e.flow().unwrap());
+        (b[0].text(), b[1].text(), b[0].drop_cap, b.len())
+    });
+    assert_eq!(n, count + 1);
+    assert_eq!(frame_text, first);
+    assert_eq!(body_text, rest);
+    let dc = frame_dc.expect("the capital's paragraph has the frame");
+    assert_eq!((dc.location, dc.lines), (DropCapLocation::Drop, 3));
+    assert!(s.with(|e, _| body(e.flow().unwrap())[1].drop_cap.is_none()));
+    let caret = s.with(|e, _| e.text_selection().map(|(_, c)| c.offset));
+    assert_eq!(caret, Some(1));
+    // The capital is drawn `lines` lines high, and the text goes round it.
+    let pages = s.with(|e, _| super::flow_layout::pages(e.flow().unwrap(), &e.resources));
+    let line_h = pages.pages[0].items.iter().find_map(|i| match i { super::flow_layout::Item::Line { para, h, .. } if *para == id0 && *h > 0.0 => Some(*h), _ => None }).expect("a line");
+    let cap = pages.pages[0].items.iter().find_map(|i| match i { super::flow_layout::Item::Text { text, size, .. } if text.as_ref() == first => Some(*size), _ => None }).expect("the capital is drawn");
+    // The frame's line is 3 of Word's `P_dc`: the body's natural line off the grid, the mean of it and the grid's line on one (this body is on the grid: its lines are `line_h`, 60 pt, and
+    // its natural line 46.85 pt, so 53.42 pt).
+    let frame_line = s.with(|e, _| match body(e.flow().unwrap())[0].direct.line { Some(LineHeight::Exact(l)) => l as f32 / 12700.0, other => panic!("the frame's line {other:?}") });
+    assert!(frame_line > 3.0 * 40.0 && frame_line < 3.0 * line_h, "the frame's line {frame_line} pt of 3 x {line_h} pt");
+    assert!((frame_line / 3.0 - (46.85 + line_h) / 2.0).abs() < 0.2, "P_dc {} pt", frame_line / 3.0);
+    // The capital's size is Word's (`drop_cap_size_and_raise`: its ink from the top of the first line's em square to the foot of the third line), not a fraction of the line: here 140.5 pt
+    // in the 160.27 pt, and it is raised by the half-points that put its lowest point on that foot.
+    assert!(cap > frame_line * 0.78 && cap < frame_line, "capital {cap} pt, line {frame_line} pt");
+    let raise = s.with(|e, _| body(e.flow().unwrap())[0].runs[0].format.raise);
+    assert!(raise.is_some_and(|r| r != 0), "the capital is raised: {raise:?}");
+    // More lines: still two paragraphs, one frame.
+    s.menu("docx.drop-cap.lines.4");
+    assert_eq!(s.with(|e, _| body(e.flow().unwrap()).len()), count + 1);
+    assert_eq!(s.with(|e, _| e.caret_drop_cap()).map(|d| d.lines), Some(4));
+    s.key("cmd-z");
+    assert_eq!(s.with(|e, _| e.caret_drop_cap()).map(|d| d.lines), Some(3));
+    // Save and read again: the same two paragraphs.
+    s.save_as("test-drop-cap-word-form.docx");
+    let saved = s.reopen();
+    let b = body(flow(&saved));
+    assert_eq!(b.len(), count + 1);
+    assert_eq!(b[0].text(), first);
+    assert_eq!(b[0].drop_cap.map(|d| (d.location, d.lines)), Some((DropCapLocation::Drop, 3)));
+    assert_eq!(b[1].text(), rest);
+    // One undo takes the whole drop cap back.
+    s.key("cmd-z");
+    let (n, t, dc) = s.with(|e, _| {
+        let b = body(e.flow().unwrap());
+        (b.len(), b[0].text(), b[0].drop_cap)
+    });
+    assert_eq!((n, t, dc), (count, text0.clone(), None));
+    s.key("cmd-shift-z");
+    assert_eq!(s.with(|e, _| body(e.flow().unwrap()).len()), count + 1);
+    // Taking it away makes one paragraph again, with the caret on the same character.
+    s.menu("docx.drop-cap.none");
+    let (n, t, dc) = s.with(|e, _| {
+        let b = body(e.flow().unwrap());
+        (b.len(), b[0].text(), b[0].drop_cap)
+    });
+    assert_eq!((n, t, dc), (count, text0, None));
+    let caret = s.with(|e, _| e.text_selection().map(|(_, c)| c.offset));
+    assert_eq!(caret, Some(2));
+}
+
 /// Shape / Text Box Text Vertical Alignment (テキストの配置):
 /// Format contextual menu: Top, Middle, Bottom (wps:bodyPr/@anchor="t"|"ctr"|"b")
 fn shape001_align_text() {
@@ -23280,8 +23357,8 @@ fn design003_set_as_default() {
     assert_eq!(status.as_ref(), "現在のスタイルとテーマを新しい文書の既定として設定しました。");
 
     // 5. Verify settings were persisted
-    assert_eq!(crate::shell::settings::get("docx.default.theme_fonts").as_deref(), Some("calibri"));
-    assert_eq!(crate::shell::settings::get("docx.default.paragraph_spacing").as_deref(), Some("tight"));
+    assert_eq!(crate::shell::settings::get("docx.default.theme-fonts").as_deref(), Some("calibri"));
+    assert_eq!(crate::shell::settings::get("docx.default.paragraph-spacing").as_deref(), Some("tight"));
 
     // Drop s to release the ONE_AT_A_TIME scenario lock before opening another Scenario
     drop(s);
@@ -23374,7 +23451,7 @@ fn design005_theme_effects() {
 
     // 7. Test Set as default
     s.menu("docx.design.set-as-default");
-    assert_eq!(crate::shell::settings::get("docx.default.theme_effects").as_deref(), Some("Aspect"));
+    assert_eq!(crate::shell::settings::get("docx.default.theme-effects").as_deref(), Some("Aspect"));
 
     // Drop s to release the ONE_AT_A_TIME scenario lock before opening another Scenario
     drop(s);
@@ -23472,7 +23549,7 @@ fn merge020_check_errors() {
     assert_eq!(s.with(|e, _| e.status.clone()).unwrap().as_ref(), "宛先リストが読み込まれていません。");
 
     // 2. Open merge panel and load recipients
-    s.menu("docx.merge");
+    s.menu("docx.mail-merge");
     s.update(|e, window, cx| {
         let input = e.doc_state().unwrap().merge.as_ref().unwrap().text.clone();
         input.update(cx, |a, cx| {
@@ -23724,7 +23801,7 @@ fn review016_combine_documents() {
             ],
             ..Default::default()
         };
-        e.run_flow(vec![FlowCommand::ReplaceBlocks { container: ibis_doc_model::Container::Body, index: 0, remove: 0, blocks: vec![Block::Paragraph(para)] }], cx);
+        e.run_flow(vec![FlowCommand::ReplaceBlockRange { container: ibis_doc_model::Container::Body, index: 0, remove: 0, blocks: vec![Block::Paragraph(para)] }], cx);
     });
 
     let doc1_path = s1.save_as(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/combine-alice.docx").to_str().unwrap());
@@ -23753,7 +23830,7 @@ fn review016_combine_documents() {
             ],
             ..Default::default()
         };
-        e.run_flow(vec![FlowCommand::ReplaceBlocks { container: ibis_doc_model::Container::Body, index: 0, remove: 0, blocks: vec![Block::Paragraph(para)] }], cx);
+        e.run_flow(vec![FlowCommand::ReplaceBlockRange { container: ibis_doc_model::Container::Body, index: 0, remove: 0, blocks: vec![Block::Paragraph(para)] }], cx);
     });
 
     // 3. Combine document 1 (Alice's file) into document 2 (Bob's document)
@@ -23844,7 +23921,7 @@ fn insert_objects_suite() {
     s.menu("edit.undo");
 
     // 4. 署名欄挿入 (docx.signature-line)
-    s.menu("docx.signature-line");
+    s.menu("insert.signature-line");
     let has_sig = s.with(|e, _| {
         let doc = e.flow().unwrap();
         let p = para(doc, id);
@@ -25579,7 +25656,7 @@ fn file011_compatibility_mode_and_convert() {
     s.settle();
     assert_eq!(s.with(|e, _| e.docx_compatibility_mode_name()), "Word 2010");
 
-    s.menu("docx.compatibility-check");
+    s.menu("review.compatibility-check");
     s.settle();
     assert!(s.with(|e, _| e.doc_state().and_then(|st| st.compatibility_panel.as_ref()).is_some()));
 
@@ -26222,7 +26299,7 @@ fn float016_group_and_ungroup_shapes() {
                     fill: Some(Rgb(0x4472c4)),
                     line: Some((Rgb(0x1f4e79), 12_700)),
                 }),
-                Command::Flow(FlowCommand::PlaceShapeOnPage {
+                Command::Flow(FlowCommand::SetShapePagePosition {
                     at: at0,
                     size: EmuSize::new(914_400, 457_200),
                     x: 457_200,
@@ -26235,7 +26312,7 @@ fn float016_group_and_ungroup_shapes() {
                     fill: Some(Rgb(0xed7d31)),
                     line: Some((Rgb(0xc55a11), 12_700)),
                 }),
-                Command::Flow(FlowCommand::PlaceShapeOnPage {
+                Command::Flow(FlowCommand::SetShapePagePosition {
                     at: at1,
                     size: EmuSize::new(685_800, 685_800),
                     x: 1_600_200,
@@ -26550,8 +26627,8 @@ fn audit_core_editing_formatting_layout_and_review() {
     assert!(!para(&s.document(), p_id).runs.iter().any(|r| r.style.bold), "direct formatting cleared");
 
     // 3. DOCX-PARA-014 (KeepNext) & DOCX-PARA-015 (KeepLines)
-    s.menu("docx.para.keep-next");
-    s.menu("docx.para.keep-lines");
+    s.menu("docx.paragraph.keep-next");
+    s.menu("docx.paragraph.keep-lines");
     let p_after = para(&s.document(), p_id).clone();
     assert_eq!(p_after.direct.keep_next, Some(true), "KeepNext enabled");
     assert_eq!(p_after.direct.keep_lines, Some(true), "KeepLines enabled");

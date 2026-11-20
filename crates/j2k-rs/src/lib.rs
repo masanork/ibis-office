@@ -1,4 +1,6 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/246)
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Pure-Rust JPEG 2000 (ISO/IEC 15444-1) encoder and decoder for codestreams
 //! (`.j2k`/`.j2c`) and JP2 containers (`.jp2`).
 

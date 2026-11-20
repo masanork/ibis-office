@@ -55,11 +55,11 @@ fn check_retention(xlsx: bool) {
         let mut doc = Document::new(opened.presentation.clone());
         let command = if xlsx {
             let slide = doc.presentation().slides.iter().find(|s| s.shapes.iter().any(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
-            Command::Sheet(SheetCommand::SetCells { slide: slide.id, edits: vec![CellEdit { row: 40, column: 20, input: CellInput::Value(CellValue::Number(42.0)) }] })
+            Command::Sheet(SheetCommand::SetCells { sheet: slide.id, edits: vec![CellEdit { row: 40, column: 20, input: CellInput::Value(CellValue::Number(42.0)) }] })
         } else {
             let slide = &doc.presentation().slides[0];
             let shape = slide.shapes.iter().find(|s| s.text_body().is_some_and(|b| !b.text().is_empty())).unwrap();
-            Command::EditText { slide: slide.id, shape: shape.id, at: 0, remove: 1, insert: "Z".into() }
+            Command::ReplaceTextRange { slide: slide.id, shape: shape.id, at: 0, remove: 1, insert: "Z".into() }
         };
         doc.execute(vec![command]).unwrap();
         let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
@@ -115,7 +115,7 @@ fn changed_radar_style_pptx_rejected_and_xlsx_saved() {
     let slide_id = doc.presentation().slides.iter().find(|s| s.shapes.iter().any(|sh| sh.id == shape_id)).unwrap().id;
     let mut modified = initial_chart.clone();
     modified.groups[0].kind = ChartType::Radar { style: Some(RadarStyle::Marker) };
-    doc.execute(vec![Command::SetKind { slide: slide_id, shape: shape_id, kind: Box::new(ShapeKind::Chart(Box::new(modified.clone()))) }]).unwrap();
+    doc.execute(vec![Command::SetShapeKind { slide: slide_id, shape: shape_id, kind: Box::new(ShapeKind::Chart(Box::new(modified.clone()))) }]).unwrap();
     assert_eq!(radar_group(doc.presentation()).kind, ChartType::Radar { style: Some(RadarStyle::Marker) });
     let saved_marker = opened_xlsx.source.save(doc.presentation(), SaveOptions::default()).unwrap();
     let pkg_marker = Package::open(saved_marker.clone()).unwrap();

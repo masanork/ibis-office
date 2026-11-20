@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/235)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Native XPS / OpenXPS (ECMA-388) container parser and [`ibis_pdf::scene::PageScene`] builder.
 
@@ -758,18 +758,22 @@ fn render_glyphs(
         rgba,
     });
 
+    // Each character has its own box along the run (a run is one drawing command, so its characters' places are estimated: `estimated_advance_em`).
+    let mut x = ox;
     for ch in text.chars() {
+        let advance = font_size * ibis_pdf::scene::estimated_advance_em(ch);
         chars.push(CharBox {
             ch,
             rect_pt: PdfRect {
-                x0: ox,
+                x0: x,
                 y0: oy - font_size,
-                x1: ox + font_size * 0.6,
+                x1: x + advance,
                 y1: oy,
             },
             vertical: false,
             stream_op_index: display_list.len(),
         });
+        x += advance;
     }
 }
 
@@ -816,5 +820,8 @@ mod tests {
         let scene = xps.interpret_page_scene(0).expect("render synthetic XPS page");
         assert_eq!(scene.display_list.len(), 2);
         assert_eq!(scene.text_index.plain_text(), "XPSテスト");
+        // Each character of a run has a box of its own, going right along the run.
+        let xs: Vec<f32> = scene.text_index.chars.iter().map(|c| c.rect_pt.x0).collect();
+        assert!(xs.windows(2).all(|w| w[1] > w[0]), "{xs:?}");
     }
 }

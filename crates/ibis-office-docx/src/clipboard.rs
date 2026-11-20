@@ -265,7 +265,7 @@ impl SlideEditor {
         }
         for p in &mut f.paragraphs { p.resolve(&imported_styles); }
         let caret = FlowPos::new(f.paragraphs.last().unwrap().id, f.paragraphs.last().unwrap().len());
-        commands.push(FlowCommand::ReplaceBlocks { container: Container::Body, index, remove: 0,
+        commands.push(FlowCommand::ReplaceBlockRange { container: Container::Body, index, remove: 0,
             blocks: f.paragraphs.into_iter().map(Block::Paragraph).collect() });
         if self.run_flow(commands, cx) {
             self.set_caret(caret, false, cx);
@@ -416,7 +416,7 @@ impl SlideEditor {
         } else {
             (index + 1, 0)
         };
-        commands.push(FlowCommand::ReplaceBlocks {
+        commands.push(FlowCommand::ReplaceBlockRange {
             container: Container::Body,
             index: insert_at,
             remove: remove_count,
@@ -492,7 +492,7 @@ pub(super) fn resolved_format(r: &FlowRun) -> RunFormat {
         bold: Some(s.bold), italic: Some(s.italic), underline: Some(s.underline), underline_style: Some(s.underline_style),
         underline_color: Some(s.underline_color), strike: Some(s.strike), double_strike: Some(s.double_strike), caps: Some(s.caps), small_caps: Some(s.small_caps),
         color: Some(s.color), theme_color: r.format.theme_color.clone(), highlight: Some(s.highlight), shd_pattern: None, effects: None, border: Some(s.border.clone()),
-        position: Some(s.position), spacing: Some(s.spacing), scale: Some(s.scale), fit_text: Some(s.fit_text), hidden: r.format.hidden, kern: Some(s.kern.unwrap_or(0)), emphasis: Some(s.emphasis), combine: s.combine.map(Some), tate_chu_yoko: Some(s.tate_chu_yoko), tate_chu_yoko_fit: Some(s.tate_chu_yoko_fit),
+        position: Some(s.position), raise: Some(s.raise), spacing: Some(s.spacing), scale: Some(s.scale), fit_text: Some(s.fit_text), hidden: r.format.hidden, kern: Some(s.kern.unwrap_or(0)), emphasis: Some(s.emphasis), combine: s.combine.map(Some), tate_chu_yoko: Some(s.tate_chu_yoko), tate_chu_yoko_fit: Some(s.tate_chu_yoko_fit),
         outline: Some(s.outline), shadow: Some(s.shadow), emboss: Some(s.emboss), imprint: Some(s.imprint), no_proof: r.format.no_proof,
         lang: r.format.lang.clone(), lang_east_asia: r.format.lang_east_asia.clone(), lang_bidi: r.format.lang_bidi.clone(),
         ligatures: Some(s.ligatures), num_form: Some(s.num_form), num_spacing: Some(s.num_spacing), contextual_alternates: Some(s.contextual_alternates), enclosure_sizes: s.enclosure_sizes }

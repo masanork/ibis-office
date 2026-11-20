@@ -138,6 +138,8 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     if has_svg && package.content_type("dummy.svg")?.is_none() {
         super::pptx_shapes::add_default_content_type(package, "svg", "image/svg+xml")?;
     }
+    // What older versions wrote and Excel cannot open or reads differently, rewritten as it is written now, edited or not (#258).
+    repair_legacy_formulas(package, map, baseline)?;
     if super::pptx::same_content(baseline, current) && baseline.workbook == current.workbook && conditional_source_ids(baseline)==conditional_source_ids(current) {
         return Ok(());
     }
@@ -210,6 +212,11 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         let version = compatibility(current).filter(|&v| matches!(v, 1 | 2)).ok_or_else(|| unsupported("計算の互換バージョン"))?;
         write_compatibility_version(package, &map.workbook, version)?;
     }
+    if baseline.cmyk != current.cmyk {
+        let doc = package.xml_mut(&map.workbook)?;
+        let root = doc.root_element().ok_or_else(|| Error::new("ブックの XML が空です"))?;
+        super::pptx_cmyk::write_cmyk_in_workbook(doc, root, &current.cmyk)?;
+    }
     if baseline.ibis_extensions != current.ibis_extensions {
         write_ibis_features(package, &map.workbook, current.ibis_extensions)?;
     }
@@ -248,7 +255,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     if queries(baseline) != queries(current) {
         write_queries(package, &map.workbook, &queries(current))?;
     }
-    let without_names = |p: &Presentation| p.workbook.as_deref().map(|w| ibis_doc_model::Workbook { names: Vec::new(), compatibility_version: None, custom_cell_styles: Vec::new(), calc_mode: ibis_doc_model::CalcMode::Auto, calc_on_save: true, full_precision: true, iterate: false, max_iterations: 100, max_change: ibis_doc_model::SheetFloat(0.001), protection: None, properties: Default::default(), theme_colors: Vec::new(), theme_fonts: None, custom_views: Vec::new(), window_hidden: false, external_books: Vec::new(), queries: Vec::new(), query_parameters: Vec::new(), ..w.clone() });
+    let without_names = |p: &Presentation| p.workbook.as_deref().map(|w| ibis_doc_model::Workbook { names: Vec::new(), compatibility_version: None, custom_cell_styles: Vec::new(), calc_mode: ibis_doc_model::CalcMode::Auto, calc_on_save: true, full_precision: true, iterate: false, max_iterations: 100, max_change: ibis_doc_model::SheetFloat(0.001), protection: None, properties: Default::default(), theme_colors: Vec::new(), theme_fonts: None, custom_views: Vec::new(), window_hidden: false, active_tab: 0, selected_tabs: Vec::new(), external_books: Vec::new(), queries: Vec::new(), query_parameters: Vec::new(), ..w.clone() });
     if without_names(baseline) != without_names(current) {
         return Err(unsupported("ブック（シート名・名前の定義など）の変更"));
     }
@@ -311,6 +318,9 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     externals::write_external_links(package, &map.workbook, &map.external_parts, baseline, current)?;
     if compatibility_changed || stale_formulas(baseline, current) {
         full_calculation_on_load(package, &map.workbook)?;
+    }
+    if let Some(wb) = current.workbook.as_deref() {
+        write_active_tab(package, map, wb.active_tab, &wb.selected_tabs)?;
     }
     if (current.media.iter().any(|m| m.format == ibis_doc_model::MediaFormat::Svg)
         || package.names().any(|n| n.ends_with(".svg")))
@@ -789,8 +799,8 @@ fn write_queries(package: &mut Package, workbook: &str, (queries, parameters): &
     Ok(())
 }
 
-fn write_workbook_window_hidden(package: &mut Package, workbook: &str, hidden: bool) -> Result<(), Error> {
-    let doc = package.xml_mut(workbook)?;
+/// The first `workbookView` (and its `bookViews`) made when the workbook has none, in the schema's place.
+fn workbook_view_of(doc: &mut XmlDocument) -> Result<NodeId, Error> {
     let root = doc.root_element().ok_or_else(|| Error::new("ブックの XML が空です"))?;
     let prefix = prefix_of(doc, root);
     let views = match doc.child(root, "bookViews") {
@@ -809,14 +819,128 @@ fn write_workbook_window_hidden(package: &mut Package, workbook: &str, hidden: b
             v
         }
     };
-    let view = match doc.child(views, "workbookView") {
+    Ok(match doc.child(views, "workbookView") {
         Some(w) => w,
         None => doc.append_element(views, &format!("{prefix}workbookView")),
-    };
+    })
+}
+
+fn write_workbook_window_hidden(package: &mut Package, workbook: &str, hidden: bool) -> Result<(), Error> {
+    let doc = package.xml_mut(workbook)?;
+    let view = workbook_view_of(doc)?;
     if hidden {
         doc.set_attr(view, "visibility", "hidden");
     } else {
         doc.remove_attr(view, "visibility");
+    }
+    Ok(())
+}
+
+/// The sheet shown when the file is left: `workbookView/@activeTab` (left out for the first sheet, as Excel does), and `tabSelected` on the
+/// sheets selected: the present sheet alone, or the group the editor has (`selected_tabs`: sheets selected together, a second sheet with the
+/// attribute is what makes a group). Written only when the file says something else.
+fn write_active_tab(package: &mut Package, map: &SourceMap, active: usize, group: &[usize]) -> Result<(), Error> {
+    let said = {
+        let doc = package.xml(&map.workbook)?;
+        doc.root_element()
+            .and_then(|root| doc.child(root, "bookViews"))
+            .and_then(|views| doc.child(views, "workbookView"))
+            .and_then(|v| doc.attr(v, "activeTab").and_then(|t| t.trim().parse::<usize>().ok()))
+            .unwrap_or(0)
+    };
+    let selected_of = |package: &Package, part: &str| package.read(part).map(|b| b.windows(11).any(|w| w == b"tabSelected")).unwrap_or(false);
+    // With no group the old rule: a file the editor left on its sheet is not touched.
+    let wanted = |i: usize| if group.len() > 1 { group.contains(&i) } else { i == active };
+    // A group is written, or a group the file had is ended (the sheets that were selected with the present one are no longer): the sheets' marks follow.
+    let file_group = map.sheet_parts.iter().flatten().filter(|part| selected_of(package, part)).count() > 1;
+    let group_changed = (group.len() > 1 || file_group)
+        && map.sheet_parts.iter().enumerate().any(|(i, part)| part.as_ref().is_some_and(|part| selected_of(package, part) != wanted(i)));
+    if said == active && !group_changed {
+        return Ok(());
+    }
+    if said != active {
+        let doc = package.xml_mut(&map.workbook)?;
+        let view = workbook_view_of(doc)?;
+        if active == 0 {
+            doc.remove_attr(view, "activeTab");
+        } else {
+            doc.set_attr(view, "activeTab", &active.to_string());
+        }
+    }
+    for (i, part) in map.sheet_parts.iter().enumerate() {
+        let Some(part) = part else { continue };
+        let selected = selected_of(package, part);
+        if !selected && !wanted(i) {
+            continue;
+        }
+        if selected == wanted(i) {
+            continue;
+        }
+        let doc = package.xml_mut(part)?;
+        let root = doc.root_element().ok_or_else(|| Error::new("シートの XML が空です"))?;
+        let Some(view) = doc.child(root, "sheetViews").and_then(|v| doc.child(v, "sheetView")) else { continue };
+        if wanted(i) {
+            doc.set_attr(view, "tabSelected", "1");
+        } else {
+            doc.remove_attr(view, "tabSelected");
+        }
+    }
+    Ok(())
+}
+
+/// The formulas a file already has, as the save writes them now (GitHub issue #258): a formula with a trim operator's characters
+/// (`.:.`, which Excel cannot open) is written as `_xlfn._TRO_*` calls (as `#NAME?` where Excel refuses the form), and a formula cell that
+/// holds a blocked spill as `t="str"` `#SPILL!` is written as Excel writes it (`t="e"` `#VALUE!`, `vm`, the rich value). The parts that need
+/// nothing are not touched.
+fn repair_legacy_formulas(package: &mut Package, map: &SourceMap, baseline: &Presentation) -> Result<(), Error> {
+    let parts: Vec<String> = map.sheet_parts.iter().flatten().cloned().collect();
+    let mut spill_cells: Vec<(String, NodeId)> = Vec::new();
+    let mut operator_formulas: Vec<(String, NodeId, String)> = Vec::new();
+    for part in &parts {
+        let Ok(doc) = package.xml(part) else { continue };
+        let Some(root) = doc.root_element() else { continue };
+        for n in doc.descendants(root) {
+            if doc.local_name(n) == "f" && doc.namespace(n) == Some(MAIN_NS) {
+                let text = doc.text(n);
+                if ibis_calc::formula::has_trim_operator(&text) {
+                    operator_formulas.push((part.clone(), n, to_file(&text)));
+                }
+            } else if doc.local_name(n) == "c" && doc.namespace(n) == Some(MAIN_NS) && doc.attr(n, "t") == Some("str") {
+                let blocked = doc.child(n, "v").is_some_and(|v| doc.text(v) == "#SPILL!");
+                if blocked && doc.child(n, "f").is_some_and(|f| doc.attr(f, "t") == Some("array")) {
+                    spill_cells.push((part.clone(), n));
+                }
+            }
+        }
+    }
+    for (part, node, text) in operator_formulas {
+        let doc = package.xml_mut(&part)?;
+        doc.set_text(node, &text);
+        if text == "#NAME?" {
+            for a in ["t", "ref", "si", "aca", "ca"] {
+                doc.remove_attr(node, a);
+            }
+        }
+    }
+    if spill_cells.is_empty() {
+        return Ok(());
+    }
+    let vm = {
+        let mut writer = Writer { package, map, baseline, styles: None, strings: None, calc: CalcChanges::default(), multi_names: HashSet::new(), books: Vec::new() };
+        writer.rich_spill_metadata().unwrap_or(None)
+    };
+    let Some(vm) = vm else { return Ok(()) };
+    for (part, cell) in spill_cells {
+        let doc = package.xml_mut(&part)?;
+        doc.set_attr(cell, "t", "e");
+        doc.set_attr(cell, "vm", &vm);
+        if let Some(v) = doc.child(cell, "v") {
+            doc.set_text(v, "#VALUE!");
+        }
+        if let Some(f) = doc.child(cell, "f") {
+            doc.set_attr(f, "aca", "1");
+            doc.set_attr(f, "ca", "1");
+        }
     }
     Ok(())
 }
@@ -897,6 +1021,8 @@ impl Writer<'_> {
             printed: Default::default(),
             column_chars: Default::default(),
             printed_text_extra: Default::default(),
+            row_ids: Default::default(),
+            column_ids: Default::default(),
             column_fonts: Default::default(),
             row_fonts: Default::default(),
             written_fonts: Default::default(),
@@ -1190,6 +1316,10 @@ impl Writer<'_> {
             }
         }
         let mut string_delta: i64 = 0;
+        // A formula's #SPILL! (a blocked spill): Excel's rich value (`vm`), not a string (GitHub issue #258).
+        let spill_vm = if changes.iter().any(|(_, _, _, a)| a.is_some_and(|c| c.formula.is_some() && c.value == CellValue::Error(ibis_doc_model::CellError::Spill))) {
+            self.rich_spill_metadata().unwrap_or(None)
+        } else { None };
         let doc = self.package.xml_mut(part)?;
         let mut sheet = SheetXml::new(doc)?;
         for &(row, column, before, after) in &changes {
@@ -1232,7 +1362,13 @@ impl Writer<'_> {
                             else { sheet.doc.remove_attr(c, "cm"); }
                         }
                     }
-                    sheet.write_value(c, cell, string_ids.get(&(row, column)).copied());
+                    let vm = spill_vm.as_deref().filter(|_| cell.formula.is_some() && cell.value == CellValue::Error(ibis_doc_model::CellError::Spill));
+                    sheet.write_value(c, cell, string_ids.get(&(row, column)).copied(), vm);
+                    if vm.is_some() && let Some(f) = sheet.formula(c) && sheet.doc.attr(f, "t") == Some("array") {
+                        // As Excel writes a formula whose spill is blocked.
+                        sheet.doc.set_attr(f, "aca", "1");
+                        sheet.doc.set_attr(f, "ca", "1");
+                    }
                     if new.phonetic_shown.contains(&(row, column)) {
                         sheet.doc.set_attr(c, "ph", "1");
                     }
@@ -1431,6 +1567,72 @@ impl Writer<'_> {
         let target = part.strip_prefix(&format!("{dir}/")).unwrap_or(&part).to_string();
         self.package.add_relationship(&workbook, REL, &target, false)?;
         Ok(vec!["1".into()])
+    }
+
+    /// The value metadata index (`c/@vm`) of a #SPILL! error as Excel stores one: `#VALUE!` in the cell, the true kind in a rich value
+    /// of the `_error` structure (`errorType` 8; `subType` 3, colOffset 0, rwOffset 0 as Excel's own file has it, GitHub issue #258).
+    /// `None` where the workbook's metadata is of a shape this does not know (the error is then written as a string).
+    fn rich_spill_metadata(&mut self) -> Result<Option<String>, Error> {
+        const REL_META: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata";
+        const REL_VALUE: &str = "http://schemas.microsoft.com/office/2017/06/relationships/rdRichValue";
+        const REL_STRUCTURE: &str = "http://schemas.microsoft.com/office/2017/06/relationships/rdRichValueStructure";
+        const REL_TYPES: &str = "http://schemas.microsoft.com/office/2017/06/relationships/rdRichValueTypes";
+        const RICH_NS: &str = "http://schemas.microsoft.com/office/spreadsheetml/2017/richdata";
+        let workbook = self.map.workbook.clone();
+        let dir = workbook.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+        let relations = self.package.relationships(&workbook)?;
+        let Some(meta_rel) = relations.iter().find(|r| r.kind == REL_META && !r.external) else { return Ok(None) };
+        let meta_part = ibis_ooxml::package::resolve(&dir, &meta_rel.target);
+        let has_rich_parts = relations.iter().any(|r| r.kind == REL_VALUE || r.kind == REL_STRUCTURE || r.kind == REL_TYPES);
+        let text = String::from_utf8(self.package.xml(&meta_part)?.to_bytes()).map_err(|e| Error::new(format!("metadata XML: {e}")))?;
+        if text.contains("XLRICHVALUE") {
+            // Rich values already there: the block that is a #SPILL!, if there is one.
+            let part_of = |kind: &str| relations.iter().find(|r| r.kind == kind && !r.external).map(|r| ibis_ooxml::package::resolve(&dir, &r.target));
+            let (Some(values), Some(structures)) = (part_of(REL_VALUE), part_of(REL_STRUCTURE)) else { return Ok(None) };
+            let values = String::from_utf8(self.package.xml(&values)?.to_bytes()).map_err(|e| Error::new(format!("rich value XML: {e}")))?;
+            let structures = String::from_utf8(self.package.xml(&structures)?.to_bytes()).map_err(|e| Error::new(format!("rich value XML: {e}")))?;
+            let (Ok(m), Ok(v), Ok(s)) = (roxmltree::Document::parse(&text), roxmltree::Document::parse(&values), roxmltree::Document::parse(&structures)) else { return Ok(None) };
+            let errors = crate::xlsx::rich_value_errors(m.root_element(), v.root_element(), s.root_element());
+            return Ok(errors.iter().filter(|(_, e)| **e == ibis_doc_model::CellError::Spill).map(|(i, _)| *i).min().map(|i| i.to_string()));
+        }
+        // No rich data in the workbook: add Excel's parts. (Other rich data without XLRICHVALUE, or other value metadata, is not touched.)
+        if has_rich_parts || text.contains("<valueMetadata") || text.rfind("<extLst").zip(text.rfind("</cellMetadata>")).is_some_and(|(a, b)| a > b) { return Ok(None); }
+        let roxml = roxmltree::Document::parse(&text).map_err(|e| Error::new(format!("metadata XML: {e}")))?;
+        let root = roxml.root_element();
+        if root.tag_name().namespace() != Some(MAIN_NS) || root.tag_name().name() != "metadata" || root.lookup_prefix(MAIN_NS).is_some_and(|p| !p.is_empty()) { return Ok(None); }
+        let Some(types) = root.children().find(|n| n.has_tag_name((MAIN_NS, "metadataTypes"))) else { return Ok(None) };
+        let count = types.children().filter(|n| n.has_tag_name((MAIN_NS, "metadataType"))).count();
+        if types.attribute("count").and_then(|c| c.parse::<usize>().ok()) != Some(count) { return Ok(None); }
+        let (old_types, old_types_open) = (format!("<metadataTypes count=\"{count}\">"), "</metadataTypes>");
+        if text.matches(&old_types).count() != 1 || text.matches(old_types_open).count() != 1 || text.matches("<cellMetadata").count() != 1 || text.matches("</metadata>").count() != 1 { return Ok(None); }
+        let record = concat!(r#"<metadataType name="XLRICHVALUE" minSupportedVersion="120000" copy="1" pasteAll="1" pasteValues="1" merge="1" splitFirst="1" rowColShift="1" clearFormats="1" clearComments="1" assign="1" coerce="1"/>"#);
+        let future = concat!(r#"<futureMetadata name="XLRICHVALUE" count="1"><bk><extLst><ext uri="{3e2802c4-a4d2-4d8b-9148-e3be6c30e623}"><xlrd:rvb i="0"/></ext></extLst></bk></futureMetadata>"#);
+        let mut edited = text
+            .replacen(&old_types, &format!("<metadataTypes count=\"{}\">", count + 1), 1)
+            .replacen(old_types_open, &format!("{record}</metadataTypes>"), 1)
+            .replacen("<cellMetadata", &format!("{future}<cellMetadata"), 1)
+            .replacen("</metadata>", &format!("<valueMetadata count=\"1\"><bk><rc t=\"{}\" v=\"0\"/></bk></valueMetadata></metadata>", count + 1), 1);
+        if !edited.contains("xmlns:xlrd=") {
+            edited = edited.replacen("<metadata ", &format!("<metadata xmlns:xlrd=\"{}\" ", "http://schemas.microsoft.com/office/spreadsheetml/2017/richdata"), 1);
+        }
+        let doc = ibis_ooxml::XmlDocument::parse(edited.as_bytes()).map_err(|e| Error::new(format!("metadata.xml: {e}")))?;
+        let rich_dir = format!("{}richData", if dir.is_empty() { String::new() } else { format!("{dir}/") });
+        let head = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
+        let parts: [(&str, String, &str, &str); 3] = [
+            ("rdrichvalue.xml", format!(r#"{head}<rvData xmlns="{RICH_NS}" count="1"><rv s="0"><v>0</v><v>8</v><v>0</v><v>3</v></rv></rvData>"#), REL_VALUE, "application/vnd.ms-excel.rdrichvalue+xml"),
+            ("rdrichvaluestructure.xml", format!(r#"{head}<rvStructures xmlns="{RICH_NS}" count="1"><s t="_error"><k n="colOffset" t="i"/><k n="errorType" t="i"/><k n="rwOffset" t="i"/><k n="subType" t="i"/></s></rvStructures>"#), REL_STRUCTURE, "application/vnd.ms-excel.rdrichvaluestructure+xml"),
+            ("rdRichValueTypes.xml", format!(r#"{head}<rvTypesInfo xmlns="http://schemas.microsoft.com/office/spreadsheetml/2017/richdata2" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="x" xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><global><keyFlags><key name="_Self"><flag name="ExcludeFromFile" value="1"/><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_DisplayString"><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_Flags"><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_Format"><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_SubLabel"><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_Attribution"><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_Icon"><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_Display"><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_CanonicalPropertyNames"><flag name="ExcludeFromCalcComparison" value="1"/></key><key name="_ClassificationId"><flag name="ExcludeFromCalcComparison" value="1"/></key></keyFlags></global></rvTypesInfo>"#), REL_TYPES, "application/vnd.ms-excel.rdrichvaluetypes+xml"),
+        ];
+        self.package.set_xml(&meta_part, doc);
+        for (name, xml, rel, content_type) in parts {
+            let part = format!("{rich_dir}/{name}");
+            let d = ibis_ooxml::XmlDocument::parse(xml.as_bytes()).map_err(|e| Error::new(format!("{name}: {e}")))?;
+            self.package.set_xml(&part, d);
+            self.package.set_override(&part, content_type)?;
+            let target = part.strip_prefix(&format!("{dir}/")).unwrap_or(&part).to_string();
+            self.package.add_relationship(&workbook, rel, &target, false)?;
+        }
+        Ok(Some("1".to_string()))
     }
 
     fn metadata_with_dynamic_record(&mut self, index: &str, default: &str) -> Result<String, Error> {
@@ -1637,6 +1839,48 @@ impl Writer<'_> {
     }
 }
 
+/// The cells of the row `earlier` that the later row `row` of the same number has no cell for, moved into `row` in column order; `earlier`
+/// is then taken out. The row's attributes are the later row's, and a column in both is the later row's cell (as Excel reads them).
+fn merge_row_into(doc: &mut XmlDocument, earlier: NodeId, row: NodeId) {
+    let column_of = |doc: &XmlDocument, c: NodeId, next: u32| doc.attr(c, "r").and_then(crate::xlsx::cell_ref).map_or(next, |(column, _)| column);
+    let mut have: Vec<(u32, NodeId)> = Vec::new();
+    let mut next = 0u32;
+    for c in doc.children_named(row, "c").collect::<Vec<_>>() {
+        let column = column_of(doc, c, next);
+        have.push((column, c));
+        next = column + 1;
+    }
+    let mut moved: Vec<(u32, NodeId)> = Vec::new();
+    let mut next = 0u32;
+    for c in doc.children_named(earlier, "c").collect::<Vec<_>>() {
+        let column = column_of(doc, c, next);
+        next = column + 1;
+        if !have.iter().any(|(h, _)| *h == column) {
+            moved.push((column, c));
+        }
+    }
+    for (column, c) in moved {
+        doc.detach(c);
+        // A cell without a reference gets one, so that it keeps its place among the later row's.
+        if doc.attr(c, "r").is_none() {
+            let r = doc.attr(row, "r").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+            doc.set_attr(c, "r", &cell_name(column, r.saturating_sub(1)));
+        }
+        match have.iter().filter(|(h, _)| *h > column).min_by_key(|(h, _)| *h) {
+            Some(&(_, before)) => doc.insert_before(before, c),
+            None => match have.iter().max_by_key(|(h, _)| *h) {
+                Some(&(_, last)) => doc.insert_after(last, c),
+                None => {
+                    let n = doc.children(row).len();
+                    doc.insert(row, n, c);
+                }
+            },
+        }
+        have.push((column, c));
+    }
+    doc.detach(earlier);
+}
+
 /// A sheet part's `sheetData`, with its rows and cells found by number.
 struct SheetXml<'d> {
     doc: &'d mut XmlDocument,
@@ -1654,8 +1898,14 @@ impl<'d> SheetXml<'d> {
         let prefix = prefix_of(doc, root);
         let mut rows = BTreeMap::new();
         let mut next = 0u32;
-        for row in doc.children_named(data, "row") {
+        let row_nodes: Vec<NodeId> = doc.children_named(data, "row").collect();
+        for row in row_nodes {
             let r = doc.attr(row, "r").and_then(|v| v.parse::<u32>().ok()).map_or(next, |v| v.saturating_sub(1));
+            // Two rows of one number are one row (Excel, K0043): the earlier one's cells the later has not are moved into the later, and the earlier is
+            // taken out, so that a saved sheet has each row once.
+            if let Some(&earlier) = rows.get(&r) {
+                merge_row_into(doc, earlier, row);
+            }
             rows.insert(r, row);
             next = r + 1;
         }
@@ -1747,7 +1997,11 @@ impl<'d> SheetXml<'d> {
     }
 
     /// Write a cell's value (`t`, `v`, `is`); its formula is already there.
-    fn write_value(&mut self, c: NodeId, cell: &SheetCell, string: Option<u32>) {
+    fn write_value(&mut self, c: NodeId, cell: &SheetCell, string: Option<u32>, vm: Option<&str>) {
+        // A rich error (`vm` on an error cell) that is replaced goes; a `vm` of another kind (a picture) stays.
+        if self.doc.attr(c, "t") == Some("e") && self.doc.attr(c, "vm").is_some() {
+            self.doc.remove_attr(c, "vm");
+        }
         let original_position = self.doc.elements(c).position(|n| matches!(self.doc.local_name(n), "v" | "is") && self.doc.namespace(n) == Some(MAIN_NS));
         for name in ["v", "is"] {
             while let Some(n) = self.doc.child(c, name) {
@@ -1762,12 +2016,17 @@ impl<'d> SheetXml<'d> {
             CellValue::Text(s) if has_formula => (Some("str"), Some(crate::xlsx::encode_xstring(s))),
             CellValue::Text(_) => (Some("s"), string.map(|i| i.to_string())),
             CellValue::Bool(b) => (Some("b"), Some(if *b { "1" } else { "0" }.to_string())),
+            // Blocked spill: #VALUE! whose true kind is in the cell's rich value.
+            CellValue::Error(ibis_doc_model::CellError::Spill) if has_formula && vm.is_some() => (Some("e"), Some("#VALUE!".to_string())),
             CellValue::Error(e) if !is_ecma376_error(*e) => (Some("str"), Some(e.as_str().to_string())),
             CellValue::Error(e) => (Some("e"), Some(e.as_str().to_string())),
         };
         match t {
             Some(t) => self.doc.set_attr(c, "t", t),
             None => self.doc.remove_attr(c, "t"),
+        }
+        if let Some(vm) = vm.filter(|_| t == Some("e") && v.as_deref() == Some("#VALUE!")) {
+            self.doc.set_attr(c, "vm", vm);
         }
         if let Some(v) = v {
             let after_formula = self.formula(c).and_then(|f| self.doc.elements(c).position(|n| n == f)).map_or(0, |i| i + 1);
@@ -2244,6 +2503,7 @@ fn write_sheet_shape_labels(
         }
     });
     let has_visual_change = new_slide.shapes.iter().any(|n| old_slide.shapes.iter().find(|o| o.id == n.id).is_some_and(|o| super::pptx_shapes::visuals_differ(o, n)));
+    let has_rotation_change = new_slide.shapes.iter().any(|n| old_slide.shapes.iter().find(|o| o.id == n.id).is_some_and(|o| o.rotation != n.rotation && !matches!(n.kind, ShapeKind::Chart(_))));
     let has_formula_change = old_slide.shape_formulas != new_slide.shape_formulas;
     let has_warp_change = old_slide.shapes.iter().zip(&new_slide.shapes).any(|(o, n)| {
         o.text_body().and_then(|b| b.warp.as_deref()) != n.text_body().and_then(|b| b.warp.as_deref())
@@ -2269,6 +2529,7 @@ fn write_sheet_shape_labels(
         && !has_warp_change
         && !has_picture_effects_change
         && !has_visual_change
+        && !has_rotation_change
     {
         return Ok(());
     }
@@ -2285,6 +2546,8 @@ fn write_sheet_shape_labels(
         picture_effects: Option<(Option<Rgb>, Option<(Rgb, Rgb)>, Option<(i32, i32)>)>,
         /// The shape before and after, when its fill, outline or effects changed.
         visual: Option<(ibis_doc_model::Shape, ibis_doc_model::Shape)>,
+        /// The turn (`a:xfrm rot`, 60000ths of a degree) when it changed.
+        rotation: Option<i32>,
     }
 
     let mut changes_by_drawing: HashMap<String, Vec<ShapeMetaChange>> = HashMap::new();
@@ -2346,7 +2609,10 @@ fn write_sheet_shape_labels(
 
         let visual_change = old_slide.shapes.iter().find(|s| s.id == shape.id).filter(|old| super::pptx_shapes::visuals_differ(old, shape)).map(|old| (old.clone(), shape.clone()));
 
+        let rotation_change = old_slide.shapes.iter().find(|s| s.id == shape.id).filter(|old| old.rotation != shape.rotation && !matches!(shape.kind, ShapeKind::Chart(_))).map(|_| shape.rotation);
+
         if name_change.is_none()
+            && rotation_change.is_none()
             && visual_change.is_none()
             && alt_change.is_none()
             && placement_change.is_none()
@@ -2381,6 +2647,7 @@ fn write_sheet_shape_labels(
                 warp: warp_change,
                 picture_effects: picture_effects_change,
                 visual: visual_change,
+                rotation: rotation_change,
             });
         }
     }
@@ -2450,7 +2717,7 @@ fn write_sheet_shape_labels(
                     }
                 }
             }
-            if item.geometry_preset.is_some() || item.formula.is_some() || item.warp.is_some() || item.picture_effects.is_some() || item.visual.is_some() {
+            if item.geometry_preset.is_some() || item.formula.is_some() || item.warp.is_some() || item.picture_effects.is_some() || item.visual.is_some() || item.rotation.is_some() {
                 let mut curr = doc.parent(node);
                 let mut sp_node = None;
                 while let Some(p) = curr {
@@ -2463,6 +2730,16 @@ fn write_sheet_shape_labels(
                 if let Some(sp) = sp_node {
                     if let Some((old, new)) = &item.visual {
                         super::pptx_shapes::write_visuals(doc, sp, old, new)?;
+                    }
+                    if let Some(rotation) = item.rotation {
+                        let xfrm = doc.children(sp).into_iter().copied().find(|&c| doc.local_name(c) == "spPr").and_then(|sp_pr| doc.children(sp_pr).into_iter().copied().find(|&c| doc.local_name(c) == "xfrm"));
+                        if let Some(xfrm) = xfrm {
+                            if rotation == 0 {
+                                doc.remove_attr(xfrm, "rot");
+                            } else {
+                                doc.set_attr(xfrm, "rot", &rotation.to_string());
+                            }
+                        }
                     }
                     if let Some(ref preset) = item.geometry_preset {
                         let sp_pr = doc.children(sp).into_iter().copied().find(|&c| doc.local_name(c) == "spPr");
@@ -2883,6 +3160,7 @@ fn write_charts(package: &mut Package, sources: &[ChartSource], sheet: &Sheet, o
         if a == b {
             continue;
         }
+        // A turn (`rotation`: 図形の書式 > 回転) is written apart, in `write_sheet_shape_labels`.
         if let (ShapeKind::Auto(aa), ShapeKind::Auto(ab)) = (&a.kind, &b.kind) {
             let mut expected_a = aa.clone();
             expected_a.geometry = ab.geometry.clone();
@@ -2894,17 +3172,17 @@ fn write_charts(package: &mut Package, sources: &[ChartSource], sheet: &Sheet, o
             expected_a.shadow = ab.shadow;
             expected_a.reflection = ab.reflection;
             expected_a.soft_edge = ab.soft_edge;
-            if &expected_a == ab && (a.rotation, a.flip_h, a.flip_v, &a.floating, a.frame) == (b.rotation, b.flip_h, b.flip_v, &b.floating, b.frame) {
+            if &expected_a == ab && (a.flip_h, a.flip_v, &a.floating, a.frame) == (b.flip_h, b.flip_v, &b.floating, b.frame) {
                 continue;
             }
         }
         if let (ShapeKind::TextBox(_), ShapeKind::TextBox(_)) = (&a.kind, &b.kind) {
-            if (a.rotation, a.flip_h, a.flip_v, &a.floating, a.frame) == (b.rotation, b.flip_h, b.flip_v, &b.floating, b.frame) {
+            if (a.flip_h, a.flip_v, &a.floating, a.frame) == (b.flip_h, b.flip_v, &b.floating, b.frame) {
                 continue;
             }
         }
         if let (ShapeKind::TextBox(_), ShapeKind::Auto(_)) = (&a.kind, &b.kind) {
-            if (a.rotation, a.flip_h, a.flip_v, &a.floating, a.frame) == (b.rotation, b.flip_h, b.flip_v, &b.floating, b.frame) {
+            if (a.flip_h, a.flip_v, &a.floating, a.frame) == (b.flip_h, b.flip_v, &b.floating, b.frame) {
                 continue;
             }
         }
@@ -2917,13 +3195,13 @@ fn write_charts(package: &mut Package, sources: &[ChartSource], sheet: &Sheet, o
             expected_a.shadow = pb.shadow.clone();
             expected_a.reflection = pb.reflection.clone();
             expected_a.soft_edge = pb.soft_edge;
-            if &expected_a == pb && (a.rotation, a.flip_h, a.flip_v, &a.floating, a.frame) == (b.rotation, b.flip_h, b.flip_v, &b.floating, b.frame) {
+            if &expected_a == pb && (a.flip_h, a.flip_v, &a.floating, a.frame) == (b.flip_h, b.flip_v, &b.floating, b.frame) {
                 continue;
             }
         }
         // A line's colour, width and dash: written apart in `write_sheet_shape_labels`.
         if let (ShapeKind::Line(_), ShapeKind::Line(_)) = (&a.kind, &b.kind) {
-            if (a.rotation, a.flip_h, a.flip_v, &a.floating, a.frame) == (b.rotation, b.flip_h, b.flip_v, &b.floating, b.frame) {
+            if (a.flip_h, a.flip_v, &a.floating, a.frame) == (b.flip_h, b.flip_v, &b.floating, b.frame) {
                 continue;
             }
         }

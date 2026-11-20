@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/226)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Rich Markdown (`.md`) native reader, writer, and `.docx` converter for `ibisOffice`.
 //!
@@ -87,9 +87,15 @@ pub fn is_markdown(data: &[u8]) -> bool {
         }
     }
 
-    // Check common block/inline Markdown markers.
+    // Text of a table (a CSV or a TSV: the same number of commas, or of tabs, in each of its lines) is no Markdown for the markers a cell may start with: a bullet (`- note`, `+81-90-...`, `* x`), a
+    // quotation or a number and a point. Only what a table does not have (headings, fences, pipes, emphasis, links) says Markdown then.
+    let tabular = looks_tabular(trimmed);
     for line in trimmed.lines().take(200) {
         let l = line.trim_start();
+        let weak = l.starts_with("- ") || l.starts_with("* ") || l.starts_with("+ ") || l.starts_with("> ") || l == ">" || is_ordered_list_line(l);
+        if tabular && weak {
+            continue;
+        }
         if let Some(rest) = l.strip_prefix('#') {
             let hashes = 1 + rest.chars().take_while(|&c| c == '#').count();
             if hashes <= 6 && rest[hashes - 1..].starts_with(' ') {
@@ -136,6 +142,18 @@ pub fn is_markdown(data: &[u8]) -> bool {
     }
 
     false
+}
+
+/// Whether the first lines have the same number (one or more) of commas, or of tabs: the lines of a CSV or a TSV.
+fn looks_tabular(text: &str) -> bool {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).take(20).collect();
+    if lines.len() < 2 {
+        return false;
+    }
+    [',', '\t'].iter().any(|d| {
+        let n = lines[0].matches(*d).count();
+        n >= 1 && lines.iter().all(|l| l.matches(*d).count() == n)
+    })
 }
 
 fn is_ordered_list_line(l: &str) -> bool {
@@ -1125,6 +1143,7 @@ fn parse_markdown_into(
         notes.push(Note {
             id: note_id,
             blocks,
+            ..Default::default()
         });
     }
 
@@ -3365,6 +3384,7 @@ fn build_chart_block_from_spec(
                     stroke: None,
                     marker: None,
                     explosion: 0,
+                    inner_shadow: None,
                     point_fills: Vec::new(),
                     point_strokes: Vec::new(),
                     point_explosions: Vec::new(),
@@ -6886,6 +6906,7 @@ fn flow_paragraph_to_slide_paragraph(p: &FlowParagraph) -> Option<ibis_doc_model
         color: None,
         auto: None,
         symbol: None,
+        font: None,
     });
     Some(ibis_doc_model::Paragraph {
         runs,

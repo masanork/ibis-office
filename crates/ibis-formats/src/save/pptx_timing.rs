@@ -355,17 +355,33 @@ fn effect_xml(p: &str, a: &Animation, spid: &str, delay: u32, id: &mut u32) -> R
         }
         _ => return Err(unsupported("このアニメーションの書き出し")),
     };
-    let fill = match a.after_effect {
-        AnimationAfterEffect::Hide => "remove",
-        _ => "hold",
+    // 巻き戻し is `fill="remove"`; what follows the effect (非表示, 淡色表示) is in its `p:subTnLst`, as PowerPoint writes it.
+    let fill = if a.rewind { "remove" } else { "hold" };
+    let hide = |master: &str, when: String| {
+        format!("<{p}set><{p}cBhvr override=\"childStyle\"><{p}cTn dur=\"1\" fill=\"hold\" display=\"0\" masterRel=\"{master}\" afterEffect=\"1\"{when}{target}<{p}attrNameLst><{p}attrName>style.visibility</{p}attrName></{p}attrNameLst></{p}cBhvr><{p}to><{p}strVal val=\"hidden\"/></{p}to></{p}set>")
+    };
+    let sub_nodes = match a.after_effect {
+        AnimationAfterEffect::Hold => String::new(),
+        AnimationAfterEffect::Hide => format!("<{p}subTnLst>{}</{p}subTnLst>", hide("sameClick", format!("><{p}stCondLst><{p}cond evt=\"end\" delay=\"0\"><{p}tn val=\"{effect_id}\"/></{p}cond></{p}stCondLst></{p}cTn>"))),
+        AnimationAfterEffect::HideOnNextClick => format!("<{p}subTnLst>{}</{p}subTnLst>", hide("nextClick", "/>".to_string())),
+        AnimationAfterEffect::Dim(c) => format!(
+            "<{p}subTnLst><{p}animClr clrSpc=\"rgb\" dir=\"cw\"><{p}cBhvr override=\"childStyle\"><{p}cTn dur=\"1\" fill=\"hold\" display=\"0\" masterRel=\"nextClick\" afterEffect=\"1\"/>{target}<{p}attrNameLst><{p}attrName>ppt_c</{p}attrName></{p}attrNameLst></{p}cBhvr><{p}to><a:srgbClr val=\"{:06X}\"/></{p}to></{p}animClr></{p}subTnLst>",
+            c.0
+        ),
     };
     let repeat_attr = match a.repeat_count {
         AnimationRepeat::None => String::new(),
         AnimationRepeat::Count(n) => format!(" repeatCount=\"{}\"", n * 1000),
+        AnimationRepeat::Thousandths(n) => format!(" repeatCount=\"{n}\""),
         AnimationRepeat::UntilNextClick | AnimationRepeat::UntilEndOfSlide => " repeatCount=\"indefinite\"".to_string(),
     };
+    // Repeating until the next click stops at the click (`endCondLst`); until the end of the slide, with the slide (`endSync`).
+    let end_conditions = match a.repeat_count {
+        AnimationRepeat::UntilNextClick => format!("<{p}endCondLst><{p}cond evt=\"onNext\" delay=\"0\"><{p}tgtEl><{p}sldTgt/></{p}tgtEl></{p}cond></{p}endCondLst>"),
+        AnimationRepeat::UntilEndOfSlide => format!("<{p}endSync evt=\"end\" delay=\"0\"><{p}rtn val=\"all\"/></{p}endSync>"),
+        _ => String::new(),
+    };
     let auto_rev_attr = if a.auto_reverse { " autoRev=\"1\"" } else { "" };
-    let rewind_attr = if a.rewind { " rewind=\"1\"" } else { "" };
     let iterate = match a.text_unit {
         Some((unit, gap)) => {
             let kind = if unit == ibis_doc_model::TextUnit::Word { "wd" } else { "lt" };
@@ -380,7 +396,7 @@ fn effect_xml(p: &str, a: &Animation, spid: &str, delay: u32, id: &mut u32) -> R
     let accel_attr = if a.accel > 0 { format!(" accel=\"{}\"", a.accel) } else { String::new() };
     let decel_attr = if a.decel > 0 { format!(" decel=\"{}\"", a.decel) } else { String::new() };
     Ok(format!(
-        "<{p}par><{p}cTn id=\"{effect_id}\" presetID=\"{preset}\" presetClass=\"{class}\" presetSubtype=\"{subtype}\" fill=\"{fill}\"{repeat_attr}{auto_rev_attr}{rewind_attr}{accel_attr}{decel_attr} grpId=\"0\" nodeType=\"{node}\"><{p}stCondLst><{p}cond delay=\"{delay}\"/></{p}stCondLst>{iterate}<{p}childTnLst>{behaviours}</{p}childTnLst></{p}cTn></{p}par>"
+        "<{p}par><{p}cTn id=\"{effect_id}\" presetID=\"{preset}\" presetClass=\"{class}\" presetSubtype=\"{subtype}\" fill=\"{fill}\"{repeat_attr}{auto_rev_attr}{accel_attr}{decel_attr} grpId=\"0\" nodeType=\"{node}\"><{p}stCondLst><{p}cond delay=\"{delay}\"/></{p}stCondLst>{end_conditions}{iterate}<{p}childTnLst>{behaviours}</{p}childTnLst>{sub_nodes}</{p}cTn></{p}par>"
     ))
 }
 

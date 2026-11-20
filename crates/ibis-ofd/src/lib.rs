@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/235)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Native OFD (GB/T 33190-2016) container parser and [`ibis_pdf::scene::PageScene`] builder.
 
@@ -15,7 +15,8 @@ use roxmltree::{Document as XmlDoc, Node};
 
 pub mod signature;
 pub use signature::{
-    OfdSignatureCryptoResult, OfdSignatureVerification, format_signature_status,
+    OfdSignatureCryptoResult, OfdSignatureVerification, SignatureOutcome, summarize_signatures,
+    format_signature_status,
     verify_signatures,
 };
 
@@ -182,6 +183,11 @@ impl OfdContainer {
 
     pub fn signature_status_text(&self) -> Option<String> {
         format_signature_status(&self.signatures)
+    }
+
+    /// How many signatures the package has and what they were found to be (`None` if it has none).
+    pub fn signature_summary(&self) -> Option<(usize, SignatureOutcome)> {
+        summarize_signatures(&self.signatures)
     }
 
     /// Return [`PageInfo`] metadata for all pages (boxes converted from mm to PDF points).
@@ -693,18 +699,22 @@ fn render_text_object(
                 font_size,
                 rgba,
             });
+            // Each character has its own box along the run (a run is one drawing command, so its characters' places are estimated: `estimated_advance_em`).
+            let mut x = ox;
             for ch in text.chars() {
+                let advance = font_size * ibis_pdf::scene::estimated_advance_em(ch);
                 chars.push(CharBox {
                     ch,
                     rect_pt: PdfRect {
-                        x0: ox,
+                        x0: x,
                         y0: oy - font_size,
-                        x1: ox + font_size * 0.6,
+                        x1: x + advance,
                         y1: oy,
                     },
                     vertical: false,
                     stream_op_index: display_list.len(),
                 });
+                x += advance;
             }
         } else {
             for (idx, ch) in text.chars().enumerate() {
@@ -828,6 +838,7 @@ mod tests {
         assert_eq!(ofd.signature_count(), 1);
         assert!(ofd.signature_verifications()[0].all_references_ok());
         assert_eq!(ofd.signature_status_text().as_deref(), Some("署名: 1件 (SM3ダイジェスト一致)"));
+        assert_eq!(ofd.signature_summary(), Some((1, SignatureOutcome::DigestsMatch)));
         let scene = ofd.interpret_page_scene(0).expect("render synthetic OFD page");
         assert_eq!(scene.display_list.len(), 2);
         assert_eq!(scene.text_index.plain_text(), "OFD测试");

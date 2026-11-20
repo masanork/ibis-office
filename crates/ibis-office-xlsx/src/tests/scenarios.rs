@@ -238,17 +238,32 @@ impl SheetSteps for Scenario {
 #[path="header_menu_click.rs"] mod header_menu_click;
 #[path="open_wide_table.rs"] mod open_wide_table;
 #[path="issue137_spill_cursor.rs"] mod issue137_spill_cursor;
+#[path="issue199_edit_text.rs"] mod issue199_edit_text;
 #[path="issue176_spill_copy.rs"] mod issue176_spill_copy;
 #[path="issue183_184_error_check.rs"] mod issue183_184_error_check;
 #[path="issue158_ivs.rs"] mod issue158_ivs;
+#[path="k0020_candidate_rect.rs"] mod k0020_candidate_rect;
+#[path="k0020_enter_mode_clauses.rs"] mod k0020_enter_mode_clauses;
+#[path="k0044_bar_clause.rs"] mod k0044_bar_clause;
+#[path="k0032_chart_menu.rs"] mod k0032_chart_menu;
+#[path="issue157_fonts_late.rs"] mod issue157_fonts_late;
+#[path="k0055_machine_readability.rs"] mod k0055_machine_readability;
+#[path="issue238_group.rs"] mod issue238_group;
+#[path="issue202_ime_commit.rs"] mod issue202_ime_commit;
+#[path="issue240_fullwidth.rs"] mod issue240_fullwidth;
 #[path="copy_outline.rs"] mod copy_outline;
+#[path="k0035_insert_drag.rs"] mod k0035_insert_drag;
 #[path="issue145_sheet_view.rs"] mod issue145_sheet_view;
+#[path="issue195_active_tab.rs"] mod issue195_active_tab;
+#[path="issue214_active_tab.rs"] mod issue214_active_tab;
 #[path="issue186_drag_autoscroll.rs"] mod issue186_drag_autoscroll;
 #[path="issue185_formula_case.rs"] mod issue185_formula_case;
+#[path="issue148_at_pointing.rs"] mod issue148_at_pointing;
 #[path="sheet_tab_visibility.rs"] mod sheet_tab_visibility;
 #[path="tab_dnd_and_shift_select.rs"] mod tab_dnd_and_shift_select;
 #[path="issue100_paste_names.rs"] mod issue100_paste_names;
 #[path="clipboard_html.rs"] mod clipboard_html;
+#[path="issue208_sheet_html.rs"] mod issue208_sheet_html;
 #[path="clipboard_native.rs"] mod clipboard_native;
 #[path="issue134_paste_special_formats.rs"] mod issue134_paste_special_formats;
 #[path="paste_special_matrix.rs"] mod paste_special_matrix;
@@ -290,7 +305,15 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::issue183_error_button_beside_frozen_columns",issue183_184_error_check::error_button_stays_reachable_beside_frozen_columns),
         ("xlsx::issue184_spilled_texts_have_no_number_as_text",issue183_184_error_check::spilled_texts_have_no_number_as_text),
         ("xlsx::issue137_spill_cursor_cost",issue137_spill_cursor::spill_cursor_cost),
+        ("xlsx::issue240_fullwidth_digits_become_numbers",issue240_fullwidth::fullwidth_digits_become_numbers),
+        ("xlsx::issue240_fullwidth_in_text_and_number_cells",issue240_fullwidth::fullwidth_in_text_and_number_cells),
+        ("xlsx::issue199_edit_text_of_date_time_percent",issue199_edit_text::edit_text_of_date_time_percent),
         ("xlsx::copy_shows_the_outline_until_esc_or_typing",copy_outline::copy_shows_the_outline_until_esc_or_typing),
+        ("xlsx::k0035_insert_shape_mode_and_drag_bounds",k0035_insert_drag::insert_shape_starts_the_mode_and_a_drag_takes_its_bounds),
+        ("xlsx::k0035_click_puts_usual_size",k0035_insert_drag::a_plain_click_puts_the_shape_at_its_usual_size),
+        ("xlsx::k0035_esc_cancels_the_drag",k0035_insert_drag::esc_during_the_drag_cancels_it),
+        ("xlsx::k0035_line_and_text_box",k0035_insert_drag::a_line_and_a_text_box_use_the_mode_too),
+        ("xlsx::k0035_three_screens_one_component",k0035_insert_drag::the_three_screens_use_the_same_component),
         ("xlsx::issue158_caret_moves_over_the_pair",issue158_ivs::caret_moves_over_the_pair),
         ("xlsx::issue158_shift_arrows_select_the_pair",issue158_ivs::shift_arrows_select_the_pair),
         ("xlsx::issue158_backspace_and_delete_take_the_pair",issue158_ivs::backspace_and_delete_take_the_pair),
@@ -321,8 +344,13 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::issue186_column_header_drag_goes_on_past_the_allocated_columns",issue186_drag_autoscroll::column_header_drag_goes_on_past_the_allocated_columns),
         ("xlsx::issue186_row_header_drag_goes_on_past_the_allocated_rows",issue186_drag_autoscroll::row_header_drag_goes_on_past_the_allocated_rows),
         ("xlsx::issue186_fill_handle_goes_on_past_the_allocated_rows",issue186_drag_autoscroll::fill_handle_goes_on_past_the_allocated_rows),
+        ("xlsx::issue148_a_range_is_pointed_at_with_the_keys_after_an_at_a_plus_a_minus_and_an_equals",issue148_at_pointing::keys),
+        ("xlsx::issue148_a_range_is_pointed_at_with_the_mouse_after_an_at_a_plus_a_minus_and_an_equals",issue148_at_pointing::mouse),
         ("xlsx::issue185_typed_formulas_are_stored_in_upper_case",issue185_formula_case::typed_formulas_are_stored_in_upper_case),
         ("xlsx::issue185_defined_names_keep_their_case",issue185_formula_case::defined_names_keep_their_case),
+        ("xlsx::issue195_active_sheet_and_cell_round_trip_through_the_file",issue195_active_tab::active_sheet_and_cell_round_trip_through_the_file),
+        ("xlsx::issue214_a_file_saved_on_the_third_sheet_opens_on_it",issue214_active_tab::a_file_saved_on_the_third_sheet_opens_on_it),
+        ("xlsx::issue214_a_new_workbook_saved_on_the_third_sheet_opens_on_it",issue214_active_tab::a_new_workbook_saved_on_the_third_sheet_opens_on_it),
         ("xlsx::issue145_sheets_keep_their_scroll",issue145_sheet_view::sheets_keep_their_scroll),
         ("xlsx::k0025_deleting_the_other_sheet_keeps_the_scroll",issue145_sheet_view::deleting_the_other_sheet_keeps_the_scroll),
         ("xlsx::k0025_current_slide_is_assigned_only_by_the_setter",issue145_sheet_view::current_slide_is_assigned_only_by_the_setter),
@@ -436,6 +464,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::n5_validation_formula", n5_validation_formula::run),
         ("xlsx::issue154_list_source_judge", issue154_compat_notice::judge),
         ("xlsx::issue154_compat_notice", issue154_compat_notice::run),
+        ("xlsx::issue260_formula_list_keeps_its_equals", issue154_compat_notice::formula_list_keeps_its_equals_issue_260),
+        ("xlsx::issue208_sheet_html", issue208_sheet_html::run),
         ("xlsx::clipboard_html_excel_mac_table", clipboard_html::excel_mac_table),
         ("xlsx::clipboard_html_attributes_and_spans", clipboard_html::attributes_and_spans),
         ("xlsx::clipboard_html_windows_format", clipboard_html::windows_format),
@@ -563,6 +593,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::xsc31_hyperlinks", xsc31_hyperlinks),
         ("xlsx::opt005_autolink", opt005_autolink),
         ("xlsx::options007_settings", options007_settings),
+        ("xlsx::issue205_quick_access_no_icon_ring", issue205_quick_access_no_icon_ring),
         ("xlsx::chtype028_box_treemap_sunburst_in_a_workbook", chtype028_box_treemap_sunburst_in_a_workbook),
         ("xlsx::view002_page_layout", view002_page_layout),
         ("xlsx::view002b_header_footer_pane", view002b_header_footer_pane),
@@ -686,6 +717,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::query_steps_scroll_issue_172", query_steps_scroll_issue_172),
         ("xlsx::query_layout_issue_173", query_layout_issue_173),
         ("xlsx::query002_blank_query", query002_blank_query),
+        ("xlsx::issue211_queries_pane_closes_empty", issue211_queries_pane_closes_empty),
         ("xlsx::ui_english_panels_2", ui_english_panels_2),
         ("xlsx::options006_error_check", options006_error_check),
         ("xlsx::error_menu_closes_on_selection_change", error_menu_closes_on_selection_change),
@@ -896,6 +928,14 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         all.push(("xlsx::harunobu_bulk_reference", harunobu_bulk_reference));
     }
     all.extend(dropdown_position_20261106::all());
+    all.extend(k0020_candidate_rect::all());
+    all.extend(k0020_enter_mode_clauses::all());
+    all.extend(k0044_bar_clause::all());
+    all.extend(k0032_chart_menu::all());
+    all.extend(issue157_fonts_late::all());
+    all.extend(k0055_machine_readability::all());
+    all.extend(issue238_group::all());
+    all.extend(issue202_ime_commit::all());
     all
 }
 
@@ -1426,6 +1466,12 @@ fn new_sheet() -> Scenario {
     let mut s = Scenario::open("test/editing/xlsx-sales.xlsx");
     s.menu("xlsx.insert-sheet");
     s
+}
+
+/// Go to the `index`-th sheet (a file opens on the sheet it was left on, #195, so a test that starts on a sheet says which).
+fn select_sheet_at(s: &mut Scenario, index: usize) {
+    let id = s.with(|e, _| e.presentation().slides[index].id);
+    s.update(move |e, window, cx| e.select_slide(id, window, cx));
 }
 
 /// The number format of a cell of the current sheet.
@@ -3808,7 +3854,7 @@ fn xlsx_reapply_filter_selection_pane_and_sparkline_points() {
                 data: CellRange { first_row: 9, last_row: 9, first_column: 1, last_column: 4 },
             }],
         };
-        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddSparklineGroup { slide, group })], cx);
+        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddSparklineGroup { sheet: slide, group })], cx);
     });
     assert_eq!(s.with(|e, _| sheet_of_slide(e.slide()).unwrap().sparklines.len()), 1);
 
@@ -4001,7 +4047,7 @@ fn xsc27_chart_format() {
     // Moved down a row's height and more.
     let (slide, id, frame) = s.with(|e, _| { let sh = &e.slide().shapes[index]; (e.current_slide, sh.id, sh.frame) });
     let moved = ibis_doc_model::EmuRect::new(frame.x + 200_000, frame.y + 300_000, frame.width, frame.height);
-    s.update(|e, _, cx| { e.document.execute(vec![ibis_doc_model::Command::SetFrame { slide, shape: id, frame: moved }]).unwrap(); cx.notify(); });
+    s.update(|e, _, cx| { e.document.execute(vec![ibis_doc_model::Command::SetFrame { slide, frames: vec![(id, moved)], with_attached: true }]).unwrap(); cx.notify(); });
     s.save_as("xsc27-chart.xlsx");
     let mut saved = s.reopen();
     // As a window opens it: the rows are measured, and the chart follows its cells.
@@ -6192,9 +6238,9 @@ fn cell005_rich_text() {
 fn cell005_rich_text_wrapped() {
     let mut s = Scenario::open("test/editing/xlsx-rich-text.xlsx");
     s.click_cell("A4");
-    s.update(|e, _, cx| e.format_cells(ibis_doc_model::StyleChange::Wrap(true), cx));
+    s.update(|e, _, cx| e.format_cells(ibis_doc_model::StyleChange::WrapText(true), cx));
     let slide = s.with(|e, _| e.current_slide);
-    s.update(move |e, _, cx| e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetSize { slide, axis: ibis_doc_model::sheet_command::Axis::Rows, first: 3, last: 3, size: 60 * 12_700 })], cx));
+    s.update(move |e, _, cx| e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetSize { sheet: slide, axis: ibis_doc_model::sheet_command::Axis::Rows, first: 3, last: 3, size: 60 * 12_700 })], cx));
     s.screenshot("wrapped");
     assert!(s.with(|e, _| e.current_sheet().and_then(|(_, sheet)| sheet.cell(3, 0).map(|c| c.runs.is_some()))).unwrap());
 }
@@ -6298,7 +6344,7 @@ fn options006_error_options() {
     s.menu("xlsx.error-options");
     s.update(|e, _, cx| {
         let slide = e.current_slide;
-        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::ResetIgnoredErrors { slide })], cx);
+        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::ResetIgnoredErrors { sheet: slide })], cx);
     });
     assert_eq!(flagged(&mut s).len(), 2);
     // Background checking off: nothing is marked.
@@ -6647,14 +6693,14 @@ fn slicer002_insert() {
     let slicers = |s: &mut Scenario| -> Vec<String> { s.with(|e, _| e.presentation().slides.iter().flat_map(|sl| sl.shapes.iter()).filter_map(|sh| match &sh.kind { ibis_doc_model::ShapeKind::Slicer(x) => Some(x.name.clone()), _ => None }).collect()) };
     assert_eq!(slicers(&mut s).len(), 2);
     // Nothing selected in a table: told so.
-    s.menu("xlsx.slicer-insert");
+    s.menu("xlsx.insert-slicer");
     s.update(|e, _, cx| e.apply_slicer_insert_panel(cx));
     s.update(|e, _, _| e.wb_mut().panels.slicer_insert = None);
     // The table's sheet: a slicer for 売上.
     let table_slide = s.with(|e, _| e.presentation().slides.iter().find(|sl| sl.name.as_deref() == Some("データ")).map(|sl| sl.id)).expect("the sheet");
     s.update(move |e, window, cx| e.select_slide(table_slide, window, cx));
     s.click_cell("B3");
-    s.menu("xlsx.slicer-insert");
+    s.menu("xlsx.insert-slicer");
     let fields = s.with(|e, _| e.wb().panels.slicer_insert.as_ref().unwrap().fields.clone());
     assert_eq!(fields, ["地域", "商品", "売上"]);
     s.update(|e, _, cx| {
@@ -6678,7 +6724,7 @@ fn slicer002_insert() {
     let pivot_slide = s.with(|e, _| e.presentation().slides.iter().find(|sl| sl.name.as_deref() == Some("Sheet2")).map(|sl| sl.id)).expect("the pivot's sheet");
     s.update(move |e, window, cx| e.select_slide(pivot_slide, window, cx));
     s.click_cell("A5");
-    s.menu("xlsx.slicer-insert");
+    s.menu("xlsx.insert-slicer");
     s.update(|e, _, cx| {
         let p = e.wb_mut().panels.slicer_insert.as_mut().unwrap();
         assert_eq!(p.fields, ["地域", "商品"], "the number field has no items to make buttons of");
@@ -6786,7 +6832,7 @@ fn slicer003_settings() {
         };
         sheet.pivots.push(p2);
         let rebuilt = ibis_formats::rebuilt_pivot(e.presentation(), slide, 1, sheet.pivots.get(1).cloned()).unwrap_or(sheet);
-        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::ReplaceSheet { slide, sheet: Box::new(rebuilt) })], cx);
+        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::ReplaceSheet { sheet: slide, replacement: Box::new(rebuilt) })], cx);
     });
     s.update(move |e, _, _| e.selection = Some(id));
     s.menu("xlsx.slicer-settings");
@@ -6915,7 +6961,7 @@ fn whatif002_data_table() {
             .into_iter()
             .map(|(row, column, input)| ibis_doc_model::CellEdit { row, column, input })
             .collect();
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits })]).unwrap();
         cx.notify();
     });
     s.click_cell("H3");
@@ -7309,8 +7355,8 @@ fn spark002_style_color_display_hidden() {
     s.update(|e, _, cx| {
         let slide = e.current_slide;
         e.run_sheet(
-            vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::Hide {
-                slide,
+            vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetHidden {
+                sheet: slide,
                 axis: ibis_doc_model::sheet_command::Axis::Columns,
                 first: 2,
                 last: 2,
@@ -7505,7 +7551,7 @@ fn spark003_date_axis_and_cross_sheet() {
             data: ibis_doc_model::CellRange { first_row: 1, last_row: 1, first_column: 0, last_column: 2 },
         });
         e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::EditSparklineGroup {
-            slide,
+            sheet: slide,
             index: 0,
             group,
         })], cx);
@@ -8713,7 +8759,7 @@ fn auto006_form_controls() {
             let mut next_frame = sh.frame;
             next_frame.x += 457200;
             next_frame.width += 228600;
-            e.run_sheet(vec![ibis_doc_model::Command::SetFrame { slide, shape: btn_id, frame: next_frame }], cx);
+            e.run_sheet(vec![ibis_doc_model::Command::SetFrame { slide, frames: vec![(btn_id, next_frame)], with_attached: true }], cx);
         }
     });
 
@@ -8733,7 +8779,7 @@ fn auto006_form_controls() {
     s.update(move |e, _, cx| {
         e.insert_form_control(ControlKind::CheckBox, cx);
         let slide = e.current_slide;
-        e.run_sheet(vec![ibis_doc_model::Command::RemoveShape { slide, shape: label_id }], cx);
+        e.run_sheet(vec![ibis_doc_model::Command::DeleteShape { slide, shapes: vec![label_id], with_attached: true }], cx);
     });
 
     s.screenshot("operated");
@@ -9113,7 +9159,7 @@ fn options006_error_check() {
             filter: None,
             totals: Vec::new(),
         };
-        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })], cx);
+        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })], cx);
     });
     s.click_cell("C10"); s.enter("Qty", "enter");
     s.click_cell("D10"); s.enter("Total", "enter");
@@ -9148,7 +9194,7 @@ fn options006_error_check() {
             prompt: None,
             error: None,
         };
-        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetValidation { slide, ranges: rule.ranges.clone(), rule: Some(rule) })], cx);
+        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetValidation { sheet: slide, ranges: rule.ranges.clone(), rule: Some(rule) })], cx);
     });
     s.click_cell("A16");
     assert_eq!(s.with(|e, _| e.current_error()), Some(ibis_doc_model::error_check::ErrorKind::ListDataValidation));
@@ -9318,7 +9364,7 @@ fn image47_web_images() {
     })));
     let mut s = Scenario::open("test/editing/xlsx-table.xlsx");
     let slide = s.with(|e, _| e.slide().id);
-    let size = |axis, first, last, points: i64| ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetSize { slide, axis, first, last, size: points * 12_700 });
+    let size = |axis, first, last, points: i64| ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetSize { sheet: slide, axis, first, last, size: points * 12_700 });
     s.update(move |e, _, cx| {
         e.run_sheet(vec![size(ibis_doc_model::sheet_command::Axis::Rows, 9, 14, 70), size(ibis_doc_model::sheet_command::Axis::Rows, 2, 2, 50), size(ibis_doc_model::sheet_command::Axis::Columns, 0, 6, 100)], cx)
     });
@@ -9544,7 +9590,7 @@ fn image003_cell_images_manipulation() {
     // 5. Insert row above row 1 (XLSX-IMAGE-007)
     s.update(|e, _, cx| {
         let slide = e.current_slide;
-        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::Insert { slide, axis: Axis::Rows, at: 1, count: 1 })], cx);
+        e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::Insert { sheet: slide, axis: Axis::Rows, at: 1, count: 1 })], cx);
     });
     let cell_images_shifted = s.with(|e, _| e.current_sheet().map(|(_, sh)| sh.cell_images.clone())).unwrap_or_default();
     assert!(cell_images_shifted.iter().any(|i| i.column == 0 && i.row == 0), "(0, 0) stayed");
@@ -10334,35 +10380,35 @@ fn table_design_ribbon_commands() {
 
     // 2. Table total row toggle
     let totals_before = table(&mut s).unwrap().totals_rows;
-    s.menu("xlsx.table-total-row");
+    s.menu("table.total-row");
     let totals_after = table(&mut s).unwrap().totals_rows;
     assert_ne!(totals_before, totals_after, "total row toggled on");
     assert_eq!(totals_after, 1);
-    s.menu("xlsx.table-total-row");
+    s.menu("table.total-row");
     assert_eq!(table(&mut s).unwrap().totals_rows, 0, "total row toggled off");
 
     // 3. Banded rows toggle
     let st = table(&mut s).unwrap().style.unwrap();
     let row_stripes_before = st.row_stripes;
-    s.menu("xlsx.table-banded-rows");
+    s.menu("table.banded-rows");
     let row_stripes_after = table(&mut s).unwrap().style.unwrap().row_stripes;
     assert_eq!(row_stripes_after, !row_stripes_before, "banded rows toggled");
 
     // 4. Banded columns toggle
     let col_stripes_before = table(&mut s).unwrap().style.unwrap().column_stripes;
-    s.menu("xlsx.table-banded-columns");
+    s.menu("table.banded-columns");
     let col_stripes_after = table(&mut s).unwrap().style.unwrap().column_stripes;
     assert_eq!(col_stripes_after, !col_stripes_before, "banded columns toggled");
 
     // 5. First column toggle
     let first_col_before = table(&mut s).unwrap().style.unwrap().first_column;
-    s.menu("xlsx.table-first-column");
+    s.menu("table.first-column");
     let first_col_after = table(&mut s).unwrap().style.unwrap().first_column;
     assert_eq!(first_col_after, !first_col_before, "first column toggled");
 
     // 6. Last column toggle
     let last_col_before = table(&mut s).unwrap().style.unwrap().last_column;
-    s.menu("xlsx.table-last-column");
+    s.menu("table.last-column");
     let last_col_after = table(&mut s).unwrap().style.unwrap().last_column;
     assert_eq!(last_col_after, !last_col_before, "last column toggled");
 
@@ -10413,9 +10459,9 @@ fn table_design_ribbon_commands() {
 
     // 11. Print area set & clear
     s.click_cell("A1");
-    s.menu("xlsx.print-area-set");
+    s.menu("xlsx.set-print-area");
     assert!(s.with(|e, _| sheet_of_slide(e.slide()).unwrap().print_area.is_some()), "print area set");
-    s.menu("xlsx.print-area-clear");
+    s.menu("xlsx.clear-print-area");
     assert!(s.with(|e, _| sheet_of_slide(e.slide()).unwrap().print_area.is_none()), "print area cleared");
 
     // 12. Page break
@@ -10700,7 +10746,7 @@ fn xsc23_sort() {
     s.update(|e, _, cx| {
         let slide = e.current_slide;
         let range = e.selected_range().unwrap();
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::Sort { slide, range, keys: vec![(1, false)], header: true })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::Sort { sheet: slide, range, keys: vec![(1, false)], header: true })]).unwrap();
         cx.notify();
     });
     assert_eq!(s.value("A4"), CellValue::Text("駅前店".into()));
@@ -11218,9 +11264,9 @@ fn cf011_threshold_types() {
 
     s.update(|e, _, cx| {
         e.document.execute(vec![
-            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { slide: slide_id, format: color_scale_format }),
-            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { slide: slide_id, format: data_bar_format }),
-            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { slide: slide_id, format: icon_set_format }),
+            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { sheet: slide_id, format: color_scale_format }),
+            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { sheet: slide_id, format: data_bar_format }),
+            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { sheet: slide_id, format: icon_set_format }),
         ]).unwrap();
         cx.notify();
     });
@@ -11752,7 +11798,7 @@ fn xsc23_sort_keys() {
     s.update(|e, _, cx| {
         let slide = e.current_slide;
         let ranges = [2u32, 5].map(|r| ibis_doc_model::CellRange { first_row: r, last_row: r, first_column: 0, last_column: 1 }).to_vec();
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetFormat { slide, ranges, change: ibis_doc_model::StyleChange::Fill(Some(ibis_doc_model::Rgb(0xFFFF00))) })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetFormat { sheet: slide, ranges, change: ibis_doc_model::StyleChange::Fill(Some(ibis_doc_model::Rgb(0xFFFF00))) })]).unwrap();
         cx.notify();
     });
     s.click_cell("A1");
@@ -11791,7 +11837,7 @@ fn xsc23_sort_manage() {
 
 fn xsc23_sort_filter() {
     let mut s=new_sheet();for (address,text) in [("A1","数"),("A2","2"),("A3","4"),("A4","6"),("C1","=SUBTOTAL(9,A2:A4)")]{s.click_cell(address);s.enter(text,"enter");}s.click_cell("A1");for _ in 0..3{s.key("shift-down");}s.menu("xlsx.filter");s.update(|e,_,cx|e.filter_column(0,Some(ibis_doc_model::ColumnFilter::Values(vec!["4".into(),"6".into()])),cx));assert_eq!(s.value("C1"),CellValue::Number(10.0));s.click_cell("A1");s.menu("xlsx.sort-manage");sort_field(&mut s,"range","A1:A4");sort_field(&mut s,"column-0","A");assert!(s.with(|e,_|e.wb().sort_edit.as_ref().unwrap().header));sort_click(&mut s,"order-0");sort_click(&mut s,"apply");for (address,n) in [("A2",2.),("A3",6.),("A4",4.),("C1",10.)]{assert_eq!(s.value(address),CellValue::Number(n));}s.click_cell("A1");s.key("cmd-z");assert_eq!(s.value("A3"),CellValue::Number(4.0));s.key("cmd-shift-z");assert_eq!(s.value("A3"),CellValue::Number(6.0));
-    s.save_as("xsc23-sort-filter-before-edit.xlsx");let p=s.reopen();assert_eq!(sheet_of_slide(&p.slides[1]).unwrap().filtered_rows.iter().copied().collect::<Vec<_>>(),vec![1]);let slide=p.slides[1].id;let mut d=ibis_doc_model::Document::new(p);d.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells {slide,edits:vec![ibis_doc_model::CellEdit {row:3,column:0,input:ibis_doc_model::CellInput::Value(CellValue::Number(3.0))}]})]).unwrap();assert_eq!(sheet_of_slide(&d.presentation().slides[1]).unwrap().cell(0,2).unwrap().value,CellValue::Number(9.0));s.click_cell("A4");s.enter("3","enter");assert_eq!(s.value("C1"),CellValue::Number(9.0));s.key("cmd-z");assert_eq!(s.value("C1"),CellValue::Number(10.0));s.key("cmd-shift-z");assert_eq!(s.value("C1"),CellValue::Number(9.0));s.save_as("xsc23-sort-filter-after-edit.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();assert_eq!(sh.filtered_rows.iter().copied().collect::<Vec<_>>(),vec![1]);assert_eq!(sh.cell(0,2).unwrap().value,CellValue::Number(9.0));
+    s.save_as("xsc23-sort-filter-before-edit.xlsx");let p=s.reopen();assert_eq!(sheet_of_slide(&p.slides[1]).unwrap().filtered_rows.iter().copied().collect::<Vec<_>>(),vec![1]);let slide=p.slides[1].id;let mut d=ibis_doc_model::Document::new(p);d.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells {sheet: slide,edits:vec![ibis_doc_model::CellEdit {row:3,column:0,input:ibis_doc_model::CellInput::Value(CellValue::Number(3.0))}]})]).unwrap();assert_eq!(sheet_of_slide(&d.presentation().slides[1]).unwrap().cell(0,2).unwrap().value,CellValue::Number(9.0));s.click_cell("A4");s.enter("3","enter");assert_eq!(s.value("C1"),CellValue::Number(9.0));s.key("cmd-z");assert_eq!(s.value("C1"),CellValue::Number(10.0));s.key("cmd-shift-z");assert_eq!(s.value("C1"),CellValue::Number(9.0));s.save_as("xsc23-sort-filter-after-edit.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();assert_eq!(sh.filtered_rows.iter().copied().collect::<Vec<_>>(),vec![1]);assert_eq!(sh.cell(0,2).unwrap().value,CellValue::Number(9.0));
 }
 
 fn xsc55_spill_structure() {
@@ -12066,7 +12112,8 @@ fn xsc55_dynamic_reopen() {
     check(&mut s, 1);
     s.save_as("xsc55-dynamic-reopen-source.xlsx");
     s.reload_saved();
-    s.click_cell("A1"); s.key("ctrl-pagedown");
+    s.click_cell("A1");
+    // The file opens on the sheet it was saved on (#195), the new sheet.
     assert_eq!(s.with(|e, _| e.document.presentation().slides.iter().position(|slide| slide.id == e.current_slide)), Some(1));
     check(&mut s, 1);
     s.click_cell("A1"); s.enter("3", "enter"); check(&mut s, 2);
@@ -12092,7 +12139,7 @@ fn xsc39_week_return_types() {
     for (r, f) in cases.iter().enumerate() { s.click_cell(&format!("A{}", r + 1)); s.enter(&format!("={}", f[0]), "enter"); }
     let check = |s: &mut Scenario, col: usize| { for (r, f) in cases.iter().enumerate() { let expected = f[col].parse::<f64>().map(CellValue::Number).unwrap_or(CellValue::Error(ibis_doc_model::CellError::Num)); assert_eq!(s.value(&format!("A{}", r + 1)), expected, "{}", f[0]); } };
     check(&mut s, 1); s.save_as("xsc39-week-return-types-before.xlsx");
-    s.reload_saved(); s.click_cell("A1"); s.key("ctrl-pagedown"); check(&mut s, 1);
+    s.reload_saved(); s.click_cell("A1"); check(&mut s, 1);
     s.click_cell("B1"); s.enter("=DATE(2021,1,4)", "enter"); check(&mut s, 2);
     s.key("cmd-z"); check(&mut s, 1); s.key("cmd-shift-z"); check(&mut s, 2);
     s.save_as("xsc39-week-return-types-after.xlsx"); let p = s.reopen(); let sh = sheet_of_slide(&p.slides[1]).unwrap();
@@ -12106,7 +12153,7 @@ fn xsc39_day_count_options() {
     s.click_cell("B1"); s.enter("=DATE(2019,1,1)", "enter"); s.click_cell("C1"); s.enter("=DATE(2020,1,1)", "enter");
     for (r, f) in cases.iter().enumerate() { s.click_cell(&format!("A{}", r + 1)); s.enter(&format!("={}", f[0]), "enter"); }
     let check = |s: &mut Scenario, col: usize| { for (r, f) in cases.iter().enumerate() { let expected = f[col].parse::<f64>().map(CellValue::Number).unwrap_or(CellValue::Error(ibis_doc_model::CellError::Num)); assert_eq!(s.value(&format!("A{}", r + 1)), expected, "{}", f[0]); } };
-    check(&mut s, 1); s.save_as("xsc39-day-count-before.xlsx"); s.reload_saved(); s.click_cell("A1"); s.key("ctrl-pagedown"); check(&mut s, 1);
+    check(&mut s, 1); s.save_as("xsc39-day-count-before.xlsx"); s.reload_saved(); s.click_cell("A1"); check(&mut s, 1);
     s.click_cell("C1"); s.enter("=DATE(2021,1,1)", "enter"); s.click_cell("B1"); s.enter("=DATE(2020,1,1)", "enter"); check(&mut s, 2);
     s.key("cmd-z"); s.key("cmd-z"); check(&mut s, 1); s.key("cmd-shift-z"); s.key("cmd-shift-z"); check(&mut s, 2);
     s.save_as("xsc39-day-count-after.xlsx"); let p = s.reopen(); let sh = sheet_of_slide(&p.slides[1]).unwrap();
@@ -12119,7 +12166,7 @@ fn xsc55_new_dynamic_metadata() {
     assert_eq!(s.with(|e,_|e.slide().name.clone()),Some("新dynamic保持".into()));
     for (address,formula,n) in [("F10","SEQUENCE(A1)",1.),("H10","F10#*2",2.)] {s.click_cell(address);s.enter(&format!("={formula}"),"enter");assert_eq!(s.value(address),CellValue::Number(n));s.key("cmd-z");assert_eq!(s.value(address),CellValue::Empty);s.key("cmd-shift-z");assert_eq!(s.value(address),CellValue::Number(n));}
     let check=|s:&mut Scenario,size:u32| {s.with(|e,_| {let sh=sheet_of_slide(e.slide()).unwrap();assert!(!sh.spills.contains_key(&(1,1)));assert!(sh.spills.contains_key(&(9,5)));assert!(sh.spills.contains_key(&(9,7)));});assert_eq!(s.value("B2"),CellValue::Number(1.));assert_eq!(s.value("B3"),CellValue::Empty);for r in 0..3 {let expected=if r<size{CellValue::Number((r+1)as f64)}else{CellValue::Empty};assert_eq!(s.value(&format!("F{}",r+10)),expected);assert_eq!(s.value(&format!("H{}",r+10)),if r<size{CellValue::Number(((r+1)*2)as f64)}else{CellValue::Empty});}};
-    check(&mut s,1);s.save_as("xsc55-new-dynamic-one.xlsx");s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");check(&mut s,1);
+    check(&mut s,1);s.save_as("xsc55-new-dynamic-one.xlsx");s.reload_saved();s.click_cell("A1");check(&mut s,1);
     s.click_cell("A1");s.enter("3","enter");check(&mut s,3);s.key("cmd-z");check(&mut s,1);s.key("cmd-shift-z");check(&mut s,3);
     s.save_as("xsc55-new-dynamic-three.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();assert!(!sh.spills.contains_key(&(1,1)));for(c,f)in[(5,"SEQUENCE(A1)"),(7,"F10#*2")] {assert!(sh.spills.contains_key(&(9,c)));assert_eq!(sh.cell(9,c).unwrap().formula.as_deref(),Some(f));for r in 0..3 {assert_eq!(sh.cell(r+9,c).unwrap().value,CellValue::Number(((r+1)*if c==5{1}else{2})as f64));}}
 }
@@ -12132,13 +12179,13 @@ fn xsc55_composite_formula_literal() {
     let check_literal=|s:&mut Scenario| {assert_eq!(s.value("B2"),CellValue::Number(42.));assert_eq!(s.shown("D3"),"#REF!");s.with(|e,_|{let sh=sheet_of_slide(e.slide()).unwrap();assert!(!sh.spills.contains_key(&(1,1)));assert!(sh.cell(1,1).unwrap().formula.is_none());});};
     check_formula(&mut s,1.); s.click_cell("B2"); s.enter("=SEQUENCE(A1)*3","enter"); check_formula(&mut s,3.);
     s.key("cmd-z"); check_formula(&mut s,1.); s.key("cmd-shift-z"); check_formula(&mut s,3.);
-    s.save_as("xsc55-composite-rewritten.xlsx"); s.reload_saved(); s.click_cell("A1"); s.key("ctrl-pagedown"); check_formula(&mut s,3.);
+    s.save_as("xsc55-composite-rewritten.xlsx"); s.reload_saved(); s.click_cell("A1"); check_formula(&mut s,3.);
     s.click_cell("B2"); s.enter("42","enter"); check_literal(&mut s); s.key("cmd-z"); check_formula(&mut s,3.); s.key("cmd-shift-z"); check_literal(&mut s);
-    s.save_as("xsc55-composite-literal.xlsx"); s.reload_saved(); s.click_cell("A1"); s.key("ctrl-pagedown"); check_literal(&mut s);
+    s.save_as("xsc55-composite-literal.xlsx"); s.reload_saved(); s.click_cell("A1"); check_literal(&mut s);
     s.click_cell("B2"); s.enter("=SEQUENCE(A1)*5","enter"); check_formula(&mut s,5.); s.key("cmd-z"); check_literal(&mut s); s.key("cmd-shift-z"); check_formula(&mut s,5.);
-    s.save_as("xsc55-composite-reactivated.xlsx"); s.reload_saved(); s.click_cell("A1"); s.key("ctrl-pagedown"); check_formula(&mut s,5.);
+    s.save_as("xsc55-composite-reactivated.xlsx"); s.reload_saved(); s.click_cell("A1"); check_formula(&mut s,5.);
     s.click_cell("A1");s.enter("3","enter");assert_eq!(s.value("B4"),CellValue::Number(15.));
-    s.save_as("xsc55-composite-reactivated-grown.xlsx");s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");assert_eq!(s.value("B4"),CellValue::Number(15.));
+    s.save_as("xsc55-composite-reactivated-grown.xlsx");s.reload_saved();s.click_cell("A1");assert_eq!(s.value("B4"),CellValue::Number(15.));
 }
 
 fn xsc55_compatibility_whitespace() {
@@ -12160,9 +12207,9 @@ fn xsc39_aggregate_count_options() {
     check(&mut s,false,false);s.save_as("xsc39-aggregate-count-shown.xlsx");
     s.click_cell("A2");s.key("ctrl-9");check(&mut s,true,false);s.key("cmd-z");check(&mut s,false,false);s.key("cmd-shift-z");check(&mut s,true,false);
     s.click_cell("A8");s.key("ctrl-9");check(&mut s,true,true);s.key("cmd-z");check(&mut s,true,false);s.key("cmd-shift-z");check(&mut s,true,true);
-    s.save_as("xsc39-aggregate-count-hidden.xlsx");s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");check(&mut s,true,true);
+    s.save_as("xsc39-aggregate-count-hidden.xlsx");s.reload_saved();s.click_cell("A1");check(&mut s,true,true);
     s.click_cell("A1");for _ in 0..7 {s.key("shift-down");}s.key("ctrl-shift-9");check(&mut s,false,false);s.key("cmd-z");check(&mut s,true,true);s.key("cmd-shift-z");check(&mut s,false,false);
-    s.save_as("xsc39-aggregate-count-restored.xlsx");s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");check(&mut s,false,false);
+    s.save_as("xsc39-aggregate-count-restored.xlsx");s.reload_saved();s.click_cell("A1");check(&mut s,false,false);
 }
 
 fn xsc25_conditional_cell_is() {
@@ -12175,19 +12222,19 @@ fn xsc25_conditional_cell_is() {
         let expected=cf_model(&mut s);assert_eq!(expected.len(),1);assert_eq!(expected[0].rules[0].kind,ibis_doc_model::CfKind::CellIs {operator:op.into(),formulas:if i>=6 {vec!["15".into(),"20".into()]}else{vec!["15".into()]}});assert_eq!(expected[0].rules[0].priority,1);assert_eq!(expected[0].rules[0].stop,i%2==0);
         for(row,hold)in holds.into_iter().enumerate(){if hold {cf_drawn(&mut s,row as u32,0xFFC7CE);}else{s.with(|e,_|{let(sh,_)=super::conditional::apply(sheet_of_slide(e.slide()).unwrap()).unwrap();let c=sh.cell(row as u32,0).unwrap();assert_ne!(sh.styles[c.style as usize].fill,Some(ibis_doc_model::Rgb(0xFFC7CE)));});}}
         s.click_cell("A1");s.key("cmd-z");assert_eq!(cf_model(&mut s),previous);s.key("cmd-shift-z");assert_eq!(cf_model(&mut s),expected);
-        s.save_as(&format!("xsc25-cellis-{op}.xlsx"));s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");assert_eq!(cf_model(&mut s),expected);
+        s.save_as(&format!("xsc25-cellis-{op}.xlsx"));s.reload_saved();s.click_cell("A1");assert_eq!(cf_model(&mut s),expected);
     }
     s.menu("xlsx.conditional");cf_click(&mut s,"edit-0");cf_field(&mut s,"formula","10");cf_field(&mut s,"formula2","22");cf_field(&mut s,"fill","FFFF00");cf_field(&mut s,"range","A2:A3");cf_click(&mut s,"apply");let edited=cf_model(&mut s);assert_eq!(edited[0].ranges[0].first_row,1);cf_drawn(&mut s,2,0xFFFF00);
-    s.click_cell("A1");s.key("cmd-z");assert_eq!(cf_model(&mut s)[0].ranges[0].first_row,0);s.key("cmd-shift-z");assert_eq!(cf_model(&mut s),edited);s.save_as("xsc25-cellis-edited.xlsx");s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");assert_eq!(cf_model(&mut s),edited);
-    s.click_cell("A2");s.key("shift-down");s.menu("xlsx.conditional");cf_click(&mut s,"clear");assert!(cf_model(&mut s).is_empty());s.click_cell("A2");s.key("cmd-z");assert_eq!(cf_model(&mut s),edited);s.key("cmd-shift-z");assert!(cf_model(&mut s).is_empty());s.save_as("xsc25-cellis-deleted.xlsx");s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");assert!(cf_model(&mut s).is_empty());
+    s.click_cell("A1");s.key("cmd-z");assert_eq!(cf_model(&mut s)[0].ranges[0].first_row,0);s.key("cmd-shift-z");assert_eq!(cf_model(&mut s),edited);s.save_as("xsc25-cellis-edited.xlsx");s.reload_saved();s.click_cell("A1");assert_eq!(cf_model(&mut s),edited);
+    s.click_cell("A2");s.key("shift-down");s.menu("xlsx.conditional");cf_click(&mut s,"clear");assert!(cf_model(&mut s).is_empty());s.click_cell("A2");s.key("cmd-z");assert_eq!(cf_model(&mut s),edited);s.key("cmd-shift-z");assert!(cf_model(&mut s).is_empty());s.save_as("xsc25-cellis-deleted.xlsx");s.reload_saved();s.click_cell("A1");assert!(cf_model(&mut s).is_empty());
 }
 
 fn xsc25_conditional_opaque_edit() {
     let mut s=Scenario::open("test/editing/xlsx-conditional-opaque.xlsx");s.click_cell("A1");s.key("ctrl-pagedown");let old=cf_model(&mut s);assert_eq!(old.len(),1);cf_drawn(&mut s,1,0xFFC7CE);cf_drawn(&mut s,2,0xFFC7CE);
     s.menu("xlsx.conditional");cf_click(&mut s,"edit-0");cf_choose_kind(&mut s,"conditional.greater-equal");cf_field(&mut s,"formula","20");cf_field(&mut s,"range","A2:A3");cf_click(&mut s,"stop");cf_click(&mut s,"apply");let edited=cf_model(&mut s);assert_eq!(edited[0].rules[0].kind,ibis_doc_model::CfKind::CellIs {operator:"greaterThanOrEqual".into(),formulas:vec!["20".into()]});assert_eq!(edited[0].rules[0].style,old[0].rules[0].style);assert_eq!(edited[0].source_index,old[0].source_index);assert_eq!(edited[0].ranges[0].first_row,1);assert!(edited[0].rules[0].stop);cf_drawn(&mut s,2,0xFFC7CE);
     s.click_cell("A1");s.key("cmd-z");assert_eq!(cf_model(&mut s),old);s.key("cmd-shift-z");assert_eq!(cf_model(&mut s),edited);
-    s.save_as("xsc25-opaque-edited.xlsx");s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");assert_eq!(cf_model(&mut s),edited);cf_drawn(&mut s,2,0xFFC7CE);
-    s.menu("xlsx.conditional");cf_click(&mut s,"edit-0");cf_field(&mut s,"fill","00B050");cf_click(&mut s,"apply");let colored=cf_model(&mut s);assert_eq!(colored[0].rules[0].style.as_ref().unwrap().fill,Some(ibis_doc_model::Rgb(0x00B050)));cf_drawn(&mut s,2,0x00B050);s.click_cell("A1");s.key("cmd-z");assert_eq!(cf_model(&mut s),edited);s.key("cmd-shift-z");assert_eq!(cf_model(&mut s),colored);s.save_as("xsc25-opaque-colored.xlsx");s.reload_saved();s.click_cell("A1");s.key("ctrl-pagedown");assert_eq!(cf_model(&mut s),colored);cf_drawn(&mut s,2,0x00B050);
+    s.save_as("xsc25-opaque-edited.xlsx");s.reload_saved();s.click_cell("A1");assert_eq!(cf_model(&mut s),edited);cf_drawn(&mut s,2,0xFFC7CE);
+    s.menu("xlsx.conditional");cf_click(&mut s,"edit-0");cf_field(&mut s,"fill","00B050");cf_click(&mut s,"apply");let colored=cf_model(&mut s);assert_eq!(colored[0].rules[0].style.as_ref().unwrap().fill,Some(ibis_doc_model::Rgb(0x00B050)));cf_drawn(&mut s,2,0x00B050);s.click_cell("A1");s.key("cmd-z");assert_eq!(cf_model(&mut s),edited);s.key("cmd-shift-z");assert_eq!(cf_model(&mut s),colored);s.save_as("xsc25-opaque-colored.xlsx");s.reload_saved();s.click_cell("A1");assert_eq!(cf_model(&mut s),colored);cf_drawn(&mut s,2,0x00B050);
 }
 
 fn xsc05_cell_comments() {
@@ -12197,7 +12244,7 @@ fn xsc05_cell_comments() {
     let slide = s.with(|e, _| e.slide().id);
     s.update(|e, _, _| {
         e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetComment {
-            slide,
+            sheet: slide,
             row: 1,
             column: 1,
             comment: Some(ibis_doc_model::SheetComment {
@@ -12752,7 +12799,7 @@ fn cell018_goto_special() {
     close_modal_panel(&mut s);
 
     // Insert a shape, then select objects: shape is selected.
-    s.menu("xlsx.shape.rect");
+    s.menu("shape.rect"); s.place_armed();
     assert!(s.with(|e, _| e.selected_sheet_shape()).is_some());
     s.click_cell("A1");
     s.menu("xlsx.goto-special");
@@ -13601,8 +13648,8 @@ fn valid012_paste_and_recalc_bypass() {
 fn sec009_notes() {
     let mut s = new_sheet();
     s.click_cell("B2");
-    assert!(s.menu_state("xlsx.note-new").is_some_and(|m| m.0));
-    s.menu("xlsx.note-new");
+    assert!(s.menu_state("xlsx.new-note").is_some_and(|m| m.0));
+    s.menu("xlsx.new-note");
     s.type_text("Check this");
     s.key("escape");
     let note = |s: &mut Scenario, r: u32, c: u32| s.with(move |e, _| e.current_sheet().and_then(|(_, sh)| sh.comment_at(r, c).map(|n| (n.author.clone(), n.text.clone()))));
@@ -13619,7 +13666,7 @@ fn sec009_notes() {
     s.key("escape");
     assert_eq!(note(&mut s, 1, 1).map(|n| n.1).as_deref(), Some("Checked"));
     s.click_cell("C3");
-    s.menu("xlsx.note-new");
+    s.menu("xlsx.new-note");
     s.type_text("Second");
     s.key("escape");
     let saved = s.save_as("sec009.xlsx");
@@ -13651,7 +13698,7 @@ fn sec009_notes() {
     // shapes as they were), one shape added.
     let first = vml.split("<v:shape ").nth(1).map(|x| x.split('"').nth(1).unwrap_or("").to_string()).unwrap_or_default();
     s.update(|e, window, cx| e.go_to_reference("D4", window, cx));
-    s.menu("xlsx.note-new");
+    s.menu("xlsx.new-note");
     s.type_text("Third");
     s.key("escape");
     let saved3 = s.save_as("sec009-three.xlsx");
@@ -14979,14 +15026,14 @@ fn formula016_calculation_options() {
     assert_eq!(s.value("B1"), CellValue::Number(20.0));
 
     // Verify initial calculation mode is Auto (checked and disabled)
-    assert_eq!(s.menu_state("xlsx.calc-auto"), Some((false, true)));
-    assert_eq!(s.menu_state("xlsx.calc-manual"), Some((true, false)));
-    assert_eq!(s.menu_state("xlsx.calc-auto-no-table"), Some((true, false)));
+    assert_eq!(s.menu_state("xlsx.calculate-auto"), Some((false, true)));
+    assert_eq!(s.menu_state("xlsx.calculate-manual"), Some((true, false)));
+    assert_eq!(s.menu_state("xlsx.calculate-auto-no-table"), Some((true, false)));
 
     // Switch to Manual mode via menu
-    s.menu("xlsx.calc-manual");
-    assert_eq!(s.menu_state("xlsx.calc-manual"), Some((false, true)));
-    assert_eq!(s.menu_state("xlsx.calc-auto"), Some((true, false)));
+    s.menu("xlsx.calculate-manual");
+    assert_eq!(s.menu_state("xlsx.calculate-manual"), Some((false, true)));
+    assert_eq!(s.menu_state("xlsx.calculate-auto"), Some((true, false)));
 
     // Edit A1 = 50: B1 must NOT recalculate in Manual mode
     s.click_cell("A1");
@@ -15016,8 +15063,8 @@ fn formula016_calculation_options() {
     assert_eq!(s.value("B1"), CellValue::Number(140.0));
 
     // Switch to AutoNoTable
-    s.menu("xlsx.calc-auto-no-table");
-    assert_eq!(s.menu_state("xlsx.calc-auto-no-table"), Some((false, true)));
+    s.menu("xlsx.calculate-auto-no-table");
+    assert_eq!(s.menu_state("xlsx.calculate-auto-no-table"), Some((false, true)));
 
     // In AutoNoTable, regular formulas auto-calculate
     s.click_cell("A1");
@@ -15025,8 +15072,8 @@ fn formula016_calculation_options() {
     assert_eq!(s.value("B1"), CellValue::Number(10.0));
 
     // Switch back to Auto
-    s.menu("xlsx.calc-auto");
-    assert_eq!(s.menu_state("xlsx.calc-auto"), Some((false, true)));
+    s.menu("xlsx.calculate-auto");
+    assert_eq!(s.menu_state("xlsx.calculate-auto"), Some((false, true)));
 
     // Save and reopen in Auto mode
     s.save_as("formula016-calc-mode-auto.xlsx");
@@ -15034,7 +15081,7 @@ fn formula016_calculation_options() {
     assert_eq!(p.workbook.as_deref().unwrap().calc_mode, ibis_doc_model::CalcMode::Auto);
 
     // Switch to Manual and save
-    s.menu("xlsx.calc-manual");
+    s.menu("xlsx.calculate-manual");
     s.save_as("formula016-calc-mode-manual.xlsx");
     let p2 = s.reopen();
     assert_eq!(p2.workbook.as_deref().unwrap().calc_mode, ibis_doc_model::CalcMode::Manual);
@@ -16650,12 +16697,12 @@ fn format016_theme_palette_and_colors() {
     s.update(|e, _, cx| {
         e.run_sheet(vec![
             ibis_doc_model::Command::Sheet(ibis_doc_model::sheet_command::SheetCommand::SetFormat {
-                slide,
+                sheet: slide,
                 ranges: vec![r1],
                 change: ibis_doc_model::sheet_command::StyleChange::FillTheme(orig_accent1, ThemeColor { index: 4, tint: 0 }),
             }),
             ibis_doc_model::Command::Sheet(ibis_doc_model::sheet_command::SheetCommand::SetFormat {
-                slide,
+                sheet: slide,
                 ranges: vec![r2],
                 change: ibis_doc_model::sheet_command::StyleChange::ColorTheme(orig_accent2, ThemeColor { index: 5, tint: 0 }),
             }),
@@ -16824,7 +16871,7 @@ fn cf012_databar_negative_and_axis() {
     };
     s.update(|e, _, cx| {
         e.document.execute(vec![
-            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { slide: slide_id, format: custom_databar_format }),
+            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { sheet: slide_id, format: custom_databar_format }),
         ]).unwrap();
         cx.notify();
     });
@@ -16948,7 +16995,7 @@ fn cf010_icon_sets_shapes_and_custom() {
     };
     s.update(|e, _, cx| {
         e.document.execute(vec![
-            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { slide: slide_id, format: custom_icon_format }),
+            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { sheet: slide_id, format: custom_icon_format }),
         ]).unwrap();
         cx.notify();
     });
@@ -17021,7 +17068,7 @@ fn table011_icon_filter_and_sort() {
     };
     s.update(|e, _, cx| {
         e.document.execute(vec![
-            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { slide: slide_id, format: icon_format }),
+            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::AddConditional { sheet: slide_id, format: icon_format }),
         ]).unwrap();
         cx.notify();
     });
@@ -17067,8 +17114,8 @@ fn table011_icon_filter_and_sort() {
     let range = ibis_doc_model::CellRange { first_row: 0, last_row: 5, first_column: 0, last_column: 0 };
     s.update(|e, _, cx| {
         e.document.execute(vec![
-            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SortBy {
-                slide: slide_id,
+            ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SortByKeys {
+                sheet: slide_id,
                 range,
                 keys: vec![(0, ibis_doc_model::sheet_command::SortBy::Icon {
                     icon_set: "3TrafficLights1".into(),
@@ -17171,11 +17218,11 @@ fn view016_custom_views_register_show_delete_and_table_exclusion() {
     s.update(|e, _, cx| {
         let slide = e.current_slide;
         e.run_sheet(vec![
-            Command::Sheet(ibis_doc_model::SheetCommand::SetZoom { slide, zoom: Some(150) }),
-            Command::Sheet(ibis_doc_model::SheetCommand::SetGridLines { slide, shown: false }),
-            Command::Sheet(ibis_doc_model::SheetCommand::SetHeadings { slide, shown: false }),
-            Command::Sheet(ibis_doc_model::SheetCommand::Hide {
-                slide,
+            Command::Sheet(ibis_doc_model::SheetCommand::SetZoom { sheet: slide, zoom: Some(150) }),
+            Command::Sheet(ibis_doc_model::SheetCommand::SetGridLines { sheet: slide, shown: false }),
+            Command::Sheet(ibis_doc_model::SheetCommand::SetHeadings { sheet: slide, shown: false }),
+            Command::Sheet(ibis_doc_model::SheetCommand::SetHidden {
+                sheet: slide,
                 axis: ibis_doc_model::sheet_command::Axis::Rows,
                 first: 2,
                 last: 2,
@@ -17277,7 +17324,7 @@ fn view016_custom_views_register_show_delete_and_table_exclusion() {
             totals: Vec::new(),
         };
         e.run_sheet(vec![Command::Sheet(ibis_doc_model::SheetCommand::SetTable {
-            slide,
+            sheet: slide,
             index: 0,
             table: Some(table),
             cells: Vec::new(),
@@ -18927,7 +18974,7 @@ fn view011_new_window_for_same_workbook() {
             input: ibis_doc_model::CellInput::Value(CellValue::Text("FromWin2".into())),
         }];
         e.document.execute(vec![ibis_doc_model::Command::Sheet(
-            ibis_doc_model::SheetCommand::SetCells { slide, edits }
+            ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits }
         )]).unwrap();
         e.sync_peers(cx);
         cx.notify();
@@ -18973,7 +19020,7 @@ fn view013_view_side_by_side_and_sync_scrolling() {
     let mut s = new_sheet();
 
     // 1. Initial menu state with 1 window
-    assert_eq!(s.menu_state("xlsx.view-side-by-side"), Some((true, false)));
+    assert_eq!(s.menu_state("view.side-by-side"), Some((true, false)));
     assert_eq!(s.menu_state("xlsx.sync-scrolling"), Some((false, false)));
     assert_eq!(s.menu_state("xlsx.reset-window-position"), Some((false, false)));
 
@@ -18991,7 +19038,7 @@ fn view013_view_side_by_side_and_sync_scrolling() {
     });
 
     // 3. Activate View Side by Side via menu
-    s.menu("xlsx.view-side-by-side");
+    s.menu("view.side-by-side");
     s.settle();
 
     // Verify both windows are in side-by-side mode with sync scrolling ON
@@ -19001,7 +19048,7 @@ fn view013_view_side_by_side_and_sync_scrolling() {
     assert!(s.with(|_, app| ed1.read(app).sync_scrolling));
 
     // Verify menu items updated
-    assert_eq!(s.menu_state("xlsx.view-side-by-side"), Some((true, true)));
+    assert_eq!(s.menu_state("view.side-by-side"), Some((true, true)));
     assert_eq!(s.menu_state("xlsx.sync-scrolling"), Some((true, true)));
     assert_eq!(s.menu_state("xlsx.reset-window-position"), Some((true, false)));
 
@@ -19074,19 +19121,19 @@ fn view013_view_side_by_side_and_sync_scrolling() {
     s.settle();
 
     // 7. Deactivate View Side by Side via menu
-    s.menu("xlsx.view-side-by-side");
+    s.menu("view.side-by-side");
     s.settle();
 
     assert!(!s.with(|e, _| e.side_by_side));
     assert!(!s.with(|e, _| e.sync_scrolling));
     assert!(!s.with(|_, app| ed1.read(app).side_by_side));
     assert!(!s.with(|_, app| ed1.read(app).sync_scrolling));
-    assert_eq!(s.menu_state("xlsx.view-side-by-side"), Some((true, false)));
+    assert_eq!(s.menu_state("view.side-by-side"), Some((true, false)));
     assert_eq!(s.menu_state("xlsx.sync-scrolling"), Some((false, false)));
     assert_eq!(s.menu_state("xlsx.reset-window-position"), Some((false, false)));
 
     // 8. Re-enable side-by-side, then close peer window -> cleans up side-by-side on window 0
-    s.menu("xlsx.view-side-by-side");
+    s.menu("view.side-by-side");
     s.settle();
     assert!(s.with(|e, _| e.side_by_side));
 
@@ -19110,7 +19157,7 @@ fn file013_compatibility_check() {
     let mut s = new_sheet();
 
     // 1. 初期状態（クリーンな新規ブック）での互換性チェック
-    s.menu("xlsx.compatibility-check");
+    s.menu("review.compatibility-check");
     s.settle();
 
     assert!(s.with(|e, _| e.wb().panels.compatibility.is_some()), "compatibility panel opened");
@@ -19195,7 +19242,7 @@ fn file013_compatibility_check() {
     s.settle();
 
     // 3. 互換性チェック パネルを開いて再検査
-    s.menu("xlsx.compatibility-check");
+    s.menu("review.compatibility-check");
     s.settle();
 
     let report = s.with(|e, _| e.wb().panels.compatibility.as_ref().unwrap().report.clone());
@@ -19692,7 +19739,7 @@ fn pivot020_pivot_chart_create_and_sync() {
 
     // 1. ピボットテーブル上のセル B4 を選択し、メニュー「xlsx.pivot-chart-insert」からピボットグラフを挿入
     s.click_cell("B4");
-    s.menu("xlsx.pivot-chart-insert");
+    s.menu("xlsx.insert-pivot-chart");
 
     // ピボットグラフが生成・配置され、選択状態になっていることを検証
     let (chart_id, chart) = s.with(|e, _| {
@@ -19842,7 +19889,7 @@ fn cell006_phonetic_edit_and_formula_sync() {
 
     // 5. ふりがなの表示/非表示トグル
     assert!(!s.with(|e, _| sheet_of_slide(e.slide()).unwrap().show_phonetic));
-    s.menu("xlsx.phonetic-toggle");
+    s.menu("xlsx.toggle-phonetic");
     assert!(s.with(|e, _| sheet_of_slide(e.slide()).unwrap().show_phonetic));
 
     // 6. 元に戻す (Undo)
@@ -20273,7 +20320,7 @@ fn spelling_range_shapes_undo() {
     s.update(|e, _, cx| {
         let slide = e.current_slide;
         let shape = ibis_doc_model::Shape::text_box(ibis_doc_model::ShapeId(9001), ibis_doc_model::EmuRect::new(0, 0, 1_000_000, 500_000), "a recieve box");
-        e.document.execute(vec![ibis_doc_model::Command::InsertShape { slide, index: 1, shape }]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::InsertShape { slide, shapes: vec![(1, shape)] }]).unwrap();
         cx.notify();
     });
     let box_text = |s: &mut Scenario| {
@@ -21458,6 +21505,7 @@ fn chart_follows_its_cells() {
 /// frozen pane come across; saving as .xlsx and opening again keeps them.
 fn file010_open_xlsb() {
     let mut s = Scenario::open("crates/ibis-formats/tests/fixtures/generated.xlsb");
+    select_sheet_at(&mut s, 0);
     s.screenshot("opened");
     let sheets = s.with(|e, _| e.presentation().slides.len());
     assert_eq!(sheets, 2);
@@ -21491,6 +21539,7 @@ fn file010_open_xlsb() {
 /// formulas that name another sheet): all of it comes across.
 fn file010_open_xlsb_excel_features() {
     let mut s = Scenario::open("test/editing/xlsb-features.xlsb");
+    select_sheet_at(&mut s, 0);
     s.screenshot("opened");
     let (validations, cf, notes, filter) = s.with(|e, _| {
         let sh = sheet_of_slide(e.slide()).unwrap();
@@ -21509,6 +21558,7 @@ fn file010_open_xlsb_excel_features() {
 /// XLSX-FILE-010, the sales book Excel saved as .xlsb (four sheets, a chart, a picture, formulas across sheets).
 fn file010_open_xlsb_excel_sales() {
     let mut s = Scenario::open("test/editing/xlsb-sales.xlsb");
+    select_sheet_at(&mut s, 0);
     s.screenshot("opened");
     assert_eq!(s.with(|e, _| e.presentation().slides.len()), 4);
     assert_eq!(s.value("E4"), CellValue::Number(3_750_000.0));
@@ -21535,7 +21585,8 @@ fn file012_open_ods() {
     let ods = s.save_as("file012.ods");
     let bytes = std::fs::read(&ods).unwrap();
     assert!(bytes.starts_with(b"PK") && bytes.windows(46).any(|w| w == b"application/vnd.oasis.opendocument.spreadsheet"));
-    let again = ibis_formats::read(&bytes).unwrap();
+    // (ODF is read by `ibis-odf` since it was split off `ibis-formats`.)
+    let again = ibis_odf::read(&bytes).unwrap();
     let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&again.slides[0]).unwrap();
     assert_eq!(sheet.cell(1, 1).map(|c| c.text.clone()).as_deref(), Some("1,234.50"));
     assert_eq!(sheet.cell(2, 1).and_then(|c| c.formula.clone()).as_deref(), Some("SUM(B2,B2*2)"));
@@ -21641,12 +21692,14 @@ fn query_code_edit_issue_173() {
     };
     s.update(|e, window, cx| e.query_toggle_code(window, cx));
     let code = s.with(|e, cx| e.wb().panels.query_editor.as_ref().unwrap().code.read(cx).value().to_string());
-    assert!(code.starts_with("let") && code.contains("Table.PromoteHeaders(Source"), "{code}");
+    assert!(code.starts_with("let") && code.contains("Table.PromoteHeaders("), "{code}");
     let before = steps(&mut s);
     let rows_before = rows(&mut s);
     assert!(before.contains(&Step::PromoteHeaders));
     // Edited code: a step added at the end is read back, and the table follows.
-    let edited = code.replace("\nin\n", ",\n    #\"Kept First Rows\" = Table.FirstN(#\"Promoted Headers\", 2)\nin\n").replace(&format!("in\n    {}", "#\"Promoted Headers\""), "in\n    #\"Kept First Rows\"");
+    // The step names are the screen's language: the code's last step is the one the new step goes on from.
+    let last = code.lines().last().unwrap().trim().to_string();
+    let edited = code.replace(&format!("\nin\n    {last}"), &format!(",\n    #\"Kept First Rows\" = Table.FirstN({last}, 2)\nin\n    #\"Kept First Rows\""));
     set_code(&mut s, edited);
     s.update(|e, _, cx| e.query_apply_code(cx));
     assert_eq!(steps(&mut s).last(), Some(&Step::KeepTopRows(2)), "{}", message(&mut s));
@@ -21655,8 +21708,7 @@ fn query_code_edit_issue_173() {
     let applied = steps(&mut s);
     for (bad, expect) in [
         ("let Source = 1 in Source", "1"),
-        ("let\n  Source = #table({}, {}),\n  A = Table.Frobnicate(Source)\nin A", "Table.Frobnicate"),
-        ("let\n  Source = #table({}, {}),\n  A = Table.FirstN(Other, 1)\nin A", "Table.FirstN"),
+        ("let\n  Source = #table({}, {}),\n  A = Table.FirstN(Source, 1\nin A", "in"),
         ("not code", "let"),
     ] {
         set_code(&mut s, bad.to_string());
@@ -21667,6 +21719,12 @@ fn query_code_edit_issue_173() {
         assert_eq!(rows(&mut s), 2, "{bad}");
     }
     let _ = rows_before;
+    // Code the steps cannot hold (K0039) is read, kept as written, and a function the interpreter does not have yet is told with its line.
+    set_code(&mut s, "let\n  Source = #table({}, {}),\n  A = Table.Frobnicate(Source)\nin A".to_string());
+    s.update(|e, _, cx| e.query_apply_code(cx));
+    assert!(matches!(steps(&mut s).last(), Some(Step::Code { .. })), "{:?}", steps(&mut s));
+    let m = message(&mut s);
+    assert!(m.contains("Table.Frobnicate") && m.contains("3"), "{m}");
 }
 
 /// GitHub issue #172: with many steps, the pane of the applied steps scrolls (the wheel over it moves it).
@@ -21780,8 +21838,8 @@ fn query001_editor() {
     assert!(s.with(|e, _| e.wb().panels.query_editor.as_ref().unwrap().form.is_some()), "the value is missing: the form stays");
     s.update(|e, _, cx| {
         e.query_add_step(Step::FilterRows { column: "店舗".into(), op: Op::DoesNotContain, value: "合計".into() }, None, cx);
-        e.query_add_step(Step::ChangeType { column: "4月".into(), ty: QType::Whole, culture: ibis_doc_model::query::Culture::Invariant }, None, cx);
-        e.query_add_step(Step::AddColumn { name: "傾向".into(), formula: "if [6月] > [4月] then \"増\" else \"減\"".into() }, None, cx);
+        e.query_add_step(Step::ChangeType { column: "4月".into(), ty: QType::Whole, culture: ibis_doc_model::query::Culture::Invariant, apart: false }, None, cx);
+        e.query_add_step(Step::AddColumn { name: "傾向".into(), formula: "if [6月] > [4月] then \"増\" else \"減\"".into(), ty: None }, None, cx);
         e.query_add_step(Step::Sort(vec![("6月".into(), false)]), None, cx);
     });
     let (names, rows, error, message) = shown(&mut s);
@@ -21802,7 +21860,7 @@ fn query001_editor() {
     assert!(shown(&mut s).2.is_none());
     // The M code of the steps.
     let m = s.with(|e, _| ibis_doc_model::query::query_to_m(&e.wb().panels.query_editor.as_ref().unwrap().query));
-    assert!(m.contains("Table.PromoteHeaders(Source") && m.contains("Table.Sort(") && m.contains("Table.AddColumn("), "{m}");
+    assert!(m.contains("Table.PromoteHeaders(") && m.contains("Table.Sort(") && m.contains("Table.AddColumn("), "{m}");
     // 閉じて読み込む.
     let sheets_before = s.with(|e, _| e.presentation().slides.len());
     s.update(|e, window, cx| e.query_close_and_load(window, cx));
@@ -21850,6 +21908,28 @@ fn query001_editor() {
     assert!(s.with(|e, _| e.presentation().workbook.as_ref().unwrap().queries.is_empty()));
 }
 
+
+/// #211: クエリと接続 (and the query editor) closed leaves no 「セルの書式設定」 pane behind.
+fn issue211_queries_pane_closes_empty() {
+    let mut s = Scenario::open("test/editing/xlsx-sales.xlsx");
+    // The list closed by its 閉じる button (not by close_dialog).
+    s.update(|e, _, cx| e.open_queries_panel(cx));
+    s.screenshot("issue211-queries");
+    assert!(s.with(|e, _| e.sidebar_open && e.wb().panels.queries.is_some()));
+    s.update(|e, _, cx| { e.wb_mut().panels.queries = None; cx.notify(); });
+    s.screenshot("issue211-closed");
+    assert!(s.with(|e, _| !e.sidebar_open && e.sheet_state().is_some_and(|st| st.custom_format.is_none())), "no cell format pane after the list is closed");
+    // The query editor closed (キャンセル): same.
+    s.update(|e, window, cx| e.open_blank_query(window, cx));
+    s.screenshot("issue211-editor");
+    s.update(|e, _, cx| e.query_cancel(cx));
+    s.screenshot("issue211-editor-closed");
+    assert!(s.with(|e, _| !e.sidebar_open && e.sheet_state().is_some_and(|st| st.custom_format.is_none())), "no cell format pane after the editor is closed");
+    // A pane the user opens (the cell format) stays.
+    s.update(|e, window, cx| e.open_custom_format_unfocused(window, cx));
+    s.screenshot("issue211-format");
+    assert!(s.with(|e, _| e.sidebar_open && e.sheet_state().is_some_and(|st| st.custom_format.is_some())));
+}
 
 /// XLSX-PQ-008 空のクエリを作る: データ > クエリと接続 > 空のクエリ.
 /// Opens a blank query with an initial empty table, adds steps, views the M code (#table({}, {})),
@@ -21951,7 +22031,7 @@ fn options007_settings() {
     assert_eq!(buttons(&mut s), 2, "the command the workbook does not have is not shown");
     s.screenshot("quick-access");
     // Kept in the file, and reordered.
-    assert!(std::fs::read_to_string(dir.join("settings.txt")).unwrap_or_default().contains("qat=file.save,xlsx.freeze"));
+    assert!(std::fs::read_to_string(dir.join("settings.txt")).unwrap_or_default().contains("app.quick-access-toolbar=file.save,xlsx.freeze"));
     // Reorder: move down and move up.
     assert!(crate::shell::qat::move_to(0, 1));
     assert_eq!(crate::shell::qat::commands(), ["xlsx.freeze", "file.save", "pptx.start-slideshow"]);
@@ -22156,7 +22236,7 @@ fn xlsx_comments_page_setup_and_insert_function() {
         e.document
             .execute(vec![
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetComment {
-                    slide,
+                    sheet: slide,
                     row: 3,
                     column: 1, // B4
                     comment: Some(ibis_doc_model::SheetComment {
@@ -22166,7 +22246,7 @@ fn xlsx_comments_page_setup_and_insert_function() {
                         text: "東町メモ".into(), ..Default::default() }),
                 }),
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetComment {
-                    slide,
+                    sheet: slide,
                     row: 5,
                     column: 3, // D6
                     comment: Some(ibis_doc_model::SheetComment {
@@ -22228,14 +22308,14 @@ fn xlsx_comments_page_setup_and_insert_function() {
     );
 
     // Paper size
-    s.menu("xlsx.paper-a3");
+    s.menu("page.paper-a3");
     s.settle();
     assert_eq!(
         s.with(|e, _| e.current_print().map(|p| p.paper)),
         Some((297 * 36_000, 420 * 36_000)),
         "paper size set to A3"
     );
-    s.menu("xlsx.paper-letter");
+    s.menu("page.paper-letter");
     s.settle();
     assert_eq!(
         s.with(|e, _| e.current_print().map(|p| p.paper)),
@@ -23298,7 +23378,7 @@ fn xlsx_pivot_source_drill_theme_and_charts() {
 
     // 24. 署名欄 (xlsx.signature-line)
     let shapes_before_sig = s.with(|e, _| e.slide().shapes.len());
-    s.menu("xlsx.signature-line");
+    s.menu("insert.signature-line");
     s.settle();
     let shapes_after_sig = s.with(|e, _| e.slide().shapes.len());
     assert_eq!(shapes_after_sig, shapes_before_sig + 1, "signature line shape inserted");
@@ -23552,11 +23632,7 @@ pub(crate) fn xlsx_chart_quick_layout_and_picture_compress() {
     s.update(|e, _, cx| {
         let slide = e.current_slide;
         e.run_sheet(
-            vec![ibis_doc_model::Command::SetFrame {
-                slide,
-                shape: pic_id,
-                frame: ibis_doc_model::EmuRect::new(0, 0, 2 * 914_400, 2 * 914_400),
-            }],
+            vec![ibis_doc_model::Command::SetFrame { slide, frames: vec![(pic_id, ibis_doc_model::EmuRect::new(0, 0, 2 * 914_400, 2 * 914_400))], with_attached: true }],
             cx,
         );
         e.crop_selected_pictures(
@@ -23868,7 +23944,7 @@ fn page_setup_and_insert_ribbon_commands() {
 
     // 図形挿入（四角形）
     let shapes_before = s.with(|e, _| e.slide().shapes.len());
-    s.menu("xlsx.shape.rect");
+    s.menu("shape.rect"); s.place_armed();
     let shapes_after = s.with(|e, _| e.slide().shapes.len());
     assert_eq!(shapes_after, shapes_before + 1, "shape inserted");
 
@@ -24141,7 +24217,7 @@ fn mark_as_final_infobar() {
         s.update(|e, _, _| {
             let mut properties = e.presentation().workbook.as_deref().unwrap().properties.clone();
             properties.custom.push(CustomProperty { name: "_MarkAsFinal".into(), value: CustomPropertyValue::Bool(true) });
-            e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetDocProperties(properties))]).unwrap();
+            e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetDocumentProperties(properties))]).unwrap();
         });
     };
     mark(&mut s);
@@ -24338,15 +24414,15 @@ fn default_xlsx_path() -> Option<String> {
 /// and a merged cell. The screenshots of both are in target/scenario.
 fn fix73_edit_text_stays_put() {
     let cases: Vec<(&str, Option<ibis_doc_model::StyleChange>, Option<ibis_doc_model::StyleChange>, bool)> = vec![
-        ("left", Some(ibis_doc_model::StyleChange::Align(ibis_doc_model::CellAlign::Left)), None, false),
-        ("center", Some(ibis_doc_model::StyleChange::Align(ibis_doc_model::CellAlign::Center)), None, false),
-        ("right", Some(ibis_doc_model::StyleChange::Align(ibis_doc_model::CellAlign::Right)), None, false),
-        ("short-top", None, Some(ibis_doc_model::StyleChange::Vertical(ibis_doc_model::CellVerticalAlign::Top)), false),
-        ("short-middle", None, Some(ibis_doc_model::StyleChange::Vertical(ibis_doc_model::CellVerticalAlign::Center)), false),
-        ("short-bottom", None, Some(ibis_doc_model::StyleChange::Vertical(ibis_doc_model::CellVerticalAlign::Bottom)), false),
-        ("short-right", Some(ibis_doc_model::StyleChange::Align(ibis_doc_model::CellAlign::Right)), None, false),
-        ("short-center", Some(ibis_doc_model::StyleChange::Align(ibis_doc_model::CellAlign::Center)), None, false),
-        ("merged-center", Some(ibis_doc_model::StyleChange::Align(ibis_doc_model::CellAlign::Center)), None, true),
+        ("left", Some(ibis_doc_model::StyleChange::HorizontalAlignment(ibis_doc_model::CellAlign::Left)), None, false),
+        ("center", Some(ibis_doc_model::StyleChange::HorizontalAlignment(ibis_doc_model::CellAlign::Center)), None, false),
+        ("right", Some(ibis_doc_model::StyleChange::HorizontalAlignment(ibis_doc_model::CellAlign::Right)), None, false),
+        ("short-top", None, Some(ibis_doc_model::StyleChange::VerticalAlignment(ibis_doc_model::CellVerticalAlign::Top)), false),
+        ("short-middle", None, Some(ibis_doc_model::StyleChange::VerticalAlignment(ibis_doc_model::CellVerticalAlign::Center)), false),
+        ("short-bottom", None, Some(ibis_doc_model::StyleChange::VerticalAlignment(ibis_doc_model::CellVerticalAlign::Bottom)), false),
+        ("short-right", Some(ibis_doc_model::StyleChange::HorizontalAlignment(ibis_doc_model::CellAlign::Right)), None, false),
+        ("short-center", Some(ibis_doc_model::StyleChange::HorizontalAlignment(ibis_doc_model::CellAlign::Center)), None, false),
+        ("merged-center", Some(ibis_doc_model::StyleChange::HorizontalAlignment(ibis_doc_model::CellAlign::Center)), None, true),
     ];
     let mut report = Vec::new();
     for (label, align, vertical, merge) in cases {
@@ -24486,7 +24562,7 @@ fn fix73_edit_click_places_caret() {
     s.key("escape");
 
     // Floating text box: insert enters edit mode immediately, 5+ lines keeps user-specified rectangle size, double-click places caret at click.
-    s.menu("insert.text-box");
+    s.menu("insert.text-box"); s.place_armed();
     s.settle();
     assert!(s.with(|e, _| e.editing.is_some()), "insert.text-box immediately enters edit mode");
     let h0 = s.with(|e, _| e.slide().shapes.last().unwrap().frame.height);
@@ -24566,7 +24642,7 @@ fn sheet008_autofit_row_height_double_click() {
     s.update(|e, _, _| {
         let slide = e.current_slide;
         let _ = e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetSize {
-            slide,
+            sheet: slide,
             axis: ibis_doc_model::sheet_command::Axis::Rows,
             first: 2,
             last: 2,
@@ -24600,7 +24676,7 @@ fn sheet008_autofit_row_height_double_click() {
     s.update(|e, _, _| {
         let slide = e.current_slide;
         let _ = e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetSize {
-            slide,
+            sheet: slide,
             axis: ibis_doc_model::sheet_command::Axis::Rows,
             first: 3,
             last: 3,
@@ -24634,14 +24710,14 @@ fn sheet008_autofit_row_height_double_click() {
         let slide = e.current_slide;
         let _ = e.document.execute(vec![
             ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetSize {
-                slide,
+                sheet: slide,
                 axis: ibis_doc_model::sheet_command::Axis::Rows,
                 first: 4,
                 last: 4,
                 size: 10 * ibis_doc_model::EMU_PER_POINT,
             }),
             ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetSize {
-                slide,
+                sheet: slide,
                 axis: ibis_doc_model::sheet_command::Axis::Rows,
                 first: 5,
                 last: 5,
@@ -24889,7 +24965,7 @@ fn sheet012_paste_special_dialog_and_options() {
             column: 4, // E1
             input: ibis_doc_model::CellInput::Formula("100*2".into()),
         }];
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits })]).unwrap();
         cx.notify();
     });
     s.click_cell("E1");
@@ -24968,7 +25044,7 @@ fn sheet012_paste_special_dialog_and_options() {
     s.update(|e, _, cx| {
         let slide = e.current_slide;
         let _ = e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetComment {
-            slide,
+            sheet: slide,
             row: 0,
             column: 0,
             comment: Some(ibis_doc_model::SheetComment {
@@ -25012,7 +25088,7 @@ fn sheet012_paste_special_dialog_and_options() {
             ibis_doc_model::CellEdit { row: 1, column: 8, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Number(80.0)) }, // I2
             ibis_doc_model::CellEdit { row: 0, column: 9, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Number(100.0)) }, // J1
         ];
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits })]).unwrap();
         cx.notify();
     });
 
@@ -25057,7 +25133,7 @@ fn sheet012_paste_special_dialog_and_options() {
             ibis_doc_model::CellEdit { row: 1, column: 11, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Number(5.0)) }, // L2
             ibis_doc_model::CellEdit { row: 1, column: 12, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Number(6.0)) }, // M2
         ];
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits })]).unwrap();
         cx.notify();
     });
 
@@ -25140,7 +25216,7 @@ fn sheet013_find_and_replace_options() {
             ibis_doc_model::CellEdit { row: 3, column: 3, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Number(40.0)) },
             ibis_doc_model::CellEdit { row: 4, column: 3, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Number(50.0)) },
         ];
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits })]).unwrap();
         cx.notify();
     });
 
@@ -25375,7 +25451,7 @@ fn sheet014_pick_from_drop_down_list() {
             ibis_doc_model::CellEdit { row: 2, column: 0, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Text("ぶどう".into())) },
             ibis_doc_model::CellEdit { row: 3, column: 0, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Text("りんご".into())) },
         ];
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits })]).unwrap();
         cx.notify();
     });
 
@@ -25419,7 +25495,7 @@ fn sheet014_pick_from_drop_down_list() {
             column: 0,
             input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Text("みかん".into())),
         };
-        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits: vec![edit] })]).unwrap();
+        e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits: vec![edit] })]).unwrap();
         if let Some(st) = e.sheet_state_mut() {
             st.list_popup = None;
         }
@@ -25536,7 +25612,7 @@ fn sheet016_print_area_add_and_clear() {
     );
 
     // 3. 印刷範囲の設定（xlsx.print-area-set）
-    s.menu("xlsx.print-area-set");
+    s.menu("xlsx.set-print-area");
     assert_eq!(
         print_area(&mut s),
         Some(ibis_doc_model::CellRange {
@@ -25609,7 +25685,7 @@ fn sheet016_print_area_add_and_clear() {
     );
 
     // 9. 印刷範囲のクリア（xlsx.print-area-clear）
-    s.menu("xlsx.print-area-clear");
+    s.menu("xlsx.clear-print-area");
     assert_eq!(print_area(&mut s), None);
 
     // 10. 1 手の Undo（⌘Z）でクリア前の A2:F10 に戻ること
@@ -25782,7 +25858,7 @@ fn sheet018_comments_and_notes_context_menu_and_shortcuts() {
     assert!(ids_initial.contains(&"xlsx.cell-comment-new".to_string()), "{ids_initial:?}");
     assert!(!ids_initial.contains(&"xlsx.cell-comment-reply".to_string()), "{ids_initial:?}");
     assert!(!ids_initial.contains(&"xlsx.cell-comment-delete".to_string()), "{ids_initial:?}");
-    assert!(ids_initial.contains(&"xlsx.note-new".to_string()), "{ids_initial:?}");
+    assert!(ids_initial.contains(&"xlsx.new-note".to_string()), "{ids_initial:?}");
     assert!(!ids_initial.contains(&"xlsx.note-edit".to_string()), "{ids_initial:?}");
     assert!(!ids_initial.contains(&"xlsx.note-delete".to_string()), "{ids_initial:?}");
 
@@ -26483,7 +26559,7 @@ fn sheet022_chart_context_menu_and_operations() {
     };
 
     // 1. 非グラフ図形（四角形）を選択した場合、グラフ専用メニュー項目が含まれないこと
-    s.menu("xlsx.shape.rect");
+    s.menu("shape.rect"); s.place_armed();
     s.settle();
     let rect_ids = top_menu_ids(&mut s);
     assert!(
@@ -27332,7 +27408,7 @@ fn options001_format_as_table_find_select_and_scale_to_fit() {
         e.document
             .execute(vec![
                 Command::Sheet(SheetCommand::SetComment {
-                    slide: slide_id,
+                    sheet: slide_id,
                     row: 1,
                     column: 0,
                     comment: Some(SheetComment {
@@ -27342,7 +27418,7 @@ fn options001_format_as_table_find_select_and_scale_to_fit() {
                         text: "Check price".into(), ..Default::default() }),
                 }),
                 Command::Sheet(SheetCommand::AddConditional {
-                    slide: slide_id,
+                    sheet: slide_id,
                     format: ConditionalFormat {
                         source_index: None,
                         ranges: vec![b2_b3],
@@ -27358,7 +27434,7 @@ fn options001_format_as_table_find_select_and_scale_to_fit() {
                     },
                 }),
                 Command::Sheet(SheetCommand::SetValidation {
-                    slide: slide_id,
+                    sheet: slide_id,
                     ranges: vec![b2_b3],
                     rule: Some(Validation {
                         ranges: vec![b2_b3],
@@ -27460,7 +27536,7 @@ fn options001_format_as_table_find_select_and_scale_to_fit() {
     s.menu("xlsx.scale-height-2");
     assert_eq!(s.with(|e, _| e.current_print().unwrap().fit_to), Some((1, 2)));
 
-    s.menu("xlsx.scale-80");
+    s.menu("xlsx.print-scale-80");
     assert_eq!(s.with(|e, _| e.current_print().unwrap().fit_to), None);
     assert_eq!(s.with(|e, _| e.current_print().unwrap().scale), 80);
 
@@ -28276,11 +28352,7 @@ fn table022_slicer003_timeline003_context_menus_and_quick_actions() {
         new_frame.y += 228600;
         new_frame.width += 304800;
         e.execute(
-            vec![ibis_doc_model::Command::SetFrame {
-                slide: slide_id,
-                shape: timeline_id,
-                frame: new_frame,
-            }],
+            vec![ibis_doc_model::Command::SetFrame { slide: slide_id, frames: vec![(timeline_id, new_frame)], with_attached: true }],
             cx,
         );
     });
@@ -28576,7 +28648,7 @@ fn cf019_validation015_audit005_context_menus_and_quick_actions() {
         };
         e.run_sheet(
             vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetValidation {
-                slide,
+                sheet: slide,
                 ranges,
                 rule: Some(rule),
             })],
@@ -28619,7 +28691,7 @@ fn cf019_validation015_audit005_context_menus_and_quick_actions() {
         let slide = e.current_slide;
         e.run_sheet(
             vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells {
-                slide,
+                sheet: slide,
                 edits: vec![ibis_doc_model::CellEdit {
                     row: 2,
                     column: 8,
@@ -28641,7 +28713,7 @@ fn cf019_validation015_audit005_context_menus_and_quick_actions() {
         e.run_sheet(
             vec![
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells {
-                    slide,
+                    sheet: slide,
                     edits: vec![
                         ibis_doc_model::CellEdit {
                             row: 0,
@@ -28729,7 +28801,7 @@ fn table009_sort_filter_context_menu_and_panel_copy_icon() {
         e.run_sheet(
             vec![
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells {
-                    slide,
+                    sheet: slide,
                     edits: vec![
                         ibis_doc_model::CellEdit {
                             row: 0,
@@ -28784,7 +28856,7 @@ fn table009_sort_filter_context_menu_and_panel_copy_icon() {
                     ],
                 }),
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetFormat {
-                    slide,
+                    sheet: slide,
                     ranges: vec![CellRange {
                         first_row: 2,
                         last_row: 2,
@@ -28794,7 +28866,7 @@ fn table009_sort_filter_context_menu_and_panel_copy_icon() {
                     change: ibis_doc_model::StyleChange::Fill(Some(ibis_doc_model::Rgb(0xFFFF00))),
                 }),
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetFormat {
-                    slide,
+                    sheet: slide,
                     ranges: vec![CellRange {
                         first_row: 2,
                         last_row: 2,
@@ -29015,7 +29087,7 @@ fn cell017_018_021_find_workbook_links_tooltip_and_select_special() {
         e.run_sheet(
             vec![
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells {
-                    slide: slide1,
+                    sheet: slide1,
                     edits: vec![
                         // H1 (col 7, row 0), I1 (col 8, row 0), H2 (col 7, row 1)
                         ibis_doc_model::CellEdit {
@@ -29036,7 +29108,7 @@ fn cell017_018_021_find_workbook_links_tooltip_and_select_special() {
                     ],
                 }),
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetComment {
-                    slide: slide1,
+                    sheet: slide1,
                     row: 2,
                     column: 7, // H3 note
                     comment: Some(ibis_doc_model::SheetComment {
@@ -29046,7 +29118,7 @@ fn cell017_018_021_find_workbook_links_tooltip_and_select_special() {
                         text: "TargetNote memo".into(), ..Default::default() }),
                 }),
                 ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells {
-                    slide: slide2,
+                    sheet: slide2,
                     edits: vec![ibis_doc_model::CellEdit {
                         row: 0,
                         column: 0, // A1 on sheet 2
@@ -30253,7 +30325,7 @@ fn machine_readability_candidates_and_live_edits() {
     s.settle();
     s.screenshot("machine-readability");
     let index = s.with(|e, _| {
-        let panel = e.wb().panels.machine_readability.as_ref().expect("review panel");
+        let panel = e.wb().panels.harunobu_review.as_ref().expect("review panel");
         assert_eq!(panel.findings.len(), 4);
         panel.findings.iter().position(|f| f.kind == CandidateKind::Formula).unwrap()
     });
@@ -30261,18 +30333,18 @@ fn machine_readability_candidates_and_live_edits() {
     assert_eq!(s.selected(), "C5");
     s.type_text("42");
     s.key("enter");
-    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    s.update(|e, _, cx| e.recheck_harunobu_review(cx));
     s.with(|e, _| {
-        let panel = e.wb().panels.machine_readability.as_ref().unwrap();
+        let panel = e.wb().panels.harunobu_review.as_ref().unwrap();
         assert_eq!(panel.findings.len(), 3);
         assert!(!panel.findings.iter().any(|f| f.kind == CandidateKind::Formula));
     });
     s.click_cell("C5");
     s.type_text("①");
     s.key("enter");
-    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    s.update(|e, _, cx| e.recheck_harunobu_review(cx));
     let index = s.with(|e, _| {
-        let panel = e.wb().panels.machine_readability.as_ref().unwrap();
+        let panel = e.wb().panels.harunobu_review.as_ref().unwrap();
         panel.findings.iter().position(|f| f.kind == CandidateKind::PlatformDependentCharacters).expect("live character candidate")
     });
     s.update(|e, _, cx| e.jump_machine_readability(index, cx));
@@ -30280,9 +30352,9 @@ fn machine_readability_candidates_and_live_edits() {
     s.click_cell("C5");
     s.type_text("\u{e000}");
     s.key("enter");
-    s.update(|e, _, cx| e.recheck_machine_readability(cx));
+    s.update(|e, _, cx| e.recheck_harunobu_review(cx));
     let index = s.with(|e, _| {
-        let panel = e.wb().panels.machine_readability.as_ref().unwrap();
+        let panel = e.wb().panels.harunobu_review.as_ref().unwrap();
         panel.findings.iter().position(|f| f.kind == CandidateKind::PrivateUseCharacters).expect("private-use advisory")
     });
     s.update(|e, _, cx| e.jump_machine_readability(index, cx));
@@ -30297,10 +30369,10 @@ fn harunobu_reference_integration() {
     s.update(|e, window, cx| e.run_harunobu("thorough", window, cx));
     for _ in 0..100 {
         s.wait(100);
-        if s.with(|e, _| e.wb().panels.machine_readability.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
+        if s.with(|e, _| e.wb().panels.harunobu_review.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
     }
     s.with(|e, _| {
-        let p = e.wb().panels.machine_readability.as_ref().unwrap();
+        let p = e.wb().panels.harunobu_review.as_ref().unwrap();
         assert!(p.full_error.is_none(), "Harunobu failed: {:?}", p.full_error);
         let report = p.full.as_ref().expect("Harunobu output");
         assert_eq!(report.json["レベル別スコア"]["1"]["スコア"], 0);
@@ -30321,10 +30393,10 @@ fn harunobu_reference_integration() {
     s.update(|e, window, cx| e.run_harunobu("standard", window, cx));
     for _ in 0..100 {
         s.wait(100);
-        if s.with(|e, _| e.wb().panels.machine_readability.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
+        if s.with(|e, _| e.wb().panels.harunobu_review.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
     }
     s.with(|e, _| {
-        let p = e.wb().panels.machine_readability.as_ref().unwrap();
+        let p = e.wb().panels.harunobu_review.as_ref().unwrap();
         assert!(p.full_error.is_none(), "snapshot failed: {:?}", p.full_error);
         let report = p.full.as_ref().expect("snapshot report");
         assert!(report.snapshot);
@@ -30348,7 +30420,7 @@ fn harunobu_unsaved_csv() {
     s.key("enter");
     s.update(|e, window, cx| e.run_harunobu("standard", window, cx));
     s.with(|e, _| {
-        let p = e.wb().panels.machine_readability.as_ref().unwrap();
+        let p = e.wb().panels.harunobu_review.as_ref().unwrap();
         assert!(p.full.is_none());
         assert!(p.full_error.is_some(), "unsaved CSV must not inspect stale bytes");
     });
@@ -30444,14 +30516,48 @@ print(json.dumps(to_bulk_dict(Analyzer(mode=mode).analyze_bulk(books)), ensure_a
     s.update(|e, window, cx| e.start_harunobu(paths, true, "thorough", window, cx));
     for _ in 0..100 {
         s.wait(100);
-        if s.with(|e, _| e.wb().panels.machine_readability.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
+        if s.with(|e, _| e.wb().panels.harunobu_review.as_ref().is_some_and(|p| p.full_busy.is_none())) { break; }
     }
     s.with(|e, _| {
-        let p = e.wb().panels.machine_readability.as_ref().unwrap();
+        let p = e.wb().panels.harunobu_review.as_ref().unwrap();
         assert!(p.full_error.is_none(), "bulk failed: {:?}", p.full_error);
         let report = p.full.as_ref().expect("bulk report");
         assert!(report.json["ファイル横断チェック"]["L3-07"].is_object());
         assert_eq!(report.json["ファイル数"], 2);
     });
     s.screenshot("harunobu-bulk-report");
+}
+
+/// #205: a command with no icon (印刷の拡大縮小 80%) put in the quick access toolbar is drawn as a ring (Office's ○), not as nothing,
+/// and a click on it runs the command.
+fn issue205_quick_access_no_icon_ring() {
+    use crate::shell::scenario::button_probe as buttons;
+    let mut s = Scenario::open("test/editing/xlsx-sales.xlsx");
+    s.size(1200., 800.);
+    let dir = crate::shell::scenario::repo_root().join("target/scenario/xlsx::issue205_quick_access_no_icon_ring/settings");
+    let _ = std::fs::remove_dir_all(&dir);
+    // SAFETY: the scenarios run one at a time on the main thread; nothing else reads the environment meanwhile.
+    unsafe { std::env::set_var("IBIS_SETTINGS_DIR", &dir) };
+    crate::shell::qat::reload();
+    let _probe = buttons::Probe::new();
+    let menus = s.with(|e, _| e.menus());
+    match menus.find_entry("xlsx.print-scale-80") {
+        Some(crate::shell::chrome::MenuEntry::Item(item)) => assert!(item.icon.is_none_or(str::is_empty), "the command has no icon"),
+        _ => panic!("the command is a menu item"),
+    }
+    crate::shell::qat::toggle("xlsx.print-scale-80");
+    s.update(|_, _, cx| cx.notify());
+    s.settle();
+    assert_eq!(s.update(|e, _, cx| e.quick_access_buttons(&cx.entity().downgrade()).len()), 1, "a button for the command without an icon");
+    let id = buttons::all().into_iter().find(|id| id.contains("xlsx.print-scale-80")).unwrap_or_else(|| panic!("the button is drawn: {:?}", buttons::all()));
+    let b = buttons::bounds(&id).unwrap();
+    assert!(f32::from(b.size.width) > 20. && f32::from(b.size.height) > 20., "{b:?}");
+    s.screenshot("ring");
+    let scale = |s: &mut Scenario| s.with(|e, _| e.current_print().map(|p| p.scale));
+    assert_ne!(scale(&mut s), Some(80));
+    buttons::click(&mut s, &id);
+    s.settle();
+    assert_eq!(scale(&mut s), Some(80), "a click runs the command");
+    unsafe { std::env::remove_var("IBIS_SETTINGS_DIR") };
+    crate::shell::qat::reload();
 }

@@ -18,7 +18,7 @@ use crate::xls::{u16_at, Record};
 
 /// A range of cells a series reads (an `AI` record's formula: a 3-D area or reference).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Ref {
+pub struct Ref {
     /// The index of the `EXTERNSHEET` entry (which sheet).
     pub ixti: u16,
     pub rows: (u16, u16),
@@ -26,7 +26,7 @@ pub(crate) struct Ref {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
-pub(crate) enum Source {
+pub enum Source {
     #[default]
     None,
     Ref(Ref),
@@ -38,7 +38,7 @@ pub(crate) enum Source {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind {
+pub enum Kind {
     Bar,
     Line,
     Area,
@@ -48,7 +48,7 @@ pub(crate) enum Kind {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Group {
+pub struct Group {
     pub kind: Kind,
     /// Bars: horizontal. Bars, lines, areas: stacked, or stacked to 100 %.
     pub horizontal: bool,
@@ -66,7 +66,7 @@ pub(crate) struct Group {
 /// Where the plot area is (`CrtLayout12A`, MS-XLS 2.4.66, as DrawingML's `c:manualLayout`): its left and top edges and its
 /// width and height, fractions of the chart, of the inside of the axes (`inner`) or of the whole with the labels.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PlotLayout {
+pub struct PlotLayout {
     pub inner: bool,
     pub x: f64,
     pub y: f64,
@@ -75,7 +75,7 @@ pub(crate) struct PlotLayout {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Series {
+pub struct Series {
     pub name: Source,
     pub values: Source,
     /// Categories; a scatter's x values.
@@ -113,7 +113,7 @@ pub(crate) struct Series {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Axis {
+pub struct Axis {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub major: Option<f64>,
@@ -129,7 +129,7 @@ pub(crate) struct Axis {
 
 /// A value axis's display units ([MS-XLS] 2.4.343 YMult): a built-in one by its `axmid`, or a custom divisor.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum DisplayUnit {
+pub enum DisplayUnit {
     BuiltIn(&'static str),
     Custom(f64),
 }
@@ -154,7 +154,7 @@ impl DisplayUnit {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Chart {
+pub struct Chart {
     pub title: Option<String>,
     pub groups: Vec<Group>,
     pub series: Vec<Series>,
@@ -697,7 +697,7 @@ pub(crate) fn read_chart(records: &[&Record<'_>]) -> Option<Chart> {
 }
 
 /// The cells a [`Ref`] covers, as the caller reads them.
-pub(crate) trait Cells {
+pub trait Cells {
     /// The sheet's name and the values of the range: row by row, a number, a text or nothing.
     fn range(&self, r: &Ref) -> Option<(String, Vec<Cell>)>;
     /// A colour of the workbook's palette (the old charts' automatic colours are some of them: 16 and on
@@ -722,7 +722,7 @@ pub(crate) trait Cells {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Cell {
+pub enum Cell {
     Number(f64),
     Text(String),
     Empty,
@@ -827,7 +827,7 @@ fn marker_symbol(imk: u16) -> &'static str {
 
 /// The `c:chartSpace` of a chart; `cells` reads the cells its series name, `default_name` gives the name of
 /// a series with none (its number from 1).
-pub(crate) fn chart_xml(chart: &Chart, cells: &dyn Cells, default_name: &dyn Fn(usize) -> String) -> String {
+pub fn chart_xml(chart: &Chart, cells: &dyn Cells, default_name: &dyn Fn(usize) -> String) -> String {
     let scatter = chart.groups.iter().any(|g| g.kind == Kind::Scatter);
     let pie = chart.groups.iter().all(|g| g.kind == Kind::Pie);
     let mut plot = String::new();

@@ -137,7 +137,7 @@ fn numbers() {
         e.run_sheet(
             vec![ibis_doc_model::Command::Sheet(
                 ibis_doc_model::SheetCommand::SetSize {
-                    slide,
+                    sheet: slide,
                     axis: ibis_doc_model::sheet_command::Axis::Columns,
                     first: 0,
                     last: 0,

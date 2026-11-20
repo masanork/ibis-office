@@ -522,6 +522,56 @@ pub enum ArrowKind {
     Double,
 }
 
+/// What a tile of the 挿入 > 図形 menu inserts (each screen turns it into its own action: a document draws it on the page, a
+/// presentation arms the drawing tool, a sheet puts it at the selected cell).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapeTile {
+    /// A closed preset shape (`rect`, `star5`…).
+    Preset(&'static str),
+    /// A line or connector, with its arrow head ([`ArrowKind::None`] or [`ArrowKind::Single`] in this menu).
+    Line(LineKind, ArrowKind),
+}
+
+/// How many tiles a row of the 挿入 > 図形 menu has (K0031).
+pub const SHAPE_TILE_COLUMNS: usize = 4;
+
+/// The 挿入 > 図形 menu of the three screens (K0031): the lines and connectors, then the preset shapes, each a small 4:3 picture over
+/// its name, [`SHAPE_TILE_COLUMNS`] to a row. The screen supplies what choosing a tile does (`insert`) and whether the tiles are enabled.
+pub fn shape_tile_items(enabled: bool, insert: fn(&mut crate::editor::SlideEditor, ShapeTile, &mut gpui_kit::Window, &mut gpui_kit::Context<crate::editor::SlideEditor>)) -> Vec<MenuEntry> {
+    let tile = |id: &'static str, icon: &'static str, kind: ShapeTile| -> MenuEntry {
+        let thumb = match kind {
+            ShapeTile::Preset(preset) => ShapeThumb::Preset(preset),
+            ShapeTile::Line(line, arrow) => ShapeThumb::Line {
+                preset: match line {
+                    LineKind::Bent => "bentConnector3",
+                    LineKind::Curved => "curvedConnector3",
+                    _ => "line",
+                },
+                arrow: arrow != ArrowKind::None,
+            },
+        };
+        MenuItem::tr(id)
+            .icon(icon)
+            .disabled(!enabled)
+            .on(move |this, window, cx| insert(this, kind, window, cx))
+            .thumb(move |editor, width| shape_thumb(editor, thumb, width))
+            .tile_columns(SHAPE_TILE_COLUMNS)
+            .tile_width(crate::menu_tiles::SMALL_TILE_WIDTH)
+            .into()
+    };
+    let mut items = vec![
+        tile("docx.shape.line", "remove", ShapeTile::Line(LineKind::Straight, ArrowKind::None)),
+        tile("docx.shape.arrow", "arrow_right_alt", ShapeTile::Line(LineKind::Straight, ArrowKind::Single)),
+        tile("docx.shape.elbow", "turn_right", ShapeTile::Line(LineKind::Bent, ArrowKind::None)),
+        tile("docx.shape.elbow-arrow", "turn_right", ShapeTile::Line(LineKind::Bent, ArrowKind::Single)),
+        tile("docx.shape.curved", "gesture", ShapeTile::Line(LineKind::Curved, ArrowKind::None)),
+        tile("docx.shape.curved-arrow", "gesture", ShapeTile::Line(LineKind::Curved, ArrowKind::Single)),
+        MenuEntry::Separator,
+    ];
+    items.extend(SHAPES.iter().map(|&(preset, icon, id)| tile(id, icon, ShapeTile::Preset(preset))));
+    items
+}
+
 pub fn smartart_insert_items() -> Vec<MenuEntry> {
     vec![
         MenuItem::tr("pptx.insert.smartart.list").icon("view_list").on(|e, _, cx| e.insert_smartart(crate::smartart::SmartArtKind::BasicBlockList, cx)).into(),
@@ -535,7 +585,7 @@ pub fn smartart_insert_items() -> Vec<MenuEntry> {
         MenuItem::tr("pptx.insert.smartart.relationship").icon("sync_alt").on(|e, _, cx| e.insert_smartart(crate::smartart::SmartArtKind::BasicRelationship, cx)).into(),
         MenuItem::tr("pptx.insert.smartart.matrix").icon("grid_view").on(|e, _, cx| e.insert_smartart(crate::smartart::SmartArtKind::BasicMatrix, cx)).into(),
         MenuItem::tr("pptx.insert.smartart.pyramid").icon("change_history").on(|e, _, cx| e.insert_smartart(crate::smartart::SmartArtKind::BasicPyramid, cx)).into(),
-        MenuItem::tr("pptx.insert.smartart.picture").icon("insert_photo").on(|e, _, cx| e.insert_smartart(crate::smartart::SmartArtKind::PictureList, cx)).into(),
+        MenuItem::tr("pptx.insert.smartart.picture").icon("image").on(|e, _, cx| e.insert_smartart(crate::smartart::SmartArtKind::PictureList, cx)).into(),
     ]
 }
 

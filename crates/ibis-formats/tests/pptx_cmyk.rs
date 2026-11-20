@@ -63,3 +63,35 @@ fn an_older_extension_with_colour_entries_is_read_without_them() {
     let again = ibis_formats::open(bytes).expect("an old extension does not stop the file opening");
     assert!(again.presentation.cmyk.enabled);
 }
+
+/// The same flag and profile name in a document's `settings.xml` and a workbook's `workbook.xml`: saved where Office ignores
+/// them, read back, and taken away again; the file still opens as before.
+#[test]
+fn the_cmyk_mode_round_trips_in_a_document_and_a_workbook() {
+    for (file, part, needle) in [("editing/docx-report.docx", "word/settings.xml", "ibis:cmyk"), ("editing/ibis-src.xlsx", "xl/workbook.xml", "1B15C0DE-0003")] {
+        let bytes = std::fs::read(test_file(file)).expect("read");
+        let opened = ibis_formats::open(bytes).expect("open");
+        assert!(!opened.presentation.cmyk.enabled, "{file}");
+        let mut modified = opened.presentation.clone();
+        modified.cmyk.enabled = true;
+        modified.cmyk.profile = Some("Test & <profile>|abc".into());
+        let saved = opened.source.save(&modified, SaveOptions::default()).unwrap_or_else(|e| panic!("{file}: save {e:?}"));
+        let pkg = ibis_ooxml::Package::open(saved.clone()).expect("package");
+        let xml = String::from_utf8(pkg.read(part).unwrap()).unwrap();
+        assert!(xml.contains(needle), "{file}: the extension is in {part}");
+        assert!(xml.contains("Test &amp; &lt;profile"), "{file}: the profile's name is escaped");
+        if part.starts_with("word/") {
+            assert!(xml.contains("Ignorable") && xml.contains("ibis"), "{file}: ibis is ignorable for Word");
+        }
+        let reopened = ibis_formats::open(saved).expect("reopen");
+        assert!(reopened.presentation.cmyk.enabled, "{file}: still on after saving and opening");
+        assert_eq!(reopened.presentation.cmyk.profile.as_deref(), Some("Test & <profile>|abc"), "{file}");
+        // Saving the reopened file again, unchanged, keeps it; turning it off takes it away.
+        let mut off = reopened.presentation.clone();
+        off.cmyk = Default::default();
+        let cleared = reopened.source.save(&off, SaveOptions::default()).expect("save cleared");
+        let pkg = ibis_ooxml::Package::open(cleared.clone()).unwrap();
+        assert!(!String::from_utf8(pkg.read(part).unwrap()).unwrap().contains(needle), "{file}: off takes the extension away");
+        assert!(!ibis_formats::open(cleared).unwrap().presentation.cmyk.enabled, "{file}");
+    }
+}

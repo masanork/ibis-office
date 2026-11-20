@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/235)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! OFD digital signature verification (SM3 reference digests and SM2withSM3).
 
@@ -429,23 +429,38 @@ fn decode_der_length(data: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-/// Format a concise status-bar summary for verified OFD signatures.
-pub fn format_signature_status(verifications: &[OfdSignatureVerification]) -> Option<String> {
+/// What the signatures of an OFD, taken together, were found to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignatureOutcome {
+    /// A reference digest or a signature value does not agree with the file.
+    Mismatch,
+    /// Every reference digest (SM3) agrees and every signature value (SM2) is valid.
+    Verified,
+    /// Every reference digest agrees; the signature value was not (or could not be) verified.
+    DigestsMatch,
+}
+
+/// The number of signatures and what they were found to be, for the status bar (the words are the screen's: the caller translates).
+pub fn summarize_signatures(verifications: &[OfdSignatureVerification]) -> Option<(usize, SignatureOutcome)> {
     if verifications.is_empty() {
         return None;
     }
     let n = verifications.len();
-    let any_tampered = verifications.iter().any(|v| {
-        !v.all_references_ok() || matches!(v.crypto, OfdSignatureCryptoResult::Invalid)
-    });
+    let any_tampered = verifications.iter().any(|v| !v.all_references_ok() || matches!(v.crypto, OfdSignatureCryptoResult::Invalid));
     if any_tampered {
-        return Some(format!("署名: {n}件 (改ざん/不一致あり)"));
+        return Some((n, SignatureOutcome::Mismatch));
     }
-    let all_crypto_valid = verifications
-        .iter()
-        .all(|v| v.all_references_ok() && v.crypto == OfdSignatureCryptoResult::Valid);
-    if all_crypto_valid {
-        return Some(format!("署名: {n}件 (SM3/SM2検証済)"));
-    }
-    Some(format!("署名: {n}件 (SM3ダイジェスト一致)"))
+    let all_crypto_valid = verifications.iter().all(|v| v.all_references_ok() && v.crypto == OfdSignatureCryptoResult::Valid);
+    Some((n, if all_crypto_valid { SignatureOutcome::Verified } else { SignatureOutcome::DigestsMatch }))
+}
+
+/// Format the signature summary used by existing Japanese status-bar callers.
+pub fn format_signature_status(verifications: &[OfdSignatureVerification]) -> Option<String> {
+    let (count, outcome) = summarize_signatures(verifications)?;
+    let detail = match outcome {
+        SignatureOutcome::Mismatch => "改ざん/不一致あり",
+        SignatureOutcome::Verified => "SM3/SM2検証済",
+        SignatureOutcome::DigestsMatch => "SM3ダイジェスト一致",
+    };
+    Some(format!("署名: {count}件 ({detail})"))
 }

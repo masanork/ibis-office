@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/247)
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
+// Changed for GitHub issue #256 (masanork, commit eb3f1a78 of github.com/masanork/ibis-office): the sprite atlas and the renderer are kept when the native window comes back from the file picker; only the surface is replaced.
 use crate::display::{AndroidDisplay, AndroidDisplayState};
 use android_activity::AndroidAppWaker;
 use gpui::{

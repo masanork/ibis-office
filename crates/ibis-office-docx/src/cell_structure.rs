@@ -124,7 +124,7 @@ impl SlideEditor {
     }
     fn replace_structure_table(&mut self,table:FlowTable,cx:&mut Context<Self>) {
         let Some((container,index))=self.flow().and_then(|d|flow_command::locate(d,table.id)) else{return};
-        let command=FlowCommand::ReplaceBlocks {container,index,remove:1,blocks:vec![Block::Table(table)]};
+        let command=FlowCommand::ReplaceBlockRange {container,index,remove:1,blocks:vec![Block::Table(table)]};
         // Validate the bounded save path before changing the live document.
         // Wrapped/complex source cells can be rejected without losing work.
         if let Some(source)=self.source.as_ref() {

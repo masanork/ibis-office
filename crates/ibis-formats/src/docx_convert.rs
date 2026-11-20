@@ -94,7 +94,8 @@ impl DocxConvertFormat {
     }
 }
 
-pub(crate) fn xml_escape(s: &str) -> String {
+#[doc(hidden)]
+pub fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -192,29 +193,32 @@ fn paragraph_heading_level(p: &FlowParagraph) -> Option<u8> {
 // =========================================================================
 
 #[derive(Clone, Debug, Default)]
-struct ConvRun {
-    text: String,
-    bold: bool,
-    italic: bool,
-    underline: bool,
-    strike: bool,
-    color: Option<Rgb>,
-    size_half_pt: Option<u32>,
-    link_url: Option<String>,
-    is_tab: bool,
-    is_line_break: bool,
+#[doc(hidden)]
+pub struct ConvRun {
+    pub text: String,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
+    pub color: Option<Rgb>,
+    pub size_half_pt: Option<u32>,
+    pub link_url: Option<String>,
+    pub is_tab: bool,
+    pub is_line_break: bool,
 }
 
 #[derive(Clone, Debug, Default)]
-struct ConvPara {
-    heading: Option<u8>,
-    align: FlowAlign,
-    runs: Vec<ConvRun>,
+#[doc(hidden)]
+pub struct ConvPara {
+    pub heading: Option<u8>,
+    pub align: FlowAlign,
+    pub runs: Vec<ConvRun>,
 }
 
 #[derive(Clone, Debug, Default)]
-struct ConvTable {
-    rows: Vec<Vec<Vec<ConvPara>>>,
+#[doc(hidden)]
+pub struct ConvTable {
+    pub rows: Vec<Vec<Vec<ConvPara>>>,
     // Non-default geometry, keyed by output row and cell (not grid column).
     geometry: HashMap<(usize, usize), (usize, ibis_doc_model::VerticalMerge)>,
 }
@@ -226,12 +230,14 @@ impl ConvTable {
 }
 
 #[derive(Clone, Debug)]
-enum ConvBlock {
+#[doc(hidden)]
+pub enum ConvBlock {
     Para(ConvPara),
     Table(ConvTable),
 }
 
-fn build_docx_from_blocks(blocks: &[ConvBlock], title: Option<&str>) -> Result<Vec<u8>, Error> {
+#[doc(hidden)]
+pub fn build_docx_from_blocks(blocks: &[ConvBlock], title: Option<&str>) -> Result<Vec<u8>, Error> {
     let mut doc_xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -960,7 +966,8 @@ pub fn import_rtf(data: &[u8]) -> Result<Opened, Error> {
 // 3. Legacy Word 97-2003 (.doc) — DOCX-FILE-010, DOCX-SEC-019
 // =========================================================================
 
-fn doc_flow_to_conv_blocks(doc: &FlowDocument) -> Vec<ConvBlock> {
+#[doc(hidden)]
+pub fn doc_flow_to_conv_blocks(doc: &FlowDocument) -> Vec<ConvBlock> {
     let map_para = |p: &FlowParagraph| -> ConvPara {
         let mut runs = Vec::new();
         for r in &p.runs {

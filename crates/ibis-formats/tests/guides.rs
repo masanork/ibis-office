@@ -154,7 +154,7 @@ fn a_deck_with_guides_keeps_them_through_an_edit_and_a_save() {
     let before = opened.presentation.guides.clone();
     let mut document = Document::new(opened.presentation.clone());
     let slide = document.presentation().slides[0].id;
-    document.execute(vec![Command::SetBackdropHidden { slide, hidden: true }]).unwrap();
+    document.execute(vec![Command::SetBackgroundGraphicsHidden { slide, hidden: true }]).unwrap();
     let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
     assert_eq!(ibis_formats::open(saved.clone()).unwrap().presentation.guides, before);
     // The layouts' guides are in the saved file as they were.

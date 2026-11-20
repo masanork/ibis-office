@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/246)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Pure-Rust HL7 FHIR (Bundle JSON/XML, JP-Core 3文書6情報) and HL7 v2.x
 //! faithful document formatter for ibisOffice.
@@ -43,8 +43,14 @@ pub fn input_to_markdown(data: &[u8]) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
+/// An HL7 CDA document: the root is `ClinicalDocument` in the namespace `urn:hl7-org:v3`.
 fn looks_like_cda_xml(trimmed: &str) -> bool {
-    trimmed.contains("urn:hl7-org:v3") && trimmed.contains("<ClinicalDocument")
+    if !trimmed.contains("urn:hl7-org:v3") {
+        return false;
+    }
+    let Ok(doc) = roxmltree::Document::parse(trimmed) else { return false };
+    let root = doc.root_element();
+    root.tag_name().namespace() == Some("urn:hl7-org:v3") && root.tag_name().name() == "ClinicalDocument"
 }
 
 /// Summary of authenticity / signature markers in a FHIR Bundle.
@@ -92,21 +98,191 @@ fn collect_fhir_authenticity(root: &Value) -> FhirAuthenticityReport {
     report
 }
 
+/// The resource types of HL7 FHIR R4 (the names a `resourceType`, or the root element of an XML resource, can have).
+const FHIR_R4_RESOURCES: &[&str] = &[
+    "Account",
+    "ActivityDefinition",
+    "AdverseEvent",
+    "AllergyIntolerance",
+    "Appointment",
+    "AppointmentResponse",
+    "AuditEvent",
+    "Basic",
+    "Binary",
+    "BiologicallyDerivedProduct",
+    "BodyStructure",
+    "Bundle",
+    "CapabilityStatement",
+    "CarePlan",
+    "CareTeam",
+    "CatalogEntry",
+    "ChargeItem",
+    "ChargeItemDefinition",
+    "Claim",
+    "ClaimResponse",
+    "ClinicalImpression",
+    "CodeSystem",
+    "Communication",
+    "CommunicationRequest",
+    "CompartmentDefinition",
+    "Composition",
+    "ConceptMap",
+    "Condition",
+    "Consent",
+    "Contract",
+    "Coverage",
+    "CoverageEligibilityRequest",
+    "CoverageEligibilityResponse",
+    "DetectedIssue",
+    "Device",
+    "DeviceDefinition",
+    "DeviceMetric",
+    "DeviceRequest",
+    "DeviceUseStatement",
+    "DiagnosticReport",
+    "DocumentManifest",
+    "DocumentReference",
+    "EffectEvidenceSynthesis",
+    "Encounter",
+    "Endpoint",
+    "EnrollmentRequest",
+    "EnrollmentResponse",
+    "EpisodeOfCare",
+    "EventDefinition",
+    "Evidence",
+    "EvidenceVariable",
+    "ExampleScenario",
+    "ExplanationOfBenefit",
+    "FamilyMemberHistory",
+    "Flag",
+    "Goal",
+    "GraphDefinition",
+    "Group",
+    "GuidanceResponse",
+    "HealthcareService",
+    "ImagingStudy",
+    "Immunization",
+    "ImmunizationEvaluation",
+    "ImmunizationRecommendation",
+    "ImplementationGuide",
+    "InsurancePlan",
+    "Invoice",
+    "Library",
+    "Linkage",
+    "List",
+    "Location",
+    "Measure",
+    "MeasureReport",
+    "Media",
+    "Medication",
+    "MedicationAdministration",
+    "MedicationDispense",
+    "MedicationKnowledge",
+    "MedicationRequest",
+    "MedicationStatement",
+    "MedicinalProduct",
+    "MedicinalProductAuthorization",
+    "MedicinalProductContraindication",
+    "MedicinalProductIndication",
+    "MedicinalProductIngredient",
+    "MedicinalProductInteraction",
+    "MedicinalProductManufactured",
+    "MedicinalProductPackaged",
+    "MedicinalProductPharmaceutical",
+    "MedicinalProductUndesirableEffect",
+    "MessageDefinition",
+    "MessageHeader",
+    "MolecularSequence",
+    "NamingSystem",
+    "NutritionOrder",
+    "Observation",
+    "ObservationDefinition",
+    "OperationDefinition",
+    "OperationOutcome",
+    "Organization",
+    "OrganizationAffiliation",
+    "Parameters",
+    "Patient",
+    "PaymentNotice",
+    "PaymentReconciliation",
+    "Person",
+    "PlanDefinition",
+    "Practitioner",
+    "PractitionerRole",
+    "Procedure",
+    "Provenance",
+    "Questionnaire",
+    "QuestionnaireResponse",
+    "RelatedPerson",
+    "RequestGroup",
+    "ResearchDefinition",
+    "ResearchElementDefinition",
+    "ResearchStudy",
+    "ResearchSubject",
+    "RiskAssessment",
+    "RiskEvidenceSynthesis",
+    "Schedule",
+    "SearchParameter",
+    "ServiceRequest",
+    "Slot",
+    "Specimen",
+    "SpecimenDefinition",
+    "StructureDefinition",
+    "StructureMap",
+    "Subscription",
+    "Substance",
+    "SubstanceNucleicAcid",
+    "SubstancePolymer",
+    "SubstanceProtein",
+    "SubstanceReferenceInformation",
+    "SubstanceSourceMaterial",
+    "SubstanceSpecification",
+    "SupplyDelivery",
+    "SupplyRequest",
+    "Task",
+    "TerminologyCapabilities",
+    "TestReport",
+    "TestScript",
+    "ValueSet",
+    "VerificationResult",
+    "VisionPrescription",
+];
+
+fn is_fhir_resource(name: &str) -> bool {
+    FHIR_R4_RESOURCES.binary_search(&name).is_ok()
+}
+
+/// A JSON object whose `resourceType` is a resource of FHIR R4 (a JSON file that only mentions one, in a string or deeper, is not).
 fn looks_like_fhir_json(trimmed: &str) -> bool {
-    trimmed.contains("\"resourceType\"")
-        && (trimmed.contains("\"Bundle\"")
-            || trimmed.contains("\"Composition\"")
-            || trimmed.contains("\"Patient\""))
+    if !trimmed.contains("\"resourceType\"") {
+        return false;
+    }
+    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(trimmed) else { return false };
+    root.get("resourceType").and_then(Value::as_str).is_some_and(is_fhir_resource)
 }
 
+/// An XML document whose root is a FHIR R4 resource in the FHIR namespace.
 fn looks_like_fhir_xml(trimmed: &str) -> bool {
-    trimmed.contains("http://hl7.org/fhir")
-        && (trimmed.contains("<Bundle") || trimmed.contains("<Composition"))
+    if !trimmed.contains("http://hl7.org/fhir") {
+        return false;
+    }
+    let Ok(doc) = roxmltree::Document::parse(trimmed) else { return false };
+    let root = doc.root_element();
+    root.tag_name().namespace() == Some("http://hl7.org/fhir") && is_fhir_resource(root.tag_name().name())
 }
 
+/// An HL7 v2 message: the MSH segment with its separators and at least the fields up to the message type (MSH-9), then segments that begin with their
+/// three-character names.
 fn looks_like_hl7v2(trimmed: &str) -> bool {
-    let first_line = trimmed.lines().next().unwrap_or("");
-    first_line.starts_with("MSH|") && first_line.len() >= 9 && first_line[4..].starts_with("^~\\&")
+    let mut lines = trimmed.lines().map(str::trim_end).filter(|l| !l.is_empty());
+    let Some(first) = lines.next() else { return false };
+    if !(first.starts_with("MSH|") && first.len() >= 9 && first[4..].starts_with("^~\\&") && first.split('|').count() >= 9) {
+        return false;
+    }
+    lines.all(|l| {
+        let b = l.as_bytes();
+        b.len() >= 4 && b[..3].iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) && b[3] == b'|'
+    })
 }
 
 fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
@@ -136,7 +312,7 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
         .find(|r| res_type(r) == "Composition");
     let title = composition
         .and_then(|c| c.get("title").and_then(Value::as_str))
-        .unwrap_or("HL7 FHIR 文書");
+        .map_or_else(|| crate::words::text("medical.fhir.default-title"), str::to_string);
     let doc_date = composition
         .and_then(|c| c.get("date").and_then(Value::as_str))
         .or_else(|| root.get("timestamp").and_then(Value::as_str))
@@ -145,7 +321,7 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
 
     let mut md = String::new();
     let _ = writeln!(md, "---");
-    let _ = writeln!(md, "title: {}", yaml_escape(title));
+    let _ = writeln!(md, "title: {}", yaml_escape(&title));
     let _ = writeln!(md, "fhir_resource_type: {}", yaml_escape(rtype));
     if !bundle_id.is_empty() {
         let _ = writeln!(md, "fhir_id: {}", yaml_escape(bundle_id));
@@ -155,22 +331,14 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
     }
     let _ = writeln!(md, "---\n");
     let _ = writeln!(md, "# {title}\n");
-    let _ = writeln!(
-        md,
-        "> 本表示は HL7 FHIR データの忠実な構造化転記であり、診断・治療の判断支援を行うものではありません。\n"
-    );
+    let _ = writeln!(md, "> {}\n", crate::words::text("medical.fhir.notice"));
     let auth = collect_fhir_authenticity(&root);
     if auth.signature_count > 0 || auth.provenance_count > 0 {
+        let signers = if auth.signers.is_empty() { "-".to_string() } else { auth.signers.join(", ") };
         let _ = writeln!(
             md,
-            "> **真正性情報 (Provenance/Signature)**: Provenance {} 件 / 署名要素 {} 件（署名者: {}）\n",
-            auth.provenance_count,
-            auth.signature_count,
-            if auth.signers.is_empty() {
-                "-".to_string()
-            } else {
-                auth.signers.join(", ")
-            }
+            "> {}\n",
+            crate::words::format("medical.fhir.authenticity", &[("provenance", &auth.provenance_count), ("signatures", &auth.signature_count), ("signers", &signers)])
         );
     }
 
@@ -181,8 +349,8 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
         .filter(|r| res_type(r) == "Patient")
         .collect();
     if !patients.is_empty() {
-        let _ = writeln!(md, "## 患者情報\n");
-        let _ = writeln!(md, "| 項目 | 内容 |");
+        let _ = writeln!(md, "## {}\n", crate::words::text("medical.fhir.patient-heading"));
+        let _ = writeln!(md, "{}", crate::words::text("medical.fhir.patient-head"));
         let _ = writeln!(md, "| --- | --- |");
         for p in patients {
             let name = extract_human_name(p);
@@ -195,10 +363,10 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
                 .and_then(|i| i.get("value").and_then(Value::as_str))
                 .or_else(|| p.get("id").and_then(Value::as_str))
                 .unwrap_or("-");
-            let _ = writeln!(md, "| 患者ID | {} |", md_cell(pid));
-            let _ = writeln!(md, "| 氏名 | {} |", md_cell(&name));
-            let _ = writeln!(md, "| 性別 | {} |", md_cell(gender));
-            let _ = writeln!(md, "| 生年月日 | {} |", md_cell(birth));
+            let _ = writeln!(md, "| {} | {} |", crate::words::text("medical.fhir.patient-id"), md_cell(pid));
+            let _ = writeln!(md, "| {} | {} |", crate::words::text("medical.fhir.patient-name"), md_cell(&name));
+            let _ = writeln!(md, "| {} | {} |", crate::words::text("medical.fhir.patient-gender"), md_cell(gender));
+            let _ = writeln!(md, "| {} | {} |", crate::words::text("medical.fhir.patient-birth"), md_cell(birth));
         }
         md.push('\n');
     }
@@ -210,8 +378,8 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
         .filter(|r| matches!(res_type(r), "Organization" | "Practitioner"))
         .collect();
     if !orgs.is_empty() {
-        let _ = writeln!(md, "## 発行元・担当者\n");
-        let _ = writeln!(md, "| 種別 | 名称 |");
+        let _ = writeln!(md, "## {}\n", crate::words::text("medical.fhir.issuer-heading"));
+        let _ = writeln!(md, "{}", crate::words::text("medical.fhir.issuer-head"));
         let _ = writeln!(md, "| --- | --- |");
         for o in orgs {
             let kind = res_type(o);
@@ -232,8 +400,8 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
         .filter(|r| res_type(r) == "Condition")
         .collect();
     if !conditions.is_empty() {
-        let _ = writeln!(md, "## 傷病名 (Condition)\n");
-        let _ = writeln!(md, "| 傷病名 | コード | 臨床状態 | 発症/記録日 |");
+        let _ = writeln!(md, "## {}\n", crate::words::text("medical.fhir.condition-heading"));
+        let _ = writeln!(md, "{}", crate::words::text("medical.fhir.condition-head"));
         let _ = writeln!(md, "| --- | --- | --- | --- |");
         for c in conditions {
             let (disp, code) = extract_codeable(c.get("code"));
@@ -262,8 +430,8 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
         .filter(|r| res_type(r) == "AllergyIntolerance")
         .collect();
     if !allergies.is_empty() {
-        let _ = writeln!(md, "## アレルギー・薬剤禁忌 (AllergyIntolerance)\n");
-        let _ = writeln!(md, "| 原因物質 | 種別 | 重要度 | 臨床状態 |");
+        let _ = writeln!(md, "## {}\n", crate::words::text("medical.fhir.allergy-heading"));
+        let _ = writeln!(md, "{}", crate::words::text("medical.fhir.allergy-head"));
         let _ = writeln!(md, "| --- | --- | --- | --- |");
         for a in allergies {
             let (disp, _) = extract_codeable(a.get("code"));
@@ -294,8 +462,8 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
         .filter(|r| res_type(r) == "Observation")
         .collect();
     if !observations.is_empty() {
-        let _ = writeln!(md, "## 検査結果・所見 (Observation)\n");
-        let _ = writeln!(md, "| 項目名 | コード | 測定値 | 基準日時 |");
+        let _ = writeln!(md, "## {}\n", crate::words::text("medical.fhir.observation-heading"));
+        let _ = writeln!(md, "{}", crate::words::text("medical.fhir.observation-head"));
         let _ = writeln!(md, "| --- | --- | --- | --- |");
         for o in observations {
             let (disp, code) = extract_codeable(o.get("code"));
@@ -323,8 +491,8 @@ fn render_fhir_json_to_markdown(text: &str) -> Result<String, Error> {
         .filter(|r| matches!(res_type(r), "MedicationRequest" | "MedicationStatement"))
         .collect();
     if !meds.is_empty() {
-        let _ = writeln!(md, "## 処方・投薬 (Medication)\n");
-        let _ = writeln!(md, "| 医薬品名 | コード | 用法・用量 | ステータス |");
+        let _ = writeln!(md, "## {}\n", crate::words::text("medical.fhir.medication-heading"));
+        let _ = writeln!(md, "{}", crate::words::text("medical.fhir.medication-head"));
         let _ = writeln!(md, "| --- | --- | --- | --- |");
         for m in meds {
             let (disp, code) = extract_codeable(m.get("medicationCodeableConcept"));
@@ -359,7 +527,7 @@ fn render_cda_xml_to_markdown(text: &str) -> Result<String, Error> {
         .children()
         .find(|n| n.is_element() && n.tag_name().name() == "title")
         .and_then(|n| n.text())
-        .unwrap_or("特定健診・HL7 CDA 文書");
+        .map_or_else(|| crate::words::text("medical.cda.default-title"), str::to_string);
     let effective_time = root
         .children()
         .find(|n| n.is_element() && n.tag_name().name() == "effectiveTime")
@@ -370,13 +538,13 @@ fn render_cda_xml_to_markdown(text: &str) -> Result<String, Error> {
     let _ = writeln!(
         md,
         "---\ntitle: {}\ncda_effective_time: {}\n---\n",
-        yaml_escape(title),
+        yaml_escape(&title),
         yaml_escape(effective_time)
     );
     let _ = writeln!(md, "# {title}\n");
-    let _ = writeln!(md, "- 作成/実施日時: `{effective_time}`\n");
-    let _ = writeln!(md, "## 検査・観察項目 (Observation)\n");
-    let _ = writeln!(md, "| 項目名 | コード | 値 | 単位 |");
+    let _ = writeln!(md, "- {}\n", crate::words::format("medical.cda.time", &[("time", &effective_time)]));
+    let _ = writeln!(md, "## {}\n", crate::words::text("medical.cda.observation-heading"));
+    let _ = writeln!(md, "{}", crate::words::text("medical.cda.observation-head"));
     let _ = writeln!(md, "| --- | --- | --- | --- |");
 
     for obs in root
@@ -422,14 +590,14 @@ pub fn flow_to_fhir_bundle_json(
         .as_ref()
         .ok_or_else(|| Error::new("DOCX フロードキュメントが存在しません"))?;
 
-    let mut title = "診療情報提供書".to_string();
+    let mut title = crate::words::text("medical.fhir.default-title-docx");
     let mut entries: Vec<Value> = Vec::new();
     let mut current_section = String::new();
 
     for block in &flow.body {
         match block {
             Block::Paragraph(p) => {
-                let text = crate::markdown::flow_paragraph_plain_text(p);
+                let text = flow_paragraph_plain_text(p);
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -452,7 +620,7 @@ pub fn flow_to_fhir_bundle_json(
                                     .iter()
                                     .filter_map(|b| match b {
                                         Block::Paragraph(p) => {
-                                            Some(crate::markdown::flow_paragraph_plain_text(p))
+                                            Some(flow_paragraph_plain_text(p))
                                         }
                                         _ => None,
                                     })
@@ -467,33 +635,25 @@ pub fn flow_to_fhir_bundle_json(
                 if rows.len() < 2 {
                     continue;
                 }
-                if current_section.contains("患者情報") {
+                if crate::words::is(&current_section, "medical.fhir.patient-heading") {
                     let mut map = serde_json::Map::new();
                     map.insert("resourceType".into(), Value::String("Patient".into()));
                     for row in rows.iter().skip(1) {
                         if row.len() >= 2 {
-                            match row[0].as_str() {
-                                "患者ID" => {
-                                    map.insert("id".into(), Value::String(row[1].clone()));
-                                }
-                                "氏名" => {
-                                    map.insert(
-                                        "name".into(),
-                                        serde_json::json!([{ "text": row[1] }]),
-                                    );
-                                }
-                                "性別" => {
-                                    map.insert("gender".into(), Value::String(row[1].clone()));
-                                }
-                                "生年月日" => {
-                                    map.insert("birthDate".into(), Value::String(row[1].clone()));
-                                }
-                                _ => {}
+                            let key = row[0].as_str();
+                            if crate::words::same(key, "medical.fhir.patient-id") {
+                                map.insert("id".into(), Value::String(row[1].clone()));
+                            } else if crate::words::same(key, "medical.fhir.patient-name") {
+                                map.insert("name".into(), serde_json::json!([{ "text": row[1] }]));
+                            } else if crate::words::same(key, "medical.fhir.patient-gender") {
+                                map.insert("gender".into(), Value::String(row[1].clone()));
+                            } else if crate::words::same(key, "medical.fhir.patient-birth") {
+                                map.insert("birthDate".into(), Value::String(row[1].clone()));
                             }
                         }
                     }
                     entries.push(serde_json::json!({ "resource": Value::Object(map) }));
-                } else if current_section.contains("Condition") || current_section.contains("傷病名") {
+                } else if current_section.contains("Condition") || current_section.contains("傷病名") { // i18n-ok（日本語で書かれた見出しも読む）
                     for row in rows.iter().skip(1) {
                         if !row.is_empty() {
                             entries.push(serde_json::json!({
@@ -510,7 +670,7 @@ pub fn flow_to_fhir_bundle_json(
                             }));
                         }
                     }
-                } else if current_section.contains("Observation") || current_section.contains("検査") {
+                } else if current_section.contains("Observation") || current_section.contains("検査") { // i18n-ok（日本語で書かれた見出しも読む）
                     for row in rows.iter().skip(1) {
                         if !row.is_empty() {
                             entries.push(serde_json::json!({
@@ -528,7 +688,7 @@ pub fn flow_to_fhir_bundle_json(
                             }));
                         }
                     }
-                } else if current_section.contains("Medication") || current_section.contains("処方") {
+                } else if current_section.contains("Medication") || current_section.contains("処方") { // i18n-ok（日本語で書かれた見出しも読む）
                     for row in rows.iter().skip(1) {
                         if !row.is_empty() {
                             entries.push(serde_json::json!({
@@ -583,13 +743,13 @@ fn render_fhir_xml_to_markdown(text: &str) -> Result<String, Error> {
                 .find(|n| n.is_element() && n.tag_name().name() == "title")
                 .and_then(|t| t.attribute("value"))
         })
-        .unwrap_or("HL7 FHIR XML 文書");
+        .map_or_else(|| crate::words::text("medical.fhir.default-title-xml"), str::to_string);
 
     let mut md = String::new();
-    let _ = writeln!(md, "---\ntitle: {}\nfhir_resource_type: {root_name}\n---\n", yaml_escape(title));
+    let _ = writeln!(md, "---\ntitle: {}\nfhir_resource_type: {root_name}\n---\n", yaml_escape(&title));
     let _ = writeln!(md, "# {title}\n");
-    let _ = writeln!(md, "## 収録リソース一覧\n");
-    let _ = writeln!(md, "| # | リソース種別 | ID |");
+    let _ = writeln!(md, "## {}\n", crate::words::text("medical.fhir-xml.resources-heading"));
+    let _ = writeln!(md, "{}", crate::words::text("medical.fhir-xml.resources-head"));
     let _ = writeln!(md, "| --- | --- | --- |");
 
     let mut idx = 0usize;
@@ -635,12 +795,12 @@ fn render_hl7v2_to_markdown(text: &str) -> String {
         segments.push((seg, fields));
     }
 
-    let _ = writeln!(md, "---\ntitle: HL7 v2 電文インスペクタ\nhl7_message_type: {}\n---\n", yaml_escape(&msg_type));
-    let _ = writeln!(md, "# HL7 v2 電文 ({msg_type})\n");
-    let _ = writeln!(md, "- メッセージ制御 ID: `{msg_ctrl}`");
-    let _ = writeln!(md, "- セグメント数: {}\n", segments.len());
-    let _ = writeln!(md, "## セグメント一覧\n");
-    let _ = writeln!(md, "| # | セグメント | 主要フィールド |");
+    let _ = writeln!(md, "---\ntitle: {}\nhl7_message_type: {}\n---\n", yaml_escape(&crate::words::text("medical.hl7v2.title")), yaml_escape(&msg_type));
+    let _ = writeln!(md, "# {}\n", crate::words::format("medical.hl7v2.heading", &[("type", &msg_type)]));
+    let _ = writeln!(md, "- {}", crate::words::format("medical.hl7v2.control-id", &[("id", &msg_ctrl)]));
+    let _ = writeln!(md, "- {}\n", crate::words::format("medical.hl7v2.segment-count", &[("count", &segments.len())]));
+    let _ = writeln!(md, "## {}\n", crate::words::text("medical.hl7v2.segments-heading"));
+    let _ = writeln!(md, "{}", crate::words::text("medical.hl7v2.segments-head"));
     let _ = writeln!(md, "| --- | --- | --- |");
     for (i, (seg, fields)) in segments.iter().enumerate() {
         let preview = fields
@@ -804,4 +964,15 @@ mod tests {
         assert!(bundle_json.contains("2型糖尿病"));
         assert!(bundle_json.contains("HbA1c(NGSP)"));
     }
+}
+
+/// The text runs of a paragraph, joined.
+fn flow_paragraph_plain_text(p: &ibis_doc_model::FlowParagraph) -> String {
+    let mut out = String::new();
+    for r in &p.runs {
+        if let ibis_doc_model::FlowRunKind::Text(t) = &r.kind {
+            out.push_str(t);
+        }
+    }
+    out
 }

@@ -71,7 +71,7 @@ impl SlideEditor {
             return self.ask_modify_password_to_unlock(window, cx);
         }
         let had = self.presentation().modify_verifier.is_some();
-        crate::password_window::ask_to_set_modify(cx.entity().downgrade(), had, window, cx);
+        self.ask_password_to_set_modify(had, window, cx);
     }
 
     #[cfg(target_family = "wasm")]
@@ -82,7 +82,7 @@ impl SlideEditor {
     /// The password to modify asked for (when the file is opened, or from the information bar).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn ask_modify_password_to_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        crate::password_window::ask_to_modify(cx.entity().downgrade(), window, cx);
+        self.ask_password_to_modify(window, cx);
     }
 
     #[cfg(target_family = "wasm")]

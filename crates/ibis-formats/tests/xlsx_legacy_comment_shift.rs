@@ -40,7 +40,7 @@ fn a_note_follows_its_cell_when_a_row_is_inserted_or_deleted() {
     let opened = ibis_formats::open(data.clone()).unwrap();
     let slide = opened.presentation.slides.iter().find(|s| s.name.as_deref() == Some("月次売上")).unwrap().id;
     let mut d = Document::new(opened.presentation.clone());
-    d.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 1, count: 1 })]).unwrap();
+    d.execute(vec![Command::Sheet(SheetCommand::Insert { sheet: slide, axis: Axis::Rows, at: 1, count: 1 })]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
     let comments = text(&saved, "xl/comments1.xml");
     assert!(comments.contains(r#"ref="B6""#), "{comments}");
@@ -49,14 +49,14 @@ fn a_note_follows_its_cell_when_a_row_is_inserted_or_deleted() {
     assert!(vml.contains("2, 15, 4, 10, 4, 31, 8, 4"), "the box moves with its cell: {vml}");
     // A column inserted before it.
     let mut d2 = Document::new(opened.presentation.clone());
-    d2.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Columns, at: 0, count: 1 })]).unwrap();
+    d2.execute(vec![Command::Sheet(SheetCommand::Insert { sheet: slide, axis: Axis::Columns, at: 0, count: 1 })]).unwrap();
     let saved2 = opened.source.save(d2.presentation(), SaveOptions::default()).unwrap();
     assert!(text(&saved2, "xl/comments1.xml").contains(r#"ref="C5""#));
     let vml2 = text(&saved2, "xl/drawings/vmlDrawing1.vml");
     assert!(vml2.contains("<x:Column>2</x:Column>") && vml2.contains("3, 15, 3, 10, 5, 31, 7, 4"), "{vml2}");
     // The row of the note deleted: the note goes.
     let mut d3 = Document::new(opened.presentation.clone());
-    d3.execute(vec![Command::Sheet(SheetCommand::Delete { slide, axis: Axis::Rows, at: 4, count: 1 })]).unwrap();
+    d3.execute(vec![Command::Sheet(SheetCommand::Delete { sheet: slide, axis: Axis::Rows, at: 4, count: 1 })]).unwrap();
     let saved3 = opened.source.save(d3.presentation(), SaveOptions::default()).unwrap();
     assert!(!text(&saved3, "xl/comments1.xml").contains("<comment "));
     assert!(!text(&saved3, "xl/drawings/vmlDrawing1.vml").contains("ClientData"));

@@ -87,7 +87,7 @@ impl SlideEditor {
             table.rows.push(row);
         }
         table.resolve_borders();
-        let command = FlowCommand::ReplaceBlocks { container: Container::Body, index: first, remove: last - first + 1, blocks: vec![Block::Table(table)] };
+        let command = FlowCommand::ReplaceBlockRange { container: Container::Body, index: first, remove: last - first + 1, blocks: vec![Block::Table(table)] };
         self.replace_converted(command, cx);
     }
 
@@ -123,7 +123,7 @@ impl SlideEditor {
         if blocks.is_empty() {
             return;
         }
-        let command = FlowCommand::ReplaceBlocks { container, index, remove: 1, blocks };
+        let command = FlowCommand::ReplaceBlockRange { container, index, remove: 1, blocks };
         self.replace_converted(command, cx);
     }
 
@@ -209,7 +209,7 @@ impl SlideEditor {
             blocks.push(Block::Table(bottom_table));
         }
 
-        let command = FlowCommand::ReplaceBlocks { container, index, remove: 1, blocks };
+        let command = FlowCommand::ReplaceBlockRange { container, index, remove: 1, blocks };
         self.replace_converted(command, cx);
     }
 

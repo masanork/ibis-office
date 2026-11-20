@@ -52,7 +52,7 @@ pub fn effects() -> &'static [CatalogEffect] {
             let (Some(code), Some(id), Some(sub)) = (cols.next(), cols.next(), cols.next()) else { continue };
             let (Some(class), Ok(id_n), Ok(sub_n)) = (class_of(code), id.parse::<u32>(), sub.parse::<u32>()) else { continue };
             // The i18n ids live as long as the program.
-            let key: &'static str = Box::leak(format!("pptx.anim.cat.{code}.{id}").into_boxed_str());
+            let key: &'static str = Box::leak(format!("pptx.animation.cat.{code}.{id}").into_boxed_str());
             let position = match all.iter().position(|e| e.class == class && e.id == id_n) {
                 Some(p) => p,
                 None => {

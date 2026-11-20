@@ -31,8 +31,8 @@ fn a_fitted_row_has_ht_and_no_custom_height() {
     let mut d = Document::new(opened.presentation.clone());
     let before = rows(&d);
     d.execute(vec![
-        Command::Sheet(SheetCommand::SetRowHeightFitted { slide, first: 4, last: 4, size: 45 * EMU_PER_POINT }),
-        Command::Sheet(SheetCommand::SetSize { slide, axis: Axis::Rows, first: 5, last: 5, size: 30 * EMU_PER_POINT }),
+        Command::Sheet(SheetCommand::SetRowHeightFitted { sheet: slide, first: 4, last: 4, size: 45 * EMU_PER_POINT }),
+        Command::Sheet(SheetCommand::SetSize { sheet: slide, axis: Axis::Rows, first: 5, last: 5, size: 30 * EMU_PER_POINT }),
     ])
     .unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
@@ -47,8 +47,8 @@ fn a_fitted_row_has_ht_and_no_custom_height() {
     assert!(!sheet.custom_rows.contains(&5));
     // A fixed row given back to the sheet loses the mark, and the file loses `customHeight`.
     let mut d2 = Document::new(opened.presentation.clone());
-    d2.execute(vec![Command::Sheet(SheetCommand::SetSize { slide, axis: Axis::Rows, first: 5, last: 5, size: 30 * EMU_PER_POINT })]).unwrap();
-    d2.execute(vec![Command::Sheet(SheetCommand::SetRowHeightFitted { slide, first: 5, last: 5, size: 30 * EMU_PER_POINT })]).unwrap();
+    d2.execute(vec![Command::Sheet(SheetCommand::SetSize { sheet: slide, axis: Axis::Rows, first: 5, last: 5, size: 30 * EMU_PER_POINT })]).unwrap();
+    d2.execute(vec![Command::Sheet(SheetCommand::SetRowHeightFitted { sheet: slide, first: 5, last: 5, size: 30 * EMU_PER_POINT })]).unwrap();
     let saved2 = opened.source.save(d2.presentation(), SaveOptions::default()).unwrap();
     let tag = row_tag(&saved2, 6);
     assert!(tag.contains("ht=\"30\"") && !tag.contains("customHeight"), "row given back: {tag}");

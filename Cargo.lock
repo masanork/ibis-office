@@ -4874,6 +4874,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "ibis-calc",
+ "ibis-m-lang",
  "parquet",
  "regex",
  "ruzstd",
@@ -4883,6 +4884,18 @@ dependencies = [
  "unicode-normalization",
  "unicode-segmentation",
  "zstd",
+]
+
+[[package]]
+name = "ibis-doc-service"
+version = "0.8.0"
+dependencies = [
+ "ibis-calc",
+ "ibis-doc-model",
+ "ibis-formats",
+ "ibis-odf",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -4901,6 +4914,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ibis-font-block-subsetter"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "gpui-pre",
+ "gpui-pre-wgpu",
+ "harfrust",
+ "miniz_oxide 0.8.9",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "skera",
+ "skrifa 0.50.0",
+ "ttf-parser",
+ "write-fonts 0.56.0",
+]
+
+[[package]]
 name = "ibis-font-subsetter"
 version = "0.8.0"
 dependencies = [
@@ -4911,6 +4942,38 @@ dependencies = [
  "skera",
  "ttf-parser",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "ibis-formats"
+version = "0.8.0"
+dependencies = [
+ "ag-psd",
+ "base64 0.22.1",
+ "chrono",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
+ "delharc",
+ "dicom-core",
+ "dicom-object",
+ "encoding_rs",
+ "exr",
+ "foreign-types",
+ "ibis-calc",
+ "ibis-doc-model",
+ "ibis-emf",
+ "ibis-heic-web",
+ "ibis-odf",
+ "ibis-ooxml",
+ "image",
+ "j2k-rs",
+ "jxl-oxide",
+ "lewton",
+ "miniz_oxide 0.8.9",
+ "pure_jpegls",
+ "roxmltree 0.21.1",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -4927,6 +4990,29 @@ name = "ibis-imgdiff"
 version = "0.8.0"
 dependencies = [
  "image",
+]
+
+[[package]]
+name = "ibis-m-lang"
+version = "0.8.0"
+
+[[package]]
+name = "ibis-mcp"
+version = "0.8.0"
+dependencies = [
+ "ibis-doc-service",
+ "serde_json",
+]
+
+[[package]]
+name = "ibis-odf"
+version = "0.8.0"
+dependencies = [
+ "ibis-calc",
+ "ibis-doc-model",
+ "ibis-formats",
+ "ibis-ooxml",
+ "roxmltree 0.21.1",
 ]
 
 [[package]]
@@ -4956,6 +5042,7 @@ dependencies = [
  "gpui-android",
  "gpui-ios",
  "gpui-kit",
+ "gpui-pre",
  "gpui-pre-macos",
  "gpui-pre-platform",
  "gpui-pre-wgpu",
@@ -4965,6 +5052,9 @@ dependencies = [
  "ibis-doc-model",
  "ibis-emf",
  "ibis-eot",
+ "ibis-formats",
+ "ibis-mcp",
+ "ibis-odf",
  "ibis-office-app",
  "ibis-office-base",
  "ibis-office-docx",
@@ -4976,7 +5066,6 @@ dependencies = [
  "ibis-office-updater",
  "ibis-office-xlsx",
  "ibis-ooxml",
- "ibis-formats",
  "image",
  "js-sys",
  "krilla",
@@ -5024,11 +5113,12 @@ dependencies = [
  "gpui-kit",
  "ibis-doc-model",
  "ibis-emf",
+ "ibis-formats",
+ "ibis-odf",
  "ibis-office-base",
  "ibis-office-macros",
  "ibis-office-render",
  "ibis-office-shell",
- "ibis-formats",
  "image",
  "log",
  "wasm-bindgen-futures",
@@ -5049,11 +5139,12 @@ version = "0.8.0"
 dependencies = [
  "gpui-kit",
  "ibis-doc-model",
+ "ibis-formats",
  "ibis-ofd",
  "ibis-office-base",
+ "ibis-office-docx",
  "ibis-office-shell",
  "ibis-pdf",
- "ibis-formats",
  "ibis-xdw",
  "ibis-xps",
  "image",
@@ -5065,11 +5156,12 @@ version = "0.8.0"
 dependencies = [
  "gpui-kit",
  "ibis-doc-model",
+ "ibis-formats",
+ "ibis-odf",
  "ibis-office-base",
  "ibis-office-macros",
  "ibis-office-render",
  "ibis-office-shell",
- "ibis-formats",
  "image",
  "log",
 ]
@@ -5087,13 +5179,14 @@ dependencies = [
  "ibis-doc-model",
  "ibis-emf",
  "ibis-eot",
- "ibis-office-base",
  "ibis-formats",
+ "ibis-office-base",
  "icu_normalizer",
  "image",
  "js-sys",
  "log",
  "lyon_tessellation",
+ "moxcms",
  "objc",
  "skrifa 0.42.1",
  "ttf-parser",
@@ -5126,12 +5219,13 @@ dependencies = [
  "ibis-calc",
  "ibis-doc-model",
  "ibis-emf",
+ "ibis-formats",
+ "ibis-odf",
  "ibis-ofd",
  "ibis-office-base",
  "ibis-office-render",
  "ibis-office-updater",
  "ibis-pdf",
- "ibis-formats",
  "ibis-xdw",
  "ibis-xps",
  "image",
@@ -5168,11 +5262,12 @@ dependencies = [
  "gpui-kit",
  "ibis-calc",
  "ibis-doc-model",
+ "ibis-formats",
+ "ibis-odf",
  "ibis-office-base",
  "ibis-office-macros",
  "ibis-office-render",
  "ibis-office-shell",
- "ibis-formats",
  "image",
  "log",
  "same-file",
@@ -5189,6 +5284,7 @@ dependencies = [
  "hmac 0.12.1",
  "md-5",
  "miniz_oxide 0.8.9",
+ "num-bigint 0.4.8",
  "p256 0.13.2",
  "p384 0.13.1",
  "rsa",
@@ -5206,36 +5302,6 @@ dependencies = [
  "hayro-interpret",
  "kurbo 0.13.1",
  "miniz_oxide 0.8.9",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "ibis-formats"
-version = "0.8.0"
-dependencies = [
- "ag-psd",
- "base64 0.22.1",
- "chrono",
- "core-foundation 0.10.1",
- "core-graphics 0.24.0",
- "delharc",
- "dicom-core",
- "dicom-object",
- "encoding_rs",
- "exr",
- "foreign-types",
- "ibis-calc",
- "ibis-doc-model",
- "ibis-emf",
- "ibis-heic-web",
- "ibis-ooxml",
- "image",
- "j2k-rs",
- "jxl-oxide",
- "miniz_oxide 0.8.9",
- "pure_jpegls",
- "roxmltree 0.21.1",
- "serde_json",
  "sha2 0.10.9",
 ]
 
@@ -6249,6 +6315,17 @@ name = "lebe"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
+
+[[package]]
+name = "lewton"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777b48df9aaab155475a83a7df3070395ea1ac6902f5cd062b8f2b028075c030"
+dependencies = [
+ "byteorder",
+ "ogg",
+ "tinyvec",
+]
 
 [[package]]
 name = "libbz2-rs-sys"
@@ -7488,6 +7565,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "ogg"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6951b4e8bf21c8193da321bcce9c9dd2e13c858fe078bf9054a288b419ae5d6e"
+dependencies = [
+ "byteorder",
 ]
 
 [[package]]
@@ -12783,6 +12869,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "944049531d52f9002812ea9de23ec8aa4e9577a7bee6869a1d0f297c679817ea"
 dependencies = [
  "font-types 0.12.7",
+ "indexmap 2.14.2",
+ "kurbo 0.13.1",
  "log",
  "read-fonts 0.47.0",
 ]

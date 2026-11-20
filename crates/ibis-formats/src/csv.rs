@@ -866,7 +866,7 @@ mod original_encoding_tests {
         let format = opened.source.original_csv_format().unwrap();
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
-        let set = |row, column, input| Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row, column, input }] });
+        let set = |row, column, input| Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row, column, input }] });
         doc.begin_csv_edit_tracking();
         doc.execute(vec![set(0, 1, CellInput::Value(CellValue::Text("first".into())))]).unwrap();
         assert!(rewrite_tracked_csv(original, b"external change", format, &doc, slide).is_err());
@@ -897,7 +897,7 @@ mod original_encoding_tests {
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
         let set = |slide, row, column| Command::Sheet(SheetCommand::SetCells {
-            slide, edits: vec![CellEdit { row, column, input: CellInput::Value(CellValue::Text("changed".into())) }],
+            sheet: slide, edits: vec![CellEdit { row, column, input: CellInput::Value(CellValue::Text("changed".into())) }],
         });
         assert!(doc.tracked_csv_ops().is_none());
         doc.begin_csv_edit_tracking();
@@ -928,7 +928,7 @@ mod original_encoding_tests {
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
         doc.begin_csv_edit_tracking();
-        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit {
             row: 0, column: 0, input: CellInput::Value(CellValue::Text("changed".into())),
         }] })]).unwrap();
         assert!(doc.undo());
@@ -960,7 +960,7 @@ mod original_encoding_tests {
         let format = opened.source.original_csv_format().unwrap();
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
-        let set = |column, text: &str| Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+        let set = |column, text: &str| Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit {
             row: 0, column, input: CellInput::Value(CellValue::Text(text.into())),
         }] });
         doc.begin_csv_edit_tracking();
@@ -1030,14 +1030,14 @@ mod original_encoding_tests {
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
         doc.begin_csv_edit_tracking();
-        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit {
             row: 0, column: 4, input: CellInput::Value(CellValue::Text("added".into())),
         }] })]).unwrap();
         assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), b"00123,\"x\",,,added\r\nlast,field");
         assert!(doc.undo());
         assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), input);
         assert!(doc.redo());
-        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit {
             row: 3, column: 1, input: CellInput::Value(CellValue::Text("new".into())),
         }] })]).unwrap();
         assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), b"00123,\"x\",,,added\r\nlast,field\r\n\r\n,new");
@@ -1054,7 +1054,7 @@ mod original_encoding_tests {
         let slide = opened.presentation.slides[0].id;
         let mut doc = Document::new(opened.presentation);
         doc.begin_csv_edit_tracking();
-        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit {
+        doc.execute(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit {
             row: 0, column: 1, input: CellInput::Formula("SUM(A1,2)".into()),
         }] })]).unwrap();
         let output = rewrite_tracked_csv(input, input, format, &doc, slide).unwrap();
@@ -1077,8 +1077,8 @@ mod original_encoding_tests {
         let range = CellRange { first_row: 0, last_row: 0, first_column: 1, last_column: 1 };
         doc.begin_csv_edit_tracking();
         doc.execute(vec![
-            Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 0, column: 1, input: CellInput::Value(CellValue::Number(0.5)) }] }),
-            Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![range], change: StyleChange::NumberFormat("0%".into()) }),
+            Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 0, column: 1, input: CellInput::Value(CellValue::Number(0.5)) }] }),
+            Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![range], change: StyleChange::NumberFormat("0%".into()) }),
         ]).unwrap();
         let output = rewrite_tracked_csv(input, input, format, &doc, slide).unwrap();
         assert_eq!(output, b"00123,50%\r\n");
@@ -1086,8 +1086,8 @@ mod original_encoding_tests {
         assert_eq!(rewrite_tracked_csv(input, input, format, &doc, slide).unwrap(), input);
         // A number format that changes the displayed text into a non-round-tripping form is refused.
         doc.execute(vec![
-            Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 0, column: 1, input: CellInput::Value(CellValue::Number(1000.0)) }] }),
-            Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![range], change: StyleChange::NumberFormat("\"prefix \"0".into()) }),
+            Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 0, column: 1, input: CellInput::Value(CellValue::Number(1000.0)) }] }),
+            Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![range], change: StyleChange::NumberFormat("\"prefix \"0".into()) }),
         ]).unwrap();
         assert!(rewrite_tracked_csv(input, input, format, &doc, slide).is_err(), "non-round-tripping formatted display must be refused");
     }
@@ -1105,12 +1105,12 @@ mod original_encoding_tests {
         doc.begin_csv_edit_tracking();
 
         // Insert row at 1, put a cell in it, and insert a column at 1.
-        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 1, count: 1 })]).unwrap();
-        doc.execute(vec![Command::Sheet(SheetCommand::PutCells {
-            slide,
+        doc.execute(vec![Command::Sheet(SheetCommand::Insert { sheet: slide, axis: Axis::Rows, at: 1, count: 1 })]).unwrap();
+        doc.execute(vec![Command::Sheet(SheetCommand::PasteCells {
+            sheet: slide,
             cells: vec![PutCell { row: 1, column: 0, input: CellInput::Value(CellValue::Text("mid".into())), style: None }],
         })]).unwrap();
-        doc.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Columns, at: 1, count: 1 })]).unwrap();
+        doc.execute(vec![Command::Sheet(SheetCommand::Insert { sheet: slide, axis: Axis::Columns, at: 1, count: 1 })]).unwrap();
 
         let saved1 = rewrite_tracked_csv(original, original, format, &doc, slide).unwrap();
         assert_eq!(saved1, b"\x87\x90,,00123,\"q,1\",\r\nmid\r\nrow2,,keep\r\n");
@@ -1124,7 +1124,7 @@ mod original_encoding_tests {
         // Redo Insert Columns at 1, then delete row 0, save, then undo Delete Row 0!
         assert!(doc.redo());
         doc.begin_csv_edit_tracking();
-        doc.execute(vec![Command::Sheet(SheetCommand::Delete { slide, axis: Axis::Rows, at: 0, count: 1 })]).unwrap();
+        doc.execute(vec![Command::Sheet(SheetCommand::Delete { sheet: slide, axis: Axis::Rows, at: 0, count: 1 })]).unwrap();
         let saved3 = rewrite_tracked_csv(&saved1, &saved1, format, &doc, slide).unwrap();
         assert_eq!(saved3, b"mid\r\nrow2,,keep\r\n");
 
@@ -1140,14 +1140,14 @@ mod original_encoding_tests {
         let slide2 = opened2.presentation.slides[0].id;
         let mut doc2 = Document::new(opened2.presentation);
         doc2.begin_csv_edit_tracking();
-        doc2.execute(vec![Command::Sheet(SheetCommand::ShiftCells {
-            slide: slide2,
+        doc2.execute(vec![Command::Sheet(SheetCommand::InsertOrDeleteCells {
+            sheet: slide2,
             range: CellRange { first_row: 0, last_row: 0, first_column: 0, last_column: 0 },
             down: true,
             insert: true,
         })]).unwrap();
         doc2.execute(vec![Command::Sheet(SheetCommand::SetCells {
-            slide: slide2,
+            sheet: slide2,
             edits: vec![CellEdit { row: 0, column: 0, input: CellInput::Value(CellValue::Text("top".into())) }],
         })]).unwrap();
         let shifted = rewrite_tracked_csv(b"a,b\r\nc,d\r\n", b"a,b\r\nc,d\r\n", format2, &doc2, slide2).unwrap();
@@ -1653,10 +1653,26 @@ pub(crate) fn column_name(mut n: u32) -> String {
     s
 }
 
+/// The family a text file's cells are shown in unless another is chosen.
+pub const DEFAULT_FONT: &str = "游ゴシック";
+
 /// A workbook (`.xlsx` bytes) of one sheet named `name` holding the CSV/TSV values.
 pub fn workbook_from(text: &str, name: &str) -> Result<Vec<u8>, Error> {
     let delimiter = detect_delimiter(text);
     workbook_from_with_delimiter(text, name, delimiter)
+}
+
+/// The font a text file's cells are shown in (#243): the family and the size in points. The workbook's default font is this one, so
+/// the rows are fitted to it as to any workbook's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CsvFont {
+    pub name: String,
+    pub size_pt: f32,
+}
+
+/// As `workbook_from_with_delimiter`, with the default font `font` (None: 游ゴシック 12 pt, the usual).
+pub fn workbook_from_with_font(text: &str, name: &str, delimiter: char, font: Option<&CsvFont>) -> Result<Vec<u8>, Error> {
+    build_workbook(text, name, delimiter, |_, _| false, false, font)
 }
 
 /// A workbook (`.xlsx` bytes) of one sheet named `name` holding the delimited values.
@@ -1670,11 +1686,11 @@ pub(crate) fn workbook_from_fields(
     delimiter: char,
     is_text: impl Fn(usize, usize) -> bool,
 ) -> Result<Vec<u8>, Error> {
-    build_workbook(text, name, delimiter, is_text, false)
+    build_workbook(text, name, delimiter, is_text, false, None)
 }
 
 pub(crate) fn blank_workbook_with_1904_dates() -> Result<Vec<u8>, Error> {
-    build_workbook("", "Sheet1", ',', |_, _| false, true)
+    build_workbook("", "Sheet1", ',', |_, _| false, true, None)
 }
 
 fn build_workbook(
@@ -1683,6 +1699,7 @@ fn build_workbook(
     delimiter: char,
     is_text: impl Fn(usize, usize) -> bool,
     date1904: bool,
+    font: Option<&CsvFont>,
 ) -> Result<Vec<u8>, Error> {
     let workbook_properties = if date1904 { r#"<workbookPr date1904="1"/>"# } else { "" };
     let records = parse_with_delimiter(text, delimiter);
@@ -1728,13 +1745,22 @@ fn build_workbook(
     }
     let num_fmts: String = formats.iter().enumerate().map(|(i, f)| format!(r#"<numFmt numFmtId="{}" formatCode="{}"/>"#, 164 + i, escape(f))).collect();
     let xfs: String = (0..formats.len()).map(|i| format!(r#"<xf numFmtId="{}" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center"/></xf>"#, 164 + i)).collect();
+    // The usual font, or the one chosen (#243). A chosen family is not the theme's minor font, so it has no `scheme`. The stored
+    // default row height keeps the usual pair (12 pt in a 20 pt row) in proportion to the size.
+    let (font_xml, row_height) = match font {
+        None => (r#"<font><sz val="12"/><color theme="1"/><name val="游ゴシック"/><family val="2"/><charset val="128"/><scheme val="minor"/></font>"#.to_string(), "20".to_string()),
+        Some(f) => (
+            format!(r#"<font><sz val="{}"/><color theme="1"/><name val="{}"/><family val="2"/><charset val="128"/></font>"#, f.size_pt, escape(&f.name)),
+            format!("{}", (f.size_pt as f64 * 20.0 / 12.0 * 4.0).ceil() / 4.0),
+        ),
+    };
     let styles = format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">{}<fonts count="1"><font><sz val="12"/><color theme="1"/><name val="游ゴシック"/><family val="2"/><charset val="128"/><scheme val="minor"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"><alignment vertical="center"/></xf></cellStyleXfs><cellXfs count="{}"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment vertical="center"/></xf>{xfs}</cellXfs><cellStyles count="1"><cellStyle name="標準" xfId="0" builtinId="0"/></cellStyles></styleSheet>"#,
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">{}<fonts count="1">{font_xml}</fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"><alignment vertical="center"/></xf></cellStyleXfs><cellXfs count="{}"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment vertical="center"/></xf>{xfs}</cellXfs><cellStyles count="1"><cellStyle name="標準" xfId="0" builtinId="0"/></cellStyles></styleSheet>"#,
         if formats.is_empty() { String::new() } else { format!(r#"<numFmts count="{}">{num_fmts}</numFmts>"#, formats.len()) },
         formats.len() + 1
     );
     let sheet = format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="A1"/><sheetViews><sheetView tabSelected="1" workbookViewId="0"/></sheetViews><sheetFormatPr baseColWidth="10" defaultRowHeight="20" customHeight="1"/><sheetData>{rows}</sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>"#
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="A1"/><sheetViews><sheetView tabSelected="1" workbookViewId="0"/></sheetViews><sheetFormatPr baseColWidth="10" defaultRowHeight="{row_height}" customHeight="1"/><sheetData>{rows}</sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>"#
     );
     let parts: Vec<(&str, String)> = vec![
         ("[Content_Types].xml", r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#.to_string()),
@@ -1926,6 +1952,24 @@ q\"
     fn records() {
         assert_eq!(parse("a,b\r\n\"c,d\",\"e\"\"f\"\n"), vec![vec!["a", "b"], vec!["c,d", "e\"f"]]);
         assert_eq!(parse("1,,3"), vec![vec!["1", "", "3"]]);
+    }
+
+    /// #243: a text file opened with a chosen font is shown in it (the cells' style, and a row as high as the size needs); without
+    /// one, in the usual 游ゴシック 12 pt.
+    #[test]
+    fn a_text_file_is_opened_in_the_chosen_font() {
+        let text = b"a,b\n1,2\n".to_vec();
+        let style_of = |font: Option<&CsvFont>| {
+            let (opened, _) = crate::save::open_progressive_with(text.clone(), usize::MAX, font).unwrap();
+            let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&opened.presentation.slides[0]).unwrap().clone();
+            let style = sheet.styles[sheet.cell(1, 0).unwrap().style as usize].clone();
+            (style.font, style.font_size, sheet.rows[1])
+        };
+        let (font, size, usual_row) = style_of(None);
+        assert_eq!((font.as_deref(), size), (Some("游ゴシック"), 1200));
+        let (font, size, row) = style_of(Some(&CsvFont { name: "Arial".into(), size_pt: 24.0 }));
+        assert_eq!((font.as_deref(), size), (Some("Arial"), 2400));
+        assert!(row > usual_row, "a 24 pt row is higher than a 12 pt one");
     }
 
     #[test]

@@ -850,27 +850,37 @@ fn column_filter(fc: Node, dxfs: &[ibis_doc_model::CfStyle]) -> Option<ibis_doc_
     (!conditions.is_empty()).then(|| ColumnFilter::Custom { and: on(list, "and", false), conditions })
 }
 
-/// A sheet's data validation rules (`dataValidations`).
+/// A sheet's data validation rules: `dataValidations`, and the 2010 ones Excel writes in the sheet's `extLst`
+/// (`x14:dataValidations`: a list whose source is on another sheet, or is a formula; the formulas are `xm:f` and the cells `xm:sqref`).
 fn read_validations(root: Node) -> Vec<ibis_doc_model::Validation> {
-    child(root, "dataValidations")
+    const X14: &str = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main";
+    let read = |v: Node, formula: &dyn Fn(Node, &str) -> Option<String>, sqref: Option<String>| {
+        let text = |name: &str| attr(v, name).unwrap_or("").to_string();
+        ibis_doc_model::Validation {
+            ranges: sqref.or_else(|| attr(v, "sqref").map(str::to_string)).unwrap_or_default().split_whitespace().filter_map(parse_range).collect(),
+            kind: attr(v, "type").unwrap_or("none").to_string(),
+            operator: attr(v, "operator").unwrap_or("between").to_string(),
+            formula1: formula(v, "formula1"),
+            formula2: formula(v, "formula2"),
+            allow_blank: attr_bool(v, "allowBlank").unwrap_or(false),
+            dropdown: !attr_bool(v, "showDropDown").unwrap_or(false),
+            prompt: attr_bool(v, "showInputMessage").unwrap_or(false).then(|| (text("promptTitle"), text("prompt"))).filter(|(t, p)| !t.is_empty() || !p.is_empty()),
+            error: attr_bool(v, "showErrorMessage").unwrap_or(false).then(|| (attr(v, "errorStyle").unwrap_or("stop").to_string(), text("errorTitle"), text("error"))),
+        }
+    };
+    let plain = |v: Node, name: &str| child(v, name).and_then(|f| f.text()).map(ibis_calc::formula::from_file);
+    let mut rules: Vec<ibis_doc_model::Validation> = child(root, "dataValidations")
         .into_iter()
         .flat_map(|d| children(d, "dataValidation"))
-        .map(|v| {
-            let formula = |name: &str| child(v, name).and_then(|f| f.text()).map(ibis_calc::formula::from_file);
-            let text = |name: &str| attr(v, name).unwrap_or("").to_string();
-            ibis_doc_model::Validation {
-                ranges: attr(v, "sqref").unwrap_or("").split_whitespace().filter_map(parse_range).collect(),
-                kind: attr(v, "type").unwrap_or("none").to_string(),
-                operator: attr(v, "operator").unwrap_or("between").to_string(),
-                formula1: formula("formula1"),
-                formula2: formula("formula2"),
-                allow_blank: attr_bool(v, "allowBlank").unwrap_or(false),
-                dropdown: !attr_bool(v, "showDropDown").unwrap_or(false),
-                prompt: attr_bool(v, "showInputMessage").unwrap_or(false).then(|| (text("promptTitle"), text("prompt"))).filter(|(t, p)| !t.is_empty() || !p.is_empty()),
-                error: attr_bool(v, "showErrorMessage").unwrap_or(false).then(|| (attr(v, "errorStyle").unwrap_or("stop").to_string(), text("errorTitle"), text("error"))),
-            }
-        })
-        .collect()
+        .map(|v| read(v, &plain, None))
+        .collect();
+    // x14: the formula is the text of `xm:f` inside `x14:formula1`; the cells are `xm:sqref` beside it.
+    let ext = |v: Node, name: &str| v.children().find(|n| n.tag_name().name() == name).and_then(|f| f.descendants().find(|n| n.tag_name().name() == "f")).and_then(|f| f.text()).map(ibis_calc::formula::from_file);
+    for v in root.descendants().filter(|n| n.tag_name().name() == "dataValidation" && n.tag_name().namespace() == Some(X14)) {
+        let sqref = v.children().find(|n| n.tag_name().name() == "sqref").and_then(|n| n.text()).map(str::to_string);
+        rules.push(read(v, &ext, sqref));
+    }
+    rules
 }
 
 /// The 2010 conditional formats (`x14:cfRule`) that no rule of 2007 names (by `x14:id`): icon sets and data bars
@@ -1922,6 +1932,54 @@ fn cell_needed_height_uncapped(text: &str, col_chars: f64, font: Option<&str>, f
 /// Read one worksheet. `digit` is the default font's maximum digit width,
 /// which column widths are measured in. Widths come out in points, as Excel
 /// for Mac lays them out (a "pixel" there is a point).
+/// The `<row>`s of a sheet as Excel keeps them, grouped by row number, when the numbers do not simply rise (a number twice in a row, a row
+/// without a number, or a lower number after a higher one); `None` when they rise, which is every sheet Excel writes. Measured with Excel
+/// (K0043, tasks/doc/requests/2026-11-16-k0043-row-order-result.md): a `<row>` without a number is the one after the row before it; rows of
+/// one number that follow each other are one row (the later attributes and cells hold); a row whose number is lower than the row before it
+/// is dropped whole (Excel repairs such a file so: the earlier row wins). Each group has its row number (from 1).
+fn rows_by_number<'a, 'i>(root: Node<'a, 'i>) -> Option<Vec<(i64, Vec<Node<'a, 'i>>)>> {
+    let rows = || child(root, "sheetData").into_iter().flat_map(|d| children(d, "row"));
+    let mut previous = 0i64;
+    let rising = rows().all(|row| {
+        let Some(r) = attr_i64(row, "r") else { return false };
+        let up = r > previous;
+        previous = r;
+        up
+    });
+    if rising {
+        return None;
+    }
+    let mut groups: Vec<(i64, Vec<Node<'a, 'i>>)> = Vec::new();
+    let mut previous = 0i64;
+    for row in rows() {
+        let r = attr_i64(row, "r").unwrap_or(previous + 1);
+        if r < previous {
+            continue;
+        }
+        match groups.last_mut() {
+            Some((number, nodes)) if *number == r => nodes.push(row),
+            _ => groups.push((r, vec![row])),
+        }
+        previous = r;
+    }
+    Some(groups)
+}
+
+/// The cells (`<c>`) of rows of one number, in column order: where a column is in several rows, the last row's cell.
+fn cells_of_rows<'a, 'i>(rows: &[Node<'a, 'i>]) -> Vec<Node<'a, 'i>> {
+    let mut by_column: std::collections::BTreeMap<u32, Node<'a, 'i>> = std::collections::BTreeMap::new();
+    for row in rows {
+        // A cell without a reference follows the one before it.
+        let mut next_column = 0u32;
+        for c in children(*row, "c") {
+            let column = attr(c, "r").and_then(cell_ref).map_or(next_column, |(column, _)| column);
+            next_column = column + 1;
+            by_column.insert(column, c);
+        }
+    }
+    by_column.into_values().collect()
+}
+
 pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras: &SharedExtras, digit: f64, colors: &SheetColors, dynamic_metadata: &HashSet<u32>) -> Sheet {
     let format = child(root, "sheetFormatPr");
     let default_row_pt = default_row_height(format, (&styles.default_font.0, styles.default_font.1));
@@ -2017,7 +2075,13 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
             Some(CellRange { first_row: r0.min(r1), first_column: c0.min(c1), last_row: r0.max(r1), last_column: c0.max(c1) })
         })
         .collect();
-    for row in child(root, "sheetData").into_iter().flat_map(|d| children(d, "row")) {
+    // Two `<row>`s of one row number are one row (Excel, K0043): the later row's attributes hold, the cells of both are the row's, the later
+    // one's where both have the cell. A sheet whose row numbers rise is read as it is, row by row.
+    let row_items: Box<dyn Iterator<Item = (Node, Option<Vec<Node>>, Option<i64>)> + '_> = match rows_by_number(root) {
+        None => Box::new(child(root, "sheetData").into_iter().flat_map(|d| children(d, "row")).map(|row| (row, None, None))),
+        Some(groups) => Box::new(groups.into_iter().map(|(r, nodes)| (*nodes.last().expect("a row"), (nodes.len() > 1).then_some(nodes), Some(r)))),
+    };
+    for (row, same_number, number) in row_items {
         // The progress bar of the loading box.
         rows_seen += 1;
         if rows_seen % 2048 == 0 {
@@ -2025,7 +2089,7 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
             crate::progress::rows_done((end - rows_reported) as u64);
             rows_reported = end;
         }
-        let Some(r) = attr_i64(row, "r").map(|v| (v.max(1) - 1) as u32) else { continue };
+        let Some(r) = number.or_else(|| attr_i64(row, "r")).map(|v| (v.max(1) - 1) as u32) else { continue };
         if let Some(level) = attr_i64(row, "outlineLevel").filter(|&l| l > 0) {
             outline_rows.insert(r, level.min(7) as u8);
         }
@@ -2074,7 +2138,9 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
         let mut any_wrap = false;
         // A cell without a reference follows the one before it.
         let mut next_column = 0u32;
-        for c in children(row, "c") {
+        let merged_cells_of_row = same_number.map(|rows| cells_of_rows(&rows));
+        let own_cells = merged_cells_of_row.is_none().then(|| children(row, "c"));
+        for c in own_cells.into_iter().flatten().chain(merged_cells_of_row.into_iter().flatten()) {
             let Some((column, row_index)) = (match attr(c, "r") {
                 Some(reference) => cell_ref(reference),
                 None => Some((next_column, r)),
@@ -2510,6 +2576,8 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
         printed: Default::default(),
         column_chars: ibis_doc_model::Unsaved(col_chars.iter().filter(|(_, w)| **w > 0.0).map(|(c, w)| (*c, *w)).collect()),
         printed_text_extra: Default::default(),
+        row_ids: Default::default(),
+        column_ids: Default::default(),
         hidden_rows,
         custom_rows,
         custom_columns,
@@ -3924,6 +3992,15 @@ pub(crate) fn read_workbook_protection(root: Node) -> Option<ibis_doc_model::Wor
         lock_windows,
         lock_revision,
     })
+}
+
+/// The sheet shown when the file was left: `bookViews/workbookView/@activeTab` of the first window (0 when it has none).
+pub(crate) fn read_active_tab(root: Node) -> usize {
+    child(root, "bookViews")
+        .and_then(|bv| child(bv, "workbookView"))
+        .and_then(|v| attr(v, "activeTab"))
+        .and_then(|t| t.trim().parse::<usize>().ok())
+        .unwrap_or(0)
 }
 
 /// ウィンドウの非表示 (`bookViews/workbookView/@visibility="hidden"`).

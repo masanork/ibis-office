@@ -153,12 +153,21 @@ impl Ctx<'_> {
             5 | 7 | 8 => 1,
             k => k as u16,
         };
-        let pick = |map: &HashMap<u16, MasterStyle>| map.get(&family).and_then(|s| s.levels.get(level as usize).cloned());
+        // What the kind's own style says (the center body's alignment, the half and quarter body's sizes) is over the family's: the file keeps
+        // the differences (099's subtitle, a center body: centered, where the body style is left with a bullet).
+        let pick = |map: &HashMap<u16, MasterStyle>| {
+            let of = |k: u16| map.get(&k).and_then(|s| s.levels.get(level as usize).cloned());
+            match (of(kind as u16).filter(|_| kind as u16 != family), of(family)) {
+                (Some((pf, cf)), Some((fpf, fcf))) => Some((pf.over(&fpf), cf.over(&fcf))),
+                (Some(x), None) | (None, Some(x)) => Some(x),
+                (None, None) => None,
+            }
+        };
         // The text of a text box (the "other" kind) on a slide takes the document's default style, not the master's (the master's
         // "other" style is for the text of the master's own shapes): 030's text boxes are centered by the default over a master that says left.
         let from_master = if kind == 4 && !self.master { None } else { pick(self.styles) };
         let from_default = pick(&self.ir.default_props_styles());
-        let (mut pf, cf) = match (from_master, from_default) {
+        let (mut pf, mut cf) = match (from_master, from_default) {
             (Some((pf, cf)), Some((dpf, dcf))) => (pf.over(&dpf), cf.over(&dcf)),
             (Some(x), None) | (None, Some(x)) => x,
             (None, None) => (Pf::default(), Cf::default()),
@@ -169,6 +178,18 @@ impl Ctx<'_> {
         // PowerPoint 97-2003 (old-file-viewer.bobpritchett.com/docs/powerpoint-format) says each level is stored as the differences from the level above.
         // The bullet of a level that does not say whether it has one is the one of the level above too (046.ppt: the body style's second
         // level gives no bullet flag, and PowerPoint's pptx of it has the check marks of the paragraphs' bullet character).
+        // The character format of a level the style leaves out is the one of the level above too (154.ppt: the body style gives 24 pt to the
+        // first level and none to the second and third, 20 pt to the fourth; PowerPoint's own pptx of it has 24, 24, 24, 20, 20...).
+        if level > 0 {
+            let (_, above) = self.level_style(kind, level - 1);
+            cf = cf.over(&above);
+        }
+        // The default tab size of a level the style leaves out is the one of the level above too (005.ppt: the body style gives 306 units (76.5 pt) to the
+        // first level only, and PowerPoint's PDF puts the tab stops of the second level's paragraphs at multiples of 76.5 pt, not 72 pt; with no
+        // default tab size in the style a level has 72 pt, measured with PowerPoint's own files).
+        if level > 0 && pf.default_tab.is_none() {
+            pf.default_tab = self.level_style(kind, level - 1).0.default_tab;
+        }
         if level > 0
             && (pf.space_before.is_none() || pf.space_after.is_none() || pf.line_spacing.is_none() || pf.has_bullet.is_none())
         {
@@ -208,6 +229,9 @@ fn ppr_xml(ctx: &Ctx, tag: &str, pf: &Pf, cf: Option<&Cf>, auto: Option<(u16, u1
     if let Some(indent) = pf.indent {
         let _ = write!(attrs, r#" indent="{}""#, units_to_emu(i64::from(indent) - left));
     }
+    if let Some(tab) = pf.default_tab.filter(|t| *t > 0) {
+        let _ = write!(attrs, r#" defTabSz="{}""#, units_to_emu(i64::from(tab)));
+    }
     if let Some(align) = pf.align {
         let a = match align {
             1 => "ctr",
@@ -220,6 +244,11 @@ fn ppr_xml(ctx: &Ctx, tag: &str, pf: &Pf, cf: Option<&Cf>, auto: Option<(u16, u1
     }
     let mut kids = String::new();
     let spacing = |name: &str, v: i16| -> String {
+        // A line spacing of 0 is exactly 0 pt, not 0 %: PowerPoint's pptx of 057.ppt has `spcPts val="0"` for it (the lines of the paragraph take no
+        // height of their own: the paragraph's step is its space before).
+        if v == 0 && name == "lnSpc" {
+            return format!(r#"<a:{name}><a:spcPts val="0"/></a:{name}>"#);
+        }
         if v >= 0 {
             format!(r#"<a:{name}><a:spcPct val="{}"/></a:{name}>"#, i64::from(v) * 1000)
         } else {
@@ -279,9 +308,42 @@ fn ppr_xml(ctx: &Ctx, tag: &str, pf: &Pf, cf: Option<&Cf>, auto: Option<(u16, u1
     format!("<a:{tag}{attrs}>{kids}</a:{tag}>")
 }
 
+/// The language tag of a Windows language id (its primary language is what the text layout looks at: ja, zh, ko, or another); en-US for 0.
+fn language_tag(lid: u16) -> &'static str {
+    match lid {
+        0 => "en-US",
+        0x0404 => "zh-TW",
+        0x0C04 => "zh-HK",
+        0x1004 => "zh-SG",
+        0x1404 => "zh-MO",
+        0x0809 => "en-GB",
+        _ => match lid & 0x3FF {
+            0x04 => "zh-CN",
+            0x11 => "ja-JP",
+            0x12 => "ko-KR",
+            0x07 => "de-DE",
+            0x0C => "fr-FR",
+            0x0A => "es-ES",
+            0x10 => "it-IT",
+            0x16 => "pt-BR",
+            0x19 => "ru-RU",
+            _ => "en-US",
+        },
+    }
+}
+
 /// A run-properties element.
 fn rpr_xml(ctx: &Ctx, tag: &str, cf: &Cf, extra_attrs: &str) -> String {
-    let mut attrs = String::from(r#" lang="ja-JP" altLang="en-US""#);
+    // The text's own language (its `TextSpecialInfoAtom`'s), else Japanese with English as the alternative.
+    let mut attrs = match cf.lang {
+        // (A text whose two languages are both not East Asian keeps the default: the English text of 141, language 0x0809 and altLang 0x0409,
+        // hangs its full stops at the end of a line in PowerPoint's PDF as the default Japanese does.)
+        Some((lid, alt)) if (lid != 0 || alt != 0) && [lid, alt].iter().any(|l| matches!(l & 0x3FF, 0x04 | 0x11 | 0x12)) => format!(r#" lang="{}" altLang="{}""#, language_tag(lid), language_tag(alt)),
+        _ => String::from(r#" lang="ja-JP" altLang="en-US""#),
+    };
+    if let Some(kern) = cf.kern {
+        let _ = write!(attrs, r#" kern="{kern}""#);
+    }
     if let Some(size) = cf.size {
         let hundredths = cf.size_hundredths.filter(|h| h / 100 == size).map_or(u32::from(size) * 100, u32::from);
         let _ = write!(attrs, r#" sz="{hundredths}""#);
@@ -308,6 +370,14 @@ fn rpr_xml(ctx: &Ctx, tag: &str, cf: &Cf, extra_attrs: &str) -> String {
     if let Some(color) = cf.color {
         kids += &ctx.color_xml(color);
     }
+    // The character shadow of a .ppt (CharFlags 0x10) is PowerPoint's text shadow: 3 pt down and right (dir 2700000 = 45 degrees), 3 pt
+    // blur, 43% alpha. Source of the values: the pptx PowerPoint wrote for the same slides (the corpus' 092.pptx, PowerPoint's own pptx of 092.ppt;
+    // every slide has runs with it, e.g. slide 17: `a:outerShdw blurRad="38100" dist="38100" dir="2700000" algn="tl"` with `a:alpha val="43137"`), whose
+    // rendering matches the PowerPoint PDF of the .ppt (092.ppt). The colour is the page's colour scheme "shadow" (index 2 of the
+    // ColorSchemeAtom), not black: 103's scheme shadow is a light eeece1 and PowerPoint's PDF of it shows no visible shadow (black: -0.0054).
+    if cf.shadow == Some(true) {
+        let _ = write!(kids, r#"<a:effectLst><a:outerShdw blurRad="38100" dist="38100" dir="2700000" algn="tl"><a:srgbClr val="{:06X}"><a:alpha val="43137"/></a:srgbClr></a:outerShdw></a:effectLst>"#, ctx.rgb(TextColor::Scheme(2)));
+    }
     if let Some(font) = ctx.font(cf.ansi_font.or(cf.font)) {
         let _ = write!(kids, r#"<a:latin typeface="{}"/>"#, esc(font));
     }
@@ -315,6 +385,9 @@ fn rpr_xml(ctx: &Ctx, tag: &str, cf: &Cf, extra_attrs: &str) -> String {
     // text style it would have inherited: PowerPoint's PDF of such a run (107.ppt, 4th slide, Times New Roman and the default
     // MS PGothic) uses MS PGothic. A run that names a typeface with Japanese characters (Meiryo) keeps it for all its characters.
     let ea = match (cf.east_asian_font, cf.font) {
+        // The East Asian typeface a run names is a Latin one (053's Calibri, lfCharSet 0): PowerPoint's pptx has no `a:ea` for the run and draws
+        // its Japanese in the style's East Asian typeface.
+        (Some(e), _) if ctx.font(Some(e)).is_some() && !ctx.has_east_asian_glyphs(e) && cf.inherited_east_asian_font.is_some() => cf.inherited_east_asian_font,
         (Some(e), _) => Some(e),
         (None, Some(f)) if ctx.font(Some(f)).is_some() && !ctx.has_east_asian_glyphs(f) => cf.inherited_east_asian_font.or(cf.font),
         _ => cf.font,
@@ -336,7 +409,7 @@ fn rpr_xml(ctx: &Ctx, tag: &str, cf: &Cf, extra_attrs: &str) -> String {
 }
 
 /// The text of a shape as a `p:txBody` / `a:txBody` content: `a:bodyPr`, `a:lstStyle` and the paragraphs.
-fn text_body(ctx: &Ctx, shape: &ShapeIr, text: &TextIr) -> String {
+fn text_body(ctx: &Ctx, shape: &ShapeIr, text: &TextIr, inherited_first_last: Option<bool>) -> String {
     let p = &shape.props;
     let d = &ctx.ir.default_props;
     let get = |id: u16| p.get(id).or_else(|| d.get(id));
@@ -349,13 +422,17 @@ fn text_body(ctx: &Ctx, shape: &ShapeIr, text: &TextIr) -> String {
     let anchor_ctr = if matches!(get(0x87), Some(3..=5)) { r#" anchorCtr="1""# } else { "" };
     let wrap = if get(0x85) == Some(2) { "none" } else { "square" };
     let vert = match get(0x88).unwrap_or(0) {
-        1 | 3 => r#" vert="vert""#,
+        // msotxflTtoBA (1) is East Asian vertical writing: PowerPoint's own conversion of the corpus's .ppt files writes eaVert for every
+        // shape whose property 0x88 is 1 (009, 013, 033, 055, 057, 077, ...: 1 -> eaVert, 2 -> vert270). 3 is not in the corpus.
+        1 => r#" vert="eaVert""#,
+        3 => r#" vert="vert""#,
         2 => r#" vert="vert270""#,
         _ => "",
     };
     let fit = if p.flag(0xBF, 1) == Some(true) { "<a:spAutoFit/>" } else { "" };
+    let first_last = if text.space_first_last.or(inherited_first_last).unwrap_or(false) { r#" spcFirstLastPara="1""# } else { "" };
     let mut out = format!(
-        r#"<a:bodyPr wrap="{wrap}" lIns="{}" tIns="{}" rIns="{}" bIns="{}" rtlCol="0" anchor="{anchor}"{anchor_ctr}{vert}>{fit}</a:bodyPr><a:lstStyle/>"#,
+        r#"<a:bodyPr wrap="{wrap}" lIns="{}" tIns="{}" rIns="{}" bIns="{}" rtlCol="0" anchor="{anchor}"{anchor_ctr}{vert}{first_last}>{fit}</a:bodyPr><a:lstStyle/>"#,
         inset(0x81, 91440),
         inset(0x82, 45720),
         inset(0x83, 91440),
@@ -375,10 +452,8 @@ fn text_body(ctx: &Ctx, shape: &ShapeIr, text: &TextIr) -> String {
         let ppr = if ppr_attrs.is_empty() { ppr } else { ppr.replacen("<a:pPr", &format!("<a:pPr{ppr_attrs}"), 1) };
         out += "<a:p>";
         out += &ppr;
-        let mut last_cf = mcf.clone();
         for (run, cf, field) in &para.runs {
             let eff = cf.over(&mcf);
-            last_cf = eff.clone();
             match field {
                 Some(Field::SlideNumber) => {
                     let _ = write!(out, r#"<a:fld id="{{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}}" type="slidenum">{}<a:t>‹#›</a:t></a:fld>"#, rpr_xml(ctx, "rPr", &eff, ""));
@@ -393,17 +468,19 @@ fn text_body(ctx: &Ctx, shape: &ShapeIr, text: &TextIr) -> String {
                             let _ = write!(out, "<a:br>{}</a:br>", rpr_xml(ctx, "rPr", &eff, ""));
                         }
                         if !piece.is_empty() {
-                            let _ = write!(out, "<a:r>{}<a:t>{}</a:t></a:r>", rpr_xml(ctx, "rPr", &eff, ""), esc(piece));
+                            // A run of a text box of the .ppt that says no size (the document's default style gives the size: the
+                            // pptx PowerPoint wrote of it has no `sz` anywhere) is written with the size and marked so (read as
+                            // `RunStyle::size_inherited`): PowerPoint counts such a run at the larger of that size and the mark's.
+                            let inherited = if cf.size.is_none() && text.kind == 4 && !ctx.master { r#" ibisSizeInherited="1""# } else { "" };
+                            let _ = write!(out, "<a:r>{}<a:t>{}</a:t></a:r>", rpr_xml(ctx, "rPr", &eff, inherited), esc(piece));
                         }
                     }
                 }
             }
         }
-        // The paragraph mark has its own formatting; an empty paragraph is as high as that says.
-        if para.runs.is_empty() {
-            last_cf = para.end_cf.over(&mcf);
-        }
-        out += &rpr_xml(ctx, "endParaRPr", &last_cf, "");
+        // The paragraph mark has its own formatting (a line's height follows its typeface, an empty paragraph is as high as it says).
+        let mark_cf = para.end_cf.over(&mcf);
+        out += &rpr_xml(ctx, "endParaRPr", &mark_cf, "");
         out += "</a:p>";
     }
     out
@@ -438,6 +515,20 @@ fn master_placeholder_props<'a>(ir: &'a PptIr, page: &PageIr, kind: u8) -> Optio
     };
     let master = ir.masters.iter().find(|m| m.id == page.master_ref)?;
     master_kinds.iter().find_map(|k| master.shapes.iter().find(|s| s.placeholder == Some(*k)).map(|s| &s.props))
+}
+
+/// Whether the layout the slide's master stands for (PowerPoint 2007's DrawingML of it, `PageIr::layout_first_last`) gives the slide's placeholder
+/// (`PlaceholderEnum` `kind`) `spcFirstLastPara`: a placeholder without a DrawingML of its own is drawn as its layout's is (155's body boxes).
+fn layout_space_first_last(ir: &PptIr, page: &PageIr, kind: Option<u8>) -> Option<bool> {
+    let types: &[&str] = match kind? {
+        0x0D => &["title"],
+        0x0E => &["body"],
+        0x0F => &["ctrTitle", "title"],
+        0x10 => &["subTitle", "body"],
+        _ => return None,
+    };
+    let master = ir.masters.iter().find(|m| m.id == page.master_ref)?;
+    types.iter().find_map(|t| master.layout_first_last.iter().find(|(ty, _)| ty == t).map(|(_, f)| *f))
 }
 
 /// A page's context for a shape that takes no document defaults: only its own properties count.
@@ -511,6 +602,10 @@ fn shape_xml(ctx: &mut Ctx, shape: &ShapeIr, page: &PageIr, outline: &[TextIr], 
         return String::new();
     };
     let rotation = shape.props.get(0x04).map_or(0, |v| ((f64::from(v as i32) / 65536.0) * 60000.0).round() as i64);
+    // A shape flipped in one direction is turned the other way round: the legacy shape is turned and then flipped, DrawingML's is flipped and
+    // then turned, and a flip reverses the turn that follows it (turning by `rot` and then flipping is flipping and then turning by `-rot`).
+    // PowerPoint's own pptx of the corpus' .ppt files has the legacy rotation's complement in each of the 196 flipped and turned shapes compared.
+    let rotation = if shape.flip_h != shape.flip_v { (-rotation).rem_euclid(21_600_000) } else { rotation };
     // The rectangle a .ppt gives a shape turned by a quarter (45 to 135 or 225 to 315 degrees) is the one it covers turned; DrawingML's
     // is the one before the turn: the same center, width and height swapped.
     // (Measured on PowerPoint's PDFs of the master top bands of one presentation; Apache POI's HSLF swaps the same. No statement found in [MS-ODRAW]
@@ -533,7 +628,29 @@ fn shape_xml(ctx: &mut Ctx, shape: &ShapeIr, page: &PageIr, outline: &[TextIr], 
     }
     if shape.is_group {
         let (cx, cy, cw, ch) = shape.child_space.unwrap_or((x, y, w, h));
-        let kids: String = shape.children.iter().map(|c| shape_xml(ctx, c, page, outline, depth + 1)).collect();
+        // The text of a group that stands for a placeholder is kerned as the master's style of that placeholder says (154's title: none), not as
+        // the presentation's default for a text box.
+        let kids: String = shape
+            .children
+            .iter()
+            .map(|c| match (shape.placeholder_style, &c.text) {
+                (Some(style), Some(text)) => {
+                    let mut c = c.clone();
+                    let kern = ctx.ir.kern.as_ref().map(|k| k.get(&(style, 0)).copied().unwrap_or(0));
+                    if let Some(t) = c.text.as_mut() {
+                        for para in t.paragraphs.iter_mut() {
+                            for run in para.runs.iter_mut() {
+                                run.1.kern = run.1.kern.or(kern);
+                            }
+                            para.end_cf.kern = para.end_cf.kern.or(kern);
+                        }
+                    }
+                    let _ = text;
+                    shape_xml(ctx, &c, page, outline, depth + 1)
+                }
+                _ => shape_xml(ctx, c, page, outline, depth + 1),
+            })
+            .collect();
         return format!(
             r#"<p:grpSp><p:nvGrpSpPr><p:cNvPr id="{id}" name="{name}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm{xfrm_attrs}><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/><a:chOff x="{cx}" y="{cy}"/><a:chExt cx="{cw}" cy="{ch}"/></a:xfrm></p:grpSpPr>{kids}</p:grpSp>"#
         );
@@ -545,13 +662,21 @@ fn shape_xml(ctx: &mut Ctx, shape: &ShapeIr, page: &PageIr, outline: &[TextIr], 
         if shape.text.is_none() && shape.placeholder.is_none() {
             if let Some(rid) = ctx.picture(index) {
                 // A picture that gives neither a line color nor a line flag has no line (as for a shape below).
+                // A picture's own fill (the flag is set) is behind it: a picture with transparent parts shows it (081's icons on a white fill).
+                let fill = if shape.props.flag(0x1BF, 4) == Some(true) { fill_xml(ctx, &shape.props, false) } else { String::new() };
                 let no_line = shape.props.get(0x1C0).is_none() && shape.props.flag(0x1FF, 3).is_none();
                 let line = if no_line { line_xml(ctx, &shape.props.with_flag(0x1FF, 3, false), false) } else { line_xml(ctx, &shape.props, false) };
                 // Cropped: the fractions of the picture left out at each side (16.16 fixed point).
                 let crop = |id: u16| shape.props.int(id).map_or(0, |v| (f64::from(v) / 65536.0 * 100_000.0).round() as i64);
                 let src_rect = if (0x100..=0x103).any(|id| crop(id) != 0) { format!(r#"<a:srcRect l="{}" t="{}" r="{}" b="{}"/>"#, crop(0x102), crop(0x100), crop(0x103), crop(0x101)) } else { String::new() };
+                // The picture's transparent colour (pictureTransparent, 0x107, MS-ODRAW 2.3.23.8): that colour of the picture is clear (102's JPEG
+                // animals on white).
+                let clear = shape.props.get(0x107).map_or_else(String::new, |c| {
+                    let rgb = ctx.color(c);
+                    format!(r#"<a:clrChange><a:clrFrom><a:srgbClr val="{rgb:06X}"/></a:clrFrom><a:clrTo><a:srgbClr val="{rgb:06X}"><a:alpha val="0"/></a:srgbClr></a:clrTo></a:clrChange>"#)
+                });
                 return format!(
-                    r#"<p:pic><p:nvPicPr><p:cNvPr id="{id}" name="{name}"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{rid}"/>{src_rect}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>{xfrm}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{line}</p:spPr></p:pic>"#
+                    r#"<p:pic><p:nvPicPr><p:cNvPr id="{id}" name="{name}"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{rid}">{clear}</a:blip>{src_rect}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>{xfrm}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{fill}{line}</p:spPr></p:pic>"#
                 );
             }
         }
@@ -563,8 +688,52 @@ fn shape_xml(ctx: &mut Ctx, shape: &ShapeIr, page: &PageIr, outline: &[TextIr], 
         _ => None,
     };
     let ph = shape.placeholder.and_then(placeholder_kind);
+    // A placeholder the file has but this writes as a plain shape (no `p:ph`: the content placeholder of a slide) is kerned as its master's style
+    // says, not as the presentation's default for a text box (154's body: the master has no kern for it, and its PowerPoint PDF is not kerned).
+    let text = match (text, shape.placeholder.or(shape.unplaced_kind), ph.is_some()) {
+        (Some(mut t), Some(kind), false) => {
+            let style = match kind {
+                0x01 | 0x03 | 0x0D | 0x0F => Some(0u8),
+                0x02 | 0x04 | 0x0E | 0x10 | 0x12 | 0x13 => Some(1),
+                _ => None,
+            };
+            if let (Some(style), Some(kern)) = (style, ctx.ir.kern.as_ref()) {
+                for para in t.paragraphs.iter_mut() {
+                    let k = kern.get(&(style, para.level.min(8) as u8)).copied().unwrap_or(0);
+                    for run in para.runs.iter_mut() {
+                        run.1.kern = run.1.kern.or(Some(k));
+                    }
+                    para.end_cf.kern = para.end_cf.kern.or(Some(k));
+                    // The master's character spacing (`spc` of its style) as well.
+                    if let Some(spc) = ctx.ir.spacing.as_ref().and_then(|m| m.get(&(style, para.level.min(8) as u8)).copied()) {
+                        for run in para.runs.iter_mut() {
+                            run.1.spacing = run.1.spacing.or(Some(spc));
+                        }
+                        para.end_cf.spacing = para.end_cf.spacing.or(Some(spc));
+                    }
+                }
+            }
+            Some(t)
+        }
+        (t, _, _) => t,
+    };
     let is_line = matches!(shape.spt, 20) || shape.is_connector || (32..=40).contains(&shape.spt);
-    let geometry = geometry_xml(shape.spt, &shape.props);
+    let mut geometry = geometry_xml(shape.spt, &shape.props, Some((w, h)));
+    // A freeform whose DrawingML says it is a preset (a 2007 shape the older format has only as its outline) is that preset.
+    if geometry.starts_with("<a:custGeom") {
+        if let Some(preset) = shape.props.complex(0x03A9).filter(|b| crate::ppt::shape_xml_is_same_size(b, shape.abs_frame)).and_then(crate::ppt::shape_xml_geometry) {
+            geometry = preset;
+        }
+    }
+    // The preset's adjust values a shape's DrawingML states are the ones PowerPoint reads (the shape's own, as the file was written), whatever the
+    // binary format's adjust values are in; the shape is as large as the DrawingML says (the values depend on the size).
+    if let Some(preset) = geometry.strip_prefix("<a:prstGeom prst=\"").and_then(|g| g.split('"').next()).map(str::to_owned)
+        && !is_line
+        && let Some(xml_geometry) = shape.props.complex(0x03A9).filter(|b| crate::ppt::shape_xml_is_same_size(b, shape.abs_frame)).and_then(crate::ppt::shape_xml_geometry)
+        && xml_geometry.starts_with(&format!("<a:prstGeom prst=\"{preset}\">"))
+    {
+        geometry = xml_geometry;
+    }
     // A shape with no text in the binary format may have it in its DrawingML (text in columns).
     let raw_body = if text.is_none() { shape.props.complex(0x03A9).filter(|b| crate::ppt::shape_xml_is_current(b, shape.frame)).and_then(crate::ppt::shape_xml_text_body) } else { None };
     let textual = text.is_some() || ph.is_some() || raw_body.is_some();
@@ -588,7 +757,11 @@ fn shape_xml(ctx: &mut Ctx, shape: &ShapeIr, page: &PageIr, outline: &[TextIr], 
         // group's default line is on, PowerPoint draws none). [MS-ODRAW] "Line Style Boolean Properties" gives the property block the
         // default 0x0 (fLine off) and says an omitted property has its default; that the drawing group's own default is left out here
         // is only measured (no statement found in MS-PPT or MS-ODRAW).
-        let line_props = if !is_line && shape.props.get(0x1C0).is_none() && shape.props.flag(0x1FF, 3).is_none() { shape.props.with_flag(0x1FF, 3, false) } else { shape.props.clone() };
+        // The shape's own DrawingML (when it is as current as the frame says) can say the outline is off (014's white strips: a line color, no
+        // line flag, and `<a:ln><a:noFill/>` in the DrawingML; PowerPoint's PDF draws none). A connector is the same (014's four lines under the faded
+        // headings: no line flag, no color, `<a:ln><a:noFill/>`; the one with a color and `<a:ln>` fill is drawn).
+        let xml_no_line = shape.props.complex(0x03A9).filter(|b| crate::ppt::shape_xml_is_same_size(b, shape.abs_frame)).is_some_and(crate::ppt::shape_xml_line_is_none);
+        let line_props = if shape.props.flag(0x1FF, 3).is_none() && (xml_no_line || (!is_line && shape.props.get(0x1C0).is_none())) { shape.props.with_flag(0x1FF, 3, false) } else { shape.props.clone() };
         (fill, line_xml(ctx, &line_props, !textual || is_line))
     };
     let sp_pr = format!("<p:spPr>{xfrm}{geometry}{fill}{line}{}</p:spPr>", shadow_xml(ctx, &shape.props));
@@ -608,7 +781,7 @@ fn shape_xml(ctx: &mut Ctx, shape: &ShapeIr, page: &PageIr, outline: &[TextIr], 
         "<p:cNvSpPr/>".to_string()
     };
     let body = match &text {
-        Some(t) => format!("<p:txBody>{}</p:txBody>", text_body(ctx, shape, t)),
+        Some(t) => format!("<p:txBody>{}</p:txBody>", text_body(ctx, shape, t, layout_space_first_last(ctx.ir, page, shape.unplaced_kind))),
         None => raw_body.unwrap_or_default(),
     };
     let link = shape.interactive.and_then(|i| ctx.link_xml(i)).unwrap_or_default();
@@ -676,6 +849,8 @@ fn tree(shapes: &str) -> String {
 
 /// The theme of a page: Office's, with the page's color scheme.
 fn theme_of(scheme: &[u32; 8]) -> String {
+    // The scheme's seventh and eighth colours are the accent with the hyperlink's and the followed hyperlink's ([MS-PPT] ColorSchemeAtom;
+    // 138's PowerPoint pptx has hlink 5C6970 and folHlink A3A3A3 = scheme[6], scheme[7]).
     let mut t = crate::new_file::theme();
     let hex = |v: u32| format!("{v:06X}");
     t = t.replacen(
@@ -688,7 +863,7 @@ fn theme_of(scheme: &[u32; 8]) -> String {
         &format!(r#"<a:lt1><a:srgbClr val="{}"/></a:lt1>"#, hex(scheme[0])),
         1,
     );
-    for (name, old, new) in [("dk2", "44546A", scheme[3]), ("lt2", "E7E6E6", scheme[4]), ("accent1", "4472C4", scheme[5]), ("accent2", "ED7D31", scheme[6]), ("accent3", "A5A5A5", scheme[7])] {
+    for (name, old, new) in [("dk2", "44546A", scheme[3]), ("lt2", "E7E6E6", scheme[4]), ("accent1", "4472C4", scheme[5]), ("accent2", "ED7D31", scheme[6]), ("accent3", "A5A5A5", scheme[7]), ("hlink", "0563C1", scheme[6]), ("folHlink", "954F72", scheme[7])] {
         t = t.replacen(&format!(r#"<a:{name}><a:srgbClr val="{old}"/></a:{name}>"#), &format!(r#"<a:{name}><a:srgbClr val="{}"/></a:{name}>"#, hex(new)), 1);
     }
     t
@@ -696,16 +871,18 @@ fn theme_of(scheme: &[u32; 8]) -> String {
 
 /// A master's `p:txStyles` from its text styles (title, body and other text).
 fn tx_styles(ctx: &Ctx) -> String {
-    let style = |tag: &str, kind: u32| -> String {
+    let style = |tag: &str, kind: u32, which: u8| -> String {
         let levels: String = (0..5)
             .map(|level| {
-                let (pf, cf) = ctx.level_style(kind, level);
+                let (pf, mut cf) = ctx.level_style(kind, level);
+                cf.kern = ctx.ir.kern.as_ref().and_then(|k| k.get(&(which, level as u8)).copied());
+                cf.spacing = cf.spacing.or_else(|| ctx.ir.spacing.as_ref().and_then(|k| k.get(&(which, level as u8)).copied()));
                 ppr_xml(ctx, &format!("lvl{}pPr", level + 1), &pf, Some(&cf), None)
             })
             .collect();
         format!("<p:{tag}>{levels}</p:{tag}>")
     };
-    format!("<p:txStyles>{}{}{}</p:txStyles>", style("titleStyle", 0), style("bodyStyle", 1), style("otherStyle", 4))
+    format!("<p:txStyles>{}{}{}</p:txStyles>", style("titleStyle", 0, 0), style("bodyStyle", 1, 1), style("otherStyle", 4, 2))
 }
 
 /// The `.pptx` made from the old presentation in `data`.
@@ -919,9 +1096,12 @@ pub(crate) fn to_pptx_of(ir: crate::ppt::PptIr) -> Result<Vec<u8>, Error> {
         pres_rels.push(rel(&format!("rId{}", extra + 4), "notesMaster", "notesMasters/notesMaster1.xml"));
         notes_master_list = format!(r#"<p:notesMasterIdLst><p:notesMasterId r:id="rId{}"/></p:notesMasterIdLst>"#, extra + 4);
     }
+    // The presentation's default text style follows the master's kerning (a text box takes it, not the master's otherStyle).
+    // (1200 in every file whose master the file keeps as DrawingML, whatever its styles say: 154's, 006's, 153's ... PowerPoint pptx.)
+    let default_levels: String = if ir.kern.is_some() { (1..=9).map(|n| format!(r#"<a:lvl{n}pPr><a:defRPr kern="1200"/></a:lvl{n}pPr>"#)).collect() } else { String::new() };
     let first_num = if ir.first_slide_number == 1 { String::new() } else { format!(r#" firstSlideNum="{}""#, ir.first_slide_number) };
     let presentation = format!(
-        r#"{HEAD}<p:presentation xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}" saveSubsetFonts="1"{first_num}><p:sldMasterIdLst>{master_ids}</p:sldMasterIdLst>{notes_master_list}<p:sldIdLst>{slide_ids}</p:sldIdLst><p:sldSz cx="{width}" cy="{height}"/><p:notesSz cx="6858000" cy="9144000"/><p:defaultTextStyle><a:defPPr><a:defRPr lang="ja-JP"/></a:defPPr></p:defaultTextStyle></p:presentation>"#
+        r#"{HEAD}<p:presentation xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}" saveSubsetFonts="1"{first_num}><p:sldMasterIdLst>{master_ids}</p:sldMasterIdLst>{notes_master_list}<p:sldIdLst>{slide_ids}</p:sldIdLst><p:sldSz cx="{width}" cy="{height}"/><p:notesSz cx="6858000" cy="9144000"/><p:defaultTextStyle><a:defPPr><a:defRPr lang="ja-JP"/></a:defPPr>{default_levels}</p:defaultTextStyle></p:presentation>"#
     );
     let mut defaults = String::from(r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>"#);
     for ext in &extensions {

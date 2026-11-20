@@ -150,7 +150,7 @@ fn chart_data_panel() {
     // Typing in the grid: the cell's text is put in the chart, and the chart's pane keeps the grid.
     s.update(|_, _, cx| workbook.update(cx, |d, cx| {
         let slide = d.current_slide;
-        d.run(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits: vec![ibis_doc_model::CellEdit { row: 1, column: 1, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Number(12.5)) }] })], cx);
+        d.run(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits: vec![ibis_doc_model::CellEdit { row: 1, column: 1, input: ibis_doc_model::CellInput::Value(ibis_doc_model::CellValue::Number(12.5)) }] })], cx);
     }));
     let first = s.with(|e, _| e.selected_chart().and_then(|(_, _, c)| c.groups[0].series[0].values[0]));
     assert_eq!(first, Some(ibis_doc_model::Number(12.5)));

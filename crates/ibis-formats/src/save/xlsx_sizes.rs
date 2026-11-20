@@ -387,6 +387,18 @@ pub(crate) fn write_validations(doc: &mut XmlDocument, rules: &[ibis_doc_model::
     if let Some(old) = doc.child(root, "dataValidations") {
         doc.detach(old);
     }
+    // The 2010 rules of the sheet's `extLst` (`x14:dataValidations`) are in the model too (the reader takes them), so they are written
+    // above and not left in the file a second time.
+    for list in doc.children_named(root, "extLst").collect::<Vec<_>>() {
+        for ext in doc.children_named(list, "ext").collect::<Vec<_>>() {
+            if doc.descendants(ext).into_iter().any(|n| doc.local_name(n) == "dataValidations") {
+                doc.detach(ext);
+            }
+        }
+        if doc.children_named(list, "ext").next().is_none() {
+            doc.detach(list);
+        }
+    }
     if rules.is_empty() {
         return Ok(());
     }

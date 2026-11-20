@@ -1,4 +1,6 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/246)
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! ISO/IEC 15444-1 JPEG 2000 codestream (`.j2k`/`.j2c`) and JP2 box (`.jp2`) encoder.
 
 use crate::dwt::{Subband, forward_53_2d, forward_rct};

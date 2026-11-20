@@ -211,7 +211,7 @@ impl SlideEditor {
             });
             cells.push(PutCell { row, column, input, style: Some(style_after.unwrap_or_else(|| sheet.styles.first().cloned().unwrap_or_default())) });
         }
-        self.status = match self.document.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index, table: Some(table), cells })]) {
+        self.status = match self.document.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index, table: Some(table), cells })]) {
             Ok(_) => None,
             Err(err) => Some(crate::shell::i18n::format("edit.refused", &[("error", &err)]).into()),
         };
@@ -483,8 +483,8 @@ impl SlideEditor {
             button_group([
                 ButtonGroupItem::new("table-design-resize", text("_xlsx.table-resize")).on_click(cx.listener(|this, _, window, cx| this.resize_table_dialog(window, cx))),
                 ButtonGroupItem::new("table-design-pivot", text("xlsx.pivot-insert")).on_click(cx.listener(|this, _, window, cx| this.open_create_pivot(window, cx))),
-                ButtonGroupItem::new("table-design-slicer", text("xlsx.slicer-insert")).on_click(cx.listener(|this, _, window, cx| this.open_slicer_insert_panel(window, cx))),
-                ButtonGroupItem::new("table-design-timeline", text("xlsx.timeline-insert")).on_click(cx.listener(|this, _, window, cx| this.open_timeline_insert_panel(window, cx))),
+                ButtonGroupItem::new("table-design-slicer", text("xlsx.insert-slicer")).on_click(cx.listener(|this, _, window, cx| this.open_slicer_insert_panel(window, cx))),
+                ButtonGroupItem::new("table-design-timeline", text("xlsx.insert-timeline")).on_click(cx.listener(|this, _, window, cx| this.open_timeline_insert_panel(window, cx))),
                 ButtonGroupItem::new("table-design-dedupe", text("xlsx.remove-duplicates")).kind(ActionButtonKind::Destructive).on_click(cx.listener(|this, _, window, cx| this.open_dedupe_panel(window, cx))),
                 ButtonGroupItem::new("table-design-to-range", text("xlsx.table-to-range")).on_click(cx.listener(|this, _, _, cx| this.table_to_range(cx))),
             ])
@@ -745,7 +745,7 @@ impl SlideEditor {
             let slide = self.current_slide;
             self.run_sheet(
                 vec![Command::Sheet(SheetCommand::Insert {
-                    slide,
+                    sheet: slide,
                     axis: ibis_doc_model::sheet_command::Axis::Rows,
                     at,
                     count,
@@ -777,7 +777,7 @@ impl SlideEditor {
             let slide = self.current_slide;
             self.run_sheet(
                 vec![Command::Sheet(SheetCommand::Insert {
-                    slide,
+                    sheet: slide,
                     axis: ibis_doc_model::sheet_command::Axis::Rows,
                     at,
                     count,
@@ -827,7 +827,7 @@ impl SlideEditor {
             let slide = self.current_slide;
             self.run_sheet(
                 vec![Command::Sheet(SheetCommand::Insert {
-                    slide,
+                    sheet: slide,
                     axis: ibis_doc_model::sheet_command::Axis::Columns,
                     at,
                     count,
@@ -857,7 +857,7 @@ impl SlideEditor {
             let slide = self.current_slide;
             self.run_sheet(
                 vec![Command::Sheet(SheetCommand::Insert {
-                    slide,
+                    sheet: slide,
                     axis: ibis_doc_model::sheet_command::Axis::Columns,
                     at,
                     count,
@@ -923,7 +923,7 @@ impl SlideEditor {
         let slide = self.current_slide;
         self.run_sheet(
             vec![Command::Sheet(SheetCommand::Delete {
-                slide,
+                sheet: slide,
                 axis: ibis_doc_model::sheet_command::Axis::Rows,
                 at: first,
                 count,
@@ -951,7 +951,7 @@ impl SlideEditor {
         let slide = self.current_slide;
         self.run_sheet(
             vec![Command::Sheet(SheetCommand::Delete {
-                slide,
+                sheet: slide,
                 axis: ibis_doc_model::sheet_command::Axis::Columns,
                 at: first,
                 count,

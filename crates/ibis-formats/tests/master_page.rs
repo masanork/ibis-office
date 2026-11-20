@@ -55,7 +55,7 @@ fn a_shape_moved_on_the_page_moves_in_the_layout() {
     assert!(!opened.presentation.slides[0].shapes.is_empty(), "the layout's shapes are the slide's");
     let mut document = Document::new(opened.presentation.clone());
     let moved = EmuRect::new(first.frame.x + 123_456, first.frame.y + 65_432, first.frame.width, first.frame.height);
-    document.execute(vec![Command::SetFrame { slide, shape: first.id, frame: moved }]).unwrap();
+    document.execute(vec![Command::SetFrame { slide, frames: vec![(first.id, moved)], with_attached: true }]).unwrap();
     let edited = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
     let back = master_page::apply(&data, &edited, &layout.part).unwrap();
     let after = ibis_formats::open(back).unwrap();
@@ -101,7 +101,7 @@ fn a_picture_put_on_a_layout_comes_with_its_file() {
     let id = document.ids().new_shape_id();
     let picture = Picture { media, crop: Default::default(), stroke: None, corner: 0, duotone: None, clear: None, luminance: None, clip: None, shadow: None, reflection: None, soft_edge: None, alt_text: Default::default(), decorative: false, name: "ロゴ".into(), geometry: None, effects: Default::default(), tile: None, fill_rect: None, artistic_effect: None };
     let index = opened.presentation.slides[0].shapes.len();
-    document.execute(vec![Command::InsertShape { slide, index, shape: Shape::new(id, EmuRect::new(100_000, 100_000, 800_000, 450_000), ShapeKind::Picture(picture)) }]).unwrap();
+    document.execute(vec![Command::InsertShape { slide, shapes: vec![(index, Shape::new(id, EmuRect::new(100_000, 100_000, 800_000, 450_000), ShapeKind::Picture(picture)))] }]).unwrap();
     let edited = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
     let back = master_page::apply(&data, &edited, &layout.part).unwrap();
     let after = ibis_formats::open(back.clone()).unwrap();
@@ -282,7 +282,7 @@ fn the_notes_master_is_a_slide_and_comes_back_changed() {
     let first = slide.shapes[0].clone();
     let mut document = Document::new(opened.presentation.clone());
     let moved = EmuRect::new(first.frame.x + 100_000, first.frame.y + 50_000, first.frame.width, first.frame.height);
-    document.execute(vec![Command::SetFrame { slide: slide.id, shape: first.id, frame: moved }]).unwrap();
+    document.execute(vec![Command::SetFrame { slide: slide.id, frames: vec![(first.id, moved)], with_attached: true }]).unwrap();
     let edited = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
     let back = master_page::apply(&data, &edited, &part).unwrap();
     let again = ibis_formats::open(master_page::build_notes_master(&back).unwrap()).unwrap();
@@ -306,9 +306,9 @@ fn a_box_added_to_a_notes_page_and_the_moved_places_come_back() {
     let mut document = Document::new(opened.presentation.clone());
     document
         .execute(vec![
-            Command::SetFrame { slide: slide.id, shape: body.id, frame: body_to },
-            Command::SetFrame { slide: slide.id, shape: image.id, frame: image_to },
-            Command::InsertShape { slide: slide.id, index: slide.shapes.len(), shape: Shape::text_box(id, EmuRect::new(500_000, 500_000, 2_000_000, 400_000), "ノートの図形") },
+            Command::SetFrame { slide: slide.id, frames: vec![(body.id, body_to)], with_attached: true },
+            Command::SetFrame { slide: slide.id, frames: vec![(image.id, image_to)], with_attached: true },
+            Command::InsertShape { slide: slide.id, shapes: vec![(slide.shapes.len(), Shape::text_box(id, EmuRect::new(500_000, 500_000, 2_000_000, 400_000), "ノートの図形"))] },
         ])
         .unwrap();
     let edited = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();

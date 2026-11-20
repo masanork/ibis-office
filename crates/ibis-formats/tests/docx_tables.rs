@@ -291,3 +291,41 @@ fn table_style_apply_and_save() {
     assert_eq!(cleared_t.style, None);
 }
 
+
+/// GitHub issue #178: a cell margin by its type (`pct` is 0, `nil` and `auto` leave the table's), the fixed layout's `tcW` and `tblW`, and the
+/// width of type `nil` (the grid's), as Word's PDFs show.
+#[test]
+fn issue_178_margin_types_fixed_widths_and_nil() {
+    let tc = |pr: &str| cell(pr, 1);
+    let row = |pr: [&str; 2]| format!("<w:tr>{}{}</w:tr>", tc(pr[0]), tc(pr[1]));
+    let margins = |mar: &str| {
+        let xml = format!(r#"<w:tbl><w:tblPr>{mar}</w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid>{}</w:tbl>"#, row(["", r#"<w:tcMar><w:left w:w="0" w:type="auto"/><w:top w:w="9" w:type="nil"/></w:tcMar>"#]));
+        let t = last_table(&with_table(&xml));
+        (t.rows[0].cells[0].margins, t.rows[0].cells[1].margins)
+    };
+    let pct = r#"<w:tblCellMar><w:top w:w="250" w:type="pct"/><w:left w:w="250" w:type="pct"/><w:bottom w:w="250" w:type="pct"/><w:right w:w="250" w:type="pct"/></w:tblCellMar>"#;
+    assert_eq!(margins(pct).0, [0, 0, 0, 0], "pct is 0");
+    assert_eq!(margins(pct).1, [0, 0, 0, 0], "nil and auto leave the table's");
+    let dxa = r#"<w:tblCellMar><w:left w:w="200" w:type="dxa"/><w:right w:w="300"/></w:tblCellMar>"#;
+    assert_eq!(margins(dxa).0, [0, 300 * TWIP, 0, 200 * TWIP]);
+    assert_eq!(margins(dxa).1, [0, 300 * TWIP, 0, 200 * TWIP], "nil and auto: the table's");
+
+    // Fixed layout: the cells' widths over a grid that disagrees; a width in twips stretches or cuts in proportion; in percent it is kept for the layout.
+    let widths = |tbl_pr: &str, cells: [&str; 3]| {
+        let row = format!("<w:tr>{}</w:tr>", cells.iter().map(|w| tc(w)).collect::<String>());
+        let xml = format!(r#"<w:tbl><w:tblPr>{tbl_pr}<w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>{row}</w:tbl>"#);
+        last_table(&with_table(&xml))
+    };
+    let same = [r#"<w:tcW w:w="2400" w:type="dxa"/>"#; 3];
+    assert_eq!(widths(r#"<w:tblW w:w="4200" w:type="dxa"/>"#, same).columns, vec![1400 * TWIP; 3]);
+    let differing = [r#"<w:tcW w:w="1800" w:type="dxa"/>"#, r#"<w:tcW w:w="3000" w:type="dxa"/>"#, r#"<w:tcW w:w="2400" w:type="dxa"/>"#];
+    assert_eq!(widths("", differing).columns, vec![1800 * TWIP, 3000 * TWIP, 2400 * TWIP]);
+    let t = widths(r#"<w:tblW w:w="5000" w:type="pct"/>"#, same);
+    assert_eq!((t.columns, t.fixed_percent), (vec![2400 * TWIP; 3], Some(5000)));
+
+    // Autofit: a cell of type nil is the grid's width (not the content's), and the grid giving every column is noted.
+    let xml = format!(r#"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="4800"/></w:tblGrid><w:tr>{}{}</w:tr></w:tbl>"#, tc(r#"<w:tcW w:w="0" w:type="nil"/>"#), tc(r#"<w:tcW w:w="4800" w:type="dxa"/>"#));
+    let fit = last_table(&with_table(&xml)).autofit.unwrap();
+    assert_eq!(fit.cells[0], vec![ibis_doc_model::PreferredWidth::Nil, ibis_doc_model::PreferredWidth::Fixed(4800 * TWIP)]);
+    assert!(fit.grid_given && fit.grid_trusted);
+}

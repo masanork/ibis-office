@@ -37,7 +37,7 @@ fn document_variables_alone_are_saved() {
     let mut d = Document::new(opened.presentation.clone());
     let mut vars = flow(d.presentation()).doc_variables.clone();
     vars.insert("資料文献".into(), "1件目".into());
-    d.execute(vec![Command::Flow(FlowCommand::SetDocVariables(vars.clone()))]).unwrap();
+    d.execute(vec![Command::Flow(FlowCommand::SetDocumentVariables(vars.clone()))]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
     assert!(saved != data, "a change of the document variables alone is written");
     let again = ibis_formats::read(&saved).unwrap();
@@ -137,7 +137,7 @@ fn editing_the_words_of_a_text_box_keeps_its_bold_colour_and_line_break() {
     let mut d = Document::new(opened.presentation.clone());
     let at = box_position(d.presentation());
     // Words added in the middle of the red bold part, and at the end of the second line.
-    d.execute(vec![Command::Flow(FlowCommand::SpliceShapeText { at, start: 8, remove: 0, insert: "【追加】".into() })]).unwrap();
+    d.execute(vec![Command::Flow(FlowCommand::ReplaceShapeTextRange { at, start: 8, remove: 0, insert: "【追加】".into() })]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
     let xml = part(&saved, "word/document.xml");
     let a = xml.find("<w:txbxContent>").unwrap();

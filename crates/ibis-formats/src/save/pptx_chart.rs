@@ -1216,7 +1216,7 @@ pub(crate) fn write_embedded_cells(package: &mut Package, chart_part: &str, cell
             None => by_sheet.push((slide, vec![edit])),
         }
     }
-    let commands = by_sheet.into_iter().map(|(slide, edits)| ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { slide, edits })).collect();
+    let commands = by_sheet.into_iter().map(|(slide, edits)| ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells { sheet: slide, edits })).collect();
     doc.execute(commands).map_err(|e| Error::new(format!("グラフのデータのブックを変えられません: {e:?}")))?;
     let saved = opened.source.save(doc.presentation(), crate::SaveOptions::default())?;
     package.set_bytes(&part, saved);

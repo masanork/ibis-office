@@ -216,7 +216,7 @@ pub fn layout(kind: Kind) -> &'static [MenuSpec] {
 
 /// Commands the layout may show more than once (the redesign allows these: comment, cross-reference, page break; the sheet's protection is in
 /// ファイル ▸ ブックの保護 and 校閲, as in Excel, 2026-11-11).
-const ALLOWED_TWICE: &[&str] = &["pptx.anim.preview", "pptx.anim.options", "docx.page-break", "docx.xref", "docx.quick-parts.prop.comments", "insert.comment", "xlsx.protect-sheet"];
+const ALLOWED_TWICE: &[&str] = &["pptx.animation.preview", "pptx.animation.options", "docx.page-break", "docx.cross-reference", "docx.quick-parts.prop.comments", "insert.comment", "xlsx.protect-sheet"];
 
 /// The ids the layout names (so that a submenu taken over whole does not also show them where it is not named).
 fn named_ids(items: &[LayoutItem], out: &mut HashSet<&'static str>) {
@@ -405,10 +405,11 @@ impl Resolver<'_> {
                             for layout_item in items_layout {
                                 if let LayoutItem::CmdAs { id: as_id, label_key: as_key } = layout_item {
                                     for entry in items.iter_mut() {
-                                        if let MenuEntry::Item(item) = entry
-                                            && item.id == *as_id
-                                        {
-                                            item.label = (*as_key).into();
+                                        match entry {
+                                            MenuEntry::Item(item) if item.id == *as_id => item.label = (*as_key).into(),
+                                            // A submenu inside the old one too (the presentation screen's action buttons under the shared shapes).
+                                            MenuEntry::Submenu(inner) if inner.id == *as_id => inner.label = (*as_key).into(),
+                                            _ => {}
                                         }
                                     }
                                 }

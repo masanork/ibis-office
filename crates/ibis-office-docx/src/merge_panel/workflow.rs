@@ -138,7 +138,7 @@ pub(crate) fn read_recipient_file(path: &std::path::Path) -> Result<MergeImport,
         .to_ascii_lowercase();
     let sheets: Vec<(String, String)> = match ext.as_str() {
         "xlsx" | "xlsm" | "xls" => {
-            let book = ibis_formats::read(&bytes).map_err(|_| error())?;
+            let book = ibis_odf::read(&bytes).map_err(|_| error())?;
             if book.workbook.is_none() {
                 return Err(error());
             }

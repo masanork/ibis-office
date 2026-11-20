@@ -186,7 +186,7 @@ fn workbook_from_chart_data(chart: &Chart, literal_labels: bool) -> Result<Chart
             filter: Some(ibis_doc_model::AutoFilter { range, columns: Vec::new() }),
             totals: Vec::new(),
         };
-        doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+        doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
         opened.source.save(doc.presentation(), crate::SaveOptions::default())?
     };
     let refs = (0..series.len() as u32)

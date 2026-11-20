@@ -26,7 +26,9 @@
 //! bar's list of zooms), `zoom-wheel:<pixels>[:<x>:<y>]` (a trackpad scroll
 //! with the wheel's zoom modifier held, zooming in if positive),
 //! `slideshow` (start the slide show), `transition-at:<ms>` (draw the slide show's transition at that time since the slide came in, whatever
-//! the clock says: the same moment of an effect on any machine; give it after the `right` that starts the transition), `goto:<reference>` (select a
+//! the clock says: the same moment of an effect on any machine; give it after the `right` that starts the transition), `anim-at:<ms>` (draw the
+//! slide show's animations at that time since they began, whatever the clock says, as the `transition-at` step does for a transition; give it after
+//! the `right` that plays the slide's animations), `goto:<reference>` (select a
 //! worksheet's cells as the name box does, such as `goto:A201` or
 //! `goto:'Sheet 2'!B3:C4`), `type:<text>` (type the text into what has
 //! the keys, such as the name box after a `click` on it) and `open:<path>`
@@ -148,6 +150,15 @@ pub(crate) fn run(
                 editor.update(app, |e, cx| {
                     if let Some(show) = e.slideshow_mut() {
                         show.transition_at = at;
+                    }
+                    cx.notify();
+                });
+                window.refresh();
+            } else if let Some(ms) = step.strip_prefix("anim-at:") {
+                let at = ms.parse::<f32>().ok();
+                editor.update(app, |e, cx| {
+                    if let Some(show) = e.slideshow_mut() {
+                        show.anim_at = at;
                     }
                     cx.notify();
                 });

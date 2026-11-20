@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/235)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Bridge from `hayro-interpret` (`Device` trait) to `ibis-pdf` [`PageScene`].
 
@@ -71,7 +71,9 @@ impl SceneDevice {
         }
     }
 
-    fn finish(self) -> PageScene {
+    fn finish(mut self) -> PageScene {
+        // The characters get the width they take (ibisOffice: selecting text needs it).
+        self.text_index.fit_widths();
         PageScene {
             info: self.info,
             display_list: self.display_list,

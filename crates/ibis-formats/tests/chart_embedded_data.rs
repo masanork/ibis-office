@@ -26,7 +26,7 @@ fn edited_data_reaches_the_embedded_workbook() {
     let series = &mut chart.groups[0].series[0];
     series.values[1] = Some(Number(777.25));
     series.name = "新しい名前".into();
-    doc.execute(vec![Command::SetKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(chart))) }]).unwrap();
+    doc.execute(vec![Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(chart))) }]).unwrap();
     let saved = opened.source.save(doc.presentation(), ibis_formats::SaveOptions::default()).unwrap();
     // The chart reads back with them.
     let again = ibis_formats::read(&saved).unwrap();

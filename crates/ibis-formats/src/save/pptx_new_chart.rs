@@ -295,7 +295,7 @@ fn workbook() -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range: CellRange { first_row: 0, first_column: 0, last_row: CATEGORIES.len() as u32, last_column: SERIES.len() as u32 }, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 
@@ -314,7 +314,7 @@ fn pie_workbook() -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range: CellRange { first_row: 0, first_column: 0, last_row: PIE_CATEGORIES.len() as u32, last_column: PIE_SERIES.len() as u32 }, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 
@@ -333,7 +333,7 @@ fn scatter_workbook() -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range: CellRange { first_row: 0, first_column: 0, last_row: 4, last_column: 1 }, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 
@@ -352,7 +352,7 @@ fn bubble_workbook() -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range: CellRange { first_row: 0, first_column: 0, last_row: 4, last_column: 2 }, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 
@@ -371,7 +371,7 @@ fn stock_hlc_workbook() -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range: CellRange { first_row: 0, first_column: 0, last_row: 4, last_column: 3 }, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 
@@ -390,7 +390,7 @@ fn stock_ohlc_workbook() -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range: CellRange { first_row: 0, first_column: 0, last_row: 4, last_column: 4 }, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 
@@ -409,7 +409,7 @@ fn stock_vhlc_workbook() -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range: CellRange { first_row: 0, first_column: 0, last_row: 4, last_column: 4 }, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 
@@ -428,7 +428,7 @@ fn stock_vohlc_workbook() -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range: CellRange { first_row: 0, first_column: 0, last_row: 4, last_column: 5 }, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 
@@ -482,7 +482,7 @@ fn ex_workbook(kind: NewChartKind) -> Result<Vec<u8>, Error> {
         filter: Some(ibis_doc_model::AutoFilter { range, columns: Vec::new() }),
         totals: Vec::new(),
     };
-    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
+    doc.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index: 0, table: Some(table), cells: Vec::new() })]).map_err(|e| Error::new(format!("ブックに表を作れません: {e:?}")))?;
     opened.source.save(doc.presentation(), crate::SaveOptions::default())
 }
 

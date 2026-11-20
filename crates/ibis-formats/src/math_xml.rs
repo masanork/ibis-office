@@ -64,6 +64,15 @@ pub fn read_math(n: Node) -> Math {
 }
 
 fn node(n: Node) -> Option<Math> {
+    let math = node_plain(n)?;
+    // The colour of the structure's own drawing (a fraction bar, brackets, a radical or an operator sign: `m:<x>Pr/m:ctrlPr/w:rPr/w:color`, GitHub issue #197).
+    Some(match ctrl_color(n) {
+        Some(color) if !matches!(math, Math::Text(_) | Math::Colored { .. } | Math::Row(_)) => Math::Colored { color, body: Box::new(math) },
+        _ => math,
+    })
+}
+
+fn node_plain(n: Node) -> Option<Math> {
     if n.tag_name().namespace() != Some(M) {
         return None;
     }
@@ -133,17 +142,62 @@ fn node(n: Node) -> Option<Math> {
     })
 }
 
+const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
 /// The colour a run (`m:r`) is given (`w:rPr/w:color/@w:val`): Word writes the colour of a formula's text on its runs, each its own (#171).
 /// `None`: none (or `auto`).
 fn run_color(r: Node) -> Option<ibis_doc_model::drawing::Rgb> {
-    let value = r
+    parse_color(run_color_value(r)?)
+}
+
+/// The colour in the control properties of a structure `n` (`m:<x>Pr/m:ctrlPr/w:rPr/w:color/@w:val`); `None`: none (or `auto`).
+fn ctrl_color(n: Node) -> Option<ibis_doc_model::drawing::Rgb> {
+    let pr = n.children().find(|c| c.is_element() && c.tag_name().namespace() == Some(M) && c.tag_name().name().ends_with("Pr") && c.tag_name().name() != "rPr")?;
+    let ctrl = m_child(pr, "ctrlPr")?;
+    parse_color(run_color_value(ctrl)?)
+}
+
+fn parse_color(value: &str) -> Option<ibis_doc_model::drawing::Rgb> {
+    (value.len() == 6).then(|| u32::from_str_radix(value, 16).ok()).flatten().map(ibis_doc_model::drawing::Rgb)
+}
+
+/// The colour among the children of `n`: Word's `w:rPr/w:color/@w:val`, or PowerPoint's `a:rPr/a:solidFill/a:srgbClr/@val` (a formula's runs and control properties
+/// have a run's properties of the application's own).
+fn run_color_value<'a>(n: Node<'a, '_>) -> Option<&'a str> {
+    let word = n
         .children()
         .filter(|c| c.is_element() && c.tag_name().namespace() == Some(W) && c.tag_name().name() == "rPr")
         .flat_map(|rpr| rpr.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(W) && c.tag_name().name() == "color"))
-        .find_map(|c| c.attribute((W, "val")))?;
-    (value.len() == 6).then(|| u32::from_str_radix(value, 16).ok()).flatten().map(ibis_doc_model::drawing::Rgb)
+        .find_map(|c| c.attribute((W, "val")));
+    word.or_else(|| {
+        n.children()
+            .filter(|c| c.is_element() && c.tag_name().namespace() == Some(A) && c.tag_name().name() == "rPr")
+            .flat_map(|rpr| rpr.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(A) && c.tag_name().name() == "solidFill"))
+            .flat_map(|fill| fill.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(A) && c.tag_name().name() == "srgbClr"))
+            .find_map(|c| c.attribute("val"))
+    })
+}
+
+/// `xml`, the markup of the structure `<m:x>...`, with the colour `color` in its control properties.
+fn with_ctrl_color(xml: String, color: ibis_doc_model::drawing::Rgb) -> String {
+    let ctrl = format!("<m:ctrlPr><w:rPr><w:color w:val=\"{:06X}\"/></w:rPr></m:ctrlPr>", color.0);
+    let Some(tag) = xml.strip_prefix("<m:").and_then(|r| r.split('>').next()) else { return xml };
+    let tag = tag.to_string();
+    let pr = format!("{tag}Pr");
+    let open = format!("<m:{tag}>");
+    let pr_close = format!("</m:{pr}>");
+    if xml[open.len().min(xml.len())..].starts_with(&format!("<m:{pr}>")) && xml.starts_with(&open) {
+        // Its own properties come first: the control properties end them.
+        let at = xml.find(&pr_close).unwrap_or(0);
+        let mut out = xml;
+        out.insert_str(at, &ctrl);
+        out
+    } else if xml.starts_with(&open) && matches!(tag.as_str(), "f" | "rad" | "nary" | "d" | "acc" | "bar" | "limUpp" | "limLow" | "eqArr" | "m" | "groupChr") {
+        format!("{open}<m:{pr}>{ctrl}</m:{pr}>{}", &xml[open.len()..])
+    } else {
+        xml
+    }
 }
 
 fn esc(s: &str) -> String {
@@ -169,7 +223,7 @@ fn content(m: &Math, upright: bool) -> String {
         Math::Text(t) => run(t, upright, None),
         Math::Colored { color, body } => match &**body {
             Math::Text(t) => run(t, upright, Some(*color)),
-            other => content(other, upright),
+            other => with_ctrl_color(content(other, upright), *color),
         },
         Math::Row(items) => items.iter().map(|i| content(i, upright)).collect(),
         Math::Frac { num, den, kind } => {
@@ -243,11 +297,17 @@ pub fn write_math_inline(math: &Math) -> String {
 
 /// The paragraph content that holds a formula the way PowerPoint writes it: `a14:m` in the `Choice` of a
 /// markup-compatibility wrapper, the formula's line of text as its fallback.
-pub fn write_math_content(math: &Math, a: &str, inline: bool) -> String {
+pub fn write_math_content(math: &Math, a: &str, inline: bool, color: Option<ibis_doc_model::drawing::Rgb>) -> String {
     // A formula in a line of text is an `m:oMath`; one of its own, an `m:oMathPara` holding it.
-    // A run's own colour is Word's (`w:rPr`); PowerPoint's formulas have the colour of the text run.
-    let math = &math.without_colors();
+    // The colour of the text run (the whole formula's) replaces those of its runs; none: they keep their own (GitHub issue #198). PowerPoint writes a colour in the
+    // run's properties of its own (`a:rPr/a:solidFill`), on each `m:r` and in each `m:ctrlPr`.
+    let math = &match color {
+        Some(c) => math.without_colors().with_default_color(c),
+        None => math.clone(),
+    };
     let markup = if inline { format!("<m:oMath xmlns:m=\"{M}\">{}</m:oMath>", content(math, false)) } else { format!("<m:oMathPara xmlns:m=\"{M}\"><m:oMath>{}</m:oMath></m:oMathPara>", content(math, false)) };
+    // Word's `<w:rPr><w:color w:val="X"/></w:rPr>` (all the colours `content` writes; a text's `<` is escaped, so these never come from a text) as PowerPoint's.
+    let markup = markup.replace("<w:rPr><w:color w:val=\"", &format!("<{a}rPr><{a}solidFill><{a}srgbClr val=\"")).replace("\"/></w:rPr>", &format!("\"/></{a}solidFill></{a}rPr>"));
     format!(
         "<mc:AlternateContent xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"><mc:Choice xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" Requires=\"a14\"><a14:m>{markup}</a14:m></mc:Choice><mc:Fallback><{a}r><{a}t>{}</{a}t></{a}r></mc:Fallback></mc:AlternateContent>",
         esc(&math.linear())

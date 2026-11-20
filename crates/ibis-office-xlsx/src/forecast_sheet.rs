@@ -289,17 +289,17 @@ impl SlideEditor {
             n += 1;
         };
         let (slide, shape) = (self.document.ids().new_slide_id(), self.document.ids().new_shape_id());
-        if let Err(err) = self.document.execute(vec![Command::Sheet(SheetCommand::AddSheet { index, name: name.clone(), slide, shape })]) {
+        if let Err(err) = self.document.execute(vec![Command::Sheet(SheetCommand::AddSheet { index, name: name.clone(), sheet: slide, shape })]) {
             return Err(format("edit.refused", &[("error", &err)]));
         }
         let edits: Vec<CellEdit> = built.cells.iter().map(|(row, column, input)| CellEdit { row: *row, column: *column, input: input.clone() }).collect();
-        let mut commands = vec![Command::Sheet(SheetCommand::SetCells { slide, edits })];
+        let mut commands = vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits })];
         if let Some(code) = source_format.filter(|c| c != "General") {
-            commands.push(Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![CellRange { first_row: 1, first_column: 0, last_row: built.last_row, last_column: 0 }], change: StyleChange::NumberFormat(code) }));
+            commands.push(Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![CellRange { first_row: 1, first_column: 0, last_row: built.last_row, last_column: 0 }], change: StyleChange::NumberFormat(code) }));
         }
         for (range, code) in &built.formats {
             if code != "General" {
-                commands.push(Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![*range], change: StyleChange::NumberFormat(code.clone()) }));
+                commands.push(Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![*range], change: StyleChange::NumberFormat(code.clone()) }));
             }
         }
         if let Err(err) = self.document.amend_last(commands) {
@@ -336,7 +336,7 @@ impl SlideEditor {
                 if widest > 0.0 {
                     let size = super::headers::fitted_width(widest);
                     size_commands.push(Command::Sheet(SheetCommand::SetSize {
-                        slide,
+                        sheet: slide,
                         axis: ibis_doc_model::sheet_command::Axis::Columns,
                         first: col,
                         last: col,
@@ -371,7 +371,7 @@ impl SlideEditor {
                 match source.new_sheet_chart(&current, slide, id, EmuRect::new(x, y, 5_486_400, 3_200_400), kind, refs) {
                     Ok(chart) => {
                         let index = self.slide().shapes.len();
-                        match self.document.amend_last(vec![Command::InsertShape { slide, index, shape: chart }]) {
+                        match self.document.amend_last(vec![Command::InsertShape { slide, shapes: vec![(index, chart)] }]) {
                             Ok(()) => None,
                             Err(err) => Some(format("edit.refused", &[("error", &err)])),
                         }

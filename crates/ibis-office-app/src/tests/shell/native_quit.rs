@@ -24,6 +24,7 @@ fn new_file(kind: ibis_formats::Kind) -> Scenario {
 
 fn edit(s: &mut Scenario, kind: ibis_formats::Kind) {
     match kind {
+        ibis_formats::Kind::Pdf => unreachable!("a PDF is only viewed: the scenarios do not make one"),
         ibis_formats::Kind::Document => {
             let (id, _) = s.paragraph(0);
             s.click_text(ibis_doc_model::FlowPos::new(id, 0));
@@ -37,11 +38,7 @@ fn edit(s: &mut Scenario, kind: ibis_formats::Kind) {
         ibis_formats::Kind::Presentation => s.update(|e, _, cx| {
             let id = e.document.ids().new_shape_id();
             let frame = ibis_doc_model::EmuRect::new(0, 0, 914_400, 914_400);
-            e.execute(vec![ibis_doc_model::Command::InsertShape {
-                slide: e.current_slide,
-                index: 0,
-                shape: ibis_doc_model::Shape::text_box(id, frame, "unsaved"),
-            }], cx);
+            e.execute(vec![ibis_doc_model::Command::InsertShape { slide: e.current_slide, shapes: vec![(0, ibis_doc_model::Shape::text_box(id, frame, "unsaved"))] }], cx);
         }),
         ibis_formats::Kind::Pdf => unreachable!("PDF is not part of native_quit scenarios"),
     }

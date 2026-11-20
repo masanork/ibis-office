@@ -145,7 +145,12 @@ impl RunProps {
                         self.color = Some(Color::opaque(rgb));
                     }
                 }
-                "latin" => self.latin = attr(n, "typeface").and_then(|t| colors.theme().typeface(t)).or(self.latin.take()),
+                // A Latin typeface that names the theme's East Asian font, which the theme leaves empty, is the theme's Japanese font (PowerPoint's
+                // PDF of a run with `latin typeface="+mn-ea"` under such a theme draws its Latin characters in ＭＳ Ｐゴシック, not the theme's Latin font).
+                "latin" => {
+                    let theme = colors.theme();
+                    self.latin = attr(n, "typeface").and_then(|t| theme.empty_east_asian_japanese(t).or_else(|| theme.typeface(t))).or(self.latin.take())
+                }
                 "ea" => {
                     let typeface = attr(n, "typeface");
                     self.east_asian = typeface.and_then(|t| colors.theme().typeface(t)).or(self.east_asian.take());

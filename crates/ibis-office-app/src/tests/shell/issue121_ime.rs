@@ -83,4 +83,14 @@ fn candidate_rect_last_line(){
         gpui_kit::PlatformInputHandler::compute_ime_candidate_bounds(Some(0..n),&sel,|r|with_format!(e,bounds_for_range(e,r,Default::default(),w,cx))).map(|b|f32::from(b.origin.y))
     });
     assert!((got.unwrap()-last).abs()<1.,"candidate rect is on the last line: {got:?} against {last}");
+    // And at the last character of it (K0020: the window opens under the newest character, not at the start of the line).
+    let (lx,line_start)=(
+        s.update(|e,w,cx|with_format!(e,bounds_for_range(e,n-1..n,Default::default(),w,cx)).map(|b|f32::from(b.origin.x)).unwrap()),
+        s.update(|e,w,cx|with_format!(e,bounds_for_range(e,0..0,Default::default(),w,cx)).map(|b|f32::from(b.origin.x)).unwrap()),
+    );
+    let gx=s.update(|e,w,cx|{
+        let sel=with_format!(e,selected_text_range(e,true,w,cx)).unwrap();
+        gpui_kit::PlatformInputHandler::compute_ime_candidate_bounds(Some(0..n),&sel,|r|with_format!(e,bounds_for_range(e,r,Default::default(),w,cx))).map(|b|f32::from(b.origin.x))
+    }).unwrap();
+    assert!((gx-lx).abs()<1.&&gx>line_start+10.,"candidate rect is at the last character: {gx} (last character {lx}, first character {line_start})");
 }

@@ -28,7 +28,7 @@ fn a_formula_is_read_as_text_and_kept() {
     // An edit elsewhere leaves the formula's markup as it was.
     let mut doc = Document::new(opened.presentation.clone());
     let other = slide.shapes.iter().find(|s| s.id != shape.id && s.text_body().is_some_and(|b| !b.text().is_empty())).unwrap();
-    doc.execute(vec![Command::EditText { slide: slide.id, shape: other.id, at: 0, remove: 0, insert: "Z".into() }]).unwrap();
+    doc.execute(vec![Command::ReplaceTextRange { slide: slide.id, shape: other.id, at: 0, remove: 0, insert: "Z".into() }]).unwrap();
     let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
     let xml = String::from_utf8(Package::open(saved).unwrap().read("ppt/slides/slide1.xml").unwrap()).unwrap();
     assert!(xml.contains("<m:oMath>") && xml.contains("a14:m"), "the formula is kept");
@@ -41,7 +41,7 @@ fn a_formula_stays_when_the_text_round_it_is_edited() {
     let slide = &opened.presentation.slides[0];
     let shape = slide.shapes.iter().find(|s| s.text_body().is_some_and(|b| b.text() == "x a/b²")).unwrap();
     let mut doc = Document::new(opened.presentation.clone());
-    doc.execute(vec![Command::EditText { slide: slide.id, shape: shape.id, at: 0, remove: 0, insert: "Z".into() }]).unwrap();
+    doc.execute(vec![Command::ReplaceTextRange { slide: slide.id, shape: shape.id, at: 0, remove: 0, insert: "Z".into() }]).unwrap();
     let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
     let xml = String::from_utf8(Package::open(saved.clone()).unwrap().read("ppt/slides/slide1.xml").unwrap()).unwrap();
     assert!(xml.contains("Zx ") && xml.contains("<m:oMath>"), "the typed text and the formula are both there");
@@ -57,7 +57,7 @@ fn a_formula_edited_in_its_text_is_read_again_and_saved_as_a_formula() {
     let shape = slide.shapes.iter().find(|s| s.text_body().is_some_and(|b| b.text() == "x a/b²")).unwrap();
     let mut doc = Document::new(opened.presentation.clone());
     // "a/b²" becomes "a+b²" (inside the formula's text).
-    doc.execute(vec![Command::EditText { slide: slide.id, shape: shape.id, at: 3, remove: 1, insert: "+".into() }]).unwrap();
+    doc.execute(vec![Command::ReplaceTextRange { slide: slide.id, shape: shape.id, at: 3, remove: 1, insert: "+".into() }]).unwrap();
     let edited = doc.presentation().slides[0].shapes.iter().find(|s| s.id == shape.id).unwrap().text_body().unwrap().clone();
     assert!(edited.paragraphs[0].runs.iter().any(|r| r.style.math.as_ref().is_some_and(|m| m.linear() == "a+b²")), "the formula is read again");
     let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();

@@ -22,7 +22,7 @@ struct Entry {
     local_header: usize,
 }
 
-pub(crate) struct Archive<'a> {
+pub struct Archive<'a> {
     data: &'a [u8],
     entries: HashMap<String, Entry>,
 }
@@ -36,7 +36,7 @@ fn u32_at(data: &[u8], at: usize) -> Option<u32> {
 }
 
 impl<'a> Archive<'a> {
-    pub(crate) fn new(data: &'a [u8]) -> Result<Self, Error> {
+    pub fn new(data: &'a [u8]) -> Result<Self, Error> {
         let bad = || Error::new("ZIP 形式ではないか、壊れています");
         // The end record is 22 bytes plus a comment of up to 64 KiB.
         let search_from = data.len().saturating_sub(22 + 0xffff);
@@ -73,11 +73,11 @@ impl<'a> Archive<'a> {
     }
 
     /// The entries' names (in no particular order).
-    pub(crate) fn names(&self) -> Vec<String> {
+    pub fn names(&self) -> Vec<String> {
         self.entries.keys().cloned().collect()
     }
 
-    pub(crate) fn contains(&self, name: &str) -> bool {
+    pub fn contains(&self, name: &str) -> bool {
         self.entries.contains_key(name)
     }
 
@@ -92,7 +92,7 @@ impl<'a> Archive<'a> {
     }
 
     /// The uncompressed contents of `name`, or `None` if there is no such entry.
-    pub(crate) fn read(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
+    pub fn read(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
         let Some(entry) = self.entries.get(name) else { return Ok(None) };
         let bad = || Error::new(format!("{name} を展開できません"));
         let at = entry.local_header;

@@ -37,7 +37,7 @@ fn what_is_not_understood_comes_through_an_edit() {
         let Some(shape) = slide.shapes.iter().find(|s| s.frame.width > 0) else { continue };
         let moved = EmuRect::new(shape.frame.x + 12_700, shape.frame.y + 12_700, shape.frame.width, shape.frame.height);
         let mut edited = opened.presentation.clone();
-        edited.apply(Command::SetFrame { slide: slide.id, shape: shape.id, frame: moved }).unwrap();
+        edited.apply(Command::SetFrame { slide: slide.id, frames: vec![(shape.id, moved)], with_attached: true }).unwrap();
         let saved = opened.source.save(&edited, SaveOptions::default()).unwrap_or_else(|e| panic!("{name}: {e:?}"));
         let reread = ibis_formats::open(saved.clone()).unwrap();
         let frame_after = reread.presentation.slides[0].shapes.iter().find(|s| s.id == shape.id).map(|s| s.frame);
@@ -46,10 +46,16 @@ fn what_is_not_understood_comes_through_an_edit() {
         let lost: Vec<&str> = before.names().filter(|n| !after.contains(n)).collect();
         assert!(lost.is_empty(), "{name}: parts lost in the edit: {lost:?}");
         let changed: Vec<&str> = before.names().filter(|n| before.read(n).ok() != after.read(n).ok()).collect();
-        // Only the first slide, the content types and the properties are written again.
-        let unexpected: Vec<&&str> = changed.iter().filter(|n| !(n.starts_with("ppt/slides/slide") && !n.contains("_rels") || **n == "[Content_Types].xml" || n.starts_with("docProps/"))).collect();
+        // Only the first slide, the content types and the properties are written again. `ppt/viewProps.xml` too, and only to get a `normalViewPr`
+        // when the file has none: PowerPoint 365 makes it at every save, with nothing done to the notes pane (tasks/doc/m114-pptx-notes-pane-save.md, (c)).
+        let unexpected: Vec<&&str> = changed.iter().filter(|n| !(n.starts_with("ppt/slides/slide") && !n.contains("_rels") || **n == "[Content_Types].xml" || n.starts_with("docProps/") || **n == "ppt/viewProps.xml")).collect();
         assert!(changed.contains(&"ppt/slides/slide1.xml"), "{name}: the slide of the moved shape is written again");
         assert!(unexpected.is_empty(), "{name}: parts changed that no edit touched: {unexpected:?}");
+        if changed.contains(&"ppt/viewProps.xml") {
+            let view = String::from_utf8(after.read("ppt/viewProps.xml").unwrap().to_vec()).unwrap();
+            let had = String::from_utf8(before.read("ppt/viewProps.xml").unwrap().to_vec()).unwrap();
+            assert!(!had.contains("normalViewPr") && view.contains("<p:normalViewPr><p:restoredLeft sz=\"15620\"/><p:restoredTop sz=\"94660\"/></p:normalViewPr>"), "{name}: viewProps changed beyond the added normalViewPr: {view}");
+        }
         checked += 1;
     }
     assert!(checked >= 5, "the public test files were checked: {checked}");

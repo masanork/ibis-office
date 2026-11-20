@@ -586,7 +586,7 @@ impl ShapeWriter<'_> {
             );
         }
         let is_line = shape.spt == 20 || shape.is_connector || (32..=40).contains(&shape.spt);
-        let geometry = geometry_xml(shape.spt, &shape.props);
+        let geometry = geometry_xml(shape.spt, &shape.props, None);
         // A workbook's shapes are filled and outlined unless they say not (MS-ODRAW's defaults).
         let fill = if is_line { String::new() } else { fill_xml(self, &shape.props, false) };
         let line = line_xml(self, &shape.props, true);

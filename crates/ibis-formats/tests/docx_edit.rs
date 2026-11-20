@@ -81,6 +81,9 @@ fn normalized(doc: &FlowDocument) -> FlowDocument {
     }
     for c in d.comments.iter_mut() {
         walk(&mut c.blocks, &mut next);
+        // The id of the comment's last paragraph in the file (#221): a split gives that paragraph an id of its own, so the model's
+        // copy of the old one is stale, like the paragraphs' `id`s above (nothing else reads it: replies point by `Comment::id`).
+        c.para_id = None;
     }
     d.id_floor = 0;
     d.file_name = None;
@@ -165,7 +168,11 @@ fn scenario_data(file: &str, data: Vec<u8>, parts: &[&str], commands: impl FnOnc
                 panic!("{file}: reads back differently:\n saved {x:#?}\n model {y:#?}");
             }
         }
-        panic!("{file}: reads back differently ({} / {} paragraphs)", pa.len(), pb.len());
+        // The first line that differs in the whole document (a table, a list, a setting: not only paragraphs).
+        let (da, db) = (format!("{a:#?}"), format!("{b:#?}"));
+        let (la, lb): (Vec<&str>, Vec<&str>) = (da.lines().collect(), db.lines().collect());
+        let i = la.iter().zip(&lb).position(|(x, y)| x != y).unwrap_or(0);
+        panic!("{file}: reads back differently ({} / {} paragraphs) at line {i}:\n{}\n-----\n{}", pa.len(), pb.len(), la[i.saturating_sub(6)..(i + 3).min(la.len())].join("\n"), lb[i.saturating_sub(6)..(i + 3).min(lb.len())].join("\n"));
     }
     // Saved again after undoing: the original file.
     assert!(document.undo());
@@ -285,7 +292,7 @@ fn character_formatting() {
         RunChange::Bold(true),
         RunChange::Italic(true),
         RunChange::Underline(true),
-        RunChange::Strike(true),
+        RunChange::Strikethrough(true),
         RunChange::Font("Arial".into()),
         RunChange::EastAsianFont("游明朝".into()),
         RunChange::Size(2000),
@@ -348,19 +355,19 @@ fn bold_across_paragraphs_then_typing() {
 #[test]
 fn paragraph_formatting() {
     let changes = [
-        ParaChange::Align(FlowAlign::Center),
-        ParaChange::Align(FlowAlign::Right),
-        ParaChange::Align(FlowAlign::Justify),
-        ParaChange::Align(FlowAlign::Distribute),
-        ParaChange::Line(LineHeight::Auto(360)),
-        ParaChange::Line(LineHeight::Exact(20 * 12_700)),
-        ParaChange::Line(LineHeight::AtLeast(18 * 12_700)),
+        ParaChange::Alignment(FlowAlign::Center),
+        ParaChange::Alignment(FlowAlign::Right),
+        ParaChange::Alignment(FlowAlign::Justify),
+        ParaChange::Alignment(FlowAlign::Distribute),
+        ParaChange::LineSpacing(LineHeight::Auto(360)),
+        ParaChange::LineSpacing(LineHeight::Exact(20 * 12_700)),
+        ParaChange::LineSpacing(LineHeight::AtLeast(18 * 12_700)),
         ParaChange::SpaceBefore(12 * 12_700),
         ParaChange::SpaceAfter(6 * 12_700),
-        ParaChange::Left(360 * 635),
-        ParaChange::Right(360 * 635),
-        ParaChange::FirstLine(420 * 635),
-        ParaChange::FirstLine(-420 * 635),
+        ParaChange::LeftIndent(360 * 635),
+        ParaChange::RightIndent(360 * 635),
+        ParaChange::FirstLineIndent(420 * 635),
+        ParaChange::FirstLineIndent(-420 * 635),
         ParaChange::OverflowPunct(false),
         ParaChange::AutoSpaceDE(false),
         ParaChange::AutoSpaceDN(false),
@@ -427,12 +434,147 @@ fn splitting_keeps_floating_shapes_single() {
     let (a0, b0, p0) = count(&original);
     let (a1, b1, p1) = count(&out.saved);
     assert_eq!((a1, b1), (a0, b0));
-    // The split-off paragraph gets a fresh identity; the first keeps its own.
+    // The new paragraph has a paraId of its own (the copy's is renewed).
     assert_eq!(p1, p0 + 1);
-    let before = body_para_ids(&original);
-    let after = body_para_ids(&out.saved);
-    assert_eq!(after[0], before[0]);
-    assert_valid_para_ids(&after);
+}
+
+/// The (`w14:paraId`, `w14:textId`) of each paragraph and row of `word/document.xml` that has a paraId, in order.
+fn para_and_text_ids(data: &[u8]) -> Vec<(String, Option<String>)> {
+    let package = ibis_ooxml::Package::open(data.to_vec()).unwrap();
+    let xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+    let attr = |tag: &str, name: &str| tag.split(&format!("{name}=\"")).nth(1).map(|r| r[..r.find('"').unwrap()].to_string());
+    let mut out = Vec::new();
+    for piece in xml.split('<').skip(1) {
+        let tag = &piece[..piece.find('>').unwrap_or(piece.len())];
+        if (tag.starts_with("w:p ") || tag.starts_with("w:tr ")) && let Some(id) = attr(tag, "w14:paraId") {
+            out.push((id, attr(tag, "w14:textId")));
+        }
+    }
+    out
+}
+
+const NEW_TEXT: &str = "77777777";
+
+fn valid_para_id(id: &str) -> bool {
+    u32::from_str_radix(id, 16).is_ok_and(|n| n > 0 && n < 0x8000_0000)
+}
+
+/// The index of the first paragraph whose paraId differs between the two lists.
+fn first_difference(before: &[(String, Option<String>)], after: &[(String, Option<String>)]) -> usize {
+    (0..before.len().min(after.len())).find(|&i| before[i].0 != after[i].0).expect("a changed paraId")
+}
+
+/// A body paragraph of plain text that has a paraId and is not in a table.
+fn nth_split_target(doc: &FlowDocument, nth: usize) -> &FlowParagraph {
+    body_paragraphs(doc).into_iter().filter(|p| p.len() >= 6 && !p.text().contains('\u{fffc}')).nth(nth).expect("a paragraph")
+}
+
+// #221 (measured in Word through COM, tasks/doc/requests/2026-11-15-221-result.md): a paragraph cut in the middle keeps its paraId in
+// the second part; the first part has a new paraId and keeps the textId; the second part's textId is new. A paragraph is not
+// touched otherwise.
+#[test]
+fn para_ids_after_a_split_in_the_middle() {
+    let original = std::fs::read(path(REPORT)).unwrap();
+    let before = para_and_text_ids(&original);
+    assert!(before.len() > 10);
+    for nth in 0..8 {
+        let out = scenario(REPORT, BODY, |doc| {
+            let p = nth_split_target(doc, nth);
+            vec![
+                FlowCommand::InsertText { at: FlowPos::new(p.id, 1), text: "x".into(), format: None },
+                FlowCommand::InsertText { at: FlowPos::new(p.id, 3), text: "\n".into(), format: None },
+            ]
+        });
+        let after = para_and_text_ids(&out.saved);
+        let i = first_difference(&before, &after);
+        assert_eq!(after.len(), before.len() + 1, "paragraph {nth}");
+        assert_eq!(after[..i], before[..i]);
+        assert_eq!(after[i + 2..], before[i + 1..]);
+        // The first part: a new valid paraId, used once; the textId as it was.
+        assert!(valid_para_id(&after[i].0), "{:?}", after[i]);
+        assert!(!before.iter().any(|b| b.0 == after[i].0));
+        assert_eq!(after[i].1, before[i].1, "the first part keeps its textId");
+        // The second part: the paraId the paragraph had, a new textId.
+        assert_eq!(after[i + 1].0, before[i].0, "the second part keeps the paraId");
+        let text = after[i + 1].1.clone().expect("a textId");
+        assert_ne!(Some(text.clone()), before[i].1);
+        assert_ne!(text, NEW_TEXT);
+        assert!(valid_para_id(&text));
+    }
+}
+
+// #221: a paragraph cut at its end (the new paragraph is empty): the text's paragraph (the first) keeps both ids; the new empty
+// paragraph has a new paraId and the textId 77777777.
+#[test]
+fn para_ids_after_a_split_at_the_end() {
+    let original = std::fs::read(path(REPORT)).unwrap();
+    let before = para_and_text_ids(&original);
+    for nth in 0..8 {
+        let out = scenario(REPORT, BODY, |doc| {
+            let p = nth_split_target(doc, nth);
+            vec![FlowCommand::InsertText { at: FlowPos::new(p.id, p.len()), text: "\n".into(), format: None }]
+        });
+        let after = para_and_text_ids(&out.saved);
+        assert_eq!(after.len(), before.len() + 1, "paragraph {nth}");
+        let i = (0..before.len()).find(|&i| before[i] != after[i]).expect("a new paragraph");
+        assert_eq!(after[..i], before[..i]);
+        assert_eq!(after[i + 1..], before[i..], "the paragraphs before and after the new one are as they were");
+        assert!(valid_para_id(&after[i].0));
+        assert!(!before.iter().any(|b| b.0 == after[i].0));
+        assert_eq!(after[i].1.as_deref(), Some(NEW_TEXT));
+    }
+}
+
+// #221: a cut at the start of a paragraph (not measured; follows the rule "the paraId stays with the text"): the empty first
+// part is the new paragraph, the text keeps the paraId.
+#[test]
+fn para_ids_after_a_split_at_the_start() {
+    let before = para_and_text_ids(&std::fs::read(path(REPORT)).unwrap());
+    let out = scenario(REPORT, BODY, |doc| {
+        let p = nth_split_target(doc, 1);
+        vec![FlowCommand::InsertText { at: FlowPos::new(p.id, 0), text: "\n".into(), format: None }]
+    });
+    let after = para_and_text_ids(&out.saved);
+    assert_eq!(after.len(), before.len() + 1);
+    let i = first_difference(&before, &after);
+    assert_eq!(after[i + 2..], before[i + 1..]);
+    assert!(valid_para_id(&after[i].0) && !before.iter().any(|b| b.0 == after[i].0));
+    assert_eq!(after[i].1.as_deref(), Some(NEW_TEXT));
+    assert_eq!(after[i + 1].0, before[i].0);
+    assert_ne!(after[i + 1].1, before[i].1);
+}
+
+// #221: two paragraphs joined: the paragraph left has the later one's paraId (the earlier one's is gone, not used again) and a
+// new textId; the others are as they were.
+#[test]
+fn para_ids_after_a_join() {
+    let before = para_and_text_ids(&std::fs::read(path(REPORT)).unwrap());
+    let mut joined = 0;
+    for skip in 0..3 {
+        let out = scenario(REPORT, BODY, |doc| {
+            let pairs: Vec<(&FlowParagraph, &FlowParagraph)> = doc
+                .body
+                .windows(2)
+                .filter_map(|w| match (&w[0], &w[1]) {
+                    (Block::Paragraph(a), Block::Paragraph(b)) if a.len() > 2 && b.len() > 2 && !a.text().contains('\u{fffc}') && !b.text().contains('\u{fffc}') => Some((a, b)),
+                    _ => None,
+                })
+                .collect();
+            let (a, b) = pairs[skip];
+            vec![FlowCommand::Delete { from: FlowPos::new(a.id, a.len()), to: FlowPos::new(b.id, 0) }]
+        });
+        let after = para_and_text_ids(&out.saved);
+        assert_eq!(after.len(), before.len() - 1);
+        let i = first_difference(&before, &after);
+        assert_eq!(after[..i], before[..i]);
+        assert_eq!(after[i + 1..], before[i + 2..]);
+        assert_eq!(after[i].0, before[i + 1].0, "the later paragraph's paraId is kept");
+        assert!(!after.iter().any(|a| a.0 == before[i].0), "the earlier paragraph's paraId is not used again");
+        let text = after[i].1.clone().expect("a textId");
+        assert!(text != NEW_TEXT && Some(&text) != before[i].1.as_ref() && Some(&text) != before[i + 1].1.as_ref());
+        joined += 1;
+    }
+    assert_eq!(joined, 3);
 }
 
 // P5–P7: lists of the document's own definitions.
@@ -488,6 +630,27 @@ fn first_table(doc: &FlowDocument, rows: usize, cols: usize) -> &ibis_doc_model:
             _ => None,
         })
         .expect("a table")
+}
+
+// #221: a row added to a table: the rows and paragraphs there were are as they were; each paragraph of the new row has a paraId of its
+// own (valid, used once) and the textId 77777777.
+#[test]
+fn para_ids_of_a_new_table_row_are_new() {
+    let before = para_and_text_ids(&std::fs::read(path(REPORT)).unwrap());
+    let out = scenario(REPORT, BODY, |doc| {
+        let t = first_table(doc, 1, 1);
+        vec![FlowCommand::EditTable { table: t.id, edit: ibis_doc_model::TableEdit::InsertRow { row: 0, below: true } }]
+    });
+    let after = para_and_text_ids(&out.saved);
+    let added: Vec<&(String, Option<String>)> = after.iter().filter(|a| !before.contains(a)).collect();
+    assert!(!added.is_empty(), "the new row has no paraId of its own");
+    for (id, text) in &added {
+        assert_eq!(after.iter().filter(|a| a.0 == *id).count(), 1, "new paraId {id} is repeated");
+        assert!(valid_para_id(id) && !before.iter().any(|b| b.0 == *id));
+        assert_eq!(text.as_deref(), Some(NEW_TEXT), "{id}");
+    }
+    let kept: Vec<_> = after.iter().filter(|a| before.contains(a)).cloned().collect();
+    assert_eq!(kept, before, "the paragraphs there were keep both ids");
 }
 
 // B3: rows and columns inserted and deleted.
@@ -878,7 +1041,7 @@ fn a_table_of_contents_defines_its_styles() {
             let first = body_paragraphs(doc)[0].id;
             let (entries, bookmarks) = toc_entries(&styled, 1, 3, &|_| Some(1), doc.new_id(), 9_448 * 635);
             let mut commands: Vec<FlowCommand> = missing.into_iter().map(|(id, s)| FlowCommand::SetStyle { id, style: Some(s) }).collect();
-            commands.push(FlowCommand::SetToc { before: first, replace: false, entries, bookmarks });
+            commands.push(FlowCommand::SetTableOfContents { before: first, replace: false, entries, bookmarks });
             commands
         });
         let reread = ibis_formats::read(&out.saved).unwrap();
@@ -935,7 +1098,7 @@ fn a_table_of_contents_with_custom_styles() {
             FlowCommand::SetParagraphFormat { first: target_p_id, last: target_p_id, change: ParaChange::Style(Some("AppendixStyle".into())) },
         ];
         commands.extend(missing.into_iter().map(|(id, s)| FlowCommand::SetStyle { id, style: Some(s) }));
-        commands.push(FlowCommand::SetToc { before: first, replace: false, entries, bookmarks });
+        commands.push(FlowCommand::SetTableOfContents { before: first, replace: false, entries, bookmarks });
         commands
     });
 
@@ -1278,7 +1441,7 @@ fn paragraph_decorations_preserve_unedited_properties() {
             new.direct.shading=Some(if remove {None}else{Some(Rgb(0xe2efd9))});
             new.direct.borders[0]=Some(if remove {None}else{Some(ibis_doc_model::FlowBorder {style:ibis_doc_model::BorderStyle::Double,width:12700,color:Rgb(0x00ff00),space:25400,art:None})});
             new.resolve(&doc.styles);
-            vec![FlowCommand::ReplaceBlocks {container,index,remove:1,blocks:vec![Block::Paragraph(new)]}]
+            vec![FlowCommand::ReplaceBlockRange {container,index,remove:1,blocks:vec![Block::Paragraph(new)]}]
         });
         let xml=String::from_utf8(ibis_ooxml::Package::open(outcome.saved).unwrap().read("word/document.xml").unwrap()).unwrap();
         assert!(xml.contains(between),"between edge changed");
@@ -1298,7 +1461,7 @@ fn table_row_height_and_column_width() {
             t.rows[0].header=true;
             t.rows[0].cant_split=true;
             t.columns[0]=40*12700;
-            vec![FlowCommand::ReplaceBlocks {container:ibis_doc_model::flow_command::Container::Body,index,remove:1,blocks:vec![Block::Table(t)]}]
+            vec![FlowCommand::ReplaceBlockRange {container:ibis_doc_model::flow_command::Container::Body,index,remove:1,blocks:vec![Block::Table(t)]}]
         });
     }
 }
@@ -1328,7 +1491,7 @@ fn cell_borders_and_diagonals() {
             t.rows[0].cells[0].own_borders=[Some(border);4];
             t.rows[0].cells[0].diagonals=[border;2];
             t.resolve_borders();
-            vec![FlowCommand::ReplaceBlocks {container:ibis_doc_model::flow_command::Container::Body,index,remove:1,blocks:vec![Block::Table(t)]}]
+            vec![FlowCommand::ReplaceBlockRange {container:ibis_doc_model::flow_command::Container::Body,index,remove:1,blocks:vec![Block::Table(t)]}]
         });
         let xml=String::from_utf8(ibis_ooxml::Package::open(outcome.saved).unwrap().read("word/document.xml").unwrap()).unwrap();
         assert!(xml.contains("w:shadow=\"1\""));
@@ -1353,7 +1516,7 @@ fn horizontal_cell_merge_keeps_paragraph_xml() {
         t.rows[0].cells[0].span=t.rows[0].cells[0].span.max(1)+right.span.max(1);
         t.rows[0].cells[0].blocks.extend(right.blocks);
         t.resolve_borders();
-        vec![FlowCommand::ReplaceBlocks {container:ibis_doc_model::flow_command::Container::Body,index,remove:1,blocks:vec![Block::Table(t)]}]
+        vec![FlowCommand::ReplaceBlockRange {container:ibis_doc_model::flow_command::Container::Body,index,remove:1,blocks:vec![Block::Table(t)]}]
     });
     let after=ibis_ooxml::Package::open(outcome.saved).unwrap().read("word/document.xml").unwrap();
     let count=|data:&[u8]|String::from_utf8_lossy(data).matches("<w:textAlignment").count();
@@ -1369,7 +1532,7 @@ fn merge_then_split_writes_new_cell_grid_width() {
         let Block::Paragraph(p)=cell.blocks[0].clone() else{panic!()};
         let mut blank=FlowParagraph {id:cell.id+1,style:p.style.clone(),table_style:p.table_style.clone(),direct:p.direct.clone(),mark_format:p.mark_format.clone(),..Default::default()};blank.resolve(&doc.styles);
         cell.blocks=vec![Block::Paragraph(blank)];t.rows[0].cells.insert(1,cell);t.resolve_borders();
-        vec![FlowCommand::ReplaceBlocks {container:ibis_doc_model::flow_command::Container::Body,index,remove:1,blocks:vec![Block::Table(t)]}]
+        vec![FlowCommand::ReplaceBlockRange {container:ibis_doc_model::flow_command::Container::Body,index,remove:1,blocks:vec![Block::Table(t)]}]
     });
     let xml=ibis_ooxml::XmlDocument::parse(&ibis_ooxml::Package::open(out.saved).unwrap().read("word/document.xml").unwrap()).unwrap();
     let body=xml.child(xml.root_element().unwrap(),"body").unwrap();let tbl=xml.child(body,"tbl").unwrap();let tr=xml.child(tbl,"tr").unwrap();
@@ -1455,6 +1618,43 @@ fn source_only_settings_and_comments() {
     assert!(flow(&ibis_formats::read(&text.saved).unwrap()).comments[0].blocks.iter().any(|b|matches!(b,Block::Paragraph(p) if p.text()=="OnlyEditCommentSeed")));
 }
 
+// #221: a comment's paragraph split in two: commentsExtended.xml names the last paragraph's own id, and no id of the comments
+// part is repeated.
+#[test]
+fn comment_para_ids_after_a_split() {
+    use ibis_doc_model::flow_command::{add_comment, CommentAuthor};
+    let data = std::fs::read(path(REPORT)).unwrap();
+    let who = CommentAuthor { author: "Test".into(), initials: "T".into(), date: "2026-10-01T00:00:00Z".into() };
+    let seed = scenario_data("comment-ids-base", data, &["*"], |d| {
+        let id = text_paragraph(d, 8).id;
+        add_comment(d, FlowPos::new(id, 1), FlowPos::new(id, 4), &who, "CommentSeed").unwrap()
+    });
+    let seed_comments = ibis_formats::test_files::part_text(&seed.saved, "word/comments.xml").unwrap();
+    let seed_id = seed_comments.split("w14:paraId=\"").nth(1).map(|r| r[..r.find('"').unwrap()].to_string()).unwrap();
+    let split = scenario_data("comment-ids-split", seed.saved, &["*"], |d| {
+        let p = match &d.comments[0].blocks[0] {
+            Block::Paragraph(p) => p.id,
+            _ => panic!("comment paragraph"),
+        };
+        vec![FlowCommand::InsertText { at: FlowPos::new(p, 7), text: "\n".into(), format: None }]
+    });
+    let comments = ibis_formats::test_files::part_text(&split.saved, "word/comments.xml").unwrap();
+    let ex = ibis_formats::test_files::part_text(&split.saved, "word/commentsExtended.xml").unwrap();
+    let ids: Vec<String> = comments.split("w14:paraId=\"").skip(1).map(|r| r[..r.find('"').unwrap()].to_string()).collect();
+    assert_eq!(ids.len(), 2, "{comments}");
+    assert_ne!(ids[0], ids[1]);
+    for id in &ids {
+        let n = u32::from_str_radix(id, 16).unwrap();
+        assert!(n > 0 && n < 0x8000_0000);
+    }
+    let named = ex.split("w15:paraId=\"").nth(1).map(|r| r[..r.find('"').unwrap()].to_string()).unwrap();
+    assert_eq!(named, ids[1], "commentsExtended names the last paragraph");
+    // Cut in the middle: the second (last) part keeps the comment's paraId (Word's rule), so the reference is the same as before.
+    assert_eq!(ids[1], seed_id, "the last part keeps the paraId commentsExtended named");
+    assert_ne!(ids[0], seed_id);
+    assert_eq!(flow(&ibis_formats::read(&split.saved).unwrap()).comments.len(), 1);
+}
+
 #[test]
 fn note_part_links() {
     use ibis_doc_model::{Link,FlowRunKind};use ibis_doc_model::flow_command::insert_note;
@@ -1531,7 +1731,7 @@ fn caps_and_small_caps() {
         vec![FlowCommand::SetRunFormat {
             from: FlowPos::new(para_id, 0),
             to: FlowPos::new(para_id, 4),
-            change: RunChange::Caps(true),
+            change: RunChange::AllCaps(true),
         }]
     });
     let xml1 = ibis_formats::test_files::part_text(&outcome1.saved, "word/document.xml").unwrap();
@@ -1554,7 +1754,7 @@ fn caps_and_small_caps() {
             FlowCommand::SetRunFormat {
                 from: FlowPos::new(para_id, 0),
                 to: FlowPos::new(para_id, 4),
-                change: RunChange::Caps(true),
+                change: RunChange::AllCaps(true),
             },
             FlowCommand::SetRunFormat {
                 from: FlowPos::new(para_id, 0),
@@ -2298,7 +2498,7 @@ fn test_doc_properties_and_document_fields() {
     props.modified = Some("2026-10-08T15:30:00Z".to_string());
 
     // 1. プロパティの変更とUndo/Redo
-    document.execute(vec![Command::Flow(FlowCommand::SetDocProperties(props.clone()))]).unwrap();
+    document.execute(vec![Command::Flow(FlowCommand::SetDocumentProperties(props.clone()))]).unwrap();
     assert_eq!(flow(document.presentation()).properties.title.as_deref(), Some("Quarterly Report"));
     assert_eq!(flow(document.presentation()).properties.creator.as_deref(), Some("Docx Specialist"));
 
@@ -2518,7 +2718,7 @@ fn test_styleref_field() {
         field_locked: false, control: None,
     }];
     let (container, idx) = ibis_doc_model::flow_command::locate(doc, target_p_id).unwrap();
-    let change_heading_cmd = ibis_doc_model::FlowCommand::ReplaceBlocks {
+    let change_heading_cmd = ibis_doc_model::FlowCommand::ReplaceBlockRange {
         container,
         index: idx,
         remove: 1,
@@ -3182,32 +3382,32 @@ fn test_char_unit_indents() {
         Command::Flow(FlowCommand::SetParagraphFormat {
             first: p_id,
             last: p_id,
-            change: ParaChange::Left(266_700),
+            change: ParaChange::LeftIndent(266_700),
         }),
         Command::Flow(FlowCommand::SetParagraphFormat {
             first: p_id,
             last: p_id,
-            change: ParaChange::LeftChars(Some(200)),
+            change: ParaChange::LeftIndentChars(Some(200)),
         }),
         Command::Flow(FlowCommand::SetParagraphFormat {
             first: p_id,
             last: p_id,
-            change: ParaChange::Right(133_350),
+            change: ParaChange::RightIndent(133_350),
         }),
         Command::Flow(FlowCommand::SetParagraphFormat {
             first: p_id,
             last: p_id,
-            change: ParaChange::RightChars(Some(100)),
+            change: ParaChange::RightIndentChars(Some(100)),
         }),
         Command::Flow(FlowCommand::SetParagraphFormat {
             first: p_id,
             last: p_id,
-            change: ParaChange::FirstLine(133_350),
+            change: ParaChange::FirstLineIndent(133_350),
         }),
         Command::Flow(FlowCommand::SetParagraphFormat {
             first: p_id,
             last: p_id,
-            change: ParaChange::FirstLineChars(Some(100)),
+            change: ParaChange::FirstLineIndentChars(Some(100)),
         }),
     ]).unwrap();
 
@@ -3231,12 +3431,12 @@ fn test_char_unit_indents() {
         Command::Flow(FlowCommand::SetParagraphFormat {
             first: p_id,
             last: p_id,
-            change: ParaChange::FirstLine(-266_700),
+            change: ParaChange::FirstLineIndent(-266_700),
         }),
         Command::Flow(FlowCommand::SetParagraphFormat {
             first: p_id,
             last: p_id,
-            change: ParaChange::FirstLineChars(Some(-200)),
+            change: ParaChange::FirstLineIndentChars(Some(-200)),
         }),
     ]).unwrap();
 
@@ -4244,7 +4444,7 @@ fn test_nested_fields_and_info_update() {
     props.creator = Some("Antigravity Author".to_string());
     props.title = Some("Docx Feature Test".to_string());
     props.subject = Some("Nested Fields & INFO".to_string());
-    document.execute(vec![Command::Flow(FlowCommand::SetDocProperties(props))]).unwrap();
+    document.execute(vec![Command::Flow(FlowCommand::SetDocumentProperties(props))]).unwrap();
 
     // 1. = { PAGE } + 10 を挿入
     let (cmds1, _) = ibis_doc_model::flow_command::insert_field_at_range(
@@ -6142,6 +6342,34 @@ fn picture_bullets_are_read_and_kept() {
     assert_eq!(flow(&reread).styles.numbering.level(90, 0).and_then(|l| l.pic_bullet), Some(0));
 }
 
+/// K0057: 図形の書式 > 回転 on a shape in a document: `SetShapeRotation` is written as the shape's `a:xfrm rot` (a new text box and a box read back from the file), and undone to the original file.
+#[test]
+fn shape_rotation_is_saved_in_the_xfrm() {
+    let data = std::fs::read(path(REPORT)).unwrap();
+    let opened = ibis_formats::open(data.clone()).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let p = text_paragraph(flow(document.presentation()), 4).clone();
+    let at = FlowPos::new(p.id, 2);
+    let rotation_of = |presentation: &Presentation| -> i32 {
+        paragraphs(flow(presentation)).into_iter().find(|q| q.id == p.id).unwrap().runs.iter().find_map(|r| match &r.kind {
+            ibis_doc_model::FlowRunKind::Shape(s) => Some(s.rotation),
+            _ => None,
+        }).expect("the text box")
+    };
+    document.execute(vec![Command::Flow(FlowCommand::InsertTextBox { at, size: ibis_doc_model::EmuSize::new(1_828_800, 914_400), text: "枠".into() })]).unwrap();
+    document.execute(vec![Command::Flow(FlowCommand::SetShapeRotation { at, rotation: 30 * 60_000 })]).unwrap();
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    assert_eq!(rotation_of(&ibis_formats::read(&saved).unwrap()), 30 * 60_000, "a new box with its turn");
+    let reopened = ibis_formats::open(saved).unwrap();
+    let mut second = Document::new(reopened.presentation.clone());
+    second.execute(vec![Command::Flow(FlowCommand::SetShapeRotation { at, rotation: 75 * 60_000 })]).unwrap();
+    let saved2 = reopened.source.save(second.presentation(), SaveOptions::default()).unwrap();
+    assert_eq!(rotation_of(&ibis_formats::read(&saved2).unwrap()), 75 * 60_000, "a box read from the file, turned");
+    second.execute(vec![Command::Flow(FlowCommand::SetShapeRotation { at, rotation: 0 })]).unwrap();
+    let saved3 = reopened.source.save(second.presentation(), SaveOptions::default()).unwrap();
+    assert_eq!(rotation_of(&ibis_formats::read(&saved3).unwrap()), 0, "turned back");
+}
+
 #[test]
 fn text_box_geometry_and_text_format() {
     let data = std::fs::read(path(REPORT)).unwrap();
@@ -6159,7 +6387,7 @@ fn text_box_geometry_and_text_format() {
     // Moved, resized, bold 14 pt in red.
     document.execute(vec![
         Command::Flow(FlowCommand::SetShapeGeometry { at, size: Some(ibis_doc_model::EmuSize::new(2_540_000, 1_270_000)), offset: Some((635_000, 317_500)) }),
-        Command::Flow(FlowCommand::SetShapeTextFormat { at, bold: Some(true), italic: None, size: Some(1400), color: Some(Rgb(0xc00000)) }),
+        Command::Flow(FlowCommand::SetShapeTextBasicFormat { at, bold: Some(true), italic: None, size: Some(1400), color: Some(Rgb(0xc00000)) }),
     ]).unwrap();
     let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
     let reread = ibis_formats::read(&saved).unwrap();
@@ -6206,7 +6434,7 @@ fn text_box_text_effects_are_saved_as_w14_and_read_again() {
     let glow = (Color { rgb: Rgb(0x4472c4), alpha: 102 }, 63_500);
     let shadow = Shadow::simple(Color { rgb: Rgb(0), alpha: 102 }, 50_800, 38_100, 2_700_000);
     // The first three characters only.
-    document.execute(vec![Command::Flow(FlowCommand::FormatShapeText {
+    document.execute(vec![Command::Flow(FlowCommand::SetShapeCharacterFormat {
         at,
         range: Some((0, 3)),
         format: CharacterFormat { outline: Some(Some(outline)), glow: Some(Some(glow)), shadow: Some(Some(shadow.clone())), ..Default::default() },
@@ -6231,7 +6459,7 @@ fn text_box_text_effects_are_saved_as_w14_and_read_again() {
     assert_eq!((runs[1].style.outline, runs[1].style.glow, runs[1].style.shadow.clone()), (None, None, None));
     // Cleared again, they are gone from the file.
     let mut second = Document::new(ibis_formats::open(saved.clone()).unwrap().presentation);
-    second.execute(vec![Command::Flow(FlowCommand::FormatShapeText {
+    second.execute(vec![Command::Flow(FlowCommand::SetShapeCharacterFormat {
         at,
         range: None,
         format: CharacterFormat { outline: Some(None), glow: Some(None), shadow: Some(None), ..Default::default() },
@@ -6250,7 +6478,7 @@ fn blocks_moved_are_saved_in_their_new_order() {
         let a = doc.body.iter().position(|x| matches!(x, Block::Paragraph(p) if p.text() == "章A")).unwrap();
         let mut blocks: Vec<Block> = doc.body[a + 4..a + 6].to_vec();
         blocks.extend(doc.body[a..a + 4].iter().cloned());
-        vec![FlowCommand::ReplaceBlocks { container: ibis_doc_model::flow_command::Container::Body, index: a, remove: 6, blocks }]
+        vec![FlowCommand::ReplaceBlockRange { container: ibis_doc_model::flow_command::Container::Body, index: a, remove: 6, blocks }]
     });
     let reread = ibis_formats::read(&out.saved).unwrap();
     let all = body_paragraphs(flow(&reread));
@@ -6375,7 +6603,7 @@ fn text_box_characters_formatted_in_part() {
     // The text box is read from the file; its characters 6..10 ("beta") become bold, red, 18 pt, in the file's own element.
     let reopened = ibis_formats::open(saved.clone()).unwrap();
     let mut second = Document::new(reopened.presentation.clone());
-    second.execute(vec![Command::Flow(FlowCommand::SetShapeRangeFormat { at, from: 6, to: 10, bold: Some(true), italic: None, size: Some(1800), color: Some(Rgb(0xC00000)) })]).unwrap();
+    second.execute(vec![Command::Flow(FlowCommand::SetShapeTextRangeBasicFormat { at, from: 6, to: 10, bold: Some(true), italic: None, size: Some(1800), color: Some(Rgb(0xC00000)) })]).unwrap();
     let saved2 = reopened.source.save(second.presentation(), SaveOptions::default()).unwrap();
     let xml = ibis_formats::test_files::part_text(&saved2, "word/document.xml").unwrap();
     let start = xml.find("<w:txbxContent>").unwrap();
@@ -6394,6 +6622,27 @@ fn text_box_characters_formatted_in_part() {
     assert_eq!(bold, [("alpha ", false), ("beta", true), ("gamma", false)]);
     second.undo();
     assert!(reopened.source.save(second.presentation(), SaveOptions::default()).unwrap() == saved, "undone, the file is as it was");
+}
+
+#[test]
+fn text_box_runs_are_japanese_for_the_line_start_rules_unless_marked_otherwise() {
+    // Word's 禁則 applies to East Asian text whatever language it is marked as; the shape text engine follows the run's language (a text box's 。 started a column
+    // in `ibisOffice-087-tatechuyoko.docx`, whose runs have no `w:lang`).
+    let data = std::fs::read(path(REPORT)).unwrap();
+    let opened = ibis_formats::open(data).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let p = text_paragraph(flow(document.presentation()), 4).clone();
+    let at = FlowPos::new(p.id, 2);
+    document.execute(vec![Command::Flow(FlowCommand::InsertTextBox { at, size: ibis_doc_model::EmuSize::new(1_828_800, 914_400), text: "alpha".into() })]).unwrap();
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let reread = ibis_formats::read(&saved).unwrap();
+    let shape = paragraphs(flow(&reread)).into_iter().find(|q| q.id == p.id).unwrap().runs.iter().find_map(|r| match &r.kind {
+        ibis_doc_model::FlowRunKind::Shape(s) => Some((**s).clone()),
+        _ => None,
+    }).unwrap();
+    let ibis_doc_model::ShapeKind::Auto(auto) = &shape.kind else { panic!("a text box") };
+    let langs: Vec<Option<&str>> = auto.text.as_ref().unwrap().paragraphs.iter().flat_map(|p| p.runs.iter()).map(|r| r.style.lang.as_deref()).collect();
+    assert!(!langs.is_empty() && langs.iter().all(|l| *l == Some("ja-JP")), "{langs:?}");
 }
 
 #[test]
@@ -7167,7 +7416,7 @@ fn theme_font_lang_and_bidi_save_and_reopen() {
         bidi: Some("he-IL".into()),
     };
     document
-        .execute(vec![Command::Flow(FlowCommand::SetThemeFontLang(Some(new_tfl.clone())))])
+        .execute(vec![Command::Flow(FlowCommand::SetThemeFontLanguage(Some(new_tfl.clone())))])
         .unwrap();
 
     let saved2 = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
@@ -7182,7 +7431,7 @@ fn theme_font_lang_and_bidi_save_and_reopen() {
 
     // 4. Clear themeFontLang (None)
     document
-        .execute(vec![Command::Flow(FlowCommand::SetThemeFontLang(None))])
+        .execute(vec![Command::Flow(FlowCommand::SetThemeFontLanguage(None))])
         .unwrap();
 
     let saved3 = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
@@ -7716,7 +7965,7 @@ fn test_docx_ink_stroke_and_effects_roundtrip() {
                 flip_v: false,
                 glue: Glue::default(),
             }),
-            Command::Flow(FlowCommand::PlaceShapeOnPage {
+            Command::Flow(FlowCommand::SetShapePagePosition {
                 at,
                 size,
                 x: 914_400,
@@ -7847,7 +8096,7 @@ fn test_docx_wpg_group_and_ungroup_roundtrip() {
                 fill: Some(Rgb(0x4472c4)),
                 line: Some((Rgb(0x1f4e79), 12_700)),
             }),
-            Command::Flow(FlowCommand::PlaceShapeOnPage {
+            Command::Flow(FlowCommand::SetShapePagePosition {
                 at: at0,
                 size: EmuSize::new(914_400, 457_200),
                 x: 457_200,
@@ -7860,7 +8109,7 @@ fn test_docx_wpg_group_and_ungroup_roundtrip() {
                 fill: Some(Rgb(0xed7d31)),
                 line: Some((Rgb(0xc55a11), 12_700)),
             }),
-            Command::Flow(FlowCommand::PlaceShapeOnPage {
+            Command::Flow(FlowCommand::SetShapePagePosition {
                 at: at1,
                 size: EmuSize::new(685_800, 685_800),
                 x: 1_600_200,
@@ -8019,8 +8268,8 @@ fn test_docx_format_conversions_txt_rtf_doc_html_odt_pdf() {
     }
 
     // 5. OpenDocument Text (.odt) roundtrip (DOCX-FILE-012)
-    let odt_bytes = export_docx_format(&opened.presentation, DocxConvertFormat::Odt).unwrap();
-    let from_odt = import_docx_format(&odt_bytes, DocxConvertFormat::Odt).unwrap();
+    let odt_bytes = ibis_odf::export_docx_to_odt(&opened.presentation).unwrap();
+    let from_odt = ibis_odf::import_odt(&odt_bytes).unwrap();
     let odt_flow = flow(&from_odt.presentation);
     assert_eq!(odt_flow.body.len(), 3);
     match &odt_flow.body[0] {
@@ -8421,4 +8670,93 @@ fn paragraph_id_default_w14_namespace_uses_named_prefix() {
     assert_eq!(p.attribute((w14, "paraId")), Some("00000005"));
     let reopened = ibis_formats::open(out.saved).unwrap();
     assert_eq!(body_paragraphs(flow(&reopened.presentation))[0].text(), "Fi!rst");
+}
+
+/// A table of `rows` x `columns` empty cells for a test (ids from `first`).
+fn built_table(first: u32, rows: usize, columns: usize, set: impl Fn(usize, usize, &mut ibis_doc_model::FlowCell)) -> ibis_doc_model::FlowTable {
+    use ibis_doc_model::{FlowCell, FlowRow, FlowTable};
+    let mut next = first + 1;
+    let mut id = || {
+        next += 1;
+        next - 1
+    };
+    let mut table = FlowTable { id: first, columns: vec![1_270_000; columns], ..FlowTable::default() };
+    for r in 0..rows {
+        let mut row = FlowRow { id: id(), ..FlowRow::default() };
+        for c in 0..columns {
+            let mut cell = FlowCell { id: id(), blocks: vec![Block::Paragraph(FlowParagraph { id: id(), ..FlowParagraph::default() })], ..FlowCell::default() };
+            set(r, c, &mut cell);
+            row.cells.push(cell);
+        }
+        table.rows.push(row);
+    }
+    table
+}
+
+/// `REPORT` with `table` put first, saved (only the body's part changes): the saved bytes.
+fn saved_with_built_table(table: ibis_doc_model::FlowTable) -> Vec<u8> {
+    let data = std::fs::read(path(REPORT)).unwrap();
+    let opened = ibis_formats::open(data.clone()).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let command = FlowCommand::ReplaceBlockRange { container: ibis_doc_model::flow_command::Container::Body, index: 0, remove: 0, blocks: vec![Block::Table(table)] };
+    document.execute(vec![Command::Flow(command)]).unwrap();
+    let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    let report = diff_packages(&data, &saved, &[]).unwrap();
+    for (part, _) in &report.differences {
+        assert!(part == "word/document.xml", "{part} changed: {}", report.to_json());
+    }
+    saved
+}
+
+// #222: a new table keeps its vertical merge: the cell that starts has `w:vMerge w:val="restart"`, the one that continues `w:vMerge`.
+#[test]
+fn a_new_tables_vertical_merge_is_written() {
+    use ibis_doc_model::VerticalMerge as M;
+    let saved = saved_with_built_table(built_table(900_000, 3, 2, |r, c, cell| {
+        if c == 0 {
+            cell.merge = match r {
+                0 => M::Start,
+                1 => M::Continue,
+                _ => M::None,
+            };
+        }
+    }));
+    let xml = String::from_utf8(ibis_ooxml::Package::open(saved.clone()).unwrap().read("word/document.xml").unwrap()).unwrap();
+    let first_table = &xml[xml.find("<w:tbl>").unwrap()..];
+    let table_xml = &first_table[..first_table.find("</w:tbl>").unwrap()];
+    assert_eq!(table_xml.matches(r#"<w:vMerge w:val="restart"/>"#).count(), 1, "{table_xml}");
+    assert_eq!(table_xml.matches("<w:vMerge/>").count(), 1, "{table_xml}");
+    let reread = ibis_formats::read(&saved).unwrap();
+    let Block::Table(t) = &flow(&reread).body[0] else { panic!("the table is first") };
+    let merges: Vec<(M, M)> = t.rows.iter().map(|r| (r.cells[0].merge, r.cells[1].merge)).collect();
+    assert_eq!(merges, vec![(M::Start, M::None), (M::Continue, M::None), (M::None, M::None)]);
+}
+
+// #222: the six directions of a cell (`lrTbV`, `tbRl`, `tbRlV`, `btLr`, `tbLrV`; `lrTb` is the default) are told apart and written as they were read.
+#[test]
+fn a_new_tables_cell_directions_are_kept() {
+    use ibis_doc_model::CellDirection as D;
+    let all = [D::LrTb, D::TbRl, D::TbRlV, D::BtLr, D::LrTbV, D::TbLrV];
+    let saved = saved_with_built_table(built_table(900_000, 1, 6, |_, c, cell| cell.direction = all[c]));
+    let reread = ibis_formats::read(&saved).unwrap();
+    let Block::Table(t) = &flow(&reread).body[0] else { panic!("the table is first") };
+    let got: Vec<D> = t.rows[0].cells.iter().map(|c| c.direction).collect();
+    assert_eq!(got, all);
+    let xml = String::from_utf8(ibis_ooxml::Package::open(saved.clone()).unwrap().read("word/document.xml").unwrap()).unwrap();
+    for name in ["tbRl", "tbRlV", "btLr", "lrTbV", "tbLrV"] {
+        assert!(xml.contains(&format!(r#"<w:textDirection w:val="{name}"/>"#)), "{name}");
+    }
+}
+
+// #222: the names, Transitional ones too; a section's `tbRlV` is as `tbRl`.
+#[test]
+fn text_direction_names() {
+    use ibis_doc_model::CellDirection as D;
+    for (name, d) in [("lrTb", D::LrTb), ("tbRl", D::TbRl), ("tbRlV", D::TbRlV), ("btLr", D::BtLr), ("lrTbV", D::LrTbV), ("tbLrV", D::TbLrV), ("rl", D::TbRl), ("rlV", D::TbRlV), ("lr", D::BtLr), ("lrV", D::TbLrV), ("tbV", D::LrTbV)] {
+        assert_eq!(D::from_name(name), d, "{name}");
+    }
+    for d in [D::LrTb, D::TbRl, D::TbRlV, D::BtLr, D::LrTbV, D::TbLrV] {
+        assert_eq!(D::from_name(d.name()), d);
+    }
+    assert_eq!(D::from_section_name("tbRlV"), D::TbRl);
 }

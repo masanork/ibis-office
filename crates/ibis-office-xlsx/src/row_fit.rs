@@ -390,7 +390,7 @@ mod tests {
     use crate::render::font_metrics::WinRowMetrics;
 
     fn metrics(win: (f64, f64), hhea: (f64, f64, f64), em: f64, vdmx: Option<Vec<(u16, i16, i16)>>) -> WinRowMetrics {
-        WinRowMetrics { win_ascent: win.0, win_descent: win.1, hhea_ascent: hhea.0, hhea_descent: hhea.1, hhea_line_gap: hhea.2, units_per_em: em, vdmx }
+        WinRowMetrics { win_ascent: win.0, win_descent: win.1, hhea_ascent: hhea.0, hhea_descent: hhea.1, hhea_line_gap: hhea.2, units_per_em: em, y_subscript_size: 0.0, y_superscript_size: 0.0, y_subscript_offset: 0.0, y_superscript_offset: 0.0, code_page_range_1: 0, vdmx }
     }
 
     /// Rows of Microsoft Excel 365 (font-rows: the Normal font set to the typeface, the standard row in points / 0.75): (pt × 100,

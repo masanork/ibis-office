@@ -70,7 +70,7 @@ fn look(body: &TextStyle, run: &RunStyle) -> Look {
 
 /// A paragraph's format as it shows.
 fn para_key(body: &TextStyle, p: &Paragraph) -> Paragraph {
-    Paragraph { runs: Vec::new(), align: Some(p.align.unwrap_or(body.align)), end_style: RunStyle::default(), ..p.clone() }
+    Paragraph { runs: Vec::new(), align: Some(p.align.unwrap_or(body.align)), end_style: RunStyle::default(), line_end: None, ..p.clone() }
 }
 
 /// A paragraph's format without what a writer sets (the alignment) and
@@ -159,6 +159,14 @@ pub(crate) fn rewrite_text(doc: &mut XmlDocument, node: NodeId, source: &ShapeSo
                 let prev_end = look(&new.style, &new.paragraphs[i - 1].end_style);
                 let rpr = x.import(doc, &run_props(&x, &prev_end, ""))?;
                 doc.insert(br, 0, rpr);
+            } else if let (Some(end), Some((base, run))) = (new.paragraphs.get(i - 1).and_then(|q| q.line_end.as_ref()).filter(|_| i > 0), template.runs.first()) {
+                // The break's formatting is the line's `line_end`: the template's first run's, changed to it.
+                let copy = doc.deep_clone(*run);
+                write_run_format(doc, copy, &x, base, &look(&new.style, end), "")?;
+                if let Some(rpr) = doc.child(copy, "rPr") {
+                    doc.detach(rpr);
+                    doc.insert(br, 0, rpr);
+                }
             } else if let Some(rpr) = template.runs.first().and_then(|(_, r)| doc.child(*r, "rPr")) {
                 let copy = doc.deep_clone(rpr);
                 doc.insert(br, 0, copy);
@@ -215,8 +223,9 @@ pub(crate) fn rewrite_text(doc: &mut XmlDocument, node: NodeId, source: &ShapeSo
             if run.text.is_empty() && run.style.field.is_none() {
                 continue;
             }
-            // A formula that is as it was is the original markup.
+            // A formula that is as it was is the original markup (a colour given to the text run is written into the formula: GitHub issue #198).
             if let Some(math) = &run.style.math
+                && run.style.color.is_none()
                 && let Some(&(_, node)) = olds.iter().flat_map(|o| o.maths.iter()).find(|(m, _)| m == &**math)
             {
                 let copy = doc.deep_clone(node);
@@ -226,7 +235,7 @@ pub(crate) fn rewrite_text(doc: &mut XmlDocument, node: NodeId, source: &ShapeSo
             }
             // A formula that was typed again is written as a formula.
             if let Some(math) = &run.style.math {
-                let copy = x.import(doc, &crate::math_xml::write_math_content(math, &x.a, run.style.math_inline))?;
+                let copy = x.import(doc, &crate::math_xml::write_math_content(math, &x.a, run.style.math_inline, run.style.color))?;
                 let index = doc.children(p).len();
                 doc.insert(p, index, copy);
                 continue;
@@ -782,8 +791,13 @@ fn write_paragraph_format(doc: &mut XmlDocument, p: NodeId, x: &Prefixes, have: 
                     let start = if auto.start_at > 1 { format!(" startAt=\"{}\"", auto.start_at) } else { String::new() };
                     replace_ppr(doc, ppr, x, &MARKS, Some(format!("<{a}buAutoNum type=\"{}\"{start}/>", new::escape(&auto.scheme))))?;
                 } else {
-                    replace_ppr(doc, ppr, x, &["buFont", "buFontTx"], Some(format!("<{a}buFont typeface=\"Arial\" panose=\"020B0604020202020204\" pitchFamily=\"34\" charset=\"0\"/>")))?;
-                    let c: String = b.text.chars().take(1).collect();
+                    replace_ppr(doc, ppr, x, &["buFont", "buFontTx"], Some(match (&b.symbol, &b.font) {
+                        (Some(sym), _) => format!("<{a}buFont typeface=\"{}\"/>", new::escape(&sym.font)),
+                        // The bullet's own typeface; none follows the text (`buFontTx`, what a missing `buFont` means).
+                        (None, Some(font)) => format!("<{a}buFont typeface=\"{}\"/>", new::escape(font)),
+                        (None, None) => format!("<{a}buFontTx/>"),
+                    }))?;
+                    let c: String = b.symbol.as_ref().map_or_else(|| b.text.chars().take(1).collect(), |sym| sym.code.clone());
                     replace_ppr(doc, ppr, x, &MARKS, Some(format!("<{a}buChar char=\"{}\"/>", new::escape(&c))))?;
                 }
             }

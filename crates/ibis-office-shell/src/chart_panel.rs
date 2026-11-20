@@ -170,10 +170,10 @@ impl SlideEditor {
         };
         let mut commands = Vec::new();
         if let Some(old) = replaced {
-            commands.push(Command::RemoveShapes { slide, shapes: vec![old] });
+            commands.push(Command::DeleteShape { slide, shapes: vec![old], with_attached: false });
         }
         let index = self.slide().shapes.len() - usize::from(replaced.is_some());
-        commands.push(Command::InsertShape { slide, index, shape });
+        commands.push(Command::InsertShape { slide, shapes: vec![(index, shape)] });
         self.run(commands, cx);
         self.set_selection(vec![id]);
         // A chart of a new kind (chartEx) has its data edited in its workbook (データの編集), not in the panel.
@@ -221,7 +221,7 @@ impl SlideEditor {
         };
         let current = self.presentation().slide(slide).and_then(|s| s.shape(shape)).map(|s| s.kind.clone());
         if current != Some(ShapeKind::Chart(Box::new(chart.clone()))) {
-            self.run(vec![Command::SetKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(chart))) }], cx);
+            self.run(vec![Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Chart(Box::new(chart))) }], cx);
         }
         cx.notify();
     }
@@ -350,7 +350,7 @@ impl SlideEditor {
             None => kind,
         };
         if self.presentation().slide(slide).and_then(|s| s.shape(shape)).is_some_and(|s| s.kind != kind) {
-            self.run(vec![Command::SetKind { slide, shape, kind: Box::new(kind) }], cx);
+            self.run(vec![Command::SetShapeKind { slide, shape, kind: Box::new(kind) }], cx);
         }
     }
 

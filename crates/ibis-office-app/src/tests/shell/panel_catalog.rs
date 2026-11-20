@@ -390,7 +390,7 @@ pub(crate) fn dump_all_right_panels() {
         x!("sheet_alt_text_panel", |e, w, cx| e.open_sheet_alt_text_panel(w, cx), sheet_alt_text_panel);
 
         // Shape frame panel & control properties panel
-        s.menu("xlsx.insert-textbox");
+        s.menu("xlsx.insert-textbox"); s.place_armed();
         s.key("escape");
         x!("sheet_frame_panel", |e, w, cx| {
             let id = e.slide().shapes.last().unwrap().id;
@@ -515,7 +515,7 @@ pub(crate) fn dump_all_right_panels() {
             let slide=e.current_slide;e.run(vec![Command::SetAnimations{slide,animations}],cx);
             if e.pptx().is_none_or(|st| !st.animation_pane) { e.toggle_animation_pane(cx); }
         }, animation_pane);
-        s.toolbar_menu("motion", "pptx.anim.in.fly-bottom");
+        s.toolbar_menu("motion", "pptx.animation.in.fly-bottom");
         p!("animation_options_panel", |e, _, cx| e.open_animation_options_panel(0, cx), animation_options_panel);
         p!("reading_order_pane", |e, _, cx| e.open_reading_order_pane(cx), reading_order_pane);
         p!("selection_pane", |e, _, cx| {

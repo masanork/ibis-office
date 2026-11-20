@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 ibis-calc.workspace = true
+ibis-m-lang.workspace = true
 ruzstd = "0.8"
 unicode-segmentation = "1"
 regex = "1"

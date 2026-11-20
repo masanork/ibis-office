@@ -89,7 +89,7 @@ fn random_command(rng: &mut Rng, doc: &FlowDocument) -> FlowCommand {
                 0 => RunChange::Bold(rng.chance(50)),
                 1 => RunChange::Italic(rng.chance(50)),
                 2 => RunChange::Underline(rng.chance(50)),
-                3 => RunChange::Strike(rng.chance(50)),
+                3 => RunChange::Strikethrough(rng.chance(50)),
                 4 => RunChange::Size([800, 1050, 1200, 2000][rng.below(4)]),
                 5 => RunChange::Color(Rgb([0xff0000, 0x0070c0, 0x000000][rng.below(3)])),
                 6 => RunChange::Highlight([None, Some(Rgb(0xffff00)), Some(Rgb(0x123456))][rng.below(3)]),
@@ -116,13 +116,13 @@ fn random_command(rng: &mut Rng, doc: &FlowDocument) -> FlowCommand {
         }
         8 => {
             let change = match rng.below(8) {
-                0 => ParaChange::Align([FlowAlign::Left, FlowAlign::Center, FlowAlign::Right, FlowAlign::Justify, FlowAlign::Distribute][rng.below(5)]),
-                1 => ParaChange::Line([LineHeight::Auto(240), LineHeight::Auto(360), LineHeight::Exact(254_000), LineHeight::AtLeast(228_600)][rng.below(4)]),
+                0 => ParaChange::Alignment([FlowAlign::Left, FlowAlign::Center, FlowAlign::Right, FlowAlign::Justify, FlowAlign::Distribute][rng.below(5)]),
+                1 => ParaChange::LineSpacing([LineHeight::Auto(240), LineHeight::Auto(360), LineHeight::Exact(254_000), LineHeight::AtLeast(228_600)][rng.below(4)]),
                 2 => ParaChange::SpaceBefore(rng.below(24) as i64 * 12_700),
                 3 => ParaChange::SpaceAfter(rng.below(24) as i64 * 12_700),
-                4 => ParaChange::Left(rng.below(4) as i64 * 266_700),
-                5 => ParaChange::Right(rng.below(4) as i64 * 266_700),
-                6 => ParaChange::FirstLine(rng.below(5) as i64 * 133_350 - 266_700),
+                4 => ParaChange::LeftIndent(rng.below(4) as i64 * 266_700),
+                5 => ParaChange::RightIndent(rng.below(4) as i64 * 266_700),
+                6 => ParaChange::FirstLineIndent(rng.below(5) as i64 * 133_350 - 266_700),
                 _ => {
                     let ids: Vec<String> = doc.styles.styles.iter().filter(|(_, s)| s.kind == ibis_doc_model::StyleKind::Paragraph).map(|(id, _)| id.clone()).collect();
                     ParaChange::Style(if ids.is_empty() || rng.chance(20) { None } else { Some(ids[rng.below(ids.len())].clone()) })

@@ -72,9 +72,9 @@ pub(super) fn copy_round_trip() {
         let one = vec![CellRange { first_row: 0, first_column: 0, last_row: 0, last_column: 0 }];
         let mut commands: Vec<Command> = [StyleChange::Bold(true), StyleChange::Fill(Some(Rgb(0x336699))), StyleChange::NumberFormat("0.00".into())]
             .into_iter()
-            .map(|change| Command::Sheet(SheetCommand::SetFormat { slide, ranges: one.clone(), change }))
+            .map(|change| Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: one.clone(), change }))
             .collect();
-        commands.push(Command::Sheet(SheetCommand::Merge { slide, range: CellRange { first_row: 1, first_column: 0, last_row: 1, last_column: 1 }, center: false }));
+        commands.push(Command::Sheet(SheetCommand::Merge { sheet: slide, range: CellRange { first_row: 1, first_column: 0, last_row: 1, last_column: 1 }, center: false }));
         e.document.execute(commands).unwrap();
     });
     select(&mut s, CellRange { first_row: 0, first_column: 0, last_row: 1, last_column: 2 });
@@ -145,9 +145,9 @@ pub(super) fn xml_spreadsheet_of_copy() {
         let one = vec![CellRange { first_row: 0, first_column: 0, last_row: 0, last_column: 0 }];
         let mut commands: Vec<Command> = [StyleChange::Bold(true), StyleChange::Fill(Some(Rgb(0x336699))), StyleChange::NumberFormat("0.00".into())]
             .into_iter()
-            .map(|change| Command::Sheet(SheetCommand::SetFormat { slide, ranges: one.clone(), change }))
+            .map(|change| Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: one.clone(), change }))
             .collect();
-        commands.push(Command::Sheet(SheetCommand::Merge { slide, range: CellRange { first_row: 1, first_column: 0, last_row: 1, last_column: 1 }, center: false }));
+        commands.push(Command::Sheet(SheetCommand::Merge { sheet: slide, range: CellRange { first_row: 1, first_column: 0, last_row: 1, last_column: 1 }, center: false }));
         e.document.execute(commands).unwrap();
     });
     select(&mut s, CellRange { first_row: 0, first_column: 0, last_row: 1, last_column: 2 });

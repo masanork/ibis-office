@@ -48,6 +48,7 @@ fn errors_pptx() {
 
 fn sample(kind: Kind) -> &'static str {
     match kind {
+        Kind::Pdf => unreachable!("a PDF is only viewed: the scenarios do not make one"),
         Kind::Document => "test/editing/docx-report.docx",
         Kind::Workbook => "test/editing/xlsx-sales.xlsx",
         Kind::Presentation => "test/editing/pptx-comments-modern.pptx",
@@ -66,6 +67,7 @@ fn clipboard(s: &mut Scenario) -> String {
 /// Leave the unsaved change in the document (the rename must not lose it).
 fn edit(s: &mut Scenario, kind: Kind) {
     match kind {
+        Kind::Pdf => unreachable!("a PDF is only viewed: the scenarios do not make one"),
         Kind::Document => {
             let (id, _) = s.paragraph(0);
             s.click_text(ibis_doc_model::FlowPos::new(id, 0));
@@ -79,7 +81,7 @@ fn edit(s: &mut Scenario, kind: Kind) {
         Kind::Presentation => s.update(|e, _, cx| {
             let id = e.document.ids().new_shape_id();
             let frame = ibis_doc_model::EmuRect::new(0, 0, 914_400, 914_400);
-            e.execute(vec![ibis_doc_model::Command::InsertShape { slide: e.current_slide, index: 0, shape: ibis_doc_model::Shape::text_box(id, frame, "unsaved") }], cx);
+            e.execute(vec![ibis_doc_model::Command::InsertShape { slide: e.current_slide, shapes: vec![(0, ibis_doc_model::Shape::text_box(id, frame, "unsaved"))] }], cx);
         }),
         Kind::Pdf => unreachable!("PDF is not part of title_file_menu scenarios"),
     }

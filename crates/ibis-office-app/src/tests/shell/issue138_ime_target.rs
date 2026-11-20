@@ -171,7 +171,7 @@ fn in_xlsx_cell(){
 
 fn in_xlsx_box(){
     let mut s=Scenario::open("test/editing/xlsx-sales.xlsx");
-    s.menu("insert.text-box");s.settle();
+    s.menu("insert.text-box");s.place_armed();s.settle();
     s.update(|e,_,cx|e.input_mark(TEXT,cx));
     s.update(|e,w,cx|with_format!(e,set_ime_clauses(e,word_like(),w,cx)));
     s.settle();

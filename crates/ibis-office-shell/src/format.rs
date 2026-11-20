@@ -43,8 +43,8 @@ pub struct ExtraDialog {
 
 /// What the PDF made for printing or export is made from (`FormatEditor::pdf_job`): the file's bytes, the pages asked for (1-based)
 /// when it is not all of them, the export's format (`pdf` or `pdf-image`) and the arguments the print settings give it.
-/// Not on the web: the PDF is made by this program's `--export` run (`SlideEditor::write_pdf_with`), which the web has not.
-#[cfg(not(target_family = "wasm"))]
+/// On the desktop the PDF is made by this program's `--export` run (`SlideEditor::write_pdf_with`); in the browser by the app's own
+/// export in the page (`app_hooks::web_pdf`).
 pub struct PdfJob {
     pub bytes: Vec<u8>,
     pub slides: Option<Vec<usize>>,
@@ -75,8 +75,27 @@ pub struct SheetOverlays {
 pub trait FormatState: std::any::Any {
     /// The kind of document this is the state of.
     fn kind(&self) -> Kind;
+    /// What a touch gesture on the page can change in this state, as it is now (`GestureView`; `shell/gesture.rs`).
+    fn gesture_view(&self) -> Box<dyn std::any::Any>;
+    /// Put back what `gesture_view` returned.
+    fn restore_gesture_view(&mut self, view: Box<dyn std::any::Any>);
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+/// What a touch gesture on the page can change in a format's state: the selection, the caret, the drag in progress, the
+/// scroll. **Every format's state implements this** (`impl_format_state!` requires it), so a touch that a second finger
+/// cancels can put the window back as it was before the finger went down (`shell/gesture.rs`, #209).
+///
+/// Implement `gesture_snapshot` by destructuring the state struct **without `..`**: a field added later does not compile
+/// until its author decides whether a touch can change it (name it and put it in the snapshot) or not (`field: _`).
+pub trait GestureView {
+    /// What `gesture_snapshot` keeps.
+    type Snapshot: 'static;
+    /// What a touch gesture can change, as it is now.
+    fn gesture_snapshot(&self) -> Self::Snapshot;
+    /// Put back what `gesture_snapshot` kept.
+    fn gesture_restore(&mut self, snapshot: Self::Snapshot);
 }
 
 /// `impl FormatState for $state`, for the document of `$kind`.
@@ -88,6 +107,14 @@ macro_rules! impl_format_state {
         impl $crate::format::FormatState for $state {
             fn kind(&self) -> ibis_formats::Kind {
                 $kind
+            }
+            fn gesture_view(&self) -> Box<dyn std::any::Any> {
+                Box::new(<$state as $crate::format::GestureView>::gesture_snapshot(self))
+            }
+            fn restore_gesture_view(&mut self, view: Box<dyn std::any::Any>) {
+                if let Ok(view) = view.downcast::<<$state as $crate::format::GestureView>::Snapshot>() {
+                    <$state as $crate::format::GestureView>::gesture_restore(self, *view);
+                }
             }
             fn as_any(&self) -> &dyn std::any::Any {
                 self
@@ -501,6 +528,12 @@ pub trait FormatEditor {
         None
     }
 
+    /// The report of the open file's digital signatures, in words, for a format that is not a package the shell can inspect (a PDF, XPS or OFD viewer): `None` leaves it to
+    /// `ibis_ooxml::signature` (`shell/signature.rs`).
+    fn signature_report(_editor: &SlideEditor) -> Option<String> {
+        None
+    }
+
     /// What the button of one of the format's bars does.
     fn infobar_action(_editor: &mut SlideEditor, _kind: crate::infobar::InfoBarKind, _window: &mut Window, _cx: &mut Context<SlideEditor>) {}
 
@@ -708,6 +741,12 @@ pub trait FormatEditor {
     /// a screen whose text is elsewhere says its own (a document's text runs, a workbook's cells).
     fn used_fonts(editor: &SlideEditor) -> Vec<String> {
         crate::replace_fonts::presentation_used_fonts(editor.presentation())
+    }
+
+    /// The text of the open file (its characters are what matters), for the blocks of the browser version's fonts that have them
+    /// (GitHub issue #157, stage 2). By default the shapes' text.
+    fn used_text(editor: &SlideEditor) -> Option<String> {
+        Some(crate::replace_fonts::presentation_used_text(editor.presentation()))
     }
 
     /// Replace the font `target` by `replacement` in the whole file, as one step of the undo history; how many places
@@ -1087,7 +1126,6 @@ pub trait FormatEditor {
     fn prepare_print_or_export(_editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>) {}
 
     /// What the PDF of the file, for printing (`printing`) or for export, is made from.
-    #[cfg(not(target_family = "wasm"))]
     fn pdf_job(editor: &SlideEditor, _printing: bool) -> Result<PdfJob, String> {
         Ok(PdfJob { bytes: editor.current_bytes()?, slides: None, format: "pdf", args: None })
     }
@@ -1222,6 +1260,11 @@ pub trait FormatEditor {
         Vec::new()
     }
 
+    /// Words after the file name in the title row (a workbook with several sheets selected: `[グループ]`).
+    fn title_suffix(_editor: &SlideEditor) -> Option<String> {
+        None
+    }
+
     /// The screen's own lines of the commands' table at `part` (`chrome_defaults::menus`): what only this screen has in a
     /// shared menu, and the whole of a menu only it has. They are placeholders as the shared ones are (`menus` connects them).
     fn menu_items(_editor: &SlideEditor, _part: crate::chrome::MenuPart) -> Vec<crate::chrome::MenuEntry> {
@@ -1237,6 +1280,12 @@ pub trait FormatEditor {
     /// The toolbar's right half, for what is selected. Empty: the toolbar ends with its left part.
     fn toolbar_right(_editor: &SlideEditor) -> Vec<ToolItem> {
         Vec::new()
+    }
+
+    /// The scene the toolbar is in (what is selected makes the right half of the toolbar differ): one of the ids
+    /// `toolbar_layout::scenes` lists for the format. Empty: the toolbar of this state cannot be customized.
+    fn toolbar_scene(_editor: &SlideEditor) -> &'static str {
+        ""
     }
 
     /// After a model is read (a file opened or loaded again): the format lays out or fills in what its pages need before they are
@@ -1352,6 +1401,7 @@ pub trait FormatDriver: Sync {
     fn panel_message_anchored(&self, _editor: &SlideEditor) -> bool;
     fn panel_message_measured(&self, _editor: &mut SlideEditor, _bounds: Bounds<Pixels>, _cx: &mut Context<SlideEditor>);
     fn infobar_kind(&self, _editor: &SlideEditor) -> Option<crate::infobar::InfoBarKind>;
+    fn signature_report(&self, _editor: &SlideEditor) -> Option<String>;
     fn infobar_action(&self, _editor: &mut SlideEditor, _kind: crate::infobar::InfoBarKind, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn infobar_spec(&self, _kind: crate::infobar::InfoBarKind) -> Option<crate::infobar::InfoBarSpec>;
     fn infobar_title_suffix(&self, _editor: &SlideEditor, _kind: crate::infobar::InfoBarKind) -> Option<String>;
@@ -1395,6 +1445,8 @@ pub trait FormatDriver: Sync {
     fn autorecover_minutes(&self, _editor: &SlideEditor) -> Option<u32>;
     fn set_autorecover_minutes(&self, _editor: &mut SlideEditor, _minutes: u32, _cx: &mut Context<SlideEditor>);
     fn used_fonts(&self, _editor: &SlideEditor) -> Vec<String>;
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    fn used_text(&self, _editor: &SlideEditor) -> Option<String>;
     fn replace_fonts(&self, _editor: &mut SlideEditor, _target: &str, _replacement: &str, _cx: &mut Context<SlideEditor>) -> usize;
     fn page_when_current_gone(&self, _editor: &SlideEditor) -> Option<SlideId>;
     fn history_applied_early(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
@@ -1470,7 +1522,6 @@ pub trait FormatDriver: Sync {
     fn new_file_shown(&self, _editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>);
     fn open_print_panel(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn prepare_print_or_export(&self, _editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>);
-    #[cfg(not(target_family = "wasm"))]
     fn pdf_job(&self, editor: &SlideEditor, _printing: bool) -> Result<PdfJob, String>;
     #[cfg(not(target_family = "wasm"))]
     fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>>;
@@ -1499,8 +1550,10 @@ pub trait FormatDriver: Sync {
     fn add_comment(&self, _editor: &SlideEditor) -> Option<crate::chrome::Handler>;
     fn show_comments(&self, _editor: &SlideEditor) -> Option<(bool, crate::chrome::Handler)>;
     fn title_buttons(&self, _editor: &SlideEditor) -> Vec<TitleButton>;
+    fn title_suffix(&self, _editor: &SlideEditor) -> Option<String>;
     fn toolbar_left(&self, _editor: &SlideEditor) -> Vec<ToolItem>;
     fn toolbar_right(&self, _editor: &SlideEditor) -> Vec<ToolItem>;
+    fn toolbar_scene(&self, _editor: &SlideEditor) -> &'static str;
     fn menu_items(&self, _editor: &SlideEditor, _part: crate::chrome::MenuPart) -> Vec<crate::chrome::MenuEntry>;
     fn prepare_model(&self, _presentation: &mut Presentation, _resources: &crate::render::shape_view::Resources, _text_system: &TextSystem, _file_name: Option<&str>, _reloaded: bool);
     fn menu_buttons(&self, _editor: &SlideEditor) -> Vec<ToolItem>;
@@ -1689,6 +1742,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn infobar_kind(&self, _editor: &SlideEditor) -> Option<crate::infobar::InfoBarKind> {
         F::infobar_kind(_editor)
     }
+    fn signature_report(&self, _editor: &SlideEditor) -> Option<String> {
+        F::signature_report(_editor)
+    }
     fn infobar_action(&self, _editor: &mut SlideEditor, _kind: crate::infobar::InfoBarKind, _window: &mut Window, _cx: &mut Context<SlideEditor>) {
         F::infobar_action(_editor, _kind, _window, _cx)
     }
@@ -1817,6 +1873,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn used_fonts(&self, _editor: &SlideEditor) -> Vec<String> {
         F::used_fonts(_editor)
+    }
+    fn used_text(&self, _editor: &SlideEditor) -> Option<String> {
+        F::used_text(_editor)
     }
     fn replace_fonts(&self, _editor: &mut SlideEditor, _target: &str, _replacement: &str, _cx: &mut Context<SlideEditor>) -> usize {
         F::replace_fonts(_editor, _target, _replacement, _cx)
@@ -2038,7 +2097,6 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn prepare_print_or_export(&self, _editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>) {
         F::prepare_print_or_export(_editor, _cx)
     }
-    #[cfg(not(target_family = "wasm"))]
     fn pdf_job(&self, editor: &SlideEditor, _printing: bool) -> Result<PdfJob, String> {
         F::pdf_job(editor, _printing)
     }
@@ -2115,11 +2173,17 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn title_buttons(&self, _editor: &SlideEditor) -> Vec<TitleButton> {
         F::title_buttons(_editor)
     }
+    fn title_suffix(&self, _editor: &SlideEditor) -> Option<String> {
+        F::title_suffix(_editor)
+    }
     fn toolbar_left(&self, _editor: &SlideEditor) -> Vec<ToolItem> {
         F::toolbar_left(_editor)
     }
     fn toolbar_right(&self, _editor: &SlideEditor) -> Vec<ToolItem> {
         F::toolbar_right(_editor)
+    }
+    fn toolbar_scene(&self, _editor: &SlideEditor) -> &'static str {
+        F::toolbar_scene(_editor)
     }
     fn menu_items(&self, _editor: &SlideEditor, _part: crate::chrome::MenuPart) -> Vec<crate::chrome::MenuEntry> {
         F::menu_items(_editor, _part)

@@ -590,19 +590,19 @@ impl SlideEditor {
             MenuItem::tr("edit.delete").icon("delete").shortcut("⌫").on(|e, _, cx| e.delete_selected(cx)).into(),
             MenuEntry::Separator,
             Submenu::tr("pptx.order", "flip_to_front", vec![
-                MenuItem::tr("pptx.order.front").icon("flip_to_front").on(|e, _, cx| e.order_selected(Order::Front, cx)).into(),
-                MenuItem::tr("pptx.order.forward").icon("arrow_upward").on(|e, _, cx| e.order_selected(Order::Forward, cx)).into(),
-                MenuItem::tr("pptx.order.backward").icon("arrow_downward").on(|e, _, cx| e.order_selected(Order::Backward, cx)).into(),
-                MenuItem::tr("pptx.order.back").icon("flip_to_back").on(|e, _, cx| e.order_selected(Order::Back, cx)).into(),
+                MenuItem::tr("arrange.bring-to-front").icon("flip_to_front").on(|e, _, cx| e.order_selected(Order::Front, cx)).into(),
+                MenuItem::tr("arrange.bring-forward").icon("arrow_upward").on(|e, _, cx| e.order_selected(Order::Forward, cx)).into(),
+                MenuItem::tr("arrange.send-backward").icon("arrow_downward").on(|e, _, cx| e.order_selected(Order::Backward, cx)).into(),
+                MenuItem::tr("arrange.send-to-back").icon("flip_to_back").on(|e, _, cx| e.order_selected(Order::Back, cx)).into(),
             ]).into(),
             Submenu::tr("pptx.align", "align_horizontal_left", vec![
-                MenuItem::tr("pptx.align.left").icon("align_horizontal_left").on(|e, _, cx| e.align_selected(Align::Left, cx)).into(),
-                MenuItem::tr("pptx.align.center").icon("align_horizontal_center").on(|e, _, cx| e.align_selected(Align::Center, cx)).into(),
-                MenuItem::tr("pptx.align.right").icon("align_horizontal_right").on(|e, _, cx| e.align_selected(Align::Right, cx)).into(),
+                MenuItem::tr("arrange.align-left").icon("align_horizontal_left").on(|e, _, cx| e.align_selected(Align::Left, cx)).into(),
+                MenuItem::tr("arrange.align-center").icon("align_horizontal_center").on(|e, _, cx| e.align_selected(Align::Center, cx)).into(),
+                MenuItem::tr("arrange.align-right").icon("align_horizontal_right").on(|e, _, cx| e.align_selected(Align::Right, cx)).into(),
                 MenuEntry::Separator,
-                MenuItem::tr("pptx.align.top").icon("align_vertical_top").on(|e, _, cx| e.align_selected(Align::Top, cx)).into(),
-                MenuItem::tr("pptx.align.middle").icon("align_vertical_center").on(|e, _, cx| e.align_selected(Align::Middle, cx)).into(),
-                MenuItem::tr("pptx.align.bottom").icon("align_vertical_bottom").on(|e, _, cx| e.align_selected(Align::Bottom, cx)).into(),
+                MenuItem::tr("arrange.align-top").icon("align_vertical_top").on(|e, _, cx| e.align_selected(Align::Top, cx)).into(),
+                MenuItem::tr("arrange.align-middle").icon("align_vertical_center").on(|e, _, cx| e.align_selected(Align::Middle, cx)).into(),
+                MenuItem::tr("arrange.align-bottom").icon("align_vertical_bottom").on(|e, _, cx| e.align_selected(Align::Bottom, cx)).into(),
                 MenuEntry::Separator,
                 MenuItem::tr("pptx.distribute.h").icon("horizontal_distribute").disabled(self.selected_ids().len() < 3).on(|e, _, cx| e.distribute_selected(true, cx)).into(),
                 MenuItem::tr("pptx.distribute.v").icon("vertical_distribute").disabled(self.selected_ids().len() < 3).on(|e, _, cx| e.distribute_selected(false, cx)).into(),
@@ -757,7 +757,7 @@ impl SlideEditor {
             entries.push(MenuItem::tr("pptx.crop-actions").icon("crop").on(|e, w, cx| e.open_crop_panel(w, cx)).into());
             entries.push(Submenu::tr("pptx.chrome.crop-picture", "crop", crate::chrome::crop_items()).into());
             entries.push(MenuItem::tr("pptx.chrome.reset-crop").icon("reset_image").on(|e, _, cx| e.crop_selected_pictures(ibis_doc_model::Crop::default(), cx)).into());
-            entries.push(Submenu::tr("pptx.video.shape", "crop_original", crate::chrome::video_shape_items(self, true)).into());
+            entries.push(Submenu::tr("pptx.video.shape", "image", crate::chrome::video_shape_items(self, true)).into());
             entries.push(crate::ibis_text::wrap_menu(self, true));
             if self.selected_mermaid_picture().is_some() {
                 entries.push(MenuItem::new("pptx.mermaid-source", "docx.picture.mermaid-source")

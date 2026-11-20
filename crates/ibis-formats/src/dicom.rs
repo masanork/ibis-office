@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/246)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Pure-Rust non-diagnostic DICOM (`.dcm`) in-memory anonymizer and Office
 //! asset extractor for ibisOffice.
@@ -169,22 +169,22 @@ pub fn anonymize_and_extract(
     let ts_uid = obj.meta().transfer_syntax().trim().to_string();
     let mut metadata_rows = Vec::new();
     for &(tag, label) in &[
-        (Tag(0x0008, 0x0060), "モダリティ (Modality)"),
-        (Tag(0x0008, 0x1030), "検査記述 (StudyDescription)"),
-        (Tag(0x0008, 0x103E), "シリーズ記述 (SeriesDescription)"),
-        (Tag(0x0018, 0x0050), "スライス厚 (SliceThickness)"),
-        (Tag(0x0018, 0x0060), "管電圧 (KVP)"),
-        (Tag(0x0028, 0x0004), "画素表現 (PhotometricInterpretation)"),
-        (Tag(0x0028, 0x0010), "行数 (Rows)"),
-        (Tag(0x0028, 0x0011), "列数 (Columns)"),
-        (Tag(0x0028, 0x0100), "割当ビット数 (BitsAllocated)"),
+        (Tag(0x0008, 0x0060), "modality"),
+        (Tag(0x0008, 0x1030), "study-description"),
+        (Tag(0x0008, 0x103E), "series-description"),
+        (Tag(0x0018, 0x0050), "slice-thickness"),
+        (Tag(0x0018, 0x0060), "kvp"),
+        (Tag(0x0028, 0x0004), "photometric"),
+        (Tag(0x0028, 0x0010), "rows"),
+        (Tag(0x0028, 0x0011), "columns"),
+        (Tag(0x0028, 0x0100), "bits-allocated"),
     ] {
         if let Ok(elem) = obj.element(tag)
             && let Ok(val) = elem.to_str()
         {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
-                metadata_rows.push((label.to_string(), trimmed.to_string()));
+                metadata_rows.push((crate::words::text(&format!("medical.dicom.tag.{label}")), trimmed.to_string()));
             }
         }
     }
@@ -195,10 +195,7 @@ pub fn anonymize_and_extract(
         && let Ok(val) = elem.to_str()
         && val.trim().eq_ignore_ascii_case("YES")
     {
-        warnings.push(
-            "BurnedInAnnotation (0028,0301) = YES: 画像ピクセル内に患者情報が焼き込まれている可能性があります。roi_masks で黒塗り領域を指定してください。"
-                .to_string(),
-        );
+        warnings.push(crate::words::text("medical.dicom.warning.burned-in"));
     }
     let png_bytes = extract_uncompressed_png(&obj, &ts_uid, &profile.roi_masks, &mut warnings);
 
@@ -229,37 +226,33 @@ pub fn input_to_markdown(data: &[u8]) -> Result<Option<String>, Error> {
 pub fn format_asset_markdown(asset: &DicomNonDiagnosticAsset) -> String {
     let mut md = String::new();
     let _ = writeln!(md, "---");
-    let _ = writeln!(md, "title: \"DICOM 非診断研究・発表用アセット\"");
+    let _ = writeln!(md, "title: \"{}\"", crate::words::text("medical.dicom.title"));
     let _ = writeln!(md, "---\n");
-    let _ = writeln!(md, "# DICOM 非診断アセット（匿名化済み）\n");
-    let _ = writeln!(
-        md,
-        "> **非 SaMD・非診断用途の注意**: 本表示は学会発表・症例報告・臨床研究資料の作成補助を目的としており、一次読影・診断・治療目的には使用できません。\n"
-    );
+    let _ = writeln!(md, "# {}\n", crate::words::text("medical.dicom.heading"));
+    let _ = writeln!(md, "> {}\n", crate::words::text("medical.dicom.notice"));
 
     if !asset.stripped_tags.is_empty() {
         let _ = writeln!(
             md,
-            "- メモリ内で除去された個人識別タグ ({} 件): `{}`",
-            asset.stripped_tags.len(),
-            asset.stripped_tags.join("`, `")
+            "- {}",
+            crate::words::format("medical.dicom.stripped-tags", &[("count", &asset.stripped_tags.len()), ("tags", &asset.stripped_tags.join("`, `"))])
         );
     } else {
-        let _ = writeln!(md, "- 個人識別タグ: 該当タグなし");
+        let _ = writeln!(md, "- {}", crate::words::text("medical.dicom.no-stripped-tags"));
     }
     for w in &asset.warnings {
-        let _ = writeln!(md, "- 注意: {w}");
+        let _ = writeln!(md, "- {}", crate::words::format("medical.dicom.note", &[("text", w)]));
     }
     md.push('\n');
 
     if let Some(png) = &asset.png_bytes {
         let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-        let _ = writeln!(md, "## 匿名化プレビュー画像\n");
+        let _ = writeln!(md, "## {}\n", crate::words::text("medical.dicom.preview-heading"));
         let _ = writeln!(md, "![DICOM Anonymized Preview](data:image/png;base64,{b64})\n");
     }
 
-    let _ = writeln!(md, "## 撮像・画像パラメータ（非個人情報）\n");
-    let _ = writeln!(md, "| 項目 | 値 |");
+    let _ = writeln!(md, "## {}\n", crate::words::text("medical.dicom.params-heading"));
+    let _ = writeln!(md, "{}", crate::words::text("medical.dicom.params-head"));
     let _ = writeln!(md, "| --- | --- |");
     for (k, v) in &asset.metadata_rows {
         let _ = writeln!(
@@ -316,9 +309,7 @@ fn extract_uncompressed_png(
         return extract_jxl_png(obj, roi_masks, warnings);
     }
     if !is_uncompressed_le_ts(ts_uid) {
-        warnings.push(format!(
-            "転送構文 `{ts_uid}` は圧縮形式のため Wasm/軽量モードでは画像デコードをスキップし、メタデータのみ抽出しました（非圧縮画像またはデスクトップ版での変換をご利用ください）。"
-        ));
+        warnings.push(crate::words::format("medical.dicom.warning.compressed", &[("ts_uid", &ts_uid)]));
         return None;
     }
 
@@ -342,7 +333,7 @@ fn extract_uncompressed_png(
         .unwrap_or_else(|| "MONOCHROME2".to_string());
 
     if rows == 0 || cols == 0 || rows > 8192 || cols > 8192 {
-        warnings.push("画像サイズがサポート範囲外のためプレビュー生成をスキップしました。".to_string());
+        warnings.push(crate::words::text("medical.dicom.warning.size"));
         return None;
     }
 
@@ -397,9 +388,7 @@ fn extract_uncompressed_png(
         }
         out
     } else {
-        warnings.push(format!(
-            "未対応の画素形式 (samples={samples}, bits={bits}) のためメタデータのみ抽出しました。"
-        ));
+        warnings.push(crate::words::format("medical.dicom.warning.pixel-format", &[("samples", &samples), ("bits", &bits)]));
         return None;
     };
 
@@ -431,14 +420,14 @@ fn extract_jpeg2000_png(
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
     let Some(j2k_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
-        warnings.push("JPEG 2000 画素データの読み取りに失敗したため、メタデータのみ抽出しました。".to_string());
+        warnings.push(crate::words::text("medical.dicom.warning.j2k-unreadable"));
         return None;
     };
 
     let decoded = match j2k_rs::decode(&j2k_bytes) {
         Ok(d) => d,
         Err(e) => {
-            warnings.push(format!("JPEG 2000 デコードに失敗したため、メタデータのみ抽出しました: {e}"));
+            warnings.push(crate::words::format("medical.dicom.warning.j2k-decode", &[("error", &e)]));
             return None;
         }
     };
@@ -460,7 +449,7 @@ fn extract_jpeg2000_png(
         }
         4 => decoded.data,
         ch => {
-            warnings.push(format!("JPEG 2000 チャンネル数 {ch} は PNG 変換未対応のためメタデータのみ抽出しました。"));
+            warnings.push(crate::words::format("medical.dicom.warning.j2k-channels", &[("count", &ch)]));
             return None;
         }
     };
@@ -490,13 +479,13 @@ fn extract_jpegls_png(
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
     let Some(jls_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
-        warnings.push("JPEG-LS 画素データの読み取りに失敗したため、メタデータのみ抽出しました。".to_string());
+        warnings.push(crate::words::text("medical.dicom.warning.jls-unreadable"));
         return None;
     };
     let decoded = match jpegls::decode_image(&jls_bytes) {
         Ok(d) => d,
         Err(e) => {
-            warnings.push(format!("JPEG-LS デコードに失敗したため、メタデータのみ抽出しました: {e}"));
+            warnings.push(crate::words::format("medical.dicom.warning.jls-decode", &[("error", &e)]));
             return None;
         }
     };
@@ -523,7 +512,7 @@ fn extract_jpegls_png(
             out
         }
         ch => {
-            warnings.push(format!("JPEG-LS コンポーネント数 {ch} は PNG 変換未対応のためメタデータのみ抽出しました。"));
+            warnings.push(crate::words::format("medical.dicom.warning.jls-channels", &[("count", &ch)]));
             return None;
         }
     };
@@ -540,20 +529,20 @@ fn extract_jxl_png(
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
     let Some(jxl_bytes) = read_encapsulated_or_raw_pixel_bytes(obj) else {
-        warnings.push("JPEG-XL 画素データの読み取りに失敗したため、メタデータのみ抽出しました。".to_string());
+        warnings.push(crate::words::text("medical.dicom.warning.jxl-unreadable"));
         return None;
     };
     let image = match jxl_oxide::JxlImage::builder().read(Cursor::new(&jxl_bytes)) {
         Ok(img) => img,
         Err(e) => {
-            warnings.push(format!("JPEG-XL ヘッダ解析に失敗したため、メタデータのみ抽出しました: {e}"));
+            warnings.push(crate::words::format("medical.dicom.warning.jxl-header", &[("error", &e)]));
             return None;
         }
     };
     let render = match image.render_frame(0) {
         Ok(r) => r,
         Err(e) => {
-            warnings.push(format!("JPEG-XL フレーム描画に失敗したため、メタデータのみ抽出しました: {e}"));
+            warnings.push(crate::words::format("medical.dicom.warning.jxl-frame", &[("error", &e)]));
             return None;
         }
     };
@@ -584,7 +573,7 @@ fn extract_jxl_png(
             }
         }
         other => {
-            warnings.push(format!("JPEG-XL チャンネル数 {other} は PNG 変換未対応のためメタデータのみ抽出しました。"));
+            warnings.push(crate::words::format("medical.dicom.warning.jxl-channels", &[("count", &other)]));
             return None;
         }
     }

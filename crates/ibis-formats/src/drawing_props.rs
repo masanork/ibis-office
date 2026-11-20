@@ -280,7 +280,7 @@ pub(crate) fn style_fill(colors: &Colors, theme: Option<Node>, style: Option<Nod
 }
 
 
-pub(crate) fn stroke(colors: &Colors, theme: Option<Node>, ln: Option<Node>, style: Option<Node>) -> Option<Stroke> {
+pub(crate) fn stroke(colors: &Colors, theme: Option<Node>, ln: Option<Node>, style: Option<Node>, default_join: ibis_doc_model::LineJoin) -> Option<Stroke> {
     let reference = style.and_then(|s| child(s, "lnRef"));
     let ref_color = reference.and_then(|r| colors.in_parent(r, None));
     let ref_idx = reference.and_then(|r| attr_i64(r, "idx")).unwrap_or(0).max(0) as usize;
@@ -327,7 +327,6 @@ pub(crate) fn stroke(colors: &Colors, theme: Option<Node>, ln: Option<Node>, sty
         }
     };
     let compound = ln.and_then(|l| attr(l, "cmpd")).or_else(|| themed.and_then(|l| attr(l, "cmpd"))).and_then(ibis_doc_model::LineCompound::parse).unwrap_or_default();
-    let default_join = ibis_doc_model::LineJoin::Miter;
     let join = ln.and_then(join_of).or_else(|| themed.and_then(join_of)).unwrap_or(default_join);
     let line_fill = ln.and_then(fill_element).and_then(|f| {
         if f.tag_name().name() == "gradFill" {
@@ -348,6 +347,8 @@ pub(crate) fn stroke(colors: &Colors, theme: Option<Node>, ln: Option<Node>, sty
         compound,
         alignment: ln.and_then(|l| attr(l, "algn")).or_else(|| themed.and_then(|l| attr(l, "algn"))).and_then(ibis_doc_model::LineAlignment::parse).unwrap_or_default(),
         fill: line_fill,
+        // Only the presentation's reader (`Reader::stroke`) sets the floor PowerPoint draws at; a document's shape has none.
+        min_drawn_width: 0,
     })
 }
 

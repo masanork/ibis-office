@@ -1051,7 +1051,7 @@ impl SheetClaimBindings {
                         let mut next = (**ctrl).clone();
                         next.checked = u8::from(target_enabled);
                         commands.push(Command::Sheet(SheetCommand::EditControl {
-                            slide: self.slide,
+                            sheet: self.slide,
                             shape,
                             control: next,
                         }));
@@ -1077,7 +1077,7 @@ impl SheetClaimBindings {
         for (target_slide, edits) in cell_edits_by_slide {
             if !edits.is_empty() {
                 commands.push(Command::Sheet(SheetCommand::SetCells {
-                    slide: target_slide,
+                    sheet: target_slide,
                     edits,
                 }));
             }
@@ -1114,14 +1114,14 @@ impl SheetClaimBindings {
                         let mut next = (**ctrl).clone();
                         next.checked = u8::from(target_enabled);
                         commands.push(Command::Sheet(SheetCommand::EditControl {
-                            slide: self.slide,
+                            sheet: self.slide,
                             shape,
                             control: next,
                         }));
                     }
                     if let Some((link_slide, row, column)) = d.linked_cell {
                         commands.push(Command::Sheet(SheetCommand::SetCells {
-                            slide: link_slide,
+                            sheet: link_slide,
                             edits: vec![CellEdit {
                                 row,
                                 column,
@@ -1132,7 +1132,7 @@ impl SheetClaimBindings {
                 }
                 BindingSource::Cell { row, column } => {
                     commands.push(Command::Sheet(SheetCommand::SetCells {
-                        slide: self.slide,
+                        sheet: self.slide,
                         edits: vec![CellEdit {
                             row,
                             column,
@@ -1155,8 +1155,8 @@ impl SheetClaimBindings {
             let mut chk_style = crate::sheet::CellStyle::default();
             chk_style.checkbox = true;
             return vec![
-                Command::Sheet(SheetCommand::PutCells {
-                    slide: self.slide,
+                Command::Sheet(SheetCommand::PasteCells {
+                    sheet: self.slide,
                     cells: vec![crate::sheet_command::PutCell {
                         row,
                         column: chk_col,
@@ -1219,9 +1219,10 @@ pub(crate) fn clear_sd_jwt_bindings_commands(
             if let ShapeKind::Control(c) = &sh.kind
                 && parse_binding_name(&c.name).is_some()
             {
-                cmds.push(Command::RemoveShape {
+                cmds.push(Command::DeleteShape {
                     slide: slide_id,
-                    shape: sh.id,
+                    shapes: vec![sh.id],
+                    with_attached: false,
                 });
             }
         }
@@ -1292,8 +1293,8 @@ pub fn bind_range_as_sd_claim_commands(
         let chk_formula = format!("{sheet_prefix}{}", abs_cell_ref(chk_col, r0));
         let mut chk_style = crate::sheet::CellStyle::default();
         chk_style.checkbox = true;
-        commands.push(Command::Sheet(SheetCommand::PutCells {
-            slide: slide_id,
+        commands.push(Command::Sheet(SheetCommand::PasteCells {
+            sheet: slide_id,
             cells: vec![crate::sheet_command::PutCell {
                 row: r0,
                 column: chk_col,
@@ -1874,8 +1875,8 @@ pub fn build_sd_jwt_template_commands(
     }
 
     let mut commands = Vec::with_capacity(1 + name_cmds.len());
-    commands.push(Command::Sheet(SheetCommand::PutCells {
-        slide: slide_id,
+    commands.push(Command::Sheet(SheetCommand::PasteCells {
+        sheet: slide_id,
         cells,
     }));
     commands.extend(name_cmds);

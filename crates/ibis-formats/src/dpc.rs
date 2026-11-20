@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/246)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Pure-Rust Japanese DPC E/F file (tab-delimited) parser, leading-zero-safe
 //! workbook builder, and Harunobu medical data quality audit profile.
@@ -14,7 +14,7 @@ use ibis_doc_model::{
 
 use crate::{Error, Opened};
 
-/// Standard header column names found in DPC E/F files.
+/// The header columns every DPC E/F file has (all of them are needed to take a tab-separated file for one).
 const DPC_EF_HEADER_HINTS: &[&str] = &["施設コード", "データ識別番号", "退院年月日", "入院年月日"];
 
 /// Returns `true` if `data` looks like a tab-delimited DPC E/F file.
@@ -31,11 +31,9 @@ pub fn is_dpc_ef(data: &[u8]) -> bool {
     if !first.contains('\t') {
         return false;
     }
-    let hits = DPC_EF_HEADER_HINTS
-        .iter()
-        .filter(|&&h| first.contains(h))
-        .count();
-    hits >= 2
+    // Every one of the four columns, as a cell of the header line.
+    let cells: Vec<&str> = first.split('\t').map(|c| c.trim().trim_matches('"')).collect();
+    DPC_EF_HEADER_HINTS.iter().all(|h| cells.contains(h))
 }
 
 /// One parsed DPC E/F detail record.
@@ -128,7 +126,7 @@ pub fn open_dpc_ef(data: &[u8]) -> Result<Opened, Error> {
     if let Some(wb_arc) = opened.presentation.workbook.as_mut()
         && let Some(first_meta) = Arc::make_mut(wb_arc).sheets.first_mut()
     {
-        first_meta.name = "DPC明細".to_string();
+        first_meta.name = crate::words::text("medical.dpc.sheet-detail");
     }
     if let Some(slide) = opened.presentation.slides.first_mut() {
         for sh in &mut slide.shapes {
@@ -177,7 +175,7 @@ pub fn open_dpc_ef(data: &[u8]) -> Result<Opened, Error> {
     opened.presentation.slides.push(summary_slide);
     if let Some(wb_arc) = opened.presentation.workbook.as_mut() {
         Arc::make_mut(wb_arc).sheets.push(WorkbookSheet {
-            name: "DPCサマリー".to_string(),
+            name: crate::words::text("medical.dpc.sheet-summary"),
             state: SheetState::Visible,
             slide: Some(summary_slide_id),
             hidden: None,
@@ -225,7 +223,8 @@ pub fn audit_medical_workbook(presentation: &Presentation) -> MedicalQualityAudi
                         || t.contains("平成")
                         || t.contains("昭和")
                         || t.starts_with('R')
-                        || t.starts_with('H'))
+                        || t.starts_with('H')
+                        || t.starts_with('S'))
                 {
                     audit.mixed_era_dates += 1;
                     if audit.details.len() < 32 {
@@ -278,9 +277,8 @@ fn build_detail_cells(doc: &DpcEfDocument) -> Vec<SheetCell> {
 
 fn build_summary_cells(doc: &DpcEfDocument) -> Vec<SheetCell> {
     let mut cells = Vec::new();
-    let headers = ["データ識別番号", "施設コード", "明細件数", "合計点数(点数×回数)"];
-    for (c, h) in headers.iter().enumerate() {
-        cells.push(text_cell(0, c as u32, h, 1));
+    for (c, h) in ["patient-id", "facility-code", "item-count", "points"].iter().enumerate() {
+        cells.push(text_cell(0, c as u32, &crate::words::text(&format!("medical.dpc.summary.{h}")), 1));
     }
 
     let mut by_patient: BTreeMap<String, (String, usize, f64)> = BTreeMap::new();

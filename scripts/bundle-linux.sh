@@ -56,6 +56,28 @@ done
 cp "$ICONS/256.png" "$APPDIR/dev.sorane.Docs.png"
 ln -s dev.sorane.Docs.png "$APPDIR/.DirIcon"
 
+# The icons of the files ibisOffice opens (K0048): the blue document, green spreadsheet and orange presentation icons, in hicolor's
+# mimetypes, named by the MIME type (a "/" is a "-"), for each type the .desktop file lists (made by scripts/gen-doc-icons.py).
+mime_icons() {
+	local kind=$1; shift
+	local mime size
+	for mime in "$@"; do
+		for size in 16 32 48 64 128 256 512; do
+			mkdir -p "$APPDIR/usr/share/icons/hicolor/${size}x${size}/mimetypes"
+			cp "crates/ibis-office-app/icons/doc/$kind/${size}.png" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/mimetypes/${mime//\//-}.png"
+		done
+	done
+}
+mime_icons document application/vnd.openxmlformats-officedocument.wordprocessingml.document application/vnd.ms-word.document.macroEnabled.12 \
+	application/vnd.openxmlformats-officedocument.wordprocessingml.template application/vnd.ms-word.template.macroEnabled.12 application/msword application/vnd.oasis.opendocument.text application/vnd.oasis.opendocument.text-template
+mime_icons spreadsheet application/vnd.openxmlformats-officedocument.spreadsheetml.sheet application/vnd.ms-excel.sheet.macroEnabled.12 application/vnd.ms-excel.sheet.binary.macroEnabled.12 \
+	application/vnd.openxmlformats-officedocument.spreadsheetml.template application/vnd.ms-excel.template.macroEnabled.12 application/vnd.ms-excel \
+	application/vnd.oasis.opendocument.spreadsheet application/vnd.oasis.opendocument.spreadsheet-template text/csv text/tab-separated-values
+mime_icons presentation application/vnd.openxmlformats-officedocument.presentationml.presentation application/vnd.ms-powerpoint.presentation.macroEnabled.12 \
+	application/vnd.openxmlformats-officedocument.presentationml.slideshow application/vnd.ms-powerpoint.slideshow.macroEnabled.12 \
+	application/vnd.openxmlformats-officedocument.presentationml.template application/vnd.ms-powerpoint.template.macroEnabled.12 application/vnd.ms-powerpoint \
+	application/vnd.oasis.opendocument.presentation application/vnd.oasis.opendocument.presentation-template
+
 # The pictures of Word's art page borders, read when a document uses one.
 cp crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip crates/ibis-formats/data/artborders/ECMA-NOTICE.txt "$APPDIR/usr/share/ibisOffice/artborders/"
 

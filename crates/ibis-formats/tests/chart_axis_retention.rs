@@ -51,11 +51,11 @@ fn check_retention(xlsx: bool) {
         let mut doc = Document::new(opened.presentation.clone());
         let command = if xlsx {
             let slide = doc.presentation().slides.iter().find(|s| s.shapes.iter().any(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
-            Command::Sheet(SheetCommand::SetCells { slide: slide.id, edits: vec![CellEdit { row: 40, column: 20, input: CellInput::Value(CellValue::Number(42.0)) }] })
+            Command::Sheet(SheetCommand::SetCells { sheet: slide.id, edits: vec![CellEdit { row: 40, column: 20, input: CellInput::Value(CellValue::Number(42.0)) }] })
         } else {
             let slide = &doc.presentation().slides[0];
             let shape = slide.shapes.iter().find(|s| s.text_body().is_some_and(|b| !b.text().is_empty())).unwrap();
-            Command::EditText { slide: slide.id, shape: shape.id, at: 0, remove: 1, insert: "Z".into() }
+            Command::ReplaceTextRange { slide: slide.id, shape: shape.id, at: 0, remove: 1, insert: "Z".into() }
         };
         doc.execute(vec![command]).unwrap();
         let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
@@ -142,11 +142,11 @@ fn assert_foreign_source_survives(xlsx: bool, xml: &str, baseline: &Chart) {
     let mut doc = Document::new(opened.presentation.clone());
         let command = if xlsx {
             let slide = doc.presentation().slides.iter().find(|s| s.shapes.iter().any(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
-            Command::Sheet(SheetCommand::SetCells { slide: slide.id, edits: vec![CellEdit { row: 40, column: 20, input: CellInput::Value(CellValue::Number(42.0)) }] })
+            Command::Sheet(SheetCommand::SetCells { sheet: slide.id, edits: vec![CellEdit { row: 40, column: 20, input: CellInput::Value(CellValue::Number(42.0)) }] })
         } else {
             let slide = &doc.presentation().slides[0];
             let shape = slide.shapes.iter().find(|s| s.text_body().is_some_and(|b| !b.text().is_empty())).unwrap();
-            Command::EditText { slide: slide.id, shape: shape.id, at: 0, remove: 1, insert: "Z".into() }
+            Command::ReplaceTextRange { slide: slide.id, shape: shape.id, at: 0, remove: 1, insert: "Z".into() }
         };
     doc.execute(vec![command]).unwrap();
     let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();

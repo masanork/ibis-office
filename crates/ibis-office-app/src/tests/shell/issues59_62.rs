@@ -88,7 +88,7 @@ fn vertical(){
 const DUPLICATE_KEY:&str=if cfg!(target_os="macos"){"cmd-d"}else{"ctrl-d"};
 fn shortcuts(){
     let mut s=Scenario::start_view();s.update(|e,w,cx|e.new_file(ibis_formats::Kind::Presentation,w,cx));let before=s.with(|e,_|e.presentation().slides.len());s.key("ctrl-m");assert_eq!(s.with(|e,_|e.presentation().slides.len()),before+1);s.key(DUPLICATE_KEY);assert_eq!(s.with(|e,_|e.presentation().slides.len()),before+2);
-    s.update(|e,_,cx|{let id=e.document.ids().new_shape_id();let shape=ibis_doc_model::Shape::text_box(id,ibis_doc_model::EmuRect::new(0,0,2000000,1000000),"Duplicate shape");let index=e.slide().shapes.len();e.run(vec![ibis_doc_model::Command::InsertShape{slide:e.current_slide,index,shape}],cx);e.set_selection(vec![id]);});
+    s.update(|e,_,cx|{let id=e.document.ids().new_shape_id();let shape=ibis_doc_model::Shape::text_box(id,ibis_doc_model::EmuRect::new(0,0,2000000,1000000),"Duplicate shape");let index=e.slide().shapes.len();e.run(vec![ibis_doc_model::Command::InsertShape { slide: e.current_slide, shapes: vec![(index, shape)] }],cx);e.set_selection(vec![id]);});
     let count=s.with(|e,_|e.slide().shapes.len());s.key(DUPLICATE_KEY);assert_eq!(s.with(|e,_|e.slide().shapes.len()),count+1);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().shapes.len()),count);s.screenshot("slide-shortcuts");
 }
 

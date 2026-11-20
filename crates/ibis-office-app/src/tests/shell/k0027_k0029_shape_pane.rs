@@ -18,6 +18,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::k0029_shape_pane_is_shared_docx", docx_uses_the_shared_pane),
         ("shell::k0027_shape_menu_first_item_xlsx_pptx", sheet_and_slide_menu),
         ("shell::k0027_shape_menu_first_item_docx", docx_menu),
+        ("shell::k0057_rotation_row_turns_the_shape_xlsx_pptx", sheet_and_slide_rotation),
+        ("shell::k0057_rotation_row_turns_the_shape_docx", docx_rotation),
     ]
 }
 
@@ -45,7 +47,7 @@ fn new_file(kind: ibis_formats::Kind) -> (Scenario, usize) {
             auto.stroke = Some(ibis_doc_model::Stroke::solid(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0)), 12_700));
             shape.kind = ShapeKind::Auto(auto);
         }
-        e.run(vec![Command::InsertShape { slide: e.current_slide, index, shape }], cx);
+        e.run(vec![Command::InsertShape { slide: e.current_slide, shapes: vec![(index, shape)] }], cx);
         e.set_selection(Vec::new());
         index
     });
@@ -260,4 +262,55 @@ fn docx_menu() {
             cx.notify();
         });
     }
+}
+
+/// K0057: the 回転 row of the shared pane turns the shape on the sheet and the slide (the same row, in degrees, after the size).
+fn sheet_and_slide_rotation() {
+    for kind in [ibis_formats::Kind::Workbook, ibis_formats::Kind::Presentation] {
+        let (mut s, index) = new_file(kind);
+        let id = s.with(|e, _| e.slide().shapes[index].id);
+        s.update(|e, w, cx| {
+            e.set_selection(vec![id]);
+            e.sidebar_open = true;
+            cx.notify();
+            if kind == ibis_formats::Kind::Workbook {
+                e.open_sheet_frame_panel(w, cx);
+            }
+        });
+        s.settle();
+        if kind == ibis_formats::Kind::Workbook {
+            s.update(|e, w, cx| {
+                let p = e.sheet_state_mut().unwrap().panels.frame.as_mut().unwrap();
+                p.fields[2].update(cx, |f, cx| f.set_value("45", w, cx));
+                e.apply_sheet_frame_panel(w, cx);
+            });
+        } else {
+            s.update(|e, w, cx| {
+                e.sidebar_field(2).unwrap().update(cx, |i, cx| {
+                    i.set_value("45", w, cx);
+                    cx.emit(gpui_kit::component::input::InputEvent::Change);
+                });
+            });
+        }
+        s.settle();
+        assert_eq!(s.with(|e, _| e.slide().shapes[index].rotation), 45 * 60_000, "{kind:?}: 45 degrees typed in the pane turn the shape");
+    }
+}
+
+/// K0057: the document screen's pane has the 回転 row too (it had none): 45 typed in it turns the text box, and the pane shows the turn.
+fn docx_rotation() {
+    let (mut s, at, (x, y, w, h)) = docx_with_text_box();
+    s.click((x + w / 2., y + h / 2.));
+    s.key("escape");
+    s.update(|e, w, cx| e.open_doc_shape_format(w, cx));
+    s.settle();
+    s.update(|e, w, cx| {
+        let st = e.doc_state().unwrap().text_box.as_ref().unwrap();
+        let rotation = st.geometry[4].clone();
+        rotation.update(cx, |i, cx| i.set_value("45", w, cx));
+        e.apply_text_box(cx);
+    });
+    s.settle();
+    let info = s.with(|e, _| e.text_box_near(at)).expect("the text box");
+    assert_eq!(info.geometry[4], "45", "the pane shows the turn the box has now");
 }

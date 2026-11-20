@@ -17,7 +17,7 @@ fn gradient_with_three_unsorted_stops_saves_in_order_and_reads_back() {
     let a1 = CellRange { first_row: 0, first_column: 0, last_row: 0, last_column: 0 };
     // The slider keeps a stop added later at the end of the list: positions 0, 1000, 400 (not in order).
     let gradient = CellGradient::Linear { degree: 45, stops: vec![(0, Rgb(0xFF0000)), (1000, Rgb(0x0000FF)), (400, Rgb(0x00FF00))] };
-    d.execute(vec![Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![a1], change: StyleChange::Gradient(Some(gradient.clone())) })]).unwrap();
+    d.execute(vec![Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![a1], change: StyleChange::Gradient(Some(gradient.clone())) })]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
     let pkg = ibis_ooxml::Package::open(saved.clone()).unwrap();
     let styles = String::from_utf8(pkg.read("xl/styles.xml").unwrap()).unwrap();

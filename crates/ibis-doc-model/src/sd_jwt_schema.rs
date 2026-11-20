@@ -598,8 +598,8 @@ impl SdJwtSchema {
             }
         }
 
-        let mut cmds = vec![Command::Sheet(SheetCommand::PutCells {
-            slide: slide_id,
+        let mut cmds = vec![Command::Sheet(SheetCommand::PasteCells {
+            sheet: slide_id,
             cells,
         })];
         cmds.extend(name_cmds);

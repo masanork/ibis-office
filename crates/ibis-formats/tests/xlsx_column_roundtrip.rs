@@ -36,13 +36,13 @@ fn a_column_shown_again_stays_shown_after_saving() {
     let mut d = Document::new(opened.presentation.clone());
     let original = widths(d.presentation());
     assert!(original[6] > 0);
-    d.execute(vec![Command::Sheet(SheetCommand::Hide { slide, axis: Axis::Columns, first: 6, last: 6, hidden: true })]).unwrap();
+    d.execute(vec![Command::Sheet(SheetCommand::SetHidden { sheet: slide, axis: Axis::Columns, first: 6, last: 6, hidden: true })]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
     let hidden = reopen(saved);
     assert_eq!(widths(&hidden.presentation)[6], 0, "hidden is saved");
     // A column the file gives no width of its own (G): hidden, it is written without `customWidth`, as ibisOffice writes it.
     let mut d2 = Document::new(hidden.presentation.clone());
-    d2.execute(vec![Command::Sheet(SheetCommand::Hide { slide, axis: Axis::Columns, first: 6, last: 6, hidden: false })]).unwrap();
+    d2.execute(vec![Command::Sheet(SheetCommand::SetHidden { sheet: slide, axis: Axis::Columns, first: 6, last: 6, hidden: false })]).unwrap();
     assert!(widths(d2.presentation())[6] > 0);
     let saved2 = hidden.source.save(d2.presentation(), SaveOptions::default()).unwrap();
     let shown = reopen(saved2);
@@ -57,7 +57,7 @@ fn a_fitted_column_width_is_saved() {
     let mut d = Document::new(opened.presentation.clone());
     let before = widths(d.presentation())[6];
     let size = before + 60 * EMU_PER_POINT;
-    d.execute(vec![Command::Sheet(SheetCommand::SetColumnWidthFitted { slide, first: 6, last: 6, size })]).unwrap();
+    d.execute(vec![Command::Sheet(SheetCommand::SetColumnWidthFitted { sheet: slide, first: 6, last: 6, size })]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
     let read = reopen(saved);
     let after = widths(&read.presentation)[6];
@@ -67,7 +67,7 @@ fn a_fitted_column_width_is_saved() {
     assert!(!s.custom_columns.contains(&6));
     // A width the sheet chose by itself stays unsaved.
     let mut d3 = Document::new(opened.presentation.clone());
-    d3.execute(vec![Command::Sheet(SheetCommand::SetColumnWidthAuto { slide, first: 6, last: 6, size })]).unwrap();
+    d3.execute(vec![Command::Sheet(SheetCommand::SetColumnWidthAuto { sheet: slide, first: 6, last: 6, size })]).unwrap();
     let saved3 = opened.source.save(d3.presentation(), SaveOptions::default()).unwrap();
     assert_eq!(widths(&reopen(saved3).presentation)[6], before);
 }

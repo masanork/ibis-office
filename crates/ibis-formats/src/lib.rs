@@ -31,11 +31,12 @@ pub(crate) fn chart_name(n: impl std::fmt::Display) -> String {
     if english_names() { format!("Chart {n}") } else { format!("グラフ {n}") } // i18n-ok（文書に保存する名前）
 }
 
-pub(crate) fn english_names() -> bool {
+pub fn english_names() -> bool {
     ENGLISH_NAMES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 mod animation;
+pub mod transition_sounds;
 pub mod symbol_font;
 pub mod animation_catalog;
 mod comments;
@@ -60,6 +61,7 @@ pub mod machine_readability_detect;
 pub mod machine_readability_xlsx;
 pub mod machine_readability_native;
 pub mod machine_readability_report;
+pub mod words;
 pub mod progress;
 mod bibliography;
 mod docx;
@@ -72,7 +74,7 @@ pub(crate) mod drawing_table_style;
 pub mod geometry;
 pub mod shape_clipboard;
 pub mod math_xml;
-mod new_file;
+pub mod new_file;
 mod package;
 mod reader;
 pub mod save;
@@ -88,27 +90,20 @@ pub mod theme_effects;
 mod theme;
 mod drawing_props;
 mod odf;
-mod ods;
 mod xlsb;
 mod xlsb_formula;
-mod ods_write;
 mod xls;
 mod msdoc;
 /// Read-only Ichitaro text import.
 pub mod jtd;
-pub mod odp;
-mod odp_anim;
-mod odp_shape;
-mod odp_write;
-mod odp_style;
-mod odp_text;
-mod officeart_xml;
+pub mod slides_html;
+pub mod officeart_xml;
 pub mod ppt;
 mod ppt_timing;
 mod ppt_write;
 mod xlsx_timeline;
 mod xlsx_legacy_controls;
-mod xls_chart;
+pub mod xls_chart;
 mod xls_write;
 mod xls_drawing;
 mod xls_features;
@@ -124,17 +119,12 @@ mod xlsx_external;
 mod xlsx_pivot;
 mod xlsx_slicer;
 mod xml;
-mod zip;
+pub mod zip;
 pub mod repair;
 pub use repair::{RepairLogEntry, RepairLogLevel, RepairMode, RepairReport, RepairedWorkbook, RepairedDocument, repair_workbook, repair_document};
 pub mod chart_template;
 pub use chart_template::{apply_chart_template, chart_to_crtx, chart_to_xml, read_crtx};
 pub use ibis_ooxml;
-
-/// The presentation as an OpenDocument presentation (`.odp`).
-pub fn write_odp(presentation: &Presentation) -> Result<Vec<u8>, Error> {
-    odp_write::write(presentation)
-}
 
 /// What was left out of an old Excel file (`.xls`) a workbook was written as.
 pub use xls_write::Report as XlsReport;
@@ -149,16 +139,6 @@ pub fn write_xls_report(presentation: &Presentation) -> Result<(Vec<u8>, XlsRepo
     xls_write::write_report(presentation)
 }
 
-/// The workbook as an OpenDocument spreadsheet (`.ods`).
-pub fn write_ods(presentation: &Presentation) -> Result<Vec<u8>, Error> {
-    ods_write::write(presentation)
-}
-
-/// The workbook as an OpenDocument spreadsheet, its charts' series reading the cells they read in the file `source` was
-/// opened from (so the charts follow the cells in the other program too).
-pub fn write_ods_with_source(presentation: &Presentation, source: &save::Source) -> Result<Vec<u8>, Error> {
-    ods_write::write_with(presentation, &|id, chart| source.sheet_chart_refs(id, chart))
-}
 /// Password-protected files: whether `data` is one, its package opened with a password, a package protected.
 pub use ibis_ooxml::encryption::{encrypt, DecryptError};
 
@@ -183,7 +163,7 @@ use ibis_doc_model::Presentation;
 pub use geometry::preset as preset_geometry;
 pub use geometry::text_warp as text_warp_geometry;
 pub use new_file::new_presentation;
-pub use save::{CsvProgressiveChunk, ForeignSlide, NewChartKind, Opened, SaveOptions, Source, open, open_progressive, open_progressive_with_csv_encoding};
+pub use save::{CsvProgressiveChunk, ForeignSlide, NewChartKind, Opened, SaveOptions, Source, open, open_progressive, open_progressive_with, open_progressive_with_csv_encoding, open_progressive_with_options};
 pub use reader::script_pieces;
 pub use save::pptx_chart_data::{ChartData, SeriesRefs, bubble_refs_for_range, chart_from_data, sheet_chart_from_data, format_ref, grown_refs, parse_ref, quote_sheet, refs_for_range, preferred_series_columns, leading_line_is_time_axis, refs_range, scatter_refs_for_range, sheet_of, stock_refs_for_range};
 pub use svg_convert::convert_svg_to_shapes;
@@ -193,11 +173,11 @@ pub use svg_convert::convert_svg_to_shapes;
 pub struct Error(String);
 
 impl Error {
-    pub(crate) fn new(message: impl Into<String>) -> Self {
+    pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
 
-    pub(crate) fn xml(part: &str, err: roxmltree::Error) -> Self {
+    pub fn xml(part: &str, err: roxmltree::Error) -> Self {
         Self(format!("{part} を読めません: {err}"))
     }
 }
@@ -215,11 +195,24 @@ pub fn is_legacy_binary(data: &[u8]) -> bool {
     ppt::is_ppt(data) || xls::is_xls(data) || docx_convert::is_doc(data)
 }
 
+/// Why an OpenDocument file (`.odt`, `.ods`, `.odp`) is not read here: `ibis-odf` reads it (it sits above this crate).
+pub(crate) const ODF_MESSAGE: &str = "OpenDocument ファイルは ibis_odf（read・open）で読みます";
+
+/// Whether `data` is an OpenDocument package (a zip whose `mimetype` is `application/vnd.oasis.opendocument.*`).
+pub(crate) fn is_opendocument(data: &[u8]) -> bool {
+    if !data.starts_with(b"PK") {
+        return false;
+    }
+    let Ok(archive) = zip::Archive::new(data) else { return false };
+    archive.read("mimetype").ok().flatten().is_some_and(|m| m.starts_with(b"application/vnd.oasis.opendocument."))
+}
+
 /// Read a `.pptx` presentation, a `.xlsx` workbook (see [`read_xlsx`]) or a
 /// `.docx` document (see [`read_docx`]): which one is told by the package's
 /// main part.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     if jtd::is_jtd(data) { return jtd::read(data); }
+    if is_opendocument(data) { return Err(Error::new(ODF_MESSAGE)); }
     if markdown::is_markdown(data) { return markdown::read_markdown(data); }
     // An old workbook (.xls) is read as the .xlsx made from it.
     let converted;
@@ -229,20 +222,11 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     } else if xls::is_xls(data) {
         converted = xls::to_xlsx(data)?;
         converted.as_slice()
-    } else if ods::is_ods(data) {
-        converted = ods::to_xlsx(data)?;
-        converted.as_slice()
     } else if xlsb::is_xlsb(data) {
         converted = xlsb::to_xlsx(data)?;
         converted.as_slice()
-    } else if odp::is_odp(data) {
-        converted = odp::to_pptx(data)?;
-        converted.as_slice()
     } else if docx_convert::is_doc(data) {
         converted = docx_convert::import_doc_to_docx_bytes(data)?;
-        converted.as_slice()
-    } else if docx_convert::is_odt(data) {
-        converted = docx_convert::import_odt_to_docx_bytes(data)?;
         converted.as_slice()
     } else {
         data
@@ -319,7 +303,6 @@ pub fn is_chart_template(extension: &str) -> bool {
 pub use blank::blank_file;
 pub use ppt::dump as ppt_dump;
 pub use ppt_write::to_pptx as ppt_to_pptx;
-pub use odp::to_pptx as odp_to_pptx;
 pub use xlsb::to_xlsx as xlsb_to_xlsx;
 pub use xls::to_xlsx as xls_to_xlsx;
 pub use cell_style::{

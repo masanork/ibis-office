@@ -25,7 +25,13 @@ impl SlideEditor {
                 return cx.notify();
             }
         };
-        let name: SharedString = new_file_name(kind).into();
+        // A host that keeps the files: the new file replaces the document of this page (the host's iframe is one editor; another tab
+        // would not be connected to the host), after the question about unsaved changes.
+        if crate::host::is_connected() && self.has_document {
+            self.host_after_unsaved_check(crate::host_editor::HostAfter::New(kind), window, cx);
+            return;
+        }
+        let name: SharedString = next_new_file_name(kind);
         // The Web version has one editor per page: the new file is another tab (K0016).
         #[cfg(target_family = "wasm")]
         if self.has_document {
@@ -56,6 +62,18 @@ impl SlideEditor {
             return;
         }
         self.show_new(opened, name, window, cx);
+    }
+
+    /// A new, empty file of `kind` in this window, in place of the document (with a host; the unsaved changes were asked about). The
+    /// document is not the host's: the host is told.
+    pub(crate) fn new_file_in_window(&mut self, kind: ibis_formats::Kind, window: &mut Window, cx: &mut Context<Self>) {
+        match ibis_formats::blank_file(kind).and_then(ibis_formats::open) {
+            Ok(opened) => {
+                self.show_new(opened, next_new_file_name(kind), window, cx);
+                self.host_document_changed(crate::host::DocumentSource::New);
+            }
+            Err(err) => self.set_status(crate::i18n::format("file.new-failed", &[("error", &err)]), cx),
+        }
     }
 
     /// Show `opened`, a new file named `name` that has no path yet.
@@ -123,13 +141,14 @@ impl SlideEditor {
                         this.fail_loading(crate::i18n::text("jtd.read-only").to_string(), cx);
                         return;
                     }
-                    let name: SharedString = new_file_name(ibis_formats::Kind::of(&loaded.presentation));
+                    let name: SharedString = next_new_file_name(ibis_formats::Kind::of(&loaded.presentation));
                     this.load(loaded.presentation, name, window, cx);
                     this.set_loaded_source(loaded.source);
                     this.path = None;
                     this.document.set_file(None);
                     this.document.reset_history();
                     this.recent_files = crate::recent_files::add(&path);
+                    crate::app::set_app_menus(cx);
                     this.set_status(crate::i18n::text("file.new-from-template-done").to_string(), cx);
                     crate::timing::document_loaded(window);
                 }
@@ -143,14 +162,53 @@ impl SlideEditor {
     }
 }
 
-/// The name a new file shows until it is saved.
+/// The name a new file shows until it is saved (the first one: 文書 1.docx, Book1.xlsx, Presentation1.pptx).
 pub fn new_file_name(kind: ibis_formats::Kind) -> SharedString {
     (crate::format::info(kind).new_file_name)()
 }
 
+thread_local! {
+    /// How many new files of each kind (document, workbook, presentation) this session has made. Closing one does not give its number back (as in Office).
+    static NEW_FILES: std::cell::Cell<[u32; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+fn kind_slot(kind: ibis_formats::Kind) -> usize {
+    match kind {
+        ibis_formats::Kind::Document => 0,
+        ibis_formats::Kind::Workbook => 1,
+        ibis_formats::Kind::Presentation => 2,
+        ibis_formats::Kind::Pdf => 3,
+    }
+}
+
+/// `name` (such as `文書 1.docx`) with the number before the extension replaced by `n`.
+pub(crate) fn numbered_name(name: &str, n: u32) -> String {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) => (stem, format!(".{ext}")),
+        None => (name, String::new()),
+    };
+    format!("{}{n}{ext}", stem.trim_end_matches(|c: char| c.is_ascii_digit()))
+}
+
+/// The name of the next new file of `kind`: the first is 1, then 2, 3… counted per kind over the session. Both the window's title and the
+/// default name of the Save dialog come from it (the file's name until it is saved).
+pub fn next_new_file_name(kind: ibis_formats::Kind) -> SharedString {
+    let n = NEW_FILES.with(|c| {
+        let mut counts = c.get();
+        counts[kind_slot(kind)] += 1;
+        c.set(counts);
+        counts[kind_slot(kind)]
+    });
+    numbered_name(&new_file_name(kind), n).into()
+}
+
+/// Start counting from 1 again (the scenarios).
+pub fn reset_new_file_numbers() {
+    NEW_FILES.with(|c| c.set([0; 4]));
+}
+
 impl SlideEditor {
     /// The open file as it would be saved now.
-    #[cfg(not(target_family = "wasm"))]
     pub fn current_bytes(&self) -> Result<Vec<u8>, String> {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         if self.is_jtd_read_only() {
@@ -161,7 +219,8 @@ impl SlideEditor {
             return Err(why);
         }
         let source = self.source.clone().ok_or(crate::i18n::text("_shell.this-file-cannot-be-saved-yet").to_string())?;
-        source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())
+        let bytes = source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())?;
+        Ok(self.without_signatures(bytes, false).0)
     }
 
     /// Write the file as it is now to `path`, leaving the file's own path.
@@ -193,6 +252,9 @@ impl SlideEditor {
             }
             None => (source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())?, true),
         };
+        // A signed file that was edited: the copy is written without the signatures (as a save is).
+        let other_kind = self.path.as_deref().and_then(|own| own.extension()).map(|e| e.to_ascii_lowercase()) != path.extension().map(|e| e.to_ascii_lowercase());
+        let (bytes, _) = self.without_signatures(bytes, other_kind);
         // A copy keeps the protection of the file.
         let bytes = match (&self.protection_password, may_protect) {
             (Some(password), true) => crate::save::protect(&bytes, password)?,
@@ -251,7 +313,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn protect_with_password(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let had = self.protection_password.is_some();
-        crate::password_window::ask_to_set(cx.entity().downgrade(), had, window, cx);
+        self.ask_password_to_set(had, window, cx);
     }
 
     /// (The Web version does not protect files with a password yet.)
@@ -354,6 +416,34 @@ impl SlideEditor {
             return;
         }
         self.commit_pending_edit(window, cx);
+        // The browser version (with or without a host): the copy is downloaded at once, as the file is now (the changes so far included). It is not a save, so the unsaved-changes
+        // mark stays (K0037).
+        #[cfg(target_family = "wasm")]
+        {
+            if !self.refuse_as(crate::save::RefusedWay::Copy, cx) {
+                let (stem, ext) = self.name_parts();
+                let name = crate::i18n::format("file.copy-name", &[("name", &stem), ("ext", &ext)]);
+                match self.host_bytes(window, cx) {
+                    Ok(bytes) => {
+                        crate::web::download_bytes(&name, "application/octet-stream", &bytes);
+                        self.set_status(crate::i18n::text("_shell.copy-saved").to_string(), cx);
+                    }
+                    Err(error) => self.set_status(crate::i18n::format("file.copy-failed", &[("error", &error)]), cx),
+                }
+            }
+            return;
+        }
+        // A host that keeps the files: its file window, and the copy goes to `saveFileAs` (the document stays the host's own file).
+        if crate::host::capabilities().list_folder && crate::host::capabilities().save_file_as {
+            if !self.refuse_as(crate::save::RefusedWay::Copy, cx) {
+                // A signed file that was edited: asked first.
+                if self.confirm_signature_loss(crate::signature::SignatureWay::Save, window, cx, |this, window, cx| this.save_copy(window, cx)) {
+                    return;
+                }
+                self.open_host_copy_dialog(window, cx);
+            }
+            return;
+        }
         #[cfg(not(target_family = "wasm"))]
         {
             let (stem, ext) = self.name_parts();
@@ -389,6 +479,15 @@ impl SlideEditor {
         }
         let standard_original_path = self.standard_source_path.clone();
         let jtd_original_path = self.jtd_source_path.clone().or_else(|| self.is_jtd_read_only().then(|| self.path.clone()).flatten());
+        // A PDF (or an XPS or OFD file) that is looked at is the PDF to write: its file as it is (made again through the export it would have no pages).
+        if self.kind() == ibis_formats::Kind::Pdf
+            && let Some(original) = self.presentation().pdf_bytes.clone()
+        {
+            return Ok(Box::new(move || {
+                crate::save::write_replacing(&pdf, &original).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &pdf.display()), ("error", &e)]))?;
+                Ok(pdf)
+            }));
+        }
         let crate::format::PdfJob { bytes, slides, format, args: print_args } = with_format!(self, pdf_job(self, printing))?;
         let (stem, mut ext) = self.name_parts();
         if self.is_jtd_read_only() { ext = "docx".into(); }
@@ -407,7 +506,7 @@ impl SlideEditor {
                 cmd.args(args);
             } else if let Some(slides) = &slides {
                 let list = slides.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(",");
-                cmd.args(["--slides", &list]);
+                cmd.args(["--range", &list]);
             }
             cmd.args(&own_args);
             cmd.arg(&file);
@@ -480,7 +579,7 @@ impl SlideEditor {
             let mut cmd = std::process::Command::new(program);
             cmd.args(["--export", "png", "--out-dir"]).arg(&out);
             if let Some(num) = slide {
-                cmd.args(["--slides", &num.to_string()]);
+                cmd.args(["--range", &num.to_string()]);
             }
             cmd.args(&own_args);
             let status = cmd.arg(&file).status().map_err(|e| e.to_string())?;
@@ -600,7 +699,13 @@ impl SlideEditor {
             });
         }
         #[cfg(target_family = "wasm")]
-        self.report(Err(crate::i18n::text("_shell.exporting-is-not-yet-available-in-the-browser-ve").into()), cx);
+        {
+            // A signed file: the PDF does not carry the signatures, so asked first (a native export asks in `ask_path_as`).
+            if self.confirm_signature_loss(crate::signature::SignatureWay::Export, window, cx, |this, window, cx| this.export_pdf(window, cx)) {
+                return;
+            }
+            self.web_export_pdf(window, cx);
+        }
     }
 
     /// ファイル > 書き出し > PNG 画像（.png）: the file as PNG pictures where
@@ -635,7 +740,7 @@ impl SlideEditor {
         {
             let (stem, _) = self.name_parts();
             self.ask_path(format!("{stem}.odp"), window, cx, |this, path, _window, cx| {
-                let result = ibis_formats::write_odp(this.presentation()).map_err(|e| e.to_string()).and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+                let result = ibis_odf::write_odp(this.presentation()).map_err(|e| e.to_string()).and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
                 #[cfg(target_os = "android")]
                 if result.is_ok() {
                     gpui_android::sync_saved_file(&path);
@@ -719,6 +824,7 @@ impl SlideEditor {
                     None => return this.report(Err(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string()), cx),
                 };
                 let result = source.save_slideshow(this.presentation(), ibis_formats::SaveOptions::default())
+                    .map(|bytes| this.without_signatures(bytes, true).0)
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| crate::save::write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)])))
                     .map(|()| crate::i18n::format("file.ppsx-done", &[("path", &path.display())]))
@@ -742,6 +848,7 @@ impl SlideEditor {
                     None => return this.report(Err(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string()), cx),
                 };
                 let result = source.save_template(this.presentation(), ibis_formats::SaveOptions::default())
+                    .map(|bytes| this.without_signatures(bytes, true).0)
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| crate::save::write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)])))
                     .map(|()| crate::i18n::format("file.potx-done", &[("path", &path.display())]))
@@ -792,6 +899,7 @@ impl SlideEditor {
                     None => return this.report(Err(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string()), cx),
                 };
                 let result = source.save_template(this.presentation(), ibis_formats::SaveOptions::default())
+                    .map(|bytes| this.without_signatures(bytes, true).0)
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| crate::save::write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)])))
                     .map(|()| crate::i18n::format("file.xltx-done", &[("path", &path.display())]))
@@ -827,6 +935,7 @@ impl SlideEditor {
                     None => return this.report(Err(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string()), cx),
                 };
                 let result = source.save_without_macros(this.presentation(), ibis_formats::SaveOptions::default())
+                    .map(|bytes| this.without_signatures(bytes, true).0)
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| crate::save::write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)])))
                     .map(|()| crate::i18n::format("file.without-macros-done", &[("path", &path.display())]))
@@ -842,6 +951,10 @@ impl SlideEditor {
     /// system to print (Preview's print dialog on macOS).
     pub fn print(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_csv_streaming && self.refuse_as(crate::save::RefusedWay::Print, cx) { return; }
+        // A host that gave no printPdf (or switched `features.print` off) has no printing (the menu item is disabled too).
+        if !crate::host::print_allowed() {
+            return;
+        }
         // Each format asks what to print in its own way (a presentation: 印刷の設定; a document and a workbook: their print panels).
         if with_format!(self, open_print_panel(self, window, cx)) {
             return;
@@ -912,10 +1025,7 @@ impl SlideEditor {
             .detach();
         }
         #[cfg(target_family = "wasm")]
-        {
-            let _ = window;
-            self.report(Err(crate::i18n::text("_shell.printing-is-not-yet-available-in-this-environmen").into()), cx);
-        }
+        self.web_print_pdf(window, cx);
     }
 }
 
@@ -986,6 +1096,14 @@ pub fn export_program() -> Result<std::path::PathBuf, String> {
                 }
             }
         }
+    }
+    // No ibisOffice next to this program. A test binary (cargo names it `<name>-<16 hex digits>`, e.g. a scenarios binary copied out of `target/release/deps`)
+    // would start itself again with `--export`, each run starting the next and none finishing (merge014), so that is an error;
+    // any other program (an ibisOffice the user renamed) is itself.
+    let stem = file_name.trim_end_matches(".exe");
+    let cargo_test_binary = stem.rsplit_once('-').is_some_and(|(_, h)| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    if cargo_test_binary || file_name.contains("test") {
+        return Err(format!("the ibisOffice program is not next to {}", current.display()));
     }
     Ok(current)
 }

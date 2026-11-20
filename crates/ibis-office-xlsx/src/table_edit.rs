@@ -10,7 +10,7 @@
 
 use crate::shell::chrome::Checkbox;
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_doc_model::sheet_command::PutCell;
@@ -139,8 +139,7 @@ impl SlideEditor {
                 this.confirm_table_dialog(window, cx);
             }
         });
-        self.wb_mut().table_dialog = Some(TableDialog { range: input, header, target_table: None, error: None, _subscription: subscription });
-        cx.notify();
+        self.show_table_dialog(TableDialog { range: input, header, target_table: None, error: None, _subscription: subscription }, window, cx);
     }
 
     /// テーブルのサイズ変更ダイアログを開く
@@ -160,13 +159,22 @@ impl SlideEditor {
                 this.confirm_table_dialog(window, cx);
             }
         });
-        self.wb_mut().table_dialog = Some(TableDialog { range: input, header: t.header_rows > 0, target_table: Some(index), error: None, _subscription: subscription });
-        cx.notify();
+        let header = t.header_rows > 0;
+        self.show_table_dialog(TableDialog { range: input, header, target_table: Some(index), error: None, _subscription: subscription }, window, cx);
     }
 
     pub(crate) fn close_table_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.wb_mut().table_dialog = None;
-        self.focus_handle.focus(window, cx);
+        // The shared dialog's close throws the state away (`discard_xlsx_dialog`).
+        self.close_dialog(window, cx);
+    }
+
+    /// The shared modal dialog opens over whatever dialog was open.
+    fn show_table_dialog(&mut self, dialog: TableDialog, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dialog.active {
+            self.close_dialog(window, cx);
+        }
+        self.wb_mut().table_dialog = Some(dialog);
+        self.sidebar_open = true;
         cx.notify();
     }
 
@@ -266,7 +274,7 @@ impl SlideEditor {
         };
         let cells = styled_cells(&sheet, &sheet, &table, &theme, &contents);
         let index = sheet.tables.len();
-        self.document.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index, table: Some(table), cells })]).map_err(|e| e.to_string())?;
+        self.document.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index, table: Some(table), cells })]).map_err(|e| e.to_string())?;
         cx.notify();
         Ok(())
     }
@@ -389,7 +397,7 @@ impl SlideEditor {
         }
         let cells = styled_cells(&grown, &base, &table, &theme, &contents);
         let slide = self.current_slide;
-        if let Err(err) = self.document.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index, table: Some(table), cells })]) {
+        if let Err(err) = self.document.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index, table: Some(table), cells })]) {
             log::warn!("table growth rejected: {err}");
         }
         cx.notify();
@@ -406,15 +414,14 @@ impl SlideEditor {
             return cx.notify();
         };
         let slide = self.current_slide;
-        if let Err(err) = self.document.execute(vec![Command::Sheet(SheetCommand::SetTable { slide, index, table: None, cells: Vec::new() })]) {
+        if let Err(err) = self.document.execute(vec![Command::Sheet(SheetCommand::SetTable { sheet: slide, index, table: None, cells: Vec::new() })]) {
             log::warn!("table to range rejected: {err}");
         }
         cx.notify();
     }
 
-    /// テーブルの作成 / サイズ変更, under the formula bar.
-    pub(crate) fn render_table_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.sheet_range_pick_active(){return None;}
+    /// テーブルの作成 / サイズ変更: the shared modal dialog.
+    pub(crate) fn table_dialog_panel(&mut self, cx: &mut Context<Self>) -> Option<crate::shell::chrome::SidebarPanel> {
         let d = self.sheet_state()?.table_dialog.as_ref()?;
         let is_resize = d.target_table.is_some();
         let title = if is_resize {
@@ -428,31 +435,15 @@ impl SlideEditor {
             crate::shell::i18n::text("_xlsx.specify-the-data-range-to-convert-to-a-table")
         };
         let theme = cx.theme().clone();
-        let dialog = v_flex()
-            .id("table-dialog")
-            .absolute()
-            .top(px(34.))
-            .left(px(8.))
-            .w(px(340.))
-            .p_3()
-            .gap_2()
-            .bg(theme.background)
-            .border_1()
-            .border_color(theme.border)
-            .rounded_md()
-            .shadow_lg()
-            .occlude()
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-            .child(desc)
-            .child(super::range_field::local_range_field(&d.range,"table-dialog-range",false,cx))
+        let body = crate::shell::chrome::panel_form()
+            .child(div().child(desc))
+            .child(super::range_field::local_range_field(&d.range, "table-dialog-range", false, cx))
             .when(!is_resize, |b| b.child(Checkbox::new("table-header").label(crate::shell::i18n::text("_xlsx.my-table-has-headers")).checked(d.header).on_click(cx.listener(|this, on: &bool, _, cx| this.set_table_dialog_header(*on, cx)))))
-            .when_some(d.error.clone(), |b, e| b.child(div().text_xs().text_color(theme.danger).child(e)))
-            .child(
-                crate::shell::chrome::action_bar_host(crate::shell::chrome::action_bar()
-                    .action(crate::shell::chrome::ActionDefinition::new("table-ok", "", crate::shell::chrome::ActionButtonKind::Primary).label("OK").on_click(cx.listener(|this, _, window, cx| this.confirm_table_dialog(window, cx))))
-                    .action(crate::shell::chrome::ActionDefinition::new("table-cancel", "", crate::shell::chrome::ActionButtonKind::Normal).label(crate::shell::i18n::text("_shell.cancel")).on_click(cx.listener(|this, _, window, cx| this.close_table_dialog(window, cx))))),
-            );
-        Some(deferred(dialog).with_priority(1).into_any_element())
+            .when_some(d.error.clone(), |b, e| b.child(div().text_xs().text_color(theme.danger).child(e)));
+        let actions = crate::shell::chrome::action_bar()
+            .action(crate::shell::chrome::ActionDefinition::new("table-ok", "OK", crate::shell::chrome::ActionButtonKind::Primary).on_click(cx.listener(|this, _, window, cx| this.confirm_table_dialog(window, cx))))
+            .action(crate::shell::chrome::dialog_cancel_definition(cx));
+        Some(crate::shell::chrome::SidebarPanel::with_footer(title, body.into_any_element(), actions))
     }
 }
 

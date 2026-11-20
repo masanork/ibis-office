@@ -2,10 +2,8 @@
 /www/pkg
 /www/samples/mermaid/
 /www/assets
-/www/main.js
-/www/heic-worker.js
-/www/font-loader.js
-/www/dynamic-fonts.js
+/www/*.js
+/www/*.d.ts
 /www/fonts.json
 /node_modules
 /crates/ibis-font-subsetter/pkg

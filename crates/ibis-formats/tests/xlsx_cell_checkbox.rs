@@ -16,7 +16,7 @@ fn a1() -> CellRange {
 }
 
 fn set(slide: SlideId, row: u32, value: CellValue) -> Command {
-    Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row, column: 0, input: CellInput::Value(value) }] })
+    Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row, column: 0, input: CellInput::Value(value) }] })
 }
 
 fn part(data: &[u8], name: &str) -> Option<String> {
@@ -36,7 +36,7 @@ fn new_check_box_is_saved_as_excel_writes_it_and_read_back() {
     let slide = opened.presentation.slides[0].id;
     let mut d = Document::new(opened.presentation.clone());
     d.execute(vec![
-        Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![a1()], change: StyleChange::Checkbox(true) }),
+        Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![a1()], change: StyleChange::Checkbox(true) }),
         set(slide, 0, CellValue::Bool(false)),
     ])
     .unwrap();
@@ -79,7 +79,7 @@ fn excel_sample_is_read_and_its_bag_survives_saving() {
     assert!(!sheet.styles[sheet.cell(0, 1).unwrap().style as usize].checkbox, "B1 is text");
 
     let mut d = Document::new(opened.presentation.clone());
-    d.execute(vec![set(slide, 0, CellValue::Bool(true)), Command::Sheet(SheetCommand::SetFormat { slide, ranges: vec![a1()], change: StyleChange::Bold(true) })]).unwrap();
+    d.execute(vec![set(slide, 0, CellValue::Bool(true)), Command::Sheet(SheetCommand::SetFormat { sheet: slide, ranges: vec![a1()], change: StyleChange::Bold(true) })]).unwrap();
     let saved = opened.source.save(d.presentation(), SaveOptions::default()).unwrap();
     assert_eq!(part(&saved, BAG), part(&data, BAG));
     assert!(part(&saved, "xl/_rels/workbook.xml.rels").unwrap().contains("FeaturePropertyBag"));

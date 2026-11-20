@@ -768,8 +768,10 @@ pub(crate) fn corpus_report_xlsx_center_across_wrapped_header_uses_the_whole_ran
     let rules = page.horizontal_rules(page.px(300.0), 200);
     let left = *page.vertical_rules(100.0, 200).first().expect("表の左の縦線");
     let table_top = page.dark_runs_down(left, 0.0, 400.0, 200).first().expect("表の左の縦線の上端").0 as f32 / page.px_per_pt;
-    let header_height = rules.first().expect("見出しの下の横線").0 - table_top;
-    let row_pitch = rules[1].0 - rules[0].0;
+    // 表の上端の罫線（セルの縁の中心に引くので、左の縦線の上端と同じ高さに出る）は見出しの下の線ではない。上端から 5pt より下の最初の線を見出しの下とする。
+    let below = rules.iter().position(|r| r.0 > table_top + 5.0).expect("見出しの下の横線");
+    let header_height = rules[below].0 - table_top;
+    let row_pitch = rules[below + 1].0 - rules[below].0;
     let ratio = header_height / row_pitch;
     if (ratio - 26.4 / 14.4).abs() > 0.1 {
         wrong.push(format!("見出しの行の高さは次の行の {ratio:.2} 倍（行の高さが `ht` のままなら 26.4 / 14.4 = 1.83 倍。見出し {header_height}pt、次の行 {row_pitch}pt）"));

@@ -288,6 +288,11 @@ fn run_format(rpr: Node, theme: &Theme) -> RunFormat {
         "subscript" => VerticalPosition::Subscript,
         _ => VerticalPosition::Baseline,
     });
+    // Half-points; the strict schema's "12pt" form is points.
+    f.raise = wval(rpr, "position").and_then(|v| match v.trim().strip_suffix("pt") {
+        Some(points) => points.trim().parse::<f64>().ok().map(|p| (p * 2.0).round() as i32),
+        None => v.trim().parse::<i32>().ok(),
+    });
     f.spacing = child(rpr, "spacing").and_then(|s| twips(s, "val"));
     f.scale = wval(rpr, "w").and_then(|v| v.parse::<u32>().ok());
     f.fit_text = child(rpr, "fitText").and_then(|e| {
@@ -390,6 +395,8 @@ fn para_format(ppr: Node, theme: &Theme) -> ParaFormat {
     if let Some(sp) = child(ppr, "spacing") {
         f.before = twips(sp, "before");
         f.after = twips(sp, "after");
+        f.before_lines = wattr(sp, "beforeLines").and_then(|v| v.parse::<i32>().ok());
+        f.after_lines = wattr(sp, "afterLines").and_then(|v| v.parse::<i32>().ok());
         // Word's automatic space is 14 pt.
         let auto = |name: &str| matches!(wattr(sp, name), Some("1" | "true" | "on"));
         if auto("beforeAutospacing") {
@@ -634,7 +641,15 @@ fn numbering(root: Node, theme: &Theme) -> Numbering {
             // the paragraph's font.
             let mut run = run;
             if format == "bullet" && run.font.as_deref().is_some_and(crate::symbol_font::is_known) {
-                run.font = None;
+                // Every slot that names the symbol typeface goes with it (w:hAnsi and w:cs are written beside w:ascii); the model
+                // of a new bullet list has none of them, so a hAnsi left behind would read back differently.
+                let face = run.font.take();
+                for slot in [&mut run.h_ansi_font, &mut run.cs_font, &mut run.east_asian_font] {
+                    if *slot == face {
+                        *slot = None;
+                    }
+                }
+                run.east_asia_hint = None;
             }
             levels.push(ListLevel {
                 start: wval(lvl, "start").and_then(|v| v.parse().ok()).unwrap_or(1),
@@ -814,7 +829,7 @@ fn page_setup(sect: Node) -> PageSetup {
     if let Some(start) = child(sect, "pgNumType").and_then(|n| wattr(n, "start")).and_then(|v| v.parse().ok()) {
         page.first_page = start;
     }
-    page.direction = child(sect, "textDirection").and_then(|n| wattr(n, "val")).map_or_default(ibis_doc_model::CellDirection::from_name);
+    page.direction = child(sect, "textDirection").and_then(|n| wattr(n, "val")).map_or_default(ibis_doc_model::CellDirection::from_section_name);
     // w:countBy 0 (and a missing one, whose default is 0) is no numbering at all: Word (Microsoft 365) shows no line
     // numbers and reports LineNumbering.Active = 0 for both (GitHub issue #140, tasks/doc/issue140-check-20261110/).
     if let Some(n) = child(sect, "lnNumType").filter(|n| wattr(*n, "countBy").and_then(|v| v.parse::<u32>().ok()).is_some_and(|c| c > 0)) {
@@ -956,6 +971,13 @@ struct ParaRead<'d, 'i> {
     field_end: bool,
     /// That field's `w:fldChar` is marked `w:dirty`.
     field_dirty: bool,
+    /// The bookmarks that start in the paragraph's runs (their names) and the characters of text before each.
+    bookmark_at: Vec<(String, usize)>,
+}
+
+/// The places of a paragraph's bookmarks: none when they all start at its beginning (what a bookmark made by a command, not read from a file, says too).
+fn zeros_are_none(at: Vec<usize>) -> Vec<usize> {
+    if at.iter().all(|a| *a == 0) { Vec::new() } else { at }
 }
 
 impl ParaRead<'_, '_> {
@@ -1054,7 +1076,7 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         let ppr = child(p, "pPr");
         let style = ppr.and_then(|p| wval(p, "pStyle")).map(str::to_string);
         let (_, base_run) = self.styles.paragraph_base(style.as_deref(), table_style);
-        let mut read = ParaRead { p, atoms: Vec::new(), field_start: None, field_end: false, field_dirty: false };
+        let mut read = ParaRead { p, atoms: Vec::new(), field_start: None, field_end: false, field_dirty: false, bookmark_at: Vec::new() };
         let mut runs = Vec::new();
         // Fields can span paragraphs (a table of contents): their state is
         // the document's; runs and positions are this paragraph's.
@@ -1119,6 +1141,7 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
             mark_format: ppr.and_then(|p| child(p, "rPr")).map(|r| run_format(r, self.theme)).unwrap_or_default(),
             mark_revision: ppr.and_then(|p| child(p, "rPr")).and_then(|r| child(r, "del")).map(|d| ibis_doc_model::flow::Revision { kind: RevisionKind::Delete, author: wattr(d, "author").unwrap_or_default().to_string(), date: wattr(d, "date").unwrap_or_default().to_string() }),
             runs,
+            bookmark_at: zeros_are_none(bookmarks.iter().map(|name| read.bookmark_at.iter().find(|(n, _)| n == name).map_or(0, |(_, at)| *at)).collect::<Vec<_>>()),
             bookmarks,
             bookmark_ends,
             field_start: read.field_start.take(),
@@ -1154,11 +1177,33 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         for node in elements(parent) {
             match node.tag_name().name() {
                 "r" => self.run(node, rels, base, field, read, out, link),
+                "bookmarkStart" => {
+                    if let Some(name) = wattr(node, "name") {
+                        read.bookmark_at.push((name.to_string(), out.iter().map(FlowRun::len).sum()));
+                    }
+                }
                 "hyperlink" => {
                     // Where it goes: a relationship's target, or a bookmark.
                     let url = rattr(node, "id").and_then(|id| rels.get(id)).map(|r| Link::Url(r.target.clone()));
                     let inner = url.or_else(|| wattr(node, "anchor").map(|a| Link::Anchor(a.to_string())));
+                    let first = out.len();
                     self.inline(node, rels, base, field, read, out, &inner);
+                    // A `w:hyperlink` that holds a picture or a shape and no text has no link in Word's PDF (Word's ExportAsFixedFormat, #227): the
+                    // link of a picture that is one is the `wp:docPr/a:hlinkClick`, which `drawing` reads.
+                    let has_text = node.descendants().any(|n| {
+                        n.is_element() && n.tag_name().namespace() == node.tag_name().namespace() && match n.tag_name().name() {
+                            "t" => n.text().is_some_and(|t| !t.is_empty()),
+                            "instrText" | "tab" | "br" => true,
+                            _ => false,
+                        }
+                    });
+                    if !has_text {
+                        for run in &mut out[first..] {
+                            if matches!(run.kind, FlowRunKind::Picture { .. } | FlowRunKind::Shape(_)) && run.link == inner {
+                                run.link = None;
+                            }
+                        }
+                    }
                 }
                 "oMath" | "oMathPara" if node.tag_name().namespace() == Some(crate::math_xml::M) => {
                     // A formula: one atom, its element kept as it is when the paragraph is saved.
@@ -1363,7 +1408,7 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                         let content = child(node, "sdtContent");
                         let showing = child(pr, "showingPlcHdr").is_some();
                         let mut temp_runs = Vec::new();
-                        let mut sub_read = ParaRead { p: read.p, atoms: Vec::new(), field_start: None, field_end: false, field_dirty: false };
+                        let mut sub_read = ParaRead { p: read.p, atoms: Vec::new(), field_start: None, field_end: false, field_dirty: false, bookmark_at: Vec::new() };
                         if let Some(c) = content {
                             self.inline(c, rels, base, field, &mut sub_read, &mut temp_runs, link);
                         }
@@ -1576,7 +1621,6 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                 }
                 "ruby" => {
                     let pr = child(node, "rubyPr");
-                    let half = |name: &str| pr.and_then(|p| wval(p, name)).and_then(|v| v.parse::<u32>().ok()).map(|v| v * 50);
                     let text_of = |part: Option<Node>| -> String { part.map(|n| n.descendants().filter(|d| d.is_element() && matches!(d.tag_name().name(), "t")).filter_map(|d| d.text()).collect()).unwrap_or_default() };
                     let base_node = child(node, "rubyBase");
                     let base_text = text_of(base_node);
@@ -1587,12 +1631,12 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                     }
                     let char_style = base_rpr.and_then(|x| wval(x, "rStyle")).map(str::to_string);
                     let style = self.styles.run_format(base, char_style.as_deref(), &format).style();
-                    let size = half("hps").unwrap_or(style.size / 2);
+                    let (size, raise) = self.ruby_size_and_raise(pr, child(node, "rt"), base, style.size);
                     let kind = FlowRunKind::Ruby {
                         base: base_text,
                         text: text_of(child(node, "rt")),
                         size,
-                        raise: half("hpsRaise").unwrap_or(style.size),
+                        raise,
                         align: ibis_doc_model::RubyAlign::from_name(pr.and_then(|p| wval(p, "rubyAlign")).unwrap_or("center")),
                     };
                     read.atoms.push(AtomSource::Field { nodes: vec![relative_path(node, read.p)] });
@@ -1601,6 +1645,30 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                 _ => {}
             }
         }
+    }
+
+    /// A ruby's size and its raise (hundredths of a point) from `w:rubyPr` (ECMA-376 §17.3.3.26): `w:hps` is the ruby's size; without it the ruby is the
+    /// size its own run has (`w:rt`'s, else the paragraph's) when that is smaller than `w:hpsBaseText` (the base's size, which is the base run's `w:sz` when
+    /// it is not written), else half of that, in half points rounded down. `w:hpsRaise` raises it that many half points, in whole points rounded down;
+    /// without it the raise is half of `w:hpsBaseText` less one point (Word's XPS, GitHub issue #179: base sizes of 6 to 72 pt, run sizes of 9 to 14 pt).
+    fn ruby_size_and_raise(&self, pr: Option<Node>, rt: Option<Node>, base: &RunFormat, base_size: u32) -> (u32, u32) {
+        let number = |name: &str| pr.and_then(|p| wval(p, name)).and_then(|v| v.parse::<u32>().ok());
+        let base_half = number("hpsBaseText").unwrap_or(base_size / 50);
+        let size_half = number("hps").unwrap_or_else(|| {
+            let rt_rpr = rt.and_then(|r| r.descendants().find(|d| d.is_element() && d.tag_name().name() == "rPr"));
+            let mut own = RunFormat::default();
+            if let Some(rpr) = rt_rpr {
+                own.overlay(&run_format(rpr, self.theme));
+            }
+            let char_style = rt_rpr.and_then(|x| wval(x, "rStyle")).map(str::to_string);
+            let run_half = self.styles.run_format(base, char_style.as_deref(), &own).style().size / 50;
+            if run_half < base_half { run_half } else { base_half / 2 }
+        });
+        let raise_points = match number("hpsRaise") {
+            Some(r) => r / 2,
+            None => (base_half / 2).saturating_sub(1),
+        };
+        (size_half * 50, raise_points * 100)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1957,7 +2025,6 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                 // text over it, one position.
                 "ruby" => {
                     let pr = child(node, "rubyPr");
-                    let half = |name: &str| pr.and_then(|p| wval(p, name)).and_then(|v| v.parse::<u32>().ok()).map(|v| v * 50);
                     let text_of = |part: Option<Node>| -> String { part.map(|n| n.descendants().filter(|d| d.is_element() && matches!(d.tag_name().name(), "t")).filter_map(|d| d.text()).collect()).unwrap_or_default() };
                     let base_node = child(node, "rubyBase");
                     let base_text = text_of(base_node);
@@ -1968,12 +2035,12 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                     }
                     let char_style = base_rpr.and_then(|x| wval(x, "rStyle")).map(str::to_string).or_else(|| char_style.clone());
                     let style = self.styles.run_format(base, char_style.as_deref(), &format).style();
-                    let size = half("hps").unwrap_or(style.size / 2);
+                    let (size, raise) = self.ruby_size_and_raise(pr, child(node, "rt"), base, style.size);
                     let kind = FlowRunKind::Ruby {
                         base: base_text,
                         text: text_of(child(node, "rt")),
                         size,
-                        raise: half("hpsRaise").unwrap_or(style.size),
+                        raise,
                         align: ibis_doc_model::RubyAlign::from_name(pr.and_then(|p| wval(p, "rubyAlign")).unwrap_or("center")),
                     };
                     read.in_run(r, node, 1);
@@ -1994,8 +2061,21 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                             }
                         }
                         read.in_run(r, node, drawings.len());
+                        // A picture that is a link (`wp:docPr/a:hlinkClick`, the link Word's 挿入 > リンク puts on a picture): the run's link, as a picture in a `w:hyperlink` has.
+                        let picture_link = node
+                            .descendants()
+                            .find(|n| n.is_element() && n.tag_name().name() == "docPr")
+                            .and_then(|d| elements(d).find(|c| c.tag_name().name() == "hlinkClick"))
+                            .and_then(|h| rattr(h, "id"))
+                            .and_then(|id| rels.get(id))
+                            .map(|r| Link::Url(r.target.clone()));
                         for drawing in drawings {
-                            out.push(make(drawing));
+                            let is_picture = matches!(drawing, FlowRunKind::Picture { .. } | FlowRunKind::Shape(_));
+                            let mut run = make(drawing);
+                            if is_picture && run.link.is_none() {
+                                run.link = picture_link.clone();
+                            }
+                            out.push(run);
                         }
                     }
                 }
@@ -2373,6 +2453,10 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         let floating = Self::parse_floating_anchor(holder);
         let colors = crate::theme::Colors::new(self.theme, None, &[]);
         let mut look = self.picture_look(holder, &colors);
+        if let Some(e) = child(holder, "effectExtent") {
+            let side = |name: &str| e.attribute(name).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+            look.effect_extent = [side("l"), side("t"), side("r"), side("b")];
+        }
         let doc_pr = child(holder, "docPr").or_else(|| holder.descendants().find(|n| n.is_element() && n.tag_name().name() == "docPr"));
         let alt_title = doc_pr.and_then(|d| attr(d, "title"))
             .or_else(|| holder.descendants().find(|n| n.is_element() && n.tag_name().name() == "cNvPr").and_then(|c| attr(c, "title")))
@@ -2519,7 +2603,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         let fill = sp_pr.and_then(|p| self.shape_fill(p, style, &colors, rels));
         let stroke = self.shape_stroke(sp_pr.and_then(|p| child(p, "ln")), style, &colors);
 
-        let text = self.shape_text(wsp, &colors);
+        let text = self.shape_text(wsp, Some(rels), &colors);
 
         // The effects (the shape's own `a:effectLst` or its style's), as a slide's shape has them.
         let (effects, bevel) = crate::drawing_props::shape_effects(&colors, self.theme_node, &sp_pr.into_iter().collect::<Vec<_>>(), style);
@@ -2708,6 +2792,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                 compound,
                 alignment: ibis_doc_model::LineAlignment::Center,
                 fill: None,
+                min_drawn_width: 0,
             }
         });
         let geometry = match name {
@@ -2768,7 +2853,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         }
         // A text box: its paragraphs, its margins and where the text sits.
         let colors = crate::theme::Colors::new(self.theme, None, &[]);
-        let mut text = self.shape_text(vml, &colors);
+        let mut text = self.shape_text(vml, None, &colors);
         if let (Some(body), Some(tb)) = (text.as_mut(), child(vml, "textbox")) {
             if let Some(inset) = tb.attribute("inset") {
                 let parts: Vec<Option<i64>> = inset.split(',').map(|p| if p.trim().is_empty() { None } else { vml_length(p) }).collect();
@@ -2837,7 +2922,8 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
     /// A shape's outline: its `a:ln` over the style's line (`wps:style/a:lnRef`, the theme's line style, which alone
     /// draws a shape that has no `a:ln`).
     fn shape_stroke(&self, ln: Option<Node>, style: Option<Node>, colors: &crate::theme::Colors) -> Option<Stroke> {
-        crate::drawing_props::stroke(colors, self.theme_node, ln, style)
+        // Word draws no shape outline thinner than 0.14 pt either (`w="0"` too; measured in Word's XPS, issue 189): the floor is taken when the line is drawn.
+        crate::drawing_props::stroke(colors, self.theme_node, ln, style, ibis_doc_model::LineJoin::Miter).map(|s| Stroke { min_drawn_width: Stroke::POWERPOINT_MIN_WIDTH, ..s })
     }
 
     /// The paragraphs of a text box's content (`w:txbxContent`): each
@@ -2845,16 +2931,16 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
     /// fields and content controls), a line break starting a paragraph that
     /// continues the line before, an empty paragraph kept at its mark's size,
     /// and a table as one line of text for each row.
-    fn txbx_paragraphs(&self, container: Node, out: &mut Vec<Paragraph>) {
+    fn txbx_paragraphs(&self, container: Node, rels: Option<&Rels>, out: &mut Vec<Paragraph>) {
         for block in elements(container) {
             match block.tag_name().name() {
-                "p" => self.txbx_paragraph(block, out),
+                "p" => self.txbx_paragraph(block, rels, out),
                 "tbl" => {
                     for row in elements(block).filter(|n| n.tag_name().name() == "tr") {
                         let mut cells: Vec<Vec<Paragraph>> = Vec::new();
                         for cell in elements(row).filter(|n| n.tag_name().name() == "tc") {
                             let mut inside = Vec::new();
-                            self.txbx_paragraphs(cell, &mut inside);
+                            self.txbx_paragraphs(cell, rels, &mut inside);
                             cells.push(inside);
                         }
                         // The row on one line: its cells' text side by side.
@@ -2882,7 +2968,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                 }
                 "sdt" => {
                     if let Some(content) = child(block, "sdtContent") {
-                        self.txbx_paragraphs(content, out);
+                        self.txbx_paragraphs(content, rels, out);
                     }
                 }
                 _ => {}
@@ -2890,7 +2976,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         }
     }
 
-    fn txbx_paragraph(&self, p: Node, out: &mut Vec<Paragraph>) {
+    fn txbx_paragraph(&self, p: Node, rels: Option<&Rels>, out: &mut Vec<Paragraph>) {
         let ppr = child(p, "pPr");
         // The paragraph as Word resolves it: the document's defaults, its style, then its own
         // properties (the spacing between paragraphs, the line spacing, the typeface).
@@ -2911,10 +2997,9 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
             _ => None,
         };
         let style_of = |rpr: Option<Node>, cjk: bool| -> RunStyle {
-            let mut f = base_run.clone();
-            if let Some(rpr) = rpr {
-                f.overlay(&run_format(rpr, self.theme));
-            }
+            // The run's character style (a link's Hyperlink: blue and underlined) over the paragraph's, then the run's own properties.
+            let direct = rpr.map(|r| run_format(r, self.theme)).unwrap_or_default();
+            let f = self.styles.run_format(&base_run, rpr.and_then(|r| wval(r, "rStyle")), &direct);
             // Match the body run font selection (ECMA-376 §17.3.2.26): East Asian text or w:hint="eastAsia"
             // uses eastAsia font (with no Latin fallback_font that would override East Asian font substitution).
             let (font, fallback_font) = if cjk || f.east_asia_hint == Some(true) {
@@ -2944,6 +3029,12 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                     _ => ibis_doc_model::TateChuYoko::Off,
                 }),
                 char_scale: f.scale.filter(|s| *s != 100),
+                // Word's line-start and line-end rules (禁則) apply to East Asian text whatever language it is marked as; the shape text engine follows the run's
+                // language for them (PowerPoint's rule), so a run with no East Asian language is Japanese here (the vertical text box of `ibisOffice-087-tatechuyoko.docx`
+                // started a line with 。).
+                lang: Some(
+                    f.lang_east_asia.clone().filter(|l| matches!(l.get(..2), Some("ja" | "zh" | "ko"))).or_else(|| f.lang.clone().filter(|l| matches!(l.get(..2), Some("ja" | "zh" | "ko")))).unwrap_or_else(|| "ja-JP".to_string()),
+                ),
                 // Word 2010's text effects (`w14:textOutline`, `w14:shadow`, `w14:glow`).
                 outline: f.effects.as_ref().and_then(|e| e.as_ref()).and_then(|e| e.outline).map(|(w, c)| (ibis_doc_model::Color::opaque(c), w)),
                 shadow: f.effects.as_ref().and_then(|e| e.as_ref()).and_then(|e| e.shadow).map(|s| ibis_doc_model::Shadow::simple(ibis_doc_model::Color { rgb: s.color, alpha: s.alpha }, s.blur, s.distance, s.direction)),
@@ -2967,24 +3058,31 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         let mut current = new_paragraph(false);
         let mut done: Vec<Paragraph> = Vec::new();
         // Runs in the order they come, inside hyperlinks, fields and content controls too.
-        fn runs_of<'a>(node: Node<'a, 'a>, out: &mut Vec<Node<'a, 'a>>) {
+        // (the run, the address of the `w:hyperlink` it is in)
+        fn runs_of<'a>(node: Node<'a, 'a>, rels: Option<&Rels>, link: &Option<String>, out: &mut Vec<(Node<'a, 'a>, Option<String>)>) {
             for c in elements(node) {
                 match c.tag_name().name() {
-                    "r" => out.push(c),
-                    "hyperlink" | "fldSimple" | "sdt" | "sdtContent" | "ins" | "smartTag" | "customXml" | "moveTo" => runs_of(c, out),
+                    "r" => out.push((c, link.clone())),
+                    "hyperlink" => {
+                        let url = rattr(c, "id").and_then(|id| rels.and_then(|r| r.get(id))).map(|r| r.target.clone()).filter(|t| !t.is_empty());
+                        runs_of(c, rels, &url.or_else(|| link.clone()), out);
+                    }
+                    "fldSimple" | "sdt" | "sdtContent" | "ins" | "smartTag" | "customXml" | "moveTo" => runs_of(c, rels, link, out),
                     _ => {}
                 }
             }
         }
         let mut runs = Vec::new();
-        runs_of(p, &mut runs);
-        for r in runs {
+        runs_of(p, rels, &None, &mut runs);
+        for (r, link) in runs {
             let rpr = child(r, "rPr");
             let mut text = String::new();
             let flush = |text: &mut String, current: &mut Paragraph| {
                 if !text.is_empty() {
                     let cjk = text.chars().any(|c| c as u32 >= 0x2e80);
-                    current.runs.push(Run { text: std::mem::take(text), style: style_of(rpr, cjk) });
+                    let mut style = style_of(rpr, cjk);
+                    style.link = link.clone().map(ibis_doc_model::SlideLink::Url);
+                    current.runs.push(Run { text: std::mem::take(text), style });
                 }
             };
             for c in elements(r) {
@@ -3012,7 +3110,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         out.extend(done);
     }
 
-    fn shape_text(&self, wsp: Node, colors: &crate::theme::Colors) -> Option<TextBody> {
+    fn shape_text(&self, wsp: Node, rels: Option<&Rels>, colors: &crate::theme::Colors) -> Option<TextBody> {
         let txbx = child(wsp, "txbx").or_else(|| child(wsp, "textbox"));
         let tx_body = child(wsp, "txBody");
         let body_pr = child(wsp, "bodyPr");
@@ -3021,7 +3119,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
 
         if let Some(tb) = txbx {
             let container = child(tb, "txbxContent").unwrap_or(tb);
-            self.txbx_paragraphs(container, &mut paragraphs);
+            self.txbx_paragraphs(container, rels, &mut paragraphs);
         } else if let Some(tb) = tx_body {
             for p in elements(tb).filter(|n| n.tag_name().name() == "p") {
                 let ppr = child(p, "pPr");
@@ -3144,12 +3242,23 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         // Table properties: the style's, then the table's own.
         let mut chain: Vec<Node> = style_id.as_deref().map(|id| self.chain_nodes(id)).unwrap_or_default().into_iter().filter_map(|s| child(s, "tblPr")).collect();
         chain.extend(tbl_pr);
-        // Word keeps its own cell margins (108 twips) for its 標準の表
-        // (Normal Table) whatever the file's says (DTST: tables of styles
-        // based on one with no margins have Word's).
-        let normal_table: Vec<Node> = style_id.as_deref().map(|id| self.chain_nodes(id)).unwrap_or_default().into_iter().filter(|s| wval(*s, "name") == Some("Normal Table")).filter_map(|s| child(s, "tblPr")).collect();
+        // The cell margins at the sides (Word 365's PDFs of 17 shapes of styles.xml, `tasks/doc/requests/2026-11-16-227-table-margin-result.md`): the table style that is
+        // in effect is the one the table names, or else the default one (`w:default="1"`); the 108 twips are the built-in 標準の表 (Normal Table) that every style based
+        // on it has (the margins its own `tblCellMar` says, 0 included, are not read: the file with 0 in it measured 5.4 pt); a style that is not based on it has none
+        // unless it says so (a named style with no `tblCellMar` and no Normal Table below it: 0, though the file has a default table style with 108); a file with no
+        // default table style (it has styles, but no table style or only ones that are not the default) has none either, nor has a file with no styles at all. The table's own `tblCellMar` and a cell's `tcMar` come
+        // after (0 is a margin).
+        // (A style the file does not define, as the TableGrid of a table inserted into a file that lacks it, is no style: the default one is in effect.)
+        let effective_style = style_id.clone().filter(|id| !self.chain_nodes(id).is_empty()).or_else(|| self.styles.default_table.clone());
+        let in_effect: Vec<Node> = effective_style.as_deref().map(|id| self.chain_nodes(id)).unwrap_or_default();
         let mut borders: [Option<Option<FlowBorder>>; 6] = Default::default(); // top right bottom left insideH insideV
-        let mut margins = [0i64, 108 * EMU_PER_TWIP, 0, 108 * EMU_PER_TWIP];
+        let default_id = self.styles.default_table.as_deref();
+        let is_normal = |s: &Node| wval(*s, "name") == Some("Normal Table") || (default_id.is_some() && wattr(*s, "styleId") == default_id);
+        let normal_table: Vec<Node> = in_effect.iter().copied().filter(|s| is_normal(s)).filter_map(|s| child(s, "tblPr")).collect();
+        // (A file with no styles.xml, or none that is a default table style: 0. Windows Word's XPS of one-factor tests (`tasks/doc/requests/2026-11-18-227-margin-s1-result.md`):
+        // styles.xml absent or empty, settings, docGrid, tblPr, the cell's content, pgMar and cols change nothing: the margin is 108 only where a `w:default="1"` table style is in the
+        // file. The earlier 108 for a file without styles followed a misreading of the probe's PDF.)
+        let mut margins = if in_effect.iter().any(|s| is_normal(s)) { [0i64, 108 * EMU_PER_TWIP, 0, 108 * EMU_PER_TWIP] } else { [0i64; 4] };
         let mut indent = 0;
         let mut align = FlowAlign::Left;
         let mut cell_spacing = None;
@@ -3185,7 +3294,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
             }
         }
         let row_nodes: Vec<Node> = children(tbl, "tr").collect();
-        let columns = grid_columns(tbl, tbl_pr, &row_nodes);
+        let (mut columns, grid_given) = grid_columns(tbl, tbl_pr, &row_nodes);
         // The style's conditional formatting (w:tblStylePr): which parts
         // of the table each cell is in, by the table's options (w:tblLook;
         // Word's new tables' 04A0 without it) and the bands' sizes.
@@ -3301,20 +3410,94 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                     p
                 });
                 self.blocks(tc, &tc_path, rels, style_id.as_deref(), &mut blocks);
-                cells.push(FlowCell { id: cell_id, own_borders, span, merge, blocks, borders: [None; 4], shading, shading_fill, shading_pattern, shading_color, anchor, margins: cell_margin, diagonals, style_fill: None, direction: tc_pr.and_then(|p| wval(p, "textDirection")).map_or_default(ibis_doc_model::CellDirection::from_cell_name), no_wrap: tc_pr.and_then(|p| toggle(p, "noWrap")).unwrap_or(false) });
+                cells.push(FlowCell { id: cell_id, own_borders, span, merge, blocks, borders: [None; 4], shading, shading_fill, shading_pattern, shading_color, anchor, margins: cell_margin, diagonals, style_fill: None, direction: tc_pr.and_then(|p| wval(p, "textDirection")).map_or_default(ibis_doc_model::CellDirection::from_name), no_wrap: tc_pr.and_then(|p| toggle(p, "noWrap")).unwrap_or(false) });
             }
             rows.push(FlowRow { id: row_id, height, header, cant_split, cells, ..FlowRow::default() });
         }
         // The model's indent is to the table's left edge, as Word 2013 and
         // later read `w:tblInd`; before, it is to the first cell's text.
-        let indent = if self.sources.table_indent_to_edge { indent } else { indent - rows.first().and_then(|r: &FlowRow| r.cells.first()).map_or(0, |c| c.margins[3]) };
+        // (A table in a cell stays at the cell's text in every mode: Word's XPS of nested tables, GitHub issue #178.)
+        let nested = tbl.parent().is_some_and(|p| p.tag_name().name() == "tc");
+        let indent = if self.sources.table_indent_to_edge || nested { indent } else { indent - rows.first().and_then(|r: &FlowRow| r.cells.first()).map_or(0, |c| c.margins[3]) };
         // 自動調整 (unless fixed): from the content and preferred widths
         // when the grid does not say the widths.
         let fixed = chain.iter().rev().find_map(|pr| child(*pr, "tblLayout")).is_some_and(|l| wattr(l, "type") == Some("fixed"));
         let width = chain.iter().rev().find_map(|pr| child(*pr, "tblW")).map_or(PreferredWidth::Auto, preferred_width);
         // Always fitted, but a grid that agrees with the cells' widths is kept while the content fits it (`AutoFit::grid_trusted`): Word writes the widths it laid out into the grid.
         let grid_trusted = !fits_content(&columns, width, &rows, &preferred);
-        let autofit = (!fixed && !shifted).then(|| AutoFit { width, cells: preferred, grid_trusted });
+        // 固定 (`w:tblLayout` fixed, GitHub issue #178, Word's PDFs): a cell's width (`w:tcW` in twips) that disagrees with the grid is the column's, and the
+        // table's width (`w:tblW`) stretches or shrinks the columns in proportion; in percent it is of the text's width, which the layout knows.
+        let mut fixed_percent = None;
+        if fixed {
+            let mut from_cells: Vec<Option<i64>> = vec![None; columns.len()];
+            // The cells of one column first, then a cell spanning columns no cell of one column gave (its width shared by the grid's).
+            for spanning in [false, true] {
+                for (row, widths) in rows.iter().zip(&preferred) {
+                    if row.cells.iter().map(|c| c.span.max(1) as usize).sum::<usize>() != columns.len() {
+                        continue;
+                    }
+                    let mut at = 0usize;
+                    for (cell, w) in row.cells.iter().zip(widths) {
+                        let span = cell.span.max(1) as usize;
+                        if let PreferredWidth::Fixed(w) = *w {
+                            if !spanning && span == 1 && from_cells[at].is_none() {
+                                from_cells[at] = Some(w);
+                            } else if spanning && span > 1 && from_cells[at..at + span].iter().all(Option::is_none) {
+                                let grid: i64 = columns[at..at + span].iter().sum();
+                                for c in at..at + span {
+                                    from_cells[c] = Some(if grid > 0 { (w as f64 * columns[c] as f64 / grid as f64).round() as i64 } else { w / span as i64 });
+                                }
+                            }
+                        }
+                        at += span;
+                    }
+                }
+            }
+            for (c, w) in columns.iter_mut().zip(from_cells) {
+                if let Some(w) = w {
+                    *c = w;
+                }
+            }
+            match width {
+                PreferredWidth::Fixed(goal) => {
+                    let sum: i64 = columns.iter().sum();
+                    if sum > 0 && sum < goal {
+                        // Widened: the columns in proportion to their widths (Word's XPS: tcW 2000 and 1000 in a tblW of 6000 are 4000 and 2000).
+                        for c in &mut columns {
+                            *c = (*c as f64 * goal as f64 / sum as f64).round() as i64;
+                        }
+                    } else if sum > goal {
+                        // Cut: the cell margins stay, and what is inside them is cut in proportion (tblW 2000 over tcW 2000 and 1000 with margins
+                        // of 108 each side: contents 1784 and 784 share 2000 less all the margins, 1305 and 695 twips; Word's 1303 and 696).
+                        let mut margin = vec![0i64; columns.len()];
+                        if let Some(row) = rows.first().filter(|r| r.cells.iter().map(|c| c.span.max(1) as usize).sum::<usize>() == columns.len()) {
+                            let mut at = 0usize;
+                            for cell in &row.cells {
+                                let span = cell.span.max(1) as usize;
+                                margin[at] = margin[at].max(cell.margins[3]);
+                                margin[at + span - 1] += cell.margins[1];
+                                at += span;
+                            }
+                        }
+                        let margins: i64 = margin.iter().sum();
+                        let contents: i64 = columns.iter().zip(&margin).map(|(c, m)| (c - m).max(0)).sum();
+                        if goal > margins && contents > 0 {
+                            let k = (goal - margins) as f64 / contents as f64;
+                            for (c, m) in columns.iter_mut().zip(&margin) {
+                                *c = m + ((*c - m).max(0) as f64 * k).round() as i64;
+                            }
+                        } else {
+                            for c in &mut columns {
+                                *c = (*c as f64 * goal as f64 / sum as f64).round() as i64;
+                            }
+                        }
+                    }
+                }
+                PreferredWidth::Percent(p) => fixed_percent = Some(p),
+                _ => {}
+            }
+        }
+        let autofit = (!fixed && !shifted).then(|| AutoFit { width, cells: preferred, grid_trusted, grid_given });
         // The style's parts (its cells' fills, their paragraphs'
         // formatting) are found from the options (FlowTable::apply_style).
         let style = style_id.map(|id| ibis_doc_model::TableStyleRef { id, look, row_band: row_band as u32, col_band: col_band as u32 });
@@ -3344,8 +3527,8 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                 distance: [tw("leftFromText"), tw("rightFromText"), tw("topFromText"), tw("bottomFromText")],
             }
         });
-        let fit_to_page = !fixed && matches!(width, PreferredWidth::Auto);
-        let mut table = FlowTable { id, borders, columns, indent, align, rows, autofit, style, floating, cell_spacing, fit_to_page };
+        let fit_to_page = !fixed && matches!(width, PreferredWidth::Auto | PreferredWidth::Nil);
+        let mut table = FlowTable { id, borders, columns, indent, align, rows, autofit, style, floating, cell_spacing, fit_to_page, fixed_percent };
         table.apply_style(self.styles);
         table.resolve_borders();
         Some(table)
@@ -3383,7 +3566,8 @@ fn preferred_width(w: Node) -> PreferredWidth {
             };
             if fiftieths > 0 { PreferredWidth::Percent(fiftieths) } else { PreferredWidth::Auto }
         }
-        Some("nil") | Some("auto") => PreferredWidth::Auto,
+        Some("nil") => PreferredWidth::Nil,
+        Some("auto") => PreferredWidth::Auto,
         _ => twips(w, "w").filter(|&v| v > 0).map_or(PreferredWidth::Auto, PreferredWidth::Fixed),
     }
 }
@@ -3408,6 +3592,8 @@ fn fits_content(columns: &[i64], width: PreferredWidth, rows: &[FlowRow], prefer
             let spanned: i64 = columns.iter().skip(at).take(span).sum();
             match *w {
                 PreferredWidth::Fixed(w) if w >= spanned - POINT => {}
+                // `nil`: the grid's width.
+                PreferredWidth::Nil => {}
                 // A cell merged down keeps the width of its start.
                 _ if cell.merge == VerticalMerge::Continue => {}
                 _ => return true,
@@ -3424,7 +3610,7 @@ fn fits_content(columns: &[i64], width: PreferredWidth, rows: &[FlowRow], prefer
 /// table's `w:tblW`), as Word lays out a table written without a grid (or
 /// with a short one) by other programs. A column still without a width
 /// gets an equal share of what `w:tblW` leaves, or an inch.
-fn grid_columns(tbl: Node, tbl_pr: Option<Node>, rows: &[Node]) -> Vec<i64> {
+fn grid_columns(tbl: Node, tbl_pr: Option<Node>, rows: &[Node]) -> (Vec<i64>, bool) {
     let mut columns: Vec<i64> = child(tbl, "tblGrid").into_iter().flat_map(|g| children(g, "gridCol")).map(|c| twips(c, "w").unwrap_or(0)).collect();
     let table_width = tbl_pr.and_then(|p| child(p, "tblW")).filter(|w| matches!(wattr(*w, "type"), None | Some("dxa"))).and_then(|w| twips(w, "w")).filter(|&w| w > 0);
     let cells = |tr: Node| -> Vec<(u32, Option<i64>)> {
@@ -3453,7 +3639,7 @@ fn grid_columns(tbl: Node, tbl_pr: Option<Node>, rows: &[Node]) -> Vec<i64> {
     let before = |tr: Node| child(tr, "trPr").and_then(|p| wval(p, "gridBefore")).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
     let count = rows.iter().map(|&tr| before(tr) + cells(tr).iter().map(|c| c.0 as usize).sum::<usize>()).max().unwrap_or(0);
     if count <= columns.len() && columns.iter().all(|&w| w > 0) {
-        return columns;
+        return (columns, true);
     }
     columns.resize(columns.len().max(count), 0);
     for &tr in rows {
@@ -3479,7 +3665,7 @@ fn grid_columns(tbl: Node, tbl_pr: Option<Node>, rows: &[Node]) -> Vec<i64> {
             *c = share;
         }
     }
-    columns
+    (columns, false)
 }
 
 /// The `w:compatibilityMode` of a settings part (Word 2007's 12 when unset;
@@ -3493,9 +3679,20 @@ fn compatibility_mode(settings: &str) -> u32 {
 
 fn cell_margins(m: Node, out: &mut [i64; 4]) {
     for (i, (name, alt)) in [("top", "top"), ("right", "end"), ("bottom", "bottom"), ("left", "start")].into_iter().enumerate() {
-        if let Some(v) = child(m, name).or_else(|| child(m, alt)).and_then(|e| twips(e, "w")) {
+        if let Some(v) = child(m, name).or_else(|| child(m, alt)).and_then(margin_width) {
             out[i] = v;
         }
+    }
+}
+
+/// A cell margin (`w:top`... of `w:tcMar` or `w:tblCellMar`) by its `w:type` (GitHub issue #178, Word's PDF): `dxa` (or none) is twips, `pct`
+/// is read as 0 (Word does not take a cell margin as a share of anything; ECMA-376 17.4.43 gives the type but no base), and `nil` and `auto`
+/// say nothing, so the margin stays the one the table (or Word's default) gives.
+fn margin_width(e: Node) -> Option<i64> {
+    match wattr(e, "type") {
+        Some("pct") => Some(0),
+        Some("nil") | Some("auto") => None,
+        _ => twips(e, "w"),
     }
 }
 
@@ -3509,7 +3706,14 @@ pub fn enclosed_field(instruction: &str) -> Option<(String, String)> {
 /// 囲い文字 (`EQ \o\ac`): the sizes (hundredths of a point) the runs of the field's code give
 /// the enclosure and the character in it, from the code's runs' text and sizes.
 fn enclosure_sizes(instruction: &str, runs: &[(String, u32)]) -> Option<(u32, u32)> {
-    let (enclosure, inner) = enclosed_field(instruction)?;
+    // An `EQ \o(…,…)` with no switch (a stack of two lines): the sizes of its first and its second argument.
+    let (enclosure, inner) = match enclosed_field(instruction) {
+        Some(parts) => parts,
+        None => match ibis_doc_model::field_format::overstrike(instruction) {
+            Some((ibis_doc_model::field_format::OverstrikeAlign::Center, args)) if args.len() >= 2 => (args[0].0.clone(), args[1].0.clone()),
+            _ => return None,
+        },
+    };
     let size_of = |text: &str| text.chars().find(|c| !c.is_whitespace()).and_then(|c| runs.iter().find(|(t, _)| t.contains(c)).map(|(_, s)| *s));
     Some((size_of(&enclosure)?, size_of(&inner)?))
 }
@@ -3654,6 +3858,12 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
     let xml = package.read_xml(&main)?;
     let doc = parse(&main, &xml)?;
     let root = doc.root_element();
+    // The notes whose reference has a mark of its own (`w:customMarkFollows`).
+    let custom_notes: std::collections::HashSet<(bool, u32)> = doc
+        .descendants()
+        .filter(|n| n.is_element() && matches!(n.tag_name().name(), "footnoteReference" | "endnoteReference") && wattr(*n, "customMarkFollows").is_some_and(|v| matches!(v, "1" | "true" | "on")))
+        .filter_map(|n| Some((n.tag_name().name() == "endnoteReference", wattr(n, "id")?.parse::<u32>().ok()?)))
+        .collect();
     let body = child(root, "body").ok_or_else(|| Error::new("文書に本文がありません"))?;
     let body_path = crate::xml::element_path(body);
 
@@ -3861,7 +4071,7 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
             let Some(id) = wattr(node, "id").and_then(|v| v.parse::<u32>().ok()) else { continue };
             let mut content = Vec::new();
             reader.blocks(node, &[index as u32], &part_rels, None, &mut content);
-            notes[i].push(Note { id, blocks: content });
+            notes[i].push(Note { id, blocks: content, custom_mark: custom_notes.contains(&(i == 1, id)) });
         }
         reader.sources.note_parts[i] = Some(part);
     }
@@ -4054,6 +4264,7 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
     // Part 1 17.15.1.18): Word's PDF of test/github-issue/54/issue54-symbols.docx (no settings part) keeps every bracket of
     // （）〔〕［］ a full em, which compressPunctuation would squeeze.
     let compress_punctuation = part_of("/settings").and_then(|p| package.read_xml(&p).ok()).is_some_and(|xml| xml.contains("characterSpacingControl w:val=\"compressPunctuation"));
+    let compress_kana = part_of("/settings").and_then(|p| package.read_xml(&p).ok()).is_some_and(|xml| xml.contains("characterSpacingControl w:val=\"compressPunctuationAndJapaneseKana"));
     // 文書の既定テーマフォント言語 (w:themeFontLang, DOCX-JA-019, ECMA-376 Part 1 §17.15.1.88).
     let theme_font_lang = part_of("/settings").and_then(|p| package.read_xml(&p).ok()).and_then(|xml| {
         let doc = roxmltree::Document::parse(&xml).ok()?;
@@ -4220,6 +4431,7 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
         no_line_end,
         strict_first_and_last_chars,
         compress_punctuation,
+        compress_kana,
         font_table,
         balance_single_double_byte_width,
         ul_trail_space,
@@ -4281,6 +4493,19 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, SourceMap)
     presentation.theme_fonts = Some(theme.fonts());
     presentation.theme_effects = theme.fmt_scheme_name.clone();
     presentation.fonts = embedded_fonts;
+    presentation.cmyk = part_of("/settings").and_then(|p| package.read_xml(&p).ok()).map(|xml| crate::save::pptx_cmyk::read_cmyk_in_text(&xml)).unwrap_or_default();
+    // The zoom the file was saved at (`w:zoom/@w:percent`, GitHub issue #237).
+    // `w:val` of `bestFit`, `fullPage` or `textFit` is the file asking to be fitted to the window (Word fits whatever `w:percent` says).
+    let zoom_tag = part_of("/settings").and_then(|p| package.read_xml(&p).ok()).and_then(|xml| {
+        let at = xml.find("<w:zoom")?;
+        Some(xml[at..at + xml[at..].find('>')?].to_string())
+    });
+    let tag_attr = |tag: &str, name: &str| -> Option<String> {
+        let v = tag.find(&format!("{name}=\""))? + name.len() + 2;
+        Some(tag[v..v + tag[v..].find('"')?].trim().to_string())
+    };
+    presentation.view_fit = zoom_tag.as_deref().and_then(|t| tag_attr(t, "w:val")).is_some_and(|v| matches!(v.as_str(), "bestFit" | "fullPage" | "textFit"));
+    presentation.view_zoom = if presentation.view_fit { None } else { zoom_tag.as_deref().and_then(|t| tag_attr(t, "w:percent")).and_then(|p| p.parse::<u16>().ok()).filter(|&p| p > 0) };
     presentation.flow = Some(document);
     presentation.modify_verifier = modify_verifier;
     Ok((presentation, sources))
@@ -4303,6 +4528,7 @@ fn read_font_table(package: &Package, part: &str) -> (std::collections::BTreeMap
             family: val(f, "family").unwrap_or_default(),
             pitch: val(f, "pitch").unwrap_or_default(),
             panose: val(f, "panose1").unwrap_or_default(),
+            csb0: f.children().find(|c| c.is_element() && c.tag_name().name() == "sig").and_then(|c| c.attributes().find(|a| a.name() == "csb0")).and_then(|a| u32::from_str_radix(a.value().trim(), 16).ok()),
         };
         for (tag, bold, italic) in [("embedRegular", false, false), ("embedBold", true, false), ("embedItalic", false, true), ("embedBoldItalic", true, true)] {
             let Some(embed) = f.children().find(|c| c.is_element() && c.tag_name().name() == tag) else { continue };
@@ -4355,6 +4581,74 @@ mod namespace_tests {
         package.remove("word/settings.xml");
         let without = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
         assert!(!crate::read_docx(&without).unwrap().flow.unwrap().compress_punctuation);
+    }
+
+    /// A shape of a document is drawn no thinner than 0.14 pt (Word's XPS of `w="0"`, 1, 1270 and 1778: 0.14; 1905: 0.15; no `w`: 0.75; issue #189), and the
+    /// model keeps the file's `w`.
+    #[test]
+    fn a_shape_outline_is_drawn_no_thinner_than_014_pt() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = std::fs::read(root.join("test/editing/docx-report.docx")).unwrap();
+        let mut package = ibis_ooxml::Package::open(source).unwrap();
+        let shape = |id: u32, ln: &str| {
+            format!(r#"<w:p><w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="900000" cy="900000"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="{id}" name="s{id}"/><wp:cNvGraphicFramePr/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="900000" cy="900000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>{ln}</wps:spPr><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#)
+        };
+        let line = |w: &str| format!(r#"<a:ln{w}><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln>"#);
+        let paragraphs = [(1, line(r#" w="0""#)), (2, line(r#" w="1270""#)), (3, line(r#" w="1905""#)), (4, line(""))].iter().map(|(i, ln)| shape(*i, ln)).collect::<String>();
+        let xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+        let at = xml.rfind("<w:sectPr").unwrap();
+        let xml = format!("{}{}{}", &xml[..at], paragraphs, &xml[at..]);
+        package.set_bytes("word/document.xml", xml.into_bytes());
+        let data = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
+        let doc = crate::read_docx(&data).unwrap().flow.unwrap();
+        let mut strokes = Vec::new();
+        for block in &doc.body {
+            if let ibis_doc_model::Block::Paragraph(p) = block {
+                for run in &p.runs {
+                    if let FlowRunKind::Shape(shape) = &run.kind
+                        && let ShapeKind::Auto(a) = &shape.kind
+                        && let Some(s) = &a.stroke
+                    {
+                        strokes.push((s.width, s.drawn_width()));
+                    }
+                }
+            }
+        }
+        assert_eq!(strokes, vec![(0, 1_778), (1_270, 1_778), (1_905, 1_905), (9_525, 9_525)]);
+    }
+
+    /// The side margins of a table's cells with no `tblStyle`, `tblCellMar` or `tcMar` (Windows Word's XPS, one factor at a time,
+    /// `tasks/doc/requests/2026-11-18-227-margin-s1-result.md`): 108 twips only where a `w:default="1"` table style is in the file; no styles.xml, an empty one, and one with
+    /// only a paragraph style, give 0.
+    #[test]
+    fn a_tables_side_margins_are_108_only_with_a_default_table_style() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = std::fs::read(root.join("test/editing/docx-report.docx")).unwrap();
+        let w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let normal_table = r#"<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>"#;
+        let paragraph = r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>"#;
+        let styles = |body: &str| Some(format!(r#"<w:styles xmlns:w="{w}">{body}</w:styles>"#));
+        let cases: [(&str, Option<String>, i64); 4] = [
+            ("no styles.xml", None, 0),
+            ("an empty styles.xml", styles(""), 0),
+            ("a paragraph style only", styles(paragraph), 0),
+            ("a default table style", styles(&format!("{paragraph}{normal_table}")), 108),
+        ];
+        for (what, styles, twips) in cases {
+            let mut package = ibis_ooxml::Package::open(source.clone()).unwrap();
+            match styles {
+                Some(xml) => package.set_bytes("word/styles.xml", xml.into_bytes()),
+                None => package.remove("word/styles.xml"),
+            }
+            let table = r#"<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="5000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="5000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
+            let xml = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+            let at = xml.rfind("<w:sectPr").unwrap();
+            package.set_bytes("word/document.xml", format!("{}{}{}", &xml[..at], table, &xml[at..]).into_bytes());
+            let data = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
+            let doc = crate::read_docx(&data).unwrap().flow.unwrap();
+            let cell = doc.body.iter().rev().find_map(|b| match b { ibis_doc_model::Block::Table(t) => t.rows.first().and_then(|r| r.cells.first()).cloned(), _ => None }).expect("the table");
+            assert_eq!((cell.margins[1], cell.margins[3]), (twips * EMU_PER_TWIP, twips * EMU_PER_TWIP), "{what}");
+        }
     }
 
     #[test]

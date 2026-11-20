@@ -198,6 +198,7 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, crate::sav
         .unwrap_or(EmuSize::new(6_858_000, 9_144_000));
     let mut reader = Reader {
         package: &package,
+        line_floor: Stroke::POWERPOINT_MIN_WIDTH,
         presentation: Presentation::empty(size),
         media: HashMap::new(),
         default_text: child(root, "defaultTextStyle"),
@@ -298,6 +299,9 @@ pub(crate) fn read_with_sources(data: &[u8]) -> Result<(Presentation, crate::sav
         .find(|r| !r.external && r.kind.ends_with("/relationships/viewProps"))
         .and_then(|r| package.read_xml(&r.target).ok());
     reader.presentation.notes_pane = view_props.as_deref().map(crate::save::pptx_guides::read_notes_pane).unwrap_or_default();
+    // The slide view's scale is not read as the zoom: PowerPoint for Windows opens a file in a window fitted to it whatever `varScale` (1, 0 or none) and `scale` (119 %,
+    // 60 %) say, in five cases and two window sizes (`tasks/doc/requests/2026-11-17-237-varscale-result.md`). The zoom the user puts on it is written (`write_view_scale`).
+    reader.presentation.view_zoom = None;
     let view_guides = view_props.as_deref().map(crate::save::pptx_guides::read_view).unwrap_or_default();
     let ext_guides = read_guides(root);
     let places = |g: &[ibis_doc_model::SlideGuide]| g.iter().map(|g| (g.horizontal, g.pos)).collect::<Vec<_>>();
@@ -549,6 +553,7 @@ fn read_object_defaults<'d, 'i>(theme_node: Node<'d, 'i>, colors: &Colors) -> ib
                     compound: unqualified_attribute(ln, "cmpd").and_then(ibis_doc_model::LineCompound::parse).unwrap_or_default(),
                     alignment: unqualified_attribute(ln, "algn").and_then(ibis_doc_model::LineAlignment::parse).unwrap_or_default(),
                     fill: None,
+                    min_drawn_width: 0,
                 })
             });
 
@@ -629,6 +634,7 @@ fn read_object_defaults<'d, 'i>(theme_node: Node<'d, 'i>, colors: &Colors) -> ib
                             compound: unqualified_attribute(ln, "cmpd").and_then(ibis_doc_model::LineCompound::parse).unwrap_or_default(),
                             alignment: unqualified_attribute(ln, "algn").and_then(ibis_doc_model::LineAlignment::parse).unwrap_or_default(),
                             fill: None,
+                            min_drawn_width: 0,
                         });
                     }
                 }
@@ -772,6 +778,8 @@ fn parse<'i>(name: &str, text: &'i str) -> Result<Document<'i>, Error> {
 
 struct Reader<'p, 'd, 'i> {
     package: &'p Package<'p>,
+    /// The thinnest the lines read are drawn (`Stroke::min_drawn_width`): 0.14 pt for a presentation's and a workbook's drawings (measured in PowerPoint and Excel).
+    line_floor: ibis_doc_model::Emu,
     presentation: Presentation,
     /// Media already stored, by part name.
     media: HashMap<String, (MediaId, MediaFormat)>,
@@ -1132,6 +1140,22 @@ fn read_transition(root: Node) -> Option<ibis_doc_model::Transition> {
     })
 }
 
+/// The relationship id of the audio a slide's transition plays (`p:sndAc/p:stSnd/p:snd/@r:embed`), if it has one.
+fn transition_sound_embed(root: Node) -> Option<String> {
+    const P:&str="http://schemas.openxmlformats.org/presentationml/2006/main";
+    const MC:&str="http://schemas.openxmlformats.org/markup-compatibility/2006";
+    let element=namespace_child(root,P,"transition").or_else(|| {
+        elements(root).filter(|n|n.has_tag_name((MC,"AlternateContent"))).find_map(|ac| {
+            let choice=namespace_child(ac,MC,"Choice").and_then(|c|namespace_child(c,P,"transition"));
+            choice.or_else(||namespace_child(ac,MC,"Fallback").and_then(|f|namespace_child(f,P,"transition")))
+        })
+    })?;
+    let snd_ac=elements(element).find(|e| e.tag_name().name()=="sndAc")?;
+    let st_snd=elements(snd_ac).find(|e| e.tag_name().name()=="stSnd")?;
+    let snd=elements(st_snd).find(|e| e.tag_name().name()=="snd")?;
+    snd.attributes().find(|a| a.name()=="embed").map(|a| a.value().to_string())
+}
+
 /// The text of slide `part`'s speaker notes (the body placeholder of its
 /// notes page), paragraphs joined by `\n`; empty without notes.
 fn read_notes(package: &Package, part: &str) -> String {
@@ -1355,6 +1379,16 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         if let Some(tree)=namespace_child(ctx.slide.root,"http://schemas.openxmlformats.org/presentationml/2006/main","cSld").and_then(|n|namespace_child(n,"http://schemas.openxmlformats.org/presentationml/2006/main","spTree")) {
             slide.groups=groups(tree,&paths).into_iter().filter_map(|member|match member {ibis_doc_model::GroupMember::Group(group)=>Some(*group),_=>None}).collect();
         }
+        // A link on a group (`a:hlinkClick` of the group's `cNvPr`), by the group's native id.
+        for node in ctx.slide.root.descendants().filter(|n| n.is_element() && n.tag_name().name() == "grpSp") {
+            let properties = namespace_child(node, "http://schemas.openxmlformats.org/presentationml/2006/main", "nvGrpSpPr").and_then(|nv| namespace_child(nv, "http://schemas.openxmlformats.org/presentationml/2006/main", "cNvPr"));
+            let Some(properties) = properties else { continue };
+            if let (Some(id), Some(h)) = (unqualified_attribute(properties, "id"), child(properties, "hlinkClick"))
+                && let Some(link) = link_of(h, &ctx.slide.rels, &self.slide_parts)
+            {
+                slide.group_links.insert(id.to_owned(), link);
+            }
+        }
         slide.placeholders = std::mem::take(&mut self.slide_placeholders);
         slide.shape_names = std::mem::take(&mut self.slide_names);
         slide.shape_alt_texts = std::mem::take(&mut self.slide_alt_texts);
@@ -1374,6 +1408,10 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         slide.guides = read_guides(ctx.slide.root);
         slide.name = path(ctx.slide.root, &["cSld"]).and_then(|c| attr(c, "name")).filter(|s| !s.is_empty()).map(str::to_string);
         slide.transition = read_transition(ctx.slide.root);
+        // The wav a transition's sound plays (`p:snd r:embed`), kept as a clip of the media (#224).
+        if let Some(rid) = transition_sound_embed(ctx.slide.root) {
+            slide.transition_sound = self.media(&ctx.slide.rels, &rid).filter(|(_, format)| format.is_audio()).map(|(media, _)| media);
+        }
         for (connector_id, start, end) in std::mem::take(&mut self.slide_glues) {
             let resolve = |cxn: Option<(String, u32)>| -> Option<(u64, u32)> {
                 let (native_id, idx) = cxn?;
@@ -2250,7 +2288,8 @@ fn parse_artistic_effect(blip: Node) -> Option<ibis_doc_model::ArtisticEffect> {
     }
 
     fn stroke(&self, ctx: &SlideCtx<'d, 'i, '_>, ln: Option<Node>, style: Option<Node>) -> Option<Stroke> {
-        crate::drawing_props::stroke(&ctx.colors, ctx.theme, ln, style)
+        // PowerPoint draws no line thinner than 0.14 pt (`w="0"` too): the floor is taken when the line is drawn (`Stroke::drawn_width`), the model keeps `w`.
+        crate::drawing_props::stroke(&ctx.colors, ctx.theme, ln, style, ibis_doc_model::LineJoin::Round).map(|s| Stroke { min_drawn_width: self.line_floor, ..s })
     }
 
     fn text_body(&mut self, ctx: &SlideCtx<'d, 'i, '_>, body: Node<'d, 'i>, defaults: TextDefaults, inherited: Option<&Inherited<'d, 'i>>, table_cell: bool) -> TextBody {
@@ -2322,9 +2361,16 @@ fn parse_artistic_effect(blip: Node) -> Option<ibis_doc_model::ArtisticEffect> {
             };
             match attr(*pr, "anchor") {
                 Some("ctr") => out.anchor = VerticalAnchor::Middle,
-                Some("b") => out.anchor = VerticalAnchor::Bottom,
+                // `just` and `dist` sit where `b` sits: measured in PowerPoint (issue #189; text frames of 17 paragraph shapes within 0.1 pt of `b`).
+                Some("b" | "just" | "dist") => out.anchor = VerticalAnchor::Bottom,
                 Some(_) => out.anchor = VerticalAnchor::Top,
                 None => {}
+            }
+            if let Some(center) = attr_bool(*pr, "anchorCtr") {
+                out.anchor_center = center;
+            }
+            if let Some(first_last) = attr_bool(*pr, "spcFirstLastPara") {
+                out.space_first_last = first_last;
             }
             if let Some(wrap) = attr(*pr, "wrap") {
                 out.wrap = wrap != "none";
@@ -2427,6 +2473,7 @@ fn parse_artistic_effect(blip: Node) -> Option<ibis_doc_model::ArtisticEffect> {
             }
             RunStyle {
                 font_size: Some(run.size.unwrap_or(default_font_size)),
+                size_inherited: run.size.is_none() || rpr.is_some_and(|r| unqualified_attribute(r, "ibisSizeInherited").is_some()),
                 bold: Some(run.bold.unwrap_or(false)),
                 italic: Some(run.italic.unwrap_or(false)),
                 underline: run.underline.unwrap_or(false),
@@ -2624,18 +2671,22 @@ fn parse_artistic_effect(blip: Node) -> Option<ibis_doc_model::ArtisticEffect> {
             }),
             _ => None,
         };
-        let bullet = bullet.map(|text| Bullet { text, picture, size: bullet_size as u32, color: props.bullet_color.flatten().map(|c| c.rgb), auto, symbol });
+        // A character bullet is drawn in its own typeface (`buFont`), a symbol typeface's by its stand-in (`symbol`).
+        let bullet_font = match (&props.bullet, props.bullet_font.as_deref()) {
+            (Some(BulletProps::Char(_)), Some(font)) if !crate::style::is_symbol_font(font) => Some(font.to_string()),
+            _ => None,
+        };
+        let bullet = bullet.map(|text| Bullet { text, picture, size: bullet_size as u32, color: props.bullet_color.flatten().map(|c| c.rgb), auto, symbol, font: bullet_font });
 
         let count = lines.len();
         lines
             .into_iter()
             .enumerate()
             .map(|(i, runs)| Paragraph {
-                end_style: if runs.is_empty() {
-                    line_ends.get(i).and_then(|s| s.clone()).unwrap_or_else(|| end_style.clone())
-                } else {
-                    end_style.clone()
-                },
+                // An empty line is as high as its break's formatting; a line ended by a line break ends in the break (`line_end`), the last
+                // one in the paragraph's mark.
+                end_style: if runs.is_empty() { line_ends.get(i).and_then(|s| s.clone()).unwrap_or_else(|| end_style.clone()) } else { end_style.clone() },
+                line_end: if runs.is_empty() { None } else { line_ends.get(i).and_then(|s| s.clone()) },
                 runs,
                 align: Some(props.align.unwrap_or_default()),
                 margin_left: props.margin_left.unwrap_or(0),
@@ -2843,9 +2894,10 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                 text.insets = Insets { left: margin("marL", 91_440), right: margin("marR", 91_440), top: margin("marT", 45_720), bottom: margin("marB", 45_720) };
                 text.anchor = match tc_pr.and_then(|p| attr(p, "anchor")) {
                     Some("ctr") => VerticalAnchor::Middle,
-                    Some("b") => VerticalAnchor::Bottom,
+                    Some("b" | "just" | "dist") => VerticalAnchor::Bottom,
                     _ => VerticalAnchor::Top,
                 };
+                text.anchor_center = tc_pr.and_then(|p| attr_bool(p, "anchorCtr")).unwrap_or(false);
                 if let Some(vert) = tc_pr.and_then(|p| attr(p, "vert")) {
                     let kind = ibis_doc_model::VerticalKind::parse(vert);
                     text.vertical = kind.is_some();
@@ -3466,6 +3518,8 @@ pub(crate) fn read_xlsx_with_records(data: &[u8], records: Option<&[Vec<String>]
         let cell_images_of_sheet = sheet.cell_images.clone();
         let mut reader = Reader {
             package: &package,
+            // Excel's drawings (`xdr` `a:ln`, rects and lines) are drawn no thinner than 0.14 pt, as PowerPoint's (measured in Excel's PDF, issue 189).
+            line_floor: Stroke::POWERPOINT_MIN_WIDTH,
             presentation: std::mem::replace(&mut presentation, Presentation::empty(EmuSize::WIDESCREEN)),
             media: std::mem::take(&mut media),
             default_text: None,
@@ -3891,6 +3945,9 @@ pub(crate) fn read_xlsx_with_records(data: &[u8], records: Option<&[Vec<String>]
     {
         presentation.ibis_extensions = true;
     }
+    if root.has_tag_name((MAIN, "workbook")) {
+        presentation.cmyk = crate::save::pptx_cmyk::read_cmyk_in_workbook(root);
+    }
     let compatibility_version = if root.has_tag_name((MAIN, "workbook")) && lists.len() == 1 && versions.len() == 1 {
         let node = versions[0];
         xlsx::unqualified_attr(node, "setVersion").and_then(xlsx::metadata_index).filter(|&v| v >= 1).filter(|&version| {
@@ -3923,6 +3980,7 @@ pub(crate) fn read_xlsx_with_records(data: &[u8], records: Option<&[Vec<String>]
         properties: crate::package::read_doc_properties(&package),
         custom_views: xlsx::read_custom_workbook_views(root),
         window_hidden: xlsx::read_workbook_window_hidden(root),
+        active_tab: xlsx::read_active_tab(root),
         external_books,
         queries,
         query_parameters,
@@ -3953,6 +4011,23 @@ pub(crate) fn read_xlsx_with_records(data: &[u8], records: Option<&[Vec<String>]
             _ => None,
         };
         workbook.sheets.push(ibis_doc_model::WorkbookSheet { name: name.clone(), state: *state, slide, hidden, other: part.is_none() });
+    }
+    // Sheets selected together (a group, 作業グループ): `tabSelected` on more than one sheet's view (GitHub issue #238). One selected sheet is the
+    // ordinary case (the present sheet), and is not a group.
+    let selected_tabs: Vec<usize> = all_sheets
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, part))| {
+            part.as_ref().and_then(|p| package.read(p).ok()).is_some_and(|bytes| {
+                let text = String::from_utf8_lossy(&bytes);
+                let at = text.find("<sheetView ");
+                at.and_then(|at| text[at..].find('>').map(|end| &text[at..at + end])).is_some_and(|tag| tag.contains("tabSelected=\"1\"") || tag.contains("tabSelected=\"true\""))
+            })
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if selected_tabs.len() > 1 {
+        workbook.selected_tabs = selected_tabs;
     }
     workbook.names = child(root, "definedNames")
         .into_iter()

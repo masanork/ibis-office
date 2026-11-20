@@ -281,15 +281,15 @@ pub(crate) fn order_and_align() {
     s.page(3);
     let first = s.with(|e, _| e.slide().shapes[1].id);
     s.select_shape(1);
-    s.menu("pptx.order.front");
+    s.menu("arrange.bring-to-front");
     assert_eq!(s.with(|e, _| e.slide().shapes.last().map(|x| x.id)), Some(first));
-    s.menu("pptx.order.back");
+    s.menu("arrange.send-to-back");
     assert_eq!(s.with(|e, _| e.slide().shapes[0].id), first);
     // Three shapes: tops lined up, then spread evenly.
     s.key("cmd-a");
     let all = s.selected();
     assert!(all >= 3);
-    s.menu("pptx.align.top");
+    s.menu("arrange.align-top");
     let tops: Vec<i64> = s.with(|e, _| e.selected_shapes().iter().map(|x| super::interaction::bounds(x).y).collect());
     assert!(tops.windows(2).all(|w| w[0] == w[1]), "{tops:?}");
     s.save_as("align.pptx");
@@ -1036,11 +1036,11 @@ pub(crate) fn play_animations_in_the_show() {
 pub(crate) fn emphasis_spin_and_scale_in_the_show() {
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.em.spin");
-    s.toolbar_menu("anim-options", "pptx.anim.opt.spin-180");
+    s.toolbar_menu("motion", "pptx.animation.em.spin");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.spin-180");
     s.click_shape(1);
-    s.toolbar_menu("motion", "pptx.anim.em.grow");
-    s.toolbar_menu("anim-options", "pptx.anim.opt.scale-200");
+    s.toolbar_menu("motion", "pptx.animation.em.grow");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.scale-200");
     let (first, second) = s.with(|e, _| (e.slide().shapes[0].clone(), e.slide().shapes[1].clone()));
     s.key("cmd-shift-enter");
     s.update(|_, _, cx| cx.set_reduce_motion(true));
@@ -2045,11 +2045,11 @@ pub(crate) fn add_animations_from_the_menu() {
     use ibis_doc_model::{AnimationClass, AnimationLook, AnimationSide, AnimationStart};
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     s.click_shape(1);
-    s.toolbar_menu("motion", "pptx.anim.in.fly-bottom");
-    s.toolbar_menu("motion", "pptx.anim.start.with");
-    s.toolbar_menu("motion", "pptx.anim.duration.1000");
+    s.toolbar_menu("motion", "pptx.animation.in.fly-bottom");
+    s.toolbar_menu("motion", "pptx.animation.start.with");
+    s.toolbar_menu("motion", "pptx.animation.duration.1000");
     let animations = s.with(|e, _| e.slide().animations.clone());
     let summary: Vec<_> = animations.iter().map(|a| (a.class, a.start, a.look, a.duration)).collect();
     assert_eq!(
@@ -2072,7 +2072,7 @@ pub(crate) fn add_animations_from_the_menu() {
     s.key("escape");
     s.page(1);
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.remove");
+    s.toolbar_menu("motion", "pptx.animation.remove");
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 1);
     undo_all_and_redo(&mut s);
 }
@@ -2226,7 +2226,7 @@ pub(crate) fn chart_ex_box_whisker_data() {
     });
     s.update(|_, _, cx| view.update(cx, |d, cx| {
         let slide = d.current_slide;
-        d.run(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 4, column: 1, input: CellInput::Value(CellValue::Number(60.0)) }] })], cx);
+        d.run(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 4, column: 1, input: CellInput::Value(CellValue::Number(60.0)) }] })], cx);
     }));
     drop(view);
     s.update(|e, w, cx| e.close_chart_panel(w, cx));
@@ -2335,7 +2335,7 @@ pub(crate) fn chart_ex_treemap_data() {
     });
     s.update(|_, _, cx| view.update(cx, |d, cx| {
         let slide = d.current_slide;
-        d.run(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 1, column: 1, input: CellInput::Value(CellValue::Number(70.0)) }] })], cx);
+        d.run(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 1, column: 1, input: CellInput::Value(CellValue::Number(70.0)) }] })], cx);
     }));
     let _ = shape;
     drop(view);
@@ -2388,7 +2388,7 @@ pub(crate) fn chart_ex_insert_and_data() {
     });
     s.update(|_, _, cx| view.update(cx, |d, cx| {
         let slide = d.current_slide;
-        d.run(vec![Command::Sheet(SheetCommand::SetCells { slide, edits: vec![CellEdit { row: 2, column: 1, input: CellInput::Value(CellValue::Number(70.0)) }] })], cx);
+        d.run(vec![Command::Sheet(SheetCommand::SetCells { sheet: slide, edits: vec![CellEdit { row: 2, column: 1, input: CellInput::Value(CellValue::Number(70.0)) }] })], cx);
     }));
     let values = |s: &mut Scenario| {
         s.with(move |e, _| match &e.slide().shape(shape).unwrap().kind {
@@ -2622,11 +2622,11 @@ pub(crate) fn animation_pane() {
     use ibis_doc_model::{AnimationClass as C, AnimationLook as L, AnimationSide};
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
-    s.toolbar_menu("motion", "add.pptx.anim.em.spin");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
+    s.toolbar_menu("motion", "add.pptx.animation.em.spin");
     s.click_shape(1);
-    s.toolbar_menu("motion", "pptx.anim.in.fly-bottom");
-    s.toolbar_menu("motion", "pptx.anim.pane");
+    s.toolbar_menu("motion", "pptx.animation.in.fly-bottom");
+    s.toolbar_menu("motion", "pptx.animation.pane");
     let order = |s: &mut Scenario| s.with(|e, _| e.slide().animations.iter().map(|a| (e.slide().shape_index(a.shape).unwrap(), a.class, a.look)).collect::<Vec<_>>());
     assert_eq!(order(&mut s), vec![(0, C::Entrance, L::Fade), (0, C::Emphasis, L::Spin(21_600_000)), (1, C::Entrance, L::Fly(AnimationSide::Bottom))]);
     s.screenshot("pane");
@@ -2661,17 +2661,17 @@ pub(crate) fn animation_pane_and_detailed_timeline() {
 
     // 図形0 (タイトル) にフェード (開始)
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
 
     // 効果の追加: スピン (強調)
-    s.toolbar_menu("motion", "add.pptx.anim.em.spin");
+    s.toolbar_menu("motion", "add.pptx.animation.em.spin");
 
     // 図形1 (サブタイトル) にスライドイン (開始)
     s.click_shape(1);
-    s.toolbar_menu("motion", "pptx.anim.in.fly-bottom");
+    s.toolbar_menu("motion", "pptx.animation.in.fly-bottom");
 
     // アニメーションウィンドウを開く
-    s.toolbar_menu("motion", "pptx.anim.pane");
+    s.toolbar_menu("motion", "pptx.animation.pane");
     assert!(s.with(|e, _| e.pptx().is_some_and(|p| p.animation_pane)), "animation pane opened");
 
     // 初期状態のタイムライン計算を検証
@@ -4075,23 +4075,23 @@ pub(crate) fn table_style_options() {
     assert!(!default_options.band_col);
 
     // 2. ツールバーから各オプションをトグル
-    s.toolbar_menu("table.style-options", "pptx.table.first-row");
+    s.toolbar_menu("table.style-options", "table.header-row");
     assert!(!get_table(&mut s).style_options.first_row, "first_row toggled to false");
 
-    s.toolbar_menu("table.style-options", "pptx.table.last-row");
+    s.toolbar_menu("table.style-options", "table.total-row");
     assert!(get_table(&mut s).style_options.last_row, "last_row toggled to true");
 
     // 3. メニューバー（書式 > 表のスタイルオプション）からトグル
-    s.menu("pptx.table.first-col");
+    s.menu("table.first-column");
     assert!(get_table(&mut s).style_options.first_col, "first_col toggled to true");
 
-    s.menu("pptx.table.band-row");
+    s.menu("table.banded-rows");
     assert!(!get_table(&mut s).style_options.band_row, "band_row toggled to false");
 
-    s.toolbar_menu("table.style-options", "pptx.table.last-col");
+    s.toolbar_menu("table.style-options", "table.last-column");
     assert!(get_table(&mut s).style_options.last_col, "last_col toggled to true");
 
-    s.toolbar_menu("table.style-options", "pptx.table.band-col");
+    s.toolbar_menu("table.style-options", "table.banded-columns");
     assert!(get_table(&mut s).style_options.band_col, "band_col toggled to true");
 
     let expected = TableStyleOptions {
@@ -4119,7 +4119,7 @@ pub(crate) fn table_style_options() {
 
     // 6. 再読込後のテーブルを再度トグルしてインプレース保存・再読込検証
     s.click_shape(shape);
-    s.toolbar_menu("table.style-options", "pptx.table.first-row");
+    s.toolbar_menu("table.style-options", "table.header-row");
     let expected2 = TableStyleOptions {
         first_row: true,
         ..expected
@@ -4859,7 +4859,7 @@ pub(crate) fn unsupported_text_copy_is_atomic() {
     let shape = s.with(|e, _| e.slide().shapes.iter().find(|sh| sh.text_body().is_some_and(|b| b.paragraphs.iter().any(|p| !p.runs.is_empty()))).unwrap().clone());
     {
         let mut copy = shape.clone();
-        copy.text_body_mut().unwrap().paragraphs[0].bullet = Some(ibis_doc_model::Bullet { text: "".into(), picture: Some(ibis_doc_model::MediaId(999)), size: 100_000, color: None, auto: None, symbol: None });
+        copy.text_body_mut().unwrap().paragraphs[0].bullet = Some(ibis_doc_model::Bullet { text: "".into(), picture: Some(ibis_doc_model::MediaId(999)), size: 100_000, color: None, auto: None, symbol: None, font: None });
         assert!(ibis_formats::save::check_shape_insertion(&copy).is_err());
         let before = s.with(|e, _| e.presentation().clone());
         s.update(|e, _, cx| {
@@ -6399,26 +6399,28 @@ pub(crate) fn print_settings_panel() {
     s.update(|e, _, cx| assert!(e.keep_print_settings(cx)));
     let settings = s.with(|e, _| e.print_settings());
     assert_eq!((settings.range, settings.custom.as_str(), settings.handout, settings.color, settings.frame), (PrintRange::Custom, "1,2", Some(4), PrintColorKind::Gray, true));
-    assert!(settings.needs_pictures());
+    assert!(!settings.needs_pictures(), "grey on a handout is vector (#225)");
     assert!(total >= 2);
     // Closing keeps what was kept; reopening shows it.
     s.update(|e, w, cx| e.close_dialog(w, cx)); // modal: the menu bar is off until it is closed
     assert!(s.with(|e, _| e.pptx().unwrap().print_panel.is_none()));
     assert_eq!(s.with(|e, _| e.print_settings()), settings);
-    // ノート ページ: replaces the handout, and is made of pictures.
+    // ノート ページ: replaces the handout, and is vector (#225).
     s.menu("file.print");
     s.update(|e, _, cx| e.edit_print_panel(|p| { p.handout = None; p.notes_pages = true; }, cx));
     s.update(|e, _, cx| assert!(e.keep_print_settings(cx)));
     let notes = s.with(|e, _| e.print_settings());
-    assert!(notes.notes_pages && notes.handout.is_none() && notes.needs_pictures());
+    assert!(notes.notes_pages && notes.handout.is_none());
+    // (the colour is still grey: the vector PDF prints it, no pictures.)
+    assert!(!notes.needs_pictures());
     assert!(notes.arguments(1, &Default::default()).contains(&"--notes-pages".to_string()));
-    // アウトライン: replaces the notes pages, and is made of text pages.
+    // アウトライン: replaces the notes pages, and is vector text pages (#225).
     s.update(|e, w, cx| e.close_dialog(w, cx));
     s.menu("file.print");
     s.update(|e, _, cx| e.edit_print_panel(|p| { p.handout = None; p.notes_pages = false; p.outline = true; }, cx));
     s.update(|e, _, cx| assert!(e.keep_print_settings(cx)));
     let outline = s.with(|e, _| e.print_settings());
-    assert!(outline.outline && !outline.notes_pages && outline.needs_pictures());
+    assert!(outline.outline && !outline.notes_pages);
     assert!(outline.arguments(1, &Default::default()).contains(&"--outline-pages".to_string()));
 }
 
@@ -6442,7 +6444,7 @@ pub(crate) fn merge_shapes() {
     let (bx, by) = (a.1.x + a.1.width / 2, a.1.y + a.1.height / 2);
     s.update(|e, _, cx| {
         let slide = e.current_slide;
-        e.run(vec![ibis_doc_model::Command::SetFrame { slide, shape: b.0, frame: ibis_doc_model::EmuRect::new(bx, by, b.1.width, b.1.height) }], cx)
+        e.run(vec![ibis_doc_model::Command::SetFrame { slide, frames: vec![(b.0, ibis_doc_model::EmuRect::new(bx, by, b.1.width, b.1.height))], with_attached: true }], cx)
     });
     s.update(|e, _, _| e.set_selection(vec![a.0, b.0]));
     s.menu("pptx.merge.union");
@@ -6672,7 +6674,7 @@ pub(crate) fn compress_pictures() {
     // Shown 4 × 2 inches, with the right half cropped off.
     s.update(|e, _, cx| {
         let slide = e.current_slide;
-        e.run(vec![ibis_doc_model::Command::SetFrame { slide, shape: id, frame: ibis_doc_model::EmuRect::new(0, 0, 2 * 914_400, 2 * 914_400) }], cx);
+        e.run(vec![ibis_doc_model::Command::SetFrame { slide, frames: vec![(id, ibis_doc_model::EmuRect::new(0, 0, 2 * 914_400, 2 * 914_400))], with_attached: true }], cx);
         e.crop_selected_pictures(ibis_doc_model::Crop { left: 0, top: 0, right: 50_000, bottom: 0 }, cx);
     });
     let (before_media, size_before) = s.with(|e, _| match &e.slide().shape(id).unwrap().kind {
@@ -6905,7 +6907,7 @@ pub(crate) fn master_view() {
     let moved = EmuRect::new(first.frame.x + 111_111, first.frame.y + 22_222, first.frame.width, first.frame.height);
     s.update(|e, _, cx| {
         let text = Shape::text_box(id, EmuRect::new(300_000, 6_000_000, 3_000_000, 400_000), "会社名");
-        e.run(vec![Command::SetFrame { slide: page_slide, shape: first.id, frame: moved }, Command::InsertShape { slide: page_slide, index: count, shape: text }], cx)
+        e.run(vec![Command::SetFrame { slide: page_slide, frames: vec![(first.id, moved)], with_attached: true }, Command::InsertShape { slide: page_slide, shapes: vec![(count, text)] }], cx)
     });
     // Another page keeps what was made.
     let pages = s.with(|e, _| e.master_view_page_count());
@@ -6996,7 +6998,7 @@ pub(crate) fn handout_master_view() {
     });
     s.screenshot("handout-master");
     let moved = EmuRect::new(header.1.x + 600_000, header.1.y + 200_000, header.1.width, header.1.height);
-    s.update(|e, _, cx| e.run(vec![Command::SetFrame { slide: page, shape: header.0, frame: moved }], cx));
+    s.update(|e, _, cx| e.run(vec![Command::SetFrame { slide: page, frames: vec![(header.0, moved)], with_attached: true }], cx));
     // A file cannot be saved while the page is open.
     s.menu("pptx.handout-master");
     assert!(!s.with(|e, _| e.is_handout_master()));
@@ -7212,7 +7214,7 @@ pub(crate) fn custom_glow_and_snapshot_rejection() {
     s.menu("pptx.glow.custom");fields(&mut s,["0","FFFFFF","0"]);press_panel_button(&mut s,"pptx-glow-apply");assert_eq!(glow(&mut s),Some((ibis_doc_model::Color {rgb:ibis_doc_model::Rgb(0xFFFFFF),alpha:0},0)));s.save_as("zero-glow.pptx");
     s.menu("pptx.glow.custom");s.update(|e,_,cx|e.set_shape_glow(Some((ibis_doc_model::Color {rgb:ibis_doc_model::Rgb(0x4472C4),alpha:128},63_500)),cx));let changed=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-glow-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),changed);assert!(s.with(|e,_|e.shape_edit.glow_panel.is_some()));press_panel_button(&mut s,"pptx-glow-cancel");
     s.menu("pptx.glow.custom");fields(&mut s,["169093.20055118","000000","100"]);press_panel_button(&mut s,"pptx-glow-apply");assert_eq!(glow(&mut s),Some((ibis_doc_model::Color::BLACK,i32::MAX as i64)));s.save_as("max-glow.pptx");let saved=s.reopen();let ShapeKind::Auto(a)=&saved.slides[0].shapes[index].kind else {panic!("auto")};assert_eq!(a.glow,Some((ibis_doc_model::Color::BLACK,i32::MAX as i64)));s.key("cmd-z");
-    s.menu("pptx.glow.custom");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[index].id;e.run(vec![ibis_doc_model::Command::RemoveShape {slide,shape}],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-glow-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.glow_panel.is_some()));press_panel_button(&mut s,"pptx-glow-cancel");s.key("cmd-z");
+    s.menu("pptx.glow.custom");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[index].id;e.run(vec![ibis_doc_model::Command::DeleteShape { slide, shapes: vec![shape], with_attached: true }],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-glow-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.glow_panel.is_some()));press_panel_button(&mut s,"pptx-glow-cancel");s.key("cmd-z");
     s.click_shape(index);s.double_click_shape(index);s.menu("pptx.glow.custom");s.update(|e,_,cx|e.input_mark("未確定",cx));let marked=s.with(|e,_|e.edited_body().unwrap().clone());press_panel_button(&mut s,"pptx-glow-apply");assert_eq!(s.with(|e,_|e.edited_body().unwrap().clone()),marked);assert!(s.with(|e,_|e.text_editing().unwrap().marked.is_some()));assert!(s.with(|e,_|e.shape_edit.glow_panel.is_some()));press_panel_button(&mut s,"pptx-glow-cancel");s.update(|e,w,cx| {e.input_mark("",cx);e.end_text_edit(w,cx);});
     let ids=s.with(|e,_|vec![e.slide().shapes[index].id,*e.slide().placeholders.keys().next().unwrap()]);s.update(|e,_,_|e.set_selection(ids));s.menu("pptx.glow.custom");fields(&mut s,["8","ABCDEF","80"]);let before=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-glow-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),before);assert!(s.with(|e,_|e.shape_edit.glow_panel.is_some()));press_panel_button(&mut s,"pptx-glow-cancel");undo_all_and_redo(&mut s);
 }
@@ -7240,7 +7242,7 @@ pub(crate) fn custom_shadow_and_snapshot_rejection() {
     s.menu("pptx.shadow.custom");fields(&mut s,["0","FFFFFF","0","0","0"]);press_panel_button(&mut s,"pptx-shadow-apply");assert_eq!(shadow(&mut s),Some(ibis_doc_model::Shadow::simple(ibis_doc_model::Color {rgb:ibis_doc_model::Rgb(0xFFFFFF),alpha:0},0,0,0)));s.save_as("zero-shadow.pptx");
     s.menu("pptx.shadow.custom");s.update(|e,_,cx|e.set_shape_shadow(Some(ibis_doc_model::Shadow::simple(ibis_doc_model::Color {rgb:ibis_doc_model::Rgb(0),alpha:128},0,50_800,0)),cx));let changed=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-shadow-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),changed);assert!(s.with(|e,_|e.shape_edit.shadow_panel.is_some()));press_panel_button(&mut s,"pptx-shadow-cancel");
     s.menu("pptx.shadow.custom");fields(&mut s,["169093.20055118","000000","100","169093.20055118","359.99998333"]);press_panel_button(&mut s,"pptx-shadow-apply");assert_eq!(shadow(&mut s),Some(ibis_doc_model::Shadow::simple(ibis_doc_model::Color::BLACK,i32::MAX as i64,i32::MAX as i64,21_599_999)));s.save_as("max-shadow.pptx");let saved=s.reopen();let ShapeKind::Auto(a)=&saved.slides[0].shapes[index].kind else {panic!("auto")};assert_eq!(a.shadow,Some(ibis_doc_model::Shadow::simple(ibis_doc_model::Color::BLACK,i32::MAX as i64,i32::MAX as i64,21_599_999)));s.key("cmd-z");
-    s.menu("pptx.shadow.custom");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[index].id;e.run(vec![ibis_doc_model::Command::RemoveShape {slide,shape}],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-shadow-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.shadow_panel.is_some()));press_panel_button(&mut s,"pptx-shadow-cancel");s.key("cmd-z");
+    s.menu("pptx.shadow.custom");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[index].id;e.run(vec![ibis_doc_model::Command::DeleteShape { slide, shapes: vec![shape], with_attached: true }],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-shadow-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.shadow_panel.is_some()));press_panel_button(&mut s,"pptx-shadow-cancel");s.key("cmd-z");
     s.click_shape(index);s.double_click_shape(index);s.menu("pptx.shadow.custom");s.update(|e,_,cx|e.input_mark("未確定",cx));let marked=s.with(|e,_|e.edited_body().unwrap().clone());press_panel_button(&mut s,"pptx-shadow-apply");assert_eq!(s.with(|e,_|e.edited_body().unwrap().clone()),marked);assert!(s.with(|e,_|e.text_editing().unwrap().marked.is_some()));assert!(s.with(|e,_|e.shape_edit.shadow_panel.is_some()));press_panel_button(&mut s,"pptx-shadow-cancel");s.update(|e,w,cx| {e.input_mark("",cx);e.end_text_edit(w,cx);});
     let ids=s.with(|e,_|vec![e.slide().shapes[index].id,*e.slide().placeholders.keys().next().unwrap()]);s.update(|e,_,_|e.set_selection(ids));s.menu("pptx.shadow.custom");fields(&mut s,["8","ABCDEF","80","3","45"]);let before=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-shadow-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),before);assert!(s.with(|e,_|e.shape_edit.shadow_panel.is_some()));press_panel_button(&mut s,"pptx-shadow-cancel");undo_all_and_redo(&mut s);
 }
@@ -8263,7 +8265,7 @@ pub(crate) fn copy_and_paste_paragraph_formats() {
     s.update(|e, _, cx| {
         let mut body = e.edited_body().unwrap().clone();
         let p = &mut body.paragraphs[0]; p.align = Some(ibis_doc_model::TextAlign::Right); p.margin_left = 360_000; p.indent = -180_000; p.level = 1;
-        p.font_align = ibis_doc_model::FontAlign::Center; p.line_spacing = Some(ibis_doc_model::LineSpacing::Points(1850)); p.space_before = 200; p.bullet = Some(ibis_doc_model::Bullet { text: "◆".into(), picture: None, size: 125_000, color: Some(ibis_doc_model::Rgb(0x112233)), auto: None, symbol: None });
+        p.font_align = ibis_doc_model::FontAlign::Center; p.line_spacing = Some(ibis_doc_model::LineSpacing::Points(1850)); p.space_before = 200; p.bullet = Some(ibis_doc_model::Bullet { text: "◆".into(), picture: None, size: 125_000, color: Some(ibis_doc_model::Rgb(0x112233)), auto: None, symbol: None, font: None });
         body.paragraphs[1].space_after = 400; body.unify_lines();
         e.run(vec![ibis_doc_model::Command::SetTextBody { slide: e.current_slide, shape: e.text_editing().unwrap().shape, body }], cx);
         let edit = e.shape_edit.edit.as_mut().unwrap(); edit.anchor = 7; edit.caret = 7;
@@ -8925,7 +8927,7 @@ pub(crate) fn custom_linear_gradient_targets_and_conflicts() {
     s.click_shape(table);let frame=s.with(|e,_|e.slide().shapes[table].frame);let cell=s.at(ibis_doc_model::EmuPoint::new(frame.x+750_000,frame.y+300_000));s.double_click(cell);assert_eq!(s.with(|e,_|e.text_editing().unwrap().cell),Some((0,0)));s.menu("pptx.fill.custom");fields(&mut s,"33.333",&[["100","112233","50"],["0","AABBCC","0"]]);let before=s.with(|e,_|e.slide().shapes[table].clone());press_panel_button(&mut s,"pptx-gradient-apply");let mut changed=before.clone();let ShapeKind::Table(t)=&mut changed.kind else {panic!("table")};t.rows[0].cells[0].fill=Fill::Linear {angle:1_999_980,scaled:false,stops:vec![GradientStop {position:0,color:Color {rgb:Rgb(0xAABBCC),alpha:0}},GradientStop {position:100_000,color:Color {rgb:Rgb(0x112233),alpha:128}}]};assert_eq!(s.with(|e,_|e.slide().shapes[table].clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().shapes[table].clone()),before);s.key("cmd-shift-z");s.save_as("custom-cell-gradient.pptx");assert_eq!(s.reopen().slides[0].shapes[table].kind,changed.kind);s.key("escape");
     s.click_shape(table);s.double_click(cell);let corner=cell_middle(&mut s,table,0,1);s.shift_click(corner);assert_eq!(s.with(|e,_|e.text_editing().unwrap().cell_anchor),Some((0,1)));s.menu("pptx.fill.custom");fields(&mut s,"45",&[["0","102938","100"],["100","ABCDEF","25"]]);let before=s.with(|e,_|e.slide().shapes[table].clone());press_panel_button(&mut s,"pptx-gradient-apply");let mut changed=before.clone();let ShapeKind::Table(t)=&mut changed.kind else {panic!("table")};let range_fill=Fill::Linear {angle:2_700_000,scaled:false,stops:vec![GradientStop {position:0,color:Color::opaque(Rgb(0x102938))},GradientStop {position:100_000,color:Color {rgb:Rgb(0xABCDEF),alpha:64}}]};for cell in &mut t.rows[0].cells {cell.fill=range_fill.clone();}assert_eq!(s.with(|e,_|e.slide().shapes[table].clone()),changed);s.save_as("custom-cell-range-gradient.pptx");assert_eq!(s.reopen().slides[0].shapes[table].kind,changed.kind);s.key("escape");
     let ids=s.with(|e,_|vec![e.slide().shapes[own].id,e.slide().shapes[table].id]);s.update(|e,_,_|e.set_selection(ids));s.menu("pptx.fill.custom");fields(&mut s,"30",&[["0","000000","100"],["50","808080","20"],["100","FFFFFF","100"]]);let before=s.with(|e,_|e.slide().clone());press_panel_button(&mut s,"pptx-gradient-apply");let mut changed=before.clone();let multi_fill=Fill::Linear {angle:1_800_000,scaled:false,stops:vec![GradientStop {position:0,color:Color::BLACK},GradientStop {position:50_000,color:Color {rgb:Rgb(0x808080),alpha:51}},GradientStop {position:100_000,color:Color::WHITE}]};let ShapeKind::Auto(a)=&mut changed.shapes[own].kind else {panic!("auto")};a.fill=multi_fill.clone();let ShapeKind::Table(t)=&mut changed.shapes[table].kind else {panic!("table")};for cell in t.rows.iter_mut().flat_map(|r|&mut r.cells) {cell.fill=multi_fill.clone();}assert_eq!(s.with(|e,_|e.slide().clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().clone()),before);s.key("cmd-shift-z");s.save_as("custom-multi-gradient.pptx");let saved=s.reopen();assert_eq!(saved.slides[0].shapes[own].kind,changed.shapes[own].kind);assert_eq!(saved.slides[0].shapes[table].kind,changed.shapes[table].kind);s.update(|e,_,_| {let id=e.slide().shapes[own].id;e.set_selection(vec![id]);});
-    s.click_shape(own);s.menu("pptx.fill.custom");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;e.run(vec![Command::RemoveShape {slide,shape}],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");undo_all_and_redo(&mut s);
+    s.click_shape(own);s.menu("pptx.fill.custom");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;e.run(vec![Command::DeleteShape { slide, shapes: vec![shape], with_attached: true }],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");undo_all_and_redo(&mut s);
 }
 
 
@@ -8940,14 +8942,14 @@ pub(crate) fn custom_path_gradient_targets_and_conflicts() {
         s.menu("pptx.fill.custom-path");assert!(s.with(|e,_|e.shape_edit.gradient_panel.as_ref().unwrap().path.is_some()));s.key("cmd-a");s.type_text(values[0]);assert_eq!(s.with(|e,cx|e.shape_edit.gradient_panel.as_ref().unwrap().focus[0].read(cx).value().to_string()),values[0]);focus(&mut s,values);press_panel_button(&mut s,&id.replace('.',"-"));assert_eq!(s.with(|e,_|e.shape_edit.gradient_panel.as_ref().unwrap().path),Some(path),"the chosen type is on");let before=s.with(|e,_|e.slide().shapes[own].clone());let mut changed=before.clone();let ShapeKind::Auto(a)=&mut changed.kind else {panic!("auto")};a.fill=Fill::Path {path,focus:positions,stops:stops.clone()};press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.slide().shapes[own].clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().shapes[own].clone()),before);s.key("cmd-shift-z");s.save_as(&format!("custom-{}.pptx",path.name()));assert_eq!(s.reopen().slides[0].shapes[own].kind,changed.kind);
     }
     for invalid in ["NaN","inf","2147483.648","-2147483.649","text"] {s.menu("pptx.fill.custom-path");focus(&mut s,[invalid,"50","50","50"]);let before=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),before);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");}
-    s.menu("pptx.fill.custom-path");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;let frame=e.slide().shapes[own].frame.translated(127_000,0);e.run(vec![Command::SetFrame {slide,shape,frame}],cx);});let altered=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),altered);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");
+    s.menu("pptx.fill.custom-path");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;let frame=e.slide().shapes[own].frame.translated(127_000,0);e.run(vec![Command::SetFrame { slide, frames: vec![(shape, frame)], with_attached: true }],cx);});let altered=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),altered);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");
     s.menu("pptx.fill.custom-path");s.double_click_shape(own);s.update(|e,_,cx|e.input_mark("未確定",cx));let marked=s.with(|e,_|e.edited_body().unwrap().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.edited_body().unwrap().clone()),marked);assert!(s.with(|e,_|e.text_editing().unwrap().marked.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.update(|e,w,cx| {e.input_mark("",cx);e.end_text_edit(w,cx);});
     s.menu("pptx.background.custom-path");press_panel_button(&mut s,"pptx-gradient-rect");focus(&mut s,["-0.001","100.001","0","50"]);let expected=Fill::Path {path:GradientPath::Rect,focus:[-1,100_001,0,50_000],stops:stops.clone()};let before=s.with(|e,_|e.slide().background.clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.slide().background.clone()),expected);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().background.clone()),before);s.key("cmd-shift-z");s.save_as("custom-path-background.pptx");assert_eq!(s.reopen().slides[0].background,expected);
     s.click_shape(table);let cell=cell_middle(&mut s,table,0,0);s.double_click(cell);let corner=cell_middle(&mut s,table,0,1);s.shift_click(corner);s.menu("pptx.fill.custom-path");press_panel_button(&mut s,"pptx-gradient-shape");focus(&mut s,["12.345","23.456","34.567","45.678"]);let fill=Fill::Path {path:GradientPath::Shape,focus:[12_345,23_456,34_567,45_678],stops:stops.clone()};let before=s.with(|e,_|e.slide().shapes[table].clone());let mut changed=before.clone();let ShapeKind::Table(t)=&mut changed.kind else {panic!("table")};for cell in &mut t.rows[0].cells {cell.fill=fill.clone();}press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.slide().shapes[table].clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().shapes[table].clone()),before);s.key("cmd-shift-z");s.save_as("custom-path-cell-range.pptx");assert_eq!(s.reopen().slides[0].shapes[table].kind,changed.kind);s.key("escape");
     s.update(|e,_,_| {let ids=vec![e.slide().shapes[own].id,e.slide().shapes[table].id];e.set_selection(ids);});s.menu("pptx.fill.custom-path");press_panel_button(&mut s,"pptx-gradient-rect");focus(&mut s,["20","30","40","50"]);let fill=Fill::Path {path:GradientPath::Rect,focus:[20_000,30_000,40_000,50_000],stops:stops.clone()};let before=s.with(|e,_|e.slide().clone());let mut changed=before.clone();let ShapeKind::Auto(a)=&mut changed.shapes[own].kind else {panic!("auto")};a.fill=fill.clone();let ShapeKind::Table(t)=&mut changed.shapes[table].kind else {panic!("table")};for cell in t.rows.iter_mut().flat_map(|r|&mut r.cells) {cell.fill=fill.clone();}press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.slide().clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().clone()),before);s.key("cmd-shift-z");s.save_as("custom-path-multi.pptx");let saved=s.reopen();assert_eq!(saved.slides[0].shapes[own].kind,changed.shapes[own].kind);assert_eq!(saved.slides[0].shapes[table].kind,changed.shapes[table].kind);
     s.update(|e,_,_| {let id=e.slide().shapes[own].id;e.set_selection(vec![id]);});s.menu("pptx.fill.custom-path");press_panel_button(&mut s,"pptx-gradient-add");s.update(|e,w,cx| {let fields=e.shape_edit.gradient_panel.as_ref().unwrap().stops[2].clone();for (f,v) in fields.iter().zip(["50","12aBcD","37.5"]) {f.update(cx,|f,cx|f.set_value(v,w,cx));}});let before=s.with(|e,_|e.slide().shapes[own].clone());press_panel_button(&mut s,"pptx-gradient-apply");let mut changed=before.clone();let ShapeKind::Auto(a)=&mut changed.kind else {panic!("auto")};a.fill=Fill::Path {path:GradientPath::Rect,focus:[20_000,30_000,40_000,50_000],stops:vec![stops[0].clone(),GradientStop {position:50_000,color:Color {rgb:ibis_doc_model::Rgb(0x12ABCD),alpha:96}},stops[1].clone()]};assert_eq!(s.with(|e,_|e.slide().shapes[own].clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().shapes[own].clone()),before);s.key("cmd-shift-z");s.save_as("custom-path-three-stops.pptx");assert_eq!(s.reopen().slides[0].shapes[own].kind,changed.kind);
     s.menu("pptx.fill.custom-path");press_panel_button(&mut s,"pptx-gradient-cancel");s.menu("pptx.fill.custom");assert!(s.with(|e,_|e.shape_edit.gradient_panel.as_ref().unwrap().path.is_none()));press_panel_button(&mut s,"pptx-gradient-cancel");s.menu("pptx.fill.custom-path");assert_eq!(s.with(|e,_|e.shape_edit.gradient_panel.as_ref().unwrap().path),Some(GradientPath::Rect));press_panel_button(&mut s,"pptx-gradient-cancel");
-    s.menu("pptx.fill.custom-path");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;e.run(vec![Command::RemoveShape {slide,shape}],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");undo_all_and_redo(&mut s);
+    s.menu("pptx.fill.custom-path");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;e.run(vec![Command::DeleteShape { slide, shapes: vec![shape], with_attached: true }],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");undo_all_and_redo(&mut s);
 }
 
 
@@ -8993,13 +8995,13 @@ pub(crate) fn custom_pattern_all_presets_targets_and_conflicts() {
     let choices=super::gradient_panel::PATTERN_CHOICES;assert_eq!(choices.len(),54);assert_eq!(choices.iter().map(|c|c.1).collect::<std::collections::HashSet<_>>().len(),54);
     for &(_id,preset,_) in choices {s.menu("pptx.fill.custom-pattern");assert_eq!(s.menu_state("pptx.gradient.add"),Some((false,false)));s.key("cmd-a");s.type_text("#12aBcD");assert_eq!(s.with(|e,cx|e.shape_edit.gradient_panel.as_ref().unwrap().stops[0][1].read(cx).value().to_string()),"#12aBcD");colors(&mut s,[["#12aBcD","37.5"],["#fedcba","25"]]);s.update(|e,_,cx|e.set_pattern_preset(preset,cx));assert_eq!(s.with(|e,_|e.shape_edit.gradient_panel.as_ref().unwrap().pattern.clone()).as_deref(),Some(preset),"the chosen pattern is on");let before=s.with(|e,_|e.slide().shapes[own].clone());let mut changed=before.clone();let ShapeKind::Auto(a)=&mut changed.kind else {panic!("auto")};a.fill=Fill::Pattern {preset:preset.into(),foreground:fg,background:bg};press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.slide().shapes[own].clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().shapes[own].clone()),before);s.key("cmd-shift-z");s.save_as(&format!("pattern-{preset}.pptx"));assert_eq!(s.reopen().slides[0].shapes[own].kind,changed.kind);}
     for values in [[["ABCDE","100"],["FFFFFF","100"]],[["GGHHII","100"],["FFFFFF","100"]],[["000000","NaN"],["FFFFFF","100"]],[["000000","-1"],["FFFFFF","100"]],[["000000","101"],["FFFFFF","100"]],[["000000","100"],["ABCDEF","inf"]],[["000000","100"],["ABCDEF","-1"]]] {s.menu("pptx.fill.custom-pattern");colors(&mut s,values);let before=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),before);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");}
-    s.menu("pptx.fill.custom-pattern");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;let frame=e.slide().shapes[own].frame.translated(127_000,0);e.run(vec![Command::SetFrame {slide,shape,frame}],cx);});let altered=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),altered);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");
+    s.menu("pptx.fill.custom-pattern");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;let frame=e.slide().shapes[own].frame.translated(127_000,0);e.run(vec![Command::SetFrame { slide, frames: vec![(shape, frame)], with_attached: true }],cx);});let altered=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),altered);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");
     s.menu("pptx.fill.custom-pattern");s.double_click_shape(own);s.update(|e,_,cx|e.input_mark("未確定",cx));let marked=s.with(|e,_|e.edited_body().unwrap().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.edited_body().unwrap().clone()),marked);assert!(s.with(|e,_|e.text_editing().unwrap().marked.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.update(|e,w,cx| {e.input_mark("",cx);e.end_text_edit(w,cx);});
     s.menu("pptx.background.custom-pattern");colors(&mut s,[["12ABCD","37.5"],["FEDCBA","25"]]);s.update(|e,_,cx|e.set_pattern_preset("sphere",cx));let expected=Fill::Pattern {preset:"sphere".into(),foreground:fg,background:bg};let before=s.with(|e,_|e.slide().background.clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.slide().background.clone()),expected);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().background.clone()),before);s.key("cmd-shift-z");s.save_as("pattern-background.pptx");assert_eq!(s.reopen().slides[0].background,expected);
     s.click_shape(table);let cell=cell_middle(&mut s,table,0,0);s.double_click(cell);let corner=cell_middle(&mut s,table,0,1);s.shift_click(corner);s.menu("pptx.fill.custom-pattern");colors(&mut s,[["12ABCD","37.5"],["FEDCBA","25"]]);s.update(|e,_,cx|e.set_pattern_preset("weave",cx));let fill=Fill::Pattern {preset:"weave".into(),foreground:fg,background:bg};let before=s.with(|e,_|e.slide().shapes[table].clone());let mut changed=before.clone();let ShapeKind::Table(t)=&mut changed.kind else {panic!("table")};for cell in &mut t.rows[0].cells {cell.fill=fill.clone();}press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.slide().shapes[table].clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().shapes[table].clone()),before);s.key("cmd-shift-z");s.save_as("pattern-cell-range.pptx");assert_eq!(s.reopen().slides[0].shapes[table].kind,changed.kind);s.key("escape");
     s.update(|e,_,_| {let ids=vec![e.slide().shapes[own].id,e.slide().shapes[table].id];e.set_selection(ids);});s.menu("pptx.fill.custom-pattern");colors(&mut s,[["12ABCD","37.5"],["FEDCBA","25"]]);s.update(|e,_,cx|e.set_pattern_preset("trellis",cx));let fill=Fill::Pattern {preset:"trellis".into(),foreground:fg,background:bg};let before=s.with(|e,_|e.slide().clone());let mut changed=before.clone();let ShapeKind::Auto(a)=&mut changed.shapes[own].kind else {panic!("auto")};a.fill=fill.clone();let ShapeKind::Table(t)=&mut changed.shapes[table].kind else {panic!("table")};for cell in t.rows.iter_mut().flat_map(|r|&mut r.cells) {cell.fill=fill.clone();}press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.slide().clone()),changed);s.key("cmd-z");assert_eq!(s.with(|e,_|e.slide().clone()),before);s.key("cmd-shift-z");s.save_as("pattern-multi.pptx");let saved=s.reopen();assert_eq!(saved.slides[0].shapes[own].kind,changed.shapes[own].kind);assert_eq!(saved.slides[0].shapes[table].kind,changed.shapes[table].kind);
     s.update(|e,_,_| {let id=e.slide().shapes[own].id;e.set_selection(vec![id]);});s.menu("pptx.fill.custom-pattern");press_panel_button(&mut s,"pptx-gradient-cancel");s.menu("pptx.fill.custom-path");assert!(s.with(|e,_|e.shape_edit.gradient_panel.as_ref().unwrap().pattern.is_none()));press_panel_button(&mut s,"pptx-gradient-cancel");s.menu("pptx.fill.custom-pattern");assert_eq!(s.with(|e,_|e.shape_edit.gradient_panel.as_ref().unwrap().pattern.as_deref().map(str::to_owned)),Some("trellis".into()));press_panel_button(&mut s,"pptx-gradient-cancel");
-    s.menu("pptx.fill.custom-pattern");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;e.run(vec![Command::RemoveShape {slide,shape}],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");undo_all_and_redo(&mut s);
+    s.menu("pptx.fill.custom-pattern");s.update(|e,_,cx| {let slide=e.current_slide;let shape=e.slide().shapes[own].id;e.run(vec![Command::DeleteShape { slide, shapes: vec![shape], with_attached: true }],cx);});let deleted=s.with(|e,_|e.presentation().clone());press_panel_button(&mut s,"pptx-gradient-apply");assert_eq!(s.with(|e,_|e.presentation().clone()),deleted);assert!(s.with(|e,_|e.shape_edit.gradient_panel.is_some()));press_panel_button(&mut s,"pptx-gradient-cancel");s.key("cmd-z");undo_all_and_redo(&mut s);
     // The type is a dropdown of pictures: opening it and choosing an item (the 7th) sets that pattern.
     s.menu("pptx.fill.custom-pattern");
     {let _probe=crate::shell::scenario::button_probe::Probe::new();s.update(|_,_,cx|cx.notify());crate::shell::scenario::button_probe::click(&mut s,"pptx-pattern-type");
@@ -9697,13 +9699,13 @@ pub(crate) fn show_properties_and_slideshow_controls() {
 pub(crate) fn animation_delay_options() {
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.delay)), Some(0));
 
-    s.toolbar_menu("motion", "pptx.anim.delay.1000");
+    s.toolbar_menu("motion", "pptx.animation.delay.1000");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.delay)), Some(1000));
 
-    s.toolbar_menu("motion", "pptx.anim.delay.500");
+    s.toolbar_menu("motion", "pptx.animation.delay.500");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.delay)), Some(500));
 
     // Undo / Redo
@@ -9805,11 +9807,11 @@ pub(crate) fn animation_preview_and_remove() {
 
     // 図形0にフェード効果を追加
     s.select_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 1);
 
     // プレビュー実行 -> スライドショーが開始される
-    s.toolbar_menu("motion", "pptx.anim.preview");
+    s.toolbar_menu("motion", "pptx.animation.preview");
     assert!(s.with(|e, _| e.slideshow().is_some()));
 
     // Esc でスライドショーを終了
@@ -9818,7 +9820,7 @@ pub(crate) fn animation_preview_and_remove() {
 
     // 再度図形を選択してアニメーション ウィンドウを開く
     s.select_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.pane");
+    s.toolbar_menu("motion", "pptx.animation.pane");
     assert!(s.with(|e, _| e.pptx().map_or(false, |p| p.animation_pane)));
 
     // アニメーション ウィンドウ経由でスライドショー（再生）を実行
@@ -9829,11 +9831,11 @@ pub(crate) fn animation_preview_and_remove() {
 
     // 図形1を選択してフライイン効果を追加
     s.select_shape(1);
-    s.toolbar_menu("motion", "pptx.anim.in.fly-bottom");
+    s.toolbar_menu("motion", "pptx.animation.in.fly-bottom");
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 2);
 
     // 図形1のアニメーションをツールバーから削除
-    s.toolbar_menu("motion", "pptx.anim.remove");
+    s.toolbar_menu("motion", "pptx.animation.remove");
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 1);
 
     // アニメーション ウィンドウ経由で先頭の効果を削除
@@ -9861,37 +9863,37 @@ pub(crate) fn animation_effect_options() {
     assert_eq!(s.toolbar_state("anim-options").map(|t| t.enabled), Some(false));
 
     // スライドイン（下から）を設定 -> anim-options が有効化
-    s.toolbar_menu("motion", "pptx.anim.in.fly-bottom");
+    s.toolbar_menu("motion", "pptx.animation.in.fly-bottom");
     assert_eq!(s.toolbar_state("anim-options").map(|t| t.enabled), Some(true));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Fly(AnimationSide::Bottom)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((2, 4)));
 
     // 「効果のオプション」から「左から」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.fly-left");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.fly-left");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Fly(AnimationSide::Left)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((2, 8)));
 
     // 「効果のオプション」から「上から」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.fly-top");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.fly-top");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Fly(AnimationSide::Top)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((2, 1)));
 
     // 図形1を選択し、スピンを設定
     s.click_shape(1);
-    s.toolbar_menu("motion", "pptx.anim.em.spin");
+    s.toolbar_menu("motion", "pptx.animation.em.spin");
     assert_eq!(s.toolbar_state("anim-options").map(|t| t.enabled), Some(true));
     assert_eq!(s.with(|e, _| e.slide().animations.last().map(|a| a.look)), Some(AnimationLook::Spin(21_600_000)));
 
     // 「効果のオプション」から「180°」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.spin-180");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.spin-180");
     assert_eq!(s.with(|e, _| e.slide().animations.last().map(|a| a.look)), Some(AnimationLook::Spin(10_800_000)));
 
     // 強調効果を拡大縮小（grow: 150%）に変更
-    s.toolbar_menu("motion", "pptx.anim.em.grow");
+    s.toolbar_menu("motion", "pptx.animation.em.grow");
     assert_eq!(s.with(|e, _| e.slide().animations.last().map(|a| a.look)), Some(AnimationLook::Scale(150_000, 150_000)));
 
     // 「効果のオプション」から「200%」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.scale-200");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.scale-200");
     assert_eq!(s.with(|e, _| e.slide().animations.last().map(|a| a.look)), Some(AnimationLook::Scale(200_000, 200_000)));
 
     // Undo / Redo の確認
@@ -9920,40 +9922,40 @@ pub(crate) fn animation_zoom_float_wipe_options() {
 
     // 1. 図形0を選択し、開始効果「ズーム」を設定
     s.select_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.zoom");
+    s.toolbar_menu("motion", "pptx.animation.in.zoom");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Zoom));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((23, 16)));
     let anim_zoom_in = s.with(|e, _| e.slide().animations[0].clone());
 
     // 2. 開始効果を「フロートイン」に変更
-    s.toolbar_menu("motion", "pptx.anim.in.float");
+    s.toolbar_menu("motion", "pptx.animation.in.float");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Float(AnimationSide::Top)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((30, 1)));
 
     // 効果オプションで「下へフロート」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.float-down");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.float-down");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Float(AnimationSide::Bottom)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((30, 2)));
 
     // 3. 開始効果を「ワイプ」に変更
-    s.toolbar_menu("motion", "pptx.anim.in.wipe");
+    s.toolbar_menu("motion", "pptx.animation.in.wipe");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Wipe(AnimationSide::Bottom)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((22, 4)));
 
     // 効果オプションで「右から」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.wipe-right");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.wipe-right");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Wipe(AnimationSide::Right)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((22, 2)));
 
     // 4. 図形1を選択し、終了効果「ズーム」を設定
     s.select_shape(1);
-    s.toolbar_menu("motion", "pptx.anim.out.zoom");
+    s.toolbar_menu("motion", "pptx.animation.out.zoom");
     assert_eq!(s.with(|e, _| e.slide().animations.last().map(|a| (a.class, a.look))), Some((AnimationClass::Exit, AnimationLook::Zoom)));
     assert_eq!(s.with(|e, _| e.slide().animations.last().map(|a| a.preset)), Some((23, 32)));
     let anim_zoom_out = s.with(|e, _| e.slide().animations.last().unwrap().clone());
 
     // 5. 終了効果を「フロートアウト」に変更
-    s.toolbar_menu("motion", "pptx.anim.out.float");
+    s.toolbar_menu("motion", "pptx.animation.out.float");
     assert_eq!(s.with(|e, _| e.slide().animations.last().map(|a| (a.class, a.look))), Some((AnimationClass::Exit, AnimationLook::Float(AnimationSide::Bottom))));
     assert_eq!(s.with(|e, _| e.slide().animations.last().map(|a| a.preset)), Some((30, 2)));
 
@@ -10009,24 +10011,24 @@ pub(crate) fn animation_motion_path() {
     assert_eq!(s.toolbar_state("anim-options").map(|t| t.enabled), Some(false));
 
     // 軌跡効果（直線: 下へ）を設定 -> anim-options が有効化
-    s.toolbar_menu("motion", "pptx.anim.path.down");
+    s.toolbar_menu("motion", "pptx.animation.path.down");
     assert_eq!(s.toolbar_state("anim-options").map(|t| t.enabled), Some(true));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.class)), Some(AnimationClass::Path));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Motion(0, 25_000)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((61, 4)));
 
     // 「効果のオプション」から「右へ」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.path-right");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.path-right");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Motion(25_000, 0)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((61, 2)));
 
     // 「効果のオプション」から「上へ」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.path-up");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.path-up");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Motion(0, -25_000)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((61, 1)));
 
     // 「効果のオプション」から「左へ」に変更
-    s.toolbar_menu("anim-options", "pptx.anim.opt.path-left");
+    s.toolbar_menu("anim-options", "pptx.animation.opt.path-left");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Motion(-25_000, 0)));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.preset)), Some((61, 8)));
 
@@ -10058,9 +10060,9 @@ pub(crate) fn animation_by_paragraph() {
         (sh.id, sh.text_body().unwrap().paragraphs.len())
     });
     s.update(|e, _, _| e.set_selection(vec![shape]));
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 1);
-    s.toolbar_menu("motion", "pptx.anim.build.paragraph");
+    s.toolbar_menu("motion", "pptx.animation.build.paragraph");
     let anim = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim.len(), paragraphs, "one for each paragraph");
     assert!(anim.iter().enumerate().all(|(k, a)| a.paragraph == Some((k as u32, k as u32)) && a.shape == shape && (k == 0 || a.start == ibis_doc_model::AnimationStart::OnClick)));
@@ -10068,7 +10070,7 @@ pub(crate) fn animation_by_paragraph() {
     let saved = s.reopen();
     assert_eq!(saved.slides[1].animations, anim, "read back as written");
     // Back to the whole shape.
-    s.toolbar_menu("motion", "pptx.anim.build.whole");
+    s.toolbar_menu("motion", "pptx.animation.build.whole");
     let whole = s.with(|e, _| e.slide().animations.clone());
     assert_eq!((whole.len(), whole[0].paragraph), (1, None));
     undo_all_and_redo(&mut s);
@@ -10085,8 +10087,8 @@ pub(crate) fn animation_by_word_and_letter() {
         (sh.id, e.presentation().size_of(e.slide()))
     });
     s.update(|e, _, _| e.set_selection(vec![shape]));
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
-    s.toolbar_menu("motion", "pptx.anim.build.word");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.build.word");
     let anim = s.with(|e, _| e.slide().animations.clone());
     assert_eq!((anim.len(), anim[0].text_unit), (1, Some((TextUnit::Word, UnitGap::Percent(10_000)))));
     // In the show: the shape with its words transparent, and a part for each word.
@@ -10118,9 +10120,9 @@ pub(crate) fn animation_by_word_and_letter() {
     s.key("escape");
     s.update(|e, _, _| e.set_selection(vec![shape]));
     // By letter, then the whole shape again.
-    s.toolbar_menu("motion", "pptx.anim.build.letter");
+    s.toolbar_menu("motion", "pptx.animation.build.letter");
     assert_eq!(s.with(|e, _| e.slide().animations[0].text_unit.map(|u| u.0)), Some(TextUnit::Letter));
-    s.toolbar_menu("motion", "pptx.anim.build.whole");
+    s.toolbar_menu("motion", "pptx.animation.build.whole");
     assert_eq!(s.with(|e, _| e.slide().animations[0].text_unit), None);
     undo_all_and_redo(&mut s);
 }
@@ -10155,11 +10157,11 @@ pub(crate) fn chart_animation_by_series_and_category() {
     s.click_shape(shape_idx);
 
     // 1. 最初はフェード効果を付ける（1つのオブジェクト）
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 1);
 
     // 2. 系列別 (By Series): 背景 + 系列ごとのアニメーション (1 + series_count)
-    s.toolbar_menu("anim-options", "pptx.anim.chart.series");
+    s.toolbar_menu("anim-options", "pptx.animation.chart.series");
     let anim_series = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_series.len(), 1 + series_count);
     assert_eq!(anim_series[0].chart_element, Some(ChartAnimationElement { series_idx: -1, category_idx: -1 }));
@@ -10182,7 +10184,7 @@ pub(crate) fn chart_animation_by_series_and_category() {
     assert!(xml.contains("<p:cChartEl seriesIdx=\"0\" categoryIdx=\"-1\"/>"), "{xml}");
 
     // 3. カテゴリ別 (By Category): 背景 + カテゴリごとのアニメーション (1 + category_count)
-    s.toolbar_menu("anim-options", "pptx.anim.chart.category");
+    s.toolbar_menu("anim-options", "pptx.animation.chart.category");
     let anim_category = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_category.len(), 1 + category_count);
     assert_eq!(anim_category[0].chart_element, Some(ChartAnimationElement { series_idx: -1, category_idx: -1 }));
@@ -10190,14 +10192,14 @@ pub(crate) fn chart_animation_by_series_and_category() {
     assert_eq!(anim_category[1].chart_element, Some(ChartAnimationElement { series_idx: -1, category_idx: 0 }));
 
     // 4. 背景を描画して開始の切り替え (animBg = false) -> 背景エフェクトが除かれ各カテゴリのみ
-    s.toolbar_menu("anim-options", "pptx.anim.chart.anim-bg");
+    s.toolbar_menu("anim-options", "pptx.animation.chart.anim-bg");
     let anim_no_bg = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_no_bg.len(), category_count);
     assert_eq!(anim_no_bg[0].chart_element, Some(ChartAnimationElement { series_idx: -1, category_idx: 0 }));
     assert_eq!(anim_no_bg[0].chart_build, Some((ChartBuildStep::Category, false)));
 
     // 5. 1 つのオブジェクトとして (AllAtOnce) に戻す
-    s.toolbar_menu("anim-options", "pptx.anim.chart.whole");
+    s.toolbar_menu("anim-options", "pptx.animation.chart.whole");
     let anim_whole = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_whole.len(), 1);
     assert_eq!(anim_whole[0].chart_element, None);
@@ -10224,14 +10226,14 @@ pub(crate) fn smartart_animation_by_element() {
     s.click_shape(dgm_idx);
 
     // 1. 最初はフェード効果を付ける（1 つのオブジェクト / 未指定 = Whole 相当）
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     let anim_init = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_init.len(), 1);
     assert_eq!(anim_init[0].shape, dgm_id);
     assert_eq!(anim_init[0].dgm_build, None);
 
     // 2. 個別 (DepthByNode / One by One): 要素ごとのアニメーション (part_count 個)
-    s.toolbar_menu("anim-options", "pptx.anim.dgm.one-by-one");
+    s.toolbar_menu("anim-options", "pptx.animation.dgm.one-by-one");
     let anim_one = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_one.len(), part_count);
     assert_eq!(anim_one[0].dgm_build, Some(DiagramBuildStep::DepthByNode));
@@ -10252,19 +10254,19 @@ pub(crate) fn smartart_animation_by_element() {
     assert!(xml.contains("<p:graphicEl><a:dgm"), "{xml}");
 
     // 3. レベルごとに (BreadthByLvl / Level at Once)
-    s.toolbar_menu("anim-options", "pptx.anim.dgm.level-at-once");
+    s.toolbar_menu("anim-options", "pptx.animation.dgm.level-at-once");
     let anim_lvl = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_lvl.len(), part_count);
     assert_eq!(anim_lvl[0].dgm_build, Some(DiagramBuildStep::BreadthByLvl));
 
     // 4. すべて同時に (AllAtOnce)
-    s.toolbar_menu("anim-options", "pptx.anim.dgm.all");
+    s.toolbar_menu("anim-options", "pptx.animation.dgm.all");
     let anim_all = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_all.len(), part_count);
     assert_eq!(anim_all[0].dgm_build, Some(DiagramBuildStep::AllAtOnce));
 
     // 5. 1 つのオブジェクトとして (Whole) に戻す
-    s.toolbar_menu("anim-options", "pptx.anim.dgm.whole");
+    s.toolbar_menu("anim-options", "pptx.animation.dgm.whole");
     let anim_whole = s.with(|e, _| e.slide().animations.clone());
     assert_eq!(anim_whole.len(), 1);
     assert_eq!(anim_whole[0].dgm_build, Some(DiagramBuildStep::Whole));
@@ -10283,14 +10285,14 @@ pub(crate) fn animation_on_several_shapes() {
     let ids: Vec<_> = s.with(|e, _| e.slide().shapes.iter().take(3).map(|sh| sh.id).collect());
     assert!(ids.len() >= 3);
     s.update(|e, _, _| e.set_selection(ids.clone()));
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     let starts = s.with(|e, _| e.slide().animations.iter().map(|a| a.start).collect::<Vec<_>>());
     assert_eq!(starts, [AnimationStart::OnClick, AnimationStart::WithPrevious, AnimationStart::WithPrevious]);
     // Grouped, the group's shapes come together as well.
     s.update(|e, _, cx| e.group_selected(cx));
     s.update(|e, _, cx| e.remove_shape_effects(cx));
     assert!(s.with(|e, _| e.slide().animations.is_empty()));
-    s.toolbar_menu("motion", "pptx.anim.in.appear");
+    s.toolbar_menu("motion", "pptx.animation.in.appear");
     let starts = s.with(|e, _| e.slide().animations.iter().map(|a| a.start).collect::<Vec<_>>());
     assert_eq!(starts, [AnimationStart::OnClick, AnimationStart::WithPrevious, AnimationStart::WithPrevious]);
     s.save_as("anim-several.pptx");
@@ -10321,7 +10323,7 @@ pub(crate) fn animation_custom_path() {
     let (a, b, c) = ((center.0 + dx, center.1), (center.0 + dx, center.1 + dy), (center.0, center.1 + dy));
 
     // Esc takes it back.
-    s.toolbar_menu("motion", "pptx.anim.path.custom");
+    s.toolbar_menu("motion", "pptx.animation.path.custom");
     assert!(s.with(|e, _| e.is_drawing_path()));
     s.dispatch_click_with(at(a.0, a.1), Default::default());
     assert_eq!(s.with(|e, _| e.path_draw_points().len()), 1);
@@ -10330,7 +10332,7 @@ pub(crate) fn animation_custom_path() {
     assert!(s.with(|e, _| e.slide().animations.is_empty()));
 
     // Two points, and the third with a double click.
-    s.toolbar_menu("motion", "pptx.anim.path.custom");
+    s.toolbar_menu("motion", "pptx.animation.path.custom");
     s.dispatch_click_with(at(a.0, a.1), Default::default());
     s.dispatch_click_with(at(b.0, b.1), Default::default());
     assert_eq!(s.with(|e, _| e.path_draw_points().len()), 2);
@@ -11420,21 +11422,21 @@ pub(crate) fn animation_menu_has_the_designed_lines() {
         })
     };
     let designed = [
-        "pptx.anim.preview",
+        "pptx.animation.preview",
         "pptx.menu.animation",
-        "pptx.anim.options",
+        "pptx.animation.options",
         "-",
-        "pptx.anim.add",
-        "pptx.anim.trigger",
-        "pptx.anim.copy",
-        "pptx.anim.paste",
+        "pptx.animation.add",
+        "pptx.animation.trigger",
+        "pptx.animation.copy",
+        "pptx.animation.paste",
         "-",
-        "pptx.anim.start",
-        "pptx.anim.duration",
-        "pptx.anim.delay",
+        "pptx.animation.start",
+        "pptx.animation.duration",
+        "pptx.animation.delay",
         "-",
-        "pptx.anim.order.earlier",
-        "pptx.anim.order.later",
+        "pptx.animation.order.earlier",
+        "pptx.animation.order.later",
     ];
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
     // Nothing selected: the same lines, the ones that need an effect grey.
@@ -11442,29 +11444,29 @@ pub(crate) fn animation_menu_has_the_designed_lines() {
     assert_eq!(none, designed, "nothing selected");
     // A shape with an effect.
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     let lines = top_ids(&mut s);
     let ids: Vec<&str> = lines.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(ids, designed, "a shape with an effect");
     let enabled = |id: &str| lines.iter().find(|(i, _)| i == id).map(|(_, on)| *on).unwrap_or(false);
-    for id in ["pptx.anim.preview", "pptx.menu.animation", "pptx.anim.add", "pptx.anim.start", "pptx.anim.duration", "pptx.anim.delay"] {
+    for id in ["pptx.animation.preview", "pptx.menu.animation", "pptx.animation.add", "pptx.animation.start", "pptx.animation.duration", "pptx.animation.delay"] {
         assert!(enabled(id), "{id} is on with an effect");
     }
     // One effect only: nowhere to move.
-    assert!(!enabled("pptx.anim.order.earlier") && !enabled("pptx.anim.order.later"));
+    assert!(!enabled("pptx.animation.order.earlier") && !enabled("pptx.animation.order.later"));
     // The submenu has the four classes.
     let classes: Vec<String> = s.with(|e, _| {
         let bar = e.menu_bar_menus();
         let (_, entries) = bar.menus.iter().find(|(id, _)| *id == MenuId::Animations).unwrap();
         entries.iter().find_map(|en| match en { MenuEntry::Submenu(sub) if sub.id == "pptx.menu.animation" => Some(sub.items.iter().filter_map(|i| match i { MenuEntry::Submenu(c) => Some(c.id.to_string()), MenuEntry::Item(c) => Some(c.id.to_string()), _ => None }).collect()), _ => None }).unwrap()
     });
-    assert_eq!(classes, ["pptx.anim.entrance", "pptx.anim.emphasis", "pptx.anim.exit", "pptx.anim.path"]);
+    assert_eq!(classes, ["pptx.animation.entrance", "pptx.animation.emphasis", "pptx.animation.exit", "pptx.animation.path"]);
     // Two effects: the second can move earlier, then the first is first.
-    s.toolbar_menu("motion", "add.pptx.anim.em.spin");
+    s.toolbar_menu("motion", "add.pptx.animation.em.spin");
     let lines = top_ids(&mut s);
     let on = |id: &str| lines.iter().find(|(i, _)| i == id).map(|(_, on)| *on).unwrap_or(false);
-    assert!(!on("pptx.anim.order.earlier") && on("pptx.anim.order.later"), "the selected shape's first effect is first");
-    s.menu("pptx.anim.order.later");
+    assert!(!on("pptx.animation.order.earlier") && on("pptx.animation.order.later"), "the selected shape's first effect is first");
+    s.menu("pptx.animation.order.later");
     let classes = s.with(|e, _| e.slide().animations.iter().map(|a| a.class).collect::<Vec<_>>());
     assert_eq!(classes[0], ibis_doc_model::AnimationClass::Emphasis, "the entrance moved after the emphasis");
 }
@@ -11515,7 +11517,7 @@ pub(crate) fn slideshow_and_transition_menus_have_the_designed_lines() {
     let ids: Vec<&str> = transitions.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(
         ids,
-        ["pptx.anim.preview", "pptx.transition", "transition.effect-options", "transition.sound", "transition.duration", "transition.all", "-", "transition.on-click", "transition.after"]
+        ["pptx.animation.preview", "pptx.transition", "transition.effect-options", "transition.sound", "transition.duration", "transition.all", "-", "transition.on-click", "transition.after"]
     );
     // No transition: the effect's options are grey, and the line is still there.
     assert!(!on(&transitions, "transition.effect-options"));
@@ -11663,8 +11665,8 @@ pub(crate) fn animation_painter_and_copy_effects() {
 
     // 1. 図形0（タイトル）にフェード（Entrance）およびスピン（Emphasis）を設定
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
-    s.toolbar_menu("motion", "add.pptx.anim.em.spin");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
+    s.toolbar_menu("motion", "add.pptx.animation.em.spin");
 
     let shape0_anims = s.with(|e, _| {
         let sid = e.slide().shapes[0].id;
@@ -11676,7 +11678,7 @@ pub(crate) fn animation_painter_and_copy_effects() {
 
     // 2. 図形0選択状態でアニメーションをコピー
     assert!(s.with(|e, _| e.can_copy_animations()), "図形0のアニメーションをコピー可能");
-    s.menu("pptx.anim.copy");
+    s.menu("pptx.animation.copy");
     let copied_count = s.with(|e, _| e.pptx().and_then(|st| st.animation_copy.as_ref()).map(|c| c.len()));
     assert_eq!(copied_count, Some(2), "2つの効果がコピーバッファに保持されている");
 
@@ -11690,7 +11692,7 @@ pub(crate) fn animation_painter_and_copy_effects() {
     assert!(s.with(|e, _| e.can_paste_animations()), "図形1にアニメーションを貼り付け可能");
 
     // 4. アニメーションを貼り付け
-    s.menu("pptx.anim.paste");
+    s.menu("pptx.animation.paste");
     let shape1_anims = s.with(|e, _| {
         let sid = e.slide().shapes[1].id;
         e.slide().animations.iter().filter(|a| a.shape == sid).map(|a| (a.class, a.look, a.duration)).collect::<Vec<_>>()
@@ -11715,7 +11717,7 @@ pub(crate) fn animation_painter_and_copy_effects() {
     // 6. ツールバー「アニメーションの書式設定（anim-painter）」ボタンの動作検証
     s.page(2);
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fly-bottom");
+    s.toolbar_menu("motion", "pptx.animation.in.fly-bottom");
     s.toolbar("anim-painter");
     let copied_p2 = s.with(|e, _| e.pptx().and_then(|st| st.animation_copy.as_ref()).map(|c| c.len()));
     assert_eq!(copied_p2, Some(1), "ページ2の図形0のアニメーションがコピーされた");
@@ -11730,10 +11732,10 @@ pub(crate) fn animation_painter_and_copy_effects() {
 
     // 6.5. ツールバー「アニメーション」ドロップダウンメニューからのコピー＆ペースト動作も検証
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.copy");
+    s.toolbar_menu("motion", "pptx.animation.copy");
     assert_eq!(s.with(|e, _| e.pptx().and_then(|st| st.animation_copy.as_ref()).map(|c| c.len())), Some(1));
     s.click_shape(1);
-    s.toolbar_menu("motion", "pptx.anim.paste");
+    s.toolbar_menu("motion", "pptx.animation.paste");
     let p2_shape1_reapplied = s.with(|e, _| {
         let sid = e.slide().shapes[1].id;
         e.slide().animations.iter().filter(|a| a.shape == sid).map(|a| (a.class, a.look)).collect::<Vec<_>>()
@@ -12032,10 +12034,10 @@ pub(crate) fn table_header_accessibility_check() {
     s.menu("table.new.3x3");
 
     // 1. 表の見出し行（first_row）をオフにして未設定状態を作る
-    s.menu("pptx.table.first-row");
+    s.menu("table.header-row");
 
     // 2. メニュー「pptx.check-accessibility」からアクセシビリティ検査パネルを開く
-    s.menu("pptx.check-accessibility");
+    s.menu("review.accessibility-check");
     assert!(s.with(|e, _| e.sidebar_open && e.pptx().and_then(|st| st.accessibility_panel.as_ref()).is_some()), "accessibility panel open");
 
     // 3. 表の見出し行未設定の警告が検出されていることを確認
@@ -12058,7 +12060,7 @@ pub(crate) fn table_header_accessibility_check() {
     assert_eq!(s.with(|e, _| e.pptx().unwrap().accessibility_panel.as_ref().unwrap().selected_issue), Some(table_warning_idx));
 
     // 5. 表の見出し行を再度オンにして「再検査」
-    s.menu("pptx.table.first-row");
+    s.menu("table.header-row");
     s.update(|e, _, cx| {
         e.recheck_pptx_accessibility(cx);
     });
@@ -12105,7 +12107,7 @@ pub(crate) fn meaningful_link_text_accessibility_check() {
     });
 
     // 2. メニュー「pptx.check-accessibility」からアクセシビリティ検査パネルを開く
-    s.menu("pptx.check-accessibility");
+    s.menu("review.accessibility-check");
     assert!(s.with(|e, _| e.sidebar_open && e.pptx().and_then(|st| st.accessibility_panel.as_ref()).is_some()), "accessibility panel open");
 
     // 3. リンクテキストに関する警告が2件検出されていることを確認
@@ -12191,7 +12193,7 @@ pub(crate) fn unique_slide_titles_accessibility_check() {
     });
 
     // 2. メニュー「pptx.check-accessibility」からパネルを開く
-    s.menu("pptx.check-accessibility");
+    s.menu("review.accessibility-check");
     assert!(s.with(|e, _| e.sidebar_open && e.pptx().and_then(|st| st.accessibility_panel.as_ref()).is_some()), "accessibility panel open");
 
     // 3. 重複タイトルの警告が検出されていることを確認
@@ -12255,7 +12257,7 @@ pub(crate) fn check_accessibility_panel_and_issue_jump() {
     });
 
     // 2. メニュー「pptx.check-accessibility」からアクセシビリティ パネルを開く
-    s.menu("pptx.check-accessibility");
+    s.menu("review.accessibility-check");
     assert!(s.with(|e, _| e.sidebar_open && e.pptx().and_then(|st| st.accessibility_panel.as_ref()).is_some()), "accessibility panel open");
 
     // 3. 検出された問題の確認
@@ -12308,7 +12310,7 @@ pub(crate) fn add_hidden_slide_title_resolves_accessibility_issue() {
     let new_slide_id = s.with(|e, _| e.current_slide);
 
     // 2. メニュー「pptx.check-accessibility」からアクセシビリティ パネルを開く
-    s.menu("pptx.check-accessibility");
+    s.menu("review.accessibility-check");
     assert!(s.with(|e, _| e.sidebar_open && e.pptx().and_then(|st| st.accessibility_panel.as_ref()).is_some()), "accessibility panel open");
 
     // 3. タイトル欠落エラー（AddSlideTitle）が検出されていることを確認
@@ -12419,7 +12421,7 @@ pub(crate) fn inspect_document_and_remove_personal_info() {
         });
         let slide = e.slide().id;
         e.run(vec![
-            Command::SetDocProperties { properties: props },
+            Command::SetDocumentProperties { properties: props },
             Command::SetNotes { slide, notes: "発表者用非公開メモ".into() },
         ], cx);
     });
@@ -12755,7 +12757,7 @@ pub(crate) fn compatibility_checker_and_options() {
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
 
     // 1. メニュー「pptx.compatibility-check」から互換性チェックパネルを開く
-    s.menu("pptx.compatibility-check");
+    s.menu("review.compatibility-check");
     assert!(s.with(|e, _| e.pptx().and_then(|st| st.compatibility_panel.as_ref()).is_some()), "compatibility panel opened");
 
     // 2. 互換性の問題を持つ要素（メディアクリップ、文字変形ワードアート、3D面取り付き図形）を追加
@@ -12852,7 +12854,7 @@ pub(crate) fn media_captions_and_accessibility() {
     s.update(|e, _, _| e.set_selection(vec![clip_id]));
 
     // 2. メニュー「pptx.check-accessibility」からアクセシビリティ パネルを開く
-    s.menu("pptx.check-accessibility");
+    s.menu("review.accessibility-check");
     assert!(s.with(|e, _| e.sidebar_open && e.pptx().and_then(|st| st.accessibility_panel.as_ref()).is_some()), "accessibility panel open");
 
     // 3. 動画クリップに字幕未設定警告（AddMediaCaptions）が検出されていることを確認
@@ -13180,7 +13182,7 @@ pub(crate) fn reading_order_pane_and_accessibility_check() {
     assert_eq!(s.with(|e, _| e.slide().shapes[0].id), orig_id0);
 
     // 7. アクセシビリティ検査パネルとの連携確認
-    s.menu("pptx.check-accessibility");
+    s.menu("review.accessibility-check");
     assert!(
         s.with(|e, _| e.sidebar_open && e.pptx().and_then(|st| st.accessibility_panel.as_ref()).is_some()),
         "accessibility panel open"
@@ -13250,7 +13252,7 @@ pub(crate) fn text_contrast_accessibility_check() {
     });
 
     // 2. メニュー「pptx.check-accessibility」からアクセシビリティ検査パネルを開く
-    s.menu("pptx.check-accessibility");
+    s.menu("review.accessibility-check");
     assert!(
         s.with(|e, _| e.sidebar_open && e.pptx().and_then(|st| st.accessibility_panel.as_ref()).is_some()),
         "accessibility panel should be open"
@@ -13496,35 +13498,35 @@ pub(crate) fn animation_repeat_and_autoreverse_options() {
 
     // 1. 図形0（タイトル）を選択し、フェード（開始）を追加
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
 
     // 初期状態の確認 (repeat_count: None, auto_reverse: false)
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.repeat_count)), Some(AnimationRepeat::None));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.auto_reverse)), Some(false));
 
     // 2. ツールバーメニューから「繰り返し: 3回」を設定
-    s.toolbar_menu("motion", "pptx.anim.repeat.3");
+    s.toolbar_menu("motion", "pptx.animation.repeat.3");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.repeat_count)), Some(AnimationRepeat::Count(3)));
 
     // 3. ツールバーメニューから「自動反転」を設定
-    s.toolbar_menu("motion", "pptx.anim.autoreverse");
+    s.toolbar_menu("motion", "pptx.animation.autoreverse");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.auto_reverse)), Some(true));
 
     // 4. メニュー状態の検証
     let anim_menu = s.with(|e, _| crate::animation_ui::animation_items(e));
-    let repeat_3_item = crate::shell::scenario::find_item(&anim_menu, "pptx.anim.repeat.3").unwrap();
+    let repeat_3_item = crate::shell::scenario::find_item(&anim_menu, "pptx.animation.repeat.3").unwrap();
     assert!(repeat_3_item.checked, "repeat 3 should be checked");
-    let repeat_none_item = crate::shell::scenario::find_item(&anim_menu, "pptx.anim.repeat.none").unwrap();
+    let repeat_none_item = crate::shell::scenario::find_item(&anim_menu, "pptx.animation.repeat.none").unwrap();
     assert!(!repeat_none_item.checked, "repeat none should not be checked");
-    let autoreverse_item = crate::shell::scenario::find_item(&anim_menu, "pptx.anim.autoreverse").unwrap();
+    let autoreverse_item = crate::shell::scenario::find_item(&anim_menu, "pptx.animation.autoreverse").unwrap();
     assert!(autoreverse_item.checked, "autoreverse should be checked");
 
     // 5. タイムライン計算（compute_timeline）の検証
-    // フェードは 500ms、3回繰返しで 1500ms
+    // フェードは 500ms。自動的に戻す（往復で 1000ms）を 3回繰り返して 3000ms（ECMA-376 19.5.3：autoRev は単純継続時間を倍にする）
     let (items, _) = s.with(|e, _| compute_timeline(&e.slide().animations));
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].duration_ms, 1500);
-    assert_eq!(items[0].end_time_ms, 1500);
+    assert_eq!(items[0].duration_ms, 3000);
+    assert_eq!(items[0].end_time_ms, 3000);
 
     // 6. アニメーション ウィンドウのインライン操作（cycle_effect_repeat_at, toggle_effect_autoreverse_at）
     s.update(|e, _, cx| {
@@ -13553,8 +13555,8 @@ pub(crate) fn animation_repeat_and_autoreverse_options() {
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.auto_reverse)), Some(false));
 
     // 8. 繰り返しを「次のクリックまで（UntilNextClick）」、自動反転を有効（true）にして保存・再読込
-    s.toolbar_menu("motion", "pptx.anim.repeat.until-click");
-    s.toolbar_menu("motion", "pptx.anim.autoreverse");
+    s.toolbar_menu("motion", "pptx.animation.repeat.until-click");
+    s.toolbar_menu("motion", "pptx.animation.autoreverse");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.repeat_count)), Some(AnimationRepeat::UntilNextClick));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.auto_reverse)), Some(true));
 
@@ -13582,33 +13584,39 @@ pub(crate) fn animation_smooth_start_and_end_options() {
     assert_eq!(apply_timing_easing(0.0, 0, 0), 0.0);
     assert_eq!(apply_timing_easing(0.5, 0, 0), 0.5);
     assert_eq!(apply_timing_easing(1.0, 0, 0), 1.0);
-    // 両方（50%/50%）: 進行度 0.25 のときは加速中で 0.125、0.5 のときは中間点 0.5、0.75 のときは減速中で 0.875
+    // 両方（50%/50%）：速さが余弦で立ち上がる（PowerPoint の動画で測定、#89）。0.25 で 0.0908、0.5 で 0.5、0.75 で 0.9092
     assert_eq!(apply_timing_easing(0.0, 50_000, 50_000), 0.0);
-    assert!((apply_timing_easing(0.25, 50_000, 50_000) - 0.125).abs() < 1e-4);
+    assert!((apply_timing_easing(0.25, 50_000, 50_000) - 0.0908).abs() < 1e-3);
     assert!((apply_timing_easing(0.5, 50_000, 50_000) - 0.5).abs() < 1e-4);
-    assert!((apply_timing_easing(0.75, 50_000, 50_000) - 0.875).abs() < 1e-4);
+    assert!((apply_timing_easing(0.75, 50_000, 50_000) - 0.9092).abs() < 1e-3);
     assert_eq!(apply_timing_easing(1.0, 50_000, 50_000), 1.0);
+    // 加速だけ（100%）：0.5 で 0.1817
+    assert!((apply_timing_easing(0.5, 100_000, 0) - 0.1817).abs() < 2e-3);
+    // A motion path is the same ramp (PowerPoint's video of 3 paths, 9 settings: 0.8 to 1 px).
+    let path = crate::slideshow::path_progress;
+    assert_eq!(path(0.3, 0, 0), 0.3);
+    assert!((path(0.25, 50_000, 50_000) - 0.0908).abs() < 1e-3 && (path(0.5, 50_000, 50_000) - 0.5).abs() < 1e-4);
 
     // 1. 図形0（タイトル）を選択し、フェード（開始）を追加
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
 
     // 初期状態の確認 (accel: 0, decel: 0)
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| (a.accel, a.decel))), Some((0, 0)));
 
     // 2. ツールバーメニューから「滑らかさ: 両方」を設定
-    s.toolbar_menu("motion", "pptx.anim.smooth.both");
+    s.toolbar_menu("motion", "pptx.animation.smooth.both");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| (a.accel, a.decel))), Some((50_000, 50_000)));
 
     // 3. メニュー状態の検証
     let anim_menu = s.with(|e, _| crate::animation_ui::animation_items(e));
-    let smooth_both_item = crate::shell::scenario::find_item(&anim_menu, "pptx.anim.smooth.both").unwrap();
+    let smooth_both_item = crate::shell::scenario::find_item(&anim_menu, "pptx.animation.smooth.both").unwrap();
     assert!(smooth_both_item.checked, "smooth both should be checked");
-    let smooth_none_item = crate::shell::scenario::find_item(&anim_menu, "pptx.anim.smooth.none").unwrap();
+    let smooth_none_item = crate::shell::scenario::find_item(&anim_menu, "pptx.animation.smooth.none").unwrap();
     assert!(!smooth_none_item.checked, "smooth none should not be checked");
 
     // 4. ツールバーメニューから「滑らかに開始」を設定
-    s.toolbar_menu("motion", "pptx.anim.smooth.start");
+    s.toolbar_menu("motion", "pptx.animation.smooth.start");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| (a.accel, a.decel))), Some((50_000, 0)));
 
     // 5. アニメーション ウィンドウのインライン操作（cycle_effect_smooth_at）
@@ -13655,7 +13663,7 @@ pub(crate) fn animation_smooth_start_and_end_options() {
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| (a.accel, a.decel))), Some((0, 50_000)));
 
     // 7. 両方滑らか（50000, 50000）にして保存・再読込
-    s.toolbar_menu("motion", "pptx.anim.smooth.both");
+    s.toolbar_menu("motion", "pptx.animation.smooth.both");
     s.save_as("pptx-anim-smooth.pptx");
     let saved = s.reopen();
     let saved_anim = saved.slides[0].animations.first().expect("saved animation");
@@ -13669,25 +13677,25 @@ pub(crate) fn animation_after_effect_options() {
 
     // 1. 図形0（タイトル）を選択し、フェード（開始）を追加
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
 
     // 初期状態の確認 (after_effect: Hold)
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.after_effect)), Some(AnimationAfterEffect::Hold));
 
     // 2. ツールバーメニューから「再生後に非表示」を設定
-    s.toolbar_menu("motion", "pptx.anim.after.hide");
+    s.toolbar_menu("motion", "pptx.animation.after.hide");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.after_effect)), Some(AnimationAfterEffect::Hide));
 
     // 3. メニュー状態の検証
     let anim_menu = s.with(|e, _| crate::animation_ui::animation_items(e));
-    let hide_item = crate::shell::scenario::find_item(&anim_menu, "pptx.anim.after.hide").unwrap();
+    let hide_item = crate::shell::scenario::find_item(&anim_menu, "pptx.animation.after.hide").unwrap();
     assert!(hide_item.checked, "after.hide should be checked");
-    let hold_item = crate::shell::scenario::find_item(&anim_menu, "pptx.anim.after.hold").unwrap();
+    let hold_item = crate::shell::scenario::find_item(&anim_menu, "pptx.animation.after.hold").unwrap();
     assert!(!hold_item.checked, "after.hold should not be checked");
 
     // 4. ツールバーメニューから「淡色表示」を設定
-    s.toolbar_menu("motion", "pptx.anim.after.dim");
-    assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.after_effect)), Some(AnimationAfterEffect::Dim));
+    s.toolbar_menu("motion", "pptx.animation.after.dim");
+    assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.after_effect)), Some(AnimationAfterEffect::Dim(AnimationAfterEffect::DEFAULT_DIM)));
 
     // 5. アニメーション ウィンドウのインライン操作（cycle_effect_after_at）
     // Dim からサイクルすると -> HideOnNextClick
@@ -13708,7 +13716,7 @@ pub(crate) fn animation_after_effect_options() {
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.after_effect)), Some(AnimationAfterEffect::HideOnNextClick));
     // ⌘Z: HideOnNextClick -> Dim に戻る
     s.key("cmd-z");
-    assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.after_effect)), Some(AnimationAfterEffect::Dim));
+    assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.after_effect)), Some(AnimationAfterEffect::Dim(AnimationAfterEffect::DEFAULT_DIM)));
 
     // ⇧⌘Z: Dim -> HideOnNextClick に進む
     s.key("cmd-shift-z");
@@ -13748,12 +13756,13 @@ pub(crate) fn animation_after_effect_options() {
     assert_eq!(m_hide.opacity, 0.0);
 
     let mut anim_dim = anim_hold.clone();
-    anim_dim.after_effect = AnimationAfterEffect::Dim;
+    anim_dim.after_effect = AnimationAfterEffect::Dim(AnimationAfterEffect::DEFAULT_DIM);
     let m_dim = crate::slideshow::motion_at(&anim_dim, crate::slideshow::ShapeMotion::at_rest(0.0), 1.0, (0.0, 0.0, 100.0, 100.0), (1000.0, 1000.0));
-    assert_eq!(m_dim.opacity, 0.3);
+    // 淡色表示 changes the colours at the next click, not the opacity at the end of the effect.
+    assert_eq!(m_dim.opacity, 1.0);
 
     // 8. 「再生後に非表示」に設定して保存・再読込
-    s.toolbar_menu("motion", "pptx.anim.after.hide");
+    s.toolbar_menu("motion", "pptx.animation.after.hide");
     s.save_as("pptx-anim-after.pptx");
     let saved = s.reopen();
     let saved_anim = saved.slides[0].animations.first().expect("saved animation");
@@ -13766,7 +13775,7 @@ pub(crate) fn animation_options_panel_controls() {
     use ibis_doc_model::{AnimationAfterEffect, AnimationRepeat, AnimationStart, AnimationTrigger};
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     let other = s.with(|e, _| e.slide().shapes[1].id);
     s.update(|e, _, cx| e.open_selected_animation_options_panel(cx));
     s.update(|e, _, cx| {
@@ -13820,12 +13829,12 @@ pub(crate) fn animation_options_panel_and_rewind() {
     assert_eq!(s.toolbar_state("anim-options").map(|t| t.enabled), Some(false));
 
     // 2. スライドイン（下から）を設定 -> anim-options が有効化
-    s.toolbar_menu("motion", "pptx.anim.in.fly-bottom");
+    s.toolbar_menu("motion", "pptx.animation.in.fly-bottom");
     assert_eq!(s.toolbar_state("anim-options").map(|t| t.enabled), Some(true));
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.rewind)), Some(false));
 
     // 3. ツールバー「アニメーション」メニューから「再生が終了したら巻き戻す」をトグル
-    s.toolbar_menu("motion", "pptx.anim.rewind");
+    s.toolbar_menu("motion", "pptx.animation.rewind");
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.rewind)), Some(true));
 
     // アニメーション ウィンドウのインライン操作（toggle_effect_rewind_at）
@@ -13851,7 +13860,7 @@ pub(crate) fn animation_options_panel_and_rewind() {
         e.toggle_panel_rewind(cx); // false -> true
         e.toggle_panel_smooth_start(cx); // 0 -> 50_000
         e.toggle_panel_smooth_end(cx); // 0 -> 50_000
-        e.set_panel_after_effect(AnimationAfterEffect::Dim, cx);
+        e.set_panel_after_effect(AnimationAfterEffect::Dim(AnimationAfterEffect::DEFAULT_DIM), cx);
         e.set_panel_fly_side(AnimationSide::Left, cx);
     });
 
@@ -13871,7 +13880,7 @@ pub(crate) fn animation_options_panel_and_rewind() {
     assert_eq!(applied.rewind, true);
     assert_eq!(applied.accel, 50_000);
     assert_eq!(applied.decel, 50_000);
-    assert_eq!(applied.after_effect, AnimationAfterEffect::Dim);
+    assert_eq!(applied.after_effect, AnimationAfterEffect::Dim(AnimationAfterEffect::DEFAULT_DIM));
     assert_eq!(applied.look, AnimationLook::Fly(AnimationSide::Left));
 
     // 8. Undo / Redo の検証
@@ -13896,11 +13905,11 @@ pub(crate) fn animation_options_panel_and_rewind() {
     assert_eq!(m_end.dx, 0.0, "rewind should restore initial dx position");
     assert_eq!(m_end.opacity, 0.0, "rewind should restore initial hidden opacity");
 
-    // 対比: rewind == false の場合は再生後の動作（after_effect: Dim -> 0.3）が残る
+    // 対比: rewind == false の場合は終わりの状態が残る（淡色表示は次のクリックで色が変わる。不透明度は変わらない）
     let mut no_rewind = reapplied.clone();
     no_rewind.rewind = false;
     let m_no_rewind = crate::slideshow::motion_at(&no_rewind, crate::slideshow::ShapeMotion::at_rest(0.0), 1.0, (0.0, 0.0, 100.0, 100.0), (1000.0, 1000.0));
-    assert_eq!(m_no_rewind.opacity, 0.3, "without rewind, after_effect Dim sets opacity to 0.3");
+    assert_eq!(m_no_rewind.opacity, 1.0, "without rewind, the effect's end stays (a dimmed shape is not made transparent)");
 
     // 10. ファイル保存 & 再読込（ラウンドトリップ検証）
     s.save_as("pptx-anim-options-panel.pptx");
@@ -13914,7 +13923,7 @@ pub(crate) fn animation_options_panel_and_rewind() {
     assert_eq!(saved_anim.rewind, true);
     assert_eq!(saved_anim.accel, 50_000);
     assert_eq!(saved_anim.decel, 50_000);
-    assert_eq!(saved_anim.after_effect, AnimationAfterEffect::Hold);
+    assert_eq!(saved_anim.after_effect, AnimationAfterEffect::Dim(AnimationAfterEffect::DEFAULT_DIM), "淡色表示とその色が保存される");
     assert_eq!(saved_anim.look, AnimationLook::Fly(AnimationSide::Left));
 }
 
@@ -13936,7 +13945,7 @@ pub(crate) fn animation_triggers_and_interactive_sequences() {
 
     // 1. shape_target を選択してフェードイン効果を追加
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 1);
     assert_eq!(s.with(|e, _| e.slide().animations[0].trigger.clone()), AnimationTrigger::None);
 
@@ -14337,7 +14346,7 @@ pub(crate) fn shape_arrange_distribute_rotate_and_context_menu() {
 
     // 9. 右クリックメニュー（shape_context_menu_entries）の内容検証
     let entries = s.with(|e, _| e.shape_context_menu_entries());
-    assert!(crate::shell::scenario::find_item(&entries, "pptx.align.left").is_some(), "align.left in context menu");
+    assert!(crate::shell::scenario::find_item(&entries, "arrange.align-left").is_some(), "align.left in context menu");
     assert!(crate::shell::scenario::find_item(&entries, "pptx.distribute.h").is_some(), "distribute.h in context menu");
     assert!(crate::shell::scenario::find_item(&entries, "pptx.rotate.right").is_some(), "rotate.right in context menu");
     assert!(crate::shell::scenario::find_item(&entries, "pptx.rotate.flip-h").is_some(), "rotate.flip-h in context menu");
@@ -14384,6 +14393,15 @@ pub(crate) fn content_placeholder_insert_table_picture_clip() {
     // 新しいスライドを追加してテスト用の白紙状態を用意
     s.page(1);
     s.menu("pptx.new-slide");
+    // タイトル スライドの次の新しいスライドは「タイトルとコンテンツ」（PowerPoint と同じ、#220）で、レイアウトのタイトルと内容のプレースホルダーが付く。
+    // 内容のプレースホルダーが残ると、下の汎用 body への挿入がそちらに入るので、白紙にしてから始める。
+    s.update(|e, _, cx| {
+        let slide = e.current_slide;
+        let shapes: Vec<_> = e.slide().shapes.iter().map(|sh| sh.id).collect();
+        if !shapes.is_empty() {
+            e.run(vec![ibis_doc_model::Command::DeleteShape { slide, shapes, with_attached: false }], cx);
+        }
+    });
 
     // ヘルパー: 空のプレースホルダーシェイプを追加する
     let add_ph = |s: &mut Scenario, kind: &str, frame: ibis_doc_model::EmuRect| -> ibis_doc_model::ShapeId {
@@ -14398,7 +14416,7 @@ pub(crate) fn content_placeholder_insert_table_picture_clip() {
             let shape_len = e.slide().shapes.len();
             e.run(
                 vec![
-                    ibis_doc_model::Command::InsertShape { slide: slide_id, index: shape_len, shape },
+                    ibis_doc_model::Command::InsertShape { slide: slide_id, shapes: vec![(shape_len, shape)] },
                     ibis_doc_model::Command::SetPlaceholder { slide: slide_id, shape: shape_id, placeholder: Some(ph) },
                 ],
                 cx,
@@ -15015,9 +15033,9 @@ pub(crate) fn insert_slide_zoom_and_slideshow_navigation() {
 
     // 3. 再度ダイアログを開いてスライド2を選択し、挿入を実行
     s.menu("pptx.insert.slide-zoom");
-    let zoom_shape_id = s.update(|e, _, cx| {
+    let zoom_shape_id = s.update(|e, w, cx| {
         let shape_id = e.insert_slide_zoom(target_slide_id, cx);
-        e.close_slide_zoom_dialog(cx);
+        e.close_slide_zoom_dialog(w, cx);
         shape_id
     }).expect("slide zoom shape inserted");
 
@@ -15350,9 +15368,9 @@ pub(crate) fn insert_section_zoom_and_slideshow_navigation() {
     // 4. 再度ダイアログを開いて第2セクションを選択し、挿入を実行
     s.menu("pptx.insert.section-zoom");
     let sec2_id = "{22222222-2222-2222-2222-222222222222}";
-    let zoom_shape_id = s.update(|e, _, cx| {
+    let zoom_shape_id = s.update(|e, w, cx| {
         let shape_id = e.insert_section_zoom(sec2_id, cx);
-        e.close_section_zoom_dialog(cx);
+        e.close_section_zoom_dialog(w, cx);
         shape_id
     }).expect("section zoom shape inserted");
 
@@ -15820,7 +15838,7 @@ pub(crate) fn math_fraction_kinds_and_big_operators() {
     let slide = s.with(|e, _| e.current_slide);
     s.update(|e, _, cx| {
         let frames: Vec<_> = ids.iter().enumerate().map(|(i, id)| (*id, ibis_doc_model::EmuRect::new(600_000 + (i as i64 % 2) * 5_600_000, 200_000 + (i as i64 / 2) * 1_080_000, 5_000_000, 1_050_000))).collect();
-        e.run(vec![ibis_doc_model::Command::SetFrames { slide, frames }], cx);
+        e.run(vec![ibis_doc_model::Command::SetFrame { slide, frames, with_attached: false }], cx);
     });
     s.screenshot("math-kinds");
     let kinds: Vec<_> = s.with(|e, _| e.slide().shapes.iter().filter_map(|sh| sh.text_body()).flat_map(|b| b.paragraphs.iter()).flat_map(|p| p.runs.iter()).filter_map(|r| r.style.math.clone()).map(|m| m.linear()).collect());
@@ -16072,6 +16090,8 @@ pub(crate) fn threed_model_views_animations_record_preview_screen_reader_and_set
 mod ui_review;
 #[path="format_pane_effects_20261112.rs"]
 mod format_pane_effects_20261112;
+#[path="scenario_issue188.rs"]
+mod scenario_issue188;
 #[path="esc_drag.rs"]
 mod esc_drag;
 #[path="slider_fills_ink.rs"]
@@ -16092,6 +16112,14 @@ mod ibis_features_20261108;
 mod issue131_chain_20261112;
 #[path="issue158_ivs.rs"]
 mod issue158_ivs;
+#[path="issue208_slides_html.rs"]
+mod issue208_slides_html;
+#[path="issue210_vertical_keys.rs"]
+mod issue210_vertical_keys;
+#[path="chain_reflow_on_open.rs"]
+mod chain_reflow_on_open;
+#[path="transition_sound_menu.rs"]
+mod transition_sound_menu;
 #[path="fix_20261106.rs"]
 mod fix_20261106;
 #[path="fix_20261106_view.rs"]
@@ -16100,12 +16128,30 @@ mod fix_20261106_view;
 mod master_switch_20261106;
 #[path="softedge_20261111.rs"]
 mod softedge_20261111;
+#[path="morph_text_20261113.rs"]
+mod morph_text_20261113;
+#[path="issue218_20261115.rs"]
+mod issue218_20261115;
+#[path="issue219_20261115.rs"]
+mod issue219_20261115;
+#[path="issue224_sound.rs"]
+mod issue224_sound;
 #[path="notes_pane_20261111.rs"]
 mod notes_pane_20261111;
 #[path="picture_shadow_20261112.rs"]
 mod picture_shadow_20261112;
 #[path="issue88_90.rs"]
 mod issue88_90;
+#[path="issue215_217.rs"]
+mod issue215_217;
+#[path="anim_timing_20261115.rs"]
+mod anim_timing_20261115;
+#[path="anim_fix2_20261115.rs"]
+mod anim_fix2_20261115;
+#[path="issue220.rs"]
+mod issue220;
+#[path="k0034_audit.rs"]
+mod k0034_audit;
 #[path="issue89_effects.rs"]
 mod issue89_effects;
 #[path="issue86.rs"]
@@ -16485,6 +16531,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     ];
     all.extend(ui_review::all());
     all.extend(format_pane_effects_20261112::all());
+    all.extend(scenario_issue188::all());
     all.extend(esc_drag::all());
     all.extend(slider_fills_ink::all());
     all.extend(binding_mixed::all());
@@ -16496,9 +16543,18 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     all.extend(fix_20261106_view::all());
     all.extend(master_switch_20261106::all());
     all.extend(softedge_20261111::all());
+    all.extend(morph_text_20261113::all());
+    all.extend(issue218_20261115::all());
+    all.extend(issue219_20261115::all());
+    all.extend(issue224_sound::all());
     all.extend(notes_pane_20261111::all());
     all.extend(picture_shadow_20261112::all());
     all.extend(issue88_90::all());
+    all.extend(issue215_217::all());
+    all.extend(anim_timing_20261115::all());
+    all.extend(anim_fix2_20261115::all());
+    all.extend(issue220::all());
+    all.extend(k0034_audit::all());
     all.extend(issue89_effects::all());
     all.extend(issue86::all());
     all.extend(fix_20261106_animation::all());
@@ -16507,6 +16563,11 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     all.extend(ibis_features_20261108::all());
     all.extend(issue131_chain_20261112::all());
     all.extend(issue158_ivs::all());
+    all.extend(issue208_slides_html::all());
+    all.extend(issue210_vertical_keys::all());
+    all.extend(transition_sound_menu::all());
+    all.extend(chain_reflow_on_open::all());
+    all.extend(chain_reflow_on_open::all_saved());
     all
 }
 
@@ -16663,7 +16724,7 @@ pub(crate) fn notes_master_view() {
     assert!(s.with(|e, _| e.slide().shapes.len()) >= 2, "its places are shapes");
     s.screenshot("notes-master");
     let moved = EmuRect::new(first.frame.x + 300_000, first.frame.y + 150_000, first.frame.width, first.frame.height);
-    s.update(|e, _, cx| e.run(vec![Command::SetFrame { slide: page, shape: first.id, frame: moved }], cx));
+    s.update(|e, _, cx| e.run(vec![Command::SetFrame { slide: page, frames: vec![(first.id, moved)], with_attached: true }], cx));
     s.menu("pptx.notes-master");
     assert!(!s.with(|e, _| e.is_notes_master()));
     assert_eq!(s.with(|e, _| e.presentation().slides.len()), slides, "the slides are as they were");
@@ -16691,7 +16752,7 @@ pub(crate) fn notes_page_boxes_and_places() {
     let count = s.with(|e, _| e.slide().shapes.len());
     let moved = EmuRect::new(body.frame.x + 150_000, body.frame.y + 250_000, body.frame.width, body.frame.height);
     s.update(|e, _, cx| {
-        e.run(vec![Command::SetFrame { slide: page, shape: body.id, frame: moved }, Command::InsertShape { slide: page, index: count, shape: Shape::text_box(id, EmuRect::new(400_000, 400_000, 2_500_000, 400_000), "配布メモ") }], cx)
+        e.run(vec![Command::SetFrame { slide: page, frames: vec![(body.id, moved)], with_attached: true }, Command::InsertShape { slide: page, shapes: vec![(count, Shape::text_box(id, EmuRect::new(400_000, 400_000, 2_500_000, 400_000), "配布メモ"))] }], cx)
     });
     s.menu("pptx.notes-format");
     assert_eq!(s.with(|e, _| e.slide().notes.clone()), notes, "the notes' text is as it was");
@@ -16765,7 +16826,7 @@ pub(crate) fn edit_points_curves() {
         let ShapeKind::Auto(mut auto) = shape.kind.clone() else { unreachable!() };
         auto.geometry = Geometry::Ellipse;
         let slide = e.current_slide;
-        e.run(vec![ibis_doc_model::Command::SetKind { slide, shape: id, kind: Box::new(ShapeKind::Auto(auto)) }], cx)
+        e.run(vec![ibis_doc_model::Command::SetShapeKind { slide, shape: id, kind: Box::new(ShapeKind::Auto(auto)) }], cx)
     });
     s.update(|e, _, _| e.set_selection(vec![id]));
     s.menu("pptx.edit-points");
@@ -17835,7 +17896,7 @@ pub(crate) fn ink_replay_and_animation() {
 
     // 2. ストローク1を選択し、ツールバーのアニメーションメニューから「インクの再生」（開始効果）を設定
     s.update(|e, _, _| e.set_selection(vec![stroke1]));
-    s.toolbar_menu("motion", "pptx.anim.in.replay");
+    s.toolbar_menu("motion", "pptx.animation.in.replay");
     assert_eq!(
         s.with(|e, _| e.slide().animations.iter().find(|a| a.shape == stroke1).map(|a| (a.class, a.look, a.preset))),
         Some((AnimationClass::Entrance, AnimationLook::Replay, (28, 0))),
@@ -17844,7 +17905,7 @@ pub(crate) fn ink_replay_and_animation() {
 
     // 3. ストローク2を選択し、終了効果「巻き戻し」を設定
     s.update(|e, _, _| e.set_selection(vec![stroke2]));
-    s.toolbar_menu("motion", "pptx.anim.out.rewind");
+    s.toolbar_menu("motion", "pptx.animation.out.rewind");
     assert_eq!(
         s.with(|e, _| e.slide().animations.iter().find(|a| a.shape == stroke2).map(|a| (a.class, a.look, a.preset))),
         Some((AnimationClass::Exit, AnimationLook::Replay, (28, 0))),
@@ -17998,7 +18059,7 @@ pub(crate) fn compare_and_merge_presentations() {
         s_rev.update(|e, _, cx| {
             e.run(vec![
                 ibis_doc_model::Command::SetText { slide: slide_id, shape: shape_id, text: "改訂版タイトル: プレゼンテーション比較テスト".into() },
-                ibis_doc_model::Command::InsertShape { slide: slide_id, index: 1, shape: new_shape },
+                ibis_doc_model::Command::InsertShape { slide: slide_id, shapes: vec![(1, new_shape)] },
                 ibis_doc_model::Command::SetNotes { slide: slide_id, notes: "これは改訂版で追加された発表者ノートです。".into() },
                 ibis_doc_model::Command::InsertSlide { index: slides_len, slide: added_slide },
             ], cx);
@@ -19944,16 +20005,16 @@ pub(crate) fn context_menu_table_design_borders_and_line_arrows() {
     run_ctx_item(&mut s, "table.borders.3pt");
     run_ctx_item(&mut s, "table.borders.red");
     run_ctx_item(&mut s, "pptx.table-style.medium2-accent1");
-    run_ctx_item(&mut s, "pptx.table.last-row");
-    run_ctx_item(&mut s, "pptx.table.first-col");
+    run_ctx_item(&mut s, "table.total-row");
+    run_ctx_item(&mut s, "table.first-column");
     run_ctx_item(&mut s, "pptx.text.middle");
     run_ctx_item(&mut s, "pptx.text.vertical");
 
     // チェック状態および表全体モデルの検証
     let entries_after = s.with(|e, _| e.shape_context_menu_entries());
     assert!(crate::shell::scenario::find_item(&entries_after, "pptx.table-style.medium2-accent1").unwrap().checked);
-    assert!(crate::shell::scenario::find_item(&entries_after, "pptx.table.last-row").unwrap().checked);
-    assert!(crate::shell::scenario::find_item(&entries_after, "pptx.table.first-col").unwrap().checked);
+    assert!(crate::shell::scenario::find_item(&entries_after, "table.total-row").unwrap().checked);
+    assert!(crate::shell::scenario::find_item(&entries_after, "table.first-column").unwrap().checked);
     assert!(crate::shell::scenario::find_item(&entries_after, "pptx.text.middle").unwrap().checked);
     assert!(crate::shell::scenario::find_item(&entries_after, "pptx.text.vertical").unwrap().checked);
 
@@ -20213,7 +20274,7 @@ pub(crate) fn context_menu_slide_transitions_sections_and_shape_edit_points_merg
             crate::shell::chrome::MenuEntry::Submenu(sub) if sub.id == "pptx.menu.animation" => Some(sub),
             _ => None,
         }).expect("pptx.menu.animation submenu in shape context menu");
-        let fade_item = crate::shell::scenario::find_item(&anim_sub.items, "pptx.anim.in.fade").expect("pptx.anim.in.fade in shape context menu");
+        let fade_item = crate::shell::scenario::find_item(&anim_sub.items, "pptx.animation.in.fade").expect("pptx.animation.in.fade in shape context menu");
         (fade_item.handler.as_ref().unwrap())(e, w, cx);
     });
     assert_eq!(s.with(|e, _| e.slide().animations.first().map(|a| a.look)), Some(AnimationLook::Fade), "Fade animation added via shape context menu");
@@ -20223,11 +20284,7 @@ pub(crate) fn context_menu_slide_transitions_sections_and_shape_edit_points_merg
     s.update(|e, _, cx| {
         let slide = e.current_slide;
         e.run(
-            vec![ibis_doc_model::Command::SetFrame {
-                slide,
-                shape: fig1.0,
-                frame: ibis_doc_model::EmuRect::new(fig0.1.x + fig0.1.width / 3, fig0.1.y + fig0.1.height / 3, fig1.1.width, fig1.1.height),
-            }],
+            vec![ibis_doc_model::Command::SetFrame { slide, frames: vec![(fig1.0, ibis_doc_model::EmuRect::new(fig0.1.x + fig0.1.width / 3, fig0.1.y + fig0.1.height / 3, fig1.1.width, fig1.1.height))], with_attached: true }],
             cx,
         );
     });
@@ -20722,10 +20779,10 @@ pub(crate) fn context_menu_outline_selection_reading_order_and_animation_panes()
         "pptx.selection-pane.hide",
         "pptx.selection-pane.show-all",
         "pptx.selection-pane.hide-all",
-        "pptx.order.front",
-        "pptx.order.forward",
-        "pptx.order.backward",
-        "pptx.order.back",
+        "arrange.bring-to-front",
+        "arrange.bring-forward",
+        "arrange.send-backward",
+        "arrange.send-to-back",
         "pptx.group",
         "pptx.ungroup",
         "pptx.frame.settings",
@@ -20779,14 +20836,14 @@ pub(crate) fn context_menu_outline_selection_reading_order_and_animation_panes()
     // 最前面へ移動（pptx.order.front）と最背面へ移動（pptx.order.back）
     s.update(|e, w, cx| {
         let entries = e.selection_pane_context_menu_entries(shape0_id);
-        let front_item = crate::shell::scenario::find_item(&entries, "pptx.order.front").unwrap();
+        let front_item = crate::shell::scenario::find_item(&entries, "arrange.bring-to-front").unwrap();
         (front_item.handler.as_ref().unwrap())(e, w, cx);
     });
     assert_eq!(s.with(|e, _| e.slide().shapes.last().unwrap().id), shape0_id, "shape moved to front");
 
     s.update(|e, w, cx| {
         let entries = e.selection_pane_context_menu_entries(shape0_id);
-        let back_item = crate::shell::scenario::find_item(&entries, "pptx.order.back").unwrap();
+        let back_item = crate::shell::scenario::find_item(&entries, "arrange.send-to-back").unwrap();
         (back_item.handler.as_ref().unwrap())(e, w, cx);
     });
     assert_eq!(s.with(|e, _| e.slide().shapes.first().unwrap().id), shape0_id, "shape moved back to first");
@@ -20839,24 +20896,24 @@ pub(crate) fn context_menu_outline_selection_reading_order_and_animation_panes()
 
     // 4. アニメーション ウィンドウ（Animation Pane）の右クリックメニュー
     s.click_shape(0);
-    s.toolbar_menu("motion", "pptx.anim.in.fade");
-    s.toolbar_menu("motion", "add.pptx.anim.em.spin");
+    s.toolbar_menu("motion", "pptx.animation.in.fade");
+    s.toolbar_menu("motion", "add.pptx.animation.em.spin");
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 2);
 
-    s.menu("pptx.anim.pane");
+    s.menu("pptx.animation.pane");
     let anim_entries = s.with(|e, _| e.animation_pane_context_menu_entries(1));
     for id in [
-        "pptx.anim.start.click",
-        "pptx.anim.start.with",
-        "pptx.anim.start.after",
-        "pptx.anim.options-dialog",
-        "pptx.anim.autoreverse",
-        "pptx.anim.rewind",
+        "pptx.animation.start.click",
+        "pptx.animation.start.with",
+        "pptx.animation.start.after",
+        "pptx.animation.options-dialog",
+        "pptx.animation.autoreverse",
+        "pptx.animation.rewind",
         "pptx.smartart.move-up",
         "pptx.smartart.move-down",
-        "pptx.anim.copy",
-        "pptx.anim.paste",
-        "pptx.anim.remove",
+        "pptx.animation.copy",
+        "pptx.animation.paste",
+        "pptx.animation.remove",
     ] {
         assert!(
             crate::shell::scenario::find_item(&anim_entries, id).is_some(),
@@ -20865,7 +20922,7 @@ pub(crate) fn context_menu_outline_selection_reading_order_and_animation_panes()
     }
 
     // 効果 0 の開始タイミングを「直前の動作と同時（pptx.anim.start.with）」、自動反転（pptx.anim.autoreverse）、巻き戻し（pptx.anim.rewind）に設定
-    for id in ["pptx.anim.start.with", "pptx.anim.autoreverse", "pptx.anim.rewind"] {
+    for id in ["pptx.animation.start.with", "pptx.animation.autoreverse", "pptx.animation.rewind"] {
         s.update(|e, w, cx| {
             let entries = e.animation_pane_context_menu_entries(0);
             let item = crate::shell::scenario::find_item(&entries, id).unwrap();
@@ -20895,7 +20952,7 @@ pub(crate) fn context_menu_outline_selection_reading_order_and_animation_panes()
     // 効果 1 を「削除（pptx.anim.remove）」
     s.update(|e, w, cx| {
         let entries = e.animation_pane_context_menu_entries(1);
-        let rem = crate::shell::scenario::find_item(&entries, "pptx.anim.remove").unwrap();
+        let rem = crate::shell::scenario::find_item(&entries, "pptx.animation.remove").unwrap();
         (rem.handler.as_ref().unwrap())(e, w, cx);
     });
     assert_eq!(s.with(|e, _| e.slide().animations.len()), 1);
@@ -21538,7 +21595,7 @@ pub(crate) fn context_menu_notes_presenter_reading_accessibility_and_compare() {
     let tbl_issue_idx = find_issue_idx(&mut s, tbl_id, IssueFixType::EnableTableHeader).expect("EnableTableHeader issue for table");
     s.update(|e, w, cx| {
         let entries = e.accessibility_issue_context_menu_entries(tbl_issue_idx);
-        let hdr = crate::shell::scenario::find_item(&entries, "pptx.table.first-row").unwrap();
+        let hdr = crate::shell::scenario::find_item(&entries, "table.header-row").unwrap();
         (hdr.handler.as_ref().unwrap())(e, w, cx);
     });
     assert!(s.with(|e, _| match &e.slide().shape(tbl_id).unwrap().kind {
@@ -21719,7 +21776,7 @@ pub(crate) fn context_menu_inspect_compatibility_photo_album_and_master_views() 
         ));
         e.run(
             vec![
-                Command::SetDocProperties { properties: props },
+                Command::SetDocumentProperties { properties: props },
                 Command::SetSlide { slide },
             ],
             cx,
@@ -21819,7 +21876,7 @@ pub(crate) fn context_menu_inspect_compatibility_photo_album_and_master_views() 
         e.run(vec![Command::SetSlide { slide }], cx);
     });
 
-    s.menu("pptx.compatibility-check");
+    s.menu("review.compatibility-check");
     s.update(|e, _, cx| e.recheck_pptx_compatibility(cx));
 
     let (sig_len, minor_len) = s.with(|e, _| {
@@ -21872,7 +21929,7 @@ pub(crate) fn context_menu_inspect_compatibility_photo_album_and_master_views() 
     assert!(s.with(|e, _| e.slide().shape(ShapeId(8891)).is_some()));
     s.update(|e, _, cx| {
         let (slide, shape) = (e.current_slide, ShapeId(8891));
-        e.run(vec![ibis_doc_model::Command::RemoveShape { slide, shape }], cx);
+        e.run(vec![ibis_doc_model::Command::DeleteShape { slide, shapes: vec![shape], with_attached: true }], cx);
     });
     assert!(s.with(|e, _| e.slide().shape(ShapeId(8891)).is_none()));
     assert_eq!(
@@ -22209,7 +22266,7 @@ pub(crate) fn context_menu_find_math_ink_and_replace_fonts() {
         let idx = e.slide().shapes.len();
         e.run(
             vec![
-                Command::InsertShape { slide, index: idx, shape: sh },
+                Command::InsertShape { slide, shapes: vec![(idx, sh)] },
                 Command::SetShapeName { slide, shape: next_id, name: "インク 1".to_string() },
             ],
             cx,
@@ -22715,8 +22772,8 @@ pub(crate) fn context_menu_links_header_footer_notes_marks_and_properties_panels
             "pptx.properties-panel.embed-fonts",
             "pptx.inspect.remove-properties",
             "pptx.inspect-document",
-            "pptx.check-accessibility",
-            "pptx.compatibility-check",
+            "review.accessibility-check",
+            "review.compatibility-check",
             "_shell.close",
         ] {
             assert!(

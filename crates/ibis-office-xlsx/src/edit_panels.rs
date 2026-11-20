@@ -137,7 +137,9 @@ pub struct EditPanels {
     pub threaded_comment: Option<super::threaded_comments::ThreadedCommentPanel>,
     /// ツール > アクセシビリティ チェック…
     pub accessibility: Option<super::accessibility_panel::AccessibilityPanel>,
-    pub(crate) machine_readability: Option<super::machine_readability::MachineReadabilityPanel>,
+    /// ツール > 機械可読性チェック…
+    pub machine_readability: Option<super::machine_readability_panel::MachineReadabilityPanel>,
+    pub(crate) harunobu_review: Option<super::harunobu_review::MachineReadabilityPanel>,
     /// ツール > 互換性チェック…
     pub(crate) compatibility: Option<super::compatibility_panel::CompatibilityPanel>,
     /// 表示 > 選択ウィンドウ… (ワークシート上の図形・画像・グラフ一覧).
@@ -232,6 +234,7 @@ impl EditPanels {
         self.threaded_comment = None;
         self.accessibility = None;
         self.machine_readability = None;
+        self.harunobu_review = None;
         self.compatibility = None;
         self.selection_pane = None;
         self.frame = None;
@@ -318,6 +321,7 @@ impl crate::shell::editor::SlideEditor {
             .or_else(|| self.sheet_doc_properties_panel(cx).map(|panel| panel.modal_named("sheet_doc_properties_panel")))
             .or_else(|| self.sheet_alt_text_panel(cx).map(|panel|panel.modal_named("sheet_alt_text_panel")))
             .or_else(|| self.xlsx_accessibility_panel(cx))
+            .or_else(|| self.harunobu_review_panel(cx))
             .or_else(|| self.machine_readability_panel(cx))
             .or_else(|| self.xlsx_compatibility_panel(cx).map(|panel| panel.modal_named("xlsx_compatibility_panel")))
             .or_else(|| self.xlsx_selection_pane_panel(cx))

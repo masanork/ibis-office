@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/235)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Viewer/editor intermediate representation (Layer 2 bridge) and page tree resolution.
 
@@ -116,11 +116,164 @@ pub struct PageTextIndex {
     pub chars: Vec<CharBox>,
 }
 
+/// The width of `ch` in ems where the page does not say (a glyph run of an XPS or an OFD, drawn by whatever font the viewer has): a full-width character one em, any other 0.55. It
+/// gives each character of a run a box of its own, so that a drag picks the characters it passes.
+pub fn estimated_advance_em(ch: char) -> f32 {
+    let u = ch as u32;
+    if (0x1100..=0x115F).contains(&u) || (0x2E80..=0xA4CF).contains(&u) || (0xAC00..=0xD7A3).contains(&u) || (0xF900..=0xFAFF).contains(&u) || (0xFE30..=0xFE6F).contains(&u) || (0xFF00..=0xFF60).contains(&u) || (0xFFE0..=0xFFE6).contains(&u) || (0x20000..=0x3FFFD).contains(&u) {
+        1.0
+    } else {
+        0.55
+    }
+}
+
 impl PageTextIndex {
     pub fn plain_text(&self) -> String {
         self.chars.iter().map(|c| c.ch).collect()
     }
+
+    /// Whether the characters at `a` and `b` stand on one line (their baselines are within half a character height).
+    pub fn same_line(&self, a: usize, b: usize) -> bool {
+        let (p, q) = (&self.chars[a], &self.chars[b]);
+        (p.rect_pt.y1 - q.rect_pt.y1).abs() <= 0.5 * p.rect_pt.height().max(q.rect_pt.height())
+    }
+
+    /// The boxes of the characters get the width they take (up to the next character of the line); the interpreter knows only where a
+    /// glyph starts. A character that ends a line keeps the width it was given.
+    /// (ibisOffice's change to the viewer scene of the fork: selecting text needs the real extent of a character.)
+    pub fn fit_widths(&mut self) {
+        for i in 0..self.chars.len().saturating_sub(1) {
+            if !self.same_line(i, i + 1) {
+                continue;
+            }
+            let (here, next) = (self.chars[i].rect_pt, self.chars[i + 1].rect_pt);
+            // Within the same run of text the next character is to the right and not a whole column away.
+            if next.x0 > here.x0 && next.x0 - here.x0 <= 3.0 * here.height().max(1.0) {
+                self.chars[i].rect_pt.x1 = next.x0;
+            }
+        }
+    }
+
+    /// The character under the point (in page points), else the one nearest to it: dragging outside the text still picks.
+    pub fn hit(&self, x: f32, y: f32) -> Option<usize> {
+        let mut best: Option<(f32, usize)> = None;
+        for (i, c) in self.chars.iter().enumerate() {
+            let r = c.rect_pt;
+            let (x0, x1, y0, y1) = (r.x0.min(r.x1), r.x0.max(r.x1), r.y0.min(r.y1), r.y0.max(r.y1));
+            let dx = if x < x0 { x0 - x } else if x > x1 { x - x1 } else { 0.0 };
+            let dy = if y < y0 { y0 - y } else if y > y1 { y - y1 } else { 0.0 };
+            // A line is nearer than a character of another line: the vertical distance counts more.
+            let d = dy * 4.0 + dx;
+            if d == 0.0 {
+                return Some(i);
+            }
+            if best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, i));
+            }
+        }
+        best.map(|(_, i)| i)
+    }
+
+    /// The text of the characters `a..=b` (in the order of the page's text), a line break where the next character is on another line.
+    pub fn text_between(&self, a: usize, b: usize) -> String {
+        if self.chars.is_empty() {
+            return String::new();
+        }
+        let (a, b) = (a.min(b), a.max(b).min(self.chars.len() - 1));
+        let mut out = String::new();
+        for i in a..=b {
+            if i > a && !self.same_line(i - 1, i) {
+                out.push('\n');
+            }
+            out.push(self.chars[i].ch);
+        }
+        out
+    }
+
+    /// Where `query` stands in the text: character ranges `[start, end)`, not across a line, not overlapping.
+    pub fn find(&self, query: &str, match_case: bool) -> Vec<(usize, usize)> {
+        let needle: Vec<char> = query.chars().collect();
+        let n = self.chars.len();
+        let mut out = Vec::new();
+        if needle.is_empty() || needle.len() > n {
+            return out;
+        }
+        let same = |a: char, b: char| if match_case { a == b } else { a.to_lowercase().eq(b.to_lowercase()) };
+        let mut at = 0;
+        while at + needle.len() <= n {
+            let end = at + needle.len();
+            let ok = (0..needle.len()).all(|k| same(self.chars[at + k].ch, needle[k])) && (at + 1..end).all(|i| self.same_line(i - 1, i));
+            if ok {
+                out.push((at, end));
+                at = end;
+            } else {
+                at += 1;
+            }
+        }
+        out
+    }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(text: &str, x0: f32, baseline: f32) -> Vec<CharBox> {
+        text.chars().enumerate().map(|(i, ch)| CharBox { ch, rect_pt: PdfRect { x0: x0 + i as f32 * 6.0, y0: baseline - 10.0, x1: x0 + i as f32 * 6.0 + 6.0, y1: baseline }, vertical: false, stream_op_index: i }).collect()
+    }
+
+    fn page() -> PageTextIndex {
+        let mut chars = line("Hello world", 10.0, 20.0);
+        chars.extend(line("second line", 10.0, 40.0));
+        PageTextIndex { chars }
+    }
+
+    #[test]
+    fn a_point_picks_the_character_under_it_or_the_nearest() {
+        let p = page();
+        assert_eq!(p.hit(11.0, 15.0), Some(0));
+        assert_eq!(p.hit(10.0 + 6.0 * 4.0 + 1.0, 15.0), Some(4));
+        // Right of a line: its last character; below the last line: the nearest of it.
+        assert_eq!(p.hit(500.0, 15.0), Some(10));
+        assert_eq!(p.hit(11.0, 500.0), Some(11));
+        // Between the lines the nearer line wins.
+        assert_eq!(p.hit(11.0, 23.0), Some(0));
+        assert_eq!(p.hit(11.0, 27.0), Some(11));
+        assert_eq!(PageTextIndex::default().hit(0.0, 0.0), None);
+    }
+
+    #[test]
+    fn the_text_between_two_characters_breaks_where_the_line_does() {
+        let p = page();
+        assert_eq!(p.text_between(6, 10), "world");
+        assert_eq!(p.text_between(6, 14), "world\nseco");
+        assert_eq!(p.text_between(14, 6), "world\nseco");
+        assert_eq!(p.text_between(0, 999), "Hello world\nsecond line");
+        assert_eq!(PageTextIndex::default().text_between(0, 3), "");
+    }
+
+    #[test]
+    fn a_search_finds_the_text_inside_a_line_with_or_without_case() {
+        let p = page();
+        assert_eq!(p.find("world", true), vec![(6, 11)]);
+        assert_eq!(p.find("WORLD", true), vec![]);
+        assert_eq!(p.find("WORLD", false), vec![(6, 11)]);
+        assert_eq!(p.find("o", false), vec![(4, 5), (7, 8), (14, 15)]);
+        // Not across the end of a line.
+        assert_eq!(p.find("dsec", false), vec![]);
+        assert_eq!(p.find("", false), vec![]);
+    }
+
+    #[test]
+    fn the_boxes_take_the_width_up_to_the_next_character() {
+        let mut p = PageTextIndex { chars: line("ab", 0.0, 10.0) };
+        // The interpreter gives each a width of 0.6 of the size; the next character is at 6.
+        p.chars[0].rect_pt.x1 = 3.0;
+        p.fit_widths();
+        assert_eq!(p.chars[0].rect_pt.x1, 6.0);
+    }
+}
+
 
 /// Combined rendering + text-index output for one PDF page.
 #[derive(Clone, Debug, PartialEq)]

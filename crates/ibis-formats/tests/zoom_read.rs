@@ -79,7 +79,7 @@ fn a_moved_zoom_card_is_moved_in_the_choice_and_the_fallback() {
     let shape = *opened.presentation.slides[1].zoom_objects.keys().next().unwrap();
     let old = opened.presentation.slides[1].shape(shape).unwrap().frame;
     let moved = EmuRect::new(old.x + 100_000, old.y + 50_000, old.width, old.height);
-    doc.execute(vec![Command::SetFrame { slide, shape, frame: moved }]).unwrap();
+    doc.execute(vec![Command::SetFrame { slide, frames: vec![(shape, moved)], with_attached: true }]).unwrap();
     let saved = opened.source.save(doc.presentation(), ibis_formats::SaveOptions::default()).unwrap();
     if let Ok(out) = std::env::var("ZOOM_TEST_OUT") {
         std::fs::write(out, &saved).unwrap();
@@ -166,7 +166,7 @@ fn new_zoom_cards_are_written_as_powerpoint_writes_them() {
         picture.stroke = Some(ibis_doc_model::Stroke::solid(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0xD3D3D3)), 3175));
         let shape = Shape::new(id, frame, ShapeKind::Picture(picture));
         let index = opened.presentation.slide(on).unwrap().shapes.len() + commands.iter().filter(|c| matches!(c, Command::InsertShape { .. })).count();
-        commands.push(Command::InsertShape { slide: on, index, shape });
+        commands.push(Command::InsertShape { slide: on, shapes: vec![(index, shape)] });
         if let Some(link) = link {
             commands.push(Command::SetShapeLink { slide: on, shape: id, link: Some(link) });
         }

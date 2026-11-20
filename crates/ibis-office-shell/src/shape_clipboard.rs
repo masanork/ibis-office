@@ -122,11 +122,7 @@ impl SlideEditor {
         let commands = shapes
             .into_iter()
             .enumerate()
-            .map(|(i, shape)| Command::InsertShape {
-                slide: owner,
-                index: start + i,
-                shape,
-            })
+            .map(|(i, shape)| Command::InsertShape { slide: owner, shapes: vec![(start + i, shape)] })
             .collect();
         self.run(commands, cx);
         self.set_selection(ids);

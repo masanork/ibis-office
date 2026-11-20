@@ -267,7 +267,7 @@ pub fn build_set_cells_command(slide: SlideId, edits: Vec<AiCellEdit>) -> Result
         cell_edits.push(CellEdit { row, column, input });
     }
     Ok(Command::Sheet(SheetCommand::SetCells {
-        slide,
+        sheet: slide,
         edits: cell_edits,
     }))
 }
@@ -305,13 +305,13 @@ pub fn build_set_format_command(
         changes.push(StyleChange::NumberFormat(fmt));
     }
     if let Some(align) = format.align {
-        changes.push(StyleChange::Align(align));
+        changes.push(StyleChange::HorizontalAlignment(align));
     }
     if let Some(vertical) = format.vertical_align {
-        changes.push(StyleChange::Vertical(vertical));
+        changes.push(StyleChange::VerticalAlignment(vertical));
     }
     if let Some(wrap) = format.wrap_text {
-        changes.push(StyleChange::Wrap(wrap));
+        changes.push(StyleChange::WrapText(wrap));
     }
     if let Some(pt) = format.font_size_pt {
         if !pt.is_finite() || pt <= 0.0 || pt > 409.0 {
@@ -323,7 +323,7 @@ pub fn build_set_format_command(
         .into_iter()
         .map(|change| {
             Command::Sheet(SheetCommand::SetFormat {
-                slide,
+                sheet: slide,
                 ranges: ranges.clone(),
                 change,
             })
@@ -338,7 +338,7 @@ pub fn build_set_format_command(
             AiBorderStyle::All => {
                 for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
                     cmds.push(Command::Sheet(SheetCommand::SetFormat {
-                        slide,
+                        sheet: slide,
                         ranges: ranges.clone(),
                         change: StyleChange::Border(edge, thin),
                     }));
@@ -347,7 +347,7 @@ pub fn build_set_format_command(
             AiBorderStyle::None => {
                 for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
                     cmds.push(Command::Sheet(SheetCommand::SetFormat {
-                        slide,
+                        sheet: slide,
                         ranges: ranges.clone(),
                         change: StyleChange::Border(edge, None),
                     }));
@@ -364,7 +364,7 @@ pub fn build_set_format_command(
                     })
                     .collect();
                 cmds.push(Command::Sheet(SheetCommand::SetFormat {
-                    slide,
+                    sheet: slide,
                     ranges: bottom_ranges,
                     change: StyleChange::Border(Edge::Bottom, thin),
                 }));
@@ -413,7 +413,7 @@ pub fn build_set_format_command(
                     (Edge::Right, right_ranges),
                 ] {
                     cmds.push(Command::Sheet(SheetCommand::SetFormat {
-                        slide,
+                        sheet: slide,
                         ranges: edge_ranges,
                         change: StyleChange::Border(edge, thin),
                     }));
@@ -427,7 +427,7 @@ pub fn build_set_format_command(
     if cmds.len() == 1 {
         Ok(cmds.pop().expect("single command"))
     } else {
-        Ok(Command::Group(cmds))
+        Ok(Command::Batch(cmds))
     }
 }
 
@@ -468,16 +468,16 @@ pub fn build_clear_cells_command(
             }
         }
         if !edits.is_empty() {
-            cmds.push(Command::Sheet(SheetCommand::SetCells { slide, edits }));
+            cmds.push(Command::Sheet(SheetCommand::SetCells { sheet: slide, edits }));
         }
     }
     if clear_formats {
-        cmds.push(Command::Sheet(SheetCommand::ClearFormats { slide, ranges }));
+        cmds.push(Command::Sheet(SheetCommand::ClearFormats { sheet: slide, ranges }));
     }
     if cmds.len() == 1 {
         Ok(cmds.pop().expect("single command"))
     } else {
-        Ok(Command::Group(cmds))
+        Ok(Command::Batch(cmds))
     }
 }
 
@@ -509,7 +509,7 @@ pub fn build_insert_axis_command(
         return Err(format!("count must be between 1 and 1000 (got {count})"));
     }
     Ok(Command::Sheet(SheetCommand::Insert {
-        slide,
+        sheet: slide,
         axis,
         at,
         count,
@@ -527,7 +527,7 @@ pub fn build_delete_axis_command(
         return Err(format!("count must be between 1 and 1000 (got {count})"));
     }
     Ok(Command::Sheet(SheetCommand::Delete {
-        slide,
+        sheet: slide,
         axis,
         at,
         count,
@@ -543,12 +543,12 @@ pub fn build_merge_command(
 ) -> Command {
     if merge {
         Command::Sheet(SheetCommand::Merge {
-            slide,
+            sheet: slide,
             range,
             center,
         })
     } else {
-        Command::Sheet(SheetCommand::Unmerge { slide, range })
+        Command::Sheet(SheetCommand::Unmerge { sheet: slide, range })
     }
 }
 
@@ -625,7 +625,7 @@ pub fn build_set_axis_size_command(
     }
     let size = (points * EMU_PER_POINT as f32).round() as i64;
     Ok(Command::Sheet(SheetCommand::SetSize {
-        slide,
+        sheet: slide,
         axis,
         first,
         last,
@@ -657,7 +657,7 @@ pub fn build_set_comment_command(
         }
     });
     Ok(Command::Sheet(SheetCommand::SetComment {
-        slide,
+        sheet: slide,
         row,
         column,
         comment,
@@ -766,6 +766,6 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(matches!(fmt, Command::Group(cmds) if cmds.len() == 2));
+        assert!(matches!(fmt, Command::Batch(cmds) if cmds.len() == 2));
     }
 }
