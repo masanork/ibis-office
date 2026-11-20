@@ -22,27 +22,43 @@ for (const ext of ['xlsx', 'pptx']) {
     await page.goto(`${root}/www/editor.html?open=../test/web/fixtures/html-export.${ext}`);
     await page.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
     await page.waitForTimeout(3000);
+    console.log(`Editing and exporting ${ext}`);
     if (ext === 'xlsx') {
-      await page.mouse.dblclick(70, 165);
-      await page.keyboard.insertText('Excel編集');
+      await page.mouse.click(70, 165);
+      await page.keyboard.press('F2');
+      await page.waitForFunction(() => document.activeElement instanceof HTMLTextAreaElement);
+      await page.keyboard.type('ExcelEdit', { delay: 80 });
+      await page.waitForFunction(() => document.querySelector('textarea')?.value.includes('ExcelEdit'));
+      await page.waitForTimeout(500);
       await page.keyboard.press('Enter');
+      await page.waitForTimeout(500);
     } else {
-      await page.mouse.dblclick(400, 196);
+      // Give the canvas a frame to select the shape before entering text mode.
+      await page.mouse.click(470, 196);
+      await page.waitForTimeout(800);
+      await page.mouse.dblclick(470, 196, { delay: 90 });
+      await page.waitForFunction(() => document.activeElement instanceof HTMLTextAreaElement);
+      await page.waitForTimeout(500);
       await page.keyboard.insertText('Slide編集');
+      await page.waitForFunction(() => document.querySelector('textarea')?.value.includes('Slide編集'));
     }
-    await page.waitForTimeout(500);
+
     await page.mouse.click(145, 49);
     await page.mouse.move(230, ext === 'xlsx' ? 323 : 295);
     await page.waitForTimeout(700);
+    if (process.env.IBIS_HTML_ARTIFACTS) {
+      await page.screenshot({ path: `${process.env.IBIS_HTML_ARTIFACTS}/${ext}-export-menu.png` });
+    }
     const downloadPromise = page.waitForEvent('download', { timeout: 15_000 });
-    await page.mouse.click(520, ext === 'xlsx' ? 635 : 494);
+    // The workbook export is below the current-sheet HTML and whole-book XLS items.
+    await page.mouse.click(520, ext === 'xlsx' ? 663 : 494);
     const download = await downloadPromise;
     assert.equal(download.suggestedFilename(), 'html-export.html');
     assert.equal(await download.failure(), null);
     const html = await readFile(await download.path(), 'utf8');
     assert(html.startsWith('<!DOCTYPE html>'));
     if (ext === 'xlsx') {
-      assert(html.includes('Excel編集') && html.includes('Second sheet'));
+      assert(html.includes('ExcelEdit') && html.includes('Second sheet'));
       assert(html.includes('colspan="2"') && html.includes('123.5'));
       assert(!html.includes('hidden sheet secret') && !html.includes('hidden row secret') && !html.includes('hidden column secret'));
     } else {
@@ -51,10 +67,10 @@ for (const ext of ['xlsx', 'pptx']) {
       assert(!html.includes('hidden slide secret'));
     }
     assert.deepEqual(errors, []);
-    await page.context().close();
+    await page.close();
     const preview = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
     await preview.setContent(html);
-    assert((await preview.locator('body').innerText()).includes(ext === 'xlsx' ? 'Excel編集' : 'Slide編集'));
+    assert((await preview.locator('body').innerText()).includes(ext === 'xlsx' ? 'ExcelEdit' : 'Slide編集'));
     if (ext === 'pptx') {
       assert.equal(await preview.locator('.slide').count(), 2);
       await preview.locator('img').first().evaluate(image => image.decode());
@@ -63,7 +79,7 @@ for (const ext of ['xlsx', 'pptx']) {
       assert.equal(await preview.locator('table').count(), 2);
     }
     if (process.env.IBIS_HTML_ARTIFACTS) await preview.screenshot({ path: `${process.env.IBIS_HTML_ARTIFACTS}/${ext}-output.png`, fullPage: true });
-    await preview.context().close();
+    await preview.close();
     console.log(`PASS: ${ext} edited HTML download and mobile rendering`);
   } finally { await browser.close(); }
 }
