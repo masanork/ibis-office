@@ -1780,6 +1780,17 @@ fn parse_blocks(
             }
         }
 
+        if trimmed.starts_with(PPTX_SHAPE_MARKER) && trimmed.ends_with(" -->") {
+            let paragraph = FlowParagraph {
+                id: ctx.fresh_id(),
+                runs: vec![FlowRun::new(FlowRunKind::Text(trimmed.to_owned()), FlowRunStyle::default())],
+                ..Default::default()
+            };
+            blocks.push(Block::Paragraph(paragraph));
+            i += 1;
+            continue;
+        }
+
         if let Some(input) = trimmed.strip_prefix(SECTION_MARKER) {
             let (kind, setup) = parse_section_marker(input, ctx)?;
             if kind != ibis_doc_model::SectionBreak::None
@@ -6043,6 +6054,93 @@ pub fn open_markdown_presentation(data: Vec<u8>) -> Result<Opened, Error> {
     open_markdown_presentation_with_base_dir(data, None)
 }
 
+const PPTX_SLIDE_MARKER: &str = "<!-- pptx-slide -->";
+const PPTX_SHAPE_MARKER: &str = "<!-- pptx-shape:";
+
+struct MarkdownShapePlacement {
+    frame: EmuRect,
+    rotation: i32,
+    flip_h: bool,
+    flip_v: bool,
+    auto_shape: Option<ibis_doc_model::AutoShape>,
+}
+
+fn parse_markdown_shape_placement(text: &str) -> Result<MarkdownShapePlacement, Error> {
+    use ibis_doc_model::{AutoShape, Color, Geometry};
+    let invalid = || Error::new("pptx-shape の配置指定が不正です");
+    let encoded = text.strip_prefix(PPTX_SHAPE_MARKER)
+        .and_then(|text| text.strip_suffix(" -->")).ok_or_else(invalid)?;
+    let data: serde_json::Value = serde_json::from_str(encoded).map_err(|_| invalid())?;
+    let Some([x, y, width, height]) = data["frame"].as_array().map(Vec::as_slice) else {
+        return Err(invalid());
+    };
+    const MAX_EMU: i64 = 27_273_042_316_900;
+    let coord = |v: &serde_json::Value| v.as_i64().filter(|n| (-MAX_EMU..=MAX_EMU).contains(n)).ok_or_else(invalid);
+    let extent = |v: &serde_json::Value| coord(v).and_then(|n| if n >= 0 { Ok(n) } else { Err(invalid()) });
+    let frame = EmuRect::new(coord(x)?, coord(y)?, extent(width)?, extent(height)?);
+    let rotation = data.get("rotation").map_or(Ok(0), |v| v.as_i64()
+        .and_then(|n| i32::try_from(n).ok()).ok_or_else(invalid))?;
+    let flip = |key| data.get(key).map_or(Ok(false), |v| v.as_bool().ok_or_else(invalid));
+    let auto_shape = if let Some(preset) = data.get("preset") {
+        let geometry = match preset.as_str() {
+            Some("rect") => Geometry::Rect,
+            Some("ellipse") => Geometry::Ellipse,
+            Some("roundRect") => Geometry::RoundRect {
+                radius: data.get("radius").map_or(Ok(16_667), |v| v.as_u64()
+                    .filter(|n| *n <= 50_000).map(|n| n as u32).ok_or_else(invalid))?,
+            },
+            _ => return Err(invalid()),
+        };
+        let fill = if let Some(fill) = data.get("fill") {
+            let Some([rgb, alpha]) = fill.as_array().map(Vec::as_slice) else { return Err(invalid()); };
+            let rgb = rgb.as_u64().filter(|n| *n <= 0xffffff).ok_or_else(invalid)?;
+            let alpha = alpha.as_u64().and_then(|n| u8::try_from(n).ok()).ok_or_else(invalid)?;
+            Fill::Solid(Color { rgb: Rgb(rgb as u32), alpha })
+        } else {
+            Fill::None
+        };
+        Some(AutoShape::new(geometry, fill, None))
+    } else {
+        None
+    };
+    Ok(MarkdownShapePlacement { frame, rotation, flip_h: flip("flip_h")?, flip_v: flip("flip_v")?, auto_shape })
+}
+
+fn write_markdown_shape_placement(out: &mut String, shape: &ibis_doc_model::Shape) {
+    use ibis_doc_model::Geometry;
+    let EmuRect { x, y, width, height } = shape.frame;
+    let mut data = serde_json::json!({ "frame": [x, y, width, height] });
+    if shape.rotation != 0 {
+        data["rotation"] = shape.rotation.into();
+    }
+    if shape.flip_h {
+        data["flip_h"] = true.into();
+    }
+    if shape.flip_v {
+        data["flip_v"] = true.into();
+    }
+    if let ShapeKind::Auto(auto) = &shape.kind {
+        let preset = match auto.geometry {
+            Geometry::Rect => Some("rect"),
+            Geometry::Ellipse => Some("ellipse"),
+            Geometry::RoundRect { radius } => {
+                data["radius"] = radius.into();
+                Some("roundRect")
+            }
+            Geometry::Formula(_) => None,
+        };
+        if let Some(preset) = preset {
+            data["preset"] = preset.into();
+            if let Fill::Solid(color) = &auto.fill {
+                data["fill"] = serde_json::json!([color.rgb.0, color.alpha]);
+            }
+        }
+    }
+    out.push_str(PPTX_SHAPE_MARKER);
+    out.push_str(&data.to_string());
+    out.push_str(" -->\n\n");
+}
+
 /// Open a Markdown document as a PowerPoint presentation, resolving relative image paths against `base_dir`.
 pub fn open_markdown_presentation_with_base_dir(
     data: Vec<u8>,
@@ -6053,6 +6151,18 @@ pub fn open_markdown_presentation_with_base_dir(
     let slide_chunks = split_markdown_slides(&raw_text);
     let blank = crate::blank::blank_file(crate::Kind::Presentation)?;
     let mut opened = crate::save::open(blank)?;
+    let trimmed = raw_text.trim_start_matches('\u{feff}').trim_start();
+    if let Some((frontmatter, _)) = trimmed.strip_prefix("---\n")
+        .or_else(|| trimmed.strip_prefix("---\r\n")).and_then(split_frontmatter_body)
+        && let Some(size) = frontmatter.lines().find_map(|line| line.strip_prefix("pptx_size:"))
+    {
+        let [width, height]: [i64; 2] = serde_json::from_str(size)
+            .map_err(|_| Error::new("pptx_size の指定が不正です"))?;
+        if !(1..=i64::from(i32::MAX)).contains(&width) || !(1..=i64::from(i32::MAX)).contains(&height) {
+            return Err(Error::new("pptx_size の指定が不正です"));
+        }
+        opened.presentation.slide_size = EmuSize::new(width, height);
+    }
 
     let mut next_shape_id: u64 = 100;
     let mut fresh_shape_id = || {
@@ -6086,6 +6196,8 @@ pub fn open_markdown_presentation_with_base_dir(
     }
 
     for (idx, chunk) in slide_chunks.iter().enumerate() {
+        let positioned = chunk.starts_with(PPTX_SLIDE_MARKER);
+        let chunk = chunk.strip_prefix(PPTX_SLIDE_MARKER).unwrap_or(chunk);
         let (clean_chunk, notes) = extract_slide_notes(chunk);
         let parsed = open_markdown_with_base_dir(clean_chunk.into_bytes(), base_dir)?;
         let Some(flow) = parsed.presentation.flow.as_ref() else {
@@ -6102,6 +6214,11 @@ pub fn open_markdown_presentation_with_base_dir(
             layout_for_slide,
             &mut fresh_shape_id,
         )?;
+        let mut new_slide = new_slide;
+        if positioned {
+            new_slide.shapes.clear();
+            new_slide.placeholders.clear();
+        }
         if idx < opened.presentation.slides.len() {
             opened.presentation.slides[idx] = new_slide;
         } else {
@@ -6118,7 +6235,7 @@ pub fn open_markdown_presentation_with_base_dir(
         let mut slide_title: Option<String> = None;
         let mut body_blocks: Vec<&Block> = Vec::new();
         for b in &flow.body {
-            if slide_title.is_none() {
+            if !positioned && slide_title.is_none() {
                 if let Block::Paragraph(p) = b {
                     let is_heading = p
                         .style
@@ -6136,38 +6253,53 @@ pub fn open_markdown_presentation_with_base_dir(
             body_blocks.push(b);
         }
 
-        // Keep source order in the shape list, which Markdown export walks after reopening.
-        let mut blocks = Vec::new();
+        // Keep source order in the shape list, which determines the stacking order.
+        let mut blocks: Vec<(SlideBlock<'_>, Option<MarkdownShapePlacement>)> = Vec::new();
         for b in body_blocks {
+            let mut visuals = Vec::new();
             match b {
                 Block::Paragraph(p) => {
-                    let before = blocks.len();
+                    if positioned {
+                        let text = flow_paragraph_plain_text(p);
+                        if text.starts_with(PPTX_SHAPE_MARKER) {
+                            blocks.push((SlideBlock::Text(Vec::new()), Some(parse_markdown_shape_placement(&text)?)));
+                            continue;
+                        }
+                    }
                     for r in &p.runs {
                         match &r.kind {
                             FlowRunKind::Picture { media, size, look } => {
                                 if let Some(&new_mid) = media_remap.get(media) {
-                                    blocks.push(SlideBlock::Picture(new_mid, *size, look));
+                                    visuals.push(SlideBlock::Picture(new_mid, *size, look));
                                 }
                             }
                             FlowRunKind::Shape(shape) => {
                                 if let ShapeKind::Chart(chart) = &shape.kind {
-                                    blocks.push(SlideBlock::Chart(chart));
+                                    visuals.push(SlideBlock::Chart(chart));
                                 }
                             }
                             _ => {}
                         }
                     }
-                    if blocks.len() == before
+                    if visuals.is_empty()
                         && let Some(paragraph) = flow_paragraph_to_slide_paragraph(p)
                     {
-                        if let Some(SlideBlock::Text(paragraphs)) = blocks.last_mut() {
+                        if let Some((SlideBlock::Text(paragraphs), _)) = blocks.last_mut() {
                             paragraphs.push(paragraph);
                         } else {
-                            blocks.push(SlideBlock::Text(vec![paragraph]));
+                            blocks.push((SlideBlock::Text(vec![paragraph]), None));
                         }
                     }
                 }
-                Block::Table(tbl) => blocks.push(SlideBlock::Table(tbl)),
+                Block::Table(tbl) => visuals.push(SlideBlock::Table(tbl)),
+            }
+            for visual in visuals {
+                match blocks.last_mut() {
+                    Some((slot @ SlideBlock::Text(_), Some(placement)))
+                        if matches!(&*slot, SlideBlock::Text(text) if text.is_empty())
+                            && placement.auto_shape.is_none() => *slot = visual,
+                    _ => blocks.push((visual, None)),
+                }
             }
         }
 
@@ -6180,12 +6312,12 @@ pub fn open_markdown_presentation_with_base_dir(
         };
         let text_lines: i64 = blocks
             .iter()
-            .filter_map(|block| match block {
+            .filter_map(|(block, _)| match block {
                 SlideBlock::Text(paragraphs) => Some(line_count(paragraphs)),
                 _ => None,
             })
             .sum();
-        let has_visuals = blocks.iter().any(|block| !matches!(block, SlideBlock::Text(_)));
+        let has_visuals = blocks.iter().any(|(block, _)| !matches!(block, SlideBlock::Text(_)));
 
         // Populate title placeholder (shape 0).
         if let Some(title_text) = slide_title {
@@ -6217,12 +6349,14 @@ pub fn open_markdown_presentation_with_base_dir(
         // Interleaved visuals split the text into multiple shapes. Share the original
         // text column between them, counting explicit line breaks in literal fences.
         let mut used_lines = 0;
-        for block in blocks {
+        for (block, mut placement) in blocks {
+            let before = opened.presentation.slides[idx].shapes.len();
+            let visual_frame = placement.as_ref().map_or(visual_frame, |placement| placement.frame);
             match block {
                 SlideBlock::Text(paragraphs) => {
-                    let top = 4_750_000 * used_lines / text_lines;
+                    let top = 4_750_000 * used_lines / text_lines.max(1);
                     used_lines += line_count(&paragraphs);
-                    let bottom = 4_750_000 * used_lines / text_lines;
+                    let bottom = 4_750_000 * used_lines / text_lines.max(1);
                     let frame = EmuRect::new(762_000, 1_550_000 + top, text_width, bottom - top);
                     let mut shape = body_placeholder.take().unwrap_or_else(|| ibis_doc_model::Shape {
                         id: fresh_shape_id(),
@@ -6234,7 +6368,12 @@ pub fn open_markdown_presentation_with_base_dir(
                         floating: None,
                     });
                     shape.frame = frame;
-                    if let Some(body) = shape_text_body_mut(&mut shape.kind) {
+                    if let Some(mut auto) = placement.as_mut().and_then(|place| place.auto_shape.take()) {
+                        if !paragraphs.is_empty() {
+                            auto.text = Some(ibis_doc_model::TextBody { paragraphs, ..Default::default() });
+                        }
+                        shape.kind = ShapeKind::Auto(auto);
+                    } else if let Some(body) = shape_text_body_mut(&mut shape.kind) {
                         body.paragraphs = paragraphs;
                     }
                     opened.presentation.slides[idx].shapes.push(shape);
@@ -6348,6 +6487,13 @@ pub fn open_markdown_presentation_with_base_dir(
                     opened.presentation.slides[idx].shapes.push(chart_shape);
                 }
             }
+            if let Some(placement) = placement {
+                let shape = &mut opened.presentation.slides[idx].shapes[before];
+                shape.frame = placement.frame;
+                shape.rotation = placement.rotation;
+                shape.flip_h = placement.flip_h;
+                shape.flip_v = placement.flip_v;
+            }
         }
 
         let _ = notes;
@@ -6358,36 +6504,37 @@ pub fn open_markdown_presentation_with_base_dir(
 
 /// Export a PowerPoint `Presentation` to Markdown (`---`-separated slides).
 pub fn export_presentation_markdown(p: &Presentation) -> String {
-    let mut out = String::new();
+    let mut out = format!("---\nmarp: true\npptx_size: [{},{}]\n---\n\n", p.slide_size.width, p.slide_size.height);
     for (idx, slide) in p.slides.iter().enumerate() {
         if idx > 0 {
             out.push_str("\n---\n\n");
         }
+        out.push_str(PPTX_SLIDE_MARKER);
+        out.push_str("\n\n");
         let mut emitted_title = false;
         for shape in &slide.shapes {
+            let position = out.len();
+            write_markdown_shape_placement(&mut out, shape);
             match &shape.kind {
                 ShapeKind::TextBox(body) | ShapeKind::Auto(ibis_doc_model::AutoShape { text: Some(body), .. }) => {
-                    if !emitted_title {
-                        let first_line: String = body
-                            .paragraphs
-                            .first()
-                            .map(|para| para.runs.iter().map(|r| r.text.as_str()).collect::<String>())
-                            .unwrap_or_default();
+                    let mut paragraphs = body.paragraphs.as_slice();
+                    if !emitted_title
+                        && let Some((first, remaining)) = paragraphs.split_first()
+                    {
+                        let first_line: String = first.runs.iter().map(|run| run.text.as_str()).collect();
                         if !first_line.trim().is_empty() && !is_literal_mermaid_fence(&first_line) {
                             out.push_str("# ");
                             out.push_str(first_line.trim());
                             out.push_str("\n\n");
                             emitted_title = true;
-                            for para in body.paragraphs.iter().skip(1) {
-                                serialize_slide_paragraph(para, &mut out);
-                            }
-                            continue;
+                            paragraphs = remaining;
                         }
                     }
-                    for para in &body.paragraphs {
+                    for para in paragraphs {
                         serialize_slide_paragraph(para, &mut out);
                     }
                 }
+                ShapeKind::Auto(auto) if !matches!(auto.geometry, ibis_doc_model::Geometry::Formula(_)) => {}
                 ShapeKind::Table(tbl) => serialize_slide_table(tbl, &mut out),
                 ShapeKind::Picture(pic) => {
                     let alt = slide
@@ -6408,6 +6555,8 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         };
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&media.data);
                         out.push_str(&format!("![{}](data:{mime};base64,{b64})\n\n", alt.description));
+                    } else {
+                        out.truncate(position);
                     }
                 }
                 ShapeKind::Chart(chart) => {
@@ -6423,7 +6572,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         serialize_chart(chart, &mut out);
                     }
                 }
-                _ => {}
+                _ => out.truncate(position),
             }
         }
         if !slide.notes.trim().is_empty() {
@@ -6494,7 +6643,7 @@ fn split_markdown_slides(text: &str) -> Vec<String> {
         chunks.push(last);
     }
 
-    if chunks.len() <= 1 {
+    if chunks.len() <= 1 && !body.starts_with(PPTX_SLIDE_MARKER) {
         // Fallback: split on top-level `# ` headings if multiple exist.
         let mut h_chunks: Vec<String> = Vec::new();
         let mut h_cur: Vec<&str> = Vec::new();
@@ -7514,7 +7663,10 @@ xychart horizontal
         let pptx = slides.source.save(&slides.presentation, Default::default()).unwrap();
         let reopened = crate::read(&pptx).unwrap();
         let exported = export_presentation_markdown(&reopened);
-        let actual: Vec<_> = exported.lines().filter(|line| !line.is_empty()).collect();
+        let (_, body) = split_frontmatter_body(exported.strip_prefix("---\n").unwrap()).unwrap();
+        let actual: Vec<_> = body.lines().filter(|line| {
+            !line.is_empty() && *line != PPTX_SLIDE_MARKER && !line.starts_with(PPTX_SHAPE_MARKER)
+        }).collect();
         let expected: Vec<_> = markdown.lines().filter(|line| !line.is_empty()).collect();
         assert_eq!(actual, expected, "{exported}");
     }
@@ -7733,6 +7885,49 @@ marp: true
         assert!(!rows[1].cells[2].merged);
         let text = rows[2].cells[2].text.paragraphs[0].runs.iter().map(|run| run.text.as_str()).collect::<String>();
         assert_eq!(text, "右|端");
+    }
+
+    #[test]
+    fn pptx_markdown_keeps_frames_and_stack_when_text_is_edited() {
+        let markdown = r#"---
+marp: true
+pptx_size: [9144000,6858000]
+---
+
+<!-- pptx-slide -->
+
+<!-- pptx-shape:{"frame":[100,200,3000000,2200000],"preset":"ellipse","fill":[16711680,255]} -->
+
+<!-- pptx-shape:{"frame":[700000,100000,1500000,1200000],"rotation":120000,"flip_h":true} -->
+
+![Sample](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a5sAAAAASUVORK5CYII=)
+
+<!-- pptx-shape:{"frame":[900000,600000,3200000,1100000]} -->
+
+Title
+
+Second paragraph
+
+<!-- pptx-shape:{"frame":[1000000,650000,2400000,900000]} -->
+
+Front caption
+"#;
+        let initial = crate::read(&import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let edited = export_presentation_markdown(&initial).replace("Second paragraph", "Edited paragraph");
+        let rebuilt = crate::read(&import_markdown_to_pptx_bytes(edited.as_bytes()).unwrap()).unwrap();
+        assert_eq!(rebuilt.slide_size, EmuSize::new(9144000, 6858000));
+        let shapes = &rebuilt.slides[0].shapes;
+        assert_eq!(shapes.len(), 4);
+        assert_eq!(shapes[0].frame, EmuRect::new(100, 200, 3000000, 2200000));
+        assert!(matches!(&shapes[0].kind, ShapeKind::Auto(shape) if shape.geometry == ibis_doc_model::Geometry::Ellipse));
+        assert!(matches!(shapes[1].kind, ShapeKind::Picture(_)));
+        assert_eq!(shapes[1].frame, EmuRect::new(700000, 100000, 1500000, 1200000));
+        assert_eq!(shapes[1].rotation, 120000);
+        assert!(shapes[1].flip_h);
+        assert_eq!(shapes[2].frame, EmuRect::new(900000, 600000, 3200000, 1100000));
+        assert_eq!(shapes[2].text_body().unwrap().paragraphs[1].runs[0].text, "Edited paragraph");
+        assert_eq!(shapes[3].frame, EmuRect::new(1000000, 650000, 2400000, 900000));
+        assert_eq!(shapes[3].text_body().unwrap().paragraphs[0].runs[0].text, "Front caption");
     }
 
     #[test]
