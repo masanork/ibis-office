@@ -4552,6 +4552,7 @@ dependencies = [
  "parquet",
  "regex",
  "ruzstd",
+ "serde_json",
  "unicode-normalization",
  "unicode-segmentation",
  "zstd",

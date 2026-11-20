@@ -275,6 +275,7 @@ pub fn encode_queries(queries: &[Query], parameters: &[Parameter]) -> String {
     for q in queries {
         out.push_str(&format!("query\t{}\t{}\n", esc(&q.name), q.output.as_deref().map(esc).unwrap_or_default()));
         match &q.source {
+            Source::JsonLines { name } => out.push_str(&format!("source\tjson-lines\t{}\n", esc(name))),
             Source::Parquet { names, columns } => {
                 if let [name] = names.as_slice() {
                     out.push_str(&format!("source\tparquet\t{}", esc(name)));
@@ -317,6 +318,7 @@ pub fn decode_queries(text: &str) -> (Vec<Query>, Vec<Parameter>) {
             Some("source") => {
                 if let Some(q) = queries.last_mut() {
                     q.source = match f.get(1).copied() {
+                        Some("json-lines") if f.len() == 3 => Source::JsonLines { name: unesc(f[2]) },
                         Some("parquet") if f.len() >= 3 => Source::Parquet { names: vec![unesc(f[2])], columns: f[3..].iter().map(|c| unesc(c)).collect() },
                         Some("parquet-set") => {
                             let file_count = f.get(2).and_then(|n| n.parse::<usize>().ok())

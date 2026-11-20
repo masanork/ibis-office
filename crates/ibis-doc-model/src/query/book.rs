@@ -53,6 +53,7 @@ fn guess_type(values: &[&CellValue]) -> QType {
 /// their values), a defined name's range, or a range of a sheet (the columns `Column1`, `Column2`…).
 pub fn read_source(p: &Presentation, source: &Source) -> Result<QTable, String> {
     match source {
+        Source::JsonLines { .. } => Err("Select the JSON Lines source file".into()),
         Source::Parquet { .. } => Err("Select the Parquet source files".into()),
         Source::Blank => Ok(QTable {
             columns: vec![QColumn {

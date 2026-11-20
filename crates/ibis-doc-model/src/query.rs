@@ -19,6 +19,10 @@ mod book;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod parquet_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod json_lines_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use json_lines_source::read_json_lines;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use parquet_source::{parquet_columns, parquet_files_columns, read_parquet, read_parquet_columns, read_parquet_files, ParquetColumn};
 mod codec;
 mod expr;
@@ -313,6 +317,8 @@ pub struct Parameter {
 /// What a query starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
+    /// A local JSON Lines file. Only the display name is stored.
+    JsonLines { name: String },
     /// Local Parquet files selected by the user. Only the display names are stored.
     Parquet { names: Vec<String>, columns: Vec<String> },
     /// A blank query starting with an empty table (`#table({}, {})`).

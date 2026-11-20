@@ -250,6 +250,27 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn pick_json_lines_query(&mut self, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_cell_edit(cx);
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true, directories: false, extensions: vec!["jsonl".into(), "ndjson".into()],
+            multiple: false, prompt: None,
+        });
+        let document_id = self.file_id;
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let result = cx.background_executor().spawn(async move { query::read_json_lines(&path) }).await;
+            this.update_in(cx, |this, window, cx| {
+                if this.file_id == document_id {
+                    this.finish_external_query(Source::JsonLines { name }, result, existing, refresh, window, cx);
+                }
+            }).ok();
+        }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn read_parquet_query(&mut self, paths: Vec<std::path::PathBuf>, columns: Vec<String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
         let names: Vec<String> = paths.iter().map(|path|
             path.file_name().unwrap_or_default().to_string_lossy().into_owned()
@@ -264,37 +285,42 @@ impl SlideEditor {
                 if this.file_id != document_id {
                     return;
                 }
-                let source = match result {
-                    Ok(source) => source,
-                    Err(error) => {
-                        this.set_status(error, cx);
-                        return;
-                    }
-                };
-                let workbook = this.presentation().workbook.as_ref();
-                let mut q = existing.unwrap_or_else(|| {
-                    let base = crate::shell::i18n::text("query.default-name").to_string();
-                    let query_name = (1..).map(|n| format!("{base}{n}"))
-                        .find(|name| workbook.is_none_or(|book| !book.queries.iter().any(|q| q.name == *name)))
-                        .unwrap_or(base);
-                    Query::new(&query_name, Source::Parquet { names: names.clone(), columns: columns.clone() })
-                });
-                if refresh {
-                    let Some(book) = workbook else { return };
-                    if !book.queries.contains(&q) {
-                        return;
-                    }
-                    q.source = Source::Parquet { names, columns };
-                    match query::result_from_source(this.presentation(), &q, &book.queries, &book.query_parameters, 0, source) {
-                        Ok(table) => this.load_refreshed_query(q, table, cx),
-                        Err(error) => this.queries_message(error, cx),
-                    }
-                } else {
-                    q.source = Source::Parquet { names, columns };
-                    this.open_query_editor_with_source(q, source, window, cx);
-                }
+                this.finish_external_query(Source::Parquet { names, columns }, result, existing, refresh, window, cx);
             }).ok();
         }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn finish_external_query(&mut self, definition: Source, result: Result<QTable, String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let source = match result {
+            Ok(source) => source,
+            Err(error) => {
+                self.set_status(error, cx);
+                return;
+            }
+        };
+        let workbook = self.presentation().workbook.as_ref();
+        let mut q = existing.unwrap_or_else(|| {
+            let base = crate::shell::i18n::text("query.default-name").to_string();
+            let query_name = (1..).map(|n| format!("{base}{n}"))
+                .find(|name| workbook.is_none_or(|book| !book.queries.iter().any(|q| q.name == *name)))
+                .unwrap_or(base);
+            Query::new(&query_name, definition.clone())
+        });
+        if refresh {
+            let Some(book) = workbook else { return };
+            if !book.queries.contains(&q) {
+                return;
+            }
+            q.source = definition;
+            match query::result_from_source(self.presentation(), &q, &book.queries, &book.query_parameters, 0, source) {
+                Ok(table) => self.load_refreshed_query(q, table, cx),
+                Err(error) => self.queries_message(error, cx),
+            }
+        } else {
+            q.source = definition;
+            self.open_query_editor_with_source(q, source, window, cx);
+        }
     }
 
     /// The editor on a query (a new one, or one of the workbook's to edit).
@@ -364,7 +390,7 @@ impl SlideEditor {
         let mut base = ed.query.clone();
         base.name = ed.name.read(cx).value().to_string();
         let result = query::m_to_query(&code, &base).map_err(|e| crate::shell::i18n::format(&format!("query.code-error.{}", e.key), &[("detail", &e.detail)]));
-        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. }) && q.source == ed.query.source {
+        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. }) && q.source == ed.query.source {
             Ok(ed.source.clone())
         } else {
             query::read_source(self.presentation(), &q.source)
@@ -611,6 +637,10 @@ impl SlideEditor {
         if matches!(query.source, Source::Parquet { .. }) {
             return self.pick_parquet_query(Some(query), false, window, cx);
         }
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if matches!(query.source, Source::JsonLines { .. }) {
+            return self.pick_json_lines_query(Some(query), false, window, cx);
+        }
         self.open_query_editor(query, window, cx);
     }
 
@@ -635,6 +665,10 @@ impl SlideEditor {
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         if matches!(query.source, Source::Parquet { .. }) {
             return self.pick_parquet_query(Some(query), true, _window, cx);
+        }
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if matches!(query.source, Source::JsonLines { .. }) {
+            return self.pick_json_lines_query(Some(query), true, _window, cx);
         }
         let table = match query::result_of(self.presentation(), &query, &wb.queries, &wb.query_parameters, 0) {
             Ok(t) => t,
@@ -677,6 +711,7 @@ impl SlideEditor {
         }
         for (i, q) in queries.iter().enumerate() {
             let source = match &q.source {
+                Source::JsonLines { name } => format!("JSON Lines · {name}"),
                 Source::Parquet { names, .. } => format!("Parquet · {}", names.join(", ")),
                 Source::Blank => crate::shell::i18n::text("query.source-blank").to_string(),
                 Source::Table(t) => t.clone(),

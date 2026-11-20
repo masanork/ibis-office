@@ -610,7 +610,9 @@ pub fn m_to_query(code: &str, base: &Query) -> Result<Query, CodeError> {
         let Some(name) = parse_id(&binding[..eq]) else { return fail("syntax", binding[..eq].trim()) };
         let body = binding[eq + 1..].trim();
         if names.is_empty() {
-            source = Some(if body == "Ibis.ParquetSource()" && matches!(base.source, Source::Parquet { .. }) {
+            source = Some(if matches!((body, &base.source),
+                ("Ibis.ParquetSource()", Source::Parquet { .. }) | ("Ibis.JsonLinesSource()", Source::JsonLines { .. })
+            ) {
                 base.source.clone()
             } else {
                 source_of(body)?

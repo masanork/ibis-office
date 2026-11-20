@@ -2592,11 +2592,14 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     }
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
-        let mut parquet: MenuEntry = MenuItem::tr("xlsx.query-from-parquet").icon("table_chart").on(|this, window, cx| this.pick_parquet_query(None, false, window, cx)).into();
-        for (_, entries) in menus.menus.iter_mut() {
-            match insert_after(entries, "xlsx.import-text", parquet) {
-                Ok(()) => break,
-                Err(back) => parquet = back,
+        let json_lines = MenuItem::tr("xlsx.query-from-json-lines").icon("table_chart").on(|this, window, cx| this.pick_json_lines_query(None, false, window, cx));
+        let parquet = MenuItem::tr("xlsx.query-from-parquet").icon("table_chart").on(|this, window, cx| this.pick_parquet_query(None, false, window, cx));
+        for mut source in [json_lines.into(), parquet.into()] {
+            for (_, entries) in menus.menus.iter_mut() {
+                match insert_after(entries, "xlsx.import-text", source) {
+                    Ok(()) => break,
+                    Err(back) => source = back,
+                }
             }
         }
     }

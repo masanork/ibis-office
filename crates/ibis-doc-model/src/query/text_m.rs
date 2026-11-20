@@ -155,6 +155,7 @@ pub fn step_m(step: &Step, prev: &str) -> (String, String) {
 /// The M code of `query`: `let Source = …, step = …  in step`.
 pub fn query_to_m(query: &Query) -> String {
     let source = match &query.source {
+        Source::JsonLines { .. } => "Ibis.JsonLinesSource()".to_string(),
         Source::Parquet { .. } => "Ibis.ParquetSource()".to_string(),
         Source::Blank => "#table({}, {})".to_string(),
         Source::Table(name) => format!("Excel.CurrentWorkbook(){{[Name={}]}}[Content]", q(name)),
