@@ -2600,8 +2600,10 @@ fn parse_nested_table(payload: &str, ctx: &mut ParseContext<'_>, depth: usize) -
     ))
 }
 
+const PPTX_NO_TABLE_HEADER: &str = "<!-- pptx-no-header -->";
+
 fn build_table_block(
-    header_cells: Vec<String>,
+    mut header_cells: Vec<String>,
     alignments: Vec<Option<FlowAlign>>,
     body_rows: Vec<Vec<String>>,
     ctx: &mut ParseContext<'_>,
@@ -2612,6 +2614,12 @@ fn build_table_block(
         .max(alignments.len())
         .max(body_rows.iter().map(Vec::len).max().unwrap_or(0))
         .max(1);
+
+    let first_row_header = !header_cells.first_mut().is_some_and(|cell| {
+        let Some(text) = cell.strip_prefix(PPTX_NO_TABLE_HEADER) else { return false };
+        *cell = text.trim_start().to_owned();
+        true
+    });
 
     let total_width: Emu = 6 * EMU_PER_INCH;
     let col_w = (total_width / col_count as Emu) / 635 * 635;
@@ -2728,7 +2736,7 @@ fn build_table_block(
     };
 
     let mut rows = Vec::with_capacity(1 + body_rows.len());
-    rows.push(build_row(header_cells, true, ctx));
+    rows.push(build_row(header_cells, first_row_header, ctx));
     for r in body_rows {
         rows.push(build_row(r, false, ctx));
     }
@@ -2744,7 +2752,7 @@ fn build_table_block(
         style: Some(TableStyleRef {
             id: "TableGrid".to_string(),
             look: TableLook {
-                first_row: true,
+                first_row: first_row_header,
                 last_row: false,
                 first_column: false,
                 last_column: false,
@@ -6321,39 +6329,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         serialize_slide_paragraph(para, &mut out);
                     }
                 }
-                ShapeKind::Table(tbl) => {
-                    if !tbl.rows.is_empty() {
-                        for (ri, row) in tbl.rows.iter().enumerate() {
-                            out.push('|');
-                            for cell in &row.cells {
-                                if cell.merged {
-                                    continue;
-                                }
-                                let cell_txt: String = cell
-                                    .text
-                                    .paragraphs
-                                    .iter()
-                                    .map(|para| para.runs.iter().map(|r| r.text.as_str()).collect::<String>())
-                                    .collect::<Vec<_>>()
-                                    .join(" ");
-                                out.push(' ');
-                                out.push_str(cell_txt.trim());
-                                out.push_str(" |");
-                            }
-                            out.push('\n');
-                            if ri == 0 {
-                                out.push('|');
-                                for cell in &row.cells {
-                                    if !cell.merged {
-                                        out.push_str(" --- |");
-                                    }
-                                }
-                                out.push('\n');
-                            }
-                        }
-                        out.push('\n');
-                    }
-                }
+                ShapeKind::Table(tbl) => serialize_slide_table(tbl, &mut out),
                 ShapeKind::Picture(pic) => {
                     let alt = slide
                         .shape_alt_texts
@@ -6591,10 +6567,60 @@ fn flow_paragraph_to_slide_paragraph(p: &FlowParagraph) -> Option<ibis_doc_model
     })
 }
 
+fn serialize_slide_table(table: &ibis_doc_model::Table, out: &mut String) {
+    if table.rows.is_empty() || table.columns.is_empty() {
+        return;
+    }
+    let columns = table.columns.len();
+    let mut vertical = HashMap::new();
+    for (r, row) in table.rows.iter().enumerate() {
+        out.push('|');
+        for c in 0..columns {
+            out.push(' ');
+            if (r, c) == (0, 0) && !table.style_options.first_row {
+                out.push_str(PPTX_NO_TABLE_HEADER);
+                out.push(' ');
+            }
+            if let Some(cell) = row.cells.get(c).filter(|cell| !cell.merged) {
+                let text = cell.text.paragraphs.iter()
+                    .map(|paragraph| paragraph.runs.iter().map(|run| run.text.as_str()).collect::<String>())
+                    .collect::<Vec<_>>().join(" ");
+                out.push_str(&text.trim().replace('|', "\\|").replace('\n', "<br>"));
+                let span = (cell.column_span as usize).max(1).min(columns - c);
+                let row_span = (cell.row_span as usize).max(1).min(table.rows.len() - r);
+                if span > 1 {
+                    out.push_str(&format!(" <!-- colspan:{span} -->"));
+                }
+                if row_span > 1 {
+                    vertical.insert(c, (r + row_span, span));
+                    out.push_str(" <!-- vmerge:start -->");
+                }
+            } else if let Some(&(end, span)) = vertical.get(&c).filter(|&&(end, _)| r < end) {
+                if span > 1 {
+                    out.push_str(&format!("<!-- colspan:{span} --> "));
+                }
+                out.push_str("<!-- vmerge:continue -->");
+                if r + 1 == end {
+                    vertical.remove(&c);
+                }
+            }
+            out.push_str(" |");
+        }
+        out.push('\n');
+        if r == 0 {
+            out.push('|');
+            for _ in 0..columns {
+                out.push_str(" --- |");
+            }
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+}
+
 fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_model::Table {
     let cols = tbl.columns.len().max(1);
-    let col_w = total_width / cols as i64;
-    let columns = vec![col_w; cols];
+    let columns = vec![total_width / cols as i64; cols];
     let covered = ibis_doc_model::TableCell {
         text: ibis_doc_model::TextBody::default(),
         fill: Fill::None,
@@ -6603,48 +6629,50 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
         row_span: 1,
         merged: true,
     };
-    let rows = tbl
-        .rows
-        .iter()
-        .map(|row| ibis_doc_model::TableRow {
-            height: 370_840,
-            cells: row
-                .cells
-                .iter()
-                .flat_map(|cell| {
-                    let paras: Vec<ibis_doc_model::Paragraph> = cell
-                        .blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            Block::Paragraph(p) => flow_paragraph_to_slide_paragraph(p),
-                            _ => None,
-                        })
-                        .collect();
-                    let primary = ibis_doc_model::TableCell {
-                        text: ibis_doc_model::TextBody {
-                            paragraphs: paras,
-                            ..ibis_doc_model::TextBody::default()
-                        },
-                        fill: Fill::None,
-                        borders: ibis_doc_model::CellBorders::default(),
-                        column_span: cell.span.max(1),
-                        row_span: 1,
-                        merged: false,
-                    };
-                    std::iter::once(primary).chain(std::iter::repeat_n(
-                        covered.clone(),
-                        cell.span.saturating_sub(1) as usize,
-                    ))
-                })
-                .collect(),
-            source: None,
-        })
-        .collect();
+    let mut vertical: HashMap<usize, usize> = HashMap::new();
+    let mut rows: Vec<ibis_doc_model::TableRow> = Vec::new();
+    for row in &tbl.rows {
+        let mut cells = Vec::new();
+        let mut continuing = HashMap::new();
+        for cell in &row.cells {
+            let column = cells.len();
+            let span = cell.span.max(1);
+            if cell.merge == VerticalMerge::Continue && let Some(&origin) = vertical.get(&column) {
+                rows[origin].cells[column].row_span += 1;
+                continuing.insert(column, origin);
+                cells.extend(std::iter::repeat_n(covered.clone(), span as usize));
+                continue;
+            }
+            if cell.merge == VerticalMerge::Start {
+                continuing.insert(column, rows.len());
+            }
+            cells.push(ibis_doc_model::TableCell {
+                text: ibis_doc_model::TextBody {
+                    paragraphs: cell.blocks.iter().filter_map(|block| match block {
+                        Block::Paragraph(paragraph) => flow_paragraph_to_slide_paragraph(paragraph),
+                        _ => None,
+                    }).collect(),
+                    ..ibis_doc_model::TextBody::default()
+                },
+                fill: Fill::None,
+                borders: ibis_doc_model::CellBorders::default(),
+                column_span: span,
+                row_span: 1,
+                merged: false,
+            });
+            cells.extend(std::iter::repeat_n(covered.clone(), (span - 1) as usize));
+        }
+        rows.push(ibis_doc_model::TableRow { height: 370_840, cells, source: None });
+        vertical = continuing;
+    }
     ibis_doc_model::Table {
         columns,
         rows,
         column_sources: Vec::new(),
-        style_options: ibis_doc_model::TableStyleOptions::default(),
+        style_options: ibis_doc_model::TableStyleOptions {
+            first_row: tbl.rows.first().is_some_and(|row| row.header),
+            ..Default::default()
+        },
         style_id: None,
     }
 }
@@ -7606,6 +7634,46 @@ xychart-beta
                 && chart.groups.iter().any(|group| matches!(group.kind, ChartType::Bar { horizontal: true, .. }))
         }));
         assert!(export_presentation_markdown(&reread).contains("```mermaid\nxychart horizontal"));
+    }
+
+    #[test]
+    fn pptx_markdown_tables_keep_rectangular_merges_and_header_options() {
+        let input = r#"---
+marp: true
+---
+# 見出し行なし
+
+| <!-- pptx-no-header --> 結合 <!-- colspan:2 --> <!-- vmerge:start --> | | 一 |
+| --- | --- | --- |
+| <!-- colspan:2 --> <!-- vmerge:continue --> | | 二 |
+| 左 | 中 | 右\|端 |
+
+---
+
+# 見出し行あり
+
+| 見出し | 値 |
+| --- | --- |
+| 項目 | 12 |
+"#;
+        let pptx = import_markdown_to_pptx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_presentation_markdown(&crate::read(&pptx).unwrap());
+        assert!(markdown.contains("<!-- pptx-no-header --> 結合 <!-- colspan:2 --> <!-- vmerge:start -->"));
+        assert!(markdown.contains("<!-- colspan:2 --> <!-- vmerge:continue -->"));
+        let rebuilt = crate::read(&import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let tables = rebuilt.slides.iter().flat_map(|slide| &slide.shapes).filter_map(|shape| {
+            if let ShapeKind::Table(table) = &shape.kind { Some(table) } else { None }
+        }).collect::<Vec<_>>();
+        assert_eq!(tables.len(), 2);
+        assert!(!tables[0].style_options.first_row);
+        assert!(tables[1].style_options.first_row);
+        let rows = &tables[0].rows;
+        assert!(rows.iter().all(|row| row.cells.len() == 3));
+        assert_eq!((rows[0].cells[0].column_span, rows[0].cells[0].row_span), (2, 2));
+        assert!(rows[0].cells[1].merged && rows[1].cells[0].merged && rows[1].cells[1].merged);
+        assert!(!rows[1].cells[2].merged);
+        let text = rows[2].cells[2].text.paragraphs[0].runs.iter().map(|run| run.text.as_str()).collect::<String>();
+        assert_eq!(text, "右|端");
     }
 
     #[test]
