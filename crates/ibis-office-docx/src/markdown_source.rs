@@ -791,7 +791,10 @@ impl SlideEditor {
         };
         let mut media = self.presentation().media.clone();
         let prev_media_len = media.len();
+        #[cfg(not(target_family = "wasm"))]
         let base_dir = self.path.as_deref().and_then(|p| p.parent());
+        #[cfg(target_family = "wasm")]
+        let base_dir: Option<&std::path::Path> = None;
         let source = self.source.clone();
         let baseline_pres = self.presentation().clone();
 
