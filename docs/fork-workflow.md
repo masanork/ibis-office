@@ -11,6 +11,8 @@ GitHubの既定ブランチも`masanork`とし、機能・修正は個別ブラ�
 | branch `masanork` | 完成した機能を統合する最新版。追跡先は`masanork/masanork` |
 | `feat/*`、`fix/*`等 | 個別の開発。統合後、作業が完了した枝は削除 |
 
+現行の機能差分と upstream 統合後の確認結果は [Docs と upstream ibisOffice の差分](fork-feature-differences.md) を参照。
+
 ## 開発と統合
 
 ```sh
