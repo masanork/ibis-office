@@ -1063,6 +1063,7 @@ pub fn m_to_query(code: &str, base: &Query) -> Result<Query, CodeError> {
                 ("Ibis.ParquetSource()", Source::Parquet { .. })
                 | ("Ibis.JsonLinesSource()", Source::JsonLines { .. })
                 | ("Ibis.JsonArraySource()", Source::JsonArray { .. })
+                | ("Ibis.DelimitedSource()", Source::Delimited { .. })
                 | ("Ibis.SqliteSource()", Source::Sqlite { .. })
                 | ("Ibis.AvroSource()", Source::Avro { .. })
                 | ("Ibis.ArrowIpcSource()", Source::ArrowIpc { .. })

@@ -96,6 +96,7 @@ pub(crate) enum SingleFileQuery {
     JsonLines,
     ArrowIpc,
     Avro,
+    Delimited,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -272,6 +273,7 @@ impl SlideEditor {
             SingleFileQuery::JsonLines => &["jsonl", "ndjson"],
             SingleFileQuery::ArrowIpc => &["arrow", "ipc", "feather"],
             SingleFileQuery::Avro => &["avro"],
+            SingleFileQuery::Delimited => &["csv", "tsv", "txt"],
         };
         let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
             files: true, directories: false, extensions: extensions.iter().map(|extension| (*extension).into()).collect(),
@@ -286,12 +288,23 @@ impl SlideEditor {
                 SingleFileQuery::JsonLines => Source::JsonLines { name },
                 SingleFileQuery::ArrowIpc => Source::ArrowIpc { name },
                 SingleFileQuery::Avro => Source::Avro { name },
+                SingleFileQuery::Delimited => match existing.as_ref().map(|query| &query.source) {
+                    Some(Source::Delimited { encoding, delimiter, start_row, headers, .. }) =>
+                        Source::Delimited { name, encoding: encoding.clone(), delimiter: *delimiter, start_row: *start_row, headers: *headers },
+                    _ => return,
+                },
             };
-            let result = cx.background_executor().spawn(async move {
-                match format {
-                    SingleFileQuery::JsonLines => query::read_json_lines(&path),
-                    SingleFileQuery::ArrowIpc => query::read_arrow_ipc(&path),
-                    SingleFileQuery::Avro => query::read_avro(&path),
+            let result = cx.background_executor().spawn({
+                let definition = definition.clone();
+                async move {
+                    match definition {
+                        Source::JsonLines { .. } => query::read_json_lines(&path),
+                        Source::ArrowIpc { .. } => query::read_arrow_ipc(&path),
+                        Source::Avro { .. } => query::read_avro(&path),
+                        Source::Delimited { encoding, delimiter, start_row, headers, .. } =>
+                            crate::import_text::read_delimited_query(&path, &encoding, delimiter, start_row, headers),
+                        _ => Err("Unsupported file source".into()),
+                    }
                 }
             }).await;
             this.update_in(cx, |this, window, cx| {
@@ -323,7 +336,7 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    fn finish_external_query(&mut self, definition: Source, result: Result<QTable, String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn finish_external_query(&mut self, definition: Source, result: Result<QTable, String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
         let source = match result {
             Ok(source) => source,
             Err(error) => {
@@ -549,7 +562,7 @@ impl SlideEditor {
             let message = crate::shell::i18n::format(&format!("query.code-error.{}", e.key), &[("detail", &e.detail)]);
             if e.line > 0 { crate::shell::i18n::format("query.code-error.at-line", &[("line", &e.line.to_string()), ("message", &message)]) } else { message }
         });
-        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. } | Source::Avro { .. } | Source::Sqlite { .. } | Source::JsonArray { .. }) && q.source == ed.query.source {
+        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. } | Source::Avro { .. } | Source::Sqlite { .. } | Source::JsonArray { .. } | Source::Delimited { .. }) && q.source == ed.query.source {
             Ok(ed.source.clone())
         } else {
             query::read_source(self.presentation(), &q.source)
@@ -833,6 +846,7 @@ impl SlideEditor {
             Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), false, window, cx),
             Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), false, window, cx),
             Source::Avro { .. } => return self.pick_single_file_query(SingleFileQuery::Avro, Some(query), false, window, cx),
+            Source::Delimited { .. } => return self.pick_single_file_query(SingleFileQuery::Delimited, Some(query), false, window, cx),
             Source::Sqlite { .. } => return self.pick_record_source(false, Some(query), false, window, cx),
             Source::JsonArray { .. } => return self.pick_record_source(true, Some(query), false, window, cx),
             _ => {}
@@ -867,6 +881,7 @@ impl SlideEditor {
             Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), true, _window, cx),
             Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), true, _window, cx),
             Source::Avro { .. } => return self.pick_single_file_query(SingleFileQuery::Avro, Some(query), true, _window, cx),
+            Source::Delimited { .. } => return self.pick_single_file_query(SingleFileQuery::Delimited, Some(query), true, _window, cx),
             Source::Sqlite { .. } => return self.pick_record_source(false, Some(query), true, _window, cx),
             Source::JsonArray { .. } => return self.pick_record_source(true, Some(query), true, _window, cx),
             _ => {}
@@ -915,6 +930,7 @@ impl SlideEditor {
                 Source::JsonLines { name } => format!("JSON Lines · {name}"),
                 Source::ArrowIpc { name } => format!("Arrow IPC · {name}"),
                 Source::Avro { name } => format!("Avro · {name}"),
+                Source::Delimited { name, .. } => format!("CSV/TSV · {name}"),
                 Source::Sqlite { name, table } => format!("SQLite · {name} · {table}"),
                 Source::JsonArray { name, key } => format!("JSON · {name} · {}", key.as_deref().unwrap_or("$")),
                 Source::Parquet { names, .. } => format!("Parquet · {}", names.join(", ")),

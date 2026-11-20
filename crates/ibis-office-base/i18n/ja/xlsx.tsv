@@ -3110,3 +3110,5 @@ query.m-error.not-table	結果が表ではありません（{type} です）。
 xlsx.query-from-json-array	JSON ファイルから
 query.json-arrays	取り込む JSON 配列を選択
 query.json-no-arrays	取り込める JSON 配列がありません
+xlsx.query-from-delimited	CSV／TSV クエリ
+query.delimited-headers	先頭行を列名にする

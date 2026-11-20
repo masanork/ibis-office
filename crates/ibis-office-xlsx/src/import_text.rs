@@ -72,6 +72,8 @@ pub struct ImportTextPanel {
     pub data: Option<Vec<u8>>,
     pub(crate) encoding: TextEncoding,
     pub(crate) delimiter: Option<char>,
+    query: bool,
+    headers: bool,
     /// The row to start from (1 for the first).
     pub(crate) start_row: Entity<InputState>,
     /// How each column of the file is read (past the list: 標準).
@@ -163,6 +165,15 @@ impl SlideEditor {
         self.pick_import_text_file(window, cx);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn open_delimited_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_import_text_panel(window, cx);
+        if let Some(panel) = self.wb_mut().panels.import_text.as_mut() {
+            panel.query = true;
+        }
+        self.pick_import_text_file(window, cx);
+    }
+
     /// The panel, with no file yet.
     pub fn show_import_text_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_cell_edit(cx);
@@ -183,6 +194,8 @@ impl SlideEditor {
             data: None,
             encoding: TextEncoding::Auto,
             delimiter: None,
+            query: false,
+            headers: true,
             start_row: input("1".into(), "1", window, cx),
             columns: Vec::new(),
             destination: input(ibis_doc_model::cell_name(column, row), "A1", window, cx),
@@ -279,6 +292,20 @@ impl SlideEditor {
         let Some(data) = p.data.as_ref() else {
             return self.import_text_message(crate::shell::i18n::text("_xlsx.choose-a-file-to-load").into(), cx);
         };
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if p.query {
+            use ibis_doc_model::query::Source;
+            let options = p.options(cx);
+            let encoding = ENCODINGS.iter().find(|(encoding, _)| *encoding == options.encoding)
+                .map(|(_, id)| *id).unwrap_or("_shell.auto");
+            let definition = Source::Delimited {
+                name: p.name.clone().unwrap_or_default(), encoding: encoding.into(),
+                delimiter: options.delimiter, start_row: options.start_row, headers: p.headers,
+            };
+            let source = delimited_table(data, &options, p.headers);
+            self.finish_external_query(definition, source, None, false, window, cx);
+            return;
+        }
         let imported = match ibis_formats::csv::import(data, &p.options(cx)) {
             Ok(i) => i,
             Err(e) => return self.import_text_message(e.to_string(), cx),
@@ -401,9 +428,18 @@ impl SlideEditor {
             .child(crate::shell::chrome::text_field_row(crate::shell::i18n::text("_shell.file"),crate::shell::chrome::text_field(&p.file_path).full_width().path_picker("import-text-pick",crate::shell::chrome::PathMode::File,&["csv","tsv","txt"],cx,|e,path,w,cx|e.load_import_text_path(path,w,cx))))
             .child(crate::shell::chrome::dropdown_row(encoding_label,mark("import-text-encoding",dropdown("import-text-encoding",crate::shell::i18n::text(encoding),encoding_choices).into_any_element())))
             .child(crate::shell::chrome::dropdown_row(crate::shell::i18n::text("query.field.separator"),mark("import-text-delimiter",dropdown("import-text-delimiter",crate::shell::i18n::text(delimiter),delimiter_choices).into_any_element())))
-            .child(crate::shell::chrome::dropdown_row(crate::shell::i18n::text("fix.series.type"),mark("import-text-fixed",dropdown("import-text-fixed",crate::shell::i18n::text(if p.fixed{"fix.text-columns.fixed-width"}else{"fix.text-columns.delimiters"}),mode_choices).into_any_element())))
+            .when(!p.query, |body| body.child(crate::shell::chrome::dropdown_row(crate::shell::i18n::text("fix.series.type"),mark("import-text-fixed",dropdown("import-text-fixed",crate::shell::i18n::text(if p.fixed{"fix.text-columns.fixed-width"}else{"fix.text-columns.delimiters"}),mode_choices).into_any_element()))))
             .child(crate::shell::chrome::text_field_row(crate::shell::i18n::text("_xlsx.start-at-row"),crate::shell::chrome::text_field(&p.start_row).spinner("import-text-start-row",crate::shell::chrome::SpinnerSpec::new(1.).range(1.,1_048_576.).integer_only(),cx,|_,_,_,cx|cx.notify())))
-            .child(crate::shell::i18n::text("_xlsx.column-data-format-click-to-change"));
+            ;
+        if p.query {
+            body = body.child(gpui_kit::component::checkbox::Checkbox::new("query-delimited-headers")
+                .label(crate::shell::i18n::text("query.delimited-headers")).checked(p.headers)
+                .on_change(cx.listener(|this, checked, _, cx| {
+                    if let Some(panel) = this.wb_mut().panels.import_text.as_mut() { panel.headers = *checked; }
+                    cx.notify();
+                })));
+        } else {
+        body = body.child(crate::shell::i18n::text("_xlsx.column-data-format-click-to-change"));
         let shown = preview.iter().map(Vec::len).max().unwrap_or(0).min(8);
         let mut types = h_flex().gap_1().flex_wrap();
         for i in 0..shown {
@@ -441,6 +477,7 @@ impl SlideEditor {
         if !p.new_sheet {
             body = body.child(crate::shell::i18n::text("fix.text-columns.destination")).child(mark("destination", super::range_field::local_range_field(&p.destination,"import-text-destination",true,cx).into_any_element()));
         }
+        }
         body = body.child(crate::shell::i18n::text("fix.text-columns.preview"));
         // Synthetic spreadsheet headings preserve the first CSV record as data.
         let column_count=preview.iter().map(Vec::len).max().unwrap_or(0);
@@ -453,4 +490,77 @@ impl SlideEditor {
             .action(crate::shell::chrome::dialog_cancel_definition(cx));
         Some(SidebarPanel::with_footer(crate::shell::i18n::text("_xlsx.from-text-csv"), body.into_any_element(), panel_terminal_actions))
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn read_delimited_query(path: &std::path::Path, encoding: &str, delimiter: Option<char>, start_row: usize, headers: bool) -> Result<ibis_doc_model::query::QTable, String> {
+    use std::io::Read;
+    let encoding = ENCODINGS.iter().find(|(_, id)| *id == encoding)
+        .map(|(encoding, _)| *encoding).ok_or("Unsupported text encoding")?;
+    let mut data = Vec::new();
+    std::fs::File::open(path).and_then(|file| file.take(64 * 1024 * 1024 + 1).read_to_end(&mut data))
+        .map_err(|error| error.to_string())?;
+    delimited_table(&data, &ImportOptions { encoding, delimiter, start_row, fixed: None }, headers)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn delimited_table(data: &[u8], options: &ImportOptions, headers: bool) -> Result<ibis_doc_model::query::QTable, String> {
+    use ibis_doc_model::query::{QType, table_of_cells};
+    if data.len() > 64 * 1024 * 1024 {
+        return Err("Delimited source exceeds the 64 MiB limit".into());
+    }
+    let imported = ibis_formats::csv::import(data, options).map_err(|error| error.to_string())?;
+    let width = imported.rows.iter().map(Vec::len).max().unwrap_or(0);
+    let height = imported.rows.len().saturating_sub(usize::from(headers));
+    if width == 0 || width > 16_384 || height > 1_048_575 || height.saturating_mul(width) > 5_000_000 {
+        return Err("Delimited source is empty or exceeds the table size limit".into());
+    }
+    let mut records = imported.rows.into_iter();
+    let headings = headers.then(|| records.next()).flatten();
+    let rows = records.map(|row| row.into_iter().map(|field| {
+        if field.is_empty() {
+            return CellValue::Empty;
+        }
+        // External data is never evaluated as a spreadsheet formula.
+        match parse_imported(&field, false) {
+            Typed::Value(value @ (CellValue::Number(_) | CellValue::Bool(_)), None)
+                if !field.starts_with('0') || field.starts_with("0.") || field == "0" => value,
+            _ => CellValue::Text(field),
+        }
+    }).collect()).collect();
+    let mut table = table_of_cells(rows, width);
+    let mut used = std::collections::HashSet::new();
+    for (index, column) in table.columns.iter_mut().enumerate() {
+        let base = headings.as_ref().and_then(|row| row.get(index)).filter(|name| !name.is_empty()).unwrap_or(&column.name);
+        let mut name = base.clone();
+        let mut suffix = 2;
+        while !used.insert(name.to_lowercase()) {
+            name = format!("{base}_{suffix}");
+            suffix += 1;
+        }
+        column.name = name;
+        let mut kinds = table.rows.iter().map(|row| match &row[index] {
+            CellValue::Empty => None,
+            CellValue::Number(value) => Some(if value.fract() == 0.0 { QType::Whole } else { QType::Decimal }),
+            CellValue::Bool(_) => Some(QType::Logical),
+            _ => Some(QType::Text),
+        }).flatten();
+        if let Some(first) = kinds.next() {
+            column.ty = kinds.fold(first, |current, next| match (current, next) {
+                (a, b) if a == b => a,
+                (QType::Whole, QType::Decimal) | (QType::Decimal, QType::Whole) => QType::Decimal,
+                _ => QType::Any,
+            });
+        }
+    }
+    Ok(table)
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[test]
+fn delimited_query_keeps_headers_and_does_not_evaluate_formulas() {
+    let data = b"code\tamount\tamount\n001\t2.5\t=1+2\n";
+    let table = delimited_table(data, &ImportOptions { delimiter: Some('\t'), ..Default::default() }, true).unwrap();
+    assert_eq!(table.names(), ["code", "amount", "amount_2"]);
+    assert_eq!(table.rows[0], [CellValue::Text("001".into()), CellValue::Number(2.5), CellValue::Text("=1+2".into())]);
 }

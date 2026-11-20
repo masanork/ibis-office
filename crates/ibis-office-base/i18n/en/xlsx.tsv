@@ -3113,3 +3113,5 @@ query.m-error.not-table	The result is not a table (it is a {type}).
 xlsx.query-from-json-array	From JSON File
 query.json-arrays	Select a JSON Array
 query.json-no-arrays	No JSON arrays to import
+xlsx.query-from-delimited	From CSV or TSV (Query)
+query.delimited-headers	Use First Row as Column Headers

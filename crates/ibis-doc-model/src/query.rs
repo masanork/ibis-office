@@ -463,6 +463,7 @@ pub struct Parameter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
     JsonArray { name: String, key: Option<String> },
+    Delimited { name: String, encoding: String, delimiter: Option<char>, start_row: usize, headers: bool },
     /// A table in a local SQLite file. Only the display name and table are stored.
     Sqlite { name: String, table: String },
     /// A local Avro object container file. Only the display name is stored.

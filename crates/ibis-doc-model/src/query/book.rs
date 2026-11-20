@@ -176,6 +176,7 @@ pub(crate) fn csv_records(text: &str, delimiter: char, quoted: bool) -> Vec<Vec<
 pub fn read_source(p: &Presentation, source: &Source) -> Result<QTable, String> {
     match source {
         Source::JsonArray { .. } => Err("Select the JSON source".into()),
+        Source::Delimited { .. } => Err("Select the CSV or TSV source".into()),
         Source::Sqlite { .. } => Err("Select the SQLite database source file".into()),
         Source::Avro { .. } => Err("Select the Avro source file".into()),
         Source::ArrowIpc { .. } => Err("Select the Arrow IPC source file".into()),

@@ -497,6 +497,7 @@ fn source_lines(source: &Source, first: &str) -> (Vec<String>, String) {
     let line = |name: &str, body: String| format!("    {} = {body}", id(name));
     match source {
         Source::JsonArray { .. } => (vec![line(first, "Ibis.JsonArraySource()".to_string())], first.to_string()),
+        Source::Delimited { .. } => (vec![line(first, "Ibis.DelimitedSource()".to_string())], first.to_string()),
         Source::Sqlite { .. } => (vec![line(first, "Ibis.SqliteSource()".to_string())], first.to_string()),
         Source::Avro { .. } => (vec![line(first, "Ibis.AvroSource()".to_string())], first.to_string()),
         Source::ArrowIpc { .. } => (vec![line(first, "Ibis.ArrowIpcSource()".to_string())], first.to_string()),
