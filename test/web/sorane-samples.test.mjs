@@ -5,13 +5,18 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 const source = readFileSync(new URL('../../www/sorane-samples.js',import.meta.url),'utf8');
 function node() { return {children:[], append(...children) { this.children.push(...children); }}; }
-async function render(payload, ok = true) {
+async function render(payload, ok = true, featured = []) {
   const container=node();
-  const document={querySelector:()=>container,createElement:()=>node()};
+  const document={querySelector:()=>container,querySelectorAll:()=>featured.map(sampleId=>({dataset:{sampleId}})),createElement:()=>node()};
   await runInNewContext(`(async () => { ${source} })()`,{document,fetch:async()=>({ok,json:async()=>payload}),encodeURIComponent});
   return container.children;
 }
 test('unavailable sample service leaves the bundled sample alone',async()=>{assert.equal((await render([],false)).length,0)});
+test('samples featured in the main gallery do not appear twice',async()=>{
+  const id='11111111-1111-4111-8111-111111111111';
+  const records=await render([{id,name:'sample.xlsx',title:'名簿の照合'}],true,[id]);
+  assert.equal(records.length,0);
+});
 test('only valid sample paths are built and titles are text, not HTML',async()=>{
   const records=await render([{id:'11111111-1111-4111-8111-111111111111',name:'sample.docx',title:'<img onerror=alert(1)>'},{id:'bad/id',name:'x.docx',title:'bad'}]);
   assert.equal(records.length,1);assert.equal(records[0].children[0].textContent,'<img onerror=alert(1)>');

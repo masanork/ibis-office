@@ -2,6 +2,7 @@
 // A failed or unconfigured sample service leaves the bundled sample available.
 const container = document.querySelector('#more-samples');
 if (container) {
+  const featured = new Set(Array.from(document.querySelectorAll('[data-sample-id]'), card => card.dataset.sampleId));
   try {
     const response = await fetch('/api/samples', { headers: { Accept: 'application/json' } });
     if (response.ok) {
@@ -9,7 +10,7 @@ if (container) {
       if (Array.isArray(samples)) for (const sample of samples.slice(0, 100)) {
         if (typeof sample.id !== 'string' || !/^[a-f0-9-]{36}$/.test(sample.id) ||
             typeof sample.name !== 'string' || !/^[a-zA-Z0-9_-]{1,80}\.(?:docx|xlsx|pptx)$/.test(sample.name) ||
-            typeof sample.title !== 'string' || sample.title.length > 100) continue;
+            typeof sample.title !== 'string' || sample.title.length > 100 || featured.has(sample.id)) continue;
         const card = document.createElement('a');
         const file = `/api/samples/${sample.id}/${sample.name}`;
         card.href = `./editor.html?open=${encodeURIComponent(file)}`;
