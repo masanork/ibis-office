@@ -400,18 +400,12 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
             }
             content.styles.push(ibis_doc_model::CellStyle { bold: true, ..base });
         }
-        let mut cells = markdown_workbook_cells(flow, marker.is_some(), &mut content.styles, date1904)?;
-        if let Some(origin) = marker.as_ref().and_then(|marker| marker.origin.as_deref()) {
-            let (row, column) = ibis_doc_model::ai_sheet::parse_cell_ref(origin)
-                .ok_or_else(|| Error::new(format!("xlsx-sheet の開始セルが不正です: {origin}")))?;
-            for cell in &mut cells {
-                cell.row = cell.row.checked_add(row).filter(|&value| value <= ibis_calc::formula::MAX_ROW)
-                    .ok_or_else(|| Error::new("Markdown の表がワークシートの行範囲を超えています"))?;
-                cell.column = cell.column.checked_add(column).filter(|&value| value <= ibis_calc::formula::MAX_COLUMN)
-                    .ok_or_else(|| Error::new("Markdown の表がワークシートの列範囲を超えています"))?;
-            }
-        }
-        content.cells = cells.into();
+        let origin = match marker.as_ref().and_then(|marker| marker.origin.as_deref()) {
+            Some(origin) => ibis_doc_model::ai_sheet::parse_cell_ref(origin)
+                .ok_or_else(|| Error::new(format!("xlsx-sheet の開始セルが不正です: {origin}")))?,
+            None => (0, 0),
+        };
+        content.cells = markdown_workbook_cells(flow, marker.is_some(), &mut content, date1904, origin)?.into();
         if let Some(MarkdownSheetMarker { name, .. }) = marker {
             if !valid_sheet_name(presentation, &name, (index == 0).then_some(0)) {
                 return Err(Error::new(format!("無効または重複したシート名です: {name}")));
@@ -495,7 +489,11 @@ const XLSX_NUMBER_CELL_MARKER: &str = "<!-- xlsx-number:";
 const XLSX_CELL_MARKER_END: &str = " -->";
 
 fn push_xlsx_string_marker(out: &mut String, marker: &str, value: &str) {
-    let encoded = serde_json::to_string(value).expect("a string is JSON serializable");
+    push_xlsx_json_marker(out, marker, &serde_json::Value::from(value));
+}
+
+fn push_xlsx_json_marker(out: &mut String, marker: &str, value: &serde_json::Value) {
+    let encoded = value.to_string();
     out.push(' ');
     out.push_str(marker);
     out.push_str(&encoded.replace('|', r"\u007c").replace('<', r"\u003c").replace('>', r"\u003e").replace("--", r"-\u002d"));
@@ -522,10 +520,13 @@ fn infer_markdown_cell_value(text: &str) -> ibis_doc_model::CellValue {
 fn markdown_workbook_cells(
     flow: &FlowDocument,
     named: bool,
-    styles: &mut Vec<ibis_doc_model::CellStyle>,
+    sheet: &mut ibis_doc_model::Sheet,
     date1904: bool,
+    (origin_row, origin_column): (u32, u32),
 ) -> Result<Vec<ibis_doc_model::SheetCell>, Error> {
-    use ibis_doc_model::{CellKind, CellValue, SheetCell};
+    use ibis_doc_model::{CellError, CellKind, CellRange, CellValue, SheetCell};
+
+    let styles = &mut sheet.styles;
 
     let mut cells: Vec<SheetCell> = Vec::new();
     let mut formats = std::collections::HashMap::new();
@@ -577,16 +578,23 @@ fn markdown_workbook_cells(
                             .join(" ");
                         let mut trimmed = txt.trim();
                         let mut formula = None;
+                        let mut spill_end = None;
                         if named && !trimmed.ends_with(XLSX_TEXT_CELL_MARKER)
                             && let Some((display, encoded)) = trimmed.strip_suffix(XLSX_CELL_MARKER_END)
                             .and_then(|text| text.rsplit_once(XLSX_FORMULA_CELL_MARKER))
                             .filter(|(_, encoded)| !encoded.contains(XLSX_CELL_MARKER_END))
                         {
-                            let expression = serde_json::from_str::<String>(encoded.trim()).ok()
-                                .and_then(|text| text.strip_prefix('=').map(str::to_owned))
-                                .filter(|text| !text.trim().is_empty())
-                                .ok_or_else(|| Error::new("xlsx-formula の数式が不正です"))?;
-                            formula = Some(expression);
+                            let invalid = || Error::new("xlsx-formula の数式またはスピル範囲が不正です");
+                            let value: serde_json::Value = serde_json::from_str(encoded.trim()).map_err(|_| invalid())?;
+                            let expression = if let Some(object) = value.as_object().filter(|object| object.len() == 2) {
+                                spill_end = Some(object.get("spill").and_then(serde_json::Value::as_str)
+                                    .and_then(ibis_doc_model::ai_sheet::parse_cell_ref).ok_or_else(invalid)?);
+                                object.get("formula").and_then(serde_json::Value::as_str)
+                            } else {
+                                value.as_str()
+                            };
+                            formula = Some(expression.and_then(|text| text.strip_prefix('='))
+                                .filter(|text| !text.trim().is_empty()).ok_or_else(invalid)?.to_owned());
                             trimmed = display.trim_end();
                         }
                         let mut style = usize::from(ri == 0);
@@ -610,6 +618,8 @@ fn markdown_workbook_cells(
                             let value = number.trim().parse::<f64>().ok().filter(|value| value.is_finite())
                                 .ok_or_else(|| Error::new(format!("xlsx-number の数値が不正です: {number}")))?;
                             (display.trim_end(), CellValue::Number(value))
+                        } else if spill_end.is_some() && trimmed == "#SPILL!" {
+                            (trimmed, CellValue::Error(CellError::Spill))
                         } else {
                             if trimmed.is_empty() {
                                 if formula.is_none() {
@@ -634,9 +644,23 @@ fn markdown_workbook_cells(
                         } else {
                             trimmed.to_string()
                         };
+                        let row = cur_row.checked_add(origin_row).filter(|&value| value <= ibis_calc::formula::MAX_ROW)
+                            .ok_or_else(|| Error::new("Markdown の表がワークシートの行範囲を超えています"))?;
+                        let column = (ci as u32).checked_add(origin_column).filter(|&value| value <= ibis_calc::formula::MAX_COLUMN)
+                            .ok_or_else(|| Error::new("Markdown の表がワークシートの列範囲を超えています"))?;
+                        if let Some((last_row, last_column)) = spill_end {
+                            if last_row < row || last_column < column
+                                || (value == CellValue::Error(CellError::Spill) && (last_row, last_column) != (row, column))
+                            {
+                                return Err(Error::new("xlsx-formula のスピル範囲が不正です"));
+                            }
+                            sheet.spills.insert((row, column), CellRange {
+                                first_row: row, first_column: column, last_row, last_column,
+                            });
+                        }
                         cells.push(SheetCell {
-                            row: cur_row,
-                            column: ci as u32,
+                            row,
+                            column,
                             kind: CellKind::of(&value),
                             value,
                             text,
@@ -756,6 +780,7 @@ fn export_workbook_markdown_with_positions(
                     continue;
                 }
                 let cell = sheet.cell(r, c);
+                let spill = sheet.spills.get(&(r, c));
                 let raw = cell.map(|cell| cell.text.as_str()).unwrap_or("");
                 let escaped = raw.replace('|', "\\|").replace('$', "\\$").replace('\n', "<br>");
                 out.push(' ');
@@ -765,6 +790,7 @@ fn export_workbook_markdown_with_positions(
                 match cell.map(|cell| &cell.value) {
                     Some(ibis_doc_model::CellValue::Text(_))
                         if raw.trim_end().ends_with(XLSX_TEXT_CELL_MARKER)
+                            || (spill.is_some() && raw.trim() == "#SPILL!")
                             || numeric_cell_marker(raw.trim()).is_some()
                             || ((raw.contains(XLSX_FORMULA_CELL_MARKER) || raw.contains(XLSX_FORMAT_CELL_MARKER)) && raw.trim_end().ends_with(XLSX_CELL_MARKER_END))
                             || !matches!(infer_markdown_cell_value(raw.trim()), ibis_doc_model::CellValue::Text(_)) =>
@@ -790,8 +816,20 @@ fn export_workbook_markdown_with_positions(
                     push_xlsx_string_marker(&mut out, XLSX_FORMAT_CELL_MARKER, format);
                 }
                 if let Some(formula) = cell.and_then(|cell| cell.formula.as_deref()) {
-                    let formula = formula.strip_prefix('=').unwrap_or(formula);
-                    push_xlsx_string_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &format!("={formula}"));
+                    let formula = format!("={}", formula.strip_prefix('=').unwrap_or(formula));
+                    if let Some(range) = spill {
+                        let end = if cell.is_some_and(|cell| cell.value == ibis_doc_model::CellValue::Error(ibis_doc_model::CellError::Spill)) {
+                            ibis_doc_model::cell_name(c, r)
+                        } else {
+                            ibis_doc_model::cell_name(range.last_column, range.last_row)
+                        };
+                        push_xlsx_json_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &serde_json::json!({
+                            "formula": formula,
+                            "spill": end,
+                        }));
+                    } else {
+                        push_xlsx_string_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &formula);
+                    }
                 }
                 out.push_str(" |");
             }
@@ -8630,6 +8668,41 @@ xychart-beta
         let recalculated = BookView::new(&rebuilt).recalculate(&[(0, 3, 2)]);
         for position in [(0, 5, 2), (1, 1, 0)] {
             assert!(recalculated.iter().any(|cell| cell.cell == position && cell.value == CellValue::Number(10.0)));
+        }
+    }
+
+    #[test]
+    fn workbook_dynamic_formulas_round_trip_with_spill_ranges() {
+        use ibis_doc_model::{CellError, CellRange, CellValue, sheet_calc::sheet_of_slide};
+
+        let input = r#"<!-- xlsx-sheet {"name":"配列","origin":"C3"} -->
+
+| 1 <!-- xlsx-formula:{"formula":"=SEQUENCE(2,2)","spill":"D4"} --> | 2 |
+| --- | --- |
+| 3 | 4 |
+| #SPILL! <!-- xlsx-formula:{"formula":"=SEQUENCE(1,2)","spill":"C5"} --> | blocked |
+"#;
+        let verify = |bytes: &[u8]| {
+            let workbook = crate::read(bytes).unwrap();
+            let sheet = sheet_of_slide(&workbook.slides[0]).unwrap();
+            assert_eq!(sheet.spills[&(2, 2)], CellRange {
+                first_row: 2, first_column: 2, last_row: 3, last_column: 3,
+            });
+            assert_eq!(sheet.cell(2, 2).unwrap().formula.as_deref(), Some("SEQUENCE(2,2)"));
+            assert_eq!(sheet.cell(3, 3).unwrap().value, CellValue::Number(4.0));
+            assert_eq!(sheet.spills[&(4, 2)], CellRange {
+                first_row: 4, first_column: 2, last_row: 4, last_column: 2,
+            });
+            assert_eq!(sheet.cell(4, 2).unwrap().value, CellValue::Error(CellError::Spill));
+        };
+        let original = import_markdown_to_xlsx_bytes(input.as_bytes()).unwrap();
+        verify(&original);
+        let markdown = export_workbook_markdown(&crate::read(&original).unwrap()).unwrap();
+        assert!(markdown.contains(r#"xlsx-formula:{"formula":"=SEQUENCE(2,2)","spill":"D4"}"#));
+        verify(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap());
+
+        for invalid in [input.replace("D4", "B4"), input.replace("D4", "XFE4"), input.replace("C5", "D5")] {
+            assert!(open_markdown_workbook(invalid.into_bytes()).is_err());
         }
     }
 
