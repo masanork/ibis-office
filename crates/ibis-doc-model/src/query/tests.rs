@@ -385,7 +385,7 @@ fn m_code_reads_back_as_the_steps() {
         Step::AddConditionalColumn { name: s("区分"), clauses: vec![Clause { column: s("数量"), op: Op::Greater, value: s("5"), output: s("多") }, Clause { column: s("店"), op: Op::Equals, value: s("北"), output: s("北") }], otherwise: s("少") },
         Step::AddIndexColumn { name: s("番号"), start: 1, step: 1 },
     ];
-    for source in [Source::Blank, Source::Table(s("売上")), Source::Range { sheet: s("Sheet1"), range: s("A1:D9") }, Source::Parquet { name: s("transactions.parquet"), columns: vec![s("amount")] }] {
+    for source in [Source::Blank, Source::Table(s("売上")), Source::Range { sheet: s("Sheet1"), range: s("A1:D9") }, Source::Parquet { names: vec![s("transactions.parquet")], columns: vec![s("amount")] }] {
         let query = Query { name: s("Q"), source, steps: steps.clone(), output: None };
         let code = query_to_m(&query);
         match m_to_query(&code, &query) {
@@ -417,10 +417,10 @@ fn m_code_is_read_freely_and_refused_with_the_reason() {
 
 #[test]
 fn parquet_query_saves_its_source_without_granting_file_access() {
-    let query = Query::new("Source", Source::Parquet { name: "明細.parquet".into(), columns: vec!["code".into(), " 金額\t".into()] });
+    let query = Query::new("Source", Source::Parquet { names: vec!["明細.parquet".into(), "別\t表.parquet".into()], columns: vec!["code".into(), " 金額\t".into()] });
     let (saved, _) = decode_queries(&encode_queries(&[query.clone()], &[]));
     assert_eq!(saved, [query]);
     assert!(read_source(&Presentation::default(), &saved[0].source).is_err());
     let (legacy, _) = decode_queries("ibis-queries 1\nquery\tSource\t\nsource\tparquet\tlegacy.parquet\n");
-    assert_eq!(legacy[0].source, Source::Parquet { name: "legacy.parquet".into(), columns: Vec::new() });
+    assert_eq!(legacy[0].source, Source::Parquet { names: vec!["legacy.parquet".into()], columns: Vec::new() });
 }

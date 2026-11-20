@@ -275,8 +275,16 @@ pub fn encode_queries(queries: &[Query], parameters: &[Parameter]) -> String {
     for q in queries {
         out.push_str(&format!("query\t{}\t{}\n", esc(&q.name), q.output.as_deref().map(esc).unwrap_or_default()));
         match &q.source {
-            Source::Parquet { name, columns } => {
-                out.push_str(&format!("source\tparquet\t{}", esc(name)));
+            Source::Parquet { names, columns } => {
+                if let [name] = names.as_slice() {
+                    out.push_str(&format!("source\tparquet\t{}", esc(name)));
+                } else {
+                    out.push_str(&format!("source\tparquet-set\t{}", names.len()));
+                    for name in names {
+                        out.push('\t');
+                        out.push_str(&esc(name));
+                    }
+                }
                 for column in columns {
                     out.push('\t');
                     out.push_str(&esc(column));
@@ -309,7 +317,18 @@ pub fn decode_queries(text: &str) -> (Vec<Query>, Vec<Parameter>) {
             Some("source") => {
                 if let Some(q) = queries.last_mut() {
                     q.source = match f.get(1).copied() {
-                        Some("parquet") if f.len() >= 3 => Source::Parquet { name: unesc(f[2]), columns: f[3..].iter().map(|c| unesc(c)).collect() },
+                        Some("parquet") if f.len() >= 3 => Source::Parquet { names: vec![unesc(f[2])], columns: f[3..].iter().map(|c| unesc(c)).collect() },
+                        Some("parquet-set") => {
+                            let file_count = f.get(2).and_then(|n| n.parse::<usize>().ok())
+                                .filter(|&count| count > 0 && count <= f.len().saturating_sub(3));
+                            match file_count {
+                                Some(count) => Source::Parquet {
+                                    names: f[3..3 + count].iter().map(|n| unesc(n)).collect(),
+                                    columns: f[3 + count..].iter().map(|c| unesc(c)).collect(),
+                                },
+                                None => Source::Parquet { names: Vec::new(), columns: Vec::new() },
+                            }
+                        },
                         Some("blank") => Source::Blank,
                         Some("range") if f.len() >= 4 => Source::Range { sheet: unesc(f[2]), range: unesc(f[3]) },
                         _ => Source::Table(f.get(2).map(|t| unesc(t)).unwrap_or_default()),

@@ -72,7 +72,7 @@ pub(crate) struct QueriesPanel {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) struct ParquetSelection {
-    path: std::path::PathBuf,
+    paths: Vec<std::path::PathBuf>,
     columns: Vec<query::ParquetColumn>,
     selected: Vec<bool>,
 }
@@ -142,12 +142,15 @@ impl SlideEditor {
         self.commit_cell_edit(cx);
         let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
             files: true, directories: false, extensions: vec!["parquet".into()],
-            multiple: false, prompt: None,
+            multiple: true, prompt: Some(crate::shell::i18n::text("query.parquet-pick-files")),
         });
         let document_id = self.file_id;
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
+            let Ok(Ok(Some(mut paths))) = picked.await else { return };
+            if paths.is_empty() {
+                return;
+            }
+            paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()).then(left.cmp(right)));
             if existing.is_some() {
                 this.update_in(cx, |this, window, cx| {
                     if this.file_id != document_id {
@@ -157,20 +160,20 @@ impl SlideEditor {
                         Some(Source::Parquet { columns, .. }) => columns.clone(),
                         _ => return,
                     };
-                    this.read_parquet_query(path, columns, existing, refresh, window, cx);
+                    this.read_parquet_query(paths, columns, existing, refresh, window, cx);
                 }).ok();
                 return;
             }
             let schema = cx.background_executor().spawn({
-                let path = path.clone();
-                async move { query::parquet_columns(&path) }
+                let paths = paths.clone();
+                async move { query::parquet_files_columns(&paths) }
             }).await;
             this.update_in(cx, |this, _, cx| {
                 if this.file_id != document_id {
                     return;
                 }
                 match schema {
-                    Ok(columns) => this.choose_parquet_columns(path, columns, cx),
+                    Ok(columns) => this.choose_parquet_columns(paths, columns, cx),
                     Err(error) => this.set_status(error, cx),
                 }
             }).ok();
@@ -178,11 +181,11 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    fn choose_parquet_columns(&mut self, path: std::path::PathBuf, columns: Vec<query::ParquetColumn>, cx: &mut Context<Self>) {
+    fn choose_parquet_columns(&mut self, paths: Vec<std::path::PathBuf>, columns: Vec<query::ParquetColumn>, cx: &mut Context<Self>) {
         let selected = columns.iter().map(|column| column.ty.is_some()).collect();
         let state = self.wb_mut();
         state.close_settings();
-        state.panels.parquet_selection = Some(ParquetSelection { path, columns, selected });
+        state.panels.parquet_selection = Some(ParquetSelection { paths, columns, selected });
         self.sidebar_open = true;
         cx.notify();
     }
@@ -193,6 +196,9 @@ impl SlideEditor {
         let p = self.sheet_state()?.panels.parquet_selection.as_ref()?;
         let text = crate::shell::i18n::text;
         let mut body = v_flex().gap_2().px(px(18.)).py(px(8.));
+        if p.paths.len() > 1 {
+            body = body.child(crate::shell::i18n::format("query.parquet-file-count", &[("count", &p.paths.len())]));
+        }
         for (index, column) in p.columns.iter().enumerate() {
             let kind = column.ty
                 .and_then(|ty| query::QType::ALL.iter().position(|&candidate| candidate == ty))
@@ -234,7 +240,7 @@ impl SlideEditor {
                         .filter(|(_, checked)| *checked)
                         .map(|(column, _)| column.name)
                         .collect();
-                    this.read_parquet_query(p.path, columns, None, false, window, cx);
+                    this.read_parquet_query(p.paths, columns, None, false, window, cx);
                     cx.notify();
                 })))
         } else {
@@ -244,13 +250,15 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    fn read_parquet_query(&mut self, path: std::path::PathBuf, columns: Vec<String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    fn read_parquet_query(&mut self, paths: Vec<std::path::PathBuf>, columns: Vec<String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let names: Vec<String> = paths.iter().map(|path|
+            path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+        ).collect();
         let document_id = self.file_id;
         cx.spawn_in(window, async move |this, cx| {
             let result = cx.background_executor().spawn({
                 let columns = columns.clone();
-                async move { query::read_parquet_columns(&path, &columns) }
+                async move { query::read_parquet_files(&paths, &columns) }
             }).await;
             this.update_in(cx, |this, window, cx| {
                 if this.file_id != document_id {
@@ -269,20 +277,20 @@ impl SlideEditor {
                     let query_name = (1..).map(|n| format!("{base}{n}"))
                         .find(|name| workbook.is_none_or(|book| !book.queries.iter().any(|q| q.name == *name)))
                         .unwrap_or(base);
-                    Query::new(&query_name, Source::Parquet { name: name.clone(), columns: columns.clone() })
+                    Query::new(&query_name, Source::Parquet { names: names.clone(), columns: columns.clone() })
                 });
                 if refresh {
                     let Some(book) = workbook else { return };
                     if !book.queries.contains(&q) {
                         return;
                     }
-                    q.source = Source::Parquet { name, columns };
+                    q.source = Source::Parquet { names, columns };
                     match query::result_from_source(this.presentation(), &q, &book.queries, &book.query_parameters, 0, source) {
                         Ok(table) => this.load_refreshed_query(q, table, cx),
                         Err(error) => this.queries_message(error, cx),
                     }
                 } else {
-                    q.source = Source::Parquet { name, columns };
+                    q.source = Source::Parquet { names, columns };
                     this.open_query_editor_with_source(q, source, window, cx);
                 }
             }).ok();
@@ -669,7 +677,7 @@ impl SlideEditor {
         }
         for (i, q) in queries.iter().enumerate() {
             let source = match &q.source {
-                Source::Parquet { name, .. } => format!("Parquet · {name}"),
+                Source::Parquet { names, .. } => format!("Parquet · {}", names.join(", ")),
                 Source::Blank => crate::shell::i18n::text("query.source-blank").to_string(),
                 Source::Table(t) => t.clone(),
                 Source::Range { sheet, range } => format!("{sheet}!{range}"),

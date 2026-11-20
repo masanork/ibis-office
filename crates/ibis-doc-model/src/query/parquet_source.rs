@@ -5,7 +5,10 @@ use parquet::basic::{ConvertedType, LogicalType, Repetition, Type as PhysicalTyp
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::Field;
 use parquet::schema::types::Type;
-use std::{fs::File, path::Path};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 fn number(value: f64, ty: QType) -> Result<(CellValue, QType), String> {
     if !value.is_finite() {
@@ -104,12 +107,70 @@ pub fn parquet_columns(path: &Path) -> Result<Vec<ParquetColumn>, String> {
         .collect())
 }
 
+/// List the first file's fields, allowing only names with a common type across the selection.
+pub fn parquet_files_columns(paths: &[PathBuf]) -> Result<Vec<ParquetColumn>, String> {
+    let mut paths = paths.iter();
+    let first = paths.next().ok_or("Select at least one Parquet file")?;
+    let mut columns = parquet_columns(first)?;
+    for path in paths {
+        let fields =
+            parquet_columns(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let mut by_name = std::collections::HashMap::new();
+        for field in fields {
+            by_name
+                .entry(field.name)
+                .and_modify(|ty| *ty = None)
+                .or_insert(field.ty);
+        }
+        for column in &mut columns {
+            if by_name.get(&column.name).copied().flatten() != column.ty {
+                column.ty = None;
+            }
+        }
+    }
+    Ok(columns)
+}
+
+/// Read a set of files into a single table with a common projected schema.
+pub fn read_parquet_files(paths: &[PathBuf], selected: &[String]) -> Result<QTable, String> {
+    if paths.is_empty() {
+        return Err("Select at least one Parquet file".into());
+    }
+    let mut table = QTable::default();
+    let mut seen = std::collections::HashSet::new();
+    for (index, path) in paths.iter().enumerate() {
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if !seen.insert(canonical) {
+            return Err(format!("Duplicate Parquet file: {}", path.display()));
+        }
+        let expected = (index != 0).then_some(table.columns.as_slice());
+        let mut part = read_columns(path, selected, table.rows.len(), expected)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if index == 0 {
+            table.columns = part.columns;
+        }
+        table.rows.append(&mut part.rows);
+    }
+    Ok(table)
+}
+
 pub fn read_parquet(path: &Path) -> Result<QTable, String> {
     read_parquet_columns(path, &[])
 }
 
 /// Materialize selected top-level fields. An empty selection means the legacy whole-table source.
 pub fn read_parquet_columns(path: &Path, selected: &[String]) -> Result<QTable, String> {
+    read_columns(path, selected, 0, None)
+}
+
+fn read_columns(
+    path: &Path,
+    selected: &[String],
+    rows_loaded: usize,
+    expected: Option<&[QColumn]>,
+) -> Result<QTable, String> {
     let reader = open(path)?;
     let meta = reader.metadata().file_metadata();
     let schema = meta.schema();
@@ -142,11 +203,12 @@ pub fn read_parquet_columns(path: &Path, selected: &[String]) -> Result<QTable, 
             Ok(QColumn { name, ty })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    if expected.is_some_and(|expected| expected != columns) {
+        return Err("Selected columns differ from the first Parquet file".into());
+    }
     let width = columns.len();
-    if width > 16_384
-        || meta.num_rows() >= 1_048_576
-        || (width as u64).saturating_mul(meta.num_rows() as u64) > 5_000_000
-    {
+    let rows = (rows_loaded as u64).saturating_add(meta.num_rows() as u64);
+    if width > 16_384 || rows >= 1_048_576 || (width as u64).saturating_mul(rows) > 5_000_000 {
         return Err("Parquet source exceeds the query editor's size limit".into());
     }
     let mut table = QTable {
@@ -194,11 +256,11 @@ mod tests {
         assert_reads_compressed_table(parquet::basic::Compression::SNAPPY, "nested", true);
     }
 
-    fn assert_reads_compressed_table(
+    fn write_table(
         compression: parquet::basic::Compression,
         fixture: &str,
         nested: bool,
-    ) {
+    ) -> PathBuf {
         use parquet::data_type::{ByteArray, ByteArrayType, Int32Type, Int64Type};
         use parquet::file::{properties::WriterProperties, writer::SerializedFileWriter};
         use parquet::schema::parser::parse_message_type;
@@ -255,6 +317,59 @@ mod tests {
         group.close().unwrap();
         writer.close().unwrap();
 
+        file
+    }
+
+    #[test]
+    fn appends_files_and_validates_projected_schema_and_limits() {
+        let first = write_table(parquet::basic::Compression::SNAPPY, "part-01", false);
+        let second = write_table(
+            parquet::basic::Compression::ZSTD(Default::default()),
+            "part-02",
+            true,
+        );
+        let paths = [second.clone(), first.clone()];
+        let schema = parquet_files_columns(&paths).unwrap();
+        assert_eq!(
+            schema.iter().map(|c| c.ty).collect::<Vec<_>>(),
+            [Some(QType::Text), Some(QType::Whole), None]
+        );
+        let columns = vec!["amount".into(), "code".into()];
+        let combined = read_parquet_files(&paths, &columns).unwrap();
+        assert_eq!(combined.names(), ["amount", "code"]);
+        assert_eq!(combined.rows.len(), 4);
+        assert_eq!(
+            combined.rows[0],
+            [CellValue::Number(7.), CellValue::Text("01202".into())]
+        );
+        assert_eq!(combined.rows[..2], combined.rows[2..]);
+        assert!(
+            read_parquet_files(&[first.clone(), first.clone()], &columns)
+                .unwrap_err()
+                .contains("Duplicate")
+        );
+        assert!(
+            read_columns(&first, &columns, 1_048_574, None)
+                .unwrap_err()
+                .contains("size limit")
+        );
+        let mut incompatible = combined.columns;
+        incompatible[0].ty = QType::Text;
+        assert!(
+            read_columns(&second, &columns, 0, Some(&incompatible))
+                .unwrap_err()
+                .contains("differ")
+        );
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
+    }
+
+    fn assert_reads_compressed_table(
+        compression: parquet::basic::Compression,
+        fixture: &str,
+        nested: bool,
+    ) {
+        let file = write_table(compression, fixture, nested);
         let result = if nested {
             let schema = parquet_columns(&file).unwrap();
             assert_eq!(schema[0].ty, Some(QType::Text));

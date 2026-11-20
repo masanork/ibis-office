@@ -2032,6 +2032,8 @@ query.field.start	Start
 query.field.step	Step
 query.field.parameter-name	Parameter name
 query.field.parameter-value	Current value
+query.parquet-pick-files	Select all Parquet files for this query
+query.parquet-file-count	{count} Parquet files selected
 query.parquet-columns	Select Parquet Columns
 query.parquet-unsupported	Unsupported
 query.parquet-select-column	Select at least one supported column.
