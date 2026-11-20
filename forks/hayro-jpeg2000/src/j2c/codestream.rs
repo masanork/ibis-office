@@ -95,7 +95,7 @@ pub(crate) fn read_header<'a>(
                 if main_progression.is_some() || num_components > 256 {
                     bail!(MarkerError::Unsupported);
                 }
-                main_progression = Some(lrcp_volume(reader)?);
+                main_progression = Some(progression_volume(reader)?);
             }
             markers::TLM => {
                 reader.read_marker()?;
@@ -761,25 +761,27 @@ fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Option<PpmMarkerData<'a>> {
     })
 }
 
-/// A single LRCP progression volume starting at layer, resolution and component zero.
+/// A single progression volume starting at layer, resolution and component zero.
 #[derive(Clone, Debug)]
 pub(crate) struct ProgressionVolume {
+    pub(crate) order: ProgressionOrder,
     pub(crate) end_layer: u8,
     pub(crate) end_resolution: u8,
     pub(crate) end_component: u8,
 }
 
-pub(crate) fn lrcp_volume(reader: &mut BitReader<'_>) -> Result<ProgressionVolume> {
+pub(crate) fn progression_volume(reader: &mut BitReader<'_>) -> Result<ProgressionVolume> {
     let invalid = MarkerError::ParseFailure("POC");
     if reader.read_u16().ok_or(invalid)? != 9 {
         bail!(MarkerError::Unsupported);
     }
-    let [0, 0, 0, end_layer, end_resolution, end_component, 0] =
+    let [0, 0, 0, end_layer, end_resolution, end_component, order] =
         reader.read_bytes(7).ok_or(invalid)?
     else {
         bail!(MarkerError::Unsupported);
     };
     Ok(ProgressionVolume {
+        order: ProgressionOrder::from_u8(*order)?,
         end_layer: *end_layer,
         end_resolution: *end_resolution,
         end_component: *end_component,

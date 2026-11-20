@@ -63,7 +63,7 @@ pub(crate) fn decode<'a>(
             {
                 bail!(crate::error::MarkerError::Unsupported);
             }
-            ProgressionOrder::LayerResolutionComponentPosition
+            volume.order
         } else {
             tile.progression_order
         };

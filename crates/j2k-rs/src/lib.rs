@@ -96,6 +96,24 @@ mod tests {
     }
 
     #[test]
+    fn accepts_all_part_one_main_header_progressions() {
+        // With one packet, all five orders describe the same encoded bytes.
+        let mut codestream =
+            encode_j2k(&[143], 1, 1, PixelFormat::Gray8, &EncodeOptions::default()).unwrap();
+        let sot = codestream
+            .windows(2)
+            .position(|m| m == [0xff, 0x90])
+            .unwrap();
+        codestream.splice(sot..sot, [0xff, 0x5f, 0, 9, 0, 0, 0, 1, 1, 1, 0]);
+        for order in 0..5 {
+            codestream[sot + 10] = order;
+            assert_eq!(decode(&codestream).unwrap().data, [143]);
+        }
+        codestream[sot + 10] = 5;
+        assert!(decode(&codestream).is_err());
+    }
+
+    #[test]
     fn roundtrips_rgb_j2k_and_jp2_losslessly() {
         let (w, h) = (29u32, 23u32);
         let mut rgb = Vec::with_capacity((w * h * 3) as usize);

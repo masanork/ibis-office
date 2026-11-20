@@ -281,7 +281,14 @@ fn parse_tile_part<'a>(
                 {
                     bail!(MarkerError::Unsupported);
                 }
-                progression_change = Some(codestream::lrcp_volume(reader)?);
+                let change = codestream::progression_volume(reader)?;
+                if !matches!(
+                    change.order,
+                    ProgressionOrder::LayerResolutionComponentPosition
+                ) {
+                    bail!(MarkerError::Unsupported);
+                }
+                progression_change = Some(change);
             }
             markers::PLT => {
                 // Can be inferred ourselves.
