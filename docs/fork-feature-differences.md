@@ -12,10 +12,8 @@
 
 | 項目 | upstream main | Docs（masanork） |
 | --- | --- | --- |
-| 表計算の「ツール → 機械可読性チェック」 | ibis 標準パネル。複数表、見出し、数値文字列、結合セル、非表示行列、数式などを検出。リアルタイム再検査、ルール・参考ツールへのリンク、行列の挿入・削除に追従するセル移動を備える。 | Docs の Harunobu レビューパネルを開く。編集中のブックから結合セル・非表示行列・数式・文字種（私用文字を含む）の候補を表示し、手動で再検査できる。 |
-| Harunobu 互換のファイル検査 | 標準パネルに Harunobu への参照リンクがある。 | デスクトップから Harunobu 0.2.2 を基にした Rust 実装を呼ぶ。XLSX/XLSM、保存済み CSV/TSV、L1・L1–L2・L1–L3、複数ファイルの L3-07、JSON/CSV 出力に対応。条件を満たす編集中の XLSX/XLSM は一時スナップショットで検査する。Web はブック内の候補表示まで。 |
-
-**確認できた導線の欠落**。Docs 側にも upstream の `machine_readability_panel.rs`、`machine_readability.rs`、`tests/k0055_machine_readability.rs` が入っている。一方、`toolbar.rs` のメニュー登録と再接続はどちらも `harunobu_review.rs` の `open_machine_readability` に接続されている。`open_machine_readability_panel` に呼び出し元がなく、ibis 標準パネル固有の機能は通常メニューから利用できない。Docs 側のファイル検査は、レビュー画面から `harunobu.rs` を経て `ibis-formats` の Rust 検査へつながっている。Harunobu との比較範囲や制約は [機械可読性チェック](machine-readability.md) を参照。
+| 表計算の「校閲 → デジタル庁: 機械可読性チェック…」 | 標準パネルで複数表、見出し、数値文字列、結合セル、非表示行列、数式などを検出。リアルタイム再検査と、行列の挿入・削除に追従するセル移動に対応。 | upstream と同じパネルを開く。 |
+| Docs の Harunobu 互換ファイル検査 | 標準パネルに Harunobu への参照リンクがある。 | メニュー検索の「機械可読性チェック…」から開く。デスクトップでは Harunobu 0.2.2 ベースの Rust 実装で XLSX/XLSM、保存済み CSV/TSV、L1・L1–L2・L1–L3、複数ファイルの L3-07、JSON/CSV 出力に対応。Web ではブック内の候補を表示する。 |
 
 ### Docs 側の主な機能差分
 

@@ -10,6 +10,7 @@ use crate::machine_readability::Rule;
 use crate::machine_readability_panel::{REALTIME_KEY, description_parts, realtime_setting};
 use crate::shell::scenario::Scenario;
 
+const WORKBOOK: &str = "test/fixtures/machine-readability/structure.xlsx";
 const FILE: &str = "test/github-issue/194/machine-readability-sample.xlsx";
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
@@ -45,7 +46,7 @@ fn review_ids(s: &mut Scenario) -> Vec<String> {
 
 /// The protection first (シートの保護 to 数式を表示しない), then the proofing (スペルチェック to オートコレクト), then the checks (アクセシビリティ to 互換性チェック): K0055 (1).
 fn review_menu_order_and_words() {
-    let mut s = Scenario::open("test/editing/xlsx-sales.xlsx");
+    let mut s = Scenario::open(WORKBOOK);
     let ids = review_ids(&mut s);
     let at = |id: &str| ids.iter().position(|x| x == id).unwrap_or_else(|| panic!("{id} in {ids:?}"));
     let order = ["xlsx.protect-sheet", "xlsx.allow-edit-ranges", "xlsx.lock-cells", "xlsx.hide-formulas", "xlsx.spelling.check", "xlsx.thesaurus", "xlsx.autocorrect", "review.accessibility-check", "xlsx.machine-readability-check", "review.compatibility-check"];
@@ -80,7 +81,7 @@ fn description_has_two_links() {
 /// K0055 (4): Window > Sidebar lists the panel and a press opens it.
 fn panel_is_a_sidebar() {
     use crate::shell::chrome::{MenuEntry, MenuId};
-    let mut s = Scenario::open("test/editing/xlsx-sales.xlsx");
+    let mut s = Scenario::open(WORKBOOK);
     let listed = s.with(|e, _| {
         let menus = e.menu_bar_menus();
         let window = menus.menus.iter().find(|(id, _)| *id == MenuId::Window).map(|(_, entries)| entries.clone()).unwrap_or_default();
@@ -150,7 +151,7 @@ fn finding_follows_deleted_rows() {
 fn realtime_check() {
     crate::shell::settings::remove(REALTIME_KEY);
     assert!(realtime_setting(), "on by default");
-    let mut s = Scenario::open("test/editing/xlsx-sales.xlsx");
+    let mut s = Scenario::open(WORKBOOK);
     s.menu("xlsx.machine-readability-check");
     assert!(s.with(|e, _| e.wb().panels.machine_readability.as_ref().unwrap().realtime));
     let count = |s: &mut Scenario| s.with(|e, _| e.wb().panels.machine_readability.as_ref().unwrap().issues.iter().find(|i| i.finding.rule == Rule::Formula).map_or(0, |i| i.finding.count));

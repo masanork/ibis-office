@@ -2567,6 +2567,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
         menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.variant-review.title").icon("rule").on(|this, window, cx| this.open_sheet_variant_review(window, cx)).into());
     }
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.machine-readability.menu").icon("rule").on(|this, window, cx| this.open_machine_readability(window, cx)).into());
+    menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.machine-readability-check").icon("rule").on(|this, window, cx| this.open_machine_readability_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("review.compatibility-check").icon("rule").on(|this, window, cx| this.open_xlsx_compatibility_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.error-options").icon("rule").on(|this, window, cx| this.open_error_options_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.autocorrect").icon("spellcheck").on(|this, window, cx| this.open_autocorrect_panel(window, cx)).into());
@@ -3680,6 +3681,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
         menus.connect("xlsx.variant-review.title", |this, window, cx| this.open_sheet_variant_review(window, cx));
     }
     menus.connect("xlsx.machine-readability.menu", |this, window, cx| this.open_machine_readability(window, cx));
+    menus.connect("xlsx.machine-readability-check", |this, window, cx| this.open_machine_readability_panel(window, cx));
     menus.connect("review.compatibility-check", |this, window, cx| this.open_xlsx_compatibility_panel(window, cx));
     menus.connect("xlsx.error-options", |this, window, cx| this.open_error_options_panel(window, cx));
     menus.connect("xlsx.slicer-settings", |this, window, cx| this.open_slicer_settings_panel(window, cx));
