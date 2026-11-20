@@ -9,8 +9,15 @@ use serde_json::{Value, json};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let [format, scenario] = args.as_slice() else {
-        return Err("usage: wallet_fixture <sd-jwt|mdoc> <normal|extra|wrong-nonce>".into());
+    let (format, scenario, wrap) = match args.as_slice() {
+        [format, scenario] => (format, scenario, false),
+        [format, scenario, flag] if flag == "--vp-token" => (format, scenario, true),
+        _ => {
+            return Err(
+                "usage: wallet_fixture <sd-jwt|mdoc> <normal|extra|wrong-nonce> [--vp-token]"
+                    .into(),
+            );
+        }
     };
     let extra = match scenario.as_str() {
         "normal" | "wrong-nonce" => false,
@@ -60,12 +67,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("unsupported format or scenario".into()),
     };
     let public_key: Value = serde_json::from_str(&issuer.to_public_jwk().to_json())?;
-    println!(
-        "{}",
-        json!({
-            "format": format, "token": token, "expected_paths": ["age_over_18"],
-            "issuer_jwk": public_key, "nonce": "age-check", "audience": audience,
-        })
-    );
+    let mut input = json!({
+        "format": format, "issuer_jwk": public_key, "nonce": "age-check", "audience": audience,
+    });
+    if wrap {
+        let (credential_format, meta, path) = if format == "mdoc" {
+            let options = MdocOptions::default();
+            (
+                "mso_mdoc",
+                json!({"doctype_value": options.doc_type}),
+                json!([options.name_space, "age_over_18"]),
+            )
+        } else {
+            (
+                "dc+sd-jwt",
+                json!({"vct_values": [SdJwtOptions::default().default_vct]}),
+                json!(["age_over_18"]),
+            )
+        };
+        input["vp_token"] = json!({"age_check": [token]});
+        input["dcql_query"] = json!({"credentials": [{
+            "id": "age_check", "format": credential_format, "meta": meta,
+            "claims": [{"path": path, "values": [true]}]
+        }]});
+    } else {
+        input["token"] = json!(token);
+        input["expected_paths"] = json!(["age_over_18"]);
+    }
+    println!("{input}");
     Ok(())
 }

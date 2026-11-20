@@ -22,6 +22,18 @@ pub(crate) fn tools() -> [Tool; 1] {
                     ("format", json!({"enum": ["sd-jwt", "mdoc"]})),
                     ("token", string("Compact SD-JWT or hex/base64url mdoc.")),
                     (
+                        "vp_token",
+                        json!({
+                            "type": "object",
+                            "description": "OpenID4VP JSON object keyed by the single DCQL credential id.",
+                            "minProperties": 1, "maxProperties": 1,
+                            "additionalProperties": {
+                                "type": "array", "minItems": 1, "maxItems": 1,
+                                "items": {"type": "string", "minLength": 1}
+                            }
+                        }),
+                    ),
+                    (
                         "expected_paths",
                         json!({"type": "array", "items": {"type": "string"}}),
                     ),
@@ -30,10 +42,19 @@ pub(crate) fn tools() -> [Tool; 1] {
                     ("nonce", string("Expected SD-JWT key binding nonce.")),
                     ("audience", string("Expected SD-JWT key binding audience.")),
                 ],
-                &["format", "token"],
+                &["format"],
             );
-            schema["oneOf"] =
-                json!([{"required": ["expected_paths"]}, {"required": ["dcql_query"]}]);
+            schema["oneOf"] = json!([
+                {"required": ["token", "expected_paths"], "not": {"anyOf": [
+                    {"required": ["vp_token"]}, {"required": ["dcql_query"]}
+                ]}},
+                {"required": ["token", "dcql_query"], "not": {"anyOf": [
+                    {"required": ["vp_token"]}, {"required": ["expected_paths"]}
+                ]}},
+                {"required": ["vp_token", "dcql_query"], "not": {"anyOf": [
+                    {"required": ["token"]}, {"required": ["expected_paths"]}
+                ]}}
+            ]);
             schema
         },
         run: |_, args| compare(args),
@@ -75,8 +96,42 @@ fn key_binding(token: &str) -> Option<(Value, bool)> {
     Some((payload, valid))
 }
 
+fn presentation_input(args: &Value) -> Result<(&str, Option<&str>), ToolError> {
+    match (args.get("token"), args.get("vp_token")) {
+        (Some(_), None) => Ok((args.str_arg("token")?, None)),
+        (None, Some(vp_token)) => {
+            if args.get("expected_paths").is_some() {
+                return Err(ToolError::invalid(
+                    "vp_token requires dcql_query instead of expected_paths",
+                ));
+            }
+            let (_, id) = crate::wallet_dcql::single_credential(&args["dcql_query"])?;
+            let presentations = vp_token
+                .as_object()
+                .filter(|map| map.len() == 1)
+                .ok_or_else(|| ToolError::invalid("vp_token must contain one credential id"))?;
+            let entry = presentations
+                .get(id)
+                .ok_or_else(|| ToolError::invalid("vp_token credential id does not match DCQL"))?;
+            let token = entry
+                .as_array()
+                .filter(|tokens| tokens.len() == 1)
+                .and_then(|tokens| tokens[0].as_str())
+                .filter(|token| !token.trim().is_empty())
+                .ok_or_else(|| {
+                    ToolError::invalid("vp_token entry must contain one presentation string")
+                })?;
+            Ok((token, Some(id)))
+        }
+        _ => Err(ToolError::invalid(
+            "provide exactly one of token or vp_token",
+        )),
+    }
+}
+
 fn compare(args: &Value) -> Result<Value, ToolError> {
-    let token = args.str_arg("token")?.trim();
+    let (token, credential_id) = presentation_input(args)?;
+    let token = token.trim();
     if token.len() > 1024 * 1024 {
         return Err(ToolError::invalid("presentation exceeds 1 MiB"));
     }
@@ -164,6 +219,7 @@ fn compare(args: &Value) -> Result<Value, ToolError> {
     Ok(json!({
         "format": format,
         "dcql": dcql,
+        "vp_token_credential_id": credential_id,
         "disclosed_paths": actual,
         "missing_paths": expected.difference(&actual).collect::<Vec<_>>(),
         "unexpected_paths": actual.difference(&expected).collect::<Vec<_>>(),

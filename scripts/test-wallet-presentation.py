@@ -120,3 +120,38 @@ for format_name in ("sd-jwt", "mdoc"):
     result = mcp_compare(args)
     assert result["isError"], result
     print(f"{format_name} / DCQL type, values, paths and unsupported query: OK")
+
+for format_name, scenario, expected_nonce in [
+    ("sd-jwt", "normal", True),
+    ("sd-jwt", "wrong-nonce", False),
+    ("mdoc", "normal", None),
+]:
+    args = json.loads(run("examples/wallet_fixture", format_name, scenario, "--vp-token"))
+    result = mcp_compare(args)
+    assert not result["isError"], result
+    report = result["structuredContent"]
+    assert report == json.loads(run("examples/presentation_compare", input_text=json.dumps(args))), report
+    assert report["vp_token_credential_id"] == "age_check", report
+    assert report["missing_paths"] == report["unexpected_paths"] == [], report
+    assert report["dcql"] == {"credential_type_matches": True, "value_mismatch_paths": []}, report
+    assert report["nonce_matches"] is expected_nonce, report
+    token = args["vp_token"]["age_check"][0]
+    raw_args = {key: value for key, value in args.items() if key != "vp_token"}
+    raw_args["token"] = token
+    raw = mcp_compare(raw_args)["structuredContent"]
+    assert {**raw, "vp_token_credential_id": "age_check"} == report, raw
+    for malformed, expected_error in [
+        ({"wrong_id": [token]}, "credential id does not match"),
+        ({}, "one credential id"),
+        ({"age_check": [token], "other": [token]}, "one credential id"),
+        ({"age_check": token}, "one presentation string"),
+        ({"age_check": []}, "one presentation string"),
+        ({"age_check": [token, token]}, "one presentation string"),
+        ({"age_check": [None]}, "one presentation string"),
+    ]:
+        result = mcp_compare({**args, "vp_token": malformed})
+        assert result["isError"], result
+        assert expected_error in result["structuredContent"]["error"]["message"], result
+    assert mcp_compare({**args, "token": token})["isError"]
+    assert mcp_compare({**args, "expected_paths": ["age_over_18"]})["isError"]
+    print(f"{format_name} / {scenario} / OpenID4VP envelope and invalid responses: OK")

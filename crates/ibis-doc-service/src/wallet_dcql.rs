@@ -34,12 +34,7 @@ fn mdoc_path(namespace: &str, element: &str) -> String {
     format!("/{}/{}", escape(namespace), escape(element))
 }
 
-pub(crate) fn compare(
-    query: &Value,
-    format: &str,
-    credential_type: Option<&str>,
-    claims: &[ParsedClaim],
-) -> Result<Comparison, ToolError> {
+pub(crate) fn single_credential(query: &Value) -> Result<(&Value, &str), ToolError> {
     object(query, &["credentials"])?;
     let credentials = query["credentials"]
         .as_array()
@@ -47,9 +42,22 @@ pub(crate) fn compare(
         .ok_or_else(|| ToolError::invalid("DCQL requires one credential query"))?;
     let credential = &credentials[0];
     object(credential, &["id", "format", "meta", "claims"])?;
-    if nonempty(&credential["id"]).is_none() {
-        return Err(ToolError::invalid("DCQL requires a credential id"));
-    }
+    let id = nonempty(&credential["id"])
+        .filter(|id| {
+            id.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        })
+        .ok_or_else(|| ToolError::invalid("invalid DCQL credential id"))?;
+    Ok((credential, id))
+}
+
+pub(crate) fn compare(
+    query: &Value,
+    format: &str,
+    credential_type: Option<&str>,
+    claims: &[ParsedClaim],
+) -> Result<Comparison, ToolError> {
+    let (credential, _) = single_credential(query)?;
     let mdoc = format == "mdoc";
     if credential["format"] != if mdoc { "mso_mdoc" } else { "dc+sd-jwt" } {
         return Err(ToolError::invalid(

@@ -120,7 +120,13 @@ The read-only `presentation_compare` tool compares a single compact SD-JWT
 or hex/base64url mdoc with explicit `expected_paths` or a `dcql_query`. Pass exactly one. For SD-JWT,
 `iss` and `vct` are treated as metadata. For mdoc the paths follow the
 worksheet importer, which qualifies repeated element identifiers with their
-namespace. Pass the token itself, rather than the enclosing OID4VP response.
+namespace. Pass the raw presentation string as `token`, or use
+`vp_token` with `dcql_query` to compare a decoded OpenID4VP response.
+For example, `"vp_token": {"age_check": ["<presentation>"]}` must
+contain exactly the credential ID from the query and one presentation string.
+The response reports the matched ID as `vp_token_credential_id`. Extract the
+JSON value of `vp_token` from the response before calling the tool. HTTP form
+decoding and encrypted responses are outside this comparison.
 The tool returns paths and diagnostic results without claim values.
 
 Supply a public issuer JWK to check the issuer signature. For SD-JWT, the
@@ -145,7 +151,7 @@ Run the offline synthetic Wallet through the CLI and real MCP stdio server:
 ```sh
 cargo build --locked -p ibis-doc-service --example wallet_fixture -p ibis-mcp --example presentation_compare --bin ibisOffice-mcp
 python3 scripts/test-wallet-presentation.py
-target/debug/examples/wallet_fixture sd-jwt extra | target/debug/examples/presentation_compare
+target/debug/examples/wallet_fixture sd-jwt extra --vp-token | target/debug/examples/presentation_compare
 ```
 
 The fixture Wallet uses public demo keys and synthetic claims. Its mdoc cases
