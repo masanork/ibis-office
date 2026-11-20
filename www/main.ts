@@ -619,12 +619,6 @@ function subsetStore(): BlockStore {
 }
 
 async function fetchWasm(): Promise<Response | WebAssembly.Module> {
-  if (!hostLoader && chunkArgument() === undefined && location.pathname.endsWith('/editor.html')) {
-    return loadWasm(new URL('./pkg/ibis_office_app_bg.manifest.json', import.meta.url), (loaded, total) => {
-      if (progress) progress.style.display = 'block';
-      if (progressFill) progressFill.style.width = `${Math.min(100, (loaded / total) * 100)}%`;
-    });
-  }
   const chunkedEnv: ChunkedEnv = {
     fetch: (input, init) => fetch(input, init),
     subtle: globalThis.crypto?.subtle,
@@ -649,7 +643,8 @@ async function fetchWasm(): Promise<Response | WebAssembly.Module> {
     decompress: typeof DecompressionStream === 'undefined' ? undefined : (source: ReadableStream<Uint8Array>) => source.pipeThrough(new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>),
   };
   // The manifest is read once: for the wasm in parts, and for the blocks of the fonts.
-  const manifest: Manifest | null = await readManifest(chunkedEnv);
+  const standaloneDocs = !hostLoader && chunkArgument() === undefined && location.pathname.endsWith('/editor.html');
+  const manifest: Manifest | null = standaloneDocs ? null : await readManifest(chunkedEnv);
   const subsets = subsetsOf(manifest);
   if (subsets) {
     subsetLoader = new SubsetLoader(subsets, { fetch: chunkedEnv.fetch, subtle: chunkedEnv.subtle, base: chunkedEnv.base, store: subsetStore(), warn: chunkedEnv.warn });
@@ -658,6 +653,9 @@ async function fetchWasm(): Promise<Response | WebAssembly.Module> {
   const chunked = await loadChunkedWasm(chunkedEnv, { manifest });
   if (chunked) {
     return chunked;
+  }
+  if (!manifest) {
+    return loadWasm(new URL('./pkg/ibis_office_app_bg.manifest.json', import.meta.url), chunkedEnv.onProgress!);
   }
   const url = new URL('./pkg/ibis_office_app_bg.wasm', import.meta.url);
   const [response, size] = await Promise.all([fetch(url), wasmSize()]);

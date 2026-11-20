@@ -30,9 +30,15 @@ WANT=$(awk -F'\t' '$1 == "wasm" { sub(/\r$/, "", $2); print $2 }' version.txt)
   exit 1
 }
 
-for f in www/index.html www/main.js www/boot.js www/host-loader.js www/chunked-fetch.js www/subset-fetch.js www/build-info.js www/ibisoffice-host.js www/ibisoffice-host.d.ts www/license.md www/pkg/ibis_office_app.js www/pkg/ibis_office_app_bg.wasm \
-         www/assets/icons www/assets/artborders/ECMA-NOTICE.txt; do
-  [[ -e $f ]] || { echo "$f is missing; build www/ first: scripts/build-web.sh --release" >&2; exit 1; }
+WEB_FILES=(
+  editor.html main.js boot.js host-loader.js chunked-fetch.js subset-fetch.js
+  build-info.js ibisoffice-host.js ibisoffice-host.d.ts license.md
+  font-loader.js wasm-loader.js dynamic-fonts.js font-coverage.js heic-worker.js
+  sorane-files-save.js sorane-ai.js favicon.svg font-notices.html
+)
+for f in "${WEB_FILES[@]}" pkg/ibis_office_app.js pkg/ibis_office_app_bg.manifest.json \
+         assets/icons assets/artborders/ECMA-NOTICE.txt; do
+  [[ -e www/$f ]] || { echo "www/$f is missing; build www/ first: scripts/build-web.sh --release" >&2; exit 1; }
 done
 
 OUT=target/dist
@@ -40,15 +46,12 @@ NAME=ibisOffice-$VERSION-Web
 mkdir -p "$OUT"
 rm -f "$OUT/$NAME.zip" "$OUT/$NAME.zip.sha256" "$OUT/$NAME.files.sha256"
 
-python3 -I - "$OUT" "$NAME" <<'PY'
+python3 -I - "$OUT" "$NAME" "${WEB_FILES[@]}" <<'PY'
 import hashlib, os, sys, zipfile
 
-out, name = sys.argv[1:3]
-# What the playground's app/ holds (scripts/playground.sh): no typings (*.d.ts), no .DS_Store.
-files = []
-# ibisoffice-host.js and .d.ts are for the host page (the bridge `attachIframe` and the types; publish/docs/web-embedding.md).
-for top in ("index.html", "main.js", "boot.js", "host-loader.js", "chunked-fetch.js", "subset-fetch.js", "build-info.js", "ibisoffice-host.js", "ibisoffice-host.d.ts", "license.md"):
-    files.append(os.path.join("www", top))
+out, name, *web_files = sys.argv[1:]
+# The archive's index directly opens the embeddable editor.
+files = [os.path.join("www", f) for f in web_files]
 for top in ("pkg", "assets"):
     for root, _dirs, names in os.walk(os.path.join("www", top)):
         for n in names:
@@ -61,6 +64,7 @@ lines = []
 with zipfile.ZipFile(os.path.join(out, name + ".zip"), "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
     for rel in rels:
         data = open(os.path.join("www", rel), "rb").read()
+        rel = "index.html" if rel == "editor.html" else rel
         info = zipfile.ZipInfo(rel, date_time=(2020, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = 0o100644 << 16
