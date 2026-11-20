@@ -5,9 +5,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const home = readFileSync(new URL('../../www/index.html', import.meta.url), 'utf8');
-const redirect = home.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+const redirect = readFileSync(new URL('../../www/home-redirect.ts', import.meta.url), 'utf8');
 
 test('existing editor links retain query and fragment', () => {
+  assert.match(home, /<script src="\.\/home-redirect\.js"><\/script>/);
   let target;
   runInNewContext(redirect, { location: { search: '?open=%2Ftest.docx&view=1', hash: '#section', replace: value => { target = value; } } });
   assert.equal(target, './editor.html?open=%2Ftest.docx&view=1#section');
