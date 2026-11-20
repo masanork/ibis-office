@@ -56,6 +56,9 @@ impl SlideEditor {
 
     /// Word: 文書のビューモードを設定する (DOCX-VIEW-001..005).
     pub(crate) fn set_document_view_mode(&mut self, mode: ibis_doc_model::DocumentViewMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_markdown_source_mode() && !self.exit_markdown_source_mode(window, cx) {
+            return;
+        }
         self.keep_read_mode(mode == ibis_doc_model::DocumentViewMode::Reading);
         if mode == ibis_doc_model::DocumentViewMode::Outline {
             self.outline_open = true;

@@ -260,6 +260,10 @@ docx.view.read-mode	閲覧モード
 docx.view.web-layout	Web レイアウト
 docx.view.outline	アウトライン
 docx.view.draft	下書き
+docx.view.markdown-source	Markdown ソース
+docx.markdown-source.modified	編集済み（戻るとき・保存時に反映）
+docx.markdown-source.synced	同期済み
+docx.markdown-source.back-to-preview	プレビューに戻る
 docx.view.focus	フォーカス
 docx.ruler	ルーラー
 docx.vertical-ruler	垂直ルーラー
@@ -476,6 +480,7 @@ docx.status.read-mode	閲覧モード
 docx.status.web-layout	Web レイアウト
 docx.status.outline	アウトライン
 docx.status.draft	下書き
+docx.status.markdown-source	Markdown ソース
 docx.table.sort	並べ替え
 docx.table.sort.asc	昇順で並べ替え（タイトル行を除く）
 docx.table.sort.desc	降順で並べ替え（タイトル行を除く）

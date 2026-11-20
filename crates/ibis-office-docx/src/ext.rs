@@ -97,6 +97,7 @@ pub(crate) use super::list_formats::ListFormatsCrate as _;
 pub use super::list_style_panel::ListStylePanel as _;
 pub(crate) use super::list_style_panel::ListStylePanelCrate as _;
 pub use super::math_panel::DocxMathPanel as _;
+pub(crate) use super::markdown_source::MarkdownSourceCrate as _;
 pub(crate) use super::math_panel::DocxMathPanelCrate as _;
 pub use super::merge_panel::MergePanel as _;
 pub(crate) use super::merge_panel::MergePanelCrate as _;
