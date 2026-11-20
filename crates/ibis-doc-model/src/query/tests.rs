@@ -842,6 +842,10 @@ fn single_file_query_saves_its_source_without_granting_file_access() {
     for source in [
         Source::JsonLines { name: "取引\t記録.ndjson".into() },
         Source::Sqlite { name: "取引\t記録.db".into(), table: "売上\t集計".into() },
+        Source::JsonArray { name: "cargo.json".into(), key: Some("packages".into()) },
+        Source::JsonArray { name: "records.json".into(), key: None },
+        Source::Delimited { name: "log.tsv".into(), encoding: "UTF-8".into(), delimiter: Some('\t'), start_row: 2, headers: false },
+        Source::ParquetFolder { name: "dataset".into(), columns: vec!["amount".into()] },
         Source::Avro { name: "取引\t記録.avro".into() },
         Source::ArrowIpc { name: "取引\t記録.arrow".into() },
     ] {

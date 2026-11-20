@@ -72,6 +72,7 @@ pub(crate) struct QueriesPanel {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) struct ParquetSelection {
+    folder: Option<std::path::PathBuf>,
     paths: Vec<std::path::PathBuf>,
     columns: Vec<query::ParquetColumn>,
     selected: Vec<bool>,
@@ -155,11 +156,11 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    pub(crate) fn pick_parquet_query(&mut self, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn pick_parquet_query(&mut self, folder: bool, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_cell_edit(cx);
         let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
-            files: true, directories: false, extensions: vec!["parquet".into()],
-            multiple: true, prompt: Some(crate::shell::i18n::text("query.parquet-pick-files")),
+            files: !folder, directories: folder, extensions: if folder { Vec::new() } else { vec!["parquet".into()] },
+            multiple: !folder, prompt: Some(crate::shell::i18n::text(if folder { "xlsx.query-from-parquet-folder" } else { "query.parquet-pick-files" })),
         });
         let document_id = self.file_id;
         cx.spawn_in(window, async move |this, cx| {
@@ -168,29 +169,38 @@ impl SlideEditor {
                 return;
             }
             paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()).then(left.cmp(right)));
+            let folder = folder.then(|| paths[0].clone());
             if existing.is_some() {
                 this.update_in(cx, |this, window, cx| {
                     if this.file_id != document_id {
                         return;
                     }
                     let columns = match existing.as_ref().map(|q| &q.source) {
-                        Some(Source::Parquet { columns, .. }) => columns.clone(),
+                        Some(Source::Parquet { columns, .. } | Source::ParquetFolder { columns, .. }) => columns.clone(),
                         _ => return,
                     };
-                    this.read_parquet_query(paths, columns, existing, refresh, window, cx);
+                    this.read_parquet_query(paths, folder, columns, existing, refresh, window, cx);
                 }).ok();
                 return;
             }
             let schema = cx.background_executor().spawn({
                 let paths = paths.clone();
-                async move { query::parquet_files_columns(&paths) }
+                let folder = folder.clone();
+                async move {
+                    let files = match folder {
+                        Some(root) => query::parquet_folder_files(&root)?,
+                        None => paths,
+                    };
+                    let columns = query::parquet_files_columns(&files)?;
+                    Ok::<_, String>((files, columns))
+                }
             }).await;
             this.update_in(cx, |this, _, cx| {
                 if this.file_id != document_id {
                     return;
                 }
                 match schema {
-                    Ok(columns) => this.choose_parquet_columns(paths, columns, cx),
+                    Ok((files, columns)) => this.choose_parquet_columns(files, folder, columns, cx),
                     Err(error) => this.set_status(error, cx),
                 }
             }).ok();
@@ -198,11 +208,11 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    fn choose_parquet_columns(&mut self, paths: Vec<std::path::PathBuf>, columns: Vec<query::ParquetColumn>, cx: &mut Context<Self>) {
+    fn choose_parquet_columns(&mut self, paths: Vec<std::path::PathBuf>, folder: Option<std::path::PathBuf>, columns: Vec<query::ParquetColumn>, cx: &mut Context<Self>) {
         let selected = columns.iter().map(|column| column.ty.is_some()).collect();
         let state = self.wb_mut();
         state.close_settings();
-        state.panels.parquet_selection = Some(ParquetSelection { paths, columns, selected });
+        state.panels.parquet_selection = Some(ParquetSelection { paths, folder, columns, selected });
         self.sidebar_open = true;
         cx.notify();
     }
@@ -257,7 +267,7 @@ impl SlideEditor {
                         .filter(|(_, checked)| *checked)
                         .map(|(column, _)| column.name)
                         .collect();
-                    this.read_parquet_query(p.paths, columns, None, false, window, cx);
+                    this.read_parquet_query(p.paths, p.folder, columns, None, false, window, cx);
                     cx.notify();
                 })))
         } else {
@@ -316,21 +326,25 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    fn read_parquet_query(&mut self, paths: Vec<std::path::PathBuf>, columns: Vec<String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let names: Vec<String> = paths.iter().map(|path|
-            path.file_name().unwrap_or_default().to_string_lossy().into_owned()
-        ).collect();
+    fn read_parquet_query(&mut self, paths: Vec<std::path::PathBuf>, folder: Option<std::path::PathBuf>, columns: Vec<String>, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let name = |path: &std::path::Path| path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let definition = match &folder {
+            Some(root) => Source::ParquetFolder { name: name(root), columns: columns.clone() },
+            None => Source::Parquet { names: paths.iter().map(|path| name(path)).collect(), columns: columns.clone() },
+        };
         let document_id = self.file_id;
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn({
-                let columns = columns.clone();
-                async move { query::read_parquet_files(&paths, &columns) }
+            let result = cx.background_executor().spawn(async move {
+                match folder {
+                    Some(root) => query::read_parquet_folder(&root, &columns),
+                    None => query::read_parquet_files(&paths, &columns),
+                }
             }).await;
             this.update_in(cx, |this, window, cx| {
                 if this.file_id != document_id {
                     return;
                 }
-                this.finish_external_query(Source::Parquet { names, columns }, result, existing, refresh, window, cx);
+                this.finish_external_query(definition, result, existing, refresh, window, cx);
             }).ok();
         }).detach();
     }
@@ -562,7 +576,7 @@ impl SlideEditor {
             let message = crate::shell::i18n::format(&format!("query.code-error.{}", e.key), &[("detail", &e.detail)]);
             if e.line > 0 { crate::shell::i18n::format("query.code-error.at-line", &[("line", &e.line.to_string()), ("message", &message)]) } else { message }
         });
-        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. } | Source::Avro { .. } | Source::Sqlite { .. } | Source::JsonArray { .. } | Source::Delimited { .. }) && q.source == ed.query.source {
+        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::ParquetFolder { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. } | Source::Avro { .. } | Source::Sqlite { .. } | Source::JsonArray { .. } | Source::Delimited { .. }) && q.source == ed.query.source {
             Ok(ed.source.clone())
         } else {
             query::read_source(self.presentation(), &q.source)
@@ -839,13 +853,14 @@ impl SlideEditor {
         let Some(query) = self.presentation().workbook.as_ref().and_then(|w| w.queries.get(index)).cloned() else { return };
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         if matches!(query.source, Source::Parquet { .. }) {
-            return self.pick_parquet_query(Some(query), false, window, cx);
+            return self.pick_parquet_query(false, Some(query), false, window, cx);
         }
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         match query.source {
             Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), false, window, cx),
             Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), false, window, cx),
             Source::Avro { .. } => return self.pick_single_file_query(SingleFileQuery::Avro, Some(query), false, window, cx),
+            Source::ParquetFolder { .. } => return self.pick_parquet_query(true, Some(query), false, window, cx),
             Source::Delimited { .. } => return self.pick_single_file_query(SingleFileQuery::Delimited, Some(query), false, window, cx),
             Source::Sqlite { .. } => return self.pick_record_source(false, Some(query), false, window, cx),
             Source::JsonArray { .. } => return self.pick_record_source(true, Some(query), false, window, cx),
@@ -874,13 +889,14 @@ impl SlideEditor {
         let Some(query) = wb.queries.get(index).cloned() else { return };
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         if matches!(query.source, Source::Parquet { .. }) {
-            return self.pick_parquet_query(Some(query), true, _window, cx);
+            return self.pick_parquet_query(false, Some(query), true, _window, cx);
         }
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         match query.source {
             Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), true, _window, cx),
             Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), true, _window, cx),
             Source::Avro { .. } => return self.pick_single_file_query(SingleFileQuery::Avro, Some(query), true, _window, cx),
+            Source::ParquetFolder { .. } => return self.pick_parquet_query(true, Some(query), true, _window, cx),
             Source::Delimited { .. } => return self.pick_single_file_query(SingleFileQuery::Delimited, Some(query), true, _window, cx),
             Source::Sqlite { .. } => return self.pick_record_source(false, Some(query), true, _window, cx),
             Source::JsonArray { .. } => return self.pick_record_source(true, Some(query), true, _window, cx),
@@ -933,6 +949,7 @@ impl SlideEditor {
                 Source::Delimited { name, .. } => format!("CSV/TSV · {name}"),
                 Source::Sqlite { name, table } => format!("SQLite · {name} · {table}"),
                 Source::JsonArray { name, key } => format!("JSON · {name} · {}", key.as_deref().unwrap_or("$")),
+                Source::ParquetFolder { name, .. } => format!("Parquet · {name}"),
                 Source::Parquet { names, .. } => format!("Parquet · {}", names.join(", ")),
                 Source::Blank => crate::shell::i18n::text("query.source-blank").to_string(),
                 Source::Table(t) => t.clone(),

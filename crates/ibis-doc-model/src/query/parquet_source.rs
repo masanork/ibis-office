@@ -156,6 +156,139 @@ pub fn read_parquet_files(paths: &[PathBuf], selected: &[String]) -> Result<QTab
     Ok(table)
 }
 
+/// Locate Parquet files below a selected folder without following symlinks.
+pub fn parquet_folder_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    let mut visited = 0;
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(&directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            visited += 1;
+            if visited > 16_384 {
+                return Err("Parquet folder contains too many entries".into());
+            }
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with(['.', '_']) {
+                continue;
+            }
+            if kind.is_dir() {
+                directories.push(path);
+            } else if kind.is_file()
+                && path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("parquet"))
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err("No Parquet files found in the selected folder".into());
+    }
+    Ok(files)
+}
+
+fn hive_partition(value: &str) -> Result<String, String> {
+    let mut chars = value.bytes();
+    let mut result = Vec::with_capacity(value.len());
+    while let Some(ch) = chars.next() {
+        if ch == b'%' {
+            let digit = |value: Option<u8>| value.and_then(|value| char::from(value).to_digit(16));
+            let hi = digit(chars.next()).ok_or("Invalid escape in Parquet partition name")?;
+            let lo = digit(chars.next()).ok_or("Invalid escape in Parquet partition name")?;
+            result.push(((hi << 4) | lo) as u8);
+        } else {
+            result.push(ch);
+        }
+    }
+    String::from_utf8(result).map_err(|error| error.to_string())
+}
+
+fn hive_values(
+    root: &Path,
+    file: &Path,
+) -> Result<std::collections::BTreeMap<String, CellValue>, String> {
+    let mut values = std::collections::BTreeMap::new();
+    let relative = file.strip_prefix(root).map_err(|error| error.to_string())?;
+    for component in relative.parent().unwrap_or(Path::new("")).components() {
+        let component = component
+            .as_os_str()
+            .to_str()
+            .ok_or("Invalid UTF-8 in Parquet folder name")?;
+        let Some((key, value)) = component.split_once('=') else {
+            continue;
+        };
+        let key = hive_partition(key)?;
+        let value = hive_partition(value)?;
+        if key.is_empty() || values.contains_key(&key) {
+            return Err(format!("Invalid or duplicate Parquet partition key: {key}"));
+        }
+        values.insert(
+            key,
+            if value == "__HIVE_DEFAULT_PARTITION__" {
+                CellValue::Empty
+            } else {
+                CellValue::Text(value)
+            },
+        );
+    }
+    Ok(values)
+}
+
+/// Read common data columns and append the Hive partition columns as text.
+pub fn read_parquet_folder(root: &Path, selected: &[String]) -> Result<QTable, String> {
+    let files = parquet_folder_files(root)?;
+    let partitions = files
+        .iter()
+        .map(|file| hive_values(root, file))
+        .collect::<Result<Vec<_>, _>>()?;
+    let keys: std::collections::BTreeSet<_> = partitions
+        .iter()
+        .flat_map(|values| values.keys().cloned())
+        .collect();
+    let mut result = QTable::default();
+    let mut data_width = 0;
+    for (index, (file, mut values)) in files.iter().zip(partitions).enumerate() {
+        let expected = (index != 0).then_some(&result.columns[..data_width]);
+        let mut part = read_columns(file, selected, result.rows.len(), expected)
+            .map_err(|error| format!("{}: {error}", file.display()))?;
+        if index == 0 {
+            data_width = part.columns.len();
+            if part
+                .columns
+                .iter()
+                .any(|column| keys.contains(&column.name))
+            {
+                return Err("A Parquet partition column also occurs in the file schema".into());
+            }
+            result.columns = part.columns;
+            result
+                .columns
+                .extend(keys.iter().cloned().map(|name| QColumn {
+                    name,
+                    ty: QType::Text,
+                }));
+        }
+        let width = result.columns.len();
+        if width > 16_384 || width.saturating_mul(result.rows.len() + part.rows.len()) > 5_000_000 {
+            return Err("Parquet folder exceeds the query editor's size limit".into());
+        }
+        let partition: Vec<_> = keys
+            .iter()
+            .map(|key| values.remove(key).unwrap_or(CellValue::Empty))
+            .collect();
+        for row in &mut part.rows {
+            row.extend(partition.iter().cloned());
+        }
+        result.rows.append(&mut part.rows);
+    }
+    Ok(result)
+}
+
 pub fn read_parquet(path: &Path) -> Result<QTable, String> {
     read_parquet_columns(path, &[])
 }
@@ -318,6 +451,26 @@ mod tests {
         writer.close().unwrap();
 
         file
+    }
+
+    #[test]
+    fn imports_a_partitioned_folder_in_relative_path_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = write_table(parquet::basic::Compression::SNAPPY, "folder-test", false);
+        for month in ["02", "01"] {
+            let path = directory
+                .path()
+                .join("year=2026")
+                .join(format!("month={month}"));
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::copy(&fixture, path.join("part.parquet")).unwrap();
+        }
+        std::fs::remove_file(fixture).unwrap();
+        let loaded = read_parquet_folder(directory.path(), &["code".into()]).unwrap();
+        assert_eq!(loaded.names(), ["code", "month", "year"]);
+        assert_eq!(loaded.rows.len(), 4);
+        assert_eq!(loaded.rows[0][1], CellValue::Text("01".into()));
+        assert_eq!(loaded.rows[2][1], CellValue::Text("02".into()));
     }
 
     #[test]

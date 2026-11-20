@@ -381,6 +381,7 @@ pub fn encode_queries(queries: &[Query], parameters: &[Parameter]) -> String {
         match &q.source {
             Source::JsonArray { name, key } => out.push_str(&format!("source\tjson-array\t{}\t{}\t{}\n", esc(name), usize::from(key.is_some()), key.as_deref().map(esc).unwrap_or_default())),
             Source::Delimited { name, encoding, delimiter, start_row, headers } => out.push_str(&format!("source\tdelimited\t{}\t{}\t{}\t{start_row}\t{}\n", esc(name), esc(encoding), delimiter.map(u32::from).map(|code| code.to_string()).unwrap_or_default(), usize::from(*headers))),
+            Source::ParquetFolder { name, columns } => { out.push_str(&format!("source\tparquet-folder\t{}", esc(name))); for column in columns { out.push('\t'); out.push_str(&esc(column)); } out.push('\n'); }
             Source::Sqlite { name, table } => out.push_str(&format!("source\tsqlite\t{}\t{}\n", esc(name), esc(table))),
             Source::Avro { name } => out.push_str(&format!("source\tavro\t{}\n", esc(name))),
             Source::ArrowIpc { name } => out.push_str(&format!("source\tarrow-ipc\t{}\n", esc(name))),
@@ -431,6 +432,7 @@ pub fn decode_queries(text: &str) -> (Vec<Query>, Vec<Parameter>) {
                     q.source = match f.get(1).copied() {
                         Some("json-array") if f.len() == 5 => Source::JsonArray { name: unesc(f[2]), key: (f[3] == "1").then(|| unesc(f[4])) },
                         Some("delimited") if f.len() == 7 => Source::Delimited { name: unesc(f[2]), encoding: unesc(f[3]), delimiter: f[4].parse::<u32>().ok().and_then(char::from_u32), start_row: f[5].parse().unwrap_or(1), headers: f[6] == "1" },
+                        Some("parquet-folder") if f.len() >= 3 => Source::ParquetFolder { name: unesc(f[2]), columns: f[3..].iter().map(|value| unesc(value)).collect() },
                         Some("sqlite") if f.len() == 4 => Source::Sqlite { name: unesc(f[2]), table: unesc(f[3]) },
                         Some("avro") if f.len() == 3 => Source::Avro { name: unesc(f[2]) },
                         Some("arrow-ipc") if f.len() == 3 => Source::ArrowIpc { name: unesc(f[2]) },

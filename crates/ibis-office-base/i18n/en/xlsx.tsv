@@ -3115,3 +3115,4 @@ query.json-arrays	Select a JSON Array
 query.json-no-arrays	No JSON arrays to import
 xlsx.query-from-delimited	From CSV or TSV (Query)
 query.delimited-headers	Use First Row as Column Headers
+xlsx.query-from-parquet-folder	From Parquet Folder

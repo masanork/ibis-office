@@ -12,6 +12,7 @@ use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
 use gpui_kit::component::input::{InputState,InputEvent};
 use gpui_kit::component::{Sizable as _, h_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_calc::input::{DateOrder, Typed, parse_date_in_order, parse_imported};
 use ibis_doc_model::{CellEdit, CellInput, CellRange, CellValue, Command, SheetCommand, SlideId, StyleChange};
@@ -229,7 +230,9 @@ impl SlideEditor {
 
     fn load_import_text_path(&mut self,path:std::path::PathBuf,w:&mut Window,cx:&mut Context<Self>){
         if let Some(p)=self.wb_mut().panels.import_text.as_mut(){p.file_path.update(cx,|i,cx|i.set_value(path.to_string_lossy().into_owned(),w,cx));}
-        match std::fs::read(&path){
+        let for_query = self.sheet_state().and_then(|state| state.panels.import_text.as_ref()).is_some_and(|panel| panel.query);
+        let result = if for_query { read_delimited_bytes(&path) } else { std::fs::read(&path).map_err(|error| error.to_string()) };
+        match result {
             Ok(data)=>{let name=path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default();self.set_import_text_data(name,data,cx);},
             Err(error)=>self.import_text_message(error.to_string(),cx),
         }
@@ -376,9 +379,15 @@ impl SlideEditor {
     pub fn import_text_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let preview: Vec<Vec<String>> = {
             let p = self.sheet_state()?.panels.import_text.as_ref()?;
-            match p.data.as_ref().map(|d| ibis_formats::csv::import(d, &p.options(cx))) {
+            let options = p.options(cx);
+            if p.query {
+                p.data.as_ref().and_then(|data| ibis_formats::csv::decode_as(data, options.encoding).ok())
+                    .map_or_else(Vec::new, |text| delimited_records(&text, &options).take(6).collect())
+            } else {
+            match p.data.as_ref().map(|d| ibis_formats::csv::import(d, &options)) {
                 Some(Ok(i)) => i.rows.into_iter().take(6).collect(),
                 _ => Vec::new(),
+            }
             }
         };
         let p = self.sheet_state()?.panels.import_text.as_ref()?;
@@ -494,13 +503,24 @@ impl SlideEditor {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) fn read_delimited_query(path: &std::path::Path, encoding: &str, delimiter: Option<char>, start_row: usize, headers: bool) -> Result<ibis_doc_model::query::QTable, String> {
-    use std::io::Read;
     let encoding = ENCODINGS.iter().find(|(_, id)| *id == encoding)
         .map(|(encoding, _)| *encoding).ok_or("Unsupported text encoding")?;
+    let data = read_delimited_bytes(path)?;
+    delimited_table(&data, &ImportOptions { encoding, delimiter, start_row, fixed: None }, headers)
+}
+
+fn read_delimited_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    if !path.is_file() {
+        return Err("Select a local CSV or TSV file".into());
+    }
     let mut data = Vec::new();
     std::fs::File::open(path).and_then(|file| file.take(64 * 1024 * 1024 + 1).read_to_end(&mut data))
         .map_err(|error| error.to_string())?;
-    delimited_table(&data, &ImportOptions { encoding, delimiter, start_row, fixed: None }, headers)
+    if data.len() > 64 * 1024 * 1024 {
+        return Err("Delimited source exceeds the 64 MiB limit".into());
+    }
+    Ok(data)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -509,25 +529,27 @@ fn delimited_table(data: &[u8], options: &ImportOptions, headers: bool) -> Resul
     if data.len() > 64 * 1024 * 1024 {
         return Err("Delimited source exceeds the 64 MiB limit".into());
     }
-    let imported = ibis_formats::csv::import(data, options).map_err(|error| error.to_string())?;
-    let width = imported.rows.iter().map(Vec::len).max().unwrap_or(0);
-    let height = imported.rows.len().saturating_sub(usize::from(headers));
-    if width == 0 || width > 16_384 || height > 1_048_575 || height.saturating_mul(width) > 5_000_000 {
-        return Err("Delimited source is empty or exceeds the table size limit".into());
-    }
-    let mut records = imported.rows.into_iter();
+    let text = ibis_formats::csv::decode_as(data, options.encoding).map_err(|error| error.to_string())?;
+    let mut records = delimited_records(&text, options);
     let headings = headers.then(|| records.next()).flatten();
-    let rows = records.map(|row| row.into_iter().map(|field| {
-        if field.is_empty() {
-            return CellValue::Empty;
+    let mut width = headings.as_ref().map_or(0, Vec::len);
+    let mut rows: Vec<Vec<CellValue>> = Vec::new();
+    for record in records {
+        width = width.max(record.len());
+        let height = rows.len() + 1;
+        if width > 16_384 || height > 1_048_575 || height.saturating_mul(width) > 5_000_000 {
+            return Err("Delimited source exceeds the table size limit".into());
         }
-        // External data is never evaluated as a spreadsheet formula.
-        match parse_imported(&field, false) {
-            Typed::Value(value @ (CellValue::Number(_) | CellValue::Bool(_)), None)
-                if !field.starts_with('0') || field.starts_with("0.") || field == "0" => value,
-            _ => CellValue::Text(field),
-        }
-    }).collect()).collect();
+        rows.push(record.into_iter().map(delimited_cell).collect());
+    }
+    if width == 0 || width > 16_384 {
+        return Err("Delimited source is empty or exceeds the column limit".into());
+    }
+    if headings.iter().flatten().any(|field| field.encode_utf16().take(32_768).count() > 32_767)
+        || rows.iter().flatten().any(|value| matches!(value, CellValue::Text(field) if field.encode_utf16().take(32_768).count() > 32_767))
+    {
+        return Err("Delimited text exceeds the spreadsheet cell limit".into());
+    }
     let mut table = table_of_cells(rows, width);
     let mut used = std::collections::HashSet::new();
     for (index, column) in table.columns.iter_mut().enumerate() {
@@ -539,12 +561,12 @@ fn delimited_table(data: &[u8], options: &ImportOptions, headers: bool) -> Resul
             suffix += 1;
         }
         column.name = name;
-        let mut kinds = table.rows.iter().map(|row| match &row[index] {
+        let mut kinds = table.rows.iter().filter_map(|row| match &row[index] {
             CellValue::Empty => None,
             CellValue::Number(value) => Some(if value.fract() == 0.0 { QType::Whole } else { QType::Decimal }),
             CellValue::Bool(_) => Some(QType::Logical),
             _ => Some(QType::Text),
-        }).flatten();
+        });
         if let Some(first) = kinds.next() {
             column.ty = kinds.fold(first, |current, next| match (current, next) {
                 (a, b) if a == b => a,
@@ -556,8 +578,32 @@ fn delimited_table(data: &[u8], options: &ImportOptions, headers: bool) -> Resul
     Ok(table)
 }
 
+fn delimited_records<'a>(text: &'a str, options: &ImportOptions) -> impl Iterator<Item = Vec<String>> + 'a {
+    let delimiter = options.delimiter.unwrap_or_else(|| ibis_formats::csv::detect_delimiter(text));
+    ibis_formats::csv::CsvRecordIter::new(text, delimiter).skip(options.start_row.max(1) - 1)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn delimited_cell(field: String) -> CellValue {
+    if field.is_empty() {
+        return CellValue::Empty;
+    }
+    // External data is never evaluated as a spreadsheet formula.
+    let trimmed = field.trim();
+    if trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("false") {
+        return CellValue::Bool(trimmed.eq_ignore_ascii_case("true"));
+    }
+    let magnitude = trimmed.trim_start_matches(['+', '-']);
+    let leading_zero = magnitude.starts_with('0') && magnitude.as_bytes().get(1).is_some_and(u8::is_ascii_digit);
+    match trimmed.parse::<f64>() {
+        Ok(number) if !leading_zero && number.is_finite() && number.abs() < (1u64 << 53) as f64 =>
+            CellValue::Number(number),
+        _ => CellValue::Text(field),
+    }
+}
+
 #[cfg(all(test, any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-#[test]
+#[::core::prelude::v1::test]
 fn delimited_query_keeps_headers_and_does_not_evaluate_formulas() {
     let data = b"code\tamount\tamount\n001\t2.5\t=1+2\n";
     let table = delimited_table(data, &ImportOptions { delimiter: Some('\t'), ..Default::default() }, true).unwrap();

@@ -75,7 +75,7 @@ impl Records {
         if width > MAX_COLUMNS || height > MAX_DATA_ROWS || width.saturating_mul(height) > MAX_CELLS
         {
             return Err(format!(
-                "{location}: JSON Lines source exceeds the table size limit"
+                "{location}: JSON source exceeds the table size limit"
             ));
         }
         let mut row = vec![CellValue::Empty; width];
@@ -126,6 +126,9 @@ impl Records {
 }
 
 fn json_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    if !path.is_file() {
+        return Err("Select a local JSON file".into());
+    }
     let mut bytes = Vec::new();
     File::open(path)
         .and_then(|file| {
@@ -176,14 +179,29 @@ fn records_from_array(bytes: &[u8], key: Option<&str>) -> Result<QTable, String>
         }
         None => document,
     };
-    let rows: Vec<&RawValue> =
-        serde_json::from_str(array.get()).map_err(|error| error.to_string())?;
+    let mut remaining = array
+        .get()
+        .strip_prefix('[')
+        .and_then(|text| text.strip_suffix(']'))
+        .ok_or("Expected a JSON array")?
+        .trim_start();
     let mut output = Records::default();
-    for (index, row) in rows.into_iter().enumerate() {
-        let location = format!("Record {}", index + 1);
+    // RawValue has already validated the array syntax. Read one record at a
+    // time so a dense array cannot allocate a second array of references.
+    while !remaining.is_empty() {
+        let location = format!("Record {}", output.table.rows.len() + 1);
+        let mut stream = serde_json::Deserializer::from_str(remaining).into_iter::<&RawValue>();
+        let row = stream
+            .next()
+            .ok_or("Expected a JSON record")?
+            .map_err(|error| format!("{location}: {error}"))?;
         let fields = serde_json::from_str(row.get())
             .map_err(|error| format!("{location}: expected an object ({error})"))?;
         output.push(fields, &location)?;
+        remaining = remaining[stream.byte_offset()..].trim_start();
+        if let Some(rest) = remaining.strip_prefix(',') {
+            remaining = rest.trim_start();
+        }
     }
     output.finish()
 }
