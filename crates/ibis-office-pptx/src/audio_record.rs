@@ -117,7 +117,7 @@ impl SlideEditor {
             name.trim().to_string()
         };
         let wav_data = generate_recorded_wav(duration_secs);
-        let (poster, _, _) = ibis_pptx::clip_poster(true, 1.0);
+        let (poster, _, _) = ibis_formats::clip_poster(true, 1.0);
         let size = self.presentation().size_of(self.slide());
         let (w, h) = (914_400, 914_400);
         let frame = EmuRect::new(size.width / 20, size.height - h - size.height / 20, w, h);

@@ -790,7 +790,7 @@ impl SlideEditor {
         self.change_picture_look(|l| {
             l.geometry = match preset {
                 None | Some("rect") => None,
-                Some(name) => ibis_pptx::geometry::preset(name),
+                Some(name) => ibis_formats::geometry::preset(name),
             };
         }, cx);
     }

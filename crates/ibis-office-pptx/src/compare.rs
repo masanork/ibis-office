@@ -230,7 +230,7 @@ impl SlideEditor {
     /// 比較対象のプレゼンテーション ファイルを読み込んで差分を解析
     pub fn compare_presentation_with_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         let data = std::fs::read(path).ok();
-        let rev = data.as_deref().and_then(|d| ibis_pptx::read(d).ok());
+        let rev = data.as_deref().and_then(|d| ibis_formats::read(d).ok());
         let Some(rev_pres) = rev else {
             self.status = Some(text("pptx.compare.cannot-read").into());
             cx.notify();

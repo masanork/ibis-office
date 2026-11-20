@@ -4,7 +4,7 @@
 //! Display bounded observations about the package that was opened.
 
 use gpui_kit::*;
-use ibis_pptx::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial, RelationshipReference, LocationExtension, CertificatePolicyObservations};
+use ibis_formats::ibis_ooxml::signatures::{ContentTypeCheck, ManifestDigest, ObjectDigest, SignatureInspection, SignatureValueCheck, XadesIssuerSerial, RelationshipReference, LocationExtension, CertificatePolicyObservations};
 use crate::editor::SlideEditor;
 
 impl SlideEditor {

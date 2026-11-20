@@ -33,7 +33,7 @@ pub struct State {
     pub viewer: Arc<Mutex<PdfViewerState>>,
 }
 
-impl_format_state!(State, ibis_pptx::Kind::Pdf);
+impl_format_state!(State, ibis_formats::Kind::Pdf);
 
 const PAGE_GAP_PX: f32 = 24.0;
 const PAGE_PAD_PX: f32 = 32.0;

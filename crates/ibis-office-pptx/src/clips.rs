@@ -438,7 +438,7 @@ impl SlideEditor {
             return None;
         }
         let aspect = if audio { 1.0 } else { aspect.unwrap_or(16.0 / 9.0) };
-        let (poster, _, _) = ibis_pptx::clip_poster(audio, aspect);
+        let (poster, _, _) = ibis_formats::clip_poster(audio, aspect);
         let placeholder = if !audio { self.empty_content_placeholder_for("media") } else { None };
         let (replaced, frame) = match placeholder {
             Some((old_id, ph_frame)) => {
@@ -600,7 +600,7 @@ impl SlideEditor {
 
         let mut commands = Vec::new();
         for (id, mut new_pic, audio, aspect) in targets {
-            let (poster, _, _) = ibis_pptx::clip_poster(audio, aspect);
+            let (poster, _, _) = ibis_formats::clip_poster(audio, aspect);
             let poster_media = self.document.ids().add_media(ibis_doc_model::MediaFormat::Png, poster.clone());
             self.resources.add_picture(poster_media, ibis_doc_model::MediaFormat::Png, &poster);
             new_pic.media = poster_media;

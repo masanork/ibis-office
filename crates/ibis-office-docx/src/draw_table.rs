@@ -124,7 +124,7 @@ impl SlideEditor {
             }
             DrawKind::Line { arrow } | DrawKind::Connector { arrow, .. } => {
                 let geometry = match kind {
-                    DrawKind::Connector { curved, .. } => ibis_pptx::preset_geometry(if curved { "curvedConnector3" } else { "bentConnector3" }),
+                    DrawKind::Connector { curved, .. } => ibis_formats::preset_geometry(if curved { "curvedConnector3" } else { "bentConnector3" }),
                     _ => None,
                 };
                 // The ends meet the connection sites of shapes near them (8 points), and the connector is glued to those.

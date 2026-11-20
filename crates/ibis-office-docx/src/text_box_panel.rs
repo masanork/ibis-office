@@ -1504,7 +1504,7 @@ impl SlideEditor {
     /// 挿入 > 図形: a floating shape of preset `preset` at the caret (Word's blue with a darker line), selected.
     /// The command that inserts a preset shape (`size` in EMU) at `caret`.
     pub(crate) fn shape_command(preset: &str, caret: FlowPos, size: ibis_doc_model::EmuSize) -> Option<FlowCommand> {
-        let geometry = ibis_pptx::preset_geometry(preset)?;
+        let geometry = ibis_formats::preset_geometry(preset)?;
         Some(FlowCommand::InsertShape { at: caret, size, geometry, fill: Some(Rgb(0x4472C4)), line: Some((Rgb(0x2F528F), 12_700)) })
     }
     pub fn doc_insert_shape(&mut self, preset: &str, cx: &mut Context<Self>) {
@@ -1530,7 +1530,7 @@ impl SlideEditor {
     /// 挿入 > 図形 > 直線・コネクタ clicked on the page: at the usual size, at the caret.
     pub(crate) fn doc_insert_connector(&mut self, preset: Option<&str>, arrow: bool, cx: &mut Context<Self>) {
         let Some((_, caret)) = self.text_selection() else { return };
-        let geometry = preset.and_then(ibis_pptx::preset_geometry);
+        let geometry = preset.and_then(ibis_formats::preset_geometry);
         let size = if geometry.is_some() { ibis_doc_model::EmuSize::new(2_160_000, 1_080_000) } else { ibis_doc_model::EmuSize::new(2_160_000, 0) };
         let command = Self::connector_command(geometry, arrow, caret, size, false, false, Default::default());
         if self.run_flow(vec![command], cx) {

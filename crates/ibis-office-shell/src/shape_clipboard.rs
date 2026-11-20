@@ -34,7 +34,7 @@ impl SlideEditor {
             return false;
         };
         let paste_stamp=crate::paste_placement::stamp(&bytes);
-        let Ok(opened) = ibis_pptx::shape_clipboard::read_gvml(bytes.clone()) else {
+        let Ok(opened) = ibis_formats::shape_clipboard::read_gvml(bytes.clone()) else {
             return false;
         };
         let foreign = opened.presentation;
@@ -144,7 +144,7 @@ impl SlideEditor {
         if shapes.is_empty() {
             return false;
         }
-        let Ok(native) = ibis_pptx::shape_clipboard::write_gvml(self.presentation(), shapes) else {
+        let Ok(native) = ibis_formats::shape_clipboard::write_gvml(self.presentation(), shapes) else {
             return false;
         };
         if self.presentation().flow.is_some() {

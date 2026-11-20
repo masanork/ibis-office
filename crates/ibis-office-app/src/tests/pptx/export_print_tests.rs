@@ -108,7 +108,7 @@ fn handout_pages() {
 /// The handout master's places: the header where the master puts it, big, the footer gone.
 #[cfg_attr(windows, test)]
 fn marks_go_where_the_handout_master_puts_them() {
-    use ibis_pptx::handout_master::{HandoutLayout, Mark, Place};
+    use ibis_formats::handout_master::{HandoutLayout, Mark, Place};
     let slides = vec![solid(160, 90, [255, 255, 255])];
     let layout = HandoutLayout {
         page: (6_858_000, 9_144_000),

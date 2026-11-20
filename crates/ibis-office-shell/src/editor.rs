@@ -270,13 +270,13 @@ pub(crate) struct ProductionImageView {
     media: ibis_doc_model::MediaId,
     source: std::sync::Arc<ProductionImageSource>,
     pub(crate) ev: i8,
-    pub(crate) alpha: ibis_pptx::production_image::AlphaPreview,
+    pub(crate) alpha: ibis_formats::production_image::AlphaPreview,
     pub(crate) rendering: bool,
 }
 
 struct ProductionImageSource {
     png: std::sync::Arc<[u8]>,
-    exposure: Option<ibis_pptx::production_image::ExrExposure>,
+    exposure: Option<ibis_formats::production_image::ExrExposure>,
 }
 
 impl ProductionImageView {
@@ -428,7 +428,7 @@ pub struct SlideEditor {
     pub save_note: Option<SharedString>,
     /// A chart's workbook (データの編集): the ranges its series take their
     /// data from, framed on the sheet.
-    pub chart_ranges: Option<Vec<ibis_pptx::SeriesRefs>>,
+    pub chart_ranges: Option<Vec<ibis_formats::SeriesRefs>>,
     /// The workbook's grid only (no title row, menus, toolbar, side pane or status bar): a workbook editor
     /// embedded in a panel of another editor (the chart's データの編集 in the presentation's pane).
     pub grid_only: bool,
@@ -515,9 +515,9 @@ pub struct SlideEditor {
     pub toolbar_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     /// Where the open file came from, for saving it (`shell/save.rs`);
     /// `None` for a new document or one that cannot be saved.
-    pub source: Option<std::sync::Arc<ibis_pptx::Source>>,
+    pub source: Option<std::sync::Arc<ibis_formats::Source>>,
     /// Encoding and delimiter of the current CSV for a same-file save.
-    pub current_csv_format: Option<ibis_pptx::csv::OriginalCsvFormat>,
+    pub current_csv_format: Option<ibis_formats::csv::OriginalCsvFormat>,
     /// Bytes and sheet corresponding to the last successful CSV read or save.
     pub current_csv_original: Option<std::sync::Arc<[u8]>>,
     pub current_csv_slide: Option<SlideId>,
@@ -581,7 +581,7 @@ pub struct SlideEditor {
     /// Summary text of repairs applied (XLSX-FILE-020).
     pub repair_summary: Option<String>,
     /// Detailed report of repairs applied (XLSX-FILE-020).
-    pub repair_report: Option<ibis_pptx::repair::RepairReport>,
+    pub repair_report: Option<ibis_formats::repair::RepairReport>,
     /// The open file was read from an old binary format (.xls, .ppt, .doc) and not yet saved in a current one: the compatibility bar is shown.
     pub opened_from_legacy: bool,
     /// Whether this document is opened in read-only / viewing mode (--read-only or ?view=1).
@@ -948,11 +948,11 @@ impl SlideEditor {
 
     /// Make `source` (of the file just given to `load`) the one saving writes from. `load` changes the model as it opens it
     /// (fields, tables of contents, pages, pivots, row heights, dates), which is not an edit: the model as it is now is
-    /// the baseline, so saving without an edit writes the original file (`ibis_pptx::Source::rebased`).
+    /// the baseline, so saving without an edit writes the original file (`ibis_formats::Source::rebased`).
     ///
     /// The exception is a table of contents the file marks for making again (`w:dirty`, `w:updateFields`): Word makes it as it
     /// opens the file and saves it made (`docx::toc017_unupdated_toc_is_made_on_open`), so that stays a change to save.
-    pub fn set_loaded_source(&mut self, source: std::sync::Arc<ibis_pptx::Source>) {
+    pub fn set_loaded_source(&mut self, source: std::sync::Arc<ibis_formats::Source>) {
         self.current_csv_format = source.original_csv_format();
         self.current_csv_original = source.original_csv_bytes();
         self.current_csv_slide = self.current_csv_original.as_ref().map(|_| self.current_slide);
@@ -1003,7 +1003,7 @@ impl SlideEditor {
         self.jtd_original.is_some()
     }
 
-    fn jtd_omission_notice(notice: &mut String, omissions: Option<ibis_pptx::jtd::OmittedContent>) {
+    fn jtd_omission_notice(notice: &mut String, omissions: Option<ibis_formats::jtd::OmittedContent>) {
         if let Some(omissions) = omissions {
             if omissions.additional_sheets > 0 {
                 notice.push_str(&crate::i18n::format("jtd.omitted-sheets", &[("count", &omissions.additional_sheets)]));
@@ -1016,7 +1016,7 @@ impl SlideEditor {
 
     pub fn load_jtd(&mut self, presentation: Presentation, name: SharedString, bytes: impl Into<std::sync::Arc<[u8]>>, gallery: bool, window: &mut Window, cx: &mut Context<Self>) {
         let bytes = bytes.into();
-        let omissions = (!gallery).then(|| ibis_pptx::jtd::omitted_content(&bytes).ok()).flatten();
+        let omissions = (!gallery).then(|| ibis_formats::jtd::omitted_content(&bytes).ok()).flatten();
         self.load(presentation, name, window, cx);
         self.jtd_original = Some(bytes);
         self.jtd_gallery = gallery;
@@ -1138,8 +1138,8 @@ impl SlideEditor {
     /// Convert the recognized preview into a separate editable Word document.
     pub fn edit_jtd_as_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_jtd_read_only() || self.read_only || self.jtd_gallery { return; }
-        let omissions = self.jtd_original.as_deref().and_then(|bytes| ibis_pptx::jtd::omitted_content(bytes).ok());
-        let result = ibis_pptx::jtd::export_docx(self.presentation()).and_then(ibis_pptx::open);
+        let omissions = self.jtd_original.as_deref().and_then(|bytes| ibis_formats::jtd::omitted_content(bytes).ok());
+        let result = ibis_formats::jtd::export_docx(self.presentation()).and_then(ibis_formats::open);
         match result {
             Ok(opened) => {
                 let name = self.file_name.as_deref().unwrap_or("document.jtd");
@@ -1161,7 +1161,7 @@ impl SlideEditor {
 
     fn set_opened_source(
         &mut self,
-        source: std::sync::Arc<ibis_pptx::Source>,
+        source: std::sync::Arc<ibis_formats::Source>,
         production_image: bool,
     ) {
         if production_image {
@@ -1173,8 +1173,8 @@ impl SlideEditor {
         }
     }
 
-    fn set_production_image_view(&mut self, present: bool, exposure: Option<ibis_pptx::production_image::ExrExposure>) {
-        use ibis_pptx::production_image::AlphaPreview;
+    fn set_production_image_view(&mut self, present: bool, exposure: Option<ibis_formats::production_image::ExrExposure>) {
+        use ibis_formats::production_image::AlphaPreview;
         self.production_image_view = self.presentation().media.last()
             .filter(|media| present && media.format == ibis_doc_model::MediaFormat::Png)
             .map(|media| ProductionImageView {
@@ -1191,13 +1191,13 @@ impl SlideEditor {
         self.set_image_display(ev.clamp(-8, 8), view.alpha, window, cx);
     }
 
-    pub(crate) fn set_image_alpha(&mut self, alpha: ibis_pptx::production_image::AlphaPreview, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn set_image_alpha(&mut self, alpha: ibis_formats::production_image::AlphaPreview, window: &mut Window, cx: &mut Context<Self>) {
         let Some(view) = self.production_image_view.as_ref() else { return };
         self.set_image_display(view.ev, alpha, window, cx);
     }
 
-    fn set_image_display(&mut self, ev: i8, alpha: ibis_pptx::production_image::AlphaPreview, window: &mut Window, cx: &mut Context<Self>) {
-        use ibis_pptx::production_image::{AlphaPreview, display_preview_png};
+    fn set_image_display(&mut self, ev: i8, alpha: ibis_formats::production_image::AlphaPreview, window: &mut Window, cx: &mut Context<Self>) {
+        use ibis_formats::production_image::{AlphaPreview, display_preview_png};
         let Some(view) = self.production_image_view.as_mut() else { return };
         if view.rendering || (view.ev == ev && view.alpha == alpha) { return; }
         if ev == 0 && alpha == AlphaPreview::Original {
@@ -1289,7 +1289,7 @@ impl SlideEditor {
         crate::clock::debug_timing::report("load: prepare_model (update_fields_on_open, expand_pages, pivots, row heights)", timing);
         // A presentation's date fields show today, as PowerPoint's do.
         if presentation.flow.is_none() && presentation.workbook.is_none() {
-            presentation.refresh_dates(&crate::clock::local_now(), &ibis_pptx::script_pieces);
+            presentation.refresh_dates(&crate::clock::local_now(), &ibis_formats::script_pieces);
         }
         self.current_slide = presentation.slides.first().map(|s| s.id).unwrap_or(ibis_doc_model::SlideId(0));
         self.format = state_for_model(&presentation, window, cx);
@@ -1345,7 +1345,7 @@ impl SlideEditor {
             .file_name
             .as_ref()
             .and_then(|n| n.rsplit_once('.'))
-            .filter(|(_, ext)| ibis_pptx::Kind::has_macros(ext))
+            .filter(|(_, ext)| ibis_formats::Kind::has_macros(ext))
             .map(|_| crate::i18n::text("_shell.macros-in-this-file-will-not-run-they-are-preser"));
         // A presentation opens with the keys on the slide list (Home, End,
         // the arrows move between slides without a click first).
@@ -1406,7 +1406,7 @@ impl SlideEditor {
             let picked = cx.prompt_for_paths(PathPromptOptions {
                 files: true,
                 directories: false,
-                extensions: ibis_pptx::Kind::OPENABLE_EXTENSIONS.iter().map(|e| e.to_string()).collect(),
+                extensions: ibis_formats::Kind::OPENABLE_EXTENSIONS.iter().map(|e| e.to_string()).collect(),
                 multiple: false,
                 prompt: Some(crate::i18n::text("_shell.open").into()),
             });
@@ -1442,7 +1442,7 @@ impl SlideEditor {
         let closed = self.closed;
         cx.spawn_in(window, async move |this, cx| {
             let name: SharedString = name.into();
-            let kind = name.rsplit_once('.').and_then(|(_, e)| ibis_pptx::Kind::from_extension(e));
+            let kind = name.rsplit_once('.').and_then(|(_, e)| ibis_formats::Kind::from_extension(e));
             let Ok(true) = this.update_in(cx, |this, window, cx| {
                 if this.closed != closed || this.web_open_generation != generation { return false; }
                 match kind {
@@ -1467,7 +1467,7 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ibis_pptx::jtd::is_extension(ext)) || ibis_pptx::jtd::is_jtd(&data);
+            let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ibis_formats::jtd::is_extension(ext)) || ibis_formats::jtd::is_jtd(&data);
             if is_jtd {
                 let mut result = crate::jtd_preview::read(&data);
                 if let Ok((presentation, _)) = &result {
@@ -1487,9 +1487,9 @@ impl SlideEditor {
             // A download-enabled embed needs the original package to write
             // edits back; ordinary initial previews keep the lighter read path.
             let extension = name.rsplit_once('.').map(|(_, ext)| ext);
-            let production_image = extension.is_some_and(ibis_pptx::production_image::supports_extension);
+            let production_image = extension.is_some_and(ibis_formats::production_image::supports_extension);
             if initial && !production_image && !crate::embed::show_download() {
-                let mut result = ibis_pptx::read(&data).map_err(|e| e.to_string());
+                let mut result = ibis_formats::read(&data).map_err(|e| e.to_string());
                 if let Ok(presentation) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
                         result = Err(crate::web::font_preload_error(error));
@@ -1505,17 +1505,17 @@ impl SlideEditor {
                 return;
             }
             let mut image_provenance = None;
-            let mut result = if extension.is_some_and(ibis_pptx::production_image::is_heic_extension) {
+            let mut result = if extension.is_some_and(ibis_formats::production_image::is_heic_extension) {
                 crate::web::open_heic(&data).await.map(|opened| (opened, None))
             } else {
-                match ibis_pptx::production_image::open_with_exposure(extension, &data) {
+                match ibis_formats::production_image::open_with_exposure(extension, &data) {
                     Ok(Some(result)) => {
                         if let Some(extension) = extension {
                             image_provenance = crate::image_provenance::inspect(extension, &data).await;
                         }
                         Ok(result)
                     }
-                    Ok(None) => ibis_pptx::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
+                    Ok(None) => ibis_formats::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
                     Err(error) => Err(error),
                 }
             };
@@ -1528,10 +1528,10 @@ impl SlideEditor {
                 // Closed (ファイル > 閉じる) while it was read.
                 _ if this.closed != closed || this.web_open_generation != generation => {}
                 Ok((opened, exposure)) => {
-                    let is_ppsx = name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::is_slideshow(e));
-                    let is_tmpl = name.rsplit_once('.').is_some_and(|(_, e)| ibis_pptx::is_template(e));
+                    let is_ppsx = name.rsplit_once('.').is_some_and(|(_, e)| ibis_formats::is_slideshow(e));
+                    let is_tmpl = name.rsplit_once('.').is_some_and(|(_, e)| ibis_formats::is_template(e));
                     let doc_name = if is_tmpl {
-                        crate::file_actions::new_file_name(ibis_pptx::Kind::of(&opened.presentation))
+                        crate::file_actions::new_file_name(ibis_formats::Kind::of(&opened.presentation))
                     } else {
                         name
                     };
@@ -1589,7 +1589,7 @@ impl SlideEditor {
         self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
         self.commit_edit(window, cx);
         let name: SharedString = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
-        let kind = path.extension().and_then(|e| e.to_str()).and_then(ibis_pptx::Kind::from_extension);
+        let kind = path.extension().and_then(|e| e.to_str()).and_then(ibis_formats::Kind::from_extension);
         match kind {
             Some(kind) if !self.has_document => self.begin_loading(kind, name.clone(), window, cx),
             _ => self.set_status(crate::i18n::format("file.opening", &[("name", &name)]), cx),
@@ -1604,7 +1604,7 @@ impl SlideEditor {
             let (mut result, sequence) = cx.background_executor().spawn(async move {
                 let result = read();
                 let sequence = if result.is_ok() && sequence_path.extension().and_then(|ext| ext.to_str())
-                    .is_some_and(ibis_pptx::production_image::supports_extension)
+                    .is_some_and(ibis_formats::production_image::supports_extension)
                 {
                     crate::image_sequence::ImageSequence::discover(&sequence_path)
                 } else {
@@ -1613,7 +1613,7 @@ impl SlideEditor {
                 (result, sequence)
             }).await;
             let ambiguous = result.as_ref().ok().and_then(|loaded| loaded.source.original_csv_format())
-                .is_some_and(|format| matches!(format.encoding, ibis_pptx::csv::OriginalEncoding::AsciiAmbiguous | ibis_pptx::csv::OriginalEncoding::Utf8OrCp932));
+                .is_some_and(|format| matches!(format.encoding, ibis_formats::csv::OriginalEncoding::AsciiAmbiguous | ibis_formats::csv::OriginalEncoding::Utf8OrCp932));
             if ambiguous {
                 let buttons = [PromptButton::ok("UTF-8"), PromptButton::ok("Shift_JIS (CP932)"), PromptButton::cancel(crate::i18n::text("_shell.cancel"))];
                 let receiver = this.update_in(cx, |_, window, cx| window.prompt(
@@ -1624,8 +1624,8 @@ impl SlideEditor {
                 let still_opening = this.update(cx, |this, _| this.closed == closed && this.watch.opening_path.as_deref() == Some(path.as_path())).unwrap_or(false);
                 if !still_opening { return; }
                 let encoding = match answer {
-                    Some(0) => ibis_pptx::csv::TextEncoding::Utf8,
-                    Some(1) => ibis_pptx::csv::TextEncoding::ShiftJis,
+                    Some(0) => ibis_formats::csv::TextEncoding::Utf8,
+                    Some(1) => ibis_formats::csv::TextEncoding::ShiftJis,
                     _ => {
                         this.update(cx, |this, cx| { this.watch.opening_path = None; this.fail_loading(String::new(), cx); }).ok();
                         return;
@@ -1656,14 +1656,14 @@ impl SlideEditor {
                 Ok(loaded) => {
                     let signature_presence = loaded.source.has_package_signatures();
                     let production_image = path.extension().and_then(|ext| ext.to_str())
-                        .is_some_and(ibis_pptx::production_image::supports_extension);
-                    let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
+                        .is_some_and(ibis_formats::production_image::supports_extension);
+                    let is_tmpl = path.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::is_template);
                     if let Some(bytes) = loaded.jtd_original {
                         this.load_jtd(loaded.presentation, name, bytes, loaded.jtd_gallery, window, cx);
                         this.set_file_path(Some(path.clone()));
                         this.watch.known = stamp_before_read;
                     } else if is_tmpl {
-                        let tmpl_name = crate::file_actions::new_file_name(ibis_pptx::Kind::of(&loaded.presentation));
+                        let tmpl_name = crate::file_actions::new_file_name(ibis_formats::Kind::of(&loaded.presentation));
                         this.load(loaded.presentation, tmpl_name, window, cx);
                         this.set_loaded_source(loaded.source);
                         this.path = None;
@@ -1672,7 +1672,7 @@ impl SlideEditor {
                         || path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
                         // An old workbook or presentation (or an OpenDocument workbook) is read as a new .xlsx or .pptx: saving asks where, and leaves the old file as it is.
                         let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let extension = crate::format::info(ibis_pptx::Kind::of(&loaded.presentation)).extension;
+                        let extension = crate::format::info(ibis_formats::Kind::of(&loaded.presentation)).extension;
                         this.load(loaded.presentation, format!("{stem}.{extension}").into(), window, cx);
                         this.set_opened_source(loaded.source, production_image);
                         this.path = None;
@@ -1779,7 +1779,7 @@ impl SlideEditor {
                     opened(this, cx);
                     this.recent_files = crate::recent_files::add(&path);
                     crate::timing::document_loaded(window);
-                    if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_slideshow) {
+                    if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::is_slideshow) {
                         with_format!(this, show_start(this, window, cx));
                     }
                     match signature_presence {
@@ -1819,8 +1819,8 @@ impl SlideEditor {
     /// Show an empty document of `kind`, titled `name`, with 「読み込み中...」
     /// over it until the file is loaded (`load`) or cannot be
     /// (`fail_loading`).
-    pub fn begin_loading(&mut self, kind: ibis_pptx::Kind, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        self.load(ibis_pptx::blank(kind), name, window, cx);
+    pub fn begin_loading(&mut self, kind: ibis_formats::Kind, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.load(ibis_formats::blank(kind), name, window, cx);
         self.loading = true;
         // The bar of the loading box moves while the file is read.
         cx.spawn_in(window, async move |this, cx| {
@@ -1993,7 +1993,7 @@ impl SlideEditor {
         }
         let theme = cx.theme();
         // How far a large file has got (only the reading that reports it, such as a big workbook's): a bar along the bottom edge of the box.
-        let progress = ibis_pptx::progress::current();
+        let progress = ibis_formats::progress::current();
         Some(
             div().absolute().inset_0().flex().items_center().justify_center().child(
                 div()
@@ -2104,7 +2104,7 @@ impl SlideEditor {
 
     /// The zoom shown, 1.0 being 100%.
     pub fn current_zoom(&self) -> f32 {
-        if self.kind() == ibis_pptx::Kind::Pdf {
+        if self.kind() == ibis_formats::Kind::Pdf {
             return self.zoom.unwrap_or(1.0);
         }
         self.zoom.or_else(|| self.slide_layout().map(|l| l.zoom(self.px_per_inch_at_100()))).unwrap_or(1.0)
@@ -2589,7 +2589,7 @@ impl SlideEditor {
     /// The other windows of the format `kind`, for 並べて比較: those on the file `file_id` if there are any, else those on other files.
     pub(crate) fn find_other_windows_of(
         my_entity_id: gpui::EntityId,
-        kind: ibis_pptx::Kind,
+        kind: ibis_formats::Kind,
         file_id: u64,
         cx: &mut App,
     ) -> Vec<(AnyWindowHandle, Entity<SlideEditor>)> {
@@ -4001,7 +4001,7 @@ impl Render for SlideEditor {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 #[cfg(not(target_family = "wasm"))]
                 for path in paths.paths() {
-                    if path.extension().and_then(|e| e.to_str()).and_then(ibis_pptx::Kind::from_extension).is_some() {
+                    if path.extension().and_then(|e| e.to_str()).and_then(ibis_formats::Kind::from_extension).is_some() {
                         // The file this window has (it cannot be looked up from the app while it is updating) is raised, not opened again.
                         if this.shows_path(path) {
                             window.activate_window();
@@ -4021,7 +4021,7 @@ impl Render for SlideEditor {
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(|_, _: &crate::actions::OpenStartWindow, _, cx| crate::app::open_editor(None, None, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::NewDocument, window, cx| {
-                let kind = if this.kind() == ibis_pptx::Kind::Pdf { ibis_pptx::Kind::Document } else { this.kind() };
+                let kind = if this.kind() == ibis_formats::Kind::Pdf { ibis_formats::Kind::Document } else { this.kind() };
                 this.new_file(kind, window, cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::NewFromTemplate, window, cx| this.new_from_template(window, cx)))

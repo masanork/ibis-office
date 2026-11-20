@@ -114,7 +114,7 @@ fn restyled() {
     set_theme_colors(&[("accent2".to_string(), Rgb::from_rgb(200, 100, 0))]);
     let b = PptBox { x: 0.5, y: 0.5, w: 0.1, h: 0.1 };
     let at = |class, id, sub, ms| {
-        let a = ibis_pptx::animation_catalog::make(ShapeId(1), class, id, sub).unwrap();
+        let a = ibis_formats::animation_catalog::make(ShapeId(1), class, id, sub).unwrap();
         styled_shape(&shape, ShapeMotion::at_rest(1.0), &[sample(&a.behaviors, ms, b)])
     };
     // 塗りつぶしの色, half way.
@@ -135,7 +135,7 @@ fn restyled() {
 /// シマー (強調 36) moves, turns and squeezes the shape and brings it back: it is shown the whole time.
 fn shimmer() {
     use crate::slideshow::{ShapeMotion, motion_at};
-    let a = ibis_pptx::animation_catalog::make(ShapeId(1), AnimationClass::Emphasis, 36, 0).unwrap();
+    let a = ibis_formats::animation_catalog::make(ShapeId(1), AnimationClass::Emphasis, 36, 0).unwrap();
     for k in 0..=20 {
         let p = k as f32 / 20.0;
         let m = motion_at(&a, ShapeMotion::at_rest(1.0), p, (100.0, 100.0, 400.0, 100.0), (960.0, 540.0));

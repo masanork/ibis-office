@@ -10,15 +10,15 @@ use crate::timing;
 #[cfg(not(target_family = "wasm"))]
 pub struct Loaded {
     pub presentation: ibis_doc_model::Presentation,
-    pub source: std::sync::Arc<ibis_pptx::Source>,
+    pub source: std::sync::Arc<ibis_formats::Source>,
     /// The password a protected file was opened with: saving protects it again.
     pub password: Option<String>,
     pub standard_encryption: bool,
     pub jtd_original: Option<Vec<u8>>,
     pub jtd_gallery: bool,
     pub(crate) image_provenance: Option<crate::image_provenance::Report>,
-    pub(crate) exr_exposure: Option<ibis_pptx::production_image::ExrExposure>,
-    pub(crate) csv_stream: Option<std::sync::mpsc::Receiver<ibis_pptx::CsvProgressiveChunk>>,
+    pub(crate) exr_exposure: Option<ibis_formats::production_image::ExrExposure>,
+    pub(crate) csv_stream: Option<std::sync::mpsc::Receiver<ibis_formats::CsvProgressiveChunk>>,
 }
 
 /// What `read_file` says when the file is protected and needs its password.
@@ -36,19 +36,19 @@ pub fn read_file(path: &std::path::Path) -> Result<Loaded, String> {
 /// As `read_file`; `password` opens a protected file (パスワードを使用して暗号化).
 #[cfg(not(target_family = "wasm"))]
 pub fn read_file_with(path: &std::path::Path, password: Option<&str>) -> Result<Loaded, String> {
-    read_file_with_stack(path, password, ibis_pptx::csv::TextEncoding::Auto)
+    read_file_with_stack(path, password, ibis_formats::csv::TextEncoding::Auto)
 }
 
 /// Re-read a CSV after the user has selected its encoding.
 #[cfg(not(target_family = "wasm"))]
-pub fn read_file_with_csv_encoding(path: &std::path::Path, encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
+pub fn read_file_with_csv_encoding(path: &std::path::Path, encoding: ibis_formats::csv::TextEncoding) -> Result<Loaded, String> {
     read_file_with_stack(path, None, encoding)
 }
 
 /// ZIP creation during CSV import needs more stack than GPUI workers provide.
 /// Both automatic and explicitly selected reads can run on those workers.
 #[cfg(not(target_family = "wasm"))]
-fn read_file_with_stack(path: &std::path::Path, password: Option<&str>, encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
+fn read_file_with_stack(path: &std::path::Path, password: Option<&str>, encoding: ibis_formats::csv::TextEncoding) -> Result<Loaded, String> {
     let path = path.to_owned();
     let password = password.map(str::to_owned);
     std::thread::Builder::new().name("file-read".into()).stack_size(8 * 1024 * 1024)
@@ -76,7 +76,7 @@ mod stack_tests {
     fn automatic_csv_read_works_from_a_small_stack() {
         let path = std::env::temp_dir().join(format!("ibis-csv-small-stack-{}-{}.csv", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let bytes = ibis_pptx::csv::encode_sjis("名前,数量\r\nりんご,00123\r\n");
+        let bytes = ibis_formats::csv::encode_sjis("名前,数量\r\nりんご,00123\r\n");
         std::fs::write(&path, &bytes).unwrap();
         let read_path = path.clone();
         let loaded = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || super::read_file(&read_path)).unwrap().join().unwrap().unwrap();
@@ -114,7 +114,7 @@ fn fixed_layout(raw: std::sync::Arc<[u8]>, page_boxes: &[(f32, f32)]) -> ibis_do
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encoding: ibis_pptx::csv::TextEncoding) -> Result<Loaded, String> {
+fn read_file_unguarded(path: &std::path::Path, password: Option<&str>, csv_encoding: ibis_formats::csv::TextEncoding) -> Result<Loaded, String> {
     timing::mark_read_start();
     let read_t0 = crate::clock::Instant::now();
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -136,8 +136,8 @@ pub fn read_file_at_ai_citation(path: &std::path::Path, query_path: &std::path::
             let data = std::fs::read(&path).map_err(|e| e.to_string())?;
             let query = std::fs::read(&query_path).map_err(|e| e.to_string())?;
             let query = serde_json::from_slice(&query).map_err(|e| e.to_string())?;
-            let paragraph = ibis_pptx::markdown::locate_ai_paragraph(&data, &query).map_err(|e| e.to_string())?;
-            let loaded = read_file_data(&path, None, ibis_pptx::csv::TextEncoding::Auto, data, read_t0)?;
+            let paragraph = ibis_formats::markdown::locate_ai_paragraph(&data, &query).map_err(|e| e.to_string())?;
+            let loaded = read_file_data(&path, None, ibis_formats::csv::TextEncoding::Auto, data, read_t0)?;
             Ok((loaded, paragraph))
         }))
         .map_err(|error| error.to_string())?
@@ -148,7 +148,7 @@ pub fn read_file_at_ai_citation(path: &std::path::Path, query_path: &std::path::
 fn read_file_data(
     path: &std::path::Path,
     password: Option<&str>,
-    csv_encoding: ibis_pptx::csv::TextEncoding,
+    csv_encoding: ibis_formats::csv::TextEncoding,
     mut data: Vec<u8>,
     read_t0: crate::clock::Instant,
 ) -> Result<Loaded, String> {
@@ -181,62 +181,62 @@ fn read_file_data(
             };
             fixed_layout(raw, &page_boxes)
         };
-        let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
-        let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
+        let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
+        let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
         return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, exr_exposure: None, image_provenance: None });
     }
     let extension = path.extension().and_then(|e| e.to_str());
-    if let Some((opened, exr_exposure)) = ibis_pptx::production_image::open_with_exposure(extension, &data)? {
+    if let Some((opened, exr_exposure)) = ibis_formats::production_image::open_with_exposure(extension, &data)? {
         let image_provenance = extension.and_then(|ext| crate::image_provenance::inspect(ext, &data));
         crate::render::preload::Preload::start_for_next(&opened.presentation);
         return Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, exr_exposure, image_provenance });
     }
-    if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::jtd::is_extension) || ibis_pptx::jtd::is_jtd(&data) {
+    if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::jtd::is_extension) || ibis_formats::jtd::is_jtd(&data) {
         let (presentation, jtd_gallery) = crate::jtd_preview::read(&data)?;
-        let blank = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
-        let source = ibis_pptx::open(blank).map_err(|e| e.to_string())?.source;
+        let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
+        let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
         crate::render::preload::Preload::start_for_next(&presentation);
         return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: Some(data), jtd_gallery, exr_exposure: None, image_provenance: None });
     }
-    let standard_encryption = ibis_pptx::ibis_ooxml::encryption::is_standard_encrypted(&data);
+    let standard_encryption = ibis_formats::ibis_ooxml::encryption::is_standard_encrypted(&data);
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     timing::mark("read");
     let mut used = None;
-    if ibis_pptx::is_encrypted(&data) {
+    if ibis_formats::is_encrypted(&data) {
         let Some(password) = password else { return Err(NEEDS_PASSWORD.to_string()) };
-        data = ibis_pptx::decrypt(&data, password).map_err(|e| if e == ibis_pptx::DecryptError::WrongPassword { WRONG_PASSWORD.to_string() } else { e.to_string() })?;
+        data = ibis_formats::decrypt(&data, password).map_err(|e| if e == ibis_formats::DecryptError::WrongPassword { WRONG_PASSWORD.to_string() } else { e.to_string() })?;
         used = Some(password.to_string());
     }
     let open_t0 = crate::clock::Instant::now();
     // An old binary file (.xls, .ppt, .doc): read by its content, not by its extension.
-    let is_legacy_binary = ibis_pptx::is_legacy_binary(&data);
-    let external_document_format = ibis_pptx::docx_convert::DocxConvertFormat::from_path(path);
-    let open_result = if let Some(law_md) = ibis_pptx::lawtext::input_to_markdown(&data).map_err(|e| {
+    let is_legacy_binary = ibis_formats::is_legacy_binary(&data);
+    let external_document_format = ibis_formats::docx_convert::DocxConvertFormat::from_path(path);
+    let open_result = if let Some(law_md) = ibis_formats::lawtext::input_to_markdown(&data).map_err(|e| {
         note_open_failed(path);
         e.to_string()
     })? {
-        ibis_pptx::markdown::open_markdown_with_base_dir(law_md.into_bytes(), path.parent()).map(|opened| (opened, None))
-    } else if let Some(dicom_md) = ibis_pptx::dicom::input_to_markdown(&data).map_err(|e| {
+        ibis_formats::markdown::open_markdown_with_base_dir(law_md.into_bytes(), path.parent()).map(|opened| (opened, None))
+    } else if let Some(dicom_md) = ibis_formats::dicom::input_to_markdown(&data).map_err(|e| {
         note_open_failed(path);
         e.to_string()
     })? {
-        ibis_pptx::markdown::open_markdown_with_base_dir(dicom_md.into_bytes(), path.parent()).map(|opened| (opened, None))
-    } else if let Some(fhir_md) = ibis_pptx::fhir::input_to_markdown(&data).map_err(|e| {
+        ibis_formats::markdown::open_markdown_with_base_dir(dicom_md.into_bytes(), path.parent()).map(|opened| (opened, None))
+    } else if let Some(fhir_md) = ibis_formats::fhir::input_to_markdown(&data).map_err(|e| {
         note_open_failed(path);
         e.to_string()
     })? {
-        ibis_pptx::markdown::open_markdown_with_base_dir(fhir_md.into_bytes(), path.parent()).map(|opened| (opened, None))
-    } else if external_document_format == Some(ibis_pptx::docx_convert::DocxConvertFormat::Markdown) {
-        if ibis_pptx::markdown::is_presentation_markdown(&data) {
-            ibis_pptx::markdown::open_markdown_presentation_with_base_dir(data, path.parent()).map(|opened| (opened, None))
+        ibis_formats::markdown::open_markdown_with_base_dir(fhir_md.into_bytes(), path.parent()).map(|opened| (opened, None))
+    } else if external_document_format == Some(ibis_formats::docx_convert::DocxConvertFormat::Markdown) {
+        if ibis_formats::markdown::is_presentation_markdown(&data) {
+            ibis_formats::markdown::open_markdown_presentation_with_base_dir(data, path.parent()).map(|opened| (opened, None))
         } else {
-            ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
+            ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
         }
     } else if let Some(format) = external_document_format {
-        ibis_pptx::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
+        ibis_formats::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
     } else {
         // The volatile cells calculated again on open (CELL("filename") among them) need the file's path.
-        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || ibis_pptx::open_progressive_with_csv_encoding(data,100_000,csv_encoding))
+        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || ibis_formats::open_progressive_with_csv_encoding(data,100_000,csv_encoding))
     };
     let (opened, csv_stream) = open_result.map_err(|e| {
         note_open_failed(path);

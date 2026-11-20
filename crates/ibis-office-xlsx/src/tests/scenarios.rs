@@ -1690,13 +1690,13 @@ fn xsc37_one_number() {
     // Compared here, in the process (ibis_ooxml::canon, what the ibis-ooxml-diff tool prints):
     // the check used to run target/release/ibis-ooxml-diff and was skipped without a word when it had not been built.
     let original = std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap();
-    let report = ibis_pptx::ibis_ooxml::canon::diff_packages(&original, &std::fs::read(&path).unwrap(), &[]).unwrap();
+    let report = ibis_formats::ibis_ooxml::canon::diff_packages(&original, &std::fs::read(&path).unwrap(), &[]).unwrap();
     let text = report.to_json();
     assert!(text.contains("xl/worksheets/sheet1.xml"), "{text}");
     // The chart's cache holds the new number: the only difference in its part.
     let chart = report.differences.iter().find(|(part, _)| part == "xl/charts/chart1.xml").map(|(_, d)| d);
     assert!(
-        matches!(chart, Some(ibis_pptx::ibis_ooxml::canon::PartDiff::Xml { b, differing: 1, a_items, b_items, .. }) if b == "\"1260000\"" && a_items == b_items),
+        matches!(chart, Some(ibis_formats::ibis_ooxml::canon::PartDiff::Xml { b, differing: 1, a_items, b_items, .. }) if b == "\"1260000\"" && a_items == b_items),
         "{text}"
     );
     for part in ["xl/drawings/", "xl/styles.xml", "xl/sharedStrings.xml", "xl/workbook.xml"] {
@@ -5631,7 +5631,7 @@ fn chedit002_scatter_switch_row_column() {
     s.key("shift-down");
 
     // Insert Scatter Chart
-    s.update(|e, w, cx| e.insert_sheet_chart(ibis_pptx::NewChartKind::Scatter, w, cx));
+    s.update(|e, w, cx| e.insert_sheet_chart(ibis_formats::NewChartKind::Scatter, w, cx));
     s.settle();
 
     // Select inserted chart (last chart)
@@ -5719,7 +5719,7 @@ fn chedit002_bubble_switch_row_column() {
     s2.key("shift-down");
 
     // Insert Bubble Chart
-    s2.update(|e, w, cx| e.insert_sheet_chart(ibis_pptx::NewChartKind::Bubble, w, cx));
+    s2.update(|e, w, cx| e.insert_sheet_chart(ibis_formats::NewChartKind::Bubble, w, cx));
     s2.settle();
 
     let idx = s2.with(|e, _| e.slide().shapes.iter().rposition(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
@@ -5812,7 +5812,7 @@ fn chedit001_headerless_scatter() {
     s.key("shift-down");
 
     // Insert Scatter Chart over headerless G1:H4
-    s.update(|e, w, cx| e.insert_sheet_chart(ibis_pptx::NewChartKind::Scatter, w, cx));
+    s.update(|e, w, cx| e.insert_sheet_chart(ibis_formats::NewChartKind::Scatter, w, cx));
     s.settle();
 
     // Select the inserted scatter chart
@@ -5910,7 +5910,7 @@ fn chedit001_headerless_bubble() {
     s.key("shift-down");
 
     // Insert Bubble Chart
-    s.update(|e, w, cx| e.insert_sheet_chart(ibis_pptx::NewChartKind::Bubble, w, cx));
+    s.update(|e, w, cx| e.insert_sheet_chart(ibis_formats::NewChartKind::Bubble, w, cx));
     s.settle();
 
     let b_idx = s.with(|e, _| e.slide().shapes.iter().rposition(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
@@ -6017,7 +6017,7 @@ fn chedit001_stock_charts() {
     s.key("shift-down");
 
     // Insert StockHLC Chart
-    s.update(|e, w, cx| e.insert_sheet_chart(ibis_pptx::NewChartKind::StockHLC, w, cx));
+    s.update(|e, w, cx| e.insert_sheet_chart(ibis_formats::NewChartKind::StockHLC, w, cx));
     s.settle();
 
     let chart_idx = s.with(|e, _| e.slide().shapes.iter().rposition(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
@@ -6087,7 +6087,7 @@ fn chedit001_radar_surface_combo_charts() {
     s.key("shift-down");
 
     // 1. Insert Radar chart
-    s.update(|e, w, cx| e.insert_sheet_chart(ibis_pptx::NewChartKind::Radar, w, cx));
+    s.update(|e, w, cx| e.insert_sheet_chart(ibis_formats::NewChartKind::Radar, w, cx));
     s.settle();
 
     let chart_idx = s.with(|e, _| e.slide().shapes.iter().rposition(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
@@ -6134,7 +6134,7 @@ fn chedit001_radar_surface_combo_charts() {
     s.key("shift-down");
     s.key("shift-down");
     s.key("shift-down");
-    s.update(|e, w, cx| e.insert_sheet_chart(ibis_pptx::NewChartKind::ComboColumnLine, w, cx));
+    s.update(|e, w, cx| e.insert_sheet_chart(ibis_formats::NewChartKind::ComboColumnLine, w, cx));
     s.settle();
 
     let combo_idx = s.with(|e, _| e.slide().shapes.iter().rposition(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
@@ -6156,7 +6156,7 @@ fn chedit001_radar_surface_combo_charts() {
     s.key("shift-down");
     s.key("shift-down");
     s.key("shift-down");
-    s.update(|e, w, cx| e.insert_sheet_chart(ibis_pptx::NewChartKind::Surface3D, w, cx));
+    s.update(|e, w, cx| e.insert_sheet_chart(ibis_formats::NewChartKind::Surface3D, w, cx));
     s.settle();
 
     let surface_idx = s.with(|e, _| e.slide().shapes.iter().rposition(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
@@ -6689,7 +6689,7 @@ fn slicer002_insert() {
     // Saved: the parts and the references.
     let path = s.save_as("slicer002.xlsx");
     let bytes = std::fs::read(&path).expect("the saved file");
-    let package = ibis_pptx::ibis_ooxml::Package::open(bytes).expect("a package");
+    let package = ibis_formats::ibis_ooxml::Package::open(bytes).expect("a package");
     let caches = package.names().filter(|n| n.starts_with("xl/slicerCaches/")).count();
     assert_eq!(caches, 5, "{:?}", package.names().collect::<Vec<_>>());
     let workbook = String::from_utf8(package.read("xl/workbook.xml").unwrap()).unwrap();
@@ -6754,7 +6754,7 @@ fn slicer003_settings() {
     assert_eq!((slicer.name.as_str(), slicer.style.as_str(), slicer.caption.as_str(), slicer.show_caption, slicer.columns, slicer.row_height, slicer.descending), ("商品スライサー", "SlicerStyleDark2", "Product", false, 2, 254_000, true));
     assert_eq!(slicer.items.iter().map(|i| i.label.clone()).collect::<Vec<_>>(), rev_items, "the buttons are remade in descending order");
     let path = s.save_as("slicer003.xlsx");
-    let package = ibis_pptx::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
+    let package = ibis_formats::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
     let part = (1..=2).map(|n| String::from_utf8(package.read(&format!("xl/slicers/slicer{n}.xml")).unwrap()).unwrap()).find(|x| x.contains("商品スライサー")).expect("the slicers part");
     assert!(part.contains("name=\"商品スライサー\"") && part.contains("style=\"SlicerStyleDark2\"") && part.contains("caption=\"Product\"") && part.contains("columnCount=\"2\"") && part.contains("rowHeight=\"254000\"") && part.contains("showCaption=\"0\""), "{part}");
     let cache_part = (1..=2).map(|n| String::from_utf8(package.read(&format!("xl/slicerCaches/slicerCache{n}.xml")).unwrap()).unwrap()).find(|x| x.contains("sortOrder=\"descending\"")).expect("the slicer cache with descending sortOrder");
@@ -6785,7 +6785,7 @@ fn slicer003_settings() {
             last_column: 10,
         };
         sheet.pivots.push(p2);
-        let rebuilt = ibis_pptx::rebuilt_pivot(e.presentation(), slide, 1, sheet.pivots.get(1).cloned()).unwrap_or(sheet);
+        let rebuilt = ibis_formats::rebuilt_pivot(e.presentation(), slide, 1, sheet.pivots.get(1).cloned()).unwrap_or(sheet);
         e.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::ReplaceSheet { slide, sheet: Box::new(rebuilt) })], cx);
     });
     s.update(move |e, _, _| e.selection = Some(id));
@@ -6824,7 +6824,7 @@ fn slicer003_settings() {
     });
     assert_eq!(kept_counts, vec![1, 1], "clicking the slicer button filters both connected PivotTables");
     let path2 = s.save_as("slicer003_multi_pivot.xlsx");
-    let pkg2 = ibis_pptx::ibis_ooxml::Package::open(std::fs::read(&path2).unwrap()).unwrap();
+    let pkg2 = ibis_formats::ibis_ooxml::Package::open(std::fs::read(&path2).unwrap()).unwrap();
     let multi_cache = (1..=2)
         .map(|n| String::from_utf8(pkg2.read(&format!("xl/slicerCaches/slicerCache{n}.xml")).unwrap()).unwrap())
         .find(|x| x.contains("ピボットテーブル2"))
@@ -7722,7 +7722,7 @@ fn pivot014_filters() {
 
 /// The chart of xlsx-sales.xlsx as read.
 fn chart_of_file() -> ibis_doc_model::Chart {
-    let p = ibis_pptx::read(&std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap()).unwrap();
+    let p = ibis_formats::read(&std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap()).unwrap();
     p.slides[0].shapes.iter().find_map(|x| match &x.kind { ibis_doc_model::ShapeKind::Chart(c) => Some((**c).clone()), _ => None }).unwrap()
 }
 
@@ -8156,7 +8156,7 @@ fn pivot018_refresh() {
     assert_eq!(s.value("F23"), CellValue::Number(151819.0));
     let saved = s.save_as("pivot018.xlsx");
     let data = std::fs::read(&saved).unwrap();
-    let zip = ibis_pptx::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition1.xml").expect("the cache's definition");
+    let zip = ibis_formats::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition1.xml").expect("the cache's definition");
     assert!(zip.contains("refreshOnLoad=\"1\""), "Excel builds it again on opening");
     let reopened = s.reopen();
     let sh = sheet_of_slide(&reopened.slides[0]).unwrap();
@@ -8211,9 +8211,9 @@ fn pivot001_create() {
     s.screenshot("created");
     let saved = s.save_as("pivot001.xlsx");
     let data = std::fs::read(&saved).unwrap();
-    let table = ibis_pptx::test_files::part_text(&data, "xl/pivotTables/pivotTable2.xml").expect("the new table's part");
+    let table = ibis_formats::test_files::part_text(&data, "xl/pivotTables/pivotTable2.xml").expect("the new table's part");
     assert!(table.contains(r#"<rowFields count="1"><field x="2"/></rowFields>"#) && table.contains(r#"<colFields count="1"><field x="1"/></colFields>"#), "{table}");
-    let cache = ibis_pptx::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition2.xml").expect("its cache");
+    let cache = ibis_formats::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition2.xml").expect("its cache");
     assert!(cache.contains(r#"refreshOnLoad="1""#) && cache.contains(r#"sheet="ピボット""#));
     let reopened = s.reopen();
     let sh = sheet_of_slide(&reopened.slides[1]).unwrap();
@@ -8433,7 +8433,7 @@ fn pivot003_value_field_settings() {
     s.screenshot("pivot003_percent_of_total");
     let saved = s.save_as("pivot003.xlsx");
     let data = std::fs::read(&saved).unwrap();
-    let table = ibis_pptx::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("table xml");
+    let table = ibis_formats::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("table xml");
     assert!(table.contains(r#"showDataAs="percentOfTotal""#), "{table}");
     assert!(table.contains(r#"name="売上合計""#), "{table}");
     assert!(table.contains(r#"numFmtId="#), "{table}");
@@ -8537,7 +8537,7 @@ fn pivot013_buttons() {
 /// undo.
 fn pq001_import_text() {
     let mut s = new_sheet();
-    let data = ibis_pptx::csv::encode_sjis("コード,名称,数量,日付\r\n00123,りんご,3,2026/1/5\r\n00456,みかん,5,2026/2/6\r\n");
+    let data = ibis_formats::csv::encode_sjis("コード,名称,数量,日付\r\n00123,りんご,3,2026/1/5\r\n00456,みかん,5,2026/2/6\r\n");
     s.click_cell("B2");
     s.update(|e, window, cx| e.show_import_text_panel(window, cx));
     s.update(move |e, _, cx| e.set_import_text_data("goods.csv".into(), data, cx));
@@ -8810,7 +8810,7 @@ fn pivot016_timeline_selected() {
     let march = t.periods(2)[2];
     assert_eq!(t.selection, Some((march.start, march.end)), "March 2026, from its first day to the day after the last");
     let saved = s.save_as("timeline-selected.xlsx");
-    let back = ibis_pptx::read(&std::fs::read(&saved).unwrap()).unwrap();
+    let back = ibis_formats::read(&std::fs::read(&saved).unwrap()).unwrap();
     let kept: Vec<_> = back.slides.iter().flat_map(|sl| &sl.shapes).filter_map(|sh| match &sh.kind { ShapeKind::Timeline(t) => Some(t.selection), _ => None }).collect();
     assert_eq!(kept, vec![Some((march.start, march.end))]);
 }
@@ -8884,7 +8884,7 @@ fn formula006_external_links() {
     assert_eq!(s.with(|e, _| e.live_external_books().iter().map(|(_, b)| b.name.clone()).collect::<Vec<_>>()), ["予算.xlsx", "actual.xlsx"]);
     assert_eq!(s.value("J45"), CellValue::Number(60.0));
     // 値の更新 from a workbook with Data!A1:A3 = 1, 2, 3 and B1 = "x".
-    let update = ibis_pptx::csv::workbook_from("1,x\n2\n3\n", "Data").expect("a workbook");
+    let update = ibis_formats::csv::workbook_from("1,x\n2\n3\n", "Data").expect("a workbook");
     s.update(move |e, _, cx| e.refresh_external_book_from(0, &update, cx));
     assert_eq!(s.value("J45"), CellValue::Number(6.0), "SUM of the new cached cells");
     assert_eq!(s.value("K45"), CellValue::Text("x".into()));
@@ -8892,7 +8892,7 @@ fn formula006_external_links() {
     close_modal_panel(&mut s); // the links panel is a modal dialog; Undo is the sheet's
     s.key("cmd-z");
     // リンク元の変更: change source of 予算.xlsx to 予算2026.xlsx
-    let new_source = ibis_pptx::csv::workbook_from("10,南部\n20\n30\n", "Data").expect("a workbook");
+    let new_source = ibis_formats::csv::workbook_from("10,南部\n20\n30\n", "Data").expect("a workbook");
     s.update(|e, _, cx| {
         e.change_external_book_source(
             0,
@@ -8920,7 +8920,7 @@ fn formula006_external_links() {
 
     // Save with changed source and reopen to verify roundtrip
     let saved_changed = s.save_as("formula006_changed.xlsx");
-    let back = ibis_pptx::open(std::fs::read(&saved_changed).unwrap()).unwrap();
+    let back = ibis_formats::open(std::fs::read(&saved_changed).unwrap()).unwrap();
     let wb = back.presentation.workbook.as_ref().unwrap();
     assert_eq!(wb.external_books[0].name, "予算2026.xlsx");
     assert_eq!(wb.external_books[0].path, "/path/to/予算2026.xlsx");
@@ -8929,7 +8929,7 @@ fn formula006_external_links() {
     assert_eq!(sh0.cell(44, 10).and_then(|c| c.formula.clone()).as_deref(), Some("[予算2026.xlsx]Data!B1"));
 
     // 外部ブックのリンクを追加 (add link)
-    let extra_bytes = ibis_pptx::csv::workbook_from("100\n", "Sheet1").expect("extra bytes");
+    let extra_bytes = ibis_formats::csv::workbook_from("100\n", "Sheet1").expect("extra bytes");
     s.update(|e, _, cx| {
         e.add_external_link("追加.xlsx".into(), "追加.xlsx".into(), &extra_bytes, cx)
     });
@@ -9766,18 +9766,18 @@ fn sec006_open_password() {
     s.enter("確認", "enter");
     let saved = s.save_as(root.join("saved.xlsx").to_str().unwrap());
     let bytes = std::fs::read(&saved).unwrap();
-    assert!(ibis_pptx::is_encrypted(&bytes), "saved protected again");
-    let plain = ibis_pptx::decrypt(&bytes, "ibis123").unwrap();
-    let again = ibis_pptx::read(&plain).unwrap();
+    assert!(ibis_formats::is_encrypted(&bytes), "saved protected again");
+    let plain = ibis_formats::decrypt(&bytes, "ibis123").unwrap();
+    let again = ibis_formats::read(&plain).unwrap();
     assert_eq!(again.slides.len(), sheets);
     assert_eq!(sheet_of_slide(&again.slides[0]).unwrap().cell(0, 9).map(|c| c.value.clone()), Some(CellValue::Text("確認".into())));
     // Taken off: saved in the clear.
     s.update(|e, w, cx| e.set_protection(None, w, cx));
     let bytes = std::fs::read(&saved).unwrap();
-    assert!(!ibis_pptx::is_encrypted(&bytes) && ibis_pptx::read(&bytes).unwrap().slides.len() == sheets, "saved without the password");
+    assert!(!ibis_formats::is_encrypted(&bytes) && ibis_formats::read(&bytes).unwrap().slides.len() == sheets, "saved without the password");
     // A new password.
     s.update(|e, w, cx| e.set_protection(Some("新しい".into()), w, cx));
-    assert!(ibis_pptx::is_encrypted(&std::fs::read(&saved).unwrap()));
+    assert!(ibis_formats::is_encrypted(&std::fs::read(&saved).unwrap()));
 }
 
 /// The middle of button `item` of the slicer `name`, in the window.
@@ -15651,10 +15651,10 @@ fn pivot009_group_and_ungroup() {
     s.screenshot("pivot009_grouped");
     let saved = s.save_as("pivot009.xlsx");
     let data = std::fs::read(&saved).unwrap();
-    let cache = ibis_pptx::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition1.xml").expect("cache xml");
+    let cache = ibis_formats::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition1.xml").expect("cache xml");
     assert!(cache.contains("<fieldGroup") && cache.contains(r#"<rangePr groupBy="months" startDate="2026-01-05T00:00:00" endDate="2026-12-22T00:00:00""#), "cache has fieldGroup rangePr with startDate/endDate: {cache}");
     assert!(cache.contains(r#"<groupItems count="14">"#), "cache has groupItems count=14: {cache}");
-    let table = ibis_pptx::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("table xml");
+    let table = ibis_formats::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("table xml");
     assert!(table.contains(r#"<items count="15">"#), "table has 14 group items + 1 default subtotal: {table}");
 
     let reopened = s.reopen();
@@ -15745,7 +15745,7 @@ fn pivot010_options() {
     s.screenshot("pivot010_options");
     let saved = s.save_as("pivot010.xlsx");
     let data = std::fs::read(&saved).unwrap();
-    let pivot_xml = ibis_pptx::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("pivot table xml");
+    let pivot_xml = ibis_formats::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("pivot table xml");
     assert!(pivot_xml.contains(r#"name="売上サマリー""#), "xml has name: {pivot_xml}");
     assert!(pivot_xml.contains(r#"mergeItem="1""#), "xml has mergeItem: {pivot_xml}");
     assert!(pivot_xml.contains(r#"applyWidthHeightFormats="0""#), "xml has applyWidthHeightFormats 0: {pivot_xml}");
@@ -16089,11 +16089,11 @@ fn pivot012_calculated_item() {
     s.screenshot("pivot012_calculated_item");
     let saved = s.save_as("pivot012_calculated_item.xlsx");
     let data = std::fs::read(&saved).unwrap();
-    let cache = ibis_pptx::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition1.xml").expect("cache xml");
+    let cache = ibis_formats::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition1.xml").expect("cache xml");
     assert!(cache.contains(r#"<s v="北日本" f="1"/>"#), "cache sharedItems has calculated item with f=1: {cache}");
     assert!(cache.contains(r#"<calculatedItem field="2" formula="北海道"><pivotArea field="2""#), "cache has ECMA-376 calculatedItem with pivotArea: {cache}");
     assert!(!cache.contains(r#"<calculatedItem field="2" name="#), "calculatedItem does not emit non-standard name attribute: {cache}");
-    let table = ibis_pptx::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("table xml");
+    let table = ibis_formats::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("table xml");
     assert!(table.contains(r#"<items count="7">"#), "table has 5 base items + 1 calculated item + 1 default subtotal: {table}");
 
     let reopened = s.reopen();
@@ -16360,7 +16360,7 @@ fn pivot001_table_source() {
     s.screenshot("pivot001_table_source");
     let saved = s.save_as("pivot001_table_source.xlsx");
     let data = std::fs::read(&saved).unwrap();
-    let cache_xml = ibis_pptx::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition2.xml").expect("pivot cache xml exists");
+    let cache_xml = ibis_formats::test_files::part_text(&data, "xl/pivotCache/pivotCacheDefinition2.xml").expect("pivot cache xml exists");
     assert!(cache_xml.contains(r#"name="テーブル1""#), "cache xml has table name: {cache_xml}");
     assert!(!cache_xml.contains(r#"ref=""#), "cache xml has no ref attribute when name is set: {cache_xml}");
 
@@ -16447,7 +16447,7 @@ fn cell003_long_numbers_precision() {
     // 保存ファイルの XML 検証
     let data = std::fs::read(&path).unwrap();
     let has_rounded = (1..=10).any(|i| {
-        ibis_pptx::test_files::part_text(&data, &format!("xl/worksheets/sheet{i}.xml"))
+        ibis_formats::test_files::part_text(&data, &format!("xl/worksheets/sheet{i}.xml"))
             .is_some_and(|xml| xml.contains("9876543210987650"))
     });
     assert!(has_rounded, "saved sheet XML contains 15-digit rounded number 9876543210987650");
@@ -16537,7 +16537,7 @@ fn pivot010_options_and_field_settings() {
     s.screenshot("pivot010_field_settings");
     let saved = s.save_as("pivot010_field_settings.xlsx");
     let data = std::fs::read(&saved).unwrap();
-    let pivot_xml = ibis_pptx::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("pivot table xml exists");
+    let pivot_xml = ibis_formats::test_files::part_text(&data, "xl/pivotTables/pivotTable1.xml").expect("pivot table xml exists");
     assert!(pivot_xml.contains(r#"grandTotalCaption="総合計""#), "XML contains grandTotalCaption: {pivot_xml}");
     assert!(pivot_xml.contains(r#"rowHeaderCaption="区分""#), "XML contains rowHeaderCaption: {pivot_xml}");
     assert!(pivot_xml.contains(r#"defaultSubtotal="0""#), "XML contains defaultSubtotal=0: {pivot_xml}");
@@ -18037,7 +18037,7 @@ fn chedit021_chart_templates() {
     // Read and verify .crtx is a valid OPC package
     let crtx_bytes = std::fs::read(&tmpl_path).expect("read saved crtx");
     assert_eq!(&crtx_bytes[..2], b"PK", "crtx must be zip");
-    let loaded_chart = ibis_pptx::read_crtx(&crtx_bytes).expect("read_crtx succeeds");
+    let loaded_chart = ibis_formats::read_crtx(&crtx_bytes).expect("read_crtx succeeds");
     assert_eq!(loaded_chart.groups[0].kind, orig_chart.groups[0].kind);
 
     // 3. Mutate target chart: change style
@@ -18146,7 +18146,7 @@ fn chtype022_radar_chart_styles_and_rendering() {
 
     let xml = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:radarChart><c:radarStyle val="standard"/><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>S1</c:v></c:tx><c:cat><c:strLit><c:ptCount val="3"/><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="1"><c:v>B</c:v></c:pt><c:pt idx="2"><c:v>C</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="3"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt><c:pt idx="2"><c:v>30</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="111"/><c:axId val="222"/></c:radarChart><c:catAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="222"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx><c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="111"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx></c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend></c:chart></c:chartSpace>"#;
     let original = std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap();
-    let bytes = ibis_pptx::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
+    let bytes = ibis_formats::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
     std::fs::write(&source, bytes).unwrap();
 
     let mut s = Scenario::open("target/scenario-input/chtype022-radar.xlsx");
@@ -18219,7 +18219,7 @@ fn chtype011_of_pie_chart_styles_and_rendering() {
 
     let xml = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:ofPieChart><c:ofPieType val="pie"/><c:splitType val="pos"/><c:splitPos val="2"/><c:secondPieSize val="75"/><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>S1</c:v></c:tx><c:cat><c:strLit><c:ptCount val="4"/><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="1"><c:v>B</c:v></c:pt><c:pt idx="2"><c:v>C</c:v></c:pt><c:pt idx="3"><c:v>D</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="4"/><c:pt idx="0"><c:v>40</c:v></c:pt><c:pt idx="1"><c:v>30</c:v></c:pt><c:pt idx="2"><c:v>20</c:v></c:pt><c:pt idx="3"><c:v>10</c:v></c:pt></c:numLit></c:val></c:ser></c:ofPieChart></c:plotArea><c:legend><c:legendPos val="r"/><c:overlay val="0"/></c:legend></c:chart></c:chartSpace>"#;
     let original = std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap();
-    let bytes = ibis_pptx::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
+    let bytes = ibis_formats::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
     std::fs::write(&source, bytes).unwrap();
 
     let mut s = Scenario::open("target/scenario-input/chtype011-of-pie.xlsx");
@@ -18306,7 +18306,7 @@ fn chtype018_stock_chart_hlc_and_ohlc() {
 
     let xml = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:stockChart><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>高値</c:v></c:tx><c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>日1</c:v></c:pt><c:pt idx="1"><c:v>日2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>30</c:v></c:pt><c:pt idx="1"><c:v>35</c:v></c:pt></c:numLit></c:val></c:ser><c:ser><c:idx val="1"/><c:order val="1"/><c:tx><c:v>安値</c:v></c:tx><c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>日1</c:v></c:pt><c:pt idx="1"><c:v>日2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>20</c:v></c:pt><c:pt idx="1"><c:v>22</c:v></c:pt></c:numLit></c:val></c:ser><c:ser><c:idx val="2"/><c:order val="2"/><c:tx><c:v>終値</c:v></c:tx><c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>日1</c:v></c:pt><c:pt idx="1"><c:v>日2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>25</c:v></c:pt><c:pt idx="1"><c:v>31</c:v></c:pt></c:numLit></c:val></c:ser><c:hiLowLines/><c:axId val="100000001"/><c:axId val="100000002"/></c:stockChart><c:catAx><c:axId val="100000001"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="100000002"/></c:catAx><c:valAx><c:axId val="100000002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="100000001"/></c:valAx></c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend></c:chart></c:chartSpace>"#;
     let original = std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap();
-    let bytes = ibis_pptx::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
+    let bytes = ibis_formats::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
     std::fs::write(&source, bytes).unwrap();
 
     let mut s = Scenario::open("target/scenario-input/chtype018-stock.xlsx");
@@ -18407,7 +18407,7 @@ fn chtype020_stock_chart_volume_vhlc_and_vohlc() {
 
     let xml = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>出来高</c:v></c:tx><c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>日1</c:v></c:pt><c:pt idx="1"><c:v>日2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>1000</c:v></c:pt><c:pt idx="1"><c:v>1500</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="100000001"/><c:axId val="100000002"/></c:barChart><c:stockChart><c:ser><c:idx val="1"/><c:order val="1"/><c:tx><c:v>高値</c:v></c:tx><c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>日1</c:v></c:pt><c:pt idx="1"><c:v>日2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>30</c:v></c:pt><c:pt idx="1"><c:v>35</c:v></c:pt></c:numLit></c:val></c:ser><c:ser><c:idx val="2"/><c:order val="2"/><c:tx><c:v>安値</c:v></c:tx><c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>日1</c:v></c:pt><c:pt idx="1"><c:v>日2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>20</c:v></c:pt><c:pt idx="1"><c:v>22</c:v></c:pt></c:numLit></c:val></c:ser><c:ser><c:idx val="3"/><c:order val="3"/><c:tx><c:v>終値</c:v></c:tx><c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>日1</c:v></c:pt><c:pt idx="1"><c:v>日2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>25</c:v></c:pt><c:pt idx="1"><c:v>31</c:v></c:pt></c:numLit></c:val></c:ser><c:hiLowLines/><c:axId val="100000001"/><c:axId val="100000003"/></c:stockChart><c:catAx><c:axId val="100000001"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="100000002"/></c:catAx><c:valAx><c:axId val="100000002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="100000001"/></c:valAx><c:valAx><c:axId val="100000003"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="r"/><c:crossAx val="100000001"/><c:crosses val="max"/></c:valAx></c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend></c:chart></c:chartSpace>"#;
     let original = std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap();
-    let bytes = ibis_pptx::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
+    let bytes = ibis_formats::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
     std::fs::write(&source, bytes).unwrap();
 
     let mut s = Scenario::open("target/scenario-input/chtype020-volume-stock.xlsx");
@@ -18523,7 +18523,7 @@ fn chtype021_surface_and_contour_charts() {
 
     let xml = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:surface3DChart><c:wireframe val="0"/><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>系列1</c:v></c:tx><c:cat><c:strLit><c:ptCount val="3"/><c:pt idx="0"><c:v>X1</c:v></c:pt><c:pt idx="1"><c:v>X2</c:v></c:pt><c:pt idx="2"><c:v>X3</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="3"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt><c:pt idx="2"><c:v>15</c:v></c:pt></c:numLit></c:val></c:ser><c:ser><c:idx val="1"/><c:order val="1"/><c:tx><c:v>系列2</c:v></c:tx><c:cat><c:strLit><c:ptCount val="3"/><c:pt idx="0"><c:v>X1</c:v></c:pt><c:pt idx="1"><c:v>X2</c:v></c:pt><c:pt idx="2"><c:v>X3</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="3"/><c:pt idx="0"><c:v>30</c:v></c:pt><c:pt idx="1"><c:v>25</c:v></c:pt><c:pt idx="2"><c:v>35</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="111"/><c:axId val="222"/><c:axId val="333"/></c:surface3DChart><c:catAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222"/></c:catAx><c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="111"/></c:valAx><c:serAx><c:axId val="333"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222"/></c:serAx></c:plotArea><c:legend><c:legendPos val="r"/><c:overlay val="0"/></c:legend></c:chart></c:chartSpace>"#;
     let original = std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap();
-    let bytes = ibis_pptx::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
+    let bytes = ibis_formats::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", xml);
     std::fs::write(&source, bytes).unwrap();
 
     let mut s = Scenario::open("target/scenario-input/chtype021-surface-scenario.xlsx");
@@ -19427,7 +19427,7 @@ fn file019_backup_and_save_location() {
 
     // 5. バックアップファイルの内容を検証（上書き前の初版データが保持されていること）
     let backup_loaded = crate::read_file(&backup_file).expect("backup file can be read as workbook");
-    assert_eq!(ibis_pptx::Kind::of(&backup_loaded.presentation), ibis_pptx::Kind::Workbook, "backup file is valid workbook");
+    assert_eq!(ibis_formats::Kind::of(&backup_loaded.presentation), ibis_formats::Kind::Workbook, "backup file is valid workbook");
 
     // 6. 手動バックアップ作成ボタンをテスト
     s.update(|e, _, cx| {
@@ -19452,8 +19452,8 @@ fn file019_backup_and_save_location() {
 }
 
 fn file020_open_and_repair_damaged_workbook() {
-    use ibis_pptx::repair::RepairMode;
-    use ibis_pptx::ibis_ooxml::zip::{EntryMeta, Writer};
+    use ibis_formats::repair::RepairMode;
+    use ibis_formats::ibis_ooxml::zip::{EntryMeta, Writer};
 
     let mut s = Scenario::open("test/editing/xlsx-sales.xlsx");
 
@@ -20339,7 +20339,7 @@ fn chtype003_three_d_charts() {
     let original = std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap();
     for (name, xml) in cases {
         let path = dir.join(format!("chtype003-{name}3d.xlsx"));
-        std::fs::write(&path, ibis_pptx::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", &xml)).unwrap();
+        std::fs::write(&path, ibis_formats::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", &xml)).unwrap();
         let mut s = Scenario::open(&format!("target/scenario-input/chtype003-{name}3d.xlsx"));
         s.settle();
         let index = s.with(|e, _| e.slide().shapes.iter().position(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
@@ -20372,7 +20372,7 @@ fn chtype003_3d_rotation_settings_and_series_depth() {
 
     let original = std::fs::read(crate::shell::scenario::repo_root().join("test/editing/xlsx-sales.xlsx")).unwrap();
     let path = dir.join("chtype003-series-depth.xlsx");
-    std::fs::write(&path, ibis_pptx::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", &chart_xml)).unwrap();
+    std::fs::write(&path, ibis_formats::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", &chart_xml)).unwrap();
 
     let mut s = Scenario::open("target/scenario-input/chtype003-series-depth.xlsx");
     s.settle();
@@ -20425,7 +20425,7 @@ fn chtype003_3d_rotation_settings_and_series_depth() {
 /// 3-D ビュー設定、保存・再読込ラウンドトリップ、Undo/Redo を検証.
 fn chtype009_010_015_insert_3d_line_pie_area() {
     use ibis_doc_model::{ChartType, ShapeKind, View3D};
-    use ibis_pptx::NewChartKind;
+    use ibis_formats::NewChartKind;
 
     for kind in [NewChartKind::Line3D, NewChartKind::Pie3D, NewChartKind::Area3D] {
         let mut s = new_sheet();
@@ -20532,7 +20532,7 @@ fn chtype017_bubble_spheres() {
         let ser = format!(r#"<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>S</c:v></c:tx>{}{}{}<c:bubble3D val="{}"/></c:ser>"#, lit("xVal", &[1.0, 2.0, 3.0]), lit("yVal", &[3.0, 5.0, 4.0]), lit("bubbleSize", &[10.0, 30.0, 20.0]), u8::from(on));
         let xml = format!(r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:bubbleChart>{ser}<c:axId val="111"/><c:axId val="222"/></c:bubbleChart><c:valAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222"/></c:valAx><c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="111"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#);
         let path = dir.join(format!("chtype017-{name}.xlsx"));
-        std::fs::write(&path, ibis_pptx::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", &xml)).unwrap();
+        std::fs::write(&path, ibis_formats::test_files::xlsx_with_chart_xml(&original, "xl/charts/chart1.xml", &xml)).unwrap();
         let mut s = Scenario::open(&format!("target/scenario-input/chtype017-{name}.xlsx"));
         s.settle();
         let index = s.with(|e, _| e.slide().shapes.iter().position(|sh| matches!(sh.kind, ShapeKind::Chart(_)))).unwrap();
@@ -20685,7 +20685,7 @@ fn analysis020_forecast_sheet() {
 /// as ファイル > 開く does; the kind comes from the extension.
 fn file_open_csv_and_tsv() {
     for (extension, text) in [("csv", "名前,数量\r\nりんご,3\r\nみかん,5\r\n"), ("tsv", "名前\t数量\r\nりんご\t3\r\nみかん\t5\r\n"), ("tab", "名前\t数量\r\nりんご\t3\r\nみかん\t5\r\n")] {
-        assert_eq!(ibis_pptx::Kind::from_extension(extension), Some(ibis_pptx::Kind::Workbook), "{extension}");
+        assert_eq!(ibis_formats::Kind::from_extension(extension), Some(ibis_formats::Kind::Workbook), "{extension}");
         let dir = crate::shell::scenario::repo_root().join("target/scenario-input");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("file-open.{extension}")), text).unwrap();
@@ -20703,7 +20703,7 @@ fn csv_in_place_preserves_cp932() {
     std::fs::create_dir_all(&dir).unwrap();
     let source_path = dir.join(format!("csv-encoding-{}.csv", std::process::id()));
     let copy = dir.join(format!("csv-encoding-copy-{}.csv", std::process::id()));
-    let original = ibis_pptx::csv::encode_sjis("名前,数量,\r\nりんご,00123,\r\n");
+    let original = ibis_formats::csv::encode_sjis("名前,数量,\r\nりんご,00123,\r\n");
     std::fs::write(&source_path, &original).unwrap();
     let relative = format!("target/scenario-input/csv-encoding-{}.csv", std::process::id());
     let mut s = Scenario::open(&relative);
@@ -20733,9 +20733,9 @@ fn csv_in_place_preserves_cp932() {
     s.settle();
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("CP932 save"));
     let saved = std::fs::read(&path).unwrap();
-    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,\r\n"));
-    let (decoded, encoding) = ibis_pptx::csv::decode_with_original_encoding(&saved).unwrap();
-    assert_eq!(encoding, ibis_pptx::csv::OriginalEncoding::Cp932);
+    assert_eq!(saved, ibis_formats::csv::encode_sjis("名前,数量,\r\nみかん,00123,\r\n"));
+    let (decoded, encoding) = ibis_formats::csv::decode_with_original_encoding(&saved).unwrap();
+    assert_eq!(encoding, ibis_formats::csv::OriginalEncoding::Cp932);
     assert!(decoded.contains("みかん"));
     s.click_cell("E2");
     s.enter("追加", "enter");
@@ -20743,17 +20743,17 @@ fn csv_in_place_preserves_cp932() {
     s.key("cmd-shift-z");
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after redo and field addition"));
     let saved = std::fs::read(&path).unwrap();
-    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n"));
+    assert_eq!(saved, ibis_formats::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n"));
     s.click_cell("B4");
     s.enter("新行", "enter");
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("save appended row"));
     let saved = std::fs::read(&path).unwrap();
-    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n\r\n,新行\r\n"));
+    assert_eq!(saved, ibis_formats::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n\r\n,新行\r\n"));
     s.click_cell("C4");
     s.enter("50%", "enter");
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("save percentage"));
     let saved = std::fs::read(&path).unwrap();
-    assert_eq!(saved, ibis_pptx::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n\r\n,新行,50%\r\n"));
+    assert_eq!(saved, ibis_formats::csv::encode_sjis("名前,数量,\r\nみかん,00123,,,追加\r\n\r\n,新行,50%\r\n"));
     s.with(|e, _| {
         assert!(e.copy_to(&path).is_err());
         assert!(e.write_csv(&path).is_err());
@@ -20783,7 +20783,7 @@ fn csv_in_place_structural_and_presave_undo() {
     let dir = crate::shell::scenario::repo_root().join("target/scenario-input");
     std::fs::create_dir_all(&dir).unwrap();
     let source_path = dir.join(format!("csv-struct-{}.csv", std::process::id()));
-    let original = ibis_pptx::csv::encode_sjis("名前,コード,\r\nりんご,00123,\r\n");
+    let original = ibis_formats::csv::encode_sjis("名前,コード,\r\nりんご,00123,\r\n");
     std::fs::write(&source_path, &original).unwrap();
     let relative = format!("target/scenario-input/csv-struct-{}.csv", std::process::id());
     let mut s = Scenario::open(&relative);
@@ -20802,13 +20802,13 @@ fn csv_in_place_structural_and_presave_undo() {
     });
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after structural edits"));
     let saved1 = std::fs::read(&path).unwrap();
-    assert_eq!(saved1, ibis_pptx::csv::encode_sjis("名前,,コード,\r\n中間\r\nりんご,,00123,\r\n"));
+    assert_eq!(saved1, ibis_formats::csv::encode_sjis("名前,,コード,\r\n中間\r\nりんご,,00123,\r\n"));
 
     // Undo past the save boundary (undo column insert) and save in place.
     s.key("cmd-z");
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after pre-save undo"));
     let saved2 = std::fs::read(&path).unwrap();
-    assert_eq!(saved2, ibis_pptx::csv::encode_sjis("名前,コード,\r\n中間\r\nりんご,00123,\r\n"));
+    assert_eq!(saved2, ibis_formats::csv::encode_sjis("名前,コード,\r\n中間\r\nりんご,00123,\r\n"));
 
     // Redo column insert, delete row 1 ("中間"), and save in place.
     s.key("cmd-shift-z");
@@ -20817,7 +20817,7 @@ fn csv_in_place_structural_and_presave_undo() {
     });
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after delete row"));
     let saved3 = std::fs::read(&path).unwrap();
-    assert_eq!(saved3, ibis_pptx::csv::encode_sjis("名前,,コード,\r\nりんご,,00123,\r\n"));
+    assert_eq!(saved3, ibis_formats::csv::encode_sjis("名前,,コード,\r\nりんご,,00123,\r\n"));
 
     let _ = std::fs::remove_file(source_path);
 }
@@ -20828,7 +20828,7 @@ fn csv_in_place_large_progressive_and_filesystem() {
     std::fs::create_dir_all(&dir).unwrap();
     let pid = std::process::id();
     let large_path = dir.join(format!("csv-large-{pid}.csv"));
-    let row = ibis_pptx::csv::encode_sjis("品名,00123,\r\n");
+    let row = ibis_formats::csv::encode_sjis("品名,00123,\r\n");
     let total_rows = 105_000usize;
     let mut bytes = Vec::with_capacity(row.len() * total_rows);
     for _ in 0..total_rows {
@@ -20851,8 +20851,8 @@ fn csv_in_place_large_progressive_and_filesystem() {
     let save_elapsed = save_t0.elapsed();
     eprintln!("large CSV ({total_rows} rows, {} bytes): open={open_elapsed:?}, save={save_elapsed:?}", bytes.len());
     let saved = std::fs::read(&path).unwrap();
-    assert!(saved.starts_with(&ibis_pptx::csv::encode_sjis("先頭,00123,\r\n")));
-    assert_eq!(saved.len(), bytes.len() - ibis_pptx::csv::encode_sjis("品名").len() + ibis_pptx::csv::encode_sjis("先頭").len());
+    assert!(saved.starts_with(&ibis_formats::csv::encode_sjis("先頭,00123,\r\n")));
+    assert_eq!(saved.len(), bytes.len() - ibis_formats::csv::encode_sjis("品名").len() + ibis_formats::csv::encode_sjis("先頭").len());
 
     // Filesystem guards: read-only, symlink, and hardlink refusal.
     #[cfg(unix)]
@@ -21057,7 +21057,7 @@ fn cell_edit_fullwidth_lines_move() {
 /// selected cells, drawn as chartEx charts, kept on a save.
 fn chtype027_chart_ex_kinds_in_a_workbook() {
     use ibis_doc_model::ShapeKind;
-    for kind in [ibis_pptx::NewChartKind::Waterfall, ibis_pptx::NewChartKind::Histogram, ibis_pptx::NewChartKind::Pareto, ibis_pptx::NewChartKind::Funnel] {
+    for kind in [ibis_formats::NewChartKind::Waterfall, ibis_formats::NewChartKind::Histogram, ibis_formats::NewChartKind::Pareto, ibis_formats::NewChartKind::Funnel] {
         let mut s = new_sheet();
         s.click_cell("A1");
         s.enter("項目", "tab");
@@ -21129,7 +21129,7 @@ fn formula006_typed_external_reference() {
     assert!(books[0].1 >= 1 && books[0].2 == 1, "{books:?}");
     let saved = s.save_as("external-saved.xlsx");
     let bytes = std::fs::read(&saved).unwrap();
-    let again = ibis_pptx::open(bytes.clone()).unwrap();
+    let again = ibis_formats::open(bytes.clone()).unwrap();
     let wb = again.presentation.workbook.as_ref().unwrap();
     assert_eq!(wb.external_books.len(), 1);
     assert_eq!(wb.external_books[0].name, "Budget.xlsx");
@@ -21240,7 +21240,7 @@ fn chtype_ex_waterfall_settings() {
     s.key("enter");
     assert_eq!(series(&mut s, "合計")[0], Some(250.0), "the chart follows its cells");
     let saved = s.save_as("waterfall-settings.xlsx");
-    let back = ibis_pptx::open(std::fs::read(&saved).unwrap()).unwrap();
+    let back = ibis_formats::open(std::fs::read(&saved).unwrap()).unwrap();
     let chart = back.presentation.slides.iter().flat_map(|sl| &sl.shapes).find_map(|sh| match &sh.kind { ibis_doc_model::ShapeKind::Chart(c) => Some((**c).clone()), _ => None }).unwrap();
     assert_eq!(chart.ex_source.unwrap().0.options().subtotals, vec![0, 5]);
     assert_eq!(chart.title.as_ref().map(|t| t.text.as_str()), Some("損益推移"));
@@ -21272,7 +21272,7 @@ fn chtype_ex_histogram_settings() {
     s.key("enter");
     assert!(bins(&mut s)[0].starts_with("[30"), "{:?}", bins(&mut s));
     let saved = s.save_as("histogram-settings.xlsx");
-    let back = ibis_pptx::open(std::fs::read(&saved).unwrap()).unwrap();
+    let back = ibis_formats::open(std::fs::read(&saved).unwrap()).unwrap();
     let chart = back.presentation.slides.iter().flat_map(|sl| &sl.shapes).find_map(|sh| match &sh.kind { ibis_doc_model::ShapeKind::Chart(c) => Some((**c).clone()), _ => None }).unwrap();
     assert_eq!(chart.ex_source.unwrap().0.options().bin_by, ibis_doc_model::BinBy::Width(ibis_doc_model::Number(10.0)));
 }
@@ -21321,7 +21321,7 @@ fn chtype_ex_boxwhisker_settings() {
     assert!(options(&mut s).box_inclusive);
 
     let saved = s.save_as("boxwhisker-settings.xlsx");
-    let back = ibis_pptx::open(std::fs::read(&saved).unwrap()).unwrap();
+    let back = ibis_formats::open(std::fs::read(&saved).unwrap()).unwrap();
     let chart = back.presentation.slides.iter().flat_map(|sl| &sl.shapes).find_map(|sh| match &sh.kind { ibis_doc_model::ShapeKind::Chart(c) => Some((**c).clone()), _ => None }).unwrap();
     let back_opts = chart.ex_source.unwrap().0.options();
     assert!(!back_opts.box_mean_marker);
@@ -21356,7 +21356,7 @@ fn chtype_ex_treemap_settings() {
     assert!(!options(&mut s).treemap_overlapping);
 
     let saved = s.save_as("treemap-settings.xlsx");
-    let back = ibis_pptx::open(std::fs::read(&saved).unwrap()).unwrap();
+    let back = ibis_formats::open(std::fs::read(&saved).unwrap()).unwrap();
     let chart = back.presentation.slides.iter().flat_map(|sl| &sl.shapes).find_map(|sh| match &sh.kind { ibis_doc_model::ShapeKind::Chart(c) => Some((**c).clone()), _ => None }).unwrap();
     let back_opts = chart.ex_source.unwrap().0.options();
     assert!(!back_opts.treemap_overlapping);
@@ -21388,7 +21388,7 @@ fn chtype_ex_funnel_settings() {
     assert_eq!(options(&mut s).gap_width, Some(30));
 
     let saved = s.save_as("funnel-settings.xlsx");
-    let back = ibis_pptx::open(std::fs::read(&saved).unwrap()).unwrap();
+    let back = ibis_formats::open(std::fs::read(&saved).unwrap()).unwrap();
     let chart = back.presentation.slides.iter().flat_map(|sl| &sl.shapes).find_map(|sh| match &sh.kind { ibis_doc_model::ShapeKind::Chart(c) => Some((**c).clone()), _ => None }).unwrap();
     let back_opts = chart.ex_source.unwrap().0.options();
     assert_eq!(back_opts.gap_width, Some(30));
@@ -21420,7 +21420,7 @@ fn chtype_ex_pareto_settings() {
     assert_eq!(options(&mut s).gap_width, Some(45));
 
     let saved = s.save_as("pareto-settings.xlsx");
-    let back = ibis_pptx::open(std::fs::read(&saved).unwrap()).unwrap();
+    let back = ibis_formats::open(std::fs::read(&saved).unwrap()).unwrap();
     let chart = back.presentation.slides.iter().flat_map(|sl| &sl.shapes).find_map(|sh| match &sh.kind { ibis_doc_model::ShapeKind::Chart(c) => Some((**c).clone()), _ => None }).unwrap();
     let back_opts = chart.ex_source.unwrap().0.options();
     assert_eq!(back_opts.gap_width, Some(45));
@@ -21450,14 +21450,14 @@ fn chart_follows_its_cells() {
     s.type_text("9000000");
     s.key("enter");
     let saved = s.save_as("chart-follows.xlsx");
-    let back = ibis_pptx::read(&std::fs::read(&saved).unwrap()).unwrap();
+    let back = ibis_formats::read(&std::fs::read(&saved).unwrap()).unwrap();
     assert_eq!(first_value(&charts(&back)[0]), Some(9_000_000.0), "the saved chart holds the new value");
 }
 
 /// XLSX-FILE-010, a binary workbook (.xlsb) is opened as a new workbook: values, formulas, styles, merges and the
 /// frozen pane come across; saving as .xlsx and opening again keeps them.
 fn file010_open_xlsb() {
-    let mut s = Scenario::open("crates/ibis-pptx/tests/fixtures/generated.xlsb");
+    let mut s = Scenario::open("crates/ibis-formats/tests/fixtures/generated.xlsb");
     s.screenshot("opened");
     let sheets = s.with(|e, _| e.presentation().slides.len());
     assert_eq!(sheets, 2);
@@ -21478,7 +21478,7 @@ fn file010_open_xlsb() {
     assert_eq!(col_breaks, vec![2]);
     assert!(wb_protected);
     let path = s.save_as("file010-xlsb.xlsx");
-    let back = ibis_pptx::read(&std::fs::read(&path).unwrap()).unwrap();
+    let back = ibis_formats::read(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(back.slides.len(), 2);
     let back_sh0 = sheet_of_slide(&back.slides[0]).unwrap();
     assert_eq!(back_sh0.print.row_breaks, vec![4]);
@@ -21521,7 +21521,7 @@ fn file010_open_xlsb_excel_sales() {
 /// XLSX-FILE-012 ODF（.ods）を開く: a spreadsheet LibreOffice Calc made is read
 /// as a new workbook (saving asks where, as with an old .xls).
 fn file012_open_ods() {
-    let mut s = Scenario::open("crates/ibis-pptx/tests/fixtures/libreoffice_small.ods");
+    let mut s = Scenario::open("crates/ibis-formats/tests/fixtures/libreoffice_small.ods");
     let sheets = s.with(|e, _| e.presentation().slides.len());
     assert_eq!(sheets, 2);
     let cell = |s: &mut Scenario, r: u32, c: u32| s.with(|e, _| ibis_doc_model::sheet_calc::sheet_of_slide(e.slide()).and_then(|sh| sh.cell(r, c)).map(|x| (x.text.clone(), x.formula.clone())));
@@ -21529,13 +21529,13 @@ fn file012_open_ods() {
     assert_eq!(cell(&mut s, 2, 1).and_then(|x| x.1).as_deref(), Some("SUM(B2,B2*2)"));
     // Saved as .xlsx and read again.
     let path = s.save_as("file012.xlsx");
-    let back = ibis_pptx::read(&std::fs::read(&path).unwrap()).unwrap();
+    let back = ibis_formats::read(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(back.slides.len(), 2);
     // Saved as .ods (ファイル > 書き出し > OpenDocument スプレッドシート) and read again.
     let ods = s.save_as("file012.ods");
     let bytes = std::fs::read(&ods).unwrap();
     assert!(bytes.starts_with(b"PK") && bytes.windows(46).any(|w| w == b"application/vnd.oasis.opendocument.spreadsheet"));
-    let again = ibis_pptx::read(&bytes).unwrap();
+    let again = ibis_formats::read(&bytes).unwrap();
     let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&again.slides[0]).unwrap();
     assert_eq!(sheet.cell(1, 1).map(|c| c.text.clone()).as_deref(), Some("1,234.50"));
     assert_eq!(sheet.cell(2, 1).and_then(|c| c.formula.clone()).as_deref(), Some("SUM(B2,B2*2)"));
@@ -21552,7 +21552,7 @@ fn formula006_links_banner() {
     assert_eq!(s.value("J45"), CellValue::Number(60.0));
     // One of the two linked workbooks beside this one.
     let dir = s.with(|e, _| e.file_path().and_then(|p| p.parent().map(std::path::Path::to_path_buf))).expect("the copy's folder");
-    std::fs::write(dir.join("予算.xlsx"), ibis_pptx::csv::workbook_from("1,x\n2\n3\n", "Data").expect("a workbook")).unwrap();
+    std::fs::write(dir.join("予算.xlsx"), ibis_formats::csv::workbook_from("1,x\n2\n3\n", "Data").expect("a workbook")).unwrap();
     s.update(|e, _, cx| e.update_all_links(cx));
     assert_eq!(s.value("J45"), CellValue::Number(6.0));
     assert!(s.with(|e, _| e.status.as_ref().is_some_and(|m| m.contains("actual.xlsx") && m.contains('1'))));
@@ -21976,9 +21976,9 @@ fn options007_settings() {
 /// sizes last), drawn as chartEx charts, kept on a save.
 fn chtype028_box_treemap_sunburst_in_a_workbook() {
     use ibis_doc_model::ShapeKind;
-    for kind in [ibis_pptx::NewChartKind::BoxWhisker, ibis_pptx::NewChartKind::Treemap, ibis_pptx::NewChartKind::Sunburst] {
+    for kind in [ibis_formats::NewChartKind::BoxWhisker, ibis_formats::NewChartKind::Treemap, ibis_formats::NewChartKind::Sunburst] {
         let mut s = new_sheet();
-        let hierarchy = !matches!(kind, ibis_pptx::NewChartKind::BoxWhisker);
+        let hierarchy = !matches!(kind, ibis_formats::NewChartKind::BoxWhisker);
         let rows: Vec<(&str, &str, f64)> = vec![("果物", "りんご", 40.0), ("果物", "みかん", 25.0), ("野菜", "にんじん", 20.0), ("野菜", "だいこん", 15.0), ("野菜", "ねぎ", 12.0), ("肉", "鶏", 30.0), ("肉", "豚", 18.0)];
         if hierarchy {
             s.click_cell("A1");
@@ -22015,9 +22015,9 @@ fn chtype028_box_treemap_sunburst_in_a_workbook() {
         assert_eq!(ex, Some(true), "{kind:?}: a chartEx chart is on the sheet");
         let kind_ok = s.with(move |e, _| e.slide().shapes.iter().any(|sh| match &sh.kind {
             ShapeKind::Chart(c) => match (&c.ex, kind) {
-                (Some(ibis_doc_model::ChartEx::Box { boxes, .. }), ibis_pptx::NewChartKind::BoxWhisker) => boxes.len() == 3,
-                (Some(ibis_doc_model::ChartEx::Treemap { nodes: t, .. }), ibis_pptx::NewChartKind::Treemap) => t.len() == 3,
-                (Some(ibis_doc_model::ChartEx::Sunburst(t)), ibis_pptx::NewChartKind::Sunburst) => t.len() == 3 && t[0].children.len() == 2,
+                (Some(ibis_doc_model::ChartEx::Box { boxes, .. }), ibis_formats::NewChartKind::BoxWhisker) => boxes.len() == 3,
+                (Some(ibis_doc_model::ChartEx::Treemap { nodes: t, .. }), ibis_formats::NewChartKind::Treemap) => t.len() == 3,
+                (Some(ibis_doc_model::ChartEx::Sunburst(t)), ibis_formats::NewChartKind::Sunburst) => t.len() == 3 && t[0].children.len() == 2,
                 _ => false,
             },
             _ => false,
@@ -22315,7 +22315,7 @@ fn file008_macro_workbook_save() {
     assert_eq!(cell(&back), Some(CellValue::Text("kept".into())), "the change is in the saved file");
     // Without macros.
     let bytes = s
-        .with(|e, _| e.source.clone().expect("a source").save_without_macros(e.presentation(), ibis_pptx::SaveOptions::default()))
+        .with(|e, _| e.source.clone().expect("a source").save_without_macros(e.presentation(), ibis_formats::SaveOptions::default()))
         .expect("saved without macros");
     let plain = saved.with_file_name("plain.xlsx");
     std::fs::write(&plain, &bytes).unwrap();
@@ -22325,7 +22325,7 @@ fn file008_macro_workbook_save() {
     assert!(!types.contains("macroEnabled") && !types.contains("PartName=\"/xl/vbaProject"), "a plain workbook: {types}");
     let rels = String::from_utf8_lossy(&part(&plain, "xl/_rels/workbook.xml.rels")).into_owned();
     assert!(!rels.contains("vbaProject"), "no relationship to the macros");
-    let reread = ibis_pptx::read(&bytes).expect("the workbook without macros opens");
+    let reread = ibis_formats::read(&bytes).expect("the workbook without macros opens");
     assert_eq!(cell(&reread), Some(CellValue::Text("kept".into())), "the change is in it");
 }
 
@@ -24802,7 +24802,7 @@ fn sheet007_row_height_column_width_dialog() {
     assert_eq!(r2_pt, on_pixels(40.0), "row 2 preserved");
     assert_eq!(r3_pt, on_pixels(35.0), "row 3 preserved");
     let saved = std::fs::read(s.with(|e, _| e.path.clone()).expect("the saved file")).expect("read the saved file");
-    let written = (1..=8).filter_map(|n| ibis_pptx::test_files::part_text(&saved, &format!("xl/worksheets/sheet{n}.xml"))).collect::<String>();
+    let written = (1..=8).filter_map(|n| ibis_formats::test_files::part_text(&saved, &format!("xl/worksheets/sheet{n}.xml"))).collect::<String>();
     assert!(written.contains("ht=\"40\" customHeight=\"1\"") && written.contains("ht=\"35\" customHeight=\"1\""), "the rows are saved with the heights set: {written}");
     assert!((cb_pt - expected_b).abs() < 1.0, "column B preserved: {cb_pt} vs {expected_b}");
     assert!((cc_pt - expected_c).abs() < 1.0, "column C preserved: {cc_pt} vs {expected_c}");
@@ -26871,7 +26871,7 @@ fn sheet023_slicer_timeline_control_and_shape_context_menu() {
             _ => panic!("expected auto shape"),
         }
     });
-    assert_eq!(Some(geometry), ibis_pptx::preset_geometry("ellipse"));
+    assert_eq!(Some(geometry), ibis_formats::preset_geometry("ellipse"));
     assert!(matches!(fill, Fill::Solid(_)), "shape fill applied");
 }
 
@@ -28250,7 +28250,7 @@ fn table022_slicer003_timeline003_context_menus_and_quick_actions() {
     });
     let grouped_filtered_ok = s.with(|e, _| {
         let (_, sh) = e.current_sheet().unwrap();
-        let data = ibis_pptx::pivot_source(e.presentation(), sh, &sh.pivots[0]).unwrap();
+        let data = ibis_formats::pivot_source(e.presentation(), sh, &sh.pivots[0]).unwrap();
         let built = sh.pivots[0].build(&data);
         // With 1 month selected, the grouped PivotTable must still have data rows (not all hidden)
         built.cells.len() >= 3

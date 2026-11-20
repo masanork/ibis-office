@@ -12,7 +12,7 @@ use crate::shell::dialog::InteractionLayer;
 use crate::shell::rename_file::RenameError;
 use crate::xlsx::scenarios::SheetSteps;
 use gpui_kit::*;
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
     vec![

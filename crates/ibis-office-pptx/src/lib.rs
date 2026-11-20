@@ -231,7 +231,7 @@ mod view_menu;
 mod title_buttons;
 mod event_hooks;
 mod infobar_hooks;
-impl_format_state!(State, ibis_pptx::Kind::Presentation);
+impl_format_state!(State, ibis_formats::Kind::Presentation);
 
 impl State {
     /// The presentation's state out of `format`, the editor's `format` field. `SlideEditor::pptx` borrows the whole editor; this
@@ -322,7 +322,7 @@ impl FormatEditor for Presentation {
 
     /// A presentation as .odp (OpenDocument), as a template, as a slide show (.ppsx) and as .pptx (whatever it was opened as).
     #[cfg(not(target_family = "wasm"))]
-    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_pptx::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
+    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
         use crate::shell::format::FileBytes;
         // Every kind of file made here (.odp, templates, slide shows, packages) is refused while the master view or the notes formatting is open.
         if let Some(why) = Self::save_refused(editor) {
@@ -331,11 +331,11 @@ impl FormatEditor for Presentation {
         let extension = path.extension()?;
         if extension.eq_ignore_ascii_case("odp") {
             // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
-            return Some(ibis_pptx::write_odp(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
+            return Some(ibis_formats::write_odp(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
         }
         if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
             return Some(
-                ibis_pptx::markdown::export_presentation_to_markdown(&Self::model_for_save(editor))
+                ibis_formats::markdown::export_presentation_to_markdown(&Self::model_for_save(editor))
                     .map(|md| FileBytes { bytes: md.into_bytes(), protect: false, note: None })
                     .map_err(|e| e.to_string()),
             );
@@ -343,14 +343,14 @@ impl FormatEditor for Presentation {
         fn package<E: ToString>(bytes: Result<Vec<u8>, E>) -> Option<Result<FileBytes, String>> {
             Some(bytes.map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()))
         }
-        if extension.to_str().is_some_and(ibis_pptx::is_template) {
-            return package(source.save_template(&Self::model_for_save(editor), ibis_pptx::SaveOptions::default()));
+        if extension.to_str().is_some_and(ibis_formats::is_template) {
+            return package(source.save_template(&Self::model_for_save(editor), ibis_formats::SaveOptions::default()));
         }
-        if extension.to_str().is_some_and(ibis_pptx::is_slideshow) {
-            return package(source.save_slideshow(&Self::model_for_save(editor), ibis_pptx::SaveOptions::default()));
+        if extension.to_str().is_some_and(ibis_formats::is_slideshow) {
+            return package(source.save_slideshow(&Self::model_for_save(editor), ibis_formats::SaveOptions::default()));
         }
         if extension.eq_ignore_ascii_case("pptx") || extension.eq_ignore_ascii_case("pptm") {
-            return package(source.save_presentation(&Self::model_for_save(editor), ibis_pptx::SaveOptions::default()));
+            return package(source.save_presentation(&Self::model_for_save(editor), ibis_formats::SaveOptions::default()));
         }
         None
     }
@@ -614,7 +614,7 @@ impl FormatEditor for Presentation {
 
     fn register_actions(root: Stateful<Div>, cx: &mut Context<SlideEditor>) -> Stateful<Div> {
         root
-            .on_action(cx.listener(|e,_:&crate::shell::actions::DuplicatePresentationSelection,w,cx|{if e.kind()==ibis_pptx::Kind::Presentation{if e.selected_shapes().is_empty(){e.duplicate_current_slide(w,cx);}else{e.duplicate_selected(cx);}}}))
+            .on_action(cx.listener(|e,_:&crate::shell::actions::DuplicatePresentationSelection,w,cx|{if e.kind()==ibis_formats::Kind::Presentation{if e.selected_shapes().is_empty(){e.duplicate_current_slide(w,cx);}else{e.duplicate_selected(cx);}}}))
             .on_action(cx.listener(|this, _: &crate::shell::actions::StartSlideshow, window, cx| this.start_slideshow(window, cx)))
             .on_action(cx.listener(|this, _: &crate::shell::actions::StartPresenterView, window, cx| this.start_presenter_view(window, cx)))
             .on_action(cx.listener(|this, _: &crate::shell::actions::BlackScreen, _, cx| this.blank_slideshow(0x000000, cx)))

@@ -477,7 +477,7 @@ pub(crate) struct BarSlot {
 }
 
 /// Which of the static menus are used least, in the order they fold (spec 4.3).
-fn static_fold_rank(kind: ibis_pptx::Kind, id: MenuId) -> Fold {
+fn static_fold_rank(kind: ibis_formats::Kind, id: MenuId) -> Fold {
     let order: &[MenuId] = crate::format::info(kind).fold_order;
     match id {
         MenuId::Help => Fold::Rank(0),
@@ -486,7 +486,7 @@ fn static_fold_rank(kind: ibis_pptx::Kind, id: MenuId) -> Fold {
 }
 
 /// The slots of the bar's menus, in the bar's order (the static menus, then the context menus: these fold from the right).
-fn bar_slots(items: &[(BarMenu, Vec<MenuEntry>)], kind: ibis_pptx::Kind, window: &Window) -> Vec<BarSlot> {
+fn bar_slots(items: &[(BarMenu, Vec<MenuEntry>)], kind: ibis_formats::Kind, window: &Window) -> Vec<BarSlot> {
     let contexts = items.iter().filter(|(m, _)| matches!(m, BarMenu::Context(_))).count();
     let mut seen_contexts = 0;
     items

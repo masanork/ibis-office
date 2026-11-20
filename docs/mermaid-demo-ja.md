@@ -2,11 +2,11 @@
 
 Docs でこの Markdown を開くと、図種別の表示を確認できます。[Markdown Reference](markdown-reference-ja.md) には対応する構文・設定と、数値 x 軸や横棒グラフなどの追加例があります。
 
-このページは固定した Mermaid 公式コーパスから、図種ごとに1例を選んだものです。例の出典とライセンスは [SOURCE.json](../crates/ibis-pptx/tests/mermaid/corpus/SOURCE.json) と [MIT ライセンス](../crates/ibis-pptx/tests/mermaid/corpus/LICENSE) を参照してください。全例を図種別の Markdown に生成する手順は [Reference](markdown-reference-ja.md) にあります。
+このページは固定した Mermaid 公式コーパスから、図種ごとに1例を選んだものです。例の出典とライセンスは [SOURCE.json](../crates/ibis-formats/tests/mermaid/corpus/SOURCE.json) と [MIT ライセンス](../crates/ibis-formats/tests/mermaid/corpus/LICENSE) を参照してください。全例を図種別の Markdown に生成する手順は [Reference](markdown-reference-ja.md) にあります。
 
 ## エージェントフロー
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/agentflow.md) · [コーパス例 11](../crates/ibis-pptx/tests/mermaid/corpus/agentflow.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/agentflow.md) · [コーパス例 11](../crates/ibis-formats/tests/mermaid/corpus/agentflow.mmd)
 
 ```mermaid
 ---
@@ -35,7 +35,7 @@ agentflow TB
 
 ## アーキテクチャ
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/architecture.md) · [コーパス例 3](../crates/ibis-pptx/tests/mermaid/corpus/architecture.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/architecture.md) · [コーパス例 3](../crates/ibis-formats/tests/mermaid/corpus/architecture.mmd)
 
 ```mermaid
 architecture-beta
@@ -51,7 +51,7 @@ architecture-beta
 
 ## ブロック
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/block.md) · [コーパス例 2](../crates/ibis-pptx/tests/mermaid/corpus/block.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/block.md) · [コーパス例 2](../crates/ibis-formats/tests/mermaid/corpus/block.mmd)
 
 ```mermaid
 block
@@ -60,7 +60,7 @@ block
 
 ## C4
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/c4.md) · [コーパス例 4](../crates/ibis-pptx/tests/mermaid/corpus/c4.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/c4.md) · [コーパス例 4](../crates/ibis-formats/tests/mermaid/corpus/c4.mmd)
 
 ```mermaid
     C4Dynamic
@@ -83,7 +83,7 @@ block
 
 ## クラス
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/classDiagram.md) · [コーパス例 16](../crates/ibis-pptx/tests/mermaid/corpus/classDiagram.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/classDiagram.md) · [コーパス例 16](../crates/ibis-formats/tests/mermaid/corpus/classDiagram.mmd)
 
 ```mermaid
 classDiagram
@@ -92,7 +92,7 @@ classDiagram
 
 ## ER
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/entityRelationshipDiagram.md) · [コーパス例 5](../crates/ibis-pptx/tests/mermaid/corpus/entityRelationshipDiagram.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/entityRelationshipDiagram.md) · [コーパス例 5](../crates/ibis-formats/tests/mermaid/corpus/entityRelationshipDiagram.mmd)
 
 ```mermaid
 erDiagram
@@ -101,7 +101,7 @@ erDiagram
 
 ## イベントモデリング
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/eventmodeling.md) · [コーパス例 1](../crates/ibis-pptx/tests/mermaid/corpus/eventmodeling.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/eventmodeling.md) · [コーパス例 1](../crates/ibis-formats/tests/mermaid/corpus/eventmodeling.mmd)
 
 ```mermaid
 eventmodeling
@@ -113,7 +113,7 @@ tf 03 evt ItemAdded
 
 ## フローチャート
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/flowchart.md) · [コーパス例 71](../crates/ibis-pptx/tests/mermaid/corpus/flowchart.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/flowchart.md) · [コーパス例 71](../crates/ibis-formats/tests/mermaid/corpus/flowchart.mmd)
 
 ```mermaid
 flowchart LR
@@ -122,7 +122,7 @@ flowchart LR
 
 ## ガント
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/gantt.md) · [コーパス例 7](../crates/ibis-pptx/tests/mermaid/corpus/gantt.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/gantt.md) · [コーパス例 7](../crates/ibis-formats/tests/mermaid/corpus/gantt.mmd)
 
 ```mermaid
 gantt
@@ -132,7 +132,7 @@ gantt
 
 ## Gitグラフ
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/gitgraph.md) · [コーパス例 2](../crates/ibis-pptx/tests/mermaid/corpus/gitgraph.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/gitgraph.md) · [コーパス例 2](../crates/ibis-formats/tests/mermaid/corpus/gitgraph.mmd)
 
 ```mermaid
     gitGraph
@@ -143,7 +143,7 @@ gantt
 
 ## カンバン
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/kanban.md) · [コーパス例 1](../crates/ibis-pptx/tests/mermaid/corpus/kanban.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/kanban.md) · [コーパス例 1](../crates/ibis-formats/tests/mermaid/corpus/kanban.mmd)
 
 ```mermaid
 kanban
@@ -153,7 +153,7 @@ kanban
 
 ## マインドマップ
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/mindmap.md) · [コーパス例 7](../crates/ibis-pptx/tests/mermaid/corpus/mindmap.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/mindmap.md) · [コーパス例 7](../crates/ibis-formats/tests/mermaid/corpus/mindmap.mmd)
 
 ```mermaid
 mindmap
@@ -162,7 +162,7 @@ mindmap
 
 ## パケット
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/packet.md) · [コーパス例 2](../crates/ibis-pptx/tests/mermaid/corpus/packet.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/packet.md) · [コーパス例 2](../crates/ibis-formats/tests/mermaid/corpus/packet.mmd)
 
 ```mermaid
 packet
@@ -176,7 +176,7 @@ title UDP Packet
 
 ## 円グラフ
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/pie.md) · [コーパス例 1](../crates/ibis-pptx/tests/mermaid/corpus/pie.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/pie.md) · [コーパス例 1](../crates/ibis-formats/tests/mermaid/corpus/pie.mmd)
 
 ```mermaid
 pie title Pets adopted by volunteers
@@ -187,7 +187,7 @@ pie title Pets adopted by volunteers
 
 ## 四象限
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/quadrantChart.md) · [コーパス例 2](../crates/ibis-pptx/tests/mermaid/corpus/quadrantChart.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/quadrantChart.md) · [コーパス例 2](../crates/ibis-formats/tests/mermaid/corpus/quadrantChart.mmd)
 
 ```mermaid
 ---
@@ -209,7 +209,7 @@ quadrantChart
 
 ## レーダー
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/radar.md) · [コーパス例 1](../crates/ibis-pptx/tests/mermaid/corpus/radar.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/radar.md) · [コーパス例 1](../crates/ibis-formats/tests/mermaid/corpus/radar.mmd)
 
 ```mermaid
 ---
@@ -227,7 +227,7 @@ radar-beta
 
 ## 構文図
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/railroad.md) · [コーパス例 4](../crates/ibis-pptx/tests/mermaid/corpus/railroad.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/railroad.md) · [コーパス例 4](../crates/ibis-formats/tests/mermaid/corpus/railroad.mmd)
 
 ```mermaid
 railroad-ebnf-beta
@@ -236,7 +236,7 @@ sign = "+" | "-" ;
 
 ## 要求
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/requirementDiagram.md) · [コーパス例 4](../crates/ibis-pptx/tests/mermaid/corpus/requirementDiagram.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/requirementDiagram.md) · [コーパス例 4](../crates/ibis-formats/tests/mermaid/corpus/requirementDiagram.mmd)
 
 ```mermaid
 requirementDiagram
@@ -251,7 +251,7 @@ requirement "__test_req__" {
 
 ## サンキー
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/sankey.md) · [コーパス例 3](../crates/ibis-pptx/tests/mermaid/corpus/sankey.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/sankey.md) · [コーパス例 3](../crates/ibis-formats/tests/mermaid/corpus/sankey.mmd)
 
 ```mermaid
 sankey
@@ -265,7 +265,7 @@ Bio-conversion,Gas,81.144
 
 ## シーケンス
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/sequenceDiagram.md) · [コーパス例 22](../crates/ibis-pptx/tests/mermaid/corpus/sequenceDiagram.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/sequenceDiagram.md) · [コーパス例 22](../crates/ibis-formats/tests/mermaid/corpus/sequenceDiagram.mmd)
 
 ```mermaid
 sequenceDiagram
@@ -275,7 +275,7 @@ sequenceDiagram
 
 ## 状態遷移
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/stateDiagram.md) · [コーパス例 5](../crates/ibis-pptx/tests/mermaid/corpus/stateDiagram.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/stateDiagram.md) · [コーパス例 5](../crates/ibis-formats/tests/mermaid/corpus/stateDiagram.mmd)
 
 ```mermaid
 stateDiagram-v2
@@ -284,7 +284,7 @@ stateDiagram-v2
 
 ## スイムレーン
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/swimlanes.md) · [コーパス例 4](../crates/ibis-pptx/tests/mermaid/corpus/swimlanes.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/swimlanes.md) · [コーパス例 4](../crates/ibis-formats/tests/mermaid/corpus/swimlanes.mmd)
 
 ```mermaid
 swimlane-beta
@@ -296,7 +296,7 @@ swimlane-beta
 
 ## タイムライン
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/timeline.md) · [コーパス例 2](../crates/ibis-pptx/tests/mermaid/corpus/timeline.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/timeline.md) · [コーパス例 2](../crates/ibis-formats/tests/mermaid/corpus/timeline.mmd)
 
 ```mermaid
 timeline
@@ -309,7 +309,7 @@ timeline
 
 ## ツリー
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/treeView.md) · [コーパス例 11](../crates/ibis-pptx/tests/mermaid/corpus/treeView.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/treeView.md) · [コーパス例 11](../crates/ibis-formats/tests/mermaid/corpus/treeView.mmd)
 
 ```mermaid
 treeView-beta
@@ -321,7 +321,7 @@ treeView-beta
 
 ## ツリーマップ
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/treemap.md) · [コーパス例 1](../crates/ibis-pptx/tests/mermaid/corpus/treemap.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/treemap.md) · [コーパス例 1](../crates/ibis-formats/tests/mermaid/corpus/treemap.mmd)
 
 ```mermaid
 treemap-beta
@@ -335,7 +335,7 @@ treemap-beta
 
 ## ユースケース
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/usecase.md) · [コーパス例 13](../crates/ibis-pptx/tests/mermaid/corpus/usecase.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/usecase.md) · [コーパス例 13](../crates/ibis-formats/tests/mermaid/corpus/usecase.mmd)
 
 ```mermaid
 usecase-beta
@@ -346,7 +346,7 @@ User -- "include account details" --> Login
 
 ## ユーザージャーニー
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/userJourney.md) · [コーパス例 1](../crates/ibis-pptx/tests/mermaid/corpus/userJourney.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/userJourney.md) · [コーパス例 1](../crates/ibis-formats/tests/mermaid/corpus/userJourney.mmd)
 
 ```mermaid
 journey
@@ -362,7 +362,7 @@ journey
 
 ## ベン図
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/venn.md) · [コーパス例 4](../crates/ibis-pptx/tests/mermaid/corpus/venn.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/venn.md) · [コーパス例 4](../crates/ibis-formats/tests/mermaid/corpus/venn.mmd)
 
 ```mermaid
 venn-beta
@@ -373,7 +373,7 @@ venn-beta
 
 ## Wardley
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/wardley.md) · [コーパス例 18](../crates/ibis-pptx/tests/mermaid/corpus/wardley.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/wardley.md) · [コーパス例 18](../crates/ibis-formats/tests/mermaid/corpus/wardley.mmd)
 
 ```mermaid
 wardley-beta
@@ -383,7 +383,7 @@ size [800, 1000]
 
 ## XYグラフ
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/xyChart.md) · [コーパス例 7](../crates/ibis-pptx/tests/mermaid/corpus/xyChart.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/xyChart.md) · [コーパス例 7](../crates/ibis-formats/tests/mermaid/corpus/xyChart.mmd)
 
 ```mermaid
 xychart
@@ -536,7 +536,7 @@ pie
 
 ## Cynefin
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/cynefin.md) · [コーパス例 3](../crates/ibis-pptx/tests/mermaid/corpus/cynefin.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/cynefin.md) · [コーパス例 3](../crates/ibis-formats/tests/mermaid/corpus/cynefin.mmd)
 
 ```mermaid
 cynefin-beta
@@ -554,7 +554,7 @@ cynefin-beta
 
 ## 特性要因図（Ishikawa）
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/ishikawa.md) · [コーパス例 1](../crates/ibis-pptx/tests/mermaid/corpus/ishikawa.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/ishikawa.md) · [コーパス例 1](../crates/ibis-formats/tests/mermaid/corpus/ishikawa.mmd)
 
 ```mermaid
 ishikawa-beta
@@ -581,7 +581,7 @@ ishikawa-beta
 
 ## ZenUML
 
-[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/zenuml.md) · [コーパス例 7](../crates/ibis-pptx/tests/mermaid/corpus/zenuml.mmd)
+[公式構文](https://github.com/mermaid-js/mermaid/blob/2086904e76c692331e34a45d7cc3bc30860d040e/docs/syntax/zenuml.md) · [コーパス例 7](../crates/ibis-formats/tests/mermaid/corpus/zenuml.mmd)
 
 ```mermaid
 zenuml

@@ -549,7 +549,7 @@ fn start_view_new_and_select() {
     // 新規作成's second page (xlsx), below the section's title.
     s.click((150.0, 140.0));
     s.settle();
-    assert!(s.with(|e, _| e.has_document && e.kind() == ibis_pptx::Kind::Workbook && e.path.is_none()));
+    assert!(s.with(|e, _| e.has_document && e.kind() == ibis_formats::Kind::Workbook && e.path.is_none()));
     s.screenshot("new-workbook");
 }
 
@@ -1499,7 +1499,7 @@ fn fix_xlsx_save_copy_and_recent() {
 
     // コピーされたファイルに編集が正しく反映されている
     let copied_bytes = std::fs::read(&copy_path).expect("copied file exists");
-    let copied = ibis_pptx::read(&copied_bytes).expect("can read copied xlsx");
+    let copied = ibis_formats::read(&copied_bytes).expect("can read copied xlsx");
     let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&copied.slides[0]).expect("sheet exists");
     let a1_cell = sheet.cell(0, 0).expect("A1 cell exists");
     assert_eq!(
@@ -3417,7 +3417,7 @@ fn fix_docx_table_of_figures() {
 
 /// todo-fix #40: the status bar's 「100%▲」 is one button (the pulldown arrow of the toolbar, turned up): a press on the percentage or on the arrow opens the list of zooms (a press again closes it); the hover shows the toolbar buttons' background. In the three formats.
 fn fix_zoom_percent_button() {
-    for kind in [ibis_pptx::Kind::Document, ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Presentation] {
+    for kind in [ibis_formats::Kind::Document, ibis_formats::Kind::Workbook, ibis_formats::Kind::Presentation] {
         let mut s = Scenario::new_document(kind);
         s.settle();
         let bounds = |s: &mut Scenario| s.with(|e, _| e.zoom_trigger_bounds.get()).expect("the zoom button is painted");
@@ -3459,7 +3459,7 @@ fn fix_status_bar_and_zoom_i18n() {
     assert_eq!(i18n::text("status.hint.textbox"), "スライドをクリックまたはドラッグしてテキスト ボックスを配置");
     assert_eq!(i18n::text("status.hint.esc"), "Esc で編集を終了");
 
-    let mut s = Scenario::new_document(ibis_pptx::Kind::Presentation);
+    let mut s = Scenario::new_document(ibis_formats::Kind::Presentation);
     s.update(|e, _, _| e.tool = Tool::TextBox);
     assert!(s.status_texts().iter().any(|t| t == "スライドをクリックまたはドラッグしてテキスト ボックスを配置"));
 
@@ -3519,7 +3519,7 @@ pub(crate) fn fix21_pptx_sidebar_close_zoom_fit_benchmark() {
 /// pptx の右ペインは、新規作成でも、開いたときでも、閉じた状態で始まる。
 /// ツールバー（view.sidebar）で開ける。docx の右ペインは今までどおり開いている。
 pub(crate) fn pptx_sidebar_starts_closed() {
-    let mut s = Scenario::new_document(ibis_pptx::Kind::Presentation);
+    let mut s = Scenario::new_document(ibis_formats::Kind::Presentation);
     assert!(!s.with(|e, _| e.sidebar_open), "新しいプレゼンテーションでは右ペインが閉じている");
     let closed_scale = s.with(|e, _| e.slide_layout().map(|l| l.scale)).expect("slide_layout");
     s.menu("view.sidebar");
@@ -3533,7 +3533,7 @@ pub(crate) fn pptx_sidebar_starts_closed() {
     assert!(!s.with(|e, _| e.sidebar_open), "pptx を開いたとき右ペインは閉じている");
     drop(s);
 
-    let mut s = Scenario::new_document(ibis_pptx::Kind::Document);
+    let mut s = Scenario::new_document(ibis_formats::Kind::Document);
     assert!(s.with(|e, _| e.sidebar_open), "docx の右ペインは開いたまま");
 }
 
@@ -3673,7 +3673,7 @@ fn fix_xlsx_sheet_tabs_scrollbar_and_fixed_add() {
 ///  At Sheet12, + should NOT move to the fixed area prematurely.
 ///  It should remain inline until Sheet14+ approaching the right edge."
 fn fix_xlsx_sheet_add_threshold_blank_workbook() {
-    let mut s = Scenario::new_document(ibis_pptx::Kind::Workbook);
+    let mut s = Scenario::new_document(ibis_formats::Kind::Workbook);
     s.settle();
     let sheets = |s: &mut Scenario| s.with(|e, _| e.presentation().slides.len());
     let y = 679.0;
@@ -5868,7 +5868,7 @@ fn fix_xlsx_file011_csv_and_tsv() {
     std::fs::create_dir_all(&dir).unwrap();
     let sjis_csv_path = dir.join("file011_sjis.csv");
     let sjis_content = "品名,数量,単価,小計\r\nりんご,5,120,=B2*C2\r\n\"温州,みかん\",3,100,=B3*C3\r\n";
-    let sjis_bytes = ibis_pptx::csv::encode_sjis(sjis_content);
+    let sjis_bytes = ibis_formats::csv::encode_sjis(sjis_content);
     std::fs::write(&sjis_csv_path, &sjis_bytes).unwrap();
 
     // 1. Shift_JIS CSV を開く
@@ -5896,7 +5896,7 @@ fn fix_xlsx_file011_csv_and_tsv() {
     });
     let out_sjis_bytes = std::fs::read(&out_sjis_path).unwrap();
     assert!(!out_sjis_bytes.starts_with(b"\xEF\xBB\xBF"), "Shift_JIS must not have UTF-8 BOM");
-    let decoded_sjis = ibis_pptx::csv::decode(&out_sjis_bytes).expect("decode sjis");
+    let decoded_sjis = ibis_formats::csv::decode(&out_sjis_bytes).expect("decode sjis");
     assert!(decoded_sjis.contains("品名,数量,単価,小計\r\n"));
     assert!(decoded_sjis.contains("\"温州,みかん\",3,100"));
 
@@ -5906,7 +5906,7 @@ fn fix_xlsx_file011_csv_and_tsv() {
         e.write_tsv(&out_tsv_path).expect("write_tsv succeeds");
     });
     let out_tsv_bytes = std::fs::read(&out_tsv_path).unwrap();
-    let decoded_tsv = ibis_pptx::csv::decode(&out_tsv_bytes).expect("decode tsv");
+    let decoded_tsv = ibis_formats::csv::decode(&out_tsv_bytes).expect("decode tsv");
     assert!(decoded_tsv.contains("品名\t数量\t単価\t小計\r\n"));
     assert!(decoded_tsv.contains("りんご\t5\t120"));
 
@@ -6021,7 +6021,7 @@ fn fix31_sheet_100_percent_is_a_point_a_pixel() {
     }
     // A presentation's slide: 72 px an inch at 100% too (1 pt a pixel, as PowerPoint for Mac; todo-fix #41).
     drop(s);
-    let mut p = Scenario::new_document(ibis_pptx::Kind::Presentation);
+    let mut p = Scenario::new_document(ibis_formats::Kind::Presentation);
     p.update(|e, window, cx| e.set_zoom(Some(1.0), window, cx));
     p.settle();
     let ratio = p.with(|e, _| e.slide_layout().map(|l| l.scale * ibis_doc_model::EMU_PER_POINT as f32));
@@ -6119,7 +6119,7 @@ fn fix51_cell_edit_and_align_toolbar() {
 
     // 4. Start window menu item exists in xlsx.
     assert!(s.menu_state("file.start-window").is_some());
-    assert_eq!(s.with(|e, _| e.kind()), ibis_pptx::Kind::Workbook);
+    assert_eq!(s.with(|e, _| e.kind()), ibis_formats::Kind::Workbook);
     drop(s);
 
     // 5. If default.xlsx exists in test/private, verify directly.
@@ -6148,13 +6148,13 @@ fn fix51_cell_edit_and_align_toolbar() {
     {
         let mut s_docx = Scenario::open("test/editing/docx-report.docx");
         assert!(s_docx.menu_state("file.start-window").is_some());
-        assert_eq!(s_docx.with(|e, _| e.kind()), ibis_pptx::Kind::Document);
+        assert_eq!(s_docx.with(|e, _| e.kind()), ibis_formats::Kind::Document);
     }
 
     {
         let mut s_pptx = Scenario::open("test/editing/pptx-plan.pptx");
         assert!(s_pptx.menu_state("file.start-window").is_some());
-        assert_eq!(s_pptx.with(|e, _| e.kind()), ibis_pptx::Kind::Presentation);
+        assert_eq!(s_pptx.with(|e, _| e.kind()), ibis_formats::Kind::Presentation);
     }
 }
 
@@ -6293,7 +6293,7 @@ fn fix72_font_dropdown_preview() {
 const CJK_SAMPLE: &str = "直接・骨・写真";
 
 /// A window with a new file of `kind`, as ファイル > 新規 makes it.
-fn new_file(kind: ibis_pptx::Kind) -> Scenario {
+fn new_file(kind: ibis_formats::Kind) -> Scenario {
     let mut s = Scenario::start_view();
     s.update(|e, window, cx| e.new_file(kind, window, cx));
     s.settle();
@@ -6316,7 +6316,7 @@ fn compose_and_commit(s: &mut Scenario) {
 }
 
 fn fix_cjk_edit_font_xlsx() {
-    let mut s = new_file(ibis_pptx::Kind::Workbook);
+    let mut s = new_file(ibis_formats::Kind::Workbook);
     s.click_cell("B2");
     s.key("f2");
     compose_and_commit(&mut s);
@@ -6325,7 +6325,7 @@ fn fix_cjk_edit_font_xlsx() {
 }
 
 fn fix_cjk_edit_font_pptx() {
-    let mut s = new_file(ibis_pptx::Kind::Presentation);
+    let mut s = new_file(ibis_formats::Kind::Presentation);
     s.double_click_shape(0);
     compose_and_commit(&mut s);
     s.key("escape");
@@ -6334,7 +6334,7 @@ fn fix_cjk_edit_font_pptx() {
 }
 
 fn fix_cjk_edit_font_docx() {
-    let mut s = new_file(ibis_pptx::Kind::Document);
+    let mut s = new_file(ibis_formats::Kind::Document);
     let (id, _) = s.paragraph(0);
     s.click_text(ibis_doc_model::FlowPos::new(id, 0));
     compose_and_commit(&mut s);
@@ -6483,32 +6483,32 @@ fn fix75_start_window_closes_with_cmd_w() {
 /// An edit in a new file of `kind`, as the user makes it: a cell typed in (not yet entered, as when the window is
 /// closed right after typing), text typed in a document, a text box on a slide.
 /// A new file of `kind`, as ファイル > 新規作成 makes it on the start window.
-fn issue27_new(kind: ibis_pptx::Kind) -> Scenario {
+fn issue27_new(kind: ibis_formats::Kind) -> Scenario {
     let mut s = Scenario::start_view();
     s.update(|e, window, cx| e.new_file(kind, window, cx));
     s.settle();
     s
 }
 
-fn issue27_make_edit(s: &mut Scenario, kind: ibis_pptx::Kind) {
+fn issue27_make_edit(s: &mut Scenario, kind: ibis_formats::Kind) {
     match kind {
-        ibis_pptx::Kind::Workbook => {
+        ibis_formats::Kind::Workbook => {
             s.click_cell("A1");
             s.type_text("a");
         }
-        ibis_pptx::Kind::Document => {
+        ibis_formats::Kind::Document => {
             let (id, _) = s.paragraph(0);
             s.click_text(ibis_doc_model::FlowPos::new(id, 0));
             s.type_text("a");
             assert!(s.paragraph(0).1.contains('a'), "the document takes the typing");
         }
-        ibis_pptx::Kind::Presentation => s.update(|e, _, cx| {
+        ibis_formats::Kind::Presentation => s.update(|e, _, cx| {
             let slide = e.current_slide;
             let id = e.document.ids().new_shape_id();
             let frame = ibis_doc_model::EmuRect::new(0, 0, 914_400, 914_400);
             e.execute(vec![ibis_doc_model::Command::InsertShape { slide, index: 0, shape: ibis_doc_model::Shape::text_box(id, frame, "a") }], cx);
         }),
-        ibis_pptx::Kind::Pdf => unreachable!("PDF is not part of issue27 scenarios"),
+        ibis_formats::Kind::Pdf => unreachable!("PDF is not part of issue27 scenarios"),
     }
 }
 
@@ -6522,7 +6522,7 @@ fn click_client_close(s: &mut Scenario) {
 fn client_close_button_click_asks_to_save() {
     let _controls = crate::shell::chrome::scenario_client_window_controls();
     for compact in [false, true] {
-        for kind in [ibis_pptx::Kind::Document, ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Presentation] {
+        for kind in [ibis_formats::Kind::Document, ibis_formats::Kind::Workbook, ibis_formats::Kind::Presentation] {
             let setup = |s: &mut Scenario| {
                 s.size(1280.0, 800.0);
                 s.update(|e, _, cx| {
@@ -6562,9 +6562,9 @@ fn client_close_button_click_asks_to_save() {
 fn client_close_button_click_saves_then_closes() {
     let _controls = crate::shell::chrome::scenario_client_window_controls();
     for (kind, extension) in [
-        (ibis_pptx::Kind::Document, "docx"),
-        (ibis_pptx::Kind::Workbook, "xlsx"),
-        (ibis_pptx::Kind::Presentation, "pptx"),
+        (ibis_formats::Kind::Document, "docx"),
+        (ibis_formats::Kind::Workbook, "xlsx"),
+        (ibis_formats::Kind::Presentation, "pptx"),
     ] {
         let mut s = issue27_new(kind);
         s.size(1280.0, 800.0);
@@ -6577,22 +6577,22 @@ fn client_close_button_click_saves_then_closes() {
         s.update(|e, window, cx| e.confirm_save_and_close(window, cx));
         assert_eq!(s.window_count(), 0, "{kind:?}: Save finishes the requested close");
         assert!(s.quit_requested());
-        let saved = ibis_pptx::read(&std::fs::read(&path).unwrap()).unwrap();
+        let saved = ibis_formats::read(&std::fs::read(&path).unwrap()).unwrap();
         match kind {
-            ibis_pptx::Kind::Workbook => {
+            ibis_formats::Kind::Workbook => {
                 let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&saved.slides[0]).unwrap();
                 assert_eq!(sheet.cell(0, 0).map(|c| c.value.clone()), Some(ibis_doc_model::CellValue::Text("a".into())), "pending typed cell was saved");
             }
-            ibis_pptx::Kind::Document => {
+            ibis_formats::Kind::Document => {
                 assert!(saved.flow.as_ref().unwrap().body.iter().any(|block| match block {
                     ibis_doc_model::Block::Paragraph(p) => p.runs.iter().any(|r| matches!(&r.kind, ibis_doc_model::FlowRunKind::Text(text) if text.contains('a'))),
                     _ => false,
                 }), "document typing was saved");
             }
-            ibis_pptx::Kind::Presentation => {
+            ibis_formats::Kind::Presentation => {
                 assert!(saved.slides.iter().flat_map(|slide| &slide.shapes).any(|shape| shape.text_body().is_some_and(|body| body.paragraphs.iter().flat_map(|p| &p.runs).any(|run| run.text.contains('a')))), "inserted text was saved");
             }
-            ibis_pptx::Kind::Pdf => unreachable!("PDF is not part of issue27 scenarios"),
+            ibis_formats::Kind::Pdf => unreachable!("PDF is not part of issue27 scenarios"),
         }
     }
 }
@@ -6601,7 +6601,7 @@ fn client_close_button_click_saves_then_closes() {
 /// them, in each format and for a new file; without edits it closes at once; キャンセル keeps the window and the edits;
 /// 保存しない from the close button closes the window (not only the file), and the app ends with its last window.
 fn issue27_close_button_asks_to_save() {
-    for kind in [ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Document, ibis_pptx::Kind::Presentation] {
+    for kind in [ibis_formats::Kind::Workbook, ibis_formats::Kind::Document, ibis_formats::Kind::Presentation] {
         // Nothing typed: the close button closes at once.
         let mut s = issue27_new(kind);
         s.quit_with_last_window();
@@ -6637,7 +6637,7 @@ fn issue27_close_button_asks_to_save() {
         assert!(s.quit_requested(), "{kind:?}: the app ends with its last window");
     }
     // ⌘W closes the window in every format, not showing the start view in it; the app ends with its last window.
-    for kind in [ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Document, ibis_pptx::Kind::Presentation] {
+    for kind in [ibis_formats::Kind::Workbook, ibis_formats::Kind::Document, ibis_formats::Kind::Presentation] {
         let mut s = issue27_new(kind);
         s.quit_with_last_window();
         s.key("cmd-w");
@@ -6676,14 +6676,14 @@ fn issue27_save_answer_writes_then_closes() {
     s.update(|e, window, cx| e.confirm_save_and_close(window, cx));
     assert_eq!(s.window_count(), 0, "保存 closes the window once written");
     assert!(s.quit_requested());
-    let saved = ibis_pptx::read(&std::fs::read(&path).unwrap()).unwrap();
+    let saved = ibis_formats::read(&std::fs::read(&path).unwrap()).unwrap();
     let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&saved.slides[0]).unwrap();
     assert_eq!(sheet.cell(19, 7).map(|c| c.value.clone()), Some(ibis_doc_model::CellValue::Text("issue27".into())), "the typed cell is saved");
 }
 
 /// GitHub issue #27: ibisOffice > 終了 (⌘Q) with edits not saved asks instead of ending; without edits it ends.
 fn issue27_quit_asks_to_save() {
-    for kind in [ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Document, ibis_pptx::Kind::Presentation] {
+    for kind in [ibis_formats::Kind::Workbook, ibis_formats::Kind::Document, ibis_formats::Kind::Presentation] {
         let mut s = issue27_new(kind);
         s.quit_with_last_window();
         s.key("cmd-q");
@@ -6714,7 +6714,7 @@ fn close_file_drops_recovery_state() {
     let dir = crate::shell::scenario::repo_root().join("target/scenario-input/close-recovery");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    for kind in [ibis_pptx::Kind::Document, ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Presentation] {
+    for kind in [ibis_formats::Kind::Document, ibis_formats::Kind::Workbook, ibis_formats::Kind::Presentation] {
         let mut s = issue27_new(kind);
         let snapshot = dir.join(format!("{kind:?}_autorecover_1.tmp"));
         std::fs::write(&snapshot, b"snapshot").unwrap();
@@ -6750,7 +6750,7 @@ fn right_pane_button_follows_the_pane() {
             .expect("表示 > サイドバー")
     });
     // docx: a new document has no panel open.
-    let mut s = issue27_new(ibis_pptx::Kind::Document);
+    let mut s = issue27_new(ibis_formats::Kind::Document);
     assert_eq!(pane(&mut s), crate::shell::chrome::RightPane { available: false, shown: false }, "docx: nothing to show: off, disabled");
     assert_eq!(menu(&mut s), (false, false), "docx: 表示 > サイドバー unchecked, disabled");
     // A panel opened: on, and the button hides it and shows it again.
@@ -6763,7 +6763,7 @@ fn right_pane_button_follows_the_pane() {
     assert!(pane(&mut s).shown, "docx: shown again");
     drop(s);
     // xlsx and pptx: the pane is there on request.
-    for kind in [ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Presentation] {
+    for kind in [ibis_formats::Kind::Workbook, ibis_formats::Kind::Presentation] {
         let mut s = issue27_new(kind);
         let before = pane(&mut s);
         assert!(before.available, "{kind:?}: the pane can be shown");
@@ -8785,7 +8785,7 @@ fn fix121_pptx_change_shape_removed_from_toolbar_kept_in_menus() {
         ibis_doc_model::ShapeKind::Auto(a) => a.geometry.clone(),
         _ => panic!("expected auto shape"),
     });
-    assert_eq!(Some(geom), ibis_pptx::preset_geometry("ellipse"), "change-shape via menu changed rect to ellipse");
+    assert_eq!(Some(geom), ibis_formats::preset_geometry("ellipse"), "change-shape via menu changed rect to ellipse");
 }
 
 /// #122 (GitHub issue #24): xlsx dynamic array spill range outline (solid blue when active,

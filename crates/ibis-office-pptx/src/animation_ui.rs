@@ -25,7 +25,7 @@ const CHILD_INDENT: f32 = 14.;
 pub(crate) fn preset_effect(shape: ShapeId, class: C, id: u32, subtype: u32) -> Animation {
     if !is_filter_preset(class, id) {
         // The rest of PowerPoint's gallery: the effect as PowerPoint wrote it.
-        if let Some(made) = ibis_pptx::animation_catalog::make(shape, class, id, subtype) {
+        if let Some(made) = ibis_formats::animation_catalog::make(shape, class, id, subtype) {
             return made;
         }
     }
@@ -55,15 +55,15 @@ fn first_option(class: C, id: u32) -> u32 {
     if is_filter_preset(class, id) {
         return ibis_doc_model::animation_preset::preset_def(id).map_or(0, |d| d.options[0].0);
     }
-    ibis_pptx::animation_catalog::effect(class, id).and_then(|e| e.options.first()).map_or(0, |o| o.0)
+    ibis_formats::animation_catalog::effect(class, id).and_then(|e| e.options.first()).map_or(0, |o| o.0)
 }
 
 /// The effects of PowerPoint's gallery that the menu has no item of its own for (the effects drawn by a look of their own, and the
 /// basic filter effects, are the menu's), as a menu: 開始・終了・強調・軌跡 → その他の効果.
 fn catalog_items(class: C, mine: &[&Animation], selected: usize) -> Vec<MenuEntry> {
-    let items: Vec<MenuEntry> = ibis_pptx::animation_catalog::effects_of(class)
+    let items: Vec<MenuEntry> = ibis_formats::animation_catalog::effects_of(class)
         .filter(|e| !is_filter_preset(class, e.id) && !(class == C::Path && STRAIGHT_PATHS.contains(&e.id)))
-        .filter(|e| ibis_pptx::animation_catalog::make(ShapeId(0), class, e.id, e.options[0].0).is_some_and(|a| matches!(a.look, L::Preset | L::Motion(..) | L::Other)))
+        .filter(|e| ibis_formats::animation_catalog::make(ShapeId(0), class, e.id, e.options[0].0).is_some_and(|a| matches!(a.look, L::Preset | L::Motion(..) | L::Other)))
         .map(|e| {
             let id = e.id;
             let on = mine.len() == selected && mine.iter().all(|a| a.class == class && a.preset.0 == id && matches!(a.look, L::Preset | L::Motion(..) | L::Other));
@@ -306,7 +306,7 @@ impl SlideEditor {
             for a in all.iter_mut().filter(|a| !a.is_media() && selected.contains(&a.shape) && a.look == L::Preset) {
                 if !is_filter_preset(a.class, a.preset.0) {
                     // PowerPoint's own effect with this option: its behaviours and time, the effect's start and delay kept.
-                    if let Some(made) = ibis_pptx::animation_catalog::make(a.shape, a.class, a.preset.0, subtype) {
+                    if let Some(made) = ibis_formats::animation_catalog::make(a.shape, a.class, a.preset.0, subtype) {
                         a.preset = made.preset;
                         a.behaviors = made.behaviors;
                         a.duration = made.duration;
@@ -699,9 +699,9 @@ impl SlideEditor {
             C::Media => Vec::new(),
         };
         v.extend(
-            ibis_pptx::animation_catalog::effects_of(class)
+            ibis_formats::animation_catalog::effects_of(class)
                 .filter(|e| !is_filter_preset(class, e.id) && !(class == C::Path && STRAIGHT_PATHS.contains(&e.id)))
-                .filter(|e| ibis_pptx::animation_catalog::make(ShapeId(0), class, e.id, e.options[0].0).is_some_and(|a| matches!(a.look, L::Preset | L::Motion(..) | L::Other)))
+                .filter(|e| ibis_formats::animation_catalog::make(ShapeId(0), class, e.id, e.options[0].0).is_some_and(|a| matches!(a.look, L::Preset | L::Motion(..) | L::Other)))
                 .map(|e| (e.key, L::Preset, Some(e.id))),
         );
         if matches!(class, C::Entrance | C::Exit) {
@@ -2064,7 +2064,7 @@ impl SlideEditor {
 
 /// The name shown for an effect: its look's, or, for the effects of PowerPoint's presets, the preset's (with its option).
 fn look_label(class: C, look: L, preset: (u32, u32)) -> String {
-    if look == L::Preset || (class == C::Path && !STRAIGHT_PATHS.contains(&preset.0) && ibis_pptx::animation_catalog::effect(class, preset.0).is_some()) {
+    if look == L::Preset || (class == C::Path && !STRAIGHT_PATHS.contains(&preset.0) && ibis_formats::animation_catalog::effect(class, preset.0).is_some()) {
         if is_filter_preset(class, preset.0) {
             let def = ibis_doc_model::animation_preset::preset_def(preset.0).expect("a filter preset");
             let name = crate::shell::i18n::text(def.key);
@@ -2073,7 +2073,7 @@ fn look_label(class: C, look: L, preset: (u32, u32)) -> String {
                 None => name.to_string(),
             };
         }
-        if let Some(def) = ibis_pptx::animation_catalog::effect(class, preset.0) {
+        if let Some(def) = ibis_formats::animation_catalog::effect(class, preset.0) {
             let name = crate::shell::i18n::text(def.key);
             return match def.options.iter().find(|(s, _)| *s == preset.1).filter(|_| def.options.len() > 1) {
                 Some((_, option)) => format!("{name}（{}）", crate::shell::i18n::text(option)), // i18n-ok（括弧だけ）
@@ -2205,7 +2205,7 @@ pub(crate) fn animation_option_items(editor: &SlideEditor) -> Vec<MenuEntry> {
                     .unwrap_or_default()
             } else {
                 // The options PowerPoint's own effect has (directions, colours, amounts), when it has more than one.
-                ibis_pptx::animation_catalog::effect(a.class, a.preset.0)
+                ibis_formats::animation_catalog::effect(a.class, a.preset.0)
                     .filter(|def| def.options.len() > 1)
                     .map(|def| {
                         def.options

@@ -216,7 +216,7 @@ impl SlideEditor {
     }
 
     pub fn can_copy_shapes(shapes: &[Shape]) -> bool {
-        !shapes.is_empty() && shapes.iter().all(|s| ibis_pptx::save::check_shape_insertion(s).is_ok())
+        !shapes.is_empty() && shapes.iter().all(|s| ibis_formats::save::check_shape_insertion(s).is_ok())
     }
 
     pub fn extract_groups_for_shapes(groups: &[ibis_doc_model::ShapeGroup], shape_ids: &[ShapeId]) -> Vec<ibis_doc_model::ShapeGroup> {
@@ -1084,7 +1084,7 @@ impl SlideEditor {
             }
         }
         if let Some(source)=&self.source {
-            if let Err(error)=source.save(&preview,ibis_pptx::SaveOptions::default()) {log::warn!("Cannot apply the edit: {error}");return false;}
+            if let Err(error)=source.save(&preview,ibis_formats::SaveOptions::default()) {log::warn!("Cannot apply the edit: {error}");return false;}
         }
         self.run(commands,cx);
         true

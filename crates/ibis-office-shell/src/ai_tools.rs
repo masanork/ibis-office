@@ -1836,16 +1836,16 @@ mod tests {
         let new_lt = "テスト法（令和七年法律第一号）\n第一条 この法律は、処分及び行政指導に関する手続を定める。";
         let old_doc = crate::ai_assistant::parse_law_input_str(old_lt).unwrap();
         let new_doc = crate::ai_assistant::parse_law_input_str(new_lt).unwrap();
-        let pkg = ibis_pptx::lawtext::build_5set_package(
+        let pkg = ibis_formats::lawtext::build_5set_package(
             &old_doc,
             &new_doc,
             "行政指導を追加",
-            &ibis_pptx::lawtext::ShinkyuOptions::default(),
+            &ibis_formats::lawtext::ShinkyuOptions::default(),
         );
         assert!(pkg.aratame_verification.is_exact_match);
-        let md = ibis_pptx::lawtext::to_markdown(&new_doc);
+        let md = ibis_formats::lawtext::to_markdown(&new_doc);
         assert_eq!(crate::ai_assistant::parse_law_input_str(&md).unwrap().law_title, "テスト法");
-        let xml = ibis_pptx::lawtext::to_law_xml(&new_doc);
+        let xml = ibis_formats::lawtext::to_law_xml(&new_doc);
         assert_eq!(crate::ai_assistant::parse_law_input_str(&xml).unwrap().law_num, "令和七年法律第一号");
     }
 }

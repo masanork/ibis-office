@@ -102,7 +102,7 @@ fn render_slides(file: &str, label: &str, slides: &[usize]) -> Vec<Page> {
 fn render_slides_at(file: &str, label: &str, slides: &[usize], width: u32) -> Vec<Page> {
     let path = crate::shell::scenario::repo_root().join("test/corpus-report/pptx").join(file);
     let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let presentation: Presentation = ibis_pptx::read(&data).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let presentation: Presentation = ibis_formats::read(&data).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let out_dir: PathBuf = crate::shell::scenario::repo_root().join("target/scenario/corpus_report").join(label);
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
@@ -1681,7 +1681,7 @@ fn check_theme_gradient_tint(file: &str) {
 
 /// pptx-C020-b3（todo に項目なし）：図形が `p:style/a:fillRef idx="2"` だけで塗られ、テーマの `fillStyleLst` の 2 番目が Office 2007 型の
 /// グラデーション（accent6 F79646 に `tint 50%/37%/15%`・`satMod 300%/350%`、下から上）のとき、PowerPoint は下ほど濃い橙（下端 #FFBF88、上端 #FFEADA）。
-/// ibisOffice は `tint` を線形光で白へ寄せる（ibis-pptx/src/theme.rs の `map_linear`）ので全体が淡い桃色（下端 #FFD4C0）になる。PowerPoint の正確な式は未特定なので、
+/// ibisOffice は `tint` を線形光で白へ寄せる（ibis-formats/src/theme.rs の `map_linear`）ので全体が淡い桃色（下端 #FFD4C0）になる。PowerPoint の正確な式は未特定なので、
 /// 期待は正解 PDF の下端の色 #FFBF88（各 ±20）だけにした。対照（正解 PDF の色を sRGB で並べたもの）は #FFBE8B。
 pub(crate) fn corpus_report_pptx_theme_gradient_tint_is_not_pale() {
     check_theme_gradient_tint("theme-gradient-tint.pptx");
@@ -1820,7 +1820,7 @@ fn check_series_lines(file: &str) {
 }
 
 /// pptx-C024-b6（todo に項目なし）：積み上げ（`stacked`・`percentStacked`）の棒グラフの `<c:serLines>`（系列の連結線）を、PowerPoint は隣り合う
-/// 棒の同じ系列の境目どうしを結ぶ細い灰色の線（0.75pt）として描く。ibisOffice は `serLines` を of-pie の `connector` にしか読まず（ibis-pptx/src/chart.rs）、棒には読む所も描く所も無い。
+/// 棒の同じ系列の境目どうしを結ぶ細い灰色の線（0.75pt）として描く。ibisOffice は `serLines` を of-pie の `connector` にしか読まず（ibis-formats/src/chart.rs）、棒には読む所も描く所も無い。
 /// 1 本目と 2 本目の棒の間の帯を横切る線が 2 本以上（3 系列の境目は 2 つ）。今は 0。対照（`serLines` を外したもの）は同じ描画（要素を無視している）なので緑の試験は足さない。
 pub(crate) fn corpus_report_pptx_stacked_bar_series_lines_are_drawn() {
     check_series_lines("chart-bar-serlines.pptx");
@@ -1847,7 +1847,7 @@ fn check_custom_error_bars(file: &str) {
 }
 
 /// pptx-C024-b7（todo に項目なし）：誤差線が `errValType="cust"` と `c:plus`・`c:minus`（numRef の numCache に点ごとの値、ここでは 0.006〜0.018）のとき、PowerPoint は
-/// 各棒の上に短い誤差線（軸 0〜90% で 5〜16px）を引く。ibisOffice は `c:val` しか読まず（ibis-pptx/src/chart.rs の誤差線）、`cust` は 1.0 で描いて紙面を貫く長い縦線になる。
+/// 各棒の上に短い誤差線（軸 0〜90% で 5〜16px）を引く。ibisOffice は `c:val` しか読まず（ibis-formats/src/chart.rs の誤差線）、`cust` は 1.0 で描いて紙面を貫く長い縦線になる。
 /// 暗い縦線の最長が 80px 以下（今は約 800px）。対照（`fixedVal` 0.01）は短い誤差線になる（位置のずれは b11 の別のバグ）ので、緑の試験は b11 に合わせて足さない。
 pub(crate) fn corpus_report_pptx_custom_error_bars_use_their_values() {
     check_custom_error_bars("chart-errbars-custom.pptx");
@@ -1954,7 +1954,7 @@ pub(crate) fn corpus_report_pptx_text_outline_follows_letter_spacing() {
 
 /// pptx-C025-b3（todo に項目なし。P6e の glow は直っていて、innerShdw が残っている）：run の `a:effectLst/a:innerShdw`（黄色、blurRad=8pt、dist=6pt、下向き、74%）を、
 /// PowerPoint は文字の内側の縁（特に下向き）の黄色いにじみにする（ほぼ白の文字が黄色がかる）。ibisOffice は effectLst の子のうち outerShdw と glow しか読まず
-/// （ibis-pptx/src/style.rs `RunStyle`）、純粋な白い文字のままで強調色が消える。ほぼ白の太字（72pt）の文字の箱に、黄色い画素（赤 220 超・緑 190 超・青 190 未満）が 200 以上
+/// （ibis-formats/src/style.rs `RunStyle`）、純粋な白い文字のままで強調色が消える。ほぼ白の太字（72pt）の文字の箱に、黄色い画素（赤 220 超・緑 190 超・青 190 未満）が 200 以上
 /// （今は 0）。対照（effectLst なし）は黄色が出ないので緑の試験は足さない。
 pub(crate) fn corpus_report_pptx_text_inner_shadow_tints_the_glyph_edge() {
     let pages = render("text-inner-shadow.pptx", "text-inner-shadow");
@@ -1975,7 +1975,7 @@ fn check_geom_char_size(file: &str) {
 
 /// pptx-C026-b1（todo に項目なし。pptx-C009-b1 の Wingdings の置き換え表とは別）：本文の run の文字 □・■・○（U+25A1・25A0・25CB。箇条書き記号でなく
 /// `<a:t>□元気がない</a:t>` の文字）が、PowerPoint では ja-JP の run で ea（Jpan）書体（メイリオ）の全幅の大きさ（32pt で約 50px 角）で描かれる。ibisOffice は `is_east_asian(c) = c >= 0x2e80`
-/// （ibis-pptx/src/style.rs）で Latin 扱いにし、Latin 書体の半角ほどの小さい字形（約 30px）で描く。1 行目の □ の幅が 42px 以上。
+/// （ibis-formats/src/style.rs）で Latin 扱いにし、Latin 書体の半角ほどの小さい字形（約 30px）で描く。1 行目の □ の幅が 42px 以上。
 /// 対照（run に `a:ea typeface="Hiragino Sans"` を足したもの）は全幅。
 pub(crate) fn corpus_report_pptx_geometric_shapes_are_drawn_in_the_east_asian_font() {
     check_geom_char_size("geom-char-in-east-asian-font.pptx");

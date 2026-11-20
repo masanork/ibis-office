@@ -69,7 +69,7 @@ cp crates/ibis-office-render/fonts/carlito/OFL.txt "$APP/Contents/Resources/Lice
 # The pictures of Word's art page borders: ECMA-376's zip, unmodified, with
 # its notice (read when a document uses an art border; not in the executable).
 mkdir -p "$APP/Contents/Resources/artborders"
-cp crates/ibis-pptx/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip crates/ibis-pptx/data/artborders/ECMA-NOTICE.txt "$APP/Contents/Resources/artborders/"
+cp crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip crates/ibis-formats/data/artborders/ECMA-NOTICE.txt "$APP/Contents/Resources/artborders/"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

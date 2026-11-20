@@ -139,11 +139,11 @@ impl SlideEditor {
     /// 挿入 > グラフ: a clustered column chart of PowerPoint's sample data
     /// in the middle of the slide (its data then edited in the panel).
     pub fn insert_slide_chart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.insert_slide_chart_kind(ibis_pptx::NewChartKind::ClusteredColumn, window, cx);
+        self.insert_slide_chart_kind(ibis_formats::NewChartKind::ClusteredColumn, window, cx);
     }
 
     /// 挿入 > グラフ: insert chart of specified kind.
-    pub fn insert_slide_chart_kind(&mut self, kind: ibis_pptx::NewChartKind, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn insert_slide_chart_kind(&mut self, kind: ibis_formats::NewChartKind, window: &mut Window, cx: &mut Context<Self>) {
         self.end_text_edit(window, cx);
         let Some(source) = self.source.clone() else { return };
         // As PowerPoint: in the slide's empty content placeholder (which it

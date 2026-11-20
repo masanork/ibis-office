@@ -8,14 +8,14 @@ on:
   push:
     branches: [masanork]
     paths:
-      - crates/ibis-pptx/**
+      - crates/ibis-formats/**
       - crates/ibis-doc-model/**
       - scripts/mermaid-corpus/**
       - Cargo.lock
       - .github/workflows/mermaid-compat.yml
   pull_request:
     paths:
-      - crates/ibis-pptx/**
+      - crates/ibis-formats/**
       - crates/ibis-doc-model/**
       - scripts/mermaid-corpus/**
       - Cargo.lock
@@ -44,14 +44,14 @@ jobs:
           shared-key: mermaid-compat
           save-if: ${{ github.ref == 'refs/heads/masanork' }}
       - name: Mermaid unit tests (renderer and Markdown round trip)
-        run: cargo test --locked -p ibis-pptx --lib mermaid
+        run: cargo test --locked -p ibis-formats --lib mermaid
       - name: Official docs corpus
         if: success() || failure()
         env:
           MERMAID_CORPUS_REPORT: ${{ runner.temp }}/mermaid-corpus.md
           MERMAID_CORPUS_DUMP: ${{ runner.temp }}/mermaid-svg
           MERMAID_CORPUS_DEMO: ${{ runner.temp }}/mermaid-markdown-demo
-        run: cargo test --locked -p ibis-pptx --test mermaid_corpus -- --nocapture
+        run: cargo test --locked -p ibis-formats --test mermaid_corpus -- --nocapture
       - name: Publish corpus report
         if: always()
         shell: bash
@@ -107,7 +107,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/mermaid-js-compare"
           chrome="$(command -v google-chrome || command -v google-chrome-stable)"
           node scripts/mermaid-corpus/compare-ref.mjs \
-            --corpus crates/ibis-pptx/tests/mermaid/corpus \
+            --corpus crates/ibis-formats/tests/mermaid/corpus \
             --ours "$RUNNER_TEMP/mermaid-svg" \
             --out "$RUNNER_TEMP/mermaid-js-compare" \
             --chrome "$chrome"

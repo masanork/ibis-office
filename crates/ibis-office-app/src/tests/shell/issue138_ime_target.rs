@@ -79,7 +79,7 @@ fn spans_and_lines(){
 }
 
 fn in_document(){
-    let mut s=Scenario::start_view();s.update(|e,w,cx|e.new_file(ibis_pptx::Kind::Document,w,cx));
+    let mut s=Scenario::start_view();s.update(|e,w,cx|e.new_file(ibis_formats::Kind::Document,w,cx));
     s.update(|e,w,cx|e.doc_replace_and_mark_text_in_range(None,TEXT,Some(0..0),w,cx));
     assert!(s.with(|e,_|e.doc_state().unwrap().marked_clauses.is_empty()),"not said yet: thin everywhere");
     s.update(|e,w,cx|with_format!(e,set_ime_clauses(e,word_like(),w,cx)));

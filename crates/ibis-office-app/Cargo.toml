@@ -33,7 +33,7 @@ ibis-office-macros.workspace = true
 ibis-doc-model.workspace = true
 # ICC profiles for CMYK colours (pure Rust; BSD-3-Clause OR Apache-2.0; also in the tree through `image`).
 moxcms = "0.8"
-ibis-pptx.workspace = true
+ibis-formats.workspace = true
 ibis-ooxml = { workspace = true, optional = true }
 ibis-emf.workspace = true
 ibis-eot.workspace = true

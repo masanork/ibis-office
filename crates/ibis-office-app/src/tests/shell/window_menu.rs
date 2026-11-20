@@ -6,7 +6,7 @@
 //! previous window, the list at the bottom of the menu (at most five, a mark for unsaved changes, the format's icon),
 //! keys that do not collide, and a menu that other windows' drawing does not close. Pictures: `target/scenario/shell__window_*/`.
 use gpui_kit::*;
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 
 use super::Scenario;
 use crate::xlsx::scenarios::SheetSteps;

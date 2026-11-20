@@ -252,7 +252,7 @@ pub(crate) fn dump_all_right_panels() {
         // Chart panel: insert a chart
         d!("doc_chart_panel", move |e, w, cx| {
             e.set_caret(ibis_doc_model::FlowPos::new(first_para, 0), false, cx);
-            e.doc_insert_chart(ibis_pptx::NewChartKind::Column3D, w, cx);
+            e.doc_insert_chart(ibis_formats::NewChartKind::Column3D, w, cx);
             e.open_doc_chart_panel(w, cx);
         }, doc_chart_panel);
 
@@ -850,7 +850,7 @@ fn seed_recovery_gallery(e:&mut crate::shell::editor::SlideEditor) {
 }
 
 fn seed_autocorrect_entry(e:&mut crate::shell::editor::SlideEditor,w:&mut gpui_kit::Window,cx:&mut gpui_kit::Context<crate::shell::editor::SlideEditor>) {
-    let p=match e.format.kind(){ibis_pptx::Kind::Document=>e.doc_state_mut().unwrap().autocorrect.as_mut().unwrap(),ibis_pptx::Kind::Workbook=>e.wb_mut().panels.autocorrect.as_mut().unwrap(),_=>e.shape_edit.autocorrect.as_mut().unwrap()};
+    let p=match e.format.kind(){ibis_formats::Kind::Document=>e.doc_state_mut().unwrap().autocorrect.as_mut().unwrap(),ibis_formats::Kind::Workbook=>e.wb_mut().panels.autocorrect.as_mut().unwrap(),_=>e.shape_edit.autocorrect.as_mut().unwrap()};
     p.entry_open=true;p.editing=Some(0);let (a,b)=p.working.table[0].clone();p.replace.update(cx,|i,cx|i.set_value(a,w,cx));p.with.update(cx,|i,cx|i.set_value(b,w,cx));
 }
 

@@ -361,11 +361,11 @@ impl Scenario {
         std::fs::copy(&original, &full).unwrap_or_else(|e| panic!("{path}: {e}"));
         let loaded = crate::read_file::read_file(&full).unwrap_or_else(|e| panic!("{path}: {e}"));
         let name: SharedString = full.file_name().unwrap().to_string_lossy().into_owned().into();
-        let is_tmpl = full.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_template);
+        let is_tmpl = full.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::is_template);
         let is_old_presentation = full.extension().and_then(|e| e.to_str()).is_some_and(|x| ["ppt", "pps", "pot", "odp", "otp"].iter().any(|o| x.eq_ignore_ascii_case(o)));
         s.update(|e, window, cx| {
             if is_tmpl {
-                let tmpl_name = crate::file_actions::new_file_name(ibis_pptx::Kind::of(&loaded.presentation));
+                let tmpl_name = crate::file_actions::new_file_name(ibis_formats::Kind::of(&loaded.presentation));
                 e.load(loaded.presentation, tmpl_name, window, cx);
                 e.set_loaded_source(loaded.source);
                 e.path = None;
@@ -380,7 +380,7 @@ impl Scenario {
                 e.set_loaded_source(loaded.source);
                 e.set_file_path(Some(full.clone()));
             }
-            if full.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_slideshow) {
+            if full.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::is_slideshow) {
                 with_format!(e, show_start(e, window, cx));
             }
         });
@@ -390,9 +390,9 @@ impl Scenario {
 
     /// A window with a new, empty document of `kind` (not saveable yet).
     #[allow(dead_code)] // For the formats' scenarios.
-    pub fn new_document(kind: ibis_pptx::Kind) -> Self {
+    pub fn new_document(kind: ibis_formats::Kind) -> Self {
         let mut s = Self::start();
-        s.update(|e, window, cx| e.load(ibis_pptx::blank(kind), "新規".into(), window, cx));
+        s.update(|e, window, cx| e.load(ibis_formats::blank(kind), "新規".into(), window, cx));
         s.settle();
         s
     }
@@ -557,7 +557,7 @@ impl Scenario {
             None => refs[series].name.clone(),
             Some(_) => refs[series].values.clone(),
         };
-        let (_, range) = ibis_pptx::parse_ref(formula.as_deref().expect("a range")).expect("a reference");
+        let (_, range) = ibis_formats::parse_ref(formula.as_deref().expect("a range")).expect("a reference");
         let (row, column) = match index {
             None => (range.first_row, range.first_column),
             Some(i) if range.first_column == range.last_column => (range.first_row + i as u32, range.first_column),
@@ -909,7 +909,7 @@ impl Scenario {
     pub fn reopen(&mut self) -> ibis_doc_model::Presentation {
         let path = self.with(|e, _| e.path.clone()).expect("the file has a path");
         let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        ibis_pptx::read(&data).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        ibis_formats::read(&data).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
     fn dir(&self) -> PathBuf {

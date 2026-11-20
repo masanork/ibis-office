@@ -5,7 +5,7 @@
 //
 // Usage:
 //   node scripts/mermaid-corpus/compare-ref.mjs \
-//     --corpus crates/ibis-pptx/tests/mermaid/corpus \
+//     --corpus crates/ibis-formats/tests/mermaid/corpus \
 //     --ours /tmp/mermaid-svg \
 //     --out /tmp/mermaid-js-compare
 //
@@ -24,7 +24,7 @@ const COUNT_TOLERANCE = 0.25;
 
 function parseArgs(argv) {
   const out = {
-    corpus: path.join(here, "../../crates/ibis-pptx/tests/mermaid/corpus"),
+    corpus: path.join(here, "../../crates/ibis-formats/tests/mermaid/corpus"),
     ours: "",
     out: "mermaid-js-compare",
     chrome: process.env.CHROME_PATH || process.env.IBIS_CHROME_PATH || "",

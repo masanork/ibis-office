@@ -4,7 +4,7 @@
 
 Downloads `docs/syntax/*.md` from mermaid-js/mermaid at a pinned commit and
 writes every distinct ```mermaid / ```mermaid-example block to
-`crates/ibis-pptx/tests/mermaid/corpus/<doc>.mmd`, separated by
+`crates/ibis-formats/tests/mermaid/corpus/<doc>.mmd`, separated by
 `%%%% case <n> (<doc>.md:<line>)` lines. The examples are MIT licensed
 (Copyright (c) 2014 - 2022 Knut Sveidqvist); see the corpus LICENSE file.
 
@@ -18,7 +18,7 @@ import urllib.request
 
 DEFAULT_TAG = "mermaid@12.3.0"
 DEFAULT_SHA = "2086904e76c692331e34a45d7cc3bc30860d040e"
-OUT = pathlib.Path(__file__).resolve().parents[2] / "crates/ibis-pptx/tests/mermaid/corpus"
+OUT = pathlib.Path(__file__).resolve().parents[2] / "crates/ibis-formats/tests/mermaid/corpus"
 FENCE = re.compile(r"^```(mermaid|mermaid-example)\s*$")
 
 

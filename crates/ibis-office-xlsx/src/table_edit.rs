@@ -6,7 +6,7 @@
 //! a table grows when a value is typed just under it or just right of it
 //! (テーブルの自動拡張), and a formula typed into an empty column of it
 //! fills the column (計算列). The table's style is laid on the cells as
-//! Excel draws it (`ibis_pptx::styled_with_table`).
+//! Excel draws it (`ibis_formats::styled_with_table`).
 
 use crate::shell::chrome::Checkbox;
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -76,7 +76,7 @@ pub(crate) fn headings(texts: &[String]) -> Vec<String> {
 /// a grown table's old edge taken off) with the style laid on, or whose
 /// content `contents` gives, with its content.
 fn styled_cells(sheet: &Sheet, base: &Sheet, table: &SheetTable, theme: &[(String, ibis_doc_model::Rgb)], contents: &[(u32, u32, CellInput)]) -> Vec<PutCell> {
-    let styled = ibis_pptx::styled_with_table(base, table, theme);
+    let styled = ibis_formats::styled_with_table(base, table, theme);
     let r = table.range;
     let mut out = Vec::new();
     for row in r.first_row..=r.last_row {
@@ -375,7 +375,7 @@ impl SlideEditor {
                 probe.put_cell(rr, c, Some(SheetCell { style: i, ..cell }));
             }
         }
-        let probed = ibis_pptx::styled_with_table(&probe, old_table, &theme);
+        let probed = ibis_formats::styled_with_table(&probe, old_table, &theme);
         let mut base = grown.clone();
         for &(rr, c) in &edge {
             let (Some(cell), Some(p)) = (base.cell(rr, c).cloned(), probed.cell(rr, c)) else { continue };

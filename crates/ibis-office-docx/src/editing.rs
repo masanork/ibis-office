@@ -4257,7 +4257,7 @@ impl SlideEditor {
 
     /// The changes from the document in the file at `path` to this one, as tracked changes.
     pub(crate) fn compare_with_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        let original = std::fs::read(path).ok().and_then(|data| ibis_pptx::read(&data).ok()).and_then(|p| p.flow);
+        let original = std::fs::read(path).ok().and_then(|data| ibis_formats::read(&data).ok()).and_then(|p| p.flow);
         let Some(original) = original else {
             self.status = Some(crate::shell::i18n::text("docx.merge-panel.cannot-read-file").into());
             return cx.notify();
@@ -4329,7 +4329,7 @@ impl SlideEditor {
 
     /// Combines the document in the file at `path` with this one, merging revisions and comments.
     pub(crate) fn combine_with_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        let other = std::fs::read(path).ok().and_then(|data| ibis_pptx::read(&data).ok()).and_then(|p| p.flow);
+        let other = std::fs::read(path).ok().and_then(|data| ibis_formats::read(&data).ok()).and_then(|p| p.flow);
         let Some(other) = other else {
             self.status = Some(crate::shell::i18n::text("docx.merge-panel.cannot-read-file").into());
             return cx.notify();
@@ -5501,7 +5501,7 @@ impl SlideEditor {
             },
         };
         let mut cmds = vec![ibis_doc_model::Command::SetTheme { colors, fonts: Some(fonts) }];
-        if let Some(effect_preset) = ibis_pptx::theme_effects::find_effect_preset(theme.effect_id) {
+        if let Some(effect_preset) = ibis_formats::theme_effects::find_effect_preset(theme.effect_id) {
             cmds.push(ibis_doc_model::Command::SetThemeEffects { name: Some(effect_preset.name.to_string()) });
         }
         let _ = self.document.execute(cmds);
@@ -5660,13 +5660,13 @@ impl SlideEditor {
     /// テーマ効果プリセットが現在アクティブかどうか.
     pub(crate) fn is_docx_theme_effects_active(&self, preset_id: &str) -> bool {
         let current = self.presentation().theme_effects.as_deref().unwrap_or("Office");
-        let Some(preset) = ibis_pptx::theme_effects::find_effect_preset(preset_id) else { return false };
+        let Some(preset) = ibis_formats::theme_effects::find_effect_preset(preset_id) else { return false };
         current.eq_ignore_ascii_case(preset.id) || current.eq_ignore_ascii_case(preset.name)
     }
 
     /// ドキュメントのテーマ効果を適用.
     pub(crate) fn apply_docx_theme_effects(&mut self, preset_id: &str, cx: &mut Context<Self>) {
-        let Some(preset) = ibis_pptx::theme_effects::find_effect_preset(preset_id) else { return };
+        let Some(preset) = ibis_formats::theme_effects::find_effect_preset(preset_id) else { return };
         let _ = self.document.execute(vec![ibis_doc_model::Command::SetThemeEffects { name: Some(preset.name.to_string()) }]);
         self.sync_peers(cx);
         self.status = Some(crate::shell::i18n::format("docx.design.effects.applied", &[("name", &crate::shell::i18n::text(preset.label_key))]).into());
@@ -6468,10 +6468,10 @@ impl SlideEditor {
             let data = std::fs::read(&full).ok()?;
             let is_docx = full.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("docx"));
             if !is_docx {
-                let text = ibis_pptx::csv::decode(&data).unwrap_or_else(|_| String::from_utf8_lossy(&data).into_owned());
+                let text = ibis_formats::csv::decode(&data).unwrap_or_else(|_| String::from_utf8_lossy(&data).into_owned());
                 return Some(text.lines().map(str::trim_end).collect::<Vec<_>>().join(" ").trim().to_string());
             }
-            let presentation = ibis_pptx::read(&data).ok()?;
+            let presentation = ibis_formats::read(&data).ok()?;
             let doc = presentation.flow.as_ref()?;
             let bookmark = words.get(2).filter(|w| !w.starts_with('\\'));
             let paragraphs: Vec<&ibis_doc_model::FlowParagraph> = doc.body.iter().filter_map(|b| if let Block::Paragraph(p) = b { Some(p) } else { None }).collect();

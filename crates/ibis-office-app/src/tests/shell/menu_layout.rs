@@ -279,7 +279,7 @@ fn paste_special_submenu_is_the_dialog() {
 /// The distributed spreadsheet Review menu exposes the machine readability check.
 fn sheet_machine_readability() {
     with_planned(false, || {
-        let mut s = Scenario::new_document(ibis_pptx::Kind::Workbook);
+        let mut s = Scenario::new_document(ibis_formats::Kind::Workbook);
         s.with(|e, _| {
             let menus = e.menu_bar_menus();
             let (_, review) = menus.menus.iter().find(|(id, _)| *id == MenuId::Review).expect("Review menu");

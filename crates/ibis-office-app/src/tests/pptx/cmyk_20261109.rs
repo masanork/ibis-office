@@ -107,7 +107,7 @@ fn gamut_and_round_trip() {
     let (slide, shape) = s.with(|e, _| (e.slide().id, e.slide().shapes[0].id));
     s.update(|e, _, cx| e.run(vec![ibis_doc_model::Command::SetFill { slide, shape, fill: ibis_doc_model::Fill::Solid(ibis_doc_model::Color::opaque(chosen)) }], cx));
     let bytes = s.with(|e, _| e.current_bytes()).expect("the file as saved");
-    let opened = ibis_pptx::open(bytes).expect("reopen");
+    let opened = ibis_formats::open(bytes).expect("reopen");
     assert!(opened.presentation.cmyk.enabled);
     let kept = opened.presentation.slide(slide).and_then(|sl| sl.shape(shape)).map(|sh| matches!(&sh.kind, ibis_doc_model::ShapeKind::Auto(a) if matches!(&a.fill, ibis_doc_model::Fill::Solid(c) if c.rgb == chosen)));
     assert_eq!(kept, Some(true), "the body has the printed colour as an ordinary colour");
@@ -171,7 +171,7 @@ fn device_cmyk_fills(pdf: &[u8]) -> usize {
 }
 
 fn profile_bar_on_three_screens() {
-    for (kind, name) in [(ibis_pptx::Kind::Presentation, "pptx"), (ibis_pptx::Kind::Document, "docx"), (ibis_pptx::Kind::Workbook, "xlsx")] {
+    for (kind, name) in [(ibis_formats::Kind::Presentation, "pptx"), (ibis_formats::Kind::Document, "docx"), (ibis_formats::Kind::Workbook, "xlsx")] {
         let mut s = Scenario::start_view();
         s.update(|e, w, cx| {
             e.new_file(kind, w, cx);

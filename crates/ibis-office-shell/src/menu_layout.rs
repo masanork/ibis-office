@@ -10,7 +10,7 @@
 //! of another selection) is left out; a command the layout does not name stays reachable by the menu search.
 use std::collections::HashSet;
 
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 
 use crate::chrome::{prune_entries, MenuEntry, MenuId, MenuItem, Menus, Submenu};
 use crate::commands::CommandRegistry;
@@ -715,7 +715,7 @@ mod planned_tests {
     use super::{LayoutItem, Resolver};
     use crate::chrome::{MenuEntry, Menus};
     use crate::commands::CommandRegistry;
-    use ibis_pptx::Kind;
+    use ibis_formats::Kind;
 
     /// A `Planned` line is a grey item with the words of its key, and it takes no command's place.
     #[test]

@@ -502,7 +502,7 @@ impl SlideEditor {
                     Recognized::Triangle => "triangle",
                     Recognized::Line => unreachable!(),
                 };
-                let Some(geometry) = ibis_pptx::preset_geometry(preset) else {
+                let Some(geometry) = ibis_formats::preset_geometry(preset) else {
                     return false;
                 };
                 let size = EmuSize::new(bbox_size.width.max(12_700), bbox_size.height.max(12_700));
@@ -864,7 +864,7 @@ impl SlideEditor {
                         Recognized::Triangle => "triangle",
                         Recognized::Line => unreachable!(),
                     };
-                    let Some(geometry) = ibis_pptx::preset_geometry(preset) else {
+                    let Some(geometry) = ibis_formats::preset_geometry(preset) else {
                         continue;
                     };
                     let size = EmuSize::new(

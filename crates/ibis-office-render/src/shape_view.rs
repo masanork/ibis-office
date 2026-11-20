@@ -945,7 +945,7 @@ impl Resources {
         // left out: its substitute drawn to its width looks smaller than it,
         // and matched its PDF worse.)
         let expected = match name {
-            n if n.starts_with("ＭＳ") || n.starts_with("MS ") => if ibis_pptx::EXCEL_METRICS == ibis_pptx::ExcelMetrics::Windows { 0.5 } else { 0.54 }, // i18n-ok（フォント名の照合（ＭＳ で始まる名前の判定）。ファイルの中の名前。i18n-ok）
+            n if n.starts_with("ＭＳ") || n.starts_with("MS ") => if ibis_formats::EXCEL_METRICS == ibis_formats::ExcelMetrics::Windows { 0.5 } else { 0.54 }, // i18n-ok（フォント名の照合（ＭＳ で始まる名前の判定）。ファイルの中の名前。i18n-ok）
             // Noto Sans JP's digits (0.555 em, from the widths in Excel's PDF of a user's workbook).
             n if n.starts_with("Noto Sans") => 0.555,
             _ => return 1.0,
@@ -6245,7 +6245,7 @@ pub(crate) fn text_body_element(
     }
     // Text bent to a warp (`a:prstTxWarp`) that has two guide curves: its glyphs are collected and painted
     // bent after the paragraphs (the other warps are not drawn yet).
-    if let Some(geometry) = body.warp.as_deref().and_then(|name| ibis_pptx::text_warp_geometry(name, &body.warp_adjust))
+    if let Some(geometry) = body.warp.as_deref().and_then(|name| ibis_formats::text_warp_geometry(name, &body.warp_adjust))
         && matches!(geometry.outline(100.0, 100.0).len(), 1 | 2 | 3 | 4 | 6)
     {
         *block.warp.borrow_mut() = Some(crate::rich_text::Warp::new(geometry));

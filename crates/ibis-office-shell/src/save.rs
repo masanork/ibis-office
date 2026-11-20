@@ -3,9 +3,9 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! ファイル > 保存 (⌘S) and 名前を付けて保存… (⌘⇧S).
 //!
-//! The file is written by `ibis_pptx::Source::save`: the original file with
+//! The file is written by `ibis_formats::Source::save`: the original file with
 //! the edits made since it was opened written into it (see
-//! `ibis-pptx/src/save/mod.rs`). An edit the format cannot save yet is
+//! `ibis-formats/src/save/mod.rs`). An edit the format cannot save yet is
 //! reported in the status bar and nothing is written, so no edit is lost
 //! silently. The file is written next to its destination and then moved
 //! over it, so a failed save never leaves a half-written file.
@@ -49,7 +49,7 @@ impl SlideEditor {
         let slide = self.current_csv_slide.ok_or_else(|| crate::i18n::text("file.csv-error.missing-sheet").to_string())?;
         if self.current_slide != slide { return Err(crate::i18n::text("file.csv-error.wrong-sheet").to_string()); }
         let disk = std::fs::read(path).map_err(|e| e.to_string())?;
-        ibis_pptx::csv::rewrite_tracked_csv_checked(original, &disk, format, &self.document, slide)
+        ibis_formats::csv::rewrite_tracked_csv_checked(original, &disk, format, &self.document, slide)
             .map_err(|e| crate::i18n::text(e.i18n_key()).to_string())
     }
     /// Confirm before saving changes to a package with signatures, including
@@ -345,7 +345,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
-        if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::production_image::supports_extension) {
+        if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::production_image::supports_extension) {
             return Err("Choose a document extension to save the imported image".into());
         }
         self.check_standard_copy_format(&path)?;
@@ -353,7 +353,7 @@ impl SlideEditor {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
         if self.is_jtd_read_only() { return Err(crate::i18n::text("jtd.read-only").to_string()); }
-        if self.jtd_source_path.as_deref().is_some_and(|original| same_file(original, &path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::jtd::is_native_extension)) {
+        if self.jtd_source_path.as_deref().is_some_and(|original| same_file(original, &path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::jtd::is_native_extension)) {
             return Err(crate::i18n::text("jtd.source-protected").to_string());
         }
         // The format may refuse for now (a presentation's master view is closed first: what is saved is the file, with what was made in it).
@@ -379,7 +379,7 @@ impl SlideEditor {
                     }
                     (other.bytes, other.protect)
                 }
-                None => (source.save(&self.presentation_for_save(), ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?, true),
+                None => (source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())?, true),
             }
         };
         // 常にバックアップ コピーを作成する: what the file is now is kept, where the format has the option.
@@ -398,7 +398,7 @@ impl SlideEditor {
                 let delimiter = if ext.eq_ignore_ascii_case("csv") { ',' }
                     else if ["tsv", "tab", "txt"].iter().any(|x| ext.eq_ignore_ascii_case(x)) { '\t' }
                     else { return None };
-                Some(ibis_pptx::csv::OriginalCsvFormat { encoding: ibis_pptx::csv::OriginalEncoding::Utf8Bom, delimiter, record_ending: ibis_pptx::csv::RecordEnding::CrLf, final_record_ending: true })
+                Some(ibis_formats::csv::OriginalCsvFormat { encoding: ibis_formats::csv::OriginalEncoding::Utf8Bom, delimiter, record_ending: ibis_formats::csv::RecordEnding::CrLf, final_record_ending: true })
             });
         }
         self.current_csv_original = self.current_csv_format.map(|_| std::sync::Arc::from(bytes.as_slice()));
@@ -486,7 +486,7 @@ fn write_checked_csv(path: &std::path::Path, expected: &[u8], bytes: &[u8]) -> s
 pub(crate) fn protect(package: &[u8], password: &str) -> Result<Vec<u8>, String> {
     // The OS's random generator (getrandom: BCryptGenRandom on Windows, which has no /dev/urandom; #M146).
     let mut failed = false;
-    let encrypted = ibis_pptx::encrypt(package, password, &mut |bytes: &mut [u8]| {
+    let encrypted = ibis_formats::encrypt(package, password, &mut |bytes: &mut [u8]| {
         if getrandom::fill(bytes).is_err() {
             failed = true;
         }
@@ -667,8 +667,8 @@ mod protect_tests {
         let package = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../test/editing/docx-report.docx")).expect("the sample");
         let locked = super::protect(&package, "ibis123").expect("random bytes from the OS");
         assert_ne!(locked, package);
-        let opened = ibis_pptx::decrypt(&locked, "ibis123").expect("opens with the password");
+        let opened = ibis_formats::decrypt(&locked, "ibis123").expect("opens with the password");
         assert_eq!(opened, package);
-        assert!(ibis_pptx::decrypt(&locked, "wrong").is_err());
+        assert!(ibis_formats::decrypt(&locked, "wrong").is_err());
     }
 }

@@ -148,7 +148,7 @@ python3 -m unittest discover -s scripts -p test_audit_jtd.py -v
 
 IBIS_JTD_SAMPLE='/path/to/sample.jtd' \
 IBIS_JTD_DOCX_OUT='/tmp/jtd-audit-current.docx' \
-cargo test -p ibis-pptx --lib jtd::tests::local_sample_can_be_read -- --ignored --exact
+cargo test -p ibis-formats --lib jtd::tests::local_sample_can_be_read -- --ignored --exact
 
 python3 scripts/audit-jtd.py '/path/to/sample.jtd' \
   --pdf '/path/to/sample.pdf' --docx '/tmp/jtd-audit-current.docx'
@@ -165,11 +165,11 @@ python3 scripts/test_audit_jtd.py --write-probes /tmp/jtd-probes
 
 # 現実装ではFAILEDとなる。本文は「甲乙丙」だがDOCXは「甲」のみ。
 IBIS_JTD_SAMPLE=/tmp/jtd-probes/inline.jtd IBIS_JTD_EXPECT=甲乙丙 \
-cargo test -p ibis-pptx --lib jtd::tests::local_sample_can_be_read -- --ignored --exact
+cargo test -p ibis-formats --lib jtd::tests::local_sample_can_be_read -- --ignored --exact
 ```
 
 同じ手順で`ordered`/`reordered`をDOCX出力して診断すると、独立診断は両方140文字、
 現importerはそれぞれ140/112文字になる。既存テストは両方で成功する。
 追加した診断の合成テスト8件は成功。現importerの最小インライン反証は期待どおり失敗。
-通常の`cargo test -p ibis-pptx ...`は無関係なXLSXテスト用TSV不足でコンパイルできないため、
+通常の`cargo test -p ibis-formats ...`は無関係なXLSXテスト用TSV不足でコンパイルできないため、
 上の`--lib`に絞って実行した。ブラウザー・Word実機・LibreOfficeの描画一致は検証していない。

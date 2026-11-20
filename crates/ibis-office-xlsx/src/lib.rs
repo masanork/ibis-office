@@ -449,7 +449,7 @@ mod dialog_hooks;
 mod event_hooks;
 mod workspace_hooks;
 mod infobar_hooks;
-impl_format_state!(State, ibis_pptx::Kind::Workbook);
+impl_format_state!(State, ibis_formats::Kind::Workbook);
 
 #[ibis_office_macros::editor_ext(Xlsx)]
 impl SlideEditor {
@@ -634,7 +634,7 @@ impl FormatEditor for Workbook {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_pptx::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
+    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
         editor.xlsx_bytes_for_path(path, source, copy)
     }
 

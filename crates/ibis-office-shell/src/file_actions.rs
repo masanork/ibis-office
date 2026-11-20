@@ -4,8 +4,8 @@
 //! ファイル > 新規作成 (⌘N for a document) and the file actions every
 //! format shares (コピーを作成…, 書き出し, 印刷…).
 //!
-//! A new file is an empty package written by `ibis_pptx::blank_file`,
-//! opened as a file is (`ibis_pptx::open`), so it saves as an opened file
+//! A new file is an empty package written by `ibis_formats::blank_file`,
+//! opened as a file is (`ibis_formats::open`), so it saves as an opened file
 //! does; it has no path until saved (⌘S asks where).
 
 use gpui_kit::*;
@@ -16,9 +16,9 @@ use crate::editor::SlideEditor;
 impl SlideEditor {
     /// A new, empty file of `kind`: in this window when it shows no
     /// document, else in a new window.
-    pub fn new_file(&mut self, kind: ibis_pptx::Kind, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn new_file(&mut self, kind: ibis_formats::Kind, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);
-        let opened = match ibis_pptx::blank_file(kind).and_then(ibis_pptx::open) {
+        let opened = match ibis_formats::blank_file(kind).and_then(ibis_formats::open) {
             Ok(opened) => opened,
             Err(err) => {
                 self.status = Some(crate::i18n::format("file.new-failed", &[("error", &err)]).into());
@@ -42,7 +42,7 @@ impl SlideEditor {
     /// A new, empty Markdown document backed by a `.docx` flow model (`Document1.md` / `文書 1.md`).
     pub fn new_markdown_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);
-        let opened = match ibis_pptx::markdown::open_markdown(Vec::new()) {
+        let opened = match ibis_formats::markdown::open_markdown(Vec::new()) {
             Ok(opened) => opened,
             Err(err) => {
                 self.status = Some(crate::i18n::format("file.new-failed", &[("error", &err)]).into());
@@ -59,7 +59,7 @@ impl SlideEditor {
     }
 
     /// Show `opened`, a new file named `name` that has no path yet.
-    pub(crate) fn show_new(&mut self, opened: ibis_pptx::Opened, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn show_new(&mut self, opened: ibis_formats::Opened, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.load(opened.presentation, name, window, cx);
         #[cfg(target_os = "android")]
         { self.phone_editing = true; }
@@ -123,7 +123,7 @@ impl SlideEditor {
                         this.fail_loading(crate::i18n::text("jtd.read-only").to_string(), cx);
                         return;
                     }
-                    let name: SharedString = new_file_name(ibis_pptx::Kind::of(&loaded.presentation));
+                    let name: SharedString = new_file_name(ibis_formats::Kind::of(&loaded.presentation));
                     this.load(loaded.presentation, name, window, cx);
                     this.set_loaded_source(loaded.source);
                     this.path = None;
@@ -144,7 +144,7 @@ impl SlideEditor {
 }
 
 /// The name a new file shows until it is saved.
-pub fn new_file_name(kind: ibis_pptx::Kind) -> SharedString {
+pub fn new_file_name(kind: ibis_formats::Kind) -> SharedString {
     (crate::format::info(kind).new_file_name)()
 }
 
@@ -155,20 +155,20 @@ impl SlideEditor {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         if self.is_jtd_read_only() {
             if self.jtd_gallery { return Err(crate::i18n::text("jtd.gallery-export-disabled").to_string()); }
-            return ibis_pptx::jtd::export_docx(self.presentation()).map_err(|e| e.to_string());
+            return ibis_formats::jtd::export_docx(self.presentation()).map_err(|e| e.to_string());
         }
         if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
             return Err(why);
         }
         let source = self.source.clone().ok_or(crate::i18n::text("_shell.this-file-cannot-be-saved-yet").to_string())?;
-        source.save(&self.presentation_for_save(), ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())
+        source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())
     }
 
     /// Write the file as it is now to `path`, leaving the file's own path.
     #[cfg(not(target_family = "wasm"))]
     pub fn copy_to(&self, path: &std::path::Path) -> Result<(), String> {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
-        if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::production_image::supports_extension) {
+        if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::production_image::supports_extension) {
             return Err("Choose a document extension to save the imported image".into());
         }
         self.check_standard_copy_format(path)?;
@@ -179,7 +179,7 @@ impl SlideEditor {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
         if self.is_jtd_read_only() { return Err(crate::i18n::text("jtd.read-only").to_string()); }
-        if self.jtd_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_pptx::jtd::is_native_extension)) {
+        if self.jtd_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::jtd::is_native_extension)) {
             return Err(crate::i18n::text("jtd.source-protected").to_string());
         }
         if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
@@ -191,7 +191,7 @@ impl SlideEditor {
                 let other = other?;
                 (other.bytes, other.protect)
             }
-            None => (source.save(&self.presentation_for_save(), ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?, true),
+            None => (source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())?, true),
         };
         // A copy keeps the protection of the file.
         let bytes = match (&self.protection_password, may_protect) {
@@ -220,7 +220,7 @@ impl SlideEditor {
             || self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
             return Err(crate::i18n::text("jtd.read-only").to_string());
         }
-        let bytes = ibis_pptx::jtd::export_docx(self.presentation()).map_err(|e| e.to_string())?;
+        let bytes = ibis_formats::jtd::export_docx(self.presentation()).map_err(|e| e.to_string())?;
         crate::save::write_replacing(path, &bytes).map_err(|e| e.to_string())
     }
 
@@ -243,7 +243,7 @@ impl SlideEditor {
             || self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
             return Err(crate::i18n::text("jtd.read-only").to_string());
         }
-        let bytes = ibis_pptx::jtd::export_html(self.presentation()).map_err(|e| e.to_string())?;
+        let bytes = ibis_formats::jtd::export_html(self.presentation()).map_err(|e| e.to_string())?;
         crate::save::write_replacing(path, &bytes).map_err(|e| e.to_string())
     }
 
@@ -635,7 +635,7 @@ impl SlideEditor {
         {
             let (stem, _) = self.name_parts();
             self.ask_path(format!("{stem}.odp"), window, cx, |this, path, _window, cx| {
-                let result = ibis_pptx::write_odp(this.presentation()).map_err(|e| e.to_string()).and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+                let result = ibis_formats::write_odp(this.presentation()).map_err(|e| e.to_string()).and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
                 #[cfg(target_os = "android")]
                 if result.is_ok() {
                     gpui_android::sync_saved_file(&path);
@@ -718,7 +718,7 @@ impl SlideEditor {
                     Some(s) => s,
                     None => return this.report(Err(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string()), cx),
                 };
-                let result = source.save_slideshow(this.presentation(), ibis_pptx::SaveOptions::default())
+                let result = source.save_slideshow(this.presentation(), ibis_formats::SaveOptions::default())
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| crate::save::write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)])))
                     .map(|()| crate::i18n::format("file.ppsx-done", &[("path", &path.display())]))
@@ -741,7 +741,7 @@ impl SlideEditor {
                     Some(s) => s,
                     None => return this.report(Err(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string()), cx),
                 };
-                let result = source.save_template(this.presentation(), ibis_pptx::SaveOptions::default())
+                let result = source.save_template(this.presentation(), ibis_formats::SaveOptions::default())
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| crate::save::write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)])))
                     .map(|()| crate::i18n::format("file.potx-done", &[("path", &path.display())]))
@@ -791,7 +791,7 @@ impl SlideEditor {
                     Some(s) => s,
                     None => return this.report(Err(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string()), cx),
                 };
-                let result = source.save_template(this.presentation(), ibis_pptx::SaveOptions::default())
+                let result = source.save_template(this.presentation(), ibis_formats::SaveOptions::default())
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| crate::save::write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)])))
                     .map(|()| crate::i18n::format("file.xltx-done", &[("path", &path.display())]))
@@ -826,7 +826,7 @@ impl SlideEditor {
                     Some(s) => s,
                     None => return this.report(Err(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string()), cx),
                 };
-                let result = source.save_without_macros(this.presentation(), ibis_pptx::SaveOptions::default())
+                let result = source.save_without_macros(this.presentation(), ibis_formats::SaveOptions::default())
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| crate::save::write_replacing(&path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)])))
                     .map(|()| crate::i18n::format("file.without-macros-done", &[("path", &path.display())]))

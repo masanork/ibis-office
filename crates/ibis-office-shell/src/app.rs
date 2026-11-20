@@ -213,7 +213,7 @@ pub fn open_path_in_app(path: std::path::PathBuf, cx: &mut App) {
 
 /// The Web version, opened as `?new=<ext>` (a new tab of ファイル > 新規作成): the page's editor shows a new file of `kind` (K0016).
 #[cfg(target_family = "wasm")]
-pub fn new_file_in_page(kind: ibis_pptx::Kind, cx: &mut App) {
+pub fn new_file_in_page(kind: ibis_formats::Kind, cx: &mut App) {
     for window in cx.windows() {
         let Some(root) = window.downcast::<Root>() else { continue };
         let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();

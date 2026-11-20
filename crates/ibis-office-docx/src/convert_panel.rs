@@ -5,7 +5,7 @@
 //! filenames are selected by the operating system, without a conversion dialog.
 use std::path::Path;
 use gpui_kit::*;
-use ibis_pptx::docx_convert::{DocxConvertFormat, export_docx_format, import_docx_format};
+use ibis_formats::docx_convert::{DocxConvertFormat, export_docx_format, import_docx_format};
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::text;
 

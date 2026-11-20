@@ -6,7 +6,7 @@
 //!
 //! - A card is a picture of the slide it goes to (PowerPoint's file carries it as a PNG as many points wide as the card is
 //!   wide: 240 pixels for a card 3 048 000 EMU wide), with a light-gray outline of 0.25 pt, a link to the slide and a
-//!   `ZoomObject` (`Slide::zoom_objects`). Saving writes the `mc:AlternateContent` PowerPoint reads (`ibis-pptx` `save/pptx_zoom.rs`).
+//!   `ZoomObject` (`Slide::zoom_objects`). Saving writes the `mc:AlternateContent` PowerPoint reads (`ibis-formats` `save/pptx_zoom.rs`).
 //! - The picture is drawn by ibisOffice's own export (`ibisOffice --export png`, a process of its own, as 印刷 and PDF 書き出し do:
 //!   the one way every desktop build draws a slide to a picture); where it cannot run (a test, the Web) the picture is a plain
 //!   outlined page, which PowerPoint shows until the card is made again.

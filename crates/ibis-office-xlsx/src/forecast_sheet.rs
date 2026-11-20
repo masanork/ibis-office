@@ -14,7 +14,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 use ibis_doc_model::forecast_sheet::{self, Settings};
 use ibis_doc_model::{CellEdit, CellRange, CellValue, Command, EmuRect, SheetCommand, StyleChange};
-use ibis_pptx::NewChartKind;
+use ibis_formats::NewChartKind;
 
 use super::analysis_panel::{Resolved, range_text};
 use crate::shell::chrome::SidebarPanel;
@@ -352,10 +352,10 @@ impl SlideEditor {
         }
 
         // The chart: the values, the forecast and its bounds over the timeline, beside the data.
-        let quoted = ibis_pptx::quote_sheet(&name);
-        let rows = |c: u32| ibis_pptx::format_ref(&quoted, CellRange { first_row: 1, first_column: c, last_row: built.last_row, last_column: c });
-        let heading = |c: u32| ibis_pptx::format_ref(&quoted, CellRange { first_row: 0, first_column: c, last_row: 0, last_column: c });
-        let refs: Vec<ibis_pptx::SeriesRefs> = (1..5).map(|c| ibis_pptx::SeriesRefs { name: Some(heading(c)), categories: Some(rows(0)), values: Some(rows(c)), ..Default::default() }).collect();
+        let quoted = ibis_formats::quote_sheet(&name);
+        let rows = |c: u32| ibis_formats::format_ref(&quoted, CellRange { first_row: 1, first_column: c, last_row: built.last_row, last_column: c });
+        let heading = |c: u32| ibis_formats::format_ref(&quoted, CellRange { first_row: 0, first_column: c, last_row: 0, last_column: c });
+        let refs: Vec<ibis_formats::SeriesRefs> = (1..5).map(|c| ibis_formats::SeriesRefs { name: Some(heading(c)), categories: Some(rows(0)), values: Some(rows(c)), ..Default::default() }).collect();
         let kind = if columns { NewChartKind::ClusteredColumn } else { NewChartKind::Line };
         let message = match self.source.clone() {
             Some(source) => {

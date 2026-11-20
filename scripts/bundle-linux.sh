@@ -57,7 +57,7 @@ cp "$ICONS/256.png" "$APPDIR/dev.sorane.Docs.png"
 ln -s dev.sorane.Docs.png "$APPDIR/.DirIcon"
 
 # The pictures of Word's art page borders, read when a document uses one.
-cp crates/ibis-pptx/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip crates/ibis-pptx/data/artborders/ECMA-NOTICE.txt "$APPDIR/usr/share/ibisOffice/artborders/"
+cp crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip crates/ibis-formats/data/artborders/ECMA-NOTICE.txt "$APPDIR/usr/share/ibisOffice/artborders/"
 
 # ibisOffice's licences, and the third-party components in the AppImage (its
 # runtime's too) with the notices their licences ask for, made afresh from

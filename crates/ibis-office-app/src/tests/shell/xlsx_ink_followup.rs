@@ -110,7 +110,7 @@ fn csv_path(){
     s.key("escape");
     assert!(s.with(|e,_|e.wb().panels.import_text.is_some()),"Escape closes the encoding popup, not its import dialog");
     assert!(s.with(|e,_|e.toolbar_search_open.is_none()),"Escape dismissed only the nested popup");
-    s.with(|e,_|{let p=e.wb().panels.import_text.as_ref().unwrap();let parsed=ibis_pptx::csv::import(p.data.as_ref().unwrap(),&ibis_pptx::csv::ImportOptions::default()).unwrap();assert_eq!(parsed.rows.len(),6);assert_eq!(parsed.rows[0],vec!["first-record","001"]);});
+    s.with(|e,_|{let p=e.wb().panels.import_text.as_ref().unwrap();let parsed=ibis_formats::csv::import(p.data.as_ref().unwrap(),&ibis_formats::csv::ImportOptions::default()).unwrap();assert_eq!(parsed.rows.len(),6);assert_eq!(parsed.rows[0],vec!["first-record","001"]);});
 }
 /// K0021 F: with オフ selected the ink pane stays open, but a click in the body places the caret and a drag selects text.
 fn docx_ink_off(){

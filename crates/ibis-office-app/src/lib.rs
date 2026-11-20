@@ -474,7 +474,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             return Err("--require-preview needs previewSha256 in the edit proposal".into());
         }
         if format == "ai-preview" {
-            let preview = ibis_pptx::markdown::preview_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
+            let preview = ibis_formats::markdown::preview_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
             println!("{preview:#}");
         } else {
             use std::io::Write;
@@ -483,11 +483,11 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 return Err("AI editing requires a new .docx output file".into());
             }
             let (bytes, receipt) = if args.ai_receipt {
-                let (bytes, report) = ibis_pptx::markdown::apply_ai_edit_with_receipt(&data, &proposal)
+                let (bytes, report) = ibis_formats::markdown::apply_ai_edit_with_receipt(&data, &proposal)
                     .map_err(|e| e.to_string())?;
                 (bytes, Some(report))
             } else {
-                let bytes = ibis_pptx::markdown::apply_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
+                let bytes = ibis_formats::markdown::apply_ai_edit(&data, &proposal).map_err(|e| e.to_string())?;
                 (bytes, None)
             };
             let parent = out.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
@@ -508,7 +508,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let query = std::fs::read(query_path).map_err(|e| format!("{}: {e}", query_path.display()))?;
         let query = serde_json::from_slice(&query).map_err(|e| format!("{}: {e}", query_path.display()))?;
-        let result = ibis_pptx::markdown::locate_ai_source(&data, &query)
+        let result = ibis_formats::markdown::locate_ai_source(&data, &query)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         println!("{result:#}");
         return Ok(());
@@ -526,14 +526,14 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .unwrap_or_else(|| "document".into());
         let raw_data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         if format == "ai-json" {
-            let export = ibis_pptx::markdown::export_ai_source(&raw_data)
+            let export = ibis_formats::markdown::export_ai_source(&raw_data)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             let out_path = out_dir.join(format!("{stem}.ai.json"));
             std::fs::write(&out_path, format!("{export:#}\n"))
                 .map_err(|e| format!("{}: {e}", out_path.display()))?;
             return Ok(());
         }
-        let data = match ibis_pptx::lawtext::input_to_markdown(&raw_data)
+        let data = match ibis_formats::lawtext::input_to_markdown(&raw_data)
             .map_err(|e| format!("{}: {e}", path.display()))?
         {
             Some(md) => md.into_bytes(),
@@ -545,7 +545,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "md" | "markdown" | "xml" | "lawtext" | "txt"));
         match format {
             "docx" => {
-                let opened = ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent())
+                let opened = ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_bytes = opened
                     .source
@@ -557,7 +557,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             }
             "pptx" => {
                 let opened =
-                    ibis_pptx::markdown::open_markdown_presentation_with_base_dir(data, path.parent())
+                    ibis_formats::markdown::open_markdown_presentation_with_base_dir(data, path.parent())
                         .map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_bytes = opened
                     .source
@@ -568,7 +568,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
             }
             "xlsx" => {
-                let out_bytes = ibis_pptx::markdown::import_markdown_to_xlsx_bytes(&data)
+                let out_bytes = ibis_formats::markdown::import_markdown_to_xlsx_bytes(&data)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.xlsx"));
                 std::fs::write(&out_path, out_bytes)
@@ -576,16 +576,16 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             }
             "lawxml" | "lawtext" => {
                 let presentation = if is_text_md {
-                    ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent())
+                    ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
                         .map_err(|e| format!("{}: {e}", path.display()))?
                         .presentation
                 } else {
-                    ibis_pptx::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
+                    ibis_formats::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };
                 let (ext, content) = if format == "lawxml" {
-                    ("xml", ibis_pptx::lawtext::export_presentation_to_law_xml(&presentation))
+                    ("xml", ibis_formats::lawtext::export_presentation_to_law_xml(&presentation))
                 } else {
-                    ("lawtext", ibis_pptx::lawtext::export_presentation_to_lawtext(&presentation))
+                    ("lawtext", ibis_formats::lawtext::export_presentation_to_lawtext(&presentation))
                 };
                 let content = content.map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.{ext}"));
@@ -594,13 +594,13 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             }
             _ => {
                 let presentation = if is_text_md {
-                    ibis_pptx::markdown::open_markdown_with_base_dir(data, path.parent())
+                    ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
                         .map_err(|e| format!("{}: {e}", path.display()))?
                         .presentation
                 } else {
-                    ibis_pptx::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
+                    ibis_formats::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };
-                let md = ibis_pptx::markdown::export_presentation_to_markdown(&presentation)
+                let md = ibis_formats::markdown::export_presentation_to_markdown(&presentation)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.md"));
                 std::fs::write(&out_path, md.as_bytes())
@@ -616,7 +616,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 let path = args.path.as_deref().ok_or("name the .xlsx or .xls file")?;
                 // Read as the PDF export reads it, so the rows are the ones its pages are laid out from.
                 let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let presentation = ibis_pptx::read(&data).map_err(|e| format!("{}: {e}", path.display()))?;
+                let presentation = ibis_formats::read(&data).map_err(|e| format!("{}: {e}", path.display()))?;
                 return export::row_heights(presentation, args.out_file.as_deref());
             }
             "ui" => {
@@ -645,7 +645,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "slides".into());
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let presentation = ibis_pptx::read(&data).map_err(|e| format!("{}: {e}", path.display()))?;
+        let presentation = ibis_formats::read(&data).map_err(|e| format!("{}: {e}", path.display()))?;
         let slides = args.slides.as_deref().map(export::parse_slides).transpose()?.unwrap_or_default();
         let file_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
         let options = export::Options {
@@ -671,7 +671,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             notes_pages: args.notes_pages,
             outline_pages: args.outline_pages,
             notes_source: args.notes_pages.then(|| data.clone()),
-            handout_marks: export_print::HandoutMarks { header: args.handout_header.clone(), date: args.handout_date.clone(), footer: args.handout_footer.clone(), number: args.handout_number, layout: ibis_pptx::handout_master::layout(&data).ok() },
+            handout_marks: export_print::HandoutMarks { header: args.handout_header.clone(), date: args.handout_date.clone(), footer: args.handout_footer.clone(), number: args.handout_number, layout: ibis_formats::handout_master::layout(&data).ok() },
         };
         export::export(presentation, &options)
     }
@@ -1109,7 +1109,7 @@ mod web {
         let mut svg_text = String::new();
         for media in &presentation.media {
             if media.format == ibis_doc_model::MediaFormat::Svg {
-                ibis_pptx::mermaid::append_svg_text(&media.data, &mut svg_text);
+                ibis_formats::mermaid::append_svg_text(&media.data, &mut svg_text);
             }
         }
         if !svg_text.trim().is_empty() {

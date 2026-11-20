@@ -118,7 +118,7 @@ pub(crate) fn run(
                 }
             } else if let Some(page) = step.strip_prefix("page:") {
                 editor.update(app, |e, cx| e.show_slide_number(page.parse().unwrap_or(1), window, cx));
-            } else if let Some(kind) = step.strip_prefix("loading:").and_then(ibis_pptx::Kind::from_extension) {
+            } else if let Some(kind) = step.strip_prefix("loading:").and_then(ibis_formats::Kind::from_extension) {
                 // What a window shows while a file of the kind loads.
                 editor.update(app, |e, cx| {
                     e.has_document = false;

@@ -26,7 +26,7 @@ use std::ops::Range;
 
 use gpui_kit::*;
 use ibis_doc_model::{EmuRect, Presentation, SlideId};
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 
 use crate::chrome::{Menus, SidebarPanel, ToolItem};
 use crate::editor::{SlideEditor, WorkspaceContent};
@@ -86,7 +86,7 @@ pub trait FormatState: std::any::Any {
 macro_rules! impl_format_state {
     ($state:ty, $kind:expr) => {
         impl $crate::format::FormatState for $state {
-            fn kind(&self) -> ibis_pptx::Kind {
+            fn kind(&self) -> ibis_formats::Kind {
                 $kind
             }
             fn as_any(&self) -> &dyn std::any::Any {
@@ -1039,13 +1039,13 @@ pub trait FormatEditor {
 
     /// The data of chart `shape` as the file has it (its workbook, or one made from its cached values), for the data
     /// grid. By default the chart is a shape of page `slide`; a document's is in its text.
-    fn read_chart_data(editor: &SlideEditor, source: &ibis_pptx::Source, slide: SlideId, shape: ibis_doc_model::ShapeId) -> Result<ibis_pptx::ChartData, ibis_pptx::Error> {
+    fn read_chart_data(editor: &SlideEditor, source: &ibis_formats::Source, slide: SlideId, shape: ibis_doc_model::ShapeId) -> Result<ibis_formats::ChartData, ibis_formats::Error> {
         source.chart_data(editor.presentation(), slide, shape)
     }
 
     /// The data grid of chart `shape` changed: the chart is made anew from `data` (`book`: the grid's workbook model).
     /// By default the chart is a shape of page `slide` (`SlideEditor::apply_shape_chart_data`).
-    fn apply_chart_data(editor: &mut SlideEditor, slide: SlideId, shape: ibis_doc_model::ShapeId, book: &Presentation, data: ibis_pptx::ChartData, cx: &mut Context<SlideEditor>) {
+    fn apply_chart_data(editor: &mut SlideEditor, slide: SlideId, shape: ibis_doc_model::ShapeId, book: &Presentation, data: ibis_formats::ChartData, cx: &mut Context<SlideEditor>) {
         editor.apply_shape_chart_data(slide, shape, book, data, cx)
     }
 
@@ -1059,7 +1059,7 @@ pub trait FormatEditor {
     /// (lt1, dk1, lt2, dk2, accent1–6). Office's own by default, as it was before the hook: only a workbook's theme
     /// reaches the palettes (the file was asked for a workbook's theme part, which a presentation and a document lack).
     fn palette_theme_colors(_editor: &SlideEditor) -> [ibis_doc_model::Rgb; 10] {
-        ibis_pptx::workbook_theme_colors(None)
+        ibis_formats::workbook_theme_colors(None)
     }
 
     /// The palettes the format offers: the id, the i18n key of the name, the colours by their scheme names (`dk1`, `accent1`, …).
@@ -1096,7 +1096,7 @@ pub trait FormatEditor {
     /// presentation as .ppsx, a template): None for the format's own (`Source::save` of `model_for_save`, which the file's
     /// password encrypts). `copy`: the file is written beside its own (the AutoRecover snapshot, a backup), not saved.
     #[cfg(not(target_family = "wasm"))]
-    fn bytes_for_path(_editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_pptx::Source, _copy: bool) -> Option<Result<FileBytes, String>> {
+    fn bytes_for_path(_editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>> {
         None
     }
 
@@ -1461,8 +1461,8 @@ pub trait FormatDriver: Sync {
     fn theme_panel_apply(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn chart_data_window<'a>(&self, _editor: &'a SlideEditor) -> Option<&'a crate::chart_data::DataWindow>;
     fn chart_data_slot<'a>(&self, _editor: &'a mut SlideEditor) -> Option<&'a mut Option<crate::chart_data::DataWindow>>;
-    fn read_chart_data(&self, _editor: &SlideEditor, _source: &ibis_pptx::Source, _slide: SlideId, _shape: ibis_doc_model::ShapeId) -> Result<ibis_pptx::ChartData, ibis_pptx::Error>;
-    fn apply_chart_data(&self, _editor: &mut SlideEditor, _slide: SlideId, _shape: ibis_doc_model::ShapeId, _book: &Presentation, _data: ibis_pptx::ChartData, _cx: &mut Context<SlideEditor>);
+    fn read_chart_data(&self, _editor: &SlideEditor, _source: &ibis_formats::Source, _slide: SlideId, _shape: ibis_doc_model::ShapeId) -> Result<ibis_formats::ChartData, ibis_formats::Error>;
+    fn apply_chart_data(&self, _editor: &mut SlideEditor, _slide: SlideId, _shape: ibis_doc_model::ShapeId, _book: &Presentation, _data: ibis_formats::ChartData, _cx: &mut Context<SlideEditor>);
     fn chart_panel_apply(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn palette_theme_colors(&self, _editor: &SlideEditor) -> [ibis_doc_model::Rgb; 10];
     fn theme_palettes(&self) -> Vec<(&'static str, &'static str, Vec<(&'static str, ibis_doc_model::Rgb)>)>;
@@ -1473,7 +1473,7 @@ pub trait FormatDriver: Sync {
     #[cfg(not(target_family = "wasm"))]
     fn pdf_job(&self, editor: &SlideEditor, _printing: bool) -> Result<PdfJob, String>;
     #[cfg(not(target_family = "wasm"))]
-    fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_pptx::Source, _copy: bool) -> Option<Result<FileBytes, String>>;
+    fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>>;
     #[cfg(not(target_family = "wasm"))]
     fn new_file_save_folder(&self, _editor: &SlideEditor) -> Option<std::path::PathBuf>;
     fn export_args(&self, _editor: &SlideEditor) -> Vec<&'static str>;
@@ -2011,10 +2011,10 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn chart_data_slot<'a>(&self, _editor: &'a mut SlideEditor) -> Option<&'a mut Option<crate::chart_data::DataWindow>> {
         F::chart_data_slot(_editor)
     }
-    fn read_chart_data(&self, _editor: &SlideEditor, _source: &ibis_pptx::Source, _slide: SlideId, _shape: ibis_doc_model::ShapeId) -> Result<ibis_pptx::ChartData, ibis_pptx::Error> {
+    fn read_chart_data(&self, _editor: &SlideEditor, _source: &ibis_formats::Source, _slide: SlideId, _shape: ibis_doc_model::ShapeId) -> Result<ibis_formats::ChartData, ibis_formats::Error> {
         F::read_chart_data(_editor, _source, _slide, _shape)
     }
-    fn apply_chart_data(&self, _editor: &mut SlideEditor, _slide: SlideId, _shape: ibis_doc_model::ShapeId, _book: &Presentation, _data: ibis_pptx::ChartData, _cx: &mut Context<SlideEditor>) {
+    fn apply_chart_data(&self, _editor: &mut SlideEditor, _slide: SlideId, _shape: ibis_doc_model::ShapeId, _book: &Presentation, _data: ibis_formats::ChartData, _cx: &mut Context<SlideEditor>) {
         F::apply_chart_data(_editor, _slide, _shape, _book, _data, _cx)
     }
     fn chart_panel_apply(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) {
@@ -2043,7 +2043,7 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
         F::pdf_job(editor, _printing)
     }
     #[cfg(not(target_family = "wasm"))]
-    fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_pptx::Source, _copy: bool) -> Option<Result<FileBytes, String>> {
+    fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>> {
         F::bytes_for_path(_editor, _path, _source, _copy)
     }
     #[cfg(not(target_family = "wasm"))]

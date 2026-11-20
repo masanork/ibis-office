@@ -105,8 +105,8 @@ fn rich_notes(source: Option<&[u8]>, index: usize, notes: &str) -> crate::export
         return plain();
     }
     let Some(data) = source else { return plain() };
-    let Ok(temp) = ibis_pptx::notes_page::build(data, index) else { return plain() };
-    let Ok(opened) = ibis_pptx::open(temp) else { return plain() };
+    let Ok(temp) = ibis_formats::notes_page::build(data, index) else { return plain() };
+    let Ok(opened) = ibis_formats::open(temp) else { return plain() };
     let Some(slide) = opened.presentation.slides.first() else { return plain() };
     let normal = |t: &str| t.replace('\u{b}', "\n").trim().to_string();
     let body = slide.shapes.iter().filter_map(|s| s.text_body()).find(|b| normal(&b.text()) == notes.trim()).or_else(|| slide.shapes.iter().filter_map(|s| s.text_body()).find(|b| !b.text().trim().is_empty()));
@@ -558,13 +558,13 @@ pub(crate) fn preview_pages(presentation: &Presentation, slide: &Slide, resource
 /// 9.44-character columns (57 pt on the screen, 52.46 pt printed) and 18 pt rows (16.32 pt);
 /// `IBIS_PRINT_COLUMNS` and `IBIS_PRINT_ROWS` override them for measuring.
 pub(crate) fn windows_print_geometry(presentation: &mut Presentation) {
-    if presentation.workbook.is_none() || ibis_pptx::EXCEL_METRICS != ibis_pptx::ExcelMetrics::Windows {
+    if presentation.workbook.is_none() || ibis_formats::EXCEL_METRICS != ibis_formats::ExcelMetrics::Windows {
         return;
     }
     let factor = |name: &str, default: f64| std::env::var(name).ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(default);
     let style = presentation.workbook.as_ref().and_then(|w| w.default_style.clone()).unwrap_or_default();
     let font_pt = if style.font_size > 0 { style.font_size as f64 / 100.0 } else { 11.0 };
-    let by_font = ibis_pptx::EXCEL_METRICS.print_column_factor(style.font.as_deref(), font_pt);
+    let by_font = ibis_formats::EXCEL_METRICS.print_column_factor(style.font.as_deref(), font_pt);
     // The row factor is the printer's standard row over the screen's, from the Normal font's text metrics; the
     // mechanism is not worked out yet (0.9067 is the one measured for ＭＳ Ｐゴシック 11, todo-adhoc A1: an exception the
     // user decided to keep, 2026-10-21). Without it the corpus' xlsx page counts fall from 117 to 77 of 172 matching
@@ -608,7 +608,7 @@ pub(crate) fn windows_print_geometry(presentation: &mut Presentation) {
                 sheet.columns.iter_mut().for_each(|c| *c = by(*c, cf));
                 // The text of a printed column breaks in a wider column than the one drawn (`printed_text_column_pt`).
                 let extra: Vec<i64> = sheet.columns.iter().enumerate().map(|(i, &c)| {
-                    let text = sheet.column_chars.get(&(i as u32)).filter(|_| c > 0).and_then(|&w| ibis_pptx::EXCEL_METRICS.printed_text_column_pt(style.font.as_deref(), font_pt, w));
+                    let text = sheet.column_chars.get(&(i as u32)).filter(|_| c > 0).and_then(|&w| ibis_formats::EXCEL_METRICS.printed_text_column_pt(style.font.as_deref(), font_pt, w));
                     text.map_or(0, |pt| (pt * ibis_doc_model::EMU_PER_POINT as f64).round() as i64 - c)
                 }).collect();
                 *sheet.printed_text_extra = extra;
@@ -1865,7 +1865,7 @@ mod tests {
     #[test]
     fn preview_pages_break_at_the_manual_breaks() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test/editing/xlsx-sales.xlsx");
-        let mut presentation = ibis_pptx::read_xlsx(&std::fs::read(path).unwrap()).unwrap();
+        let mut presentation = ibis_formats::read_xlsx(&std::fs::read(path).unwrap()).unwrap();
         let slide = presentation.slides.first_mut().unwrap();
         let mut frame_y = 0;
         let mut break_y = 0;
@@ -1891,7 +1891,7 @@ mod tests {
     fn page_range_grows_with_entries_past_the_used_cells() {
         use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Document, SheetCommand};
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test/editing/xlsx-sales.xlsx");
-        let presentation = ibis_pptx::read_xlsx(&std::fs::read(path).unwrap()).unwrap();
+        let presentation = ibis_formats::read_xlsx(&std::fs::read(path).unwrap()).unwrap();
         let slide_id = presentation.slides[0].id;
         let mut document = Document::new(presentation);
         let reach = |document: &Document| {

@@ -1511,7 +1511,7 @@ impl SlideEditor {
 
     /// 選択中の図形の形状（プリセット geometry）を変更する (XLSX-OBJECT-002).
     pub(crate) fn change_sheet_shape(&mut self, preset: &str, cx: &mut Context<Self>) {
-        let Some(geometry) = ibis_pptx::preset_geometry(preset) else { return };
+        let Some(geometry) = ibis_formats::preset_geometry(preset) else { return };
         let slide = self.current_slide;
         let mut ids = self.selected_ids();
         if ids.is_empty() {
@@ -2021,7 +2021,7 @@ impl SlideEditor {
 
     /// Insert a screenshot of an available window (window snapshot).
     pub(crate) fn insert_sheet_screenshot_window(&mut self, cx: &mut Context<Self>) -> Option<ShapeId> {
-        let (data, _, _) = ibis_pptx::screenshot_snapshot(640, 360);
+        let (data, _, _) = ibis_formats::screenshot_snapshot(640, 360);
         self.insert_sheet_picture("Screenshot_Window.png", data, cx)
     }
 
@@ -2030,7 +2030,7 @@ impl SlideEditor {
         if let Some(id) = self.insert_sheet_screenshot_from_clipboard(cx) {
             return Some(id);
         }
-        let (data, _, _) = ibis_pptx::screenshot_snapshot(480, 270);
+        let (data, _, _) = ibis_formats::screenshot_snapshot(480, 270);
         self.insert_sheet_picture("Screen_Clipping.png", data, cx)
     }
 

@@ -212,7 +212,7 @@ fn wrap_round_trip() {
     assert_eq!(slide.ibis_wrap_ignore.len(), 1);
     // PowerPoint skips what it does not know: the extensions are `ext` elements with a uri of their own, inside the
     // `extLst` of the presentation and of the shapes' `cNvPr`; the rest of the part is as before.
-    let package = ibis_pptx::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
+    let package = ibis_formats::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
     let presentation = String::from_utf8(package.read("ppt/presentation.xml").unwrap()).unwrap();
     assert!(presentation.contains("{1B15C0DE-0001-4B15-9E77-1B15A0F0C001}") && presentation.contains("ibis:features"), "{presentation}");
     let part = (1..=20).filter_map(|n| package.read(&format!("ppt/slides/slide{n}.xml")).ok()).map(|b| String::from_utf8(b).unwrap()).find(|x| x.contains("ibis:shape")).expect("a slide with the shapes' extension");
@@ -223,7 +223,7 @@ fn wrap_round_trip() {
     s.update(|e, _, _| e.set_selection(vec![text]));
     s.update(|e, _, cx| e.toggle_selected_ignore_wrap(cx));
     let path = s.save_as("ibis-wrap-off.pptx");
-    let package = ibis_pptx::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
+    let package = ibis_formats::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
     assert!((1..=20).filter_map(|n| package.read(&format!("ppt/slides/slide{n}.xml")).ok()).all(|b| !String::from_utf8(b).unwrap().contains("ibis:shape")));
 }
 
@@ -448,7 +448,7 @@ fn panel_distances() {
     let saved = s.reopen();
     let slide = saved.slides.iter().find(|sl| !sl.ibis_wrap.is_empty()).expect("a wrap is read");
     assert_eq!(slide.ibis_wrap.values().next().unwrap().margins, [1_800_000, 0, 1_800_000, 270_000]);
-    let package = ibis_pptx::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
+    let package = ibis_formats::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
     let part = (1..=20).filter_map(|n| package.read(&format!("ppt/slides/slide{n}.xml")).ok()).map(|b| String::from_utf8(b).unwrap()).find(|x| x.contains("ibis:shape")).unwrap();
     assert!(part.contains("marginL=\"1800000\"") && part.contains("marginT=\"0\"") && part.contains("marginR=\"1800000\"") && part.contains("marginB=\"270000\""), "{part}");
 }

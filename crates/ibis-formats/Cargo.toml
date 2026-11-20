@@ -1,0 +1,51 @@
+[package]
+name = "ibis-formats"
+description = "Reads and saves PowerPoint (.pptx), Excel (.xlsx) and Word (.docx) files for ibisOffice."
+license = "AGPL-3.0-only"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.22"
+chrono = "0.4"
+ibis-calc.workspace = true
+ibis-doc-model.workspace = true
+j2k-rs = { workspace = true, features = ["color-managed-preview"] }
+exr = { version = "1.74", default-features = false }
+ag-psd = "0.3.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "tiff", "exr"] }
+ibis-ooxml.workspace = true
+miniz_oxide = "0.8"
+roxmltree = "0.21"
+encoding_rs = "0.8"
+delharc = { version = "0.8", default-features = false }
+dicom-object = { version = "0.10.1", default-features = false, features = ["deflate"] }
+pure_jpegls = "2.1"
+jxl-oxide = { version = "0.12", default-features = false }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+sha2 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = "0.24"
+foreign-types = "0.5"
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+ibis-heic-web = { path = "../ibis-heic-web" }
+
+[dev-dependencies]
+dicom-core = "0.10.1"
+ibis-emf.workspace = true
+
+[[bin]]
+name = "ibis-office-roundtrip"
+path = "src/bin/roundtrip.rs"
+
+[[bin]]
+name = "ibis-office-geometry"
+path = "src/bin/geometry.rs"
+
+[[bin]]
+name = "ibis-calc-check"
+path = "src/bin/calc_check.rs"

@@ -13,7 +13,7 @@ ibis-xps.workspace = true
 ibis-office-base.workspace = true
 ibis-office-shell.workspace = true
 ibis-doc-model.workspace = true
-ibis-pptx.workspace = true
+ibis-formats.workspace = true
 gpui-kit.workspace = true
 image = { version = "0.25", default-features = false }
 ibis-xdw.workspace = true

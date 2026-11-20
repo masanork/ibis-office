@@ -11,7 +11,7 @@ use crate::docx::scenarios::DocSteps;
 use crate::shell::dialog::InteractionLayer;
 use crate::xlsx::scenarios::SheetSteps;
 use gpui_kit::*;
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 use crate::docx::ext::*;
 use crate::xlsx::ext::*;
 

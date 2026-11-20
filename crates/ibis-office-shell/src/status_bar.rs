@@ -186,7 +186,7 @@ impl SlideEditor {
     }
 
     fn render_image_alpha(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        use ibis_pptx::production_image::AlphaPreview;
+        use ibis_formats::production_image::AlphaPreview;
         let view = self.production_image_view.as_ref()?;
         let (caption, next) = match view.alpha {
             AlphaPreview::Original => ("view.image-background-page", AlphaPreview::Checker),

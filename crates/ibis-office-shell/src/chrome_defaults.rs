@@ -110,7 +110,7 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 let icon = path
                     .extension()
                     .and_then(|e| e.to_str())
-                    .and_then(ibis_pptx::Kind::from_extension)
+                    .and_then(ibis_formats::Kind::from_extension)
                     .map_or(OTHER_FILE_ICON, |kind| crate::format::info(kind).icon);
                 let path = path.clone();
                 let exists = path.is_file();
@@ -160,7 +160,7 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 item("file.export.svg", "draw").into(),
             ];
             #[cfg(target_family = "wasm")]
-            if matches!(editor.kind(), ibis_pptx::Kind::Workbook | ibis_pptx::Kind::Presentation) {
+            if matches!(editor.kind(), ibis_formats::Kind::Workbook | ibis_formats::Kind::Presentation) {
                 entries.push(item_key("file.export.html", "description", "docx.convert.format.html").on(|this, window, cx| this.export_office_html(window, cx)).into());
             }
             if editor.is_jtd_read_only() && !editor.jtd_gallery {

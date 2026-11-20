@@ -117,9 +117,9 @@ impl SlideEditor {
         let (stem, _) = self.name_parts();
         let stem = if stem.is_empty() { "document" } else { &stem };
         let result = if self.is_workbook() {
-            ibis_pptx::html_export::export_workbook_html(self.presentation(), stem)
+            ibis_formats::html_export::export_workbook_html(self.presentation(), stem)
         } else {
-            ibis_pptx::html_export::export_slides_html(self.presentation(), stem)
+            ibis_formats::html_export::export_slides_html(self.presentation(), stem)
         };
         match result {
             Ok(bytes) => if let Err(error) = crate::web::download_html(&format!("{stem}.html"), bytes) {
@@ -138,7 +138,7 @@ impl SlideEditor {
     /// Download only the content currently recognized from the read-only JTD.
     pub(crate) fn export_jtd_docx(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_jtd_read_only() || self.jtd_gallery { return; }
-        match ibis_pptx::jtd::export_docx(self.presentation()) {
+        match ibis_formats::jtd::export_docx(self.presentation()) {
             Ok(bytes) => {
                 let name = self.file_name.as_deref().unwrap_or("document.jtd");
                 let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
@@ -152,7 +152,7 @@ impl SlideEditor {
     /// Download the content currently recognized from the read-only JTD as HTML.
     pub(crate) fn export_jtd_html(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_jtd_read_only() { return; }
-        match ibis_pptx::jtd::export_html(self.presentation()) {
+        match ibis_formats::jtd::export_html(self.presentation()) {
             Ok(bytes) => {
                 let name = self.file_name.as_deref().unwrap_or("document.jtd");
                 let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
@@ -176,9 +176,9 @@ impl SlideEditor {
         };
         let name = self.file_name.as_deref().unwrap_or("");
         let docx_name = name.rsplit_once('.')
-            .filter(|(_, extension)| ibis_pptx::production_image::supports_extension(extension))
+            .filter(|(_, extension)| ibis_formats::production_image::supports_extension(extension))
             .map(|(stem, _)| format!("{stem}.docx"));
-        match source.save(&self.presentation_for_save(), ibis_pptx::SaveOptions::default()) {
+        match source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()) {
             Ok(bytes) => embed_action_js("download", docx_name.as_deref().unwrap_or(name), Some(bytes)),
             Err(err) => {
                 self.status = Some(crate::i18n::format("file.save-failed", &[("error", &err)]).into());

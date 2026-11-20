@@ -114,7 +114,7 @@ pub const WORDART_PRESETS: &[WordArtPreset] = &[
 ];
 
 pub fn new_shape(id: ShapeId, preset: &str, frame: EmuRect) -> Shape {
-    let geometry = ibis_pptx::preset_geometry(preset).unwrap_or(Geometry::Rect);
+    let geometry = ibis_formats::preset_geometry(preset).unwrap_or(Geometry::Rect);
     let mut auto = AutoShape::new(geometry, Fill::Solid(Color::opaque(Rgb(0x4472c4))), Some(Stroke::solid(Color::opaque(Rgb(0x2f528f)), 12_700)));
     let style = TextStyle { color: Rgb::WHITE, align: TextAlign::Center, ..TextStyle::default() };
     auto.text = Some(TextBody { anchor: VerticalAnchor::Middle, ..TextBody::plain("", style) });
@@ -183,7 +183,7 @@ pub fn new_connector(
             shape
         }
         LineKind::Bent => {
-            let geom = ibis_pptx::preset_geometry("bentConnector3").unwrap_or(Geometry::Rect);
+            let geom = ibis_formats::preset_geometry("bentConnector3").unwrap_or(Geometry::Rect);
             let auto = AutoShape::new(geom, Fill::None, Some(stroke));
             let mut shape = Shape::new(id, frame, ShapeKind::Auto(auto));
             shape.flip_h = flip_h;
@@ -191,7 +191,7 @@ pub fn new_connector(
             shape
         }
         LineKind::Curved => {
-            let geom = ibis_pptx::preset_geometry("curvedConnector3").unwrap_or(Geometry::Rect);
+            let geom = ibis_formats::preset_geometry("curvedConnector3").unwrap_or(Geometry::Rect);
             let auto = AutoShape::new(geom, Fill::None, Some(stroke));
             let mut shape = Shape::new(id, frame, ShapeKind::Auto(auto));
             shape.flip_h = flip_h;
@@ -551,7 +551,7 @@ pub enum ShapeThumb {
 }
 
 /// The picture of a shape in a gallery of the menus (挿入 > 図形 of each screen), `width` pixels wide and 4:3: the shape drawn by the
-/// shapes' own drawing (the preset definitions of ECMA-376, `ibis_pptx::preset_geometry`), as it is when inserted (the fill and
+/// shapes' own drawing (the preset definitions of ECMA-376, `ibis_formats::preset_geometry`), as it is when inserted (the fill and
 /// outline of a new shape), inside a margin. The three screens' galleries are made of this one part.
 pub fn shape_thumb(editor: &crate::editor::SlideEditor, thumb: ShapeThumb, width: f32) -> gpui_kit::AnyElement {
     use gpui_kit::{div, IntoElement as _, ParentElement as _, Styled as _};
@@ -566,7 +566,7 @@ pub fn shape_thumb(editor: &crate::editor::SlideEditor, thumb: ShapeThumb, width
     let line_color = Color::opaque(Rgb(0x2F528F));
     let kind = match thumb {
         ShapeThumb::Preset(preset) => {
-            let geometry = ibis_pptx::preset_geometry(preset).unwrap_or(Geometry::Rect);
+            let geometry = ibis_formats::preset_geometry(preset).unwrap_or(Geometry::Rect);
             ShapeKind::Auto(AutoShape::new(geometry, Fill::Solid(fill_color), Some(Stroke::solid(line_color, 12_700))))
         }
         ShapeThumb::Line { preset, arrow } => {
@@ -574,7 +574,7 @@ pub fn shape_thumb(editor: &crate::editor::SlideEditor, thumb: ShapeThumb, width
             if arrow {
                 stroke.tail = ibis_doc_model::LineEnd::parse(Some("triangle"), None, None);
             }
-            match ibis_pptx::preset_geometry(preset).filter(|_| preset != "line") {
+            match ibis_formats::preset_geometry(preset).filter(|_| preset != "line") {
                 Some(geometry) => ShapeKind::Auto(AutoShape::new(geometry, Fill::None, Some(stroke))),
                 None => ShapeKind::Line(stroke),
             }

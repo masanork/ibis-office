@@ -105,8 +105,8 @@ pub fn language() -> Language {
 
 fn set_language(language: Language) {
     CURRENT.store(if language == Language::Japanese { 1 } else { 2 }, Ordering::Relaxed);
-    // The names saved in documents follow the UI too (ibis-pptx has no tables).
-    ibis_pptx::set_english_names(language == Language::English);
+    // The names saved in documents follow the UI too (ibis-formats has no tables).
+    ibis_formats::set_english_names(language == Language::English);
 }
 
 /// The language a setting shows.

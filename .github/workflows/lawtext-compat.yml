@@ -2,9 +2,9 @@ name: Lawtext compatibility
 on:
   push:
     branches: [masanork]
-    paths: ['crates/ibis-pptx/**', 'crates/ibis-doc-model/**', 'Cargo.lock', '.github/workflows/lawtext-compat.yml']
+    paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', '.github/workflows/lawtext-compat.yml']
   pull_request:
-    paths: ['crates/ibis-pptx/**', 'crates/ibis-doc-model/**', 'Cargo.lock', '.github/workflows/lawtext-compat.yml']
+    paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', '.github/workflows/lawtext-compat.yml']
 permissions:
   contents: read
 jobs:
@@ -20,6 +20,6 @@ jobs:
         with:
           toolchain: nightly-2026-10-28
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked -p ibis-pptx --lib lawtext
-      - run: cargo test --locked -p ibis-pptx --test lawtext_corpus
-      - run: cargo test --locked -p ibis-pptx --test ai_document_export
+      - run: cargo test --locked -p ibis-formats --lib lawtext
+      - run: cargo test --locked -p ibis-formats --test lawtext_corpus
+      - run: cargo test --locked -p ibis-formats --test ai_document_export

@@ -35,7 +35,7 @@ BUILDS = {
 }
 # What each build ships besides the app: the AppImage's runtime is in the Linux one.
 EXTRA_PACKAGES = {"web": ["ibis-font-subsetter"], "linux": ["ibis-appimage"]}
-OWN = {"ibis-font-subsetter", "ibis-office-app", "ibis-office-shell", "ibis-office-pptx", "ibis-office-docx", "ibis-office-xlsx", "ibis-office-render", "ibis-office-base", "ibis-office-macros", "ibis-doc-model", "ibis-pptx", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
+OWN = {"ibis-font-subsetter", "ibis-office-app", "ibis-office-shell", "ibis-office-pptx", "ibis-office-docx", "ibis-office-xlsx", "ibis-office-render", "ibis-office-base", "ibis-office-macros", "ibis-doc-model", "ibis-formats", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
 
 
 def run(*args):
@@ -193,10 +193,10 @@ def write(build):
                 own_texts.append((f"{p['name']} {p['version']}（{lic}）", open(path, encoding="utf-8", errors="replace").read().strip()))
                 break
 
-    ecma = open(os.path.join(ROOT, "crates", "ibis-pptx", "data", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
+    ecma = open(os.path.join(ROOT, "crates", "ibis-formats", "data", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
     # The art page borders' pictures: the desktop app reads them from the zip
     # in its Resources; the web version serves its PNG files one by one.
-    ecma_art = open(os.path.join(ROOT, "crates", "ibis-pptx", "data", "artborders", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
+    ecma_art = open(os.path.join(ROOT, "crates", "ibis-formats", "data", "artborders", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
     harunobu = open(os.path.join(ROOT, "crates", "ibis-doc-model", "HARUNOBU-MIT.txt"), encoding="utf-8").read().strip()
     unicode_notice = open(os.path.join(ROOT, "crates", "ibis-doc-model", "UNICODE-LICENSE.txt"), encoding="utf-8").read().strip()
     gjs = open(os.path.join(ROOT, "crates", "ibis-doc-model", "GJS-MIT.txt"), encoding="utf-8").read().strip()

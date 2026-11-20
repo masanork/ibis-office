@@ -360,7 +360,7 @@ impl SlideEditor {
             "rect" => Geometry::Rect,
             "roundRect" => Geometry::RoundRect { radius: 15_000 },
             "ellipse" => Geometry::Ellipse,
-            other => ibis_pptx::geometry::preset(other).unwrap_or(Geometry::Rect),
+            other => ibis_formats::geometry::preset(other).unwrap_or(Geometry::Rect),
         };
 
         match &mut shape.kind {

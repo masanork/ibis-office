@@ -722,7 +722,7 @@ impl SlideEditor {
             return;
         }
         let Some(flow) = self.flow() else { return };
-        let initial = ibis_pptx::markdown::export_markdown(flow, &self.presentation().media);
+        let initial = ibis_formats::markdown::export_markdown(flow, &self.presentation().media);
         let readonly = self.is_read_only()
             || self.is_jtd_read_only()
             || self.is_viewing_mode()
@@ -798,7 +798,7 @@ impl SlideEditor {
         let source = self.source.clone();
         let baseline_pres = self.presentation().clone();
 
-        let parsed = ibis_pptx::markdown::reparse_markdown_document(
+        let parsed = ibis_formats::markdown::reparse_markdown_document(
             &text,
             &current_doc,
             &mut media,

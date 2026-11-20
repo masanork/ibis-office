@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! 表示形式 > セルのスタイル: Excel's built-in cell styles (良い, 悪い,
-//! 見出し, アクセント, 桁区切り, …; `ibis_pptx::preset_cell_styles`, from
+//! 見出し, アクセント, 桁区切り, …; `ibis_formats::preset_cell_styles`, from
 //! ECMA-376's data with the workbook's theme) put on the selected cells as
 //! their formats, in one step.
 use crate::shell::chrome::{MenuEntry, MenuItem, Submenu};
@@ -45,18 +45,18 @@ pub(crate) struct NewCellStylePanel {
 #[ibis_office_macros::editor_ext(CellStyles)]
 impl SlideEditor {
     /// The built-in cell styles with this workbook's theme.
-    pub(crate) fn cell_styles(&self) -> Option<std::rc::Rc<Vec<ibis_pptx::PresetCellStyle>>> {
+    pub(crate) fn cell_styles(&self) -> Option<std::rc::Rc<Vec<ibis_formats::PresetCellStyle>>> {
         let state = self.sheet_state()?;
         let mut cached = state.panels.cell_styles.borrow_mut();
         if cached.is_none() {
             let styles = if let Some(w) = self.presentation().workbook.as_ref() {
                 if !w.theme_colors.is_empty() {
-                    ibis_pptx::preset_cell_styles_with_theme(&w.theme_colors, w.theme_fonts.as_ref())
+                    ibis_formats::preset_cell_styles_with_theme(&w.theme_colors, w.theme_fonts.as_ref())
                 } else {
-                    ibis_pptx::preset_cell_styles_of(self.source.as_deref())
+                    ibis_formats::preset_cell_styles_of(self.source.as_deref())
                 }
             } else {
-                ibis_pptx::preset_cell_styles_of(self.source.as_deref())
+                ibis_formats::preset_cell_styles_of(self.source.as_deref())
             };
             *cached = Some(std::rc::Rc::new(styles));
         }

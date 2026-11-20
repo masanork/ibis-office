@@ -467,7 +467,7 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
         if base.len() == 10 {
             for row in 1..6 {
                 theme.push((0..10).map(|i| {
-                    let rgb = ibis_pptx::tinted(Rgb(base[i].2), THEME_TINTS[i][row]);
+                    let rgb = ibis_formats::tinted(Rgb(base[i].2), THEME_TINTS[i][row]);
                     Swatch::new(rgb, format!("#{:06X}", rgb.0), current == Some(rgb), &pick)
                 }).collect());
             }
@@ -1624,12 +1624,12 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
 
     // Format conversion is a File > Export choice, not a separate settings screen.
     for (id, key, format) in [
-        ("docx.file.export.doc", "docx.convert.format.doc", ibis_pptx::docx_convert::DocxConvertFormat::Doc),
-        ("docx.file.export.rtf", "docx.convert.format.rtf", ibis_pptx::docx_convert::DocxConvertFormat::Rtf),
-        ("docx.file.export.txt", "docx.convert.format.txt", ibis_pptx::docx_convert::DocxConvertFormat::Txt),
-        ("docx.file.export.html", "docx.convert.format.html", ibis_pptx::docx_convert::DocxConvertFormat::Html),
-        ("docx.file.export.odt", "docx.convert.format.odt", ibis_pptx::docx_convert::DocxConvertFormat::Odt),
-        ("docx.file.export.md", "docx.convert.format.md", ibis_pptx::docx_convert::DocxConvertFormat::Markdown),
+        ("docx.file.export.doc", "docx.convert.format.doc", ibis_formats::docx_convert::DocxConvertFormat::Doc),
+        ("docx.file.export.rtf", "docx.convert.format.rtf", ibis_formats::docx_convert::DocxConvertFormat::Rtf),
+        ("docx.file.export.txt", "docx.convert.format.txt", ibis_formats::docx_convert::DocxConvertFormat::Txt),
+        ("docx.file.export.html", "docx.convert.format.html", ibis_formats::docx_convert::DocxConvertFormat::Html),
+        ("docx.file.export.odt", "docx.convert.format.odt", ibis_formats::docx_convert::DocxConvertFormat::Odt),
+        ("docx.file.export.md", "docx.convert.format.md", ibis_formats::docx_convert::DocxConvertFormat::Markdown),
     ] {
         let entry = MenuItem::new(id, crate::shell::i18n::text(key)).icon("description")
             .on(move |editor, window, cx| editor.export_docx_format_dialog(format, window, cx)).into();
@@ -2447,7 +2447,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
                         theme.push(
                             (0..10)
                                 .map(|i| {
-                                    let rgb = ibis_pptx::tinted(Rgb(base[i].2), THEME_TINTS[i][row]);
+                                    let rgb = ibis_formats::tinted(Rgb(base[i].2), THEME_TINTS[i][row]);
                                     let mut sw = Swatch::new(rgb, format!("#{:06X}", rgb.0), current == Some(rgb), &pick);
                                     sw.item = sw.item.disabled(!editing);
                                     sw

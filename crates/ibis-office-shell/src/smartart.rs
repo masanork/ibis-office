@@ -206,7 +206,7 @@ fn make_smartart_node(
     text_color: Rgb,
     text: &str,
 ) -> Shape {
-    let geometry = ibis_pptx::preset_geometry(geom_preset).unwrap_or(ibis_doc_model::Geometry::Rect);
+    let geometry = ibis_formats::preset_geometry(geom_preset).unwrap_or(ibis_doc_model::Geometry::Rect);
     let border = border_rgb.map(|c| ibis_doc_model::Stroke::solid(ibis_doc_model::Color::opaque(c), 12_700));
     let mut auto = ibis_doc_model::AutoShape::new(
         geometry,
@@ -228,7 +228,7 @@ fn make_smartart_node(
 }
 
 fn make_smartart_arrow(id: ShapeId, geom_preset: &str, frame: EmuRect, fill_rgb: Rgb) -> Shape {
-    let geometry = ibis_pptx::preset_geometry(geom_preset).unwrap_or(ibis_doc_model::Geometry::Rect);
+    let geometry = ibis_formats::preset_geometry(geom_preset).unwrap_or(ibis_doc_model::Geometry::Rect);
     let auto = ibis_doc_model::AutoShape::new(
         geometry,
         ibis_doc_model::Fill::Solid(ibis_doc_model::Color::opaque(fill_rgb)),
@@ -267,7 +267,7 @@ impl SlideEditor {
     /// 図形に変換: the graphic's shapes, as copies of their own (grouped), in the graphic's place.
     pub fn convert_diagram_to_shapes(&mut self, cx: &mut Context<Self>) {
         if let Some((owner, parts)) = self.selected_diagram() {
-            if !parts.iter().all(|s| ibis_pptx::save::check_shape_insertion(s).is_ok()) {
+            if !parts.iter().all(|s| ibis_formats::save::check_shape_insertion(s).is_ok()) {
                 return self.set_status(crate::i18n::text("pptx.smartart.smartart-has-parts-cannot").to_string(), cx);
             }
             let slide = self.current_slide;

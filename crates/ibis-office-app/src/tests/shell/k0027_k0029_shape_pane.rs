@@ -32,7 +32,7 @@ fn built() -> Option<(&'static str, usize, bool)> {
     LAST_BUILT.with(|l| l.borrow_mut().take())
 }
 
-fn new_file(kind: ibis_pptx::Kind) -> (Scenario, usize) {
+fn new_file(kind: ibis_formats::Kind) -> (Scenario, usize) {
     let mut s = Scenario::start_view();
     let index = s.update(|e, w, cx| {
         e.new_file(kind, w, cx);
@@ -71,7 +71,7 @@ fn solid(hex: u32) -> Fill {
 /// The presentation's sidebar and the sheet's pane are the shared pane (built by `shape_format_panel`, with the three tabs), and a
 /// fill and an outline typed in it are written to the shape.
 fn sheet_and_slide_use_the_shared_pane() {
-    for kind in [ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Presentation] {
+    for kind in [ibis_formats::Kind::Workbook, ibis_formats::Kind::Presentation] {
         let (mut s, index) = new_file(kind);
         let id = s.with(|e, _| e.slide().shapes[index].id);
         s.update(|e, _, cx| {
@@ -79,13 +79,13 @@ fn sheet_and_slide_use_the_shared_pane() {
             e.sidebar_open = true;
             cx.notify();
         });
-        if kind == ibis_pptx::Kind::Workbook {
+        if kind == ibis_formats::Kind::Workbook {
             s.update(|e, w, cx| e.open_sheet_frame_panel(w, cx));
         }
         built();
         s.settle();
         let (prefix, _, tabs) = built().unwrap_or_else(|| panic!("{kind:?}: the shared pane is built"));
-        assert_eq!(prefix, if kind == ibis_pptx::Kind::Workbook { "xlsx" } else { "pptx" });
+        assert_eq!(prefix, if kind == ibis_formats::Kind::Workbook { "xlsx" } else { "pptx" });
         assert!(tabs, "{kind:?}: with the three tabs");
         assert_eq!(
             crate::shell::chrome::LAST_SIDEBAR_TITLE.with(|t| t.borrow().clone()),
@@ -94,7 +94,7 @@ fn sheet_and_slide_use_the_shared_pane() {
         );
 
         // A fill and an outline colour typed in the pane's fields.
-        if kind == ibis_pptx::Kind::Workbook {
+        if kind == ibis_formats::Kind::Workbook {
             s.update(|e, w, cx| {
                 let (fill, line) = (e.frame_panel_attr(0).unwrap(), e.frame_panel_attr(1).unwrap());
                 fill.update(cx, |i, cx| i.set_value("FF0000", w, cx));
@@ -117,7 +117,7 @@ fn sheet_and_slide_use_the_shared_pane() {
         assert_eq!(stroke_of(&mut s, index).map(|st| st.color.rgb.0), Some(0x00B050), "{kind:?}: and so is the outline's colour");
 
         // The line style chosen in the shared dropdown.
-        if kind == ibis_pptx::Kind::Workbook {
+        if kind == ibis_formats::Kind::Workbook {
             s.update(|e, w, cx| e.choose_frame_panel_dash(ibis_doc_model::LineDash::Dash, w, cx));
         } else {
             s.update(|e, w, cx| e.choose_sidebar_dash(ibis_doc_model::LineDash::Dash, w, cx));
@@ -129,7 +129,7 @@ fn sheet_and_slide_use_the_shared_pane() {
 
 fn docx_with_text_box() -> (Scenario, FlowPos, (f32, f32, f32, f32)) {
     let mut s = Scenario::start_view();
-    s.update(|e, w, cx| e.new_file(ibis_pptx::Kind::Document, w, cx));
+    s.update(|e, w, cx| e.new_file(ibis_formats::Kind::Document, w, cx));
     let (p, _) = s.paragraph(0);
     s.update(|e, _, cx| {
         let mut shape = Shape::text_box(e.document.ids().new_shape_id(), EmuRect::new(0, 0, 2000000, 1000000), "Text");
@@ -186,7 +186,7 @@ fn docx_uses_the_shared_pane() {
 /// A right click on the shape (inside it, and on the hand band of the selected one) on the sheet and the slide: the shape's menu has
 /// 図形の書式設定… first, and choosing it opens the shared pane.
 fn sheet_and_slide_menu() {
-    for kind in [ibis_pptx::Kind::Workbook, ibis_pptx::Kind::Presentation] {
+    for kind in [ibis_formats::Kind::Workbook, ibis_formats::Kind::Presentation] {
         let (mut s, index) = new_file(kind);
         let id = s.with(|e, _| e.slide().shapes[index].id);
         for (label, offset) in [("inside", None), ("on the band", Some(-2.0_f32))] {
@@ -206,11 +206,11 @@ fn sheet_and_slide_menu() {
             });
             s.right_click((x, y));
             assert!(s.with(|e, _| e.selected_ids().contains(&id)), "{kind:?} {label}: the shape stays selected");
-            let entries = s.with(|e, _| if kind == ibis_pptx::Kind::Workbook { e.shape_menu() } else { e.shape_context_menu_entries() });
+            let entries = s.with(|e, _| if kind == ibis_formats::Kind::Workbook { e.shape_menu() } else { e.shape_context_menu_entries() });
             let handler = first_is_shape_format(&entries, &format!("{kind:?} {label}"));
             s.update(|e, w, cx| handler(e, w, cx));
             s.settle();
-            if kind == ibis_pptx::Kind::Workbook {
+            if kind == ibis_formats::Kind::Workbook {
                 assert!(s.with(|e, _| e.frame_panel_open() && e.sidebar_open), "{kind:?} {label}: the pane opens");
             } else {
                 assert!(s.with(|e, _| e.sidebar_open), "{kind:?} {label}: the pane opens");

@@ -13,7 +13,7 @@ fn scroll(s: &mut Scenario) -> f32 {
 }
 
 pub(crate) fn sheets_keep_their_scroll() {
-    let mut s = Scenario::new_document(ibis_pptx::Kind::Workbook);
+    let mut s = Scenario::new_document(ibis_formats::Kind::Workbook);
     s.size(1200., 720.);
     s.update(|e, window, cx| e.copy_sheet(window, cx));
     let ids: Vec<_> = s.with(|e, _| e.presentation().workbook.as_ref().unwrap().sheets.iter().filter_map(|sh| sh.slide).collect());
@@ -81,7 +81,7 @@ pub(crate) fn sheet_views_round_trip_through_the_file() {
     assert_eq!(b.active_cell, Some((1, 1)));
     assert!(b.top_left.is_some_and(|(_, r)| r > 150 && r < 250), "the second sheet's top row: {:?}", b.top_left);
     // And the XML: Excel's own attributes.
-    let xml = ibis_pptx::test_files::part_text(&std::fs::read(&path).unwrap(), "xl/worksheets/sheet1.xml").unwrap();
+    let xml = ibis_formats::test_files::part_text(&std::fs::read(&path).unwrap(), "xl/worksheets/sheet1.xml").unwrap();
     assert!(xml.contains("topLeftCell=\"A") && xml.contains("activeCell=\"C7\"") && xml.contains("sqref=\"C7\""), "{xml}");
     // Opened again: where each sheet was left.
     drop(s);
@@ -126,7 +126,7 @@ pub(crate) fn frozen_panes_keep_the_scroll_in_the_file() {
         assert_eq!(row > frozen.1, y != 0.0, "{menu}: row {row}");
         assert_eq!(column.max(frozen.0), column);
         // `topLeftCell` before `workbookViewId` (as Excel writes it) when the top-left pane scrolls on a side.
-        let xml = ibis_pptx::test_files::part_text(&std::fs::read(&path).unwrap(), "xl/worksheets/sheet1.xml").unwrap();
+        let xml = ibis_formats::test_files::part_text(&std::fs::read(&path).unwrap(), "xl/worksheets/sheet1.xml").unwrap();
         let tag = &xml[xml.find("<sheetView ").unwrap()..];
         let tag = &tag[..tag.find('>').unwrap()];
         if let (Some(a), Some(b)) = (tag.find("topLeftCell"), tag.find("workbookViewId")) {
@@ -146,7 +146,7 @@ pub(crate) fn frozen_panes_keep_the_scroll_in_the_file() {
 pub(crate) fn deleting_the_other_sheet_keeps_the_scroll() {
     use ibis_doc_model::sheet_command::SheetCommand;
     use ibis_doc_model::Command;
-    let mut s = Scenario::new_document(ibis_pptx::Kind::Workbook);
+    let mut s = Scenario::new_document(ibis_formats::Kind::Workbook);
     s.size(1200., 720.);
     s.update(|e, window, cx| e.copy_sheet(window, cx));
     let ids: Vec<_> = s.with(|e, _| e.presentation().workbook.as_ref().unwrap().sheets.iter().filter_map(|sh| sh.slide).collect());

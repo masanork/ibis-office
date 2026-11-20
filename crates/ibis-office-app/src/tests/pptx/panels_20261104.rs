@@ -180,7 +180,7 @@ fn chart_without_workbook() {
     assert_eq!(s.with(|e, _| read(e.presentation())), (Some(77.0), "Edited".to_string()));
     s.screenshot("chart-no-workbook-edited");
     let path = s.save_as("chart-no-workbook.pptx");
-    let package = ibis_pptx::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
+    let package = ibis_formats::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
     assert!(package.names().any(|n| n.starts_with("ppt/embeddings/")), "the workbook is in the file");
     assert_eq!(read(&s.reopen()), (Some(77.0), "Edited".to_string()));
 }

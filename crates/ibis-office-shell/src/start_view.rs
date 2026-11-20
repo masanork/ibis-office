@@ -209,7 +209,7 @@ impl SlideEditor {
 
     /// One kind of 新規作成: a blank page with the format's badge on its
     /// lower left; a click makes an empty file of it.
-    fn new_file_tile(&self, kind: ibis_pptx::Kind, label: &'static str, color: u32, cx: &mut Context<Self>) -> AnyElement {
+    fn new_file_tile(&self, kind: ibis_formats::Kind, label: &'static str, color: u32, cx: &mut Context<Self>) -> AnyElement {
         self.render_new_tile(label, color, move |this, window, cx| this.new_file(kind, window, cx), cx)
     }
 

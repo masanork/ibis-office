@@ -330,7 +330,7 @@ impl SlideEditor {
         if blocks.is_empty() {
             return false;
         }
-        let md = ibis_pptx::markdown::export_blocks_to_markdown(&blocks, doc, &self.presentation().media);
+        let md = ibis_formats::markdown::export_blocks_to_markdown(&blocks, doc, &self.presentation().media);
         if md.is_empty() {
             return false;
         }
@@ -362,7 +362,7 @@ impl SlideEditor {
         let mut temp_doc = (**doc).clone();
         let mut media = self.presentation().media.clone();
         let prev_media_len = media.len();
-        let Ok(mut blocks) = ibis_pptx::markdown::parse_markdown_fragment_blocks(&text, &mut temp_doc, &mut media) else {
+        let Ok(mut blocks) = ibis_formats::markdown::parse_markdown_fragment_blocks(&text, &mut temp_doc, &mut media) else {
             return false;
         };
         if blocks.is_empty() {

@@ -1,0 +1,345 @@
+# Mermaid syntax features tracked by the corpus test (tests/mermaid_corpus.rs).
+#
+# Each line: doc | feature | status | match | pattern
+#   doc     corpus file stem, or * for every supported document
+#   status  ok      = drawn by ibis-formats
+#           gap     = parsed past or ignored; the diagram renders without it
+#           wontfix = deliberately not supported (scripts, links)
+#   match   prefix   a trimmed body line starts with the pattern
+#           contains a body line contains the pattern
+#           front    a top-level YAML frontmatter key starts with the pattern
+#           header   the diagram header line contains the pattern
+#           config   a frontmatter `config:` leaf, as a dotted path below `config`, starts with the
+#                    pattern (`gitGraph.showBranches`, `themeVariables.git0`); `*` matches a case
+#                    with any config leaf that no other `config` line for its document covers;
+#                    a trailing `$` matches the whole key only (`theme$` is not `themeVariables.*`)
+# A feature may have several lines (any of them matches). A case is "clean" when it renders and
+# uses no `gap` feature. The heuristics are deliberately simple; they rank work, they do not prove it.
+
+* | frontmatter title | ok | front | title:
+* | config: theme (default / base / dark / forest / neutral) | ok | config | theme$
+* | config: generic theme variables (primaryColor, lineColor, background ...) | ok | config | themeVariables.primary
+* | config: generic theme variables (primaryColor, lineColor, background ...) | ok | config | themeVariables.lineColor
+* | config: generic theme variables (primaryColor, lineColor, background ...) | ok | config | themeVariables.background
+* | config: logLevel (no visual effect) | ok | config | logLevel$
+* | config: htmlLabels (labels are always plain SVG text) | ok | config | htmlLabels$
+* | config: look (handDrawn) | wontfix | config | look$
+* | config: layout engine (elk) | wontfix | config | layout$
+* | config: themeCSS (arbitrary CSS is not applied) | wontfix | config | themeCSS$
+* | config: other options | gap | config | *
+* | %%{init}%% directive | gap | contains | %%{
+* | HTML entity codes (#quot; #9829;) | ok | contains | #quot;
+* | HTML entity codes (#quot; #9829;) | ok | contains | #9829;
+
+flowchart | classDef / class / ::: styling | ok | prefix | classDef
+flowchart | classDef / class / ::: styling | ok | prefix | class
+flowchart | classDef / class / ::: styling | ok | contains | :::
+flowchart | style statement | ok | prefix | style
+flowchart | linkStyle | ok | prefix | linkStyle
+flowchart | bidirectional / circle / cross edges | ok | contains | <--
+flowchart | bidirectional / circle / cross edges | ok | contains | <==
+flowchart | bidirectional / circle / cross edges | ok | contains | --o
+flowchart | bidirectional / circle / cross edges | ok | contains | --x
+flowchart | invisible link ~~~ | ok | contains | ~~~
+flowchart | expanded node shapes @{ shape } | ok | contains | @{ shape:
+flowchart | expanded node shapes @{ shape } | ok | contains | @{shape:
+flowchart | node icons @{ icon } (drawn as a symbol in a box) | ok | contains | @{ icon:
+flowchart | node images @{ img } (a placeholder frame; the image is not fetched) | gap | contains | @{ img:
+flowchart | edge ids (e1@-->) | ok | contains | @--
+flowchart | edge ids (e1@-->) | ok | contains | @==
+flowchart | edge ids (e1@-->) | ok | contains | @-.
+flowchart | edge curve e1@{ curve } | ok | contains | @{ curve:
+flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ animate
+flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ animation
+flowchart | edge animation (animate, animation, step) | wontfix | contains | @{ step:
+flowchart | edge animation (animate, animation, step) | wontfix | config | flowchart.stepDuration
+flowchart | collapsed subgraph @{ view } | ok | contains | @{ view:
+flowchart | markdown strings "`...`" | ok | contains | "`
+flowchart | Font Awesome icons (fa:) as Unicode symbols | ok | contains | fa:
+flowchart | click / callbacks | wontfix | prefix | click
+
+sequenceDiagram | rect highlight | ok | prefix | rect
+sequenceDiagram | create / destroy participants | ok | prefix | create
+sequenceDiagram | create / destroy participants | ok | prefix | destroy
+sequenceDiagram | par/and, critical/option dividers | ok | prefix | and
+sequenceDiagram | par/and, critical/option dividers | ok | prefix | option
+sequenceDiagram | lower-case note | ok | prefix | note
+sequenceDiagram | participant types @{ "type" } | ok | contains | @{
+sequenceDiagram | bidirectional arrows <<->> | ok | contains | <<-
+sequenceDiagram | actor menus (link / links) | wontfix | prefix | link
+
+classDiagram | namespace | ok | prefix | namespace
+classDiagram | note | ok | prefix | note
+classDiagram | classDef / style / ::: | ok | prefix | classDef
+classDiagram | classDef / style / ::: | ok | prefix | style
+classDiagram | classDef / style / ::: | ok | contains | :::
+classDiagram | generics ~T~ | ok | contains | ~
+classDiagram | relation cardinality "1" --> "*" | ok | contains | " --
+classDiagram | relation cardinality "1" --> "*" | ok | contains | " *--
+classDiagram | relation cardinality "1" --> "*" | ok | contains | " o--
+classDiagram | lollipop interfaces ()-- | ok | contains | ()--
+classDiagram | lollipop interfaces ()-- | ok | contains | --()
+classDiagram | config: class.hideEmptyMembersBox | ok | config | class.hideEmptyMembersBox
+classDiagram | config: class.hierarchicalNamespaces (dotted namespaces nest) | ok | config | class.hierarchicalNamespaces
+classDiagram | click / link / callback | wontfix | prefix | click
+classDiagram | click / link / callback | wontfix | prefix | link
+classDiagram | click / link / callback | wontfix | prefix | callback
+
+stateDiagram | note | ok | prefix | note
+stateDiagram | concurrency -- | ok | prefix | --
+stateDiagram | classDef / class / ::: | ok | prefix | classDef
+stateDiagram | classDef / class / ::: | ok | prefix | class
+stateDiagram | classDef / class / ::: | ok | contains | :::
+
+entityRelationshipDiagram | entity alias p[Person] | ok | contains | [
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | one or
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | zero or
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | only one
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | many(
+entityRelationshipDiagram | word cardinality (one or more, 1 to ...) | ok | contains | 1 to
+entityRelationshipDiagram | subgraph | ok | prefix | subgraph
+entityRelationshipDiagram | direction | ok | prefix | direction
+entityRelationshipDiagram | classDef / style / ::: | ok | prefix | classDef
+entityRelationshipDiagram | classDef / style / ::: | ok | prefix | style
+entityRelationshipDiagram | classDef / style / ::: | ok | contains | :::
+entityRelationshipDiagram | markdown in entity names (**bold** _italic_) | ok | contains | **
+
+gantt | axisFormat | ok | prefix | axisFormat
+gantt | tickInterval | ok | prefix | tickInterval
+gantt | todayMarker | ok | prefix | todayMarker
+gantt | weekday / weekend | ok | prefix | weekday
+gantt | weekday / weekend | ok | prefix | weekend
+gantt | vert markers | ok | contains | vert
+gantt | until | ok | contains | until
+gantt | click | wontfix | prefix | click
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.useWidth
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.topAxis
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.rightPadding
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.numberSectionStyles
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.barHeight
+gantt | config: gantt options (useWidth, topAxis, rightPadding, numberSectionStyles, barHeight, barGap) | ok | config | gantt.barGap
+
+gitgraph | cherry-pick | ok | prefix | cherry-pick
+gitgraph | commit type (HIGHLIGHT / REVERSE) | ok | contains | type:
+gitgraph | branch order | ok | contains | order:
+gitgraph | direction (gitGraph LR: / TB: / BT:) | ok | header | LR
+gitgraph | direction (gitGraph LR: / TB: / BT:) | ok | header | TB
+gitgraph | direction (gitGraph LR: / TB: / BT:) | ok | header | BT
+gitgraph | config: gitGraph options | ok | config | gitGraph.showBranches
+gitgraph | config: gitGraph options | ok | config | gitGraph.showCommitLabel
+gitgraph | config: gitGraph options | ok | config | gitGraph.rotateCommitLabel
+gitgraph | config: gitGraph options | ok | config | gitGraph.mainBranchName
+gitgraph | config: gitGraph options | ok | config | gitGraph.mainBranchOrder
+gitgraph | config: gitGraph options | ok | config | gitGraph.parallelCommits
+gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit / tag labels) | ok | config | themeVariables.git
+gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit / tag labels) | ok | config | themeVariables.commitLabel
+gitgraph | config: git theme variables (git0-7, gitInv, gitBranchLabel, commit / tag labels) | ok | config | themeVariables.tagLabel
+
+mindmap | node shapes ((circle)) {{hexagon}} | ok | contains | ((
+mindmap | node shapes ((circle)) {{hexagon}} | ok | contains | {{
+mindmap | node shapes ((circle)) {{hexagon}} | ok | contains | )(
+mindmap | icons ::icon() (drawn as a named badge; icon fonts are not embedded) | ok | contains | ::icon(
+mindmap | classes ::: (CSS classes; only user CSS styles them) | wontfix | contains | :::
+mindmap | markdown strings "`...`" | ok | contains | "`
+mindmap | config: colorBy (depth) | ok | config | mindmap.colorBy
+mindmap | config: branch colours (cScale, cScaleLabel) | ok | config | themeVariables.cScale
+mindmap | config: root colour (git0, gitBranchLabel0) | ok | config | themeVariables.git0
+mindmap | config: root colour (git0, gitBranchLabel0) | ok | config | themeVariables.gitBranchLabel0
+
+timeline | section | ok | prefix | section
+timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok | config | themeVariables.cScale
+timeline | config: period colours (cScale, cScaleLabel, disableMulticolor) | ok | config | timeline.disableMulticolor
+
+pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.textPosition
+pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.donutHole
+pie | config: pie options (textPosition, donutHole, highlightSlice) | ok | config | pie.highlightSlice
+pie | config: legendPosition | ok | config | pie.legendPosition
+pie | config: pie theme variables (pie1-12, pieOuterStrokeWidth) | ok | config | themeVariables.pie
+xyChart | y-axis title / range | ok | prefix | y-axis
+xyChart | horizontal orientation | ok | header | horizontal
+xyChart | numeric x-axis range | ok | contains | x-axis 0
+xyChart | point labels (line [540 "PaLM", ...]) | ok | contains | "PaLM"
+xyChart | config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) | ok | config | xyChart.width
+xyChart | config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) | ok | config | xyChart.height
+xyChart | config: xyChart options (width, height, showDataLabel, showDataLabelOutsideBar) | ok | config | xyChart.showDataLabel
+xyChart | config: xyChart theme variables (plotColorPalette, titleColor) | ok | config | themeVariables.xyChart.plotColorPalette
+xyChart | config: xyChart theme variables (plotColorPalette, titleColor) | ok | config | themeVariables.xyChart.titleColor
+
+quadrantChart | point styling (radius, color, :::) | ok | contains | radius:
+quadrantChart | point styling (radius, color, :::) | ok | contains | :::
+quadrantChart | point styling (radius, color, :::) | ok | prefix | classDef
+quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | quadrantChart.chartWidth
+quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | quadrantChart.chartHeight
+quadrantChart | config: chartWidth / chartHeight / pointRadius | ok | config | quadrantChart.pointRadius
+quadrantChart | config: quadrant theme variables (quadrantNFill / TextFill, point / axis / title fills) | ok | config | themeVariables.quadrant
+
+requirementDiagram | requirement / element blocks and relationships | ok | contains | - satisfies ->
+requirementDiagram | reverse relationships (<- kind -) | ok | contains | <-
+requirementDiagram | classDef / class / ::: styling | ok | prefix | classDef
+requirementDiagram | classDef / class / ::: styling | ok | prefix | class
+requirementDiagram | classDef / class / ::: styling | ok | contains | :::
+requirementDiagram | style statement | ok | prefix | style
+requirementDiagram | direction | ok | prefix | direction
+requirementDiagram | markdown names and text ("**bold**", "*italic*") | ok | contains | "*
+requirementDiagram | markdown names and text ("**bold**", "*italic*") | ok | contains | "_
+
+kanban | card metadata @{ ticket, assigned, priority } | ok | contains | @{
+kanban | config: ticketBaseUrl (tickets are not links) | wontfix | config | kanban.ticketBaseUrl
+kanban | config: section width | ok | config | kanban.sectionWidth
+
+packet | relative field widths (+N) | ok | prefix | +
+packet | title line | ok | prefix | title
+packet | config: packet options (showBits, bitOrder, bitsPerRow, bitWidth, rowHeight, padding) | ok | config | packet.
+packet | config: packet theme variables (startByteColor, blockFillColor ...) | ok | config | themeVariables.packet
+
+sankey | quoted CSV fields | ok | contains | ""
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.showValues
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.labelStyle
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.nodeWidth
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.nodePadding
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.linkColor
+sankey | config: sankey options (showValues, labelStyle, nodeWidth, nodePadding, linkColor, nodeAlignment) | ok | config | sankey.nodeAlignment
+sankey | config: node colours (nodeColors) | ok | config | sankey.nodeColors
+
+block | columns (N / auto) | ok | prefix | columns
+block | nested blocks (block:id:span ... end) | ok | prefix | block
+block | widths (id:N) and space / space:N | ok | contains | space
+block | block arrows <["label"]>(right, left, up, down, x, y) | ok | contains | <[
+block | edges with labels (A-- "X" -->B) | ok | contains | -->
+block | style / classDef / class | ok | prefix | style
+block | style / classDef / class | ok | prefix | classDef
+block | style / classDef / class | ok | prefix | class
+
+architecture | groups (group id(icon)[title] in parent) | ok | prefix | group
+architecture | junctions | ok | prefix | junction
+architecture | edge sides and arrows (a:R --> L:b) | ok | contains | --
+architecture | align row / column | ok | prefix | align
+architecture | built-in icons (cloud, database, disk, internet, server) | ok | contains | (server)
+architecture | icon packs (logos:...) are not bundled; drawn as mermaid's "?" icon | gap | contains | (logos:
+
+c4 | title line | ok | prefix | title
+c4 | boundaries (Enterprise_ / System_ / Container_Boundary, Boundary) | ok | contains | Boundary(
+c4 | deployment nodes | ok | prefix | Deployment_Node(
+c4 | Db / Queue / _Ext element variants | ok | contains | _Ext(
+c4 | BiRel / Rel_Back / Rel_U, _D, _L, _R | ok | prefix | BiRel(
+c4 | BiRel / Rel_Back / Rel_U, _D, _L, _R | ok | prefix | Rel_
+c4 | UpdateElementStyle ($bgColor, $fontColor, $borderColor) | ok | prefix | UpdateElementStyle(
+c4 | UpdateRelStyle colours ($textColor, $lineColor) | ok | prefix | UpdateRelStyle(
+c4 | UpdateRelStyle label offsets ($offsetX / $offsetY are tuned to mermaid's own layout; labels are placed clear of shapes instead) | wontfix | contains | $offset
+c4 | UpdateLayoutConfig ($c4ShapeInRow, $c4BoundaryInRow) | ok | prefix | UpdateLayoutConfig(
+c4 | element tags ($tags, no visual effect without AddElementTag) | ok | contains | $tags=
+
+treemap | nested sections by indentation | ok | prefix | "
+treemap | classes (:::class, classDef) | ok | contains | :::
+treemap | classes (:::class, classDef) | ok | prefix | classDef
+treemap | config: diagramPadding / width / height | ok | config | treemap.diagramPadding
+treemap | config: valueFormat ($, thousands, .Nf, .N%) | ok | config | treemap.valueFormat
+
+venn | title line | ok | prefix | title
+venn | unions of two or three sets | ok | prefix | union
+venn | set and union sizes (:N) | ok | contains | ]:
+venn | text items in a region | ok | prefix | text
+venn | style (fill, stroke, color) | ok | prefix | style
+
+radar | multiple axis / curve lines | ok | prefix | axis
+radar | max / min | ok | prefix | max
+radar | graticule polygon | ok | prefix | graticule
+radar | title line | ok | prefix | title
+radar | config: axisScaleFactor, axisLabelFactor, curveTension, width, height, margins | ok | config | radar.
+radar | config: curve colours (cScale) | ok | config | themeVariables.cScale
+radar | config: radar theme variables (curveOpacity, curveStrokeWidth, axisColor, graticuleColor, graticuleOpacity) | ok | config | themeVariables.radar
+
+usecase | actors (normal / hollow / awesome / fa: icon) | ok | prefix | actor
+usecase | use cases (ellipse / rect, business, «stereotype») | ok | contains | (
+usecase | system boundaries and packages | ok | prefix | systemBoundary
+usecase | direction | ok | prefix | direction
+usecase | links (-->, <--, --, o / x / triangle ends, labels) | ok | contains | --
+usecase | include / extend links (..> : include) | ok | contains | ..>
+usecase | edge ids (A id@--> B) and edge styles | ok | contains | @--
+usecase | notes (note for X) | ok | prefix | note
+usecase | json boxes | ok | prefix | json
+usecase | classDef / class / style / :::class | ok | prefix | classDef
+usecase | classDef / class / style / :::class | ok | prefix | class
+usecase | classDef / class / style / :::class | ok | prefix | style
+usecase | accTitle / accDescr | ok | prefix | acc
+usecase | config: actor / usecase fonts | ok | config | usecase.actorFont
+usecase | config: actor / usecase fonts | ok | config | usecase.usecaseFont
+usecase | config: nodeSpacing / rankSpacing / diagramPadding | ok | config | usecase.nodeSpacing
+usecase | config: nodeSpacing / rankSpacing / diagramPadding | ok | config | usecase.rankSpacing
+usecase | config: nodeSpacing / rankSpacing / diagramPadding | ok | config | usecase.diagramPadding
+usecase | config: colorScheme (rotate palette; role draws the default colours) | ok | config | usecase.colorScheme
+usecase | config: useMaxWidth (no effect; the SVG has a fixed size) | ok | config | usecase.useMaxWidth
+
+wardley | components and anchors at [visibility, evolution] | ok | prefix | component
+wardley | components and anchors at [visibility, evolution] | ok | prefix | anchor
+wardley | component label offsets, (inertia), (build/buy/outsource/market) | ok | contains | (
+wardley | dependency links (->) | ok | contains | ->
+wardley | flows (+>, +<, +<>, +'label'>) | ok | contains | +
+wardley | evolve | ok | prefix | evolve
+wardley | custom evolution stages (@ widths, dual labels) | ok | prefix | evolution
+wardley | size | ok | prefix | size
+wardley | title | ok | prefix | title
+wardley | pipelines | ok | prefix | pipeline
+wardley | notes | ok | prefix | note
+wardley | annotations legend | ok | prefix | annotation
+wardley | accelerators / deaccelerators | ok | prefix | accelerator
+wardley | accelerators / deaccelerators | ok | prefix | deaccelerator
+
+treeView | box-drawing prefixes (├── └── │) | ok | contains | ──
+treeView | :::class highlight | ok | contains | :::
+treeView | ## comments | ok | contains | ##
+treeView | icon(...) (drawn as the "?" mermaid.js shows for an unregistered pack; icon packs are not bundled) | gap | contains | icon(
+treeView | config: showIcons (generic folder / file glyphs) | ok | config | treeView.showIcons
+treeView | config: rowIndent / lineThickness | ok | config | treeView.rowIndent
+treeView | config: rowIndent / lineThickness | ok | config | treeView.lineThickness
+treeView | config: icon packs (defaultIconPack, filenameIcons, extensionIcons) | gap | config | treeView.defaultIconPack
+treeView | config: icon packs (defaultIconPack, filenameIcons, extensionIcons) | gap | config | treeView.filenameIcons
+treeView | config: icon packs (defaultIconPack, filenameIcons, extensionIcons) | gap | config | treeView.extensionIcons
+treeView | config: treeView theme variables (labelFontSize, labelColor, lineColor) | ok | config | themeVariables.treeView
+
+swimlanes | lanes (subgraph id [title] … end) | ok | prefix | subgraph
+swimlanes | links with labels and chains | ok | contains | --
+swimlanes | flowchart node shapes | ok | contains | [
+swimlanes | classDef / class / style | ok | prefix | classDef
+swimlanes | classDef / class / style | ok | prefix | class
+swimlanes | classDef / class / style | ok | prefix | style
+swimlanes | accTitle / accDescr | ok | prefix | acc
+
+eventmodeling | timeframes (tf / timeframe) | ok | prefix | tf
+eventmodeling | timeframes (tf / timeframe) | ok | prefix | timeframe
+eventmodeling | reset frames (rf / resetframe) | ok | prefix | rf
+eventmodeling | reset frames (rf / resetframe) | ok | prefix | resetframe
+eventmodeling | inline payloads { … } | ok | contains | {
+eventmodeling | data blocks and [[references]] | ok | prefix | data
+eventmodeling | data blocks and [[references]] | ok | contains | [[
+eventmodeling | explicit sources (->> NN) | ok | contains | ->>
+eventmodeling | streams (Stream.Event lanes) | ok | contains | .
+
+ishikawa | effect and indented causes | ok | header | ishikawa-beta
+
+agentflow | flows (flow id["Agent"] … end, nested) | ok | prefix | flow
+agentflow | global block | ok | prefix | global
+agentflow | node shapes (input / task / tool / decision / refdoc / action) | ok | contains | shape:
+agentflow | links (-->, -.-, --x, -- text -->) | ok | contains | --
+agentflow | connectors | ok | prefix | connector
+agentflow | collapsed flows (@{ view: collapsed }) | ok | contains | view:
+agentflow | metadata (protocol, endpoint, connectorRef, params, returns, value, instruction; not drawn) | ok | contains | @{
+agentflow | config: nodeSpacing / rankSpacing | ok | config | agentflow.nodeSpacing
+agentflow | config: nodeSpacing / rankSpacing | ok | config | agentflow.rankSpacing
+
+railroad | EBNF rules (alternatives, ? * +, groups, [ ] and { }) | ok | header | railroad-ebnf
+railroad | ABNF rules (/ and n*m repetition) | ok | header | railroad-abnf
+railroad | PEG rules (<- / ! &) | ok | header | railroad-peg
+railroad | function form (sequence / choice / optional / zeroOrMore / oneOrMore / terminal / nonterminal) | ok | header | railroad-beta
+railroad | title | ok | prefix | title
+
+cynefin | five domains and items | ok | header | cynefin-beta
+cynefin | labeled transitions | ok | contains | -->
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.width$
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.height$
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.padding$
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.showDomainDescriptions$
+cynefin | config: size, padding, descriptions and boundary | ok | config | cynefin.boundaryAmplitude$
+cynefin | config: random boundary seed | gap | config | cynefin.seed$
+zenuml | participants, messages and control fragments | ok | header | zenuml
+zenuml | Markdown formatting in comments | gap | contains | **Markdown**

@@ -4,7 +4,7 @@
 //! Scenarios of the menu search's history ("履歴"/"コマンド", 2026-11-03), the scroll bar of the menus and
 //! submenus, and the grid of pictures of the spreadsheet's 挿入 > グラフ submenu.
 use ibis_doc_model::ShapeKind;
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 
 use crate::shell::chrome::{MenuEntry, MenuId, MENU_SEARCH_COMMANDS_HEADING, MENU_SEARCH_HISTORY_HEADING, MENU_SEARCH_HISTORY_ITEM, menu_search_rows};
 use crate::shell::menu_search_history as history;

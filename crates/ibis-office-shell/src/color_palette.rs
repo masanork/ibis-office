@@ -203,7 +203,7 @@ pub fn theme_rows(colors: &[Rgb; 10], pick: &PickColor, current: Option<Rgb>) ->
             (0..10)
                 .map(|column| {
                     let tint = THEME_TINTS[column][row];
-                    let rgb = ibis_pptx::tinted(colors[column], tint);
+                    let rgb = ibis_formats::tinted(colors[column], tint);
                     let name = crate::i18n::text(THEME_NAME_IDS[column]);
                     let label = match tint {
                         0 => name.to_string(),

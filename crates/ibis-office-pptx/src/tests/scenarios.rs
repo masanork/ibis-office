@@ -998,7 +998,7 @@ pub(crate) fn presenter_view_on_two_displays() {
 /// back. The file's timing is saved as it was.
 pub(crate) fn play_animations_in_the_show() {
     let root = crate::shell::scenario::repo_root();
-    let made = ibis_pptx::test_files::pptx_with_animations(&std::fs::read(root.join("test/editing/pptx-plan.pptx")).unwrap());
+    let made = ibis_formats::test_files::pptx_with_animations(&std::fs::read(root.join("test/editing/pptx-plan.pptx")).unwrap());
     let dir = root.join("target/scenario-input");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("pptx-animations.pptx"), &made).unwrap();
@@ -2003,7 +2003,7 @@ pub(crate) fn paste_slide_from_another_file() {
     let check_saved_pkg = |s: &mut Scenario, slide_parts: &[&str]| {
         let path = s.with(|e, _| e.path.clone()).expect("saved path");
         let bytes = std::fs::read(&path).expect("read saved pptx");
-        let pkg = ibis_pptx::ibis_ooxml::Package::open(bytes).expect("open saved package");
+        let pkg = ibis_formats::ibis_ooxml::Package::open(bytes).expect("open saved package");
         for name in pkg.names() {
             assert!(!name.starts_with("customXml/"), "customXml part must not be copied: {name}");
             for rel in pkg.relationships(name).expect("part relationships") {
@@ -2091,7 +2091,7 @@ pub(crate) fn change_shape() {
     s.toolbar_menu("change-shape", "change-shape.heart");
     let after = s.with(|e, _| e.slide().shapes[index].clone());
     let (ShapeKind::Auto(a), ShapeKind::Auto(b)) = (&before.kind, &after.kind) else { panic!("auto shapes") };
-    assert_eq!(b.geometry, ibis_pptx::preset_geometry("heart").unwrap());
+    assert_eq!(b.geometry, ibis_formats::preset_geometry("heart").unwrap());
     assert_eq!((&a.text, &a.fill, &a.stroke, before.frame), (&b.text, &b.fill, &b.stroke, after.frame), "all but its form kept");
     s.screenshot("heart");
     s.save_as("changed.pptx");
@@ -2252,7 +2252,7 @@ pub(crate) fn chart_ex_format_labels_axis_and_fill() {
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
     s.page(2);
     let format = |s: &mut Scenario| s.with(|e, _| e.selected_chart().and_then(|(_, _, c)| c.ex_format.clone()).expect("a chartEx chart's format"));
-    let part_xml = |file: &std::path::Path, n: usize| ibis_pptx::test_files::part_text(&std::fs::read(file).unwrap(), &format!("ppt/charts/chartEx{}.xml", n + 1)).expect("the chart part");
+    let part_xml = |file: &std::path::Path, n: usize| ibis_formats::test_files::part_text(&std::fs::read(file).unwrap(), &format!("ppt/charts/chartEx{}.xml", n + 1)).expect("the chart part");
     // Histogram: labels at the inside end, the axis from 0 to 100 by 20, a red fill.
     s.menu("pptx.insert-chart.histogram");
     s.update(|e, _, cx| e.set_chart_ex_labels(Some(ExLabels { value: true, category: false, series_name: false, position: Some(LabelPosition::InsideEnd) }), cx));
@@ -4790,7 +4790,7 @@ pub(crate) fn copy_table_slide_number_fields() {
         cell.text.paragraphs[0].runs[0].style.field = Some(ibis_doc_model::TextField::SlideNumber);
     } }
     let source = ibis_doc_model::Shape::new(ibis_doc_model::ShapeId(9999), ibis_doc_model::EmuRect::new(500_000,500_000,3_000_000,1_200_000), ShapeKind::Table(Box::new(table)));
-    assert!(ibis_pptx::save::check_shape_insertion(&source).is_ok());
+    assert!(ibis_formats::save::check_shape_insertion(&source).is_ok());
     s.update(|e, _, cx| { e.shape_edit.clipboard = vec![source]; assert!(e.paste_shapes(cx)); });
     s.key("cmd-c"); s.page(2); s.key("cmd-v");
     let fields = |shape: &ibis_doc_model::Shape| {
@@ -4819,7 +4819,7 @@ pub(crate) fn copy_slide_number_field() {
         ibis_doc_model::Run { text: "page ".into(), style: Default::default() },
         ibis_doc_model::Run { text: "1".into(), style: ibis_doc_model::RunStyle { field: Some(ibis_doc_model::TextField::SlideNumber), bold: Some(true), ..Default::default() } },
     ], ..Default::default() }];
-    assert!(ibis_pptx::save::check_shape_insertion(&source).is_ok());
+    assert!(ibis_formats::save::check_shape_insertion(&source).is_ok());
     s.update(|e, _, cx| {
         e.shape_edit.clipboard = vec![source.clone()];
         assert!(e.paste_shapes(cx));
@@ -4860,7 +4860,7 @@ pub(crate) fn unsupported_text_copy_is_atomic() {
     {
         let mut copy = shape.clone();
         copy.text_body_mut().unwrap().paragraphs[0].bullet = Some(ibis_doc_model::Bullet { text: "".into(), picture: Some(ibis_doc_model::MediaId(999)), size: 100_000, color: None, auto: None, symbol: None });
-        assert!(ibis_pptx::save::check_shape_insertion(&copy).is_err());
+        assert!(ibis_formats::save::check_shape_insertion(&copy).is_err());
         let before = s.with(|e, _| e.presentation().clone());
         s.update(|e, _, cx| {
             e.shape_edit.clipboard = vec![shape.clone(), copy];
@@ -5313,7 +5313,7 @@ pub(crate) fn export_and_save_slideshow_ppsx() {
 
     // 3. 保存された .ppsx ファイルが正常に読み込めることを検証
     let ppsx_bytes = std::fs::read(&ppsx_path).expect("read .ppsx");
-    let ppsx_opened = ibis_pptx::open(ppsx_bytes).expect("open .ppsx as Presentation");
+    let ppsx_opened = ibis_formats::open(ppsx_bytes).expect("open .ppsx as Presentation");
     assert!(!ppsx_opened.presentation.slides.is_empty(), ".ppsx has slides");
 
     // 最初のシナリオを解放（ONE_AT_A_TIME ロックの解放）
@@ -5358,7 +5358,7 @@ pub(crate) fn export_and_save_template_potx() {
 
     // 3. 保存された .potx ファイルが正常に読み込めることを検証
     let potx_bytes = std::fs::read(&potx_path).expect("read .potx");
-    let potx_opened = ibis_pptx::open(potx_bytes).expect("open .potx as Presentation");
+    let potx_opened = ibis_formats::open(potx_bytes).expect("open .potx as Presentation");
     assert!(!potx_opened.presentation.slides.is_empty(), ".potx has slides");
 
     // 最初のシナリオを解放（ONE_AT_A_TIME ロックの解放）
@@ -5396,7 +5396,7 @@ pub(crate) fn export_and_save_theme_thmx() {
 
     // 3. OOXML パッケージ構造の検証（ECMA-376 Part 1 14.2.7）
     let thmx_bytes = std::fs::read(&thmx_path).expect("read .thmx");
-    let thmx_pkg = ibis_pptx::ibis_ooxml::Package::open(thmx_bytes).expect("open thmx as package");
+    let thmx_pkg = ibis_formats::ibis_ooxml::Package::open(thmx_bytes).expect("open thmx as package");
     assert_eq!(
         thmx_pkg.content_type("theme/theme/theme1.xml").expect("ct theme1.xml").as_deref(),
         Some("application/vnd.openxmlformats-officedocument.theme+xml")
@@ -5425,7 +5425,7 @@ pub(crate) fn export_and_save_theme_thmx() {
     assert!(thmx_path2.exists(), "second .thmx file was created");
 
     let thmx_bytes2 = std::fs::read(&thmx_path2).expect("read second .thmx");
-    let thmx_pkg2 = ibis_pptx::ibis_ooxml::Package::open(thmx_bytes2).expect("open apex thmx as package");
+    let thmx_pkg2 = ibis_formats::ibis_ooxml::Package::open(thmx_bytes2).expect("open apex thmx as package");
     let theme_xml2 = String::from_utf8(thmx_pkg2.read("theme/theme/theme1.xml").expect("read second theme1.xml")).expect("utf8");
     assert!(theme_xml2.contains("ApexTheme"), "second theme1.xml contains theme name ApexTheme");
 
@@ -5487,7 +5487,7 @@ pub(crate) fn new_open_save_and_copy_presentation() {
 
     // 新規作成
     s_new.update(|e, window, cx| {
-        e.new_file(ibis_pptx::Kind::Presentation, window, cx);
+        e.new_file(ibis_formats::Kind::Presentation, window, cx);
     });
     assert!(s_new.with(|e, _| e.has_document), "新規作成でドキュメントが開く");
     assert_eq!(s_new.with(|e, _| e.presentation().slides.len()), 1, "新規プレゼンテーションは初期スライド1枚を持つ");
@@ -5535,7 +5535,7 @@ pub(crate) fn new_presentation_from_template() {
     // テンプレートの内容が読み込まれつつ、パスは未保存状態（path == None）になっていること
     assert!(s.with(|e, _| e.has_document), "テンプレートから開いたドキュメントが存在する");
     assert_eq!(s.with(|e, _| e.path.clone()), None, "テンプレートから新規作成時は path が None（未保存）");
-    let default_name = crate::shell::file_actions::new_file_name(ibis_pptx::Kind::Presentation);
+    let default_name = crate::shell::file_actions::new_file_name(ibis_formats::Kind::Presentation);
     assert_eq!(s.with(|e, _| e.file_name.clone()), Some(default_name), "ファイル名は初期プレゼンテーション名");
 
     // 最近使ったファイルにテンプレートが登録されていること
@@ -5595,7 +5595,7 @@ pub(crate) fn change_chart_type() {
         s.screenshot(id);
         let path = s.save_as("chart-type.pptx");
         // A line is DrawingML's `a:ln`, not an element of the chart's namespace.
-        let package = ibis_pptx::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
+        let package = ibis_formats::ibis_ooxml::Package::open(std::fs::read(&path).unwrap()).unwrap();
         for name in package.names().filter(|n| n.starts_with("ppt/charts/chart") && n.ends_with(".xml")).map(str::to_string).collect::<Vec<_>>() {
             let xml = String::from_utf8(package.read(&name).unwrap()).unwrap();
             assert!(!xml.contains("<c:ln ") && !xml.contains("<c:ln>") && !xml.contains("<c:round/>"), "{id}: {name} has a line in the chart's namespace");
@@ -6795,7 +6795,7 @@ pub(crate) fn protected_file() {
     std::fs::create_dir_all(&root).unwrap();
     let plain = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/editing/pptx-plan.pptx")).unwrap();
     let mut seed = 1u32;
-    let protected = ibis_pptx::encrypt(&plain, "ibis123", &mut |bytes: &mut [u8]| {
+    let protected = ibis_formats::encrypt(&plain, "ibis123", &mut |bytes: &mut [u8]| {
         for b in bytes {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             *b = (seed >> 24) as u8;
@@ -6824,14 +6824,14 @@ pub(crate) fn protected_file() {
     assert_eq!(s.with(|e, _| e.presentation().slides.len()), slides);
     let saved = s.save_as(root.join("saved.pptx").to_str().unwrap());
     let bytes = std::fs::read(&saved).unwrap();
-    assert!(ibis_pptx::is_encrypted(&bytes), "saved protected again");
-    assert_eq!(ibis_pptx::read(&ibis_pptx::decrypt(&bytes, "ibis123").unwrap()).unwrap().slides.len(), slides);
+    assert!(ibis_formats::is_encrypted(&bytes), "saved protected again");
+    assert_eq!(ibis_formats::read(&ibis_formats::decrypt(&bytes, "ibis123").unwrap()).unwrap().slides.len(), slides);
     s.update(|e, w, cx| e.set_protection(None, w, cx));
     let bytes = std::fs::read(&saved).unwrap();
-    assert!(!ibis_pptx::is_encrypted(&bytes) && ibis_pptx::read(&bytes).unwrap().slides.len() == slides, "saved without the password");
+    assert!(!ibis_formats::is_encrypted(&bytes) && ibis_formats::read(&bytes).unwrap().slides.len() == slides, "saved without the password");
     // A new password.
     s.update(|e, w, cx| e.set_protection(Some("新しい".into()), w, cx));
-    assert!(ibis_pptx::is_encrypted(&std::fs::read(&saved).unwrap()));
+    assert!(ibis_formats::is_encrypted(&std::fs::read(&saved).unwrap()));
 }
 
 /// スペルチェック: the words the system does not know are listed with their
@@ -6916,7 +6916,7 @@ pub(crate) fn master_view() {
     assert!(s.with(|e, _| e.slide().shapes.iter().any(|sh| sh.text_body().is_some_and(|b| b.text() == "会社名"))), "the text box is still on the page");
     // 文字の書式: the title's style of the master, for every slide.
     let before_size = s.with(|e, _| e.title_size_of_slide(1));
-    s.update(|e, w, cx| e.choose_master_style(ibis_pptx::master_page::StyleKind::Title, 1, w, cx));
+    s.update(|e, w, cx| e.choose_master_style(ibis_formats::master_page::StyleKind::Title, 1, w, cx));
     s.update(|e, w, cx| {
         e.set_master_style_inputs("33", "C00000", "Meiryo UI", true, w, cx);
         e.apply_master_style(w, cx);
@@ -7003,15 +7003,15 @@ pub(crate) fn handout_master_view() {
     assert!(s.with(|e, _| e.presentation().slides.iter().any(|sl| sl.shapes.iter().any(|sh| sh.text_body().is_some_and(|b| b.text() == "保存前の変更")))), "what was not saved is kept");
     let path = s.save_as("handout-master.pptx");
     let data = std::fs::read(path).unwrap();
-    let layout = ibis_pptx::handout_master::layout(&data).unwrap();
-    let place = layout.places.iter().find(|p| p.mark == ibis_pptx::handout_master::Mark::Header).unwrap();
+    let layout = ibis_formats::handout_master::layout(&data).unwrap();
+    let place = layout.places.iter().find(|p| p.mark == ibis_formats::handout_master::Mark::Header).unwrap();
     assert_eq!((place.frame.0, place.frame.1), (moved.x, moved.y));
     undo_all_and_redo(&mut s);
 }
 
 /// The text of the notes pages of a file (for the scenarios).
 fn ibis_ooxml_for_scenarios(data: &[u8]) -> String {
-    let package = ibis_pptx::ibis_ooxml::Package::open(data.to_vec()).unwrap();
+    let package = ibis_formats::ibis_ooxml::Package::open(data.to_vec()).unwrap();
     package.names().filter(|n| n.starts_with("ppt/notesSlides/notesSlide") && n.ends_with(".xml")).map(|n| String::from_utf8_lossy(&package.read(n).unwrap()).into_owned()).collect()
 }
 
@@ -7598,7 +7598,7 @@ pub(crate) fn copy_shape_shadow_and_glow() {
     let ShapeKind::Auto(auto) = &mut source.kind else { panic!("auto") };
     auto.shadow = Some(ibis_doc_model::Shadow::simple(ibis_doc_model::Color { rgb:ibis_doc_model::Rgb(0x123456),alpha:128 },101_600,152_400,8_100_000));
     auto.glow = Some((ibis_doc_model::Color { rgb:ibis_doc_model::Rgb(0x66CCFF),alpha:200 },63_500));
-    assert!(ibis_pptx::save::check_shape_insertion(&source).is_ok());
+    assert!(ibis_formats::save::check_shape_insertion(&source).is_ok());
     s.update(|e,_,cx| { e.shape_edit.clipboard=vec![source.clone()]; assert!(e.paste_shapes(cx)); });
     s.key("cmd-c"); s.page(2); s.key("cmd-v");
     assert_eq!(s.with(|e,_| e.slide().shapes.last().unwrap().kind.clone()),source.kind);
@@ -8150,7 +8150,7 @@ fn mermaid_source_edit_roundtrip() {
     let original = "flowchart LR\n  A[Before] --> B[End]";
     let updated = "sequenceDiagram\n  A->>B: After";
     let markdown = format!("# Diagram\n\n```mermaid\n{original}\n```\n");
-    let bytes = ibis_pptx::markdown::import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap();
+    let bytes = ibis_formats::markdown::import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap();
     let dir = crate::shell::scenario::repo_root().join("target/scenario-fixtures");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("pptx-mermaid-source-input.pptx");
@@ -8187,7 +8187,7 @@ fn mermaid_source_edit_roundtrip() {
     assert_eq!(snapshot(&mut s), after);
     s.save_as("pptx-mermaid-source-edited.pptx");
     let reopened = s.reopen();
-    let markdown = ibis_pptx::markdown::export_presentation_markdown(&reopened);
+    let markdown = ibis_formats::markdown::export_presentation_markdown(&reopened);
     assert!(markdown.contains(updated));
     assert!(!markdown.contains(original));
     let picture = reopened.slides[0].shapes.iter().find_map(|shape| match &shape.kind {
@@ -10101,7 +10101,7 @@ pub(crate) fn animation_by_word_and_letter() {
     let file = s.save_as("anim-by-word.pptx");
     let saved = s.reopen();
     assert_eq!(saved.slides[1].animations, anim, "read back as written");
-    let xml = ibis_pptx::test_files::part_text(&std::fs::read(file).unwrap(), "ppt/slides/slide2.xml").unwrap();
+    let xml = ibis_formats::test_files::part_text(&std::fs::read(file).unwrap(), "ppt/slides/slide2.xml").unwrap();
     assert!(xml.contains("<p:iterate type=\"wd\"><p:tmPct val=\"10000\"/></p:iterate>"), "{xml}");
     // Played: before the click the text is not there, after it every word is.
     s.key("cmd-shift-enter");
@@ -10177,7 +10177,7 @@ pub(crate) fn chart_animation_by_series_and_category() {
     let file = s.save_as("chart-anim-series.pptx");
     let saved = s.reopen();
     assert_eq!(saved.slides[page - 1].animations, anim_series);
-    let xml = ibis_pptx::test_files::part_text(&std::fs::read(file).unwrap(), &format!("ppt/slides/slide{page}.xml")).unwrap();
+    let xml = ibis_formats::test_files::part_text(&std::fs::read(file).unwrap(), &format!("ppt/slides/slide{page}.xml")).unwrap();
     assert!(xml.contains("bld=\"series\" animBg=\"1\""), "{xml}");
     assert!(xml.contains("<p:cChartEl seriesIdx=\"0\" categoryIdx=\"-1\"/>"), "{xml}");
 
@@ -10246,7 +10246,7 @@ pub(crate) fn smartart_animation_by_element() {
     let file = s.save_as("smartart-anim-one.pptx");
     let saved = s.reopen();
     assert_eq!(saved.slides[0].animations, anim_one);
-    let xml = ibis_pptx::test_files::part_text(&std::fs::read(file).unwrap(), "ppt/slides/slide1.xml").unwrap();
+    let xml = ibis_formats::test_files::part_text(&std::fs::read(file).unwrap(), "ppt/slides/slide1.xml").unwrap();
     assert!(xml.contains("<p:bldDgm"), "{xml}");
     assert!(xml.contains("bld=\"depthByNode\""), "{xml}");
     assert!(xml.contains("<p:graphicEl><a:dgm"), "{xml}");
@@ -15514,7 +15514,7 @@ pub(crate) fn pptm_and_macro_enabled_presentations() {
     let pptm_path = {
         let template_path = crate::shell::scenario::repo_root().join("test/editing/pptx-plan.pptx");
         let source_bytes = std::fs::read(&template_path).expect("read template");
-        let mut package = ibis_pptx::ibis_ooxml::Package::open(source_bytes).expect("open pkg");
+        let mut package = ibis_formats::ibis_ooxml::Package::open(source_bytes).expect("open pkg");
         let main = "ppt/presentation.xml";
         let content_type = "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml";
         package.set_override(main, content_type).unwrap();
@@ -15522,7 +15522,7 @@ pub(crate) fn pptm_and_macro_enabled_presentations() {
         package.set_bytes(vba, b"dummy vba binary content".to_vec());
         package.set_override(vba, "application/vnd.ms-office.vbaProject").unwrap();
         package.add_relationship(main, "http://schemas.microsoft.com/office/2006/relationships/vbaProject", "vbaProject.bin", false).unwrap();
-        let pptm_data = package.save(ibis_pptx::ibis_ooxml::SaveOptions::default()).unwrap();
+        let pptm_data = package.save(ibis_formats::ibis_ooxml::SaveOptions::default()).unwrap();
         let path = out_dir.join("macro_presentation.pptm");
         std::fs::write(&path, pptm_data).unwrap();
         path
@@ -15558,7 +15558,7 @@ pub(crate) fn pptm_and_macro_enabled_presentations() {
     drop(s);
 
     let saved_bytes = std::fs::read(&saved_path).unwrap();
-    let pkg = ibis_pptx::ibis_ooxml::Package::open(saved_bytes).unwrap();
+    let pkg = ibis_formats::ibis_ooxml::Package::open(saved_bytes).unwrap();
     assert_eq!(pkg.read("ppt/vbaProject.bin").unwrap(), b"dummy vba binary content", "vbaProject.bin が保存後も完全に保持される");
     let ct = String::from_utf8(pkg.read("[Content_Types].xml").unwrap()).unwrap();
     assert!(ct.contains("application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml"), "macroEnabled ContentType が保持される");
@@ -15643,7 +15643,7 @@ pub(crate) fn insert_math_inline_in_text() {
     assert!(last.style.math.is_some() && last.style.math_inline, "an inline formula at the end");
     assert!(s.with(move |e, _| e.slide().shape(id).unwrap().text_body().unwrap().text()).starts_with(&before), "the text is as it was");
     let file = s.save_as("math-inline.pptx");
-    let xml = ibis_pptx::test_files::part_text(&std::fs::read(&file).unwrap(), "ppt/slides/slide1.xml").unwrap();
+    let xml = ibis_formats::test_files::part_text(&std::fs::read(&file).unwrap(), "ppt/slides/slide1.xml").unwrap();
     assert!(xml.contains("<a14:m><m:oMath") && !xml.contains("<m:oMathPara"), "{xml}");
     let saved = s.reopen();
     let again = saved.slides[0].shapes.iter().filter_map(|sh| sh.text_body()).flat_map(|b| b.paragraphs.iter()).flat_map(|p| p.runs.iter()).find(|r| r.style.math.is_some()).expect("read back");
@@ -16627,7 +16627,7 @@ pub(crate) fn master_view_insert_placeholders() {
     s.update(|e, w, cx| e.switch_master_page(1, w, cx));
     let name = s.with(|e, _| e.master_view_name());
     let before = s.with(|e, _| e.slide().shapes.len());
-    for (n, kind) in [ibis_pptx::master_page::PlaceholderKind::Picture, ibis_pptx::master_page::PlaceholderKind::Chart, ibis_pptx::master_page::PlaceholderKind::Table].into_iter().enumerate() {
+    for (n, kind) in [ibis_formats::master_page::PlaceholderKind::Picture, ibis_formats::master_page::PlaceholderKind::Chart, ibis_formats::master_page::PlaceholderKind::Table].into_iter().enumerate() {
         s.update(|e, w, cx| e.insert_master_placeholder(kind, w, cx));
         assert_eq!(s.with(|e, _| e.slide().shapes.len()), before + n + 1, "the placeholder is a shape of the page");
         assert_eq!(s.with(|e, _| e.master_view_name()), name, "still the same layout");
@@ -16670,7 +16670,7 @@ pub(crate) fn notes_master_view() {
     assert!(s.with(|e, _| e.presentation().slides.iter().any(|sl| sl.shapes.iter().any(|sh| sh.text_body().is_some_and(|b| b.text() == "保存前の変更")))), "what was not saved is kept");
     let path = s.save_as("notes-master.pptx");
     let data = std::fs::read(path).unwrap();
-    let again = ibis_pptx::open(ibis_pptx::master_page::build_notes_master(&data).unwrap()).unwrap();
+    let again = ibis_formats::open(ibis_formats::master_page::build_notes_master(&data).unwrap()).unwrap();
     assert_eq!(again.presentation.slides[0].shapes[0].frame, moved, "the place is where it was moved in the file");
     undo_all_and_redo(&mut s);
 }
@@ -16944,7 +16944,7 @@ pub(crate) fn handout_master_background() {
     s.menu("pptx.handout-master");
     let path = s.save_as("handout-background.pptx");
     let data = std::fs::read(path).unwrap();
-    let again = ibis_pptx::open(ibis_pptx::handout_master::build(&data).unwrap()).unwrap();
+    let again = ibis_formats::open(ibis_formats::handout_master::build(&data).unwrap()).unwrap();
     assert_eq!(again.presentation.slides[0].background, tint, "the saved file's handout master has the background");
     // Opened again in the program: the page has it.
     s.menu("pptx.handout-master");
@@ -18417,7 +18417,7 @@ fn insert_3d_model_and_embedded_object() {
     // 3. 保存して再読込
     let saved = s.save_as("test-3d-model-and-object.pptx");
     let bytes = std::fs::read(&saved).expect("read bytes");
-    let reloaded = ibis_pptx::read(&bytes).expect("reloads");
+    let reloaded = ibis_formats::read(&bytes).expect("reloads");
     assert_eq!(reloaded.slides[0].shapes.len(), initial_count + 2);
     assert!(reloaded.slides[0].shapes.iter().any(|sh| sh.text_body().is_some_and(|tb| tb.text().contains("sample_model.glb"))));
     assert!(reloaded.slides[0].shapes.iter().any(|sh| sh.text_body().is_some_and(|tb| tb.text().contains("spec_document.pdf"))));
@@ -18802,13 +18802,13 @@ pub(crate) fn context_menu_edit_text_and_change_shape() {
     s.update(|e, _, cx| e.change_selected_shapes("heart", cx));
     let shape_after_heart = s.with(|e, _| e.slide().shapes[index].clone());
     let ShapeKind::Auto(heart_auto) = &shape_after_heart.kind else { panic!("expected auto shape") };
-    assert_eq!(heart_auto.geometry, ibis_pptx::preset_geometry("heart").unwrap());
+    assert_eq!(heart_auto.geometry, ibis_formats::preset_geometry("heart").unwrap());
 
     // 6. コンテキストメニュー「図形の変更」で角丸四角形（roundRect）に変更
     s.update(|e, _, cx| e.change_selected_shapes("roundRect", cx));
     let shape_after_round = s.with(|e, _| e.slide().shapes[index].clone());
     let ShapeKind::Auto(round_auto) = &shape_after_round.kind else { panic!("expected auto shape") };
-    assert_eq!(round_auto.geometry, ibis_pptx::preset_geometry("roundRect").unwrap());
+    assert_eq!(round_auto.geometry, ibis_formats::preset_geometry("roundRect").unwrap());
 
     // 7. 複数図形選択時のコンテキストメニュー動作を検証
     let all_shape_ids: Vec<_> = s.with(|e, _| e.slide().shapes.iter().map(|sh| sh.id).collect());
@@ -18826,7 +18826,7 @@ pub(crate) fn context_menu_edit_text_and_change_shape() {
     let reloaded = s.reopen();
     let reloaded_shape = &reloaded.slides[page].shapes[index];
     let ShapeKind::Auto(reloaded_auto) = &reloaded_shape.kind else { panic!("expected reloaded auto shape") };
-    assert_eq!(reloaded_auto.geometry, ibis_pptx::preset_geometry("roundRect").unwrap(), "reloaded geometry is roundRect");
+    assert_eq!(reloaded_auto.geometry, ibis_formats::preset_geometry("roundRect").unwrap(), "reloaded geometry is roundRect");
 
     // 9. Undo/Redo の検証
     undo_all_and_redo(&mut s);

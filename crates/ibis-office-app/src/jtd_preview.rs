@@ -6,9 +6,9 @@ use ibis_doc_model::{
 };
 
 pub(crate) fn read(data: &[u8]) -> Result<(Presentation, bool), String> {
-    match ibis_pptx::jtd::read_preview(data).map_err(|e| e.to_string())? {
-        ibis_pptx::jtd::Preview::Document(document) => Ok((document, false)),
-        ibis_pptx::jtd::Preview::UnplacedImages(images) => {
+    match ibis_formats::jtd::read_preview(data).map_err(|e| e.to_string())? {
+        ibis_formats::jtd::Preview::Document(document) => Ok((document, false)),
+        ibis_formats::jtd::Preview::UnplacedImages(images) => {
             gallery(images, "jtd.gallery-unavailable").map(|document| (document, true))
         }
     }
@@ -16,19 +16,19 @@ pub(crate) fn read(data: &[u8]) -> Result<(Presentation, bool), String> {
 
 /// Inspect unplaced images separately even when the document has body text.
 pub(crate) fn images(data: &[u8]) -> Result<Presentation, String> {
-    let images = ibis_pptx::jtd::inspect_embedded_metafiles(data).map_err(|e| e.to_string())?;
+    let images = ibis_formats::jtd::inspect_embedded_metafiles(data).map_err(|e| e.to_string())?;
     gallery(images, "jtd.no-embedded-images")
 }
 
 /// An embedded snapshot, which may be stale and is not a reconstructed page.
 pub(crate) fn thumbnail(data: &[u8]) -> Result<Presentation, String> {
-    let bmp = ibis_pptx::jtd::decode_thumbnail_bmp(data)
+    let bmp = ibis_formats::jtd::decode_thumbnail_bmp(data)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| crate::shell::i18n::text("jtd.thumbnail-unavailable").to_string())?;
     let (width, height) = crate::pptx::editing::validated_picture_size(MediaFormat::Bmp, &bmp)
         .ok_or_else(|| crate::shell::i18n::text("jtd.thumbnail-unavailable").to_string())?;
-    let bytes = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
-    let mut document = ibis_pptx::read(&bytes).map_err(|e| e.to_string())?;
+    let bytes = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
+    let mut document = ibis_formats::read(&bytes).map_err(|e| e.to_string())?;
     let media = document.add_media(MediaFormat::Bmp, bmp);
     let longest = u64::from(width.max(height).max(1));
     let scale = |value: u32| ((u64::from(value) * (5 * 914_400)) / longest).max(1) as i64;
@@ -41,9 +41,9 @@ pub(crate) fn thumbnail(data: &[u8]) -> Result<Presentation, String> {
     Ok(document)
 }
 
-fn gallery(mut images: ibis_pptx::jtd::EmbeddedMetafileInspection, empty_key: &str) -> Result<Presentation, String> {
-    let bytes = ibis_pptx::blank_file(ibis_pptx::Kind::Document).map_err(|e| e.to_string())?;
-    let mut document = ibis_pptx::read(&bytes).map_err(|e| e.to_string())?;
+fn gallery(mut images: ibis_formats::jtd::EmbeddedMetafileInspection, empty_key: &str) -> Result<Presentation, String> {
+    let bytes = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
+    let mut document = ibis_formats::read(&bytes).map_err(|e| e.to_string())?;
     images.metafiles.sort_by_key(|entry| entry.embedding_index);
     let candidate_count = images.metafiles.len() + images.rejected;
     let mut blocks = vec![paragraph(

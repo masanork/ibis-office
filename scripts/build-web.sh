@@ -33,7 +33,7 @@ scripts/build-font-subsetter.sh
 
 # Generate the public demo from the same pinned corpus used in compatibility CI.
 mkdir -p www/samples/mermaid
-MERMAID_CORPUS_DEMO="$PWD/www/samples/mermaid" cargo test --locked -p ibis-pptx --test mermaid_corpus
+MERMAID_CORPUS_DEMO="$PWD/www/samples/mermaid" cargo test --locked -p ibis-formats --test mermaid_corpus
 
 # Optional self-hosted fonts, prepared before the app starts. Relative font and
 # text paths are resolved against the configuration file, not this script.
@@ -89,8 +89,8 @@ cp -R "$ASSETS_DIR/icons" www/assets/icons
 # unmodified (fetched one by one when a document uses them), with the notice.
 rm -rf www/assets/artborders
 mkdir -p www/assets/artborders
-unzip -q -o crates/ibis-pptx/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip -d www/assets/artborders
-cp crates/ibis-pptx/data/artborders/ECMA-NOTICE.txt www/assets/artborders/
+unzip -q -o crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip -d www/assets/artborders
+cp crates/ibis-formats/data/artborders/ECMA-NOTICE.txt www/assets/artborders/
 
 python3 scripts/check-web-assets.py www
 

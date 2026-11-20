@@ -1046,7 +1046,7 @@ impl SlideEditor {
         {
             return Err(std::io::Error::other(crate::shell::i18n::text("file.csv-error.export-original").to_string()));
         }
-        std::fs::write(path, ibis_pptx::csv::sheet_to_csv(self.presentation(), index))
+        std::fs::write(path, ibis_formats::csv::sheet_to_csv(self.presentation(), index))
     }
 
     /// Ask where, and write the sheet shown there as Shift_JIS CSV.
@@ -1115,8 +1115,8 @@ impl SlideEditor {
     pub(crate) fn write_ods(&self, path: &std::path::Path) -> std::io::Result<()> {
         self.check_standard_output(path)?;
         let bytes = match self.source.as_deref() {
-            Some(source) => ibis_pptx::write_ods_with_source(self.presentation(), source),
-            None => ibis_pptx::write_ods(self.presentation()),
+            Some(source) => ibis_formats::write_ods_with_source(self.presentation(), source),
+            None => ibis_formats::write_ods(self.presentation()),
         }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(path, bytes)
@@ -1125,7 +1125,7 @@ impl SlideEditor {
     /// The whole workbook, as an old Excel file, to `path`; what was left out.
     pub(crate) fn write_xls(&self, path: &std::path::Path) -> std::io::Result<Option<SharedString>> {
         self.check_standard_output(path)?;
-        let (bytes, report) = ibis_pptx::write_xls_report(self.presentation()).map_err(|e| std::io::Error::other(e.to_string()))?;
+        let (bytes, report) = ibis_formats::write_xls_report(self.presentation()).map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(path, bytes)?;
         Ok(super::export_xls::note(&report))
     }
@@ -1203,7 +1203,7 @@ impl SlideEditor {
         {
             return Err(std::io::Error::other(crate::shell::i18n::text("file.csv-error.export-original").to_string()));
         }
-        let bytes = ibis_pptx::csv::sheet_to_csv_sjis_strict(self.presentation(), index)
+        let bytes = ibis_formats::csv::sheet_to_csv_sjis_strict(self.presentation(), index)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(path, bytes)
     }
@@ -1218,7 +1218,7 @@ impl SlideEditor {
         {
             return Err(std::io::Error::other(crate::shell::i18n::text("file.csv-error.export-original").to_string()));
         }
-        std::fs::write(path, ibis_pptx::csv::sheet_to_tsv(self.presentation(), index))
+        std::fs::write(path, ibis_formats::csv::sheet_to_tsv(self.presentation(), index))
     }
 
     /// The axis an outline acts on: columns when whole columns are selected, else rows.
@@ -1553,7 +1553,7 @@ pub(crate) fn cell_color_menu(editor: &SlideEditor, fill: bool) -> Vec<MenuEntry
                 .map(|i| {
                     let tint = THEME_TINTS[i][row];
                     let theme = ibis_doc_model::ThemeColor { index: i as u8, tint };
-                    let rgb = ibis_pptx::tinted(colors[i], tint);
+                    let rgb = ibis_formats::tinted(colors[i], tint);
                     let name = crate::shell::i18n::text(THEME_NAMES[i]);
                     let label = match tint {
                         0 => name.to_string(),
@@ -1654,7 +1654,7 @@ pub(crate) fn palette_menu_with_ids(
             theme.push(
                 (0..10)
                     .map(|i| {
-                        let rgb = ibis_pptx::tinted(base[i], THEME_TINTS[i][row]);
+                        let rgb = ibis_formats::tinted(base[i], THEME_TINTS[i][row]);
                         let mut sw = Swatch::new(rgb, format!("#{:06X}", rgb.0), false, &pick);
                         sw.item.disabled = disabled;
                         sw
@@ -3828,7 +3828,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.items_mut(crate::shell::chrome::MenuId::Format).push(
         Submenu::tr("xlsx.theme-fonts", "font_download", theme_fonts_items).into(),
     );
-    let theme_effects_items: Vec<MenuEntry> = ibis_pptx::theme_effects::THEME_EFFECTS
+    let theme_effects_items: Vec<MenuEntry> = ibis_formats::theme_effects::THEME_EFFECTS
         .iter()
         .map(|preset| {
             let pid = preset.id;
@@ -3953,7 +3953,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("xlsx.theme-font.meiryo", |this, _, cx| this.apply_xlsx_theme_fonts("meiryo", cx));
     menus.connect("xlsx.theme-font.yu-gothic", |this, _, cx| this.apply_xlsx_theme_fonts("yu-gothic", cx));
     menus.connect("xlsx.theme-effects", |this, _, cx| this.apply_xlsx_theme_effects("office", cx));
-    for preset in &ibis_pptx::theme_effects::THEME_EFFECTS {
+    for preset in &ibis_formats::theme_effects::THEME_EFFECTS {
         let pid = preset.id;
         menus.connect(super::theme_panel::theme_effect_action_id(pid), move |this, _, cx| this.apply_xlsx_theme_effects(pid, cx));
     }

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Compare the real Rust importer with independent logical-text decoding.
 
-Build first: cargo build -p ibis-pptx --example jtd_import
+Build first: cargo build -p ibis-formats --example jtd_import
 Input files stay local. Only counts and filenames are printed; no text.
 """
 import argparse

@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! ibisOffice's own text features PowerPoint does not have: text wrap round pictures and videos (GitHub issue #132)
-//! and linked text boxes (#131). They are saved in an extension PowerPoint ignores (`ibis-pptx` `pptx_ibis`).
+//! and linked text boxes (#131). They are saved in an extension PowerPoint ignores (`ibis-formats` `pptx_ibis`).
 use crate::{Emu, ShapeId};
 
 /// How text wraps round a picture or a video (図の形式 > テキストの回り込み).

@@ -82,7 +82,7 @@ fn without_style(sheet: &Sheet, table: &SheetTable, theme: &[(String, Rgb)]) -> 
         bare.styles.push(st);
         c.style = (bare.styles.len() - 1) as u32;
     }
-    let overlay = ibis_pptx::styled_with_table(&bare, table, theme);
+    let overlay = ibis_formats::styled_with_table(&bare, table, theme);
     let mut out = sheet.clone();
     for row in r.first_row..=r.last_row {
         for column in r.first_column..=r.last_column {
@@ -186,7 +186,7 @@ impl SlideEditor {
                 }
             }
         }
-        let styled = ibis_pptx::styled_with_table(&base, &table, &theme);
+        let styled = ibis_formats::styled_with_table(&base, &table, &theme);
         let area = |r: CellRange| (r.first_row..=r.last_row).flat_map(move |row| (r.first_column..=r.last_column).map(move |c| (row, c)));
         let mut cells: Vec<PutCell> = Vec::new();
         let mut seen = std::collections::HashSet::new();

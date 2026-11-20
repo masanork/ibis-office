@@ -42,13 +42,13 @@ fn comp_obj() -> Vec<u8> {
 
 /// The compound file that holds the workbook `xlsx` as an embedded Excel worksheet.
 pub(crate) fn embed_source(xlsx: &[u8]) -> Vec<u8> {
-    use ibis_pptx::ibis_ooxml::cfb::{Item, write_with_clsid};
+    use ibis_formats::ibis_ooxml::cfb::{Item, write_with_clsid};
     write_with_clsid(&[Item::stream("Package", xlsx.to_vec()), Item::stream("\u{1}CompObj", comp_obj())], EXCEL_SHEET_12)
 }
 
 /// The workbook (`.xlsx`) inside an embedded object, if it is a compound file with a `Package` stream.
 pub(crate) fn package_of(bytes: &[u8]) -> Option<Vec<u8>> {
-    let package = ibis_pptx::ibis_ooxml::cfb::stream(bytes, "Package").ok()?;
+    let package = ibis_formats::ibis_ooxml::cfb::stream(bytes, "Package").ok()?;
     package.starts_with(b"PK").then_some(package)
 }
 
@@ -57,7 +57,7 @@ pub(crate) fn package_of(bytes: &[u8]) -> Option<Vec<u8>> {
 /// columns count from the first cell. The merged ranges come back as ranges of the clip. `None` when it is not a workbook with
 /// cells.
 pub(crate) fn read(bytes: &[u8], slide: SlideId, text: &str) -> Option<(Clip, Vec<CellRange>)> {
-    let presentation = ibis_pptx::read_xlsx(&package_of(bytes)?).ok()?;
+    let presentation = ibis_formats::read_xlsx(&package_of(bytes)?).ok()?;
     let sheet = presentation.slides.iter().find_map(|s| crate::shell::editor::sheet_of(s).map(|(_, sheet)| sheet.clone()))?;
     if sheet.cells.is_empty() {
         return None;
@@ -147,7 +147,7 @@ pub(crate) fn write(clip: &Clip, merges: &[CellRange]) -> Option<Vec<u8>> {
     if clip.cells.is_empty() || clip.cells.len() > MAX_CELLS {
         return None;
     }
-    let opened = ibis_pptx::open(ibis_pptx::blank_file(ibis_pptx::Kind::Workbook).ok()?).ok()?;
+    let opened = ibis_formats::open(ibis_formats::blank_file(ibis_formats::Kind::Workbook).ok()?).ok()?;
     let slide = opened.presentation.slides.iter().find(|s| crate::shell::editor::sheet_of(s).is_some())?.id;
     let default_column = crate::shell::editor::sheet_of(opened.presentation.slides.iter().find(|s| s.id == slide)?)?.1.default_column;
     // Where the clip's first row and column were.
@@ -188,6 +188,6 @@ pub(crate) fn write(clip: &Clip, merges: &[CellRange]) -> Option<Vec<u8>> {
     }
     let mut document = Document::new(opened.presentation.clone());
     document.execute(commands).ok()?;
-    let xlsx = opened.source.save(document.presentation(), ibis_pptx::SaveOptions::default()).ok()?;
+    let xlsx = opened.source.save(document.presentation(), ibis_formats::SaveOptions::default()).ok()?;
     Some(embed_source(&xlsx))
 }

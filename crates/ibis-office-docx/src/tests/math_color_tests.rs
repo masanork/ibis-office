@@ -38,7 +38,7 @@ fn the_runs_of_a_formula_have_each_their_colour() {
     assert_eq!(colour_of(items, '\u{1d450}'), ibis_doc_model::Rgb(0x008000), "c in the fraction is green");
     // Saved without a change: each run keeps its colour.
     let saved = s.save_as("docx-math-run-colors-saved.docx");
-    let xml = ibis_pptx::test_files::part_text(&std::fs::read(&saved).unwrap(), "word/document.xml").unwrap();
+    let xml = ibis_formats::test_files::part_text(&std::fs::read(&saved).unwrap(), "word/document.xml").unwrap();
     assert!(xml.contains("<w:color w:val=\"FF0000\"/>") && xml.contains("<w:color w:val=\"0000FF\"/>") && xml.contains("<w:color w:val=\"008000\"/>"), "the runs' colours are in the file");
 }
 
@@ -54,7 +54,7 @@ fn a_colour_for_the_whole_formula_replaces_those_of_its_runs() {
     }
     // Saved: every run of the formulas has it (the colours it had are gone).
     let saved = s.save_as("docx-math-run-colors-whole.docx");
-    let xml = ibis_pptx::test_files::part_text(&std::fs::read(&saved).unwrap(), "word/document.xml").unwrap();
+    let xml = ibis_formats::test_files::part_text(&std::fs::read(&saved).unwrap(), "word/document.xml").unwrap();
     let start = xml.find("<m:oMath").expect("a formula");
     let formulas = &xml[start..];
     assert!(!formulas.contains("FF0000") && !formulas.contains("0000FF") && !formulas.contains("008000"), "the old colours are gone");
@@ -67,12 +67,12 @@ fn the_colour_of_a_formula_is_saved_and_read_again() {
     let root = crate::shell::scenario::repo_root();
     let input = root.join("target/scenario-input/docx-math-color.docx");
     std::fs::create_dir_all(input.parent().unwrap()).unwrap();
-    std::fs::write(&input, ibis_pptx::test_files::docx_with_math(&std::fs::read(root.join("test/editing/docx-report.docx")).unwrap())).unwrap();
+    std::fs::write(&input, ibis_formats::test_files::docx_with_math(&std::fs::read(root.join("test/editing/docx-report.docx")).unwrap())).unwrap();
     let mut s = Scenario::open("target/scenario-input/docx-math-color.docx");
     s.key("cmd-a");
     s.update(|e, _, cx| e.set_text_color(ibis_doc_model::Rgb(0xff0000), cx));
     let saved = s.save_as("docx-math-color-saved.docx");
-    let xml = ibis_pptx::test_files::part_text(&std::fs::read(&saved).unwrap(), "word/document.xml").unwrap();
+    let xml = ibis_formats::test_files::part_text(&std::fs::read(&saved).unwrap(), "word/document.xml").unwrap();
     assert!(xml.contains("<w:color w:val=\"FF0000\"/>") && xml.matches("<m:r>").count() > 0, "the colour is in the file");
     // Each formula's runs carry it.
     let m_start = xml.find("<m:oMath").expect("a formula");

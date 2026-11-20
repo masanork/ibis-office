@@ -155,7 +155,7 @@ fn image_switch() {
     assert!(!s.with(|e, _| e.is_jtd_read_only()));
     let output = path.with_extension("docx");
     s.update(|e, w, _| e.save_to(output.clone(), w)).unwrap();
-    let saved = ibis_pptx::read(&std::fs::read(output).unwrap()).unwrap();
+    let saved = ibis_formats::read(&std::fs::read(output).unwrap()).unwrap();
     assert!(saved.flow.unwrap().body.iter().any(|b| matches!(b, ibis_doc_model::Block::Paragraph(p) if p.text().contains("日本語 test"))));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
@@ -289,8 +289,8 @@ fn compressed_template() {
     let path = s.screenshot_path("synthetic-compressed-template").with_extension("JTTC");
     let bytes = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jttc");
     std::fs::write(&path, bytes).unwrap();
-    assert_eq!(ibis_pptx::Kind::from_extension("JTTC"), Some(ibis_pptx::Kind::Document));
-    assert!(ibis_pptx::Kind::OPENABLE_EXTENSIONS.contains(&"jttc"));
+    assert_eq!(ibis_formats::Kind::from_extension("JTTC"), Some(ibis_formats::Kind::Document));
+    assert!(ibis_formats::Kind::OPENABLE_EXTENSIONS.contains(&"jttc"));
     s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
     for _ in 0..100 {
         s.wait(50);
@@ -306,7 +306,7 @@ fn compressed_template() {
     assert!(s.update(|e, w, _| e.save_to(path.with_file_name("other.jtdc"), w)).is_err());
     let docx = path.with_extension("docx");
     s.update(|e, w, _| e.save_to(docx.clone(), w)).unwrap();
-    assert!(ibis_pptx::read(&std::fs::read(docx).unwrap()).is_ok());
+    assert!(ibis_formats::read(&std::fs::read(docx).unwrap()).is_ok());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     let renamed = path.with_file_name("renamed-compressed.docx");
     std::fs::write(&renamed, bytes).unwrap();
@@ -321,8 +321,8 @@ fn template() {
     let path = s.screenshot_path("synthetic-template").with_extension("JTT");
     let bytes = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jtd");
     std::fs::write(&path, bytes).unwrap();
-    assert_eq!(ibis_pptx::Kind::from_extension("JTT"), Some(ibis_pptx::Kind::Document));
-    assert!(ibis_pptx::Kind::OPENABLE_EXTENSIONS.contains(&"jtt"));
+    assert_eq!(ibis_formats::Kind::from_extension("JTT"), Some(ibis_formats::Kind::Document));
+    assert!(ibis_formats::Kind::OPENABLE_EXTENSIONS.contains(&"jtt"));
     s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
     for _ in 0..100 {
         s.wait(50);
@@ -337,7 +337,7 @@ fn template() {
     assert!(s.update(|e, w, _| e.save_to(path.with_file_name("other.jtt"), w)).is_err());
     let docx = path.with_extension("docx");
     s.update(|e, w, _| e.save_to(docx.clone(), w)).unwrap();
-    assert!(ibis_pptx::read(&std::fs::read(docx).unwrap()).is_ok());
+    assert!(ibis_formats::read(&std::fs::read(docx).unwrap()).is_ok());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     let invalid = path.with_file_name("invalid.jtt");
     std::fs::write(&invalid, b"not a JTT").unwrap();
@@ -384,8 +384,8 @@ fn open_read_only() {
     let path = s.screenshot_path("synthetic").with_extension("JTD");
     let bytes = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jtd");
     std::fs::write(&path, bytes).unwrap();
-    assert_eq!(ibis_pptx::Kind::from_extension("JTD"), Some(ibis_pptx::Kind::Document));
-    assert!(ibis_pptx::Kind::OPENABLE_EXTENSIONS.contains(&"jtd"));
+    assert_eq!(ibis_formats::Kind::from_extension("JTD"), Some(ibis_formats::Kind::Document));
+    assert!(ibis_formats::Kind::OPENABLE_EXTENSIONS.contains(&"jtd"));
     s.update(|e, w, cx| e.open_path(path.clone(), None, w, cx));
     for _ in 0..100 {
         s.wait(50);
@@ -429,7 +429,7 @@ fn open_read_only() {
         assert!(s.with(|e, _| e.export_jtd_docx_to(&alias)).is_err());
     }
     s.with(|e, _| e.export_jtd_docx_to(&output)).unwrap();
-    let imported = ibis_pptx::read(&std::fs::read(output).unwrap()).unwrap();
+    let imported = ibis_formats::read(&std::fs::read(output).unwrap()).unwrap();
     assert!(imported.flow.unwrap().body.iter().any(|b| matches!(b, ibis_doc_model::Block::Paragraph(p) if p.text().contains("日本語 test"))));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 
@@ -455,7 +455,7 @@ fn open_read_only() {
     }
     let edited_path = path.with_file_name("edited.docx");
     s.update(|e, w, _| e.save_to(edited_path.clone(), w)).unwrap();
-    let edited = ibis_pptx::read(&std::fs::read(edited_path).unwrap()).unwrap();
+    let edited = ibis_formats::read(&std::fs::read(edited_path).unwrap()).unwrap();
     assert!(edited.flow.unwrap().body.iter().any(|b| matches!(b, ibis_doc_model::Block::Paragraph(p) if p.text().contains("edited"))));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 

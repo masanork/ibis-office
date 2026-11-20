@@ -384,14 +384,14 @@ series:
 
 ```sh
 MERMAID_CORPUS_DEMO=/tmp/ibis-mermaid-demo \
-  cargo test -p ibis-pptx --test mermaid_corpus
+  cargo test -p ibis-formats --test mermaid_corpus
 ```
 
 [Web 版の構文デモ集](https://docs.sorane.dev/samples/mermaid/web) には、固定した Mermaid 12.3.0 の公式例539件があります。ローカル生成先では `index.md` が目次です。出典と MIT ライセンスは生成先に含まれ、Mermaid CI では `mermaid-markdown-demo` 成果物として取得できます。
 
 ### 対応する図種と構文
 
-第1列は現在認識するすべての図種キーワードと別名です。第2列は公式例コーパスで対応として追跡している項目です。設定キーや演算子は[構文一覧の元データ](../crates/ibis-pptx/tests/mermaid/features.txt)と[図種ごとの入力例](../crates/ibis-pptx/tests/mermaid/corpus/)で照合できます。
+第1列は現在認識するすべての図種キーワードと別名です。第2列は公式例コーパスで対応として追跡している項目です。設定キーや演算子は[構文一覧の元データ](../crates/ibis-formats/tests/mermaid/features.txt)と[図種ごとの入力例](../crates/ibis-formats/tests/mermaid/corpus/)で照合できます。
 
 共通設定は図の先頭の YAML に書きます。タイトル、配色テーマ、主要な色変数を扱います。HTML ラベルは SVG の通常テキストとして表示します。ELK 固有の配置、任意の CSS、コールバック、アニメーションは再現しません。
 
@@ -517,15 +517,15 @@ DOCX・PPTX では図を選んで「Mermaid ソースを編集…」から修正
 
 Docs は UTF-8 の法令標準XMLや、法令名・法令番号と条見出しを持つ Lawtext を認識し、条文を Markdown に変換して開きます。文書全体を法令として扱う挙動は、同梱の Lawtext と XML をそれぞれ開いて試せます。
 
-Lawtext 本家が掲載している行政手続法の第一条を、法令名と法令番号が別行の原文のまま同梱しています。次の例では、章見出し、条の見出し、第二項を確認できます。[Lawtext 本家の掲載例](https://github.com/yamachig/Lawtext/blob/60567c6ca7de6b14c8c1d895338c4614b49969d1/README.md#lawtextの例--example-of-lawtext)・[同梱した入力](../crates/ibis-pptx/tests/lawtext/administrative-procedure-act.lawtext)。
+Lawtext 本家が掲載している行政手続法の第一条を、法令名と法令番号が別行の原文のまま同梱しています。次の例では、章見出し、条の見出し、第二項を確認できます。[Lawtext 本家の掲載例](https://github.com/yamachig/Lawtext/blob/60567c6ca7de6b14c8c1d895338c4614b49969d1/README.md#lawtextの例--example-of-lawtext)・[同梱した入力](../crates/ibis-formats/tests/lawtext/administrative-procedure-act.lawtext)。
 
 ```sh
-ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-pptx/tests/lawtext/administrative-procedure-act.lawtext
-ibisOffice --export lawxml --out-dir /tmp/docs-reference/law crates/ibis-pptx/tests/lawtext/administrative-procedure-act.lawtext
-ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-pptx/tests/lawtext/321CONSTITUTION.xml
+ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-formats/tests/lawtext/administrative-procedure-act.lawtext
+ibisOffice --export lawxml --out-dir /tmp/docs-reference/law crates/ibis-formats/tests/lawtext/administrative-procedure-act.lawtext
+ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-formats/tests/lawtext/321CONSTITUTION.xml
 ```
 
-日本国憲法の XML では、Markdown に前文が出ることと、ibisOffice が生成した Lawtext を読み直すと本則の構造が一致することを CI で確認します。改正履歴や全 XML 要素の可逆性、他の Lawtext 構文との互換性は個別に確認が必要です。[CI の入力と出典](../crates/ibis-pptx/tests/lawtext/README.md)。
+日本国憲法の XML では、Markdown に前文が出ることと、ibisOffice が生成した Lawtext を読み直すと本則の構造が一致することを CI で確認します。改正履歴や全 XML 要素の可逆性、他の Lawtext 構文との互換性は個別に確認が必要です。[CI の入力と出典](../crates/ibis-formats/tests/lawtext/README.md)。
 
 ### Lawtext の構文と法令標準 XML の対応範囲
 

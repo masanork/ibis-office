@@ -220,7 +220,7 @@ impl SlideEditor {
             if candidate.execute(vec![ibis_doc_model::Command::Flow(command.clone())]).is_err() {
                 return;
             }
-            if let Err(error) = source.save(candidate.presentation(), ibis_pptx::SaveOptions::default()) {
+            if let Err(error) = source.save(candidate.presentation(), ibis_formats::SaveOptions::default()) {
                 self.status = Some(crate::shell::i18n::format("docx.table-convert.document-cannot-save-table-text", &[("error", &error)]).into());
                 cx.notify();
                 return;

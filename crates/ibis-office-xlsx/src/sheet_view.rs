@@ -26,9 +26,9 @@ const CELL_PADDING_PT: f32 = 2.0;
 /// A column's width counts 5 pixels of padding besides its characters (ECMA-376 Part 1 18.3.1.13: 2 px a
 /// side and 1 for the grid line), so a text has the column less 5 px: 2.5 px = 1.875 pt a side on Windows
 /// (0.75 pt a pixel). Excel for Mac counts a pixel as a point and 4 pt in all.
-const ROOM_PADDING_PT: f32 = match ibis_pptx::EXCEL_METRICS {
-    ibis_pptx::ExcelMetrics::Windows => 2.5 * 0.75,
-    ibis_pptx::ExcelMetrics::Mac => 2.0,
+const ROOM_PADDING_PT: f32 = match ibis_formats::EXCEL_METRICS {
+    ibis_formats::ExcelMetrics::Windows => 2.5 * 0.75,
+    ibis_formats::ExcelMetrics::Mac => 2.0,
 };
 /// Where a printed cell's text starts: 21 of the printer's pixels (1/600 inch) from the column's left, whatever the Normal font (Excel for
 /// Windows' PDFs of `pad-*.xlsx`: Calibri 11 and 20, ＭＳ Ｐゴシック 11, 游ゴシック 11, Arial 10).
@@ -110,7 +110,7 @@ fn whole_point_advances(line: &mut ShapedLine, px_per_point: f32, printed: bool)
         return;
     }
     // Excel for Windows rounds to a whole pixel (0.75 pt) on the screen and to the printer's (0.12 pt) in print, the Mac's to a point.
-    let unit = px_per_point * if printed { 72.0 / 600.0 } else { ibis_pptx::EXCEL_METRICS.pixel_pt() as f32 };
+    let unit = px_per_point * if printed { 72.0 / 600.0 } else { ibis_formats::EXCEL_METRICS.pixel_pt() as f32 };
     let old: Vec<f32> = line.runs.iter().flat_map(|r| r.glyphs.iter().map(|g| f32::from(g.position.x))).collect();
     if old.is_empty() {
         return;
@@ -1469,7 +1469,7 @@ fn layout(sheet: &Sheet, scale: f32, ctx: &LayoutContext, overlay: Option<&super
             // stroked) filled with the paper's checkerboard of points, as
             // the straight hair line (Excel's PDFs of xlsx-XBRD: a pattern
             // fill of that outline).
-            if ibis_pptx::EXCEL_METRICS == ibis_pptx::ExcelMetrics::Mac
+            if ibis_formats::EXCEL_METRICS == ibis_formats::ExcelMetrics::Mac
                 && let (BorderLine::Hair, Some((sc, kx, ky))) = (b.line, PRINT_GRID.with(|g| g.get()))
             {
                 let p = px_per_point;
@@ -2201,7 +2201,7 @@ fn screen_border_pixels(line: BorderLine) -> f32 {
 fn border_quads(b: &ibis_doc_model::Border, horizontal: bool, at_page_start: bool, at: f32, from: f32, to: f32, px_per_point: f32, out: &mut Vec<Quad>) {
     // On the screen (not printed) a fixed number of pixels, whatever the zoom.
     let screen = PRINT_GRID.with(|g| g.get()).is_none() && !crate::render::chart_view::VECTOR_EXPORT.with(|v| v.get());
-    let win_printed_hair = !screen && b.line == BorderLine::Hair && ibis_pptx::EXCEL_METRICS == ibis_pptx::ExcelMetrics::Windows;
+    let win_printed_hair = !screen && b.line == BorderLine::Hair && ibis_formats::EXCEL_METRICS == ibis_formats::ExcelMetrics::Windows;
     let t = if screen {
         screen_border_pixels(b.line)
     } else if win_printed_hair {
@@ -2227,7 +2227,7 @@ fn border_quads(b: &ibis_doc_model::Border, horizontal: bool, at_page_start: boo
             (lo.max(0.0), a, t, z - a)
         }
     };
-    if (b.line == BorderLine::Dotted || (b.line == BorderLine::Hair && ibis_pptx::EXCEL_METRICS == ibis_pptx::ExcelMetrics::Mac))
+    if (b.line == BorderLine::Dotted || (b.line == BorderLine::Hair && ibis_formats::EXCEL_METRICS == ibis_formats::ExcelMetrics::Mac))
         && let Some(grid) = PRINT_GRID.with(|g| g.get())
     {
         // Printed: a 1 pt line, on the paper's points.
@@ -3565,7 +3565,7 @@ fn text_items(cell: &CellText, px_per_point: f32, measure: &dyn Fn(&str, &Font, 
         // top, the next one down (its PDFs of xlsx-XALN: top, centred and
         // bottom lines in 48 pt rows at 13, 28 and 43 pt where these are
         // 12.73, 27.75 and 42.78).
-        if !is_vertical && (line_count == 1 || ibis_pptx::EXCEL_METRICS != ibis_pptx::ExcelMetrics::Windows || matches!(vertical, CellVerticalAlign::Justify | CellVerticalAlign::Distributed)) {
+        if !is_vertical && (line_count == 1 || ibis_formats::EXCEL_METRICS != ibis_formats::ExcelMetrics::Windows || matches!(vertical, CellVerticalAlign::Justify | CellVerticalAlign::Distributed)) {
             baseline = (baseline / px_per_point - 1e-3).ceil() * px_per_point;
         }
         // (Fitted to Excel's PDFs of xlsx-XBASE and XFNT; the cause not
@@ -4150,7 +4150,7 @@ fn proportional_japanese(typeface: Option<&str>) -> bool {
 pub(crate) fn line_pitch(typeface: Option<&str>, japanese: bool) -> Option<f32> {
     let name = typeface?;
     if name.starts_with("ＭＳ") || name.starts_with("MS ") { // i18n-ok（フォント名の判定（表示名ではなく、フォント名の接頭辞））
-        Some(if ibis_pptx::EXCEL_METRICS == ibis_pptx::ExcelMetrics::Windows { 13.5 / 11.0 } else { 13.0 / 9.0 })
+        Some(if ibis_formats::EXCEL_METRICS == ibis_formats::ExcelMetrics::Windows { 13.5 / 11.0 } else { 13.0 / 9.0 })
     } else if name.starts_with("Meiryo") || name.starts_with("メイリオ") { // i18n-ok（フォント名の判定（表示名ではなく、フォント名の接頭辞））
         Some(11.0 / 8.0)
     } else if name.starts_with("Calibri") || name.starts_with("Carlito") {

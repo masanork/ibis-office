@@ -9,7 +9,7 @@
 //! is `crate::legacy_password::legacy_hash`).
 use gpui_kit::*;
 use ibis_doc_model::{Command, ModifyVerifier};
-use ibis_pptx::ibis_ooxml::modify_password::{hash as password_hash, Algorithm};
+use ibis_formats::ibis_ooxml::modify_password::{hash as password_hash, Algorithm};
 
 use crate::editor::SlideEditor;
 use crate::i18n;
@@ -23,8 +23,8 @@ pub(crate) fn verifier_accepts(v: &ModifyVerifier, password: &str) -> Result<boo
         return Ok(v.hash.eq_ignore_ascii_case(&crate::legacy_password::legacy_hash(password)));
     }
     let algorithm = Algorithm::from_sid(v.algorithm_sid).ok_or_else(|| i18n::text("pptx.modify-password.password-modify-uses-method-not").to_string())?;
-    let salt = ibis_pptx::ibis_ooxml::base64::decode(&v.salt).ok_or_else(|| i18n::text("pptx.modify-password.password-information-file-damaged").to_string())?;
-    let expected = ibis_pptx::ibis_ooxml::base64::decode(&v.hash).ok_or_else(|| i18n::text("pptx.modify-password.password-information-file-damaged").to_string())?;
+    let salt = ibis_formats::ibis_ooxml::base64::decode(&v.salt).ok_or_else(|| i18n::text("pptx.modify-password.password-information-file-damaged").to_string())?;
+    let expected = ibis_formats::ibis_ooxml::base64::decode(&v.hash).ok_or_else(|| i18n::text("pptx.modify-password.password-information-file-damaged").to_string())?;
     Ok(password_hash(algorithm, &salt, password, v.spin_count) == expected)
 }
 
@@ -97,7 +97,7 @@ fn new_verifier(password: &str) -> Result<ModifyVerifier, String> {
     // The OS's random generator (getrandom: Windows has no /dev/urandom, so setting a password to modify failed there; #M150).
     let mut salt = [0u8; 16];
     getrandom::fill(&mut salt).map_err(|_| i18n::text("_shell.passwords-cannot-be-set-in-this-environment").to_string())?;
-    Ok(ModifyVerifier { algorithm_sid: Algorithm::Sha512.sid(), spin_count: SPIN_COUNT, salt: ibis_pptx::ibis_ooxml::base64::encode(&salt), hash: ibis_pptx::ibis_ooxml::base64::encode(&password_hash(Algorithm::Sha512, &salt, password, SPIN_COUNT)) })
+    Ok(ModifyVerifier { algorithm_sid: Algorithm::Sha512.sid(), spin_count: SPIN_COUNT, salt: ibis_formats::ibis_ooxml::base64::encode(&salt), hash: ibis_formats::ibis_ooxml::base64::encode(&password_hash(Algorithm::Sha512, &salt, password, SPIN_COUNT)) })
 }
 
 #[cfg(target_family = "wasm")]

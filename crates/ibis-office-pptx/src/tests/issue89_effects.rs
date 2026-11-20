@@ -41,7 +41,7 @@ fn every_effect_is_drawn() {
         return;
     }
     let data = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(FILE)).unwrap();
-    let p = ibis_pptx::read(&data).unwrap();
+    let p = ibis_formats::read(&data).unwrap();
     let mut nothing = Vec::new();
     for (i, slide) in p.slides.iter().enumerate() {
         for a in &slide.animations {
@@ -131,9 +131,9 @@ fn frames() {
 /// behaviours, and is saved and read back as it was.
 fn gallery_in_menu() {
     for (class, key_class) in [(AnimationClass::Entrance, "entr"), (AnimationClass::Emphasis, "emph")] {
-        let effect = ibis_pptx::animation_catalog::effects_of(class)
+        let effect = ibis_formats::animation_catalog::effects_of(class)
             .filter(|e| !(class == AnimationClass::Entrance && ibis_doc_model::animation_preset::preset_def(e.id).is_some()))
-            .find(|e| ibis_pptx::animation_catalog::make(ibis_doc_model::ShapeId(0), class, e.id, e.options[0].0).is_some_and(|a| a.look == AnimationLook::Preset))
+            .find(|e| ibis_formats::animation_catalog::make(ibis_doc_model::ShapeId(0), class, e.id, e.options[0].0).is_some_and(|a| a.look == AnimationLook::Preset))
             .expect("a gallery effect");
         let mut s = Scenario::open("test/editing/pptx-plan.pptx");
         s.select_shape(0);
@@ -153,7 +153,7 @@ fn looks() {
     let Ok(out) = std::env::var("ANIM89_LOOKS") else { return };
     let file = std::env::var("ANIM89_FILE").unwrap_or_else(|_| FILE.to_string());
     let data = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(&file)).unwrap();
-    let p = ibis_pptx::read(&data).unwrap();
+    let p = ibis_formats::read(&data).unwrap();
     let mut lines = Vec::new();
     for (i, slide) in p.slides.iter().enumerate() {
         for a in &slide.animations {

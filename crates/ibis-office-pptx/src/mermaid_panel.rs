@@ -7,7 +7,7 @@ use gpui_kit::*;
 use ibis_doc_model::{
     Command, EmuRect, MediaFormat, MediaId, Picture, ShapeId, ShapeKind, SlideId,
 };
-use ibis_pptx::mermaid::{MermaidOutput, render_mermaid};
+use ibis_formats::mermaid::{MermaidOutput, render_mermaid};
 
 use crate::ext::*;
 use crate::shell::{chrome, editor::SlideEditor, i18n::text};

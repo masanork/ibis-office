@@ -2,11 +2,11 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! 挿入 > グラフ in a document: an inline chart (DrawingML `c:chart` in a `w:drawing`) of a kind
-//! the menu offers (the same kinds and sample data as a presentation's, `ibis_pptx::NewChartKind`),
+//! the menu offers (the same kinds and sample data as a presentation's, `ibis_formats::NewChartKind`),
 //! at the caret, 6 × 3.5 inches as Word makes it. It is drawn as the charts a file has are.
 use gpui_kit::*;
 use ibis_doc_model::{Chart, ChartType, Fill, Stroke, EmuSize, FlowCommand, FlowPos, FlowRunKind, Shape, ShapeId, ShapeKind, SlideId};
-use ibis_pptx::NewChartKind;
+use ibis_formats::NewChartKind;
 
 use crate::shell::chart_panel::{ChartPanel, ChartPreset, chart_with_preset, ChartPanelActions, chart_panel_sidebar};
 use crate::shell::chrome::SidebarPanel;
@@ -239,10 +239,10 @@ impl SlideEditor {
 
     /// The data grid of chart `shape` changed (`book` its workbook's model, `data` the workbook as saved and the
     /// ranges): the chart made anew from it, in one step of undo, and the workbook kept for saving.
-    pub(crate) fn apply_doc_chart_data(&mut self, shape: ShapeId, book: &ibis_doc_model::Presentation, data: ibis_pptx::ChartData, cx: &mut Context<Self>) {
+    pub(crate) fn apply_doc_chart_data(&mut self, shape: ShapeId, book: &ibis_doc_model::Presentation, data: ibis_formats::ChartData, cx: &mut Context<Self>) {
         let Some(source) = self.source.clone() else { return };
         let Some((at, chart)) = self.doc_chart_by_id(shape) else { return };
-        let target = ibis_pptx::chart_from_data(&chart, book, &data.series);
+        let target = ibis_formats::chart_from_data(&chart, book, &data.series);
         source.set_chart_data(shape, target.clone(), data);
         if target != chart {
             self.run_flow(vec![FlowCommand::SetChart { at, chart: Box::new(target) }], cx);

@@ -4,7 +4,7 @@
 //! The xlsx defects of the corpus report (Excel for the web's PDFs against
 //! ibisOffice's) that need drawing or printing, each as Excel shows it, on
 //! the small files of `test/corpus-report/xlsx` (made up, no corpus text).
-//! The ones the model shows are `ibis-pptx/tests/corpus_report_xlsx.rs`.
+//! The ones the model shows are `ibis-formats/tests/corpus_report_xlsx.rs`.
 //!
 //! TODO: このファイルは、実文書の比較（コーパス）から見つかった崩れの試験の
 //! 仮置き場で、ずっと残すものではない。試験が通るようになったら（崩れを直した
@@ -103,7 +103,7 @@ fn open(name: &str) -> Scenario {
 
 fn read(name: &str) -> ibis_doc_model::Presentation {
     let path = crate::shell::scenario::repo_root().join(DIR).join(name);
-    ibis_pptx::read(&std::fs::read(&path).unwrap_or_else(|e| panic!("{name}: {e}"))).unwrap_or_else(|e| panic!("{name}: {e}"))
+    ibis_formats::read(&std::fs::read(&path).unwrap_or_else(|e| panic!("{name}: {e}"))).unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
 /// The text each cell of the current sheet shows, by (row, column).
@@ -406,7 +406,7 @@ fn export_pdf(file: &str, label: &str) -> PathBuf {
     let root = crate::shell::scenario::repo_root();
     let path = root.join(DIR).join(file);
     let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{file}: {e}"));
-    let presentation = ibis_pptx::read(&data).unwrap_or_else(|e| panic!("{file}: {e}"));
+    let presentation = ibis_formats::read(&data).unwrap_or_else(|e| panic!("{file}: {e}"));
     let out_dir = root.join("target/scenario/corpus_report_xlsx").join(label);
     std::fs::create_dir_all(&out_dir).unwrap();
     let name = Path::new(file).file_stem().unwrap().to_string_lossy().into_owned();

@@ -43,7 +43,7 @@ fn standard_encryption_read_only() {
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert!(s.update(|e, w, _| e.save_to(path.clone(), w)).is_err());
     let saved = std::fs::read(&copy).unwrap();
-    assert!(ibis_pptx::is_encrypted(&saved));
-    assert!(!ibis_pptx::ibis_ooxml::encryption::is_standard_encrypted(&saved));
-    assert!(ibis_pptx::decrypt(&saved, "Password1234_").is_ok());
+    assert!(ibis_formats::is_encrypted(&saved));
+    assert!(!ibis_formats::ibis_ooxml::encryption::is_standard_encrypted(&saved));
+    assert!(ibis_formats::decrypt(&saved, "Password1234_").is_ok());
 }

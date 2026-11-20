@@ -4897,7 +4897,7 @@ dependencies = [
 name = "ibis-eot"
 version = "0.8.0"
 dependencies = [
- "ibis-pptx",
+ "ibis-formats",
 ]
 
 [[package]]
@@ -4976,7 +4976,7 @@ dependencies = [
  "ibis-office-updater",
  "ibis-office-xlsx",
  "ibis-ooxml",
- "ibis-pptx",
+ "ibis-formats",
  "image",
  "js-sys",
  "krilla",
@@ -5009,7 +5009,7 @@ version = "0.8.0"
 dependencies = [
  "gpui-kit",
  "ibis-doc-model",
- "ibis-pptx",
+ "ibis-formats",
  "js-sys",
  "log",
  "objc",
@@ -5028,7 +5028,7 @@ dependencies = [
  "ibis-office-macros",
  "ibis-office-render",
  "ibis-office-shell",
- "ibis-pptx",
+ "ibis-formats",
  "image",
  "log",
  "wasm-bindgen-futures",
@@ -5053,7 +5053,7 @@ dependencies = [
  "ibis-office-base",
  "ibis-office-shell",
  "ibis-pdf",
- "ibis-pptx",
+ "ibis-formats",
  "ibis-xdw",
  "ibis-xps",
  "image",
@@ -5069,7 +5069,7 @@ dependencies = [
  "ibis-office-macros",
  "ibis-office-render",
  "ibis-office-shell",
- "ibis-pptx",
+ "ibis-formats",
  "image",
  "log",
 ]
@@ -5088,7 +5088,7 @@ dependencies = [
  "ibis-emf",
  "ibis-eot",
  "ibis-office-base",
- "ibis-pptx",
+ "ibis-formats",
  "icu_normalizer",
  "image",
  "js-sys",
@@ -5131,7 +5131,7 @@ dependencies = [
  "ibis-office-render",
  "ibis-office-updater",
  "ibis-pdf",
- "ibis-pptx",
+ "ibis-formats",
  "ibis-xdw",
  "ibis-xps",
  "image",
@@ -5172,7 +5172,7 @@ dependencies = [
  "ibis-office-macros",
  "ibis-office-render",
  "ibis-office-shell",
- "ibis-pptx",
+ "ibis-formats",
  "image",
  "log",
  "same-file",
@@ -5210,7 +5210,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ibis-pptx"
+name = "ibis-formats"
 version = "0.8.0"
 dependencies = [
  "ag-psd",

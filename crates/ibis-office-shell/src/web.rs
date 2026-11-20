@@ -45,15 +45,15 @@ extern "C" {
     fn decode_heic_js(bytes: &[u8]) -> Result<js_sys::Promise, JsValue>;
 }
 
-pub(crate) async fn open_heic(bytes: &[u8]) -> Result<ibis_pptx::Opened, String> {
-    ibis_pptx::production_image::validate_heic_still(bytes)?;
+pub(crate) async fn open_heic(bytes: &[u8]) -> Result<ibis_formats::Opened, String> {
+    ibis_formats::production_image::validate_heic_still(bytes)?;
     let describe = |error: JsValue| {
         error.as_string().unwrap_or_else(|| "HEIC preview could not be decoded".into())
     };
     let png = wasm_bindgen_futures::JsFuture::from(decode_heic_js(bytes).map_err(describe)?)
         .await
         .map_err(describe)?;
-    ibis_pptx::production_image::open_browser_heic_preview(&js_sys::Uint8Array::new(&png).to_vec())
+    ibis_formats::production_image::open_browser_heic_preview(&js_sys::Uint8Array::new(&png).to_vec())
 }
 
 #[wasm_bindgen]
@@ -183,19 +183,19 @@ pub fn open_in_new_tab(query: &str) {
 }
 
 /// The kind `?new=<ext>` of this page's address names (`docx`, `xlsx`, `pptx`), if it has one.
-pub fn new_kind_of_address() -> Option<ibis_pptx::Kind> {
+pub fn new_kind_of_address() -> Option<ibis_formats::Kind> {
     let read = js_sys::Function::new_no_args("return new URLSearchParams(location.search).get('new');");
     let ext = read.call0(&JsValue::NULL).ok()?.as_string()?;
-    ibis_pptx::Kind::from_extension(&ext)
+    ibis_formats::Kind::from_extension(&ext)
 }
 
 /// The `?new=` query of a new tab for `kind`.
-pub fn new_query(kind: ibis_pptx::Kind) -> &'static str {
+pub fn new_query(kind: ibis_formats::Kind) -> &'static str {
     match kind {
-        ibis_pptx::Kind::Presentation => "?new=pptx",
-        ibis_pptx::Kind::Workbook => "?new=xlsx",
-        ibis_pptx::Kind::Document => "?new=docx",
-        ibis_pptx::Kind::Pdf => "?new=pdf",
+        ibis_formats::Kind::Presentation => "?new=pptx",
+        ibis_formats::Kind::Workbook => "?new=xlsx",
+        ibis_formats::Kind::Document => "?new=docx",
+        ibis_formats::Kind::Pdf => "?new=pdf",
     }
 }
 

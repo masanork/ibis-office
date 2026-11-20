@@ -167,13 +167,13 @@ fn column_letters(mut col: u32) -> String {
     out.into_iter().rev().collect()
 }
 
-pub(crate) fn parse_law_input_str(text: &str) -> Result<ibis_pptx::lawtext::LawDoc, String> {
-    if ibis_pptx::lawtext::is_law_xml(text.as_bytes()) {
-        ibis_pptx::lawtext::parse_law_xml(text).map_err(|e| e.to_string())
+pub(crate) fn parse_law_input_str(text: &str) -> Result<ibis_formats::lawtext::LawDoc, String> {
+    if ibis_formats::lawtext::is_law_xml(text.as_bytes()) {
+        ibis_formats::lawtext::parse_law_xml(text).map_err(|e| e.to_string())
     } else if text.trim_start().starts_with("---") && text.contains("type: lawtext") {
-        ibis_pptx::lawtext::parse_markdown_law(text).map_err(|e| e.to_string())
+        ibis_formats::lawtext::parse_markdown_law(text).map_err(|e| e.to_string())
     } else {
-        ibis_pptx::lawtext::parse_lawtext(text).map_err(|e| e.to_string())
+        ibis_formats::lawtext::parse_lawtext(text).map_err(|e| e.to_string())
     }
 }
 
@@ -3288,8 +3288,8 @@ impl SlideEditor {
                 }
             }
             "export_active_lawtext" => {
-                match ibis_pptx::lawtext::export_presentation_to_lawtext(self.presentation()) {
-                    Ok(lt) => match ibis_pptx::lawtext::parse_lawtext(&lt) {
+                match ibis_formats::lawtext::export_presentation_to_lawtext(self.presentation()) {
+                    Ok(lt) => match ibis_formats::lawtext::parse_lawtext(&lt) {
                         Ok(doc) => (
                             json!({
                                 "law_title": doc.law_title,
@@ -3343,7 +3343,7 @@ impl SlideEditor {
                         parse_law_input_str(old_str),
                         match a.new_lawtext.as_deref() {
                             Some(s) => parse_law_input_str(s),
-                            None => ibis_pptx::lawtext::export_presentation_to_lawtext(
+                            None => ibis_formats::lawtext::export_presentation_to_lawtext(
                                 self.presentation(),
                             )
                             .map_err(|e| e.to_string())
@@ -3351,11 +3351,11 @@ impl SlideEditor {
                         },
                     ) {
                         (Ok(old_doc), Ok(new_doc)) => {
-                            let opts = ibis_pptx::lawtext::ShinkyuOptions {
+                            let opts = ibis_formats::lawtext::ShinkyuOptions {
                                 new_on_left: !a.old_on_left.unwrap_or(false),
                                 ..Default::default()
                             };
-                            let pkg = ibis_pptx::lawtext::build_5set_package(
+                            let pkg = ibis_formats::lawtext::build_5set_package(
                                 &old_doc,
                                 &new_doc,
                                 a.policy_memo.as_deref().unwrap_or(""),
@@ -3407,7 +3407,7 @@ impl SlideEditor {
                         parse_law_input_str(old_str),
                         match a.expected_new_lawtext.as_deref() {
                             Some(s) => parse_law_input_str(s),
-                            None => ibis_pptx::lawtext::export_presentation_to_lawtext(
+                            None => ibis_formats::lawtext::export_presentation_to_lawtext(
                                 self.presentation(),
                             )
                             .map_err(|e| e.to_string())
@@ -3415,7 +3415,7 @@ impl SlideEditor {
                         },
                     ) {
                         (Ok(old_doc), Ok(new_doc)) => {
-                            let res = ibis_pptx::lawtext::verify_aratame(
+                            let res = ibis_formats::lawtext::verify_aratame(
                                 &old_doc,
                                 &a.aratame_text,
                                 &new_doc,
@@ -3447,7 +3447,7 @@ impl SlideEditor {
                     Ok(a) => {
                         let new_res = match a.new_lawtext.as_deref() {
                             Some(s) => parse_law_input_str(s),
-                            None => ibis_pptx::lawtext::export_presentation_to_lawtext(
+                            None => ibis_formats::lawtext::export_presentation_to_lawtext(
                                 self.presentation(),
                             )
                             .map_err(|e| e.to_string())
@@ -3468,9 +3468,9 @@ impl SlideEditor {
                             (Ok(old_opt), Ok(new_doc)) => {
                                 let report = match old_opt.as_ref() {
                                     Some(old_doc) => {
-                                        ibis_pptx::lawtext::lint_amendment(old_doc, &new_doc)
+                                        ibis_formats::lawtext::lint_amendment(old_doc, &new_doc)
                                     }
-                                    None => ibis_pptx::lawtext::lint_law(&new_doc),
+                                    None => ibis_formats::lawtext::lint_law(&new_doc),
                                 };
                                 let errs = report.error_count;
                                 let warns = report.warning_count;
@@ -3506,9 +3506,9 @@ impl SlideEditor {
                         a.law_num.as_deref(),
                         a.law_id.as_deref(),
                     ) {
-                        Ok((id, title, xml)) => match ibis_pptx::lawtext::parse_law_xml(&xml) {
+                        Ok((id, title, xml)) => match ibis_formats::lawtext::parse_law_xml(&xml) {
                             Ok(doc) => {
-                                let lt = ibis_pptx::lawtext::to_lawtext(&doc);
+                                let lt = ibis_formats::lawtext::to_lawtext(&doc);
                                 let set_baseline = a.set_as_baseline.unwrap_or(true);
                                 if set_baseline {
                                     if let Some(p) = self.ai_assistant.as_mut() {
@@ -3553,7 +3553,7 @@ impl SlideEditor {
                         None,
                         format!("✗ open_markdown_document: {e}"),
                     ),
-                    Ok(a) => match ibis_pptx::markdown::open_markdown(a.markdown.into_bytes()) {
+                    Ok(a) => match ibis_formats::markdown::open_markdown(a.markdown.into_bytes()) {
                         Ok(opened) => {
                             let title = a.title;
                             let name: SharedString = title.clone().into();

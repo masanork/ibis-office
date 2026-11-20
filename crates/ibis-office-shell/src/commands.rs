@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::SharedString;
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 
 use crate::chrome::{Handler, MenuEntry, MenuItem, Menus, Submenu, ToolButton, ToolItem};
 use crate::i18n;

@@ -25,7 +25,7 @@ use crate::docx::scenarios::DocSteps;
 use crate::xlsx::scenarios::SheetSteps;
 use crate::shell::chrome::{Handler, MenuEntry};
 use crate::shell::menu_layout::{layout, layout_context, LayoutItem, DRAW_MENU};
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 use crate::pptx::ext::*;
 use crate::docx::ext::*;
 use crate::xlsx::ext::*;

@@ -1354,9 +1354,9 @@ fn docs_mark() -> std::sync::Arc<Image> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub(crate) fn office_app_logo(kind: ibis_pptx::Kind) -> std::sync::Arc<Image> {
+pub(crate) fn office_app_logo(kind: ibis_formats::Kind) -> std::sync::Arc<Image> {
     // One image per format for the life of the application, made when first shown.
-    static LOGOS: std::sync::Mutex<Vec<(ibis_pptx::Kind, std::sync::Arc<Image>)>> = std::sync::Mutex::new(Vec::new());
+    static LOGOS: std::sync::Mutex<Vec<(ibis_formats::Kind, std::sync::Arc<Image>)>> = std::sync::Mutex::new(Vec::new());
     let mut logos = LOGOS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, logo)) = logos.iter().find(|(k, _)| *k == kind) {
         return logo.clone();

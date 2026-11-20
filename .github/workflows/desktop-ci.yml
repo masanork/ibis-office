@@ -115,7 +115,7 @@ jobs:
           $dir = 'ci-package/ibisOffice'
           New-Item -ItemType Directory -Force "$dir/Resources/artborders", "$dir/Resources/Licenses" | Out-Null
           Copy-Item target/release/ibisOffice.exe,target/release/ibisOfficeUpdater.exe $dir
-          Copy-Item crates/ibis-pptx/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip,crates/ibis-pptx/data/artborders/ECMA-NOTICE.txt "$dir/Resources/artborders"
+          Copy-Item crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip,crates/ibis-formats/data/artborders/ECMA-NOTICE.txt "$dir/Resources/artborders"
           Copy-Item LICENSE,NOTICE,COMMERCIAL-LICENSE.md,crates/ibis-office-app/windows/license.md,crates/ibis-office-render/fonts/carlito/OFL.txt "$dir/Resources/Licenses"
           if (Get-ChildItem $dir -Recurse -Filter "*onnx*") { throw 'unexpected ONNX package content' }
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path "$dir/ibisOffice.exe"))

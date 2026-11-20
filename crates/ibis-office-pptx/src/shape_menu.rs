@@ -345,7 +345,7 @@ impl SlideEditor {
         let has_table_selected = self.selected_shapes().iter().any(|s| matches!(s.kind, ShapeKind::Table(_)));
         let is_table = is_table_cell_editing || has_table_selected;
         let range = edit.as_ref().is_some_and(|e| !e.range().is_empty());
-        let can_copy = if editing { range } else { has_selection && self.selected_shapes().iter().all(|s| ibis_pptx::save::check_shape_insertion(s).is_ok()) };
+        let can_copy = if editing { range } else { has_selection && self.selected_shapes().iter().all(|s| ibis_formats::save::check_shape_insertion(s).is_ok()) };
         let mut entries: Vec<MenuEntry> = vec![
             MenuItem::tr("edit.cut").icon("content_cut").shortcut("⌘X").disabled(!can_copy).on(|e, _, cx| {
                 if e.text_editing().is_some() {
@@ -494,13 +494,13 @@ impl SlideEditor {
             ]);
             if self.is_master_view() {
                 let placeholder_items: Vec<MenuEntry> = [
-                    (ibis_pptx::master_page::PlaceholderKind::Title, "pptx.master-view.placeholder.title", "title"),
-                    (ibis_pptx::master_page::PlaceholderKind::Text, "pptx.master-view.placeholder.text", "notes"),
-                    (ibis_pptx::master_page::PlaceholderKind::Content, "pptx.master-view.placeholder.content", "dashboard"),
-                    (ibis_pptx::master_page::PlaceholderKind::Picture, "pptx.master-view.placeholder.picture", "image"),
-                    (ibis_pptx::master_page::PlaceholderKind::Chart, "pptx.master-view.placeholder.chart", "insert_chart"),
-                    (ibis_pptx::master_page::PlaceholderKind::Table, "pptx.master-view.placeholder.table", "table"),
-                    (ibis_pptx::master_page::PlaceholderKind::Media, "pptx.master-view.placeholder.media", "movie"),
+                    (ibis_formats::master_page::PlaceholderKind::Title, "pptx.master-view.placeholder.title", "title"),
+                    (ibis_formats::master_page::PlaceholderKind::Text, "pptx.master-view.placeholder.text", "notes"),
+                    (ibis_formats::master_page::PlaceholderKind::Content, "pptx.master-view.placeholder.content", "dashboard"),
+                    (ibis_formats::master_page::PlaceholderKind::Picture, "pptx.master-view.placeholder.picture", "image"),
+                    (ibis_formats::master_page::PlaceholderKind::Chart, "pptx.master-view.placeholder.chart", "insert_chart"),
+                    (ibis_formats::master_page::PlaceholderKind::Table, "pptx.master-view.placeholder.table", "table"),
+                    (ibis_formats::master_page::PlaceholderKind::Media, "pptx.master-view.placeholder.media", "movie"),
                 ]
                 .into_iter()
                 .map(|(kind, label, icon)| {

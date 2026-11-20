@@ -13,7 +13,7 @@ use crate::shell::chrome::MenuId;
 use crate::shell::menu_bar::{BarMenu, OVERFLOW_IX};
 use crate::shell::menu_context::ContextMenu;
 use crate::shell::menu_layout::{layout_context, LayoutItem};
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 use crate::docx::ext::*;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {

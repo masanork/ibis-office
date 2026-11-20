@@ -8,7 +8,7 @@
 use std::sync::OnceLock;
 
 use gpui_kit::App;
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 
 use crate::format::FormatDriver;
 

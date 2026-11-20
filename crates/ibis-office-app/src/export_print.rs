@@ -34,7 +34,7 @@ pub struct HandoutMarks {
     /// The number of the page, bottom right.
     pub number: bool,
     /// Where they go and how big: the file's handout master (the corners, 10 pt, if `None`).
-    pub layout: Option<ibis_pptx::handout_master::HandoutLayout>,
+    pub layout: Option<ibis_formats::handout_master::HandoutLayout>,
 }
 /// The notes of a slide as a printed page carries them.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -236,7 +236,7 @@ fn notes_left(flow: &NotesFlow) -> bool {
 /// The header, date, footer and page number of a handout page: where the
 /// handout master puts them, or in the margins' corners.
 fn draw_marks(layer: &mut dyn TextLayer, page: &mut RgbaImage, marks: &HandoutMarks, number: usize, (page_w, page_h): (f32, f32)) {
-    use ibis_pptx::handout_master::Mark;
+    use ibis_formats::handout_master::Mark;
     if let Some(layout) = &marks.layout {
         // The master's boxes, scaled from the notes page to this one; the text inside as its box says.
         let (kx, ky) = (page_w * PX_PER_PT / layout.page.0.max(1) as f32, page_h * PX_PER_PT / layout.page.1.max(1) as f32);

@@ -77,7 +77,7 @@ JTD の `FlowRowLine` は表示上の行内線分であり、現在の DOCX 書�
 
 - `cargo test -p ibis-office-docx --lib`: 56 件成功。文字方向の描き分けと縦書き
   ページの既存テストを含む。
-- `cargo test -p ibis-pptx --lib jtd::`: 66 件成功、3 件は ignore。ローカル実行時の
+- `cargo test -p ibis-formats --lib jtd::`: 66 件成功、3 件は ignore。ローカル実行時の
   記録であり、全形式の互換性を意味しない。
 - 合成 DOCX でセルの文字方向メニュー、undo / redo、保存・再読込を実行した。対象外の
   シナリオがコンパイル時に要求する不足ファイルは一時的な空ファイルで補い、

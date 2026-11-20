@@ -59,7 +59,7 @@ fn laid_out(file: &str) -> Arc<Pagination> {
 #[cfg(windows)]
 fn laid_out(file: &str) -> Arc<Pagination> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/corpus-report/docx").join(file);
-    let mut presentation = ibis_pptx::read(&std::fs::read(path).expect("the file")).expect("a document");
+    let mut presentation = ibis_formats::read(&std::fs::read(path).expect("the file")).expect("a document");
     let (_platform, mut cx) = crate::export::headless_app();
     cx.allow_parking();
     let resources = cx.update(|app| {

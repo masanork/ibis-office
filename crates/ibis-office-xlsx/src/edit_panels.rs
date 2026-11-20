@@ -122,7 +122,7 @@ pub struct EditPanels {
     pub(crate) splits: std::collections::HashMap<ibis_doc_model::SlideId, super::split_view::SplitPanes>,
     /// The built-in cell styles with the workbook's theme (made when the
     /// menu is first shown).
-    pub(crate) cell_styles: std::cell::RefCell<Option<std::rc::Rc<Vec<ibis_pptx::PresetCellStyle>>>>,
+    pub(crate) cell_styles: std::cell::RefCell<Option<std::rc::Rc<Vec<ibis_formats::PresetCellStyle>>>>,
     /// データ > 数式の検証…
     pub(crate) evaluate_formula: Option<super::formula_audit::EvaluateFormulaPanel>,
     /// データ > ウォッチ ウィンドウ…

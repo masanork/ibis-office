@@ -5,14 +5,14 @@
 //! shortcut, for signed and malformed packages.
 
 use super::{repo_root, Scenario};
-use ibis_pptx::ibis_ooxml::Package;
+use ibis_formats::ibis_ooxml::Package;
 
 pub fn all() -> Vec<(&'static str, fn())> {
     vec![("shell::signature_open_warning", signature_open_warning), ("shell::signature_relationship_selection", signature_relationship_selection), ("shell::signature_certificate_locations", signature_certificate_locations), ("shell::signature_certificate_policies", signature_certificate_policies)]
 }
 
 fn signature_open_warning() {
-    use ibis_pptx::ibis_ooxml::signatures::{inspect_signatures, ManifestDigest, ObjectDigest, SignatureValueCheck};
+    use ibis_formats::ibis_ooxml::signatures::{inspect_signatures, ManifestDigest, ObjectDigest, SignatureValueCheck};
     let fixture = repo_root().join("crates/ibis-ooxml/tests/fixtures/signatures/signed-editable.docx");
     let dir = repo_root().join("target/scenario/signature-open-warning");
     std::fs::create_dir_all(&dir).unwrap();
@@ -48,7 +48,7 @@ fn signature_open_warning() {
     scenario.update(|e, w, _| e.save_to(copy.clone(), w)).unwrap();
     let copy_before = std::fs::read(&copy).unwrap();
     let copied = Package::open(copy_before.clone()).unwrap();
-    assert_eq!(ibis_pptx::ibis_ooxml::signatures::signature_parts(&copied).unwrap().len(), 1);
+    assert_eq!(ibis_formats::ibis_ooxml::signatures::signature_parts(&copied).unwrap().len(), 1);
     assert_eq!(inspect_signatures(&copied).unwrap()[0].manifest[0].digest, ManifestDigest::Matches);
     scenario.key("cmd-down");
     scenario.type_text("edited");
@@ -151,7 +151,7 @@ fn signature_certificate_locations() {
 }
 
 fn signature_certificate_policies() {
-    use ibis_pptx::ibis_ooxml::{base64, signatures::extract_single_embedded_certificate, SaveOptions};
+    use ibis_formats::ibis_ooxml::{base64, signatures::extract_single_embedded_certificate, SaveOptions};
     let fixtures = repo_root().join("crates/ibis-ooxml/tests/fixtures/signatures");
     let mut package = Package::open(std::fs::read(fixtures.join("signed-editable.docx")).unwrap()).unwrap();
     let part = "_xmlsignatures/sig1.xml";

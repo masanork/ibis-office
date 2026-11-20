@@ -10,7 +10,7 @@
 //! The same functions change the model when the user edits it and, when
 //! saving, the model as it was read, so that the saved file's cells can be
 //! compared with the edited ones after the file's XML has had the same
-//! changes (see `ibis-pptx/src/save/xlsx.rs`). The workbook keeps the
+//! changes (see `ibis-formats/src/save/xlsx.rs`). The workbook keeps the
 //! list of structural changes in the order they were made
 //! ([`crate::Workbook::structure`]).
 

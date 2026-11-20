@@ -6,7 +6,7 @@
 //! names, `docx/chart_insert.rs`). What inserting a kind does is the format's (`insert`).
 
 use gpui_kit::*;
-use ibis_pptx::NewChartKind;
+use ibis_formats::NewChartKind;
 
 use crate::chrome::{MenuEntry, MenuItem};
 use crate::editor::SlideEditor;

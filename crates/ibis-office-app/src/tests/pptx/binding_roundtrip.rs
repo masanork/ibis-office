@@ -26,7 +26,7 @@ const INSET:i64=91_441;
 const ROTATION:i32=740_741;
 
 fn unedited_apply(){
-    let mut s=Scenario::new_document(ibis_pptx::Kind::Presentation);
+    let mut s=Scenario::new_document(ibis_formats::Kind::Presentation);
     s.size(1200.,900.);
     let id=s.update(|e,_,cx|{
         let mut auto=AutoShape::new(Geometry::Rect,Fill::Solid(Color::BLACK),None);
@@ -58,7 +58,7 @@ fn unedited_apply(){
 
 /// The slide size panel shows 25.4 x 19.05 cm for 9 144 007 x 6 858 011 EMU; an Apply without an edit keeps the exact size.
 fn unedited_slide_size(){
-    let mut s=Scenario::new_document(ibis_pptx::Kind::Presentation);
+    let mut s=Scenario::new_document(ibis_formats::Kind::Presentation);
     let size=ibis_doc_model::EmuSize::new(9_144_007,6_858_011);
     s.update(|e,_,cx|{e.run(vec![ibis_doc_model::Command::SetSlideSize{size}],cx);});
     let undo_before=s.with(|e,_|e.document.undo_len());

@@ -1402,7 +1402,7 @@ impl SlideEditor {
 
     /// Insert a screenshot of an available window (window snapshot).
     pub(crate) fn insert_screenshot_window(&mut self, cx: &mut Context<Self>) -> Option<ShapeId> {
-        let (data, _, _) = ibis_pptx::screenshot_snapshot(640, 360);
+        let (data, _, _) = ibis_formats::screenshot_snapshot(640, 360);
         self.insert_picture("Screenshot_Window.png", data, cx)
     }
 
@@ -1411,7 +1411,7 @@ impl SlideEditor {
         if let Some(id) = self.insert_screenshot_from_clipboard(cx) {
             return Some(id);
         }
-        let (data, _, _) = ibis_pptx::screenshot_snapshot(480, 270);
+        let (data, _, _) = ibis_formats::screenshot_snapshot(480, 270);
         self.insert_picture("Screen_Clipping.png", data, cx)
     }
 
@@ -1574,7 +1574,7 @@ impl SlideEditor {
     /// 図形の変更: the selected auto shapes made preset `preset` (their text,
     /// fill and outline kept).
     pub(crate) fn change_selected_shapes(&mut self, preset: &str, cx: &mut Context<Self>) {
-        let Some(geometry) = ibis_pptx::preset_geometry(preset) else { return };
+        let Some(geometry) = ibis_formats::preset_geometry(preset) else { return };
         let slide = self.current_slide;
         let commands: Vec<Command> = self
             .selected_shapes()
@@ -1600,8 +1600,8 @@ impl SlideEditor {
         let chosen = self.selected_slide_ids();
         // The file as it is now, and the slides' parts in it.
         let saved = self.source.as_ref().and_then(|source| {
-            let data: std::sync::Arc<[u8]> = source.save(self.presentation(), ibis_pptx::SaveOptions::default()).ok()?.into();
-            let opened = ibis_pptx::open(data.clone()).ok()?;
+            let data: std::sync::Arc<[u8]> = source.save(self.presentation(), ibis_formats::SaveOptions::default()).ok()?.into();
+            let opened = ibis_formats::open(data.clone()).ok()?;
             let parts = opened.source.slide_parts(&opened.presentation);
             Some((data, parts))
         });
@@ -1611,7 +1611,7 @@ impl SlideEditor {
                 let slide = self.presentation().slide(*id)?.clone();
                 let layout = slide.layout.and_then(|l| self.presentation().layout(l)).map(|l| l.name.clone());
                 let index = self.presentation().slide_index(*id)?;
-                let file = saved.as_ref().and_then(|(data, parts)| Some(ibis_pptx::ForeignSlide { data: data.clone(), part: parts.get(index).cloned().flatten()?, keep_source: false }));
+                let file = saved.as_ref().and_then(|(data, parts)| Some(ibis_formats::ForeignSlide { data: data.clone(), part: parts.get(index).cloned().flatten()?, keep_source: false }));
                 Some((slide, layout, file))
             })
             .collect();
@@ -2038,7 +2038,7 @@ impl SlideEditor {
 
         for (shape_id, frame, svg_data) in selected_svgs {
             let shape_index = self.slide().shapes.iter().position(|s| s.id == shape_id).unwrap_or(0);
-            match ibis_pptx::convert_svg_to_shapes(|| self.document.ids().new_shape_id(), &svg_data, frame) {
+            match ibis_formats::convert_svg_to_shapes(|| self.document.ids().new_shape_id(), &svg_data, frame) {
                 Ok(new_shapes) if !new_shapes.is_empty() => {
                     commands.push(Command::RemoveShape { slide: slide_id, shape: shape_id });
                     for (i, new_shape) in new_shapes.into_iter().enumerate() {
@@ -2463,7 +2463,7 @@ pub(crate) fn crop_for_aspect(orig_w: u64, orig_h: u64, num: u64, den: u64) -> i
 #[derive(Clone)]
 pub(crate) struct CopiedSlides {
     pub(crate) origin: SlideOrigin,
-    pub(crate) slides: Vec<(ibis_doc_model::Slide, Option<String>, Option<ibis_pptx::ForeignSlide>)>,
+    pub(crate) slides: Vec<(ibis_doc_model::Slide, Option<String>, Option<ibis_formats::ForeignSlide>)>,
 }
 
 /// The slide clipboard, shared by the app's windows.
@@ -2503,7 +2503,7 @@ fn matching_layout(presentation: &ibis_doc_model::Presentation, name: Option<&st
 #[derive(Clone)]
 pub(crate) struct SlideOrigin {
     window: gpui_kit::EntityId,
-    file: Option<std::sync::Weak<ibis_pptx::Source>>,
+    file: Option<std::sync::Weak<ibis_formats::Source>>,
 }
 
 impl SlideOrigin {

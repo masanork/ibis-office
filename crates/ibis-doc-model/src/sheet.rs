@@ -852,7 +852,7 @@ pub struct PhoneticInfo {
 
 /// Where a worksheet was left, as the file keeps it in its `sheetView` (Excel writes it at each save): the cell at the top left of
 /// what scrolls, and the selected cell and range. Cells are `(column, row)`, 0-based. The editor reads it when the file is opened
-/// and hands the present positions back when it saves (`ibis_pptx::SaveOptions` gets the sheet as it is, with these set).
+/// and hands the present positions back when it saves (`ibis_formats::SaveOptions` gets the sheet as it is, with these set).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SheetViewPosition {
     /// `sheetView/@topLeftCell`: the first cell of the (top-left) pane's view.

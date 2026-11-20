@@ -9,7 +9,7 @@ pub(crate) struct Report { pub(crate) json: serde_json::Value, pub(crate) csv: S
 /// Detect content independently from the filename; an ambiguous text stream can
 /// be valid CSV and TSV, so the extension still selects its delimiter.
 fn validate_content(name: &str, bytes: &[u8]) -> Result<(), String> {
-    use ibis_pptx::machine_readability_detect::{detect, Content};
+    use ibis_formats::machine_readability_detect::{detect, Content};
     let extension=Path::new(name).extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
     let valid=matches!((extension.as_str(), detect(bytes)),
         ("xlsx" | "xlsm", Content::Workbook | Content::Zip)
@@ -21,8 +21,8 @@ fn analyze_bytes(source: &Path, bytes: &[u8], mode: &str) -> Result<serde_json::
     let name=source.file_name().and_then(|v|v.to_str()).ok_or("Input file name is missing")?;
     validate_content(name,bytes)?;
     match source.extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
-        "csv" | "tsv" => ibis_pptx::machine_readability_native::analyze_csv_report_experimental(bytes,name,mode).map_err(|e| { log::warn!("CSV analysis failed: {e:?}"); "Native analysis unavailable".to_string() }),
-        "xlsx" | "xlsm" => ibis_pptx::machine_readability_xlsx::analyze_xlsx_report_experimental(bytes,name,mode).map_err(|e| { log::warn!("Excel analysis failed: {e:?}"); "Native analysis unavailable".to_string() }),
+        "csv" | "tsv" => ibis_formats::machine_readability_native::analyze_csv_report_experimental(bytes,name,mode).map_err(|e| { log::warn!("CSV analysis failed: {e:?}"); "Native analysis unavailable".to_string() }),
+        "xlsx" | "xlsm" => ibis_formats::machine_readability_xlsx::analyze_xlsx_report_experimental(bytes,name,mode).map_err(|e| { log::warn!("Excel analysis failed: {e:?}"); "Native analysis unavailable".to_string() }),
         _ => Err("Unsupported input format".into()),
     }
 }
@@ -38,7 +38,7 @@ pub(crate) fn analyze_snapshot(source: &Path, bytes: &[u8], mode: &str) -> Resul
 
 fn analyze_snapshot_inner(source: &Path, bytes: &[u8], mode: &str, snapshot: bool) -> Result<Report, String> {
     let json=analyze_bytes(source,bytes,mode)?;
-    let csv=ibis_pptx::machine_readability_report::file_report_csv(&json).ok_or("Invalid native report")?;
+    let csv=ibis_formats::machine_readability_report::file_report_csv(&json).ok_or("Invalid native report")?;
     Ok(Report { json,csv,bulk:false,snapshot,sources:vec![source.to_path_buf()] })
 }
 
@@ -49,8 +49,8 @@ pub(crate) fn analyze_bulk(sources: &[PathBuf], mode: &str) -> Result<Report, St
         let bytes=std::fs::read(source).map_err(|e|e.to_string())?;
         files.push(analyze_bytes(source,&bytes,mode)?);
     }
-    let json=ibis_pptx::machine_readability_report::combine_native_reports(&files).ok_or("Invalid native bulk report")?;
-    let csv=ibis_pptx::machine_readability_report::bulk_report_csv(&json).ok_or("Invalid native bulk CSV")?;
+    let json=ibis_formats::machine_readability_report::combine_native_reports(&files).ok_or("Invalid native bulk report")?;
+    let csv=ibis_formats::machine_readability_report::bulk_report_csv(&json).ok_or("Invalid native bulk CSV")?;
     Ok(Report { json,csv,bulk:true,snapshot:false,sources:sources.to_vec() })
 }
 

@@ -7,7 +7,7 @@
 //! sidebars and every command that left the menus are found by the search, and each of them has a door.
 use std::collections::HashSet;
 
-use ibis_pptx::Kind;
+use ibis_formats::Kind;
 
 use crate::shell::chrome::{MenuEntry, MenuId};
 use crate::shell::menu_context::{ContextState, ObjectKind};

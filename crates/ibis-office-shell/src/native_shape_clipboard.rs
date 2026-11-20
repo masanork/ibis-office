@@ -692,7 +692,7 @@ pub fn image_fallback(
         }
     }
     let mut shapes = shapes.to_vec();
-    let bounds = ibis_pptx::shape_clipboard::drawing_bounds(&shapes)?;
+    let bounds = ibis_formats::shape_clipboard::drawing_bounds(&shapes)?;
     let (x, y, w, h) = (bounds.x, bounds.y, bounds.width, bounds.height);
     for shape in &mut shapes {
         shape.frame.x -= x;

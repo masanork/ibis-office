@@ -118,7 +118,7 @@ impl SlideEditor {
         self.start_harunobu_input(paths, bulk, None, mode, window, cx);
     }
     #[cfg(not(target_family = "wasm"))]
-    fn start_harunobu_input(&mut self, paths: Vec<std::path::PathBuf>, bulk: bool, snapshot: Option<(std::sync::Arc<ibis_pptx::Source>, ibis_doc_model::Presentation)>, mode: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_harunobu_input(&mut self, paths: Vec<std::path::PathBuf>, bulk: bool, snapshot: Option<(std::sync::Arc<ibis_formats::Source>, ibis_doc_model::Presentation)>, mode: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let job = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -128,7 +128,7 @@ impl SlideEditor {
         cx.spawn_in(window, async move |this, cx| {
             let result = cx.background_executor().spawn(async move {
                 if let Some((source, presentation)) = snapshot {
-                    let bytes = source.save(&presentation, ibis_pptx::SaveOptions::default()).map_err(|e| e.to_string())?;
+                    let bytes = source.save(&presentation, ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())?;
                     super::harunobu::analyze_snapshot(&paths[0], &bytes, mode)
                 } else if bulk { super::harunobu::analyze_bulk(&paths, mode) }
                 else { super::harunobu::analyze(&paths[0], mode) }

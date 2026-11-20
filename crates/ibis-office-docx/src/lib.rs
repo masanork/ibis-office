@@ -337,7 +337,7 @@ pub struct Document;
 mod dialog_hooks;
 mod event_hooks;
 mod infobar_hooks;
-impl_format_state!(State, ibis_pptx::Kind::Document);
+impl_format_state!(State, ibis_formats::Kind::Document);
 
 #[ibis_office_macros::editor_ext(Docx)]
 impl SlideEditor {
@@ -574,39 +574,39 @@ impl FormatEditor for Document {
 
     /// A document as .odt (OpenDocument) and as a template (.dotx, .dotm).
     #[cfg(not(target_family = "wasm"))]
-    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_pptx::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
+    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
         use crate::shell::format::FileBytes;
         let extension = path.extension()?;
         if extension.eq_ignore_ascii_case("odt") {
             // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
-            return Some(ibis_pptx::docx_convert::export_docx_to_odt(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
+            return Some(ibis_formats::docx_convert::export_docx_to_odt(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
         }
         if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
             if let Some(raw_md) = editor.markdown_source_text() {
                 return Some(Ok(FileBytes { bytes: raw_md.as_bytes().to_vec(), protect: false, note: None }));
             }
             return Some(
-                ibis_pptx::docx_convert::export_docx_format(editor.presentation(), ibis_pptx::docx_convert::DocxConvertFormat::Markdown)
+                ibis_formats::docx_convert::export_docx_format(editor.presentation(), ibis_formats::docx_convert::DocxConvertFormat::Markdown)
                     .map(|bytes| FileBytes { bytes, protect: false, note: None })
                     .map_err(|e| e.to_string()),
             );
         }
         if extension.eq_ignore_ascii_case("xml") {
             return Some(
-                ibis_pptx::lawtext::export_presentation_to_law_xml(editor.presentation())
+                ibis_formats::lawtext::export_presentation_to_law_xml(editor.presentation())
                     .map(|xml| FileBytes { bytes: xml.into_bytes(), protect: false, note: None })
                     .map_err(|e| e.to_string()),
             );
         }
         if extension.eq_ignore_ascii_case("lawtext") {
             return Some(
-                ibis_pptx::lawtext::export_presentation_to_lawtext(editor.presentation())
+                ibis_formats::lawtext::export_presentation_to_lawtext(editor.presentation())
                     .map(|lt| FileBytes { bytes: lt.into_bytes(), protect: false, note: None })
                     .map_err(|e| e.to_string()),
             );
         }
         if extension.eq_ignore_ascii_case("dotx") || extension.eq_ignore_ascii_case("dotm") {
-            return Some(source.save_template(editor.presentation(), ibis_pptx::SaveOptions::default()).map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()));
+            return Some(source.save_template(editor.presentation(), ibis_formats::SaveOptions::default()).map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()));
         }
         None
     }
@@ -793,11 +793,11 @@ impl FormatEditor for Document {
     }
 
     /// A document's chart is in its text: found by its id alone.
-    fn read_chart_data(editor: &SlideEditor, source: &ibis_pptx::Source, _slide: ibis_doc_model::SlideId, shape: ibis_doc_model::ShapeId) -> Result<ibis_pptx::ChartData, ibis_pptx::Error> {
+    fn read_chart_data(editor: &SlideEditor, source: &ibis_formats::Source, _slide: ibis_doc_model::SlideId, shape: ibis_doc_model::ShapeId) -> Result<ibis_formats::ChartData, ibis_formats::Error> {
         source.doc_chart_data(editor.presentation(), shape)
     }
 
-    fn apply_chart_data(editor: &mut SlideEditor, _slide: ibis_doc_model::SlideId, shape: ibis_doc_model::ShapeId, book: &Presentation, data: ibis_pptx::ChartData, cx: &mut Context<SlideEditor>) {
+    fn apply_chart_data(editor: &mut SlideEditor, _slide: ibis_doc_model::SlideId, shape: ibis_doc_model::ShapeId, book: &Presentation, data: ibis_formats::ChartData, cx: &mut Context<SlideEditor>) {
         editor.apply_doc_chart_data(shape, book, data, cx)
     }
 
