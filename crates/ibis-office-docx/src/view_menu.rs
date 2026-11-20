@@ -38,11 +38,13 @@ pub(crate) fn connect(editor: &SlideEditor, menus: &mut Menus) {
     }
     check(menus, "docx.interaction.reviewing", editor.is_reviewing_mode());
     check(menus, "docx.interaction.viewing", editor.is_viewing_mode());
-    check(menus, "docx.view.read-mode", editor.is_read_mode());
-    check(menus, "docx.print-layout", editor.is_print_layout_mode());
-    check(menus, "docx.view.web-layout", editor.is_web_layout_mode());
-    check(menus, "docx.view.outline", editor.is_outline_mode());
-    check(menus, "docx.view.draft", editor.is_draft_mode());
+    let in_md_source = editor.is_markdown_source_mode();
+    check(menus, "docx.view.read-mode", !in_md_source && editor.is_read_mode());
+    check(menus, "docx.print-layout", !in_md_source && editor.is_print_layout_mode());
+    check(menus, "docx.view.web-layout", !in_md_source && editor.is_web_layout_mode());
+    check(menus, "docx.view.outline", !in_md_source && editor.is_outline_mode());
+    check(menus, "docx.view.draft", !in_md_source && editor.is_draft_mode());
+    check(menus, "docx.view.markdown-source", in_md_source);
     check(menus, "docx.view.focus", editor.is_focus_mode());
     check(menus, "docx.formatting-marks", editor.doc_prefs().formatting_marks_open);
     check(menus, "docx.white-space", editor.doc_prefs().show_white_space);

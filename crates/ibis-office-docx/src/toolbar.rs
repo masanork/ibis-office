@@ -3260,14 +3260,16 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("docx.view.web-layout", |this, window, cx| this.set_document_view_mode(ibis_doc_model::DocumentViewMode::Web, window, cx));
     menus.connect("docx.view.outline", |this, window, cx| this.set_document_view_mode(ibis_doc_model::DocumentViewMode::Outline, window, cx));
     menus.connect("docx.view.draft", |this, window, cx| this.set_document_view_mode(ibis_doc_model::DocumentViewMode::Draft, window, cx));
+    menus.connect("docx.view.markdown-source", |this, window, cx| this.toggle_markdown_source_mode(window, cx));
     menus.connect("docx.view.focus", |this, window, cx| this.toggle_focus_mode(window, cx));
     {
-        const VIEW_MODE_IDS: [&str; 6] = [
+        const VIEW_MODE_IDS: [&str; 7] = [
             "docx.view.read-mode",
             "docx.print-layout",
             "docx.view.web-layout",
             "docx.view.outline",
             "docx.view.draft",
+            "docx.view.markdown-source",
             "docx.view.focus",
         ];
         let view_items = menus.items_mut(MenuId::View);

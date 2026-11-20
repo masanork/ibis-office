@@ -614,6 +614,8 @@ pub enum FlowCommand {
     SetParagraphFormat { first: u32, last: u32, change: ParaChange },
     /// Replace `remove` blocks at `index` of a list of blocks with `blocks`.
     ReplaceBlocks { container: Container, index: usize, remove: usize, blocks: Vec<Block> },
+    /// Replace the entire flowing document atomically (its own inverse).
+    ReplaceDocument(Box<FlowDocument>),
     /// Replace the list definitions (a list added); the paragraphs are
     /// resolved again.
     SetNumbering { numbering: crate::flow::Numbering },
@@ -911,6 +913,7 @@ pub(crate) fn apply(presentation: &mut Presentation, command: FlowCommand) -> Re
     let inverse = apply_to(Arc::make_mut(flow), command)?;
     // The pages show the new document until the viewer lays it out again.
     if let Some(flow) = presentation.flow.clone() {
+        presentation.slide_size = flow.page.size;
         for slide in &mut presentation.slides {
             for shape in &mut slide.shapes {
                 if let ShapeKind::Page { document, .. } = &mut shape.kind {
@@ -954,6 +957,10 @@ pub fn apply_to(doc: &mut FlowDocument, command: FlowCommand) -> Result<FlowComm
             let count = blocks.len();
             let old: Vec<Block> = list.splice(index..index + remove, blocks).collect();
             Ok(FlowCommand::ReplaceBlocks { container, index, remove: count, blocks: old })
+        }
+        FlowCommand::ReplaceDocument(new_doc) => {
+            let old = std::mem::replace(doc, *new_doc);
+            Ok(FlowCommand::ReplaceDocument(Box::new(old)))
         }
         FlowCommand::SetNumbering { numbering } => {
             let styles = Arc::make_mut(&mut doc.styles);
