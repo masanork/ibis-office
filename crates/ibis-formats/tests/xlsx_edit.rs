@@ -259,6 +259,24 @@ fn sizes_and_merges_are_saved() {
 }
 
 #[test]
+fn added_sheet_declares_relationship_namespace_when_siblings_declare_their_own() {
+    let data = include_bytes!("../../../test/web/fixtures/html-export.xlsx");
+    let opened = ibis_formats::open(data.to_vec()).unwrap();
+    let mut document = Document::new(opened.presentation.clone());
+    let sheet = document.ids().new_slide_id();
+    let shape = document.ids().new_shape_id();
+    document.execute(vec![Command::Sheet(SheetCommand::AddSheet {
+        index: 0,
+        name: "Query output".into(),
+        sheet,
+        shape,
+    })]).unwrap();
+    let bytes = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    assert_reads_back(&bytes, document.presentation());
+    assert_eq!(ibis_formats::read(&bytes).unwrap().slides[0].name.as_deref(), Some("Query output"));
+}
+
+#[test]
 fn sheets_added_renamed_and_deleted_are_saved() {
     let (data, opened) = open("xlsx-sales.xlsx");
     let mut d = Document::new(opened.presentation.clone());
