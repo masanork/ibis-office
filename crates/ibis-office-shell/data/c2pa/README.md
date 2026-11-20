@@ -12,5 +12,5 @@ https://creativecommons.org/licenses/by/4.0/).
 | C2PA-TSA-TRUST-LIST.pem | `eca8347ee71e31d226e00c85b15aca356116fefe6c26ed8c0ee1f954115b1990` |
 
 Update both bundles from a reviewed upstream commit. Record its permalink
-and the two SHA-256 values here, and ship the update with the desktop app.
-The app uses these local files during verification.
+and the two SHA-256 values here, and ship the update with the desktop and
+browser builds. Both builds use these bundled files during verification.

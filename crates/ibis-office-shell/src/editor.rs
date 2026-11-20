@@ -596,7 +596,6 @@ pub struct SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub standard_source_path: Option<std::path::PathBuf>,
     pub(crate) production_image_view: Option<ProductionImageView>,
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) image_provenance: Option<crate::image_provenance::Report>,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) image_sequence: Option<crate::image_sequence::ImageSequence>,
@@ -924,7 +923,6 @@ impl SlideEditor {
             standard_source_path: None,
             jtd_original: None,
             production_image_view: None,
-            #[cfg(not(target_family = "wasm"))]
             image_provenance: None,
             #[cfg(not(target_family = "wasm"))]
             image_sequence: None,
@@ -1261,8 +1259,8 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         {
             self.image_sequence = None;
-            self.image_provenance = None;
         }
+        self.image_provenance = None;
         self.jtd_gallery = false;
         self.jtd_gallery_body = None;
         self.jtd_thumbnail = false;
@@ -1506,11 +1504,17 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
+            let mut image_provenance = None;
             let mut result = if extension.is_some_and(ibis_pptx::production_image::is_heic_extension) {
                 crate::web::open_heic(&data).await.map(|opened| (opened, None))
             } else {
                 match ibis_pptx::production_image::open_with_exposure(extension, &data) {
-                    Ok(Some(result)) => Ok(result),
+                    Ok(Some(result)) => {
+                        if let Some(extension) = extension {
+                            image_provenance = crate::image_provenance::inspect(extension, &data).await;
+                        }
+                        Ok(result)
+                    }
                     Ok(None) => ibis_pptx::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
                     Err(error) => Err(error),
                 }
@@ -1533,6 +1537,7 @@ impl SlideEditor {
                     };
                     this.load(opened.presentation, doc_name, window, cx);
                     this.set_production_image_view(production_image, exposure);
+                    this.image_provenance = image_provenance;
                     this.set_opened_source(std::sync::Arc::new(opened.source), production_image);
                     // (A presentation opens without the speaker notes, as a new one does.)
                     with_format!(this, file_opened(this));

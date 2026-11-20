@@ -26,13 +26,16 @@ pub(crate) struct Report {
     ingredients: Vec<String>,
 }
 
-pub(crate) fn inspect(extension: &str, original: &[u8]) -> Option<Report> {
-    let mime = match extension.to_ascii_lowercase().as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "tif" | "tiff" => "image/tiff",
-        _ => return None,
-    };
+fn mime_type(extension: &str) -> Option<&'static str> {
+    match extension.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "tif" | "tiff" => Some("image/tiff"),
+        _ => None,
+    }
+}
+
+fn offline_settings() -> Settings {
     let mut settings = Settings::new();
     settings.verify.ocsp_fetch = false;
     settings.verify.remote_manifest_fetch = false;
@@ -49,13 +52,33 @@ pub(crate) fn inspect(extension: &str, original: &[u8]) -> Option<Report> {
             ..TrustAnchor::default()
         },
     ]);
-    Some(inspect_with_settings(mime, original, settings))
+    settings
 }
 
-fn inspect_with_settings(mime: &str, original: &[u8], settings: Settings) -> Report {
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn inspect(extension: &str, original: &[u8]) -> Option<Report> {
+    let mime = mime_type(extension)?;
     let result = C2paContext::new()
-        .with_settings(settings)
+        .with_settings(offline_settings())
         .and_then(|context| Reader::from_context(context).with_stream(mime, Cursor::new(original)));
+    Some(report(result))
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) async fn inspect(extension: &str, original: &[u8]) -> Option<Report> {
+    let mime = mime_type(extension)?;
+    let result = match C2paContext::new().with_settings(offline_settings()) {
+        Ok(context) => {
+            Reader::from_context(context)
+                .with_stream_async(mime, Cursor::new(original))
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    Some(report(result))
+}
+
+fn report(result: Result<Reader, Error>) -> Report {
     let reader = match result {
         Ok(reader) => reader,
         Err(error) => {
@@ -203,7 +226,7 @@ impl SlideEditor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
 

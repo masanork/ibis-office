@@ -132,12 +132,7 @@ impl SlideEditor {
                     }))
                     .children(right_texts)
                     .children(self.render_image_alpha(cx))
-                    .children({
-                        #[cfg(not(target_family = "wasm"))]
-                        { self.render_image_provenance(cx) }
-                        #[cfg(target_family = "wasm")]
-                        { None::<AnyElement> }
-                    })
+                    .children(self.render_image_provenance(cx))
                     .children(self.render_exr_exposure(cx))
                     .children({
                         #[cfg(not(target_family = "wasm"))]

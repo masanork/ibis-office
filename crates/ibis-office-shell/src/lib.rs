@@ -54,8 +54,6 @@ pub mod autorecover;
 pub mod editor;
 pub mod embed;
 pub mod file_actions;
-#[cfg(not(target_family = "wasm"))]
-#[cfg(not(target_family = "wasm"))]
 mod image_provenance;
 mod signature_ui;
 pub mod file_watch;
