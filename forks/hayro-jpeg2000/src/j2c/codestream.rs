@@ -18,7 +18,7 @@ pub(crate) struct Header<'a> {
     pub(crate) size_data: SizeData,
     pub(crate) global_coding_style: CodingStyleDefault,
     pub(crate) component_infos: Vec<ComponentInfo>,
-    pub(crate) main_progression: Option<ProgressionVolume>,
+    pub(crate) main_progression: Vec<ProgressionVolume>,
     pub(crate) ppm_packets: Vec<PpmPacket<'a>>,
     pub(crate) skipped_resolution_levels: u8,
     /// Whether strict mode is enabled for decoding.
@@ -54,7 +54,7 @@ pub(crate) fn read_header<'a>(
     let mut qcd_components = vec![None; num_components as usize];
     let mut ppm_markers = vec![];
     let mut roi_shifts = vec![None; num_components as usize];
-    let mut main_progression = None;
+    let mut main_progression = vec![];
 
     loop {
         match reader.peek_marker().ok_or(MarkerError::Invalid)? {
@@ -92,10 +92,10 @@ pub(crate) fn read_header<'a>(
             }
             markers::POC => {
                 reader.read_marker()?;
-                if main_progression.is_some() || num_components > 256 {
+                if !main_progression.is_empty() || num_components > 256 {
                     bail!(MarkerError::Unsupported);
                 }
-                main_progression = Some(progression_volume(reader)?);
+                main_progression = progression_volumes(reader, 33)?;
             }
             markers::TLM => {
                 reader.read_marker()?;
@@ -770,22 +770,36 @@ pub(crate) struct ProgressionVolume {
     pub(crate) end_component: u8,
 }
 
-pub(crate) fn progression_volume(reader: &mut BitReader<'_>) -> Result<ProgressionVolume> {
+pub(crate) fn progression_volumes(
+    reader: &mut BitReader<'_>,
+    max_entries: usize,
+) -> Result<Vec<ProgressionVolume>> {
     let invalid = MarkerError::ParseFailure("POC");
-    if reader.read_u16().ok_or(invalid)? != 9 {
+    let length = usize::from(reader.read_u16().ok_or(invalid)?)
+        .checked_sub(2)
+        .ok_or(invalid)?;
+    if length == 0 || length % 7 != 0 {
+        bail!(invalid);
+    }
+    if length / 7 > max_entries {
         bail!(MarkerError::Unsupported);
     }
-    let [0, 0, 0, end_layer, end_resolution, end_component, order] =
-        reader.read_bytes(7).ok_or(invalid)?
-    else {
-        bail!(MarkerError::Unsupported);
-    };
-    Ok(ProgressionVolume {
-        order: ProgressionOrder::from_u8(*order)?,
-        end_layer: *end_layer,
-        end_resolution: *end_resolution,
-        end_component: *end_component,
-    })
+    reader
+        .read_bytes(length)
+        .ok_or(invalid)?
+        .chunks_exact(7)
+        .map(|entry| {
+            let [0, 0, 0, end_layer, end_resolution, end_component, order] = entry else {
+                bail!(MarkerError::Unsupported);
+            };
+            Ok(ProgressionVolume {
+                order: ProgressionOrder::from_u8(*order)?,
+                end_layer: *end_layer,
+                end_resolution: *end_resolution,
+                end_component: *end_component,
+            })
+        })
+        .collect()
 }
 
 /// RGN marker (A.6.3), implicit ROI (Maxshift).

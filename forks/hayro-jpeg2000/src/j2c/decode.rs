@@ -8,9 +8,7 @@ use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
 use super::build::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, SubBandType};
-use super::codestream::{
-    ComponentInfo, Header, ProgressionOrder, QuantizationStyle, WaveletTransform,
-};
+use super::codestream::{ComponentInfo, Header, QuantizationStyle, WaveletTransform};
 use super::idwt::IDWTOutput;
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
@@ -45,25 +43,9 @@ pub(crate) fn decode<'a>(
             tile.rect.height(),
         );
 
-        let progression_order = if let Some(volume) = &header.main_progression {
-            if volume.end_layer < tile.num_layers
-                || usize::from(volume.end_component) < tile.component_infos.len()
-                || tile
-                    .component_infos
-                    .iter()
-                    .any(|component| component.num_resolution_levels() > volume.end_resolution)
-            {
-                bail!(crate::error::MarkerError::Unsupported);
-            }
-            volume.order
-        } else {
-            tile.progression_order
-        };
-
         decode_tile(
             tile,
             header,
-            progression_order,
             &mut ctx.tile_decode_context,
             &mut ctx.channel_data,
             &mut ctx.storage,
@@ -113,7 +95,6 @@ impl DecoderContext<'_> {
 fn decode_tile<'a, 'b>(
     tile: &'b Tile<'a>,
     header: &Header<'_>,
-    progression_order: ProgressionOrder,
     tile_ctx: &mut TileDecodeContext,
     channel_data: &mut [ComponentData],
     storage: &mut DecompositionStorage<'a>,
@@ -126,7 +107,7 @@ fn decode_tile<'a, 'b>(
     // and code blocks.
     build::build(tile, storage)?;
     // Next, we parse the layers/segments for each code block.
-    segment::parse(tile, progression_order, header, storage)?;
+    segment::parse(tile, header, storage)?;
     // We then decode the bitplanes of each code block, yielding the
     // (possibly dequantized) coefficients of each code block.
     decode_component_tile_bit_planes(tile, tile_ctx, storage, header)?;

@@ -1,8 +1,10 @@
 //! Parsing of layers and their segments, as specified in Annex B.
 
+use alloc::{boxed::Box, vec::Vec};
+
 use super::build::Segment;
 use super::codestream::markers::{EPH, SOP};
-use super::codestream::{ComponentInfo, Header, ProgressionOrder};
+use super::codestream::{ComponentInfo, Header, ProgressionVolume};
 use super::decode::DecompositionStorage;
 use super::progression::{IteratorInput, ProgressionData};
 use super::tile::{Tile, TilePart};
@@ -13,50 +15,31 @@ pub(crate) const MAX_BITPLANE_COUNT: u8 = 32;
 
 pub(crate) fn parse<'a, 'b>(
     tile: &'b Tile<'a>,
-    progression_order: ProgressionOrder,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
 ) -> Result<()> {
     if !tile.progression_changes.is_empty() {
-        let max_resolution = tile
-            .component_infos
-            .iter()
-            .map(|component| component.num_resolution_levels())
-            .max()
-            .ok_or(TileError::Invalid)?;
-        let mut start_resolution = 0;
-        for (part, change) in tile.tile_parts.iter().zip(&tile.progression_changes) {
-            let end_resolution = change.end_resolution.min(max_resolution);
-            if end_resolution <= start_resolution
-                || tile.num_layers == 0
-                || change.end_layer < tile.num_layers
-                || usize::from(change.end_component) != tile.component_infos.len()
-            {
-                bail!(MarkerError::Unsupported);
-            }
-            // Every volume covers all layers and components. Earlier parts have
-            // already supplied packets below start_resolution.
-            let input = IteratorInput::new_with_custom_bounds(
-                tile,
-                (start_resolution, end_resolution),
-                (0, tile.num_layers),
-                (0, change.end_component),
-            );
-            let mut packets = input.packets(change.order)?;
+        let volumes = resolution_volumes(tile, &tile.progression_changes, false)?;
+        for (part, mut packets) in tile.tile_parts.iter().zip(volumes) {
             if parse_inner(part.clone(), &mut packets, &tile.component_infos, storage).is_none()
                 || packets.next().is_some()
             {
                 bail!(TileError::Invalid);
             }
-            start_resolution = end_resolution;
-        }
-        if start_resolution != max_resolution {
-            bail!(TileError::Invalid);
         }
         return Ok(());
     }
 
-    let mut progression_iterator = IteratorInput::new(tile).packets(progression_order)?;
+    let has_main_poc = !header.main_progression.is_empty();
+    let mut progression_iterator: Box<dyn Iterator<Item = ProgressionData>> = if has_main_poc {
+        Box::new(
+            resolution_volumes(tile, &header.main_progression, true)?
+                .into_iter()
+                .flatten(),
+        )
+    } else {
+        IteratorInput::new(tile).packets(tile.progression_order)?
+    };
     for tile_part in &tile.tile_parts {
         if parse_inner(
             tile_part.clone(),
@@ -65,17 +48,60 @@ pub(crate) fn parse<'a, 'b>(
             storage,
         )
         .is_none()
-            && (header.strict || header.main_progression.is_some())
+            && (header.strict || has_main_poc)
         {
             bail!(TileError::Invalid);
         }
     }
 
-    if header.main_progression.is_some() && progression_iterator.next().is_some() {
+    if has_main_poc && progression_iterator.next().is_some() {
         bail!(TileError::Invalid);
     }
 
     Ok(())
+}
+
+// All implemented volumes cover every layer and component. Previous volumes
+// have already supplied the lower resolutions, so each iterator visits only
+// the newly covered range.
+fn resolution_volumes<'a>(
+    tile: &'a Tile<'a>,
+    changes: &[ProgressionVolume],
+    allow_excess_components: bool,
+) -> Result<Vec<Box<dyn Iterator<Item = ProgressionData> + 'a>>> {
+    let max_resolution = tile
+        .component_infos
+        .iter()
+        .map(|component| component.num_resolution_levels())
+        .max()
+        .ok_or(TileError::Invalid)?;
+    let components = tile.component_infos.len();
+    let mut start_resolution = 0;
+    let mut volumes = Vec::with_capacity(changes.len());
+    for change in changes {
+        let end_resolution = change.end_resolution.min(max_resolution);
+        let end_component = usize::from(change.end_component);
+        if end_resolution <= start_resolution
+            || tile.num_layers == 0
+            || change.end_layer < tile.num_layers
+            || end_component < components
+            || (!allow_excess_components && end_component != components)
+        {
+            bail!(MarkerError::Unsupported);
+        }
+        let input = IteratorInput::new_with_custom_bounds(
+            tile,
+            (start_resolution, end_resolution),
+            (0, tile.num_layers),
+            (0, change.end_component),
+        );
+        volumes.push(input.packets(change.order)?);
+        start_resolution = end_resolution;
+    }
+    if start_resolution != max_resolution {
+        bail!(TileError::Invalid);
+    }
+    Ok(volumes)
 }
 
 fn parse_inner<'a>(

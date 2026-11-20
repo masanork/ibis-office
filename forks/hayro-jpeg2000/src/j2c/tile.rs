@@ -277,11 +277,11 @@ fn parse_tile_part<'a>(
                 reader.read_marker()?;
                 if progression_change.is_some()
                     || num_components > 256
-                    || main_header.main_progression.is_some()
+                    || !main_header.main_progression.is_empty()
                 {
                     bail!(MarkerError::Unsupported);
                 }
-                progression_change = Some(codestream::progression_volume(reader)?);
+                progression_change = codestream::progression_volumes(reader, 1)?.pop();
             }
             markers::PLT => {
                 // Can be inferred ourselves.
@@ -838,7 +838,7 @@ mod tests {
         assert_eq!(size_data.num_tiles(), 16);
 
         let header = Header {
-            main_progression: None,
+            main_progression: vec![],
             size_data,
             // Just dummy values.
             global_coding_style: CodingStyleDefault {
