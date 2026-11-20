@@ -1120,7 +1120,7 @@ fn write_comments(package: &mut Package, map: &SourceMap, old: &[ibis_doc_model:
                 } else if let Some(own) = writer.doc.attr_local(last, "paraId").map(str::to_string) {
                     effective.insert(c.id, own);
                 } else {
-                    let fresh = format!("{:08X}", writer.fresh_para_id());
+                    let fresh = writer.para_ids.fresh();
                     writer.doc.set_attr(last, &format!("{w14}:paraId"), &fresh);
                     effective.insert(c.id, fresh);
                 }

@@ -52,7 +52,7 @@ import hashlib, os, sys, zipfile
 out, name, *web_files = sys.argv[1:]
 # The archive's index directly opens the embeddable editor.
 files = [os.path.join("www", f) for f in web_files]
-for top in ("pkg", "assets"):
+for top in ("pkg", "assets", "licenses"):
     for root, _dirs, names in os.walk(os.path.join("www", top)):
         for n in names:
             if n == ".DS_Store" or (top == "pkg" and n.endswith(".d.ts")):
