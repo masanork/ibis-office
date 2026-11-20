@@ -4331,7 +4331,7 @@ impl SlideEditor {
                 .min_w(px(72.)).h(px(40.)).px_3().rounded_md().cursor_pointer()
                 .text_sm().text_color(theme.foreground)
                 .child(crate::i18n::text("start.open"))
-                .on_click(cx.listener(|this, _, window, cx| this.open_file(&OpenFile, window, cx))))
+                .on_click(cx.listener(|this, _, window, cx| this.open_file(&Open, window, cx))))
             .when(narrow_android && !self.file_is_read_only(), |bar| {
                 #[cfg(target_os = "android")]
                 let bar = bar.child(
@@ -4888,6 +4888,7 @@ impl SlideEditor {
                 show_menu_bar: _,
                 show_toolbar: _,
                 is_csv_streaming: _,
+                ..
         } = editor;
         let crate::shape_state::ShapeEditState {
                 selection: shape_selection,

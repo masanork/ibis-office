@@ -80,7 +80,8 @@ mod store {
     use wasm_bindgen::JsValue;
 
     fn storage() -> Option<JsValue> {
-        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("localStorage")).ok() // host-lint-allow: not used when a host embeds the editor (`use_memory_only`).filter(|s| !s.is_undefined() && !s.is_null())
+        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("localStorage")).ok() // host-lint-allow: not used when an editor uses in-memory settings
+            .filter(|s| !s.is_undefined() && !s.is_null())
     }
 
     fn call(name: &str, args: &[&str]) -> Option<JsValue> {

@@ -734,7 +734,7 @@ impl SlideEditor {
                                     let grouped = if cmds.len() == 1 {
                                         cmds.into_iter().next().expect("single cmd")
                                     } else {
-                                        Command::Group(cmds)
+                                        Command::Batch(cmds)
                                     };
                                     editor.run(vec![grouped], cx);
                                 }
@@ -793,7 +793,7 @@ impl SlideEditor {
                     let grouped = if turn_commands.len() == 1 {
                         turn_commands.into_iter().next().expect("single cmd")
                     } else {
-                        Command::Group(turn_commands)
+                        Command::Batch(turn_commands)
                     };
                     editor.run(vec![grouped], cx);
                 }
@@ -1596,7 +1596,7 @@ impl SlideEditor {
                     let cmd = Command::Sheet(SheetCommand::AddSheet {
                         index,
                         name: sheet_name,
-                        slide,
+                        sheet: slide,
                         shape,
                     });
                     self.run(vec![cmd], cx);
@@ -1980,7 +1980,7 @@ impl SlideEditor {
                 (
                     json!({ "ok": true, "template": kind.0, "command_count": cmds.len() })
                         .to_string(),
-                    Some(Command::Group(cmds)),
+                    Some(Command::Batch(cmds)),
                     format!("✓ apply_vc_template ({})", kind.0),
                 )
             }
@@ -2025,7 +2025,7 @@ impl SlideEditor {
                         let claim_count = schema.claims.len();
                         let cmd = if arg.apply {
                             let cmds = schema.build_sheet_commands(self.presentation(), slide);
-                            Some(Command::Group(cmds))
+                            Some(Command::Batch(cmds))
                         } else {
                             None
                         };
@@ -2087,7 +2087,7 @@ impl SlideEditor {
                     Some((full_name, cmds)) => (
                         json!({ "ok": true, "binding": full_name, "selective": arg.selective })
                             .to_string(),
-                        Some(Command::Group(cmds)),
+                        Some(Command::Batch(cmds)),
                         format!("✓ bind_vc_claim ({full_name})"),
                     ),
                 }
@@ -2262,7 +2262,7 @@ impl SlideEditor {
                                 Ok(slide) => {
                                     let cmds =
                                         parsed_cred.build_sheet_commands(self.presentation(), slide);
-                                    Some(Command::Group(cmds))
+                                    Some(Command::Batch(cmds))
                                 }
                                 Err(e) => {
                                     return (
@@ -2352,7 +2352,7 @@ impl SlideEditor {
                     if cmds.is_empty() {
                         None
                     } else {
-                        Some(Command::Group(cmds))
+                        Some(Command::Batch(cmds))
                     }
                 } else {
                     None
@@ -2787,7 +2787,7 @@ impl SlideEditor {
                             ),
                             Ok(slide_id) => (
                                 json!({ "ok": true }).to_string(),
-                                Some(Command::RemoveSlide { slide: slide_id }),
+                                Some(Command::DeleteSlide { slide: slide_id }),
                                 format!("✓ remove_slide (slide {})", a.slide_index),
                             ),
                         }
@@ -2879,8 +2879,7 @@ impl SlideEditor {
                                 json!({ "ok": true, "shape_id": shape_id.0 }).to_string(),
                                 Some(Command::InsertShape {
                                     slide: slide_id,
-                                    index,
-                                    shape,
+                                    shapes: vec![(index, shape)],
                                 }),
                                 format!("✓ insert_text_box (shape {})", shape_id.0),
                             )
@@ -2995,7 +2994,7 @@ impl SlideEditor {
                             let cmd = if cmds.len() == 1 {
                                 cmds.pop().expect("single")
                             } else {
-                                Command::Group(cmds)
+                                Command::Batch(cmds)
                             };
                             (
                                 json!({ "ok": true }).to_string(),

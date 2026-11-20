@@ -8773,6 +8773,12 @@ fn find_bookmark(doc: &FlowDocument, name: &str) -> Option<u32> {
     walk(&doc.body, name)
 }
 
+struct DropCapGeometry {
+    pitch: f64,
+    size: u32,
+    raise: Option<i32>,
+}
+
 fn match_double_delim(before: &[char], delim: char, change: RunChange) -> Option<(usize, usize, usize, RunChange)> {
     let n = before.len();
     if n < 4 || before[n - 1] != delim {

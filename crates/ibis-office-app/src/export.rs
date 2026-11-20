@@ -1151,6 +1151,7 @@ pub(crate) fn headless_app() -> (Rc<dyn Platform>, HeadlessAppContext) {
         Arc::new(crate::shell::icons::Assets::new("")),
         headless_renderer,
     );
+    crate::register_local_pup_font(cx.text_system());
     (platform, cx)
 }
 

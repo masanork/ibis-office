@@ -614,7 +614,7 @@ impl SlideEditor {
                                     .items_center()
                                     .whitespace_nowrap()
                                     // The caret at the end of the text sits on the row's right edge, where it would be clipped.
-                                    .child(div().pr(px(2.)).child(SharedString::from(text)))
+                                    .child(div().pr(px(2.)).child(crate::variant_pup_fonts::styled(window.text_system(), text)))
                                     .when(sel.is_some() || caret.is_some() || !marked_underlines.is_empty(), |d| {
                                         d.child(
                                             canvas(
@@ -627,13 +627,13 @@ impl SlideEditor {
                                                     } else {
                                                         let run = TextRun {
                                                             len: overlay_text.len(),
-                                                            font: style.font(),
+                                                            font: super::formula_layout::bar_font(&style),
                                                             color: style.color,
                                                             background_color: None,
                                                             underline: None,
                                                             strikethrough: None,
                                                         };
-                                                        Some(window.text_system().shape_line(SharedString::from(overlay_text.clone()), size, &[run], None))
+                                                        Some(window.text_system().shape_line(SharedString::from(overlay_text.clone()), size, &crate::variant_pup_fonts::runs(window.text_system(), &overlay_text, &[run]), None))
                                                     };
                                                     let x_at = |b: usize| -> Pixels {
                                                         shaped.as_ref().map_or(px(0.), |s| s.x_for_index(b.min(overlay_text.len())))
@@ -701,7 +701,7 @@ impl SlideEditor {
                                             .flex_shrink_0()
                                             .whitespace_nowrap()
                                             .when(is_ghost_formula, |d| d.text_color(theme.muted_foreground))
-                                            .child(SharedString::from(l.to_string()))
+                                            .child(crate::variant_pup_fonts::styled(window.text_system(), l.to_string()))
                                     })
                                     .collect()
                             } else {
@@ -709,7 +709,7 @@ impl SlideEditor {
                                     div()
                                         .truncate()
                                         .when(is_ghost_formula, |d| d.text_color(theme.muted_foreground))
-                                        .child(SharedString::from(content.split('\n').next().unwrap_or("").to_string())),
+                                        .child(crate::variant_pup_fonts::styled(window.text_system(), content.split('\n').next().unwrap_or("").to_string())),
                                 ]
                             };
                             bar_text(rows, expanded, bar_scroll.as_ref())

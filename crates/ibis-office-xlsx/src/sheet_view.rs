@@ -347,7 +347,7 @@ pub fn sheet_element(sheet: &Arc<Sheet>, frame: EmuRect, scale: f32, res: &Resou
                             return width;
                         }
                         let run = TextRun { len: text.len(), font: font.clone(), color: black(), background_color: None, underline: None, strikethrough: None };
-                        let mut line = window.text_system().shape_line(SharedString::from(text.to_string()), px(size), &[run], None);
+                        let mut line = window.text_system().shape_line(SharedString::from(text.to_string()), px(size), &crate::variant_pup_fonts::runs(window.text_system(), text, &[run]), None);
                         whole_point_advances(&mut line, px_per_point, *sheet.printed);
                         let width = f32::from(line.width);
                         let line = Rc::new(line);
@@ -424,7 +424,7 @@ pub fn sheet_element(sheet: &Arc<Sheet>, frame: EmuRect, scale: f32, res: &Resou
                             Ok(match measured.get(&(measured_key(&p.text, font, size) ^ ts_key)).filter(|l| l.text.as_ref() == p.text) {
                                 Some(line) => line.restyled(&[run]),
                                 None => {
-                                    let mut line = window.text_system().shape_line(SharedString::from(p.text.clone()), px(size), &[run], None);
+                                    let mut line = window.text_system().shape_line(SharedString::from(p.text.clone()), px(size), &crate::variant_pup_fonts::runs(window.text_system(), &p.text, &[run]), None);
                                     whole_point_advances(&mut line, px_per_point, *sheet.printed);
                                     line
                                 }
@@ -2706,7 +2706,7 @@ pub fn text_width_pt(text: &str, style: &CellStyle, res: &Resources, ts: &TextSy
 
 pub fn printed_shaped_width(ts: &WindowTextSystem, text: &str, font: &Font, size: f32, px_per_point: f32, printed: bool) -> f32 {
     let run = TextRun { len: text.len(), font: font.clone(), color: black(), background_color: None, underline: None, strikethrough: None };
-    let mut line = ts.shape_line(SharedString::from(text.to_owned()), px(size * px_per_point), &[run], None);
+    let mut line = ts.shape_line(SharedString::from(text.to_owned()), px(size * px_per_point), &crate::variant_pup_fonts::runs(ts, text, &[run]), None);
     whole_point_advances(&mut line, px_per_point, printed);
     f32::from(line.width) / px_per_point
 }
@@ -2784,6 +2784,7 @@ fn measure_printed_text_regions(sheet: &Sheet, res: &Resources) -> Vec<EmuRect> 
 pub(crate) struct GlyphWidths<'a> {
     ts: &'a TextSystem,
     id: FontId,
+    font: Font,
     size: f32,
     latin_scale: f32,
     advances: HashMap<char, f32>,
@@ -2792,17 +2793,23 @@ pub(crate) struct GlyphWidths<'a> {
 impl<'a> GlyphWidths<'a> {
     pub(crate) fn new(style: &CellStyle, res: &Resources, ts: &'a TextSystem) -> Self {
         let cell = cell_font(style, res);
-        Self { ts, id: ts.resolve_font(&cell.font), size: style.font_size as f32 / 100.0, latin_scale: cell.latin_scale, advances: HashMap::new() }
+        Self { ts, id: ts.resolve_font(&cell.font), font: cell.font, size: style.font_size as f32 / 100.0, latin_scale: cell.latin_scale, advances: HashMap::new() }
     }
 
     /// `text_width_pt`: the glyphs' advances added up.
     pub(crate) fn width(&mut self, text: &str) -> f32 {
-        let Self { ts, id, size, latin_scale, advances } = self;
+        let Self { ts, id, font, size, latin_scale, advances } = self;
         text.chars()
             .map(|c| {
                 *advances.entry(c).or_insert_with(|| {
                     let k = if c.is_ascii() { *latin_scale } else { 1.0 };
-                    ts.advance(*id, px(*size * k), c).map(|a| f32::from(a.width)).unwrap_or(if c.is_ascii() { *size * 0.5 } else { *size })
+                    let selected = if crate::variant_pup_fonts::enabled() && (0x100000..=0x10fffd).contains(&(c as u32)) {
+                        let text = c.to_string();
+                        let run = TextRun { len: text.len(), font: font.clone(), color: black(), background_color: None, underline: None, strikethrough: None };
+                        let routed = crate::variant_pup_fonts::runs(ts, &text, &[run]);
+                        ts.resolve_font(&routed[0].font)
+                    } else { *id };
+                    ts.advance(selected, px(*size * k), c).map(|a| f32::from(a.width)).unwrap_or(if c.is_ascii() { *size * 0.5 } else { *size })
                 })
             })
             .sum()
@@ -2820,7 +2827,7 @@ pub fn shown_texts(sheet: &Sheet, res: &Resources, window: &Window) -> Vec<(u32,
     let laid = layout(sheet, scale, &context, None, Part::All);
     let measure = |text: &str, font: &Font, size: f32| -> f32 {
         let run = TextRun { len: text.len(), font: font.clone(), color: black(), background_color: None, underline: None, strikethrough: None };
-        let mut line = window.text_system().shape_line(SharedString::from(text.to_string()), px(size), &[run], None);
+        let mut line = window.text_system().shape_line(SharedString::from(text.to_string()), px(size), &crate::variant_pup_fonts::runs(window.text_system(), text, &[run]), None);
         whole_point_advances(&mut line, 1.0, *sheet.printed);
         f32::from(line.width)
     };
@@ -4056,7 +4063,7 @@ pub(crate) fn edit_layout(ts: &WindowTextSystem, sheet: &Sheet, default_style: O
     );
     let measure = |t: &str, f: &Font, size: f32| -> f32 {
         let run = TextRun { len: t.len(), font: f.clone(), color: black(), background_color: None, underline: None, strikethrough: None };
-        let mut line = ts.shape_line(SharedString::from(t.to_string()), px(size), &[run], None);
+        let mut line = ts.shape_line(SharedString::from(t.to_string()), px(size), &crate::variant_pup_fonts::runs(ts, t, &[run]), None);
         whole_point_advances(&mut line, px_per_point, false);
         f32::from(line.width)
     };
@@ -4148,7 +4155,7 @@ pub(crate) fn edit_layout(ts: &WindowTextSystem, sheet: &Sheet, default_style: O
                         strikethrough: p.run.as_ref().map_or(t.strike, |r| r.strike).then(|| StrikethroughStyle { thickness: px((p.size / 14.0).max(0.5)), color: Some(color) }),
                     };
                     let runs=super::formula_reference::color_runs(&plain,piece_start,p.text.len(),run);
-                    let mut line = ts.shape_line(SharedString::from(p.text.clone()), px(p.size), &runs, None);
+                    let mut line = ts.shape_line(SharedString::from(p.text.clone()), px(p.size), &crate::variant_pup_fonts::runs(ts, &p.text, &runs), None);
                     whole_point_advances(&mut line, px_per_point, false);
                     let w = f32::from(line.width);
                     (Some(line), w)

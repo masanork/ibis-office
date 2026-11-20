@@ -18,7 +18,7 @@
     document.documentElement.lang = 'ja';
     const text = document.getElementById('status-text');
     if (text) {
-      text.textContent = 'ibisOffice を読み込んでいます…';
+      text.textContent = 'Docs を読み込んでいます…';
     }
   }
 })();

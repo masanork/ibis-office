@@ -171,7 +171,7 @@ impl SlideEditor {
                 };
                 self.run(
                     vec![
-                        Command::SetKind {
+                        Command::SetShapeKind {
                             slide,
                             shape,
                             kind: Box::new(ShapeKind::Picture(picture)),
@@ -183,8 +183,8 @@ impl SlideEditor {
                         },
                         Command::SetFrame {
                             slide,
-                            shape,
-                            frame: updated,
+                            frames: vec![(shape, updated)],
+                            with_attached: false,
                         },
                     ],
                     cx,

@@ -556,6 +556,7 @@ impl FormatEditor for PdfDocument {
             .map(|b| b.size)
             .unwrap_or(size(px(1200.0), px(800.0)));
         let content = Self::workspace_content(editor, workspace);
+        let entity = cx.entity().downgrade();
         let find_bar = find_open.then(|| find_bar(editor, &find_input, cx));
         let page_bar = page_open.then(|| page_bar(editor, &page_input, cx));
 
@@ -655,7 +656,7 @@ impl FormatEditor for PdfDocument {
 
 /// The marks over a page: the text picked, the places the search found (the one shown stronger).
 fn paint_marks(viewer: &mut PdfViewerState, page: usize, left: f32, top: f32, scale: f32, window: &mut Window) {
-    let mut mark = |viewer: &mut PdfViewerState, from: usize, to: usize, color: gpui_kit::Hsla, window: &mut Window| {
+    let mark = |viewer: &mut PdfViewerState, from: usize, to: usize, color: gpui_kit::Hsla, window: &mut Window| {
         for i in from..=to {
             if let Some(r) = viewer.char_rect(page, i) {
                 let bounds = Bounds { origin: point(px(left + r.x0.min(r.x1) * scale), px(top + r.y0.min(r.y1) * scale)), size: size(px(r.width() * scale), px(r.height() * scale)) };

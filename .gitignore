@@ -5,6 +5,7 @@
 /www/*.js
 /www/*.d.ts
 /www/fonts.json
+/www/build-info.ts
 /node_modules
 /crates/ibis-font-subsetter/pkg
 /data/fonts

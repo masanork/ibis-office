@@ -1099,7 +1099,7 @@ struct LineDecorations {
 }
 
 impl LineDecorations {
-    fn finish(self, line: &mut LineBox, vertical_right: bool) {
+    fn finish(self, line: &mut LineBox, vertical: bool, vertical_right: bool) {
         let mut b_items = self.highlights;
         for u in self.underlines {
             let mut items = underline_items(u.style, u.size, u.x, u.w, u.baseline, u.color);
@@ -3892,7 +3892,7 @@ impl<'r> Layouter<'r> {
                         let (ki_off, ww_off) = (!p.kinsoku, !p.word_wrap);
                         let after_opener = |k: usize| !ki_off && k > start && is_open(k - 1);
                         match unit_char(&units[i]) {
-                            
+
                             Some(ch) if closing_char(ch) => if ki_off { em } else if n_open == 0 { 2.0 * em } else if n_close == 0 { 1.5 * em } else { f32::INFINITY },
                             Some(ch) if opening_char(ch) => {
                                 // After a closing bracket (the pair kerned: the closing one is squeezed already) a quarter em, `w:kinsoku` 0 or not; else with opening brackets only an em at most.
@@ -4945,7 +4945,7 @@ impl<'r> Layouter<'r> {
                         }
                     }
                     flush(&mut run, &mut line, &mut dec);
-                    dec.finish(&mut line, self.vertical_underline_right());
+                    dec.finish(&mut line, self.vertical.get(), self.vertical_underline_right());
                     let end = positions.get(seg.e).map_or(p.len(), |&(position, _)| position);
                     let avail = (seg.slot_x + seg.slot_w - line_x).max(0.0);
                     stops.push((end, if matches!(slice.last(), Some(Unit::PageBreak | Unit::ColumnBreak)) { avail.max(x - line_x) } else { x - line_x }));
@@ -5473,7 +5473,7 @@ impl<'r> Layouter<'r> {
                 }
             }
             flush(&mut run, &mut line, &mut dec);
-            dec.finish(&mut line, self.vertical_underline_right());
+            dec.finish(&mut line, self.vertical.get(), self.vertical_underline_right());
             // Where the line's text ends: the next line's first position.
             let end = positions.get(e).map_or(p.len(), |&(position, _)| position);
             // The caret after a page or column break stands where its dashes end (Word: the break's mark is the line's last, with the paragraph's end after it).
@@ -7310,7 +7310,7 @@ impl<'r> Layouter<'r> {
                         else { (x0 + x1, y1.min(y2), y1.max(y2)) };
                     // Partial rules have the same line-type semantics as
                     // cell borders, including dashed and compound strokes.
-                    items.extend(border_items(&line.border, horizontal, true, at, from, to, false, false));
+                    items.extend(border_items(&line.border, horizontal, true, at, from, to, false, false, true));
                     continue;
                 }
                 items.push(Item::Stroke {

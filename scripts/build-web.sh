@@ -86,7 +86,8 @@ node_modules/.bin/tsc -p www
 { head -n 3 www/ibisoffice-host.ts; echo; grep -v '^// \(SPDX-License-Identifier\|Copyright (c)\|Additional terms\)' www/ibisoffice-host.d.ts; } > www/ibisoffice-host.d.ts.new
 mv www/ibisoffice-host.d.ts.new www/ibisoffice-host.d.ts
 # The loader and the host bridge's own tests (node; the same TypeScript).
-scripts/test-web.sh
+node_modules/.bin/tsc -p www/tsconfig.test.json
+node --test target/www-test/test/*.test.js www/test/copy_text.test.mjs
 
 # The same checks on what was built (wasm-bindgen's JavaScript shows what the Rust calls: a `new Function` there would need `unsafe-eval`).
 python3 scripts/check-web-sources.py --dist

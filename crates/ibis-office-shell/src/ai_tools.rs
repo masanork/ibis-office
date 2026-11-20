@@ -1383,7 +1383,7 @@ pub fn build_set_run_format_command(
     if cmds.len() == 1 {
         Ok(cmds.pop().expect("single"))
     } else {
-        Ok(Command::Group(cmds))
+        Ok(Command::Batch(cmds))
     }
 }
 
@@ -1575,7 +1575,7 @@ pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command
     Ok(Command::Flow(FlowCommand::SetParagraphFormat {
         first: args.paragraph,
         last: args.paragraph,
-        change: ParaChange::Align(align),
+        change: ParaChange::Alignment(align),
     }))
 }
 
@@ -1592,7 +1592,7 @@ pub fn build_replace_paragraph_command(paragraph: u32, old_len: usize, text: Str
             to: FlowPos::new(paragraph, old_len),
         })
     } else {
-        Command::Group(vec![
+        Command::Batch(vec![
             Command::Flow(FlowCommand::Delete {
                 from: FlowPos::new(paragraph, 0),
                 to: FlowPos::new(paragraph, old_len),
@@ -1634,7 +1634,7 @@ mod tests {
             r##"{"range":"A1:C1","bold":true,"fill_color":"#E8F0FE","number_format":"#,##0"}"##,
         )
         .unwrap();
-        assert!(matches!(cmd, Command::Group(v) if v.len() == 3));
+        assert!(matches!(cmd, Command::Batch(v) if v.len() == 3));
     }
 
     #[test]
@@ -1684,7 +1684,7 @@ mod tests {
             color: Some("#1A73E8".to_string()),
         };
         let cmd = build_set_run_format_command(args, 10).unwrap();
-        assert!(matches!(cmd, Command::Group(v) if v.len() == 4));
+        assert!(matches!(cmd, Command::Batch(v) if v.len() == 4));
     }
 
     #[test]

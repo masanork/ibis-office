@@ -137,7 +137,7 @@ impl SlideEditor {
             match self
                 .document
                 .execute(vec![Command::Sheet(SheetCommand::SetCells {
-                    slide,
+                    sheet: slide,
                     edits,
                 })]) {
                 Ok(_) => {

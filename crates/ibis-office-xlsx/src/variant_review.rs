@@ -33,6 +33,7 @@ pub(crate) struct VariantReviewPanel {
     matches: Vec<MatchGroup>,
     skipped: usize,
     truncated: bool,
+    pup_fonts: super::variant_pup_fonts::PupFonts,
 }
 fn variation_selector(c: char) -> bool {
     matches!(c as u32, 0xfe00..=0xfe0f | 0xe0100..=0xe01ef)
@@ -135,6 +136,7 @@ impl SlideEditor {
             }
             None => (false, Vec::new(), 0, false),
         };
+        let pup_fonts = super::variant_pup_fonts::PupFonts::discover(cx);
         let s = self.wb_mut();
         s.custom_format = None;
         s.page_setup = false;
@@ -150,6 +152,7 @@ impl SlideEditor {
             matches,
             skipped,
             truncated,
+            pup_fonts,
         });
         self.sidebar_open = true;
         cx.notify();
@@ -211,14 +214,25 @@ impl SlideEditor {
                 if form.count > form.cells.len() {
                     cells.push_str(", …");
                 }
-                block = block.child(div().text_sm().child(format!(
+                let line = format!(
                     "{} [{}]　({}: {} / {})",
                     value,
                     codes,
                     text("xlsx.variant-review.cells"),
                     cells,
                     form.count
-                )));
+                );
+                let (line, overrides) = p.pup_fonts.display(&line);
+                // Highlights create run boundaries; font-family overrides then preserve
+                // the original UTF-8 and inherit the surrounding UI style.
+                let boundaries = overrides
+                    .iter()
+                    .map(|(range, _)| (range.clone(), HighlightStyle::default()))
+                    .collect::<Vec<_>>();
+                let line = StyledText::new(line)
+                    .with_highlights(boundaries)
+                    .with_font_family_overrides(overrides);
+                block = block.child(div().text_sm().child(line));
             }
             if group.more_forms > 0 {
                 block = block.child(div().text_sm().child(format!(

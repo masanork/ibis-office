@@ -28,17 +28,7 @@
   </head>
   <body>
     <div id="status"><span id="status-text">Loading Docs…</span><div id="progress"><div></div></div></div>
-    <script>
-      // The same language as the playground page's menu, else the browser's.
-      (() => {
-        let lang = null;
-        try { lang = localStorage.getItem('ibisoffice-lang'); } catch { /* storage blocked */ }
-        if ((lang ?? navigator.language).toLowerCase().startsWith('ja')) {
-          document.documentElement.lang = 'ja';
-          document.getElementById('status-text').textContent = 'Docs を読み込んでいます…';
-        }
-      })();
-    </script>
+    <script src="./boot.js"></script>
     <script type="module" src="./main.js"></script>
     <script type="module" src="./sorane-files-save.js"></script>
     <script type="module" src="./sorane-ai.js"></script>

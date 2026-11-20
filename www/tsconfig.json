@@ -12,5 +12,5 @@
     // ibisoffice-host.d.ts ships with the Web archive next to ibisoffice-host.js (the other .d.ts files are not used).
     "declaration": true
   },
-  "files": ["main.ts", "heic-worker.ts", "boot.ts", "ibisoffice-host.ts"]
+  "files": ["main.ts", "heic-worker.ts", "boot.ts", "home-redirect.ts", "ibisoffice-host.ts"]
 }
