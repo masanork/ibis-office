@@ -3,6 +3,11 @@
 - `masanork` is this fork's integration branch and the base for new feature
   and fix branches. `main` tracks upstream; `origin` is `ibisjp/ibis-office`,
   and the `masanork` remote is `masanork/ibis-office`.
+- Upstream `ibisjp/ibis-office` limits pull request creation to repository
+  collaborators. To propose a change from this fork, open an upstream issue
+  or update the relevant existing issue. Link to a specific proof-of-concept
+  commit or compare view in `masanork/ibis-office`, and summarize the behavior
+  and verification results in the issue.
 - Develop each independent change on its own branch, using an isolated
   worktree when the current checkout contains unrelated changes.
 - Integrate completed, tested changes into `masanork`. Verify the final
