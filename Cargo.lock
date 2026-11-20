@@ -4871,6 +4871,7 @@ dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
+ "branches",
  "ibis-calc",
  "ibis-m-lang",
  "parquet",
