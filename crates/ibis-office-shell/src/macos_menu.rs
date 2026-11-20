@@ -106,12 +106,18 @@ fn dispatch_menu_command(action: &RunMenuCommand, cx: &mut App) {
     let editor = active.editor.clone();
     let _ = active.window.update(cx, |_, window, cx| {
         let _ = editor.update(cx, |editor, cx| {
-            if !editor.dialog_is_modal() {
+            if !document_commands_blocked(editor) {
                 editor.ruler_settings_open = false;
                 crate::chrome::dispatch(&handler, editor, window, cx);
             }
         });
     });
+}
+
+fn document_commands_blocked(editor: &SlideEditor) -> bool {
+    editor.dialog_is_modal()
+        || editor.interaction_layer().is_confirmation()
+        || editor.show_running()
 }
 
 /// A language or recents change can arrive while the editor is borrowed.
@@ -145,7 +151,7 @@ pub(crate) fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<Slide
 
     let mut projection = Projection {
         handlers: Vec::new(),
-        blocked: editor.dialog_is_modal(),
+        blocked: document_commands_blocked(editor),
         recent_colors: &editor.recent_colors,
     };
     let entries: Vec<_> = editor
