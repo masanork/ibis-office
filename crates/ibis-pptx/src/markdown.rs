@@ -3513,6 +3513,49 @@ fn format_markdown_citation_source(tag: &str, switches: &[&str]) -> Option<Strin
     Some(marker)
 }
 
+const PAGE_FIELDS: [(&str, &str); 4] = [
+    ("page", "PAGE"),
+    ("pages", "NUMPAGES"),
+    ("section", "SECTION"),
+    ("section-pages", "SECTIONPAGES"),
+];
+
+fn markdown_page_field(value: &str) -> Option<String> {
+    let (name, format) = value.split_once(':').map_or((value, None), |(name, format)| (name, Some(format)));
+    if name == "page-ref" {
+        let bookmark = format.filter(|name| is_equation_bookmark(name))?;
+        return Some(format!(r"PAGEREF {bookmark} \h"));
+    }
+    let (_, command) = PAGE_FIELDS.iter().find(|(label, _)| *label == name)?;
+    match format {
+        Some(format) if matches!(format, "Arabic" | "ROMAN" | "roman" | "ALPHABETIC" | "alphabetic") => {
+            Some(format!(r"{command} \* {format}"))
+        }
+        None => Some((*command).to_owned()),
+        _ => None,
+    }
+}
+
+fn format_markdown_page_field(words: &[&str]) -> Option<String> {
+    let command = words.first()?;
+    let (label, _) = PAGE_FIELDS.iter().find(|(_, keyword)| keyword.eq_ignore_ascii_case(command))?;
+    match words {
+        [_] => Some(format!("{{{{field:{label}}}}}")),
+        [_, r"\*", format] if matches!(*format, "Arabic" | "ROMAN" | "roman" | "ALPHABETIC" | "alphabetic") => {
+            Some(format!("{{{{field:{label}:{format}}}}}"))
+        }
+        _ => None,
+    }
+}
+
+fn format_markdown_page_ref(bookmark: &str, shown: &str, locked: bool) -> String {
+    if !locked && is_equation_bookmark(bookmark) {
+        format!("{{{{field:page-ref:{bookmark}}}}}")
+    } else {
+        shown.to_owned()
+    }
+}
+
 fn markdown_inline_field(rest: &str) -> Option<(usize, String)> {
     let field = rest.strip_prefix("{{")?;
     let (token, _) = field.split_once("}}")?;
@@ -3521,6 +3564,7 @@ fn markdown_inline_field(rest: &str) -> Option<(usize, String)> {
         "seq" => format!("SEQ {}", markdown_sequence(value)?.1),
         "ref" if is_equation_bookmark(value) => format!("REF {value} \\h"),
         "cite" => markdown_citation_instruction(value)?,
+        "field" => markdown_page_field(value)?,
         _ => return None,
     };
     Some((token.len() + 4, instruction))
@@ -3538,7 +3582,7 @@ fn format_markdown_inline_field(instruction: &str, shown: &str) -> String {
         [citation, tag, switches @ ..] if citation.eq_ignore_ascii_case("CITATION") => {
             format_markdown_citation(tag, switches).unwrap_or_else(|| shown.to_owned())
         }
-        _ => shown.to_owned(),
+        _ => format_markdown_page_field(&words).unwrap_or_else(|| shown.to_owned()),
     }
 }
 
@@ -3588,10 +3632,14 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         if let Some((consumed, instruction)) = markdown_inline_field(rest) {
             flush_plain(&mut plain, &mut out, base_fmt);
-            let mut run = FlowRun::new(
-                FlowRunKind::Field { instruction, shown: "?".into() },
-                FlowRunStyle::default(),
-            );
+            let kind = if instruction == "PAGE" {
+                FlowRunKind::PageNumber
+            } else if let Some(bookmark) = instruction.strip_prefix("PAGEREF ").and_then(|rest| rest.strip_suffix(r" \h")) {
+                FlowRunKind::PageRef { bookmark: bookmark.to_owned(), shown: "?".into() }
+            } else {
+                FlowRunKind::Field { instruction, shown: "?".into() }
+            };
+            let mut run = FlowRun::new(kind, FlowRunStyle::default());
             run.format = base_fmt.clone();
             out.push(run);
             i += consumed;
@@ -5304,6 +5352,16 @@ fn serialize_header_footer(blocks: &[Block]) -> String {
             for r in &p.runs {
                 match &r.kind {
                     FlowRunKind::Text(t) => s.push_str(t),
+                    FlowRunKind::Field { instruction, shown } => {
+                        if r.field_locked {
+                            s.push_str(shown);
+                        } else if let Some(marker) = format_markdown_page_field(&ibis_doc_model::flow_command::field_words(instruction)) {
+                            s.push_str(&marker);
+                        }
+                    }
+                    FlowRunKind::PageRef { bookmark, shown } => {
+                        s.push_str(&format_markdown_page_ref(bookmark, shown, r.field_locked));
+                    }
                     FlowRunKind::PageNumber => s.push_str("{page}"),
                     FlowRunKind::FileName(_) => s.push_str("{filename}"),
                     _ => {}
@@ -5842,7 +5900,8 @@ fn serialize_runs(
             FlowRunKind::Tab => "\t".to_string(),
             FlowRunKind::PageBreak => "\\newpage".to_string(),
             FlowRunKind::ColumnBreak => "\\columnbreak".to_string(),
-            FlowRunKind::PageNumber => "{page}".to_string(),
+            FlowRunKind::PageNumber => "{{field:page}}".to_string(),
+            FlowRunKind::PageRef { bookmark, shown } => format_markdown_page_ref(bookmark, shown, run.field_locked),
             FlowRunKind::FileName(_) => "{filename}".to_string(),
             FlowRunKind::Math { math, display } => {
                 let l = math.to_latex();
@@ -8260,6 +8319,32 @@ xychart-beta
         assert_eq!(serialize_header_footer(&flow.header), "後半");
         assert_eq!(serialize_header_footer(&flow.footer), "頁 {page}");
         assert!(import_markdown_to_docx_bytes(input.replace("11906,16838", "0,16838").as_bytes()).is_err());
+    }
+
+    #[test]
+    fn docx_page_fields_round_trip_in_body_and_footer() {
+        let input = r#"---
+footer: "{page} / {{field:pages}}"
+---
+# Target {#target}
+
+Page {{field:page}}, section {{field:section}}, section pages {{field:section-pages}}, target page {{field:page-ref:target}}, formatted {{field:page:ROMAN}}.
+"#;
+        let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        for marker in ["{{field:page}}", "{{field:pages}}", "{{field:section}}", "{{field:section-pages}}", "{{field:page-ref:target}}", "{{field:page:ROMAN}}"] {
+            assert!(markdown.contains(marker), "missing {marker}: {markdown}");
+        }
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let package = ibis_ooxml::Package::open(rebuilt).unwrap();
+        let body = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+        for instruction in [" PAGE ", " SECTION ", " SECTIONPAGES ", r" PAGEREF target \h ", r" PAGE \* ROMAN "] {
+            assert!(body.contains(instruction), "missing {instruction}");
+        }
+        let footer = package.names().find(|part| part.starts_with("word/footer") && part.ends_with(".xml")).unwrap();
+        let footer = String::from_utf8(package.read(footer).unwrap()).unwrap();
+        assert!(footer.contains(" NUMPAGES "));
+        assert_eq!(format_markdown_inline_field(r"NUMPAGES \# 000", "003"), "003");
     }
 
     #[test]
