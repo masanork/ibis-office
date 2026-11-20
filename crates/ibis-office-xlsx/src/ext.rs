@@ -118,7 +118,6 @@ pub(crate) use super::links::LinksCrate as _;
 pub use super::machine_readability_panel::MachineReadabilityPanelExt as _;
 pub use super::move_chart::MoveChartExt as _;
 pub(crate) use super::move_chart::MoveChartExtCrate as _;
-pub(crate) use super::harunobu_review::MachineReadabilityCrate as _;
 pub(crate) use super::names::NamesCrate as _;
 pub use super::names_panel::NamesPanelExt as _;
 pub(crate) use super::names_panel::NamesPanelExtCrate as _;

@@ -20,10 +20,6 @@ gpui-kit.workspace = true
 log = "0.4"
 ttf-parser = "0.25"
 
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-serde_json = "1"
-same-file = "1"
-
 # The pictures the checks make and read (src/tests/): the same declaration as ibis-office-app's.
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"], optional = true }

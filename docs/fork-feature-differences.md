@@ -13,7 +13,17 @@
 | 項目 | upstream main | Docs（masanork） |
 | --- | --- | --- |
 | 表計算の「校閲 → デジタル庁: 機械可読性チェック…」 | 標準パネルで複数表、見出し、数値文字列、結合セル、非表示行列、数式などを検出。リアルタイム再検査と、行列の挿入・削除に追従するセル移動に対応。 | upstream と同じパネルを開く。 |
-| Docs の Harunobu 互換ファイル検査 | 標準パネルに Harunobu への参照リンクがある。 | メニュー検索の「機械可読性チェック…」から開く。デスクトップでは Harunobu 0.2.2 ベースの Rust 実装で XLSX/XLSM、保存済み CSV/TSV、L1・L1–L2・L1–L3、複数ファイルの L3-07、JSON/CSV 出力に対応。Web ではブック内の候補を表示する。 |
+
+### 重複実装の確認
+
+upstream `a1079df1` と整理前の Docs `7017c065` の比較で、表計算の機械可読性チェックは upstream のパネルに統一した。Docs 独自のファイル検査と JSON/CSV 出力は廃止した。AI アシスタントが使うブック内の候補抽出は引き続き利用できる。
+
+| 比較した機能 | Docs 側で引き続き必要な処理 |
+| --- | --- |
+| HTML 書き出し | upstream の表計算メニューは現在のシートを出力する。Docs の Web 用処理は可視シートをまとめて出力し、スライドも構造化 HTML に変換する。 |
+| フォントサブセット | upstream のツールは配信用のブロックを事前生成し、Docs の Web 処理は入力文字に合わせて動的に生成する。 |
+| Markdown・Mermaid | Docs は複数形式での Markdown 入出力と Mermaid 原文の保持を扱う。 |
+| ODF 読み込み | Docs は入れ子になった領域の読み込み、繰り返し列と非表示行列の処理を追加している。 |
 
 ### Docs 側の主な機能差分
 
@@ -33,7 +43,6 @@
 ### 確認時点の CI
 
 - [Desktop build CI](https://github.com/masanork/ibis-office/actions/runs/44779300538)、[Mermaid compatibility](https://github.com/masanork/ibis-office/actions/runs/44779300543)、[Lawtext compatibility](https://github.com/masanork/ibis-office/actions/runs/44779300544)、[Sorane update verifier](https://github.com/masanork/ibis-office/actions/runs/44779300430) は成功。
-- [Harunobu Windows setup](https://github.com/masanork/ibis-office/actions/runs/44779300512) は成功。このジョブは Python 参照実装のセットアップと検査を検証する。Docs の Rust 検査の GUI 操作や全ファイルでの判定一致は今回未検証。
 - [Web font tests](https://github.com/masanork/ibis-office/actions/runs/44779300723) は失敗。Chrome の HTML ダウンロードで編集結果のエスケープを確認するアサーションが失敗し、フォントの repertoire テストは `Note` の初期化で `custom_mark` が欠けてコンパイルに失敗。タッチのブラウザ試験とポータブルジェスチャーのジョブは成功。
 
 ## 更新方法

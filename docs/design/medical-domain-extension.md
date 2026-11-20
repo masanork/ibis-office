@@ -21,7 +21,7 @@ ibisOffice / Sorane Docs は **「クライアント完結型の構造化文書�
 | 既存モジュール | 既存機能 | 医療ドメインでの転用先 |
 | :--- | :--- | :--- |
 | `crates/ibis-formats/src/uke.rs` | `RECEIPTC.UKE` 可変長 CSV 構造化展開・先頭ゼロ保持・検算サマリー | Phase 1: 医療事務・レセプト点検ビューア |
-| `crates/ibis-doc-model/src/machine_readability*.rs` / `crates/ibis-office-xlsx/src/harunobu.rs` | Harunobu 機械可読性検査（1セル複数値、外字/機種依存文字、空白/結合セル等） | Phase 1: レセプト・DPC・患者台帳の提出前品質チェック |
+| `crates/ibis-office-xlsx/src/machine_readability.rs` | Harunobu 機械可読性検査（1セル複数値、外字/機種依存文字、空白/結合セル等） | Phase 1: レセプト・DPC・患者台帳の提出前品質チェック |
 | `crates/ibis-doc-model/src/japanese_date_review.rs` / `variant_clusters.rs` | 和暦・西暦正規化、異体字・文字クラスタレビュー | Phase 1: 生年月日・診療年月日の表記統一、患者名/傷病名の異体字揺れ検出 |
 | `crates/ibis-formats/src/lawtext.rs` | 構造化 XML ⇄ Markdown、新旧対照表、静的 lint | Phase 1-2: 診療報酬改定マスター・通知差分、HL7 FHIR XML/JSON の可読文書化 |
 | `crates/ibis-doc-model/src/sd_jwt*.rs` / `crates/ibis-office-xlsx/src/sd_jwt_panel.rs` | SD-JWT / ISO 18013-5 mDOC / OID4VP 検証・提示 | Phase 2: 医師等5資格のデジタル資格者証・HPKI・患者同意 VC の検証・紐付け |
@@ -54,7 +54,7 @@ ibisOffice は `AGPL-3.0-only` と商用ライセンスのデュアルライセ�
 - **実装済み（PoC）**: `crates/ibis-formats/src/uke.rs` による `RECEIPTC.UKE` 自動判別・Shift_JIS/UTF-8 デコード・先頭ゼロ保持・2シート構成（`レセプト明細` / `レセプトサマリー`）・`HO` / `GO` 点数検算・任意外部マスター解決（`MedicalMasterIndex`）。
 - **次期拡張**:
   - DPC 関連ファイル（様式1・E/F ファイル）の固定長・タブ区切り安全インポート。
-  - `harunobu` / `japanese_date_review` / `variant_clusters` を束ねた「医療事務データ品質チェック」ワンクリック実行プロファイル。
+  - 機械可読性チェック / `japanese_date_review` / `variant_clusters` を束ねた「医療事務データ品質チェック」ワンクリック実行プロファイル。
   - 改定前後マスター比較および施設基準様式（DOCX/XLSX/JTD）への影響箇所ハイライト。
 
 ### Phase 2: HL7 FHIR（3文書6情報）＆ デジタル資格・署名ハブ

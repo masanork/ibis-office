@@ -5269,8 +5269,6 @@ dependencies = [
  "ibis-office-shell",
  "image",
  "log",
- "same-file",
- "serde_json",
  "ttf-parser",
 ]
 

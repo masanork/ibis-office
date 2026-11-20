@@ -55,12 +55,6 @@ pub mod dpc;
 pub mod fhir;
 pub mod pii_preflight;
 pub mod uke;
-pub mod machine_readability_csv;
-#[cfg(not(target_family = "wasm"))]
-pub mod machine_readability_detect;
-pub mod machine_readability_xlsx;
-pub mod machine_readability_native;
-pub mod machine_readability_report;
 pub mod words;
 pub mod progress;
 mod bibliography;

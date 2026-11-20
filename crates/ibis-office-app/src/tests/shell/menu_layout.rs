@@ -284,9 +284,10 @@ fn sheet_machine_readability() {
             let menus = e.menu_bar_menus();
             let (_, review) = menus.menus.iter().find(|(id, _)| *id == MenuId::Review).expect("Review menu");
             let item = review.iter().find_map(|entry| match entry {
-                MenuEntry::Item(item) if item.id == "xlsx.machine-readability.menu" => Some(item),
+                MenuEntry::Item(item) if item.id == "xlsx.machine-readability-check" => Some(item),
                 _ => None,
             }).expect("machine readability command in Review");
+            assert!(!e.command_search_items().iter().any(|item| item.id == "xlsx.machine-readability.menu"));
             assert!(item.enabled());
             assert!(item.handler.is_some());
         });

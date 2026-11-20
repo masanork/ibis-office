@@ -2913,46 +2913,10 @@ xlsx.format-pane.stop-color	ストップの色
 xlsx.format-pane.stop-position	ストップの位置
 xlsx.format-pane.remove-stop	ストップを削除
 
-xlsx.machine-readability.menu	機械可読性チェック…
-xlsx.machine-readability.title	機械可読性チェック
-xlsx.machine-readability.scope	結合セル・非表示行列・数式・文字を確認します。候補の一覧であり、合否や点数ではありません。表の領域と非表示シート、その他の項目は未検査です。編集後は再検査してください。
-xlsx.machine-readability.loading	CSV を読み込み中です。完了後に再検査してください。
-xlsx.machine-readability.none	確認する候補はありません。ほかの項目は未検査です。
-xlsx.machine-readability.merge	L1-12 結合セル：見出しとデータのどちらか確認してください。
-xlsx.machine-readability.hidden-row	L1-13 非表示の行
-xlsx.machine-readability.hidden-column	L1-13 非表示の列
-xlsx.machine-readability.formula	L2-06 数式：公開データとして値が必要か確認してください。
-xlsx.machine-readability.omitted	表示していない候補の件数
 
-xlsx.harunobu.scope	Harunobu 互換の検査を実行します。開いた XLSX・XLSM の未保存の編集は一時コピーで検査し、CSV・TSV は保存後に検査します。入力中のセルは確定してください。AI 補完はオフです。表の範囲は推定で、未判定を除いた得点は参考値です。
-xlsx.harunobu.save-first	保存するか、保存済みファイルを開いてください
-xlsx.harunobu.running	検査中…
-xlsx.harunobu.failed	検査できませんでした
-xlsx.harunobu.skipped	未判定
-xlsx.harunobu.issue	要確認
-xlsx.harunobu.info	参考
-xlsx.harunobu.lite	Harunobu L1
-xlsx.harunobu.standard	Harunobu L1–L2
-xlsx.harunobu.thorough	Harunobu L1–L3
-xlsx.harunobu.export-json	JSON を保存…
-xlsx.harunobu.export-csv	CSV を保存…
-xlsx.harunobu.cannot-overwrite	元ファイルには上書きできません
-xlsx.harunobu.exported	検査結果を保存しました
-xlsx.harunobu.hidden-sheet	非表示シート
-xlsx.harunobu.table	推定範囲
-xlsx.harunobu.header	見出し
-xlsx.harunobu.stale	編集中の変更は、この検査結果に含まれていません。
-xlsx.harunobu.unsupported	この形式は Harunobu の検査対象外です。
-xlsx.harunobu.analysis-unavailable	このファイルの内容を検査できませんでした。
-xlsx.harunobu.bulk-scope	複数の保存済みファイルを選んで比較
-xlsx.harunobu.bulk-score	複数ファイル総合スコア
-xlsx.harunobu.pick-bulk	比較するファイルを選択
 
-xlsx.harunobu.bulk-minimum	2 ファイル以上を選択してください
 
-xlsx.machine-readability.platform-characters	L1-08 機種依存文字・全角英数字：公開形式での表示を確認してください。
 
-xlsx.harunobu.snapshot	検査開始時の未保存の編集内容です。検査開始後に変更した場合は再検査してください。
 xlsx.margins-normal	標準
 xlsx.margins-wide	広い
 xlsx.margins-narrow	狭い
@@ -2962,7 +2926,6 @@ xlsx.validation.list-needs-extension	この設定は Excel にない機能です
 xlsx.design-mode.close	デザイン モードを閉じる
 xlsx.sheet.delete-ask	シートを削除してよろしいですか？
 
-xlsx.machine-readability.private-use	私用文字：環境によって表示や文字の意味が異なる場合があります。利用先のフォントや対応表を確認してください。
 xlsx.sd-jwt	SD-JWT の生成…
 xlsx.sd-jwt.title	SD-JWT の生成とプレビュー
 xlsx.sd-jwt.iss	発行者 (iss)
