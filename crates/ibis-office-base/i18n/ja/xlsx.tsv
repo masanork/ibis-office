@@ -1905,6 +1905,9 @@ xlsx.links-banner.close	閉じる
 xlsx.links-banner.updated	{count} 件のリンクの値を更新しました。
 xlsx.links-banner.partly	{count} 件のリンクの値を更新しました。見つからないファイル：{missing}
 xlsx.query-from-table	テーブルまたは範囲から…
+xlsx.query-from-sqlite	SQLite ファイルから
+query.sqlite-tables	SQLite のテーブルを選択
+query.sqlite-no-tables	SQLite ファイルに取り込めるテーブルがありません
 xlsx.query-from-avro	Avro ファイルから
 xlsx.query-from-arrow-ipc	Arrow IPC ファイルから
 xlsx.query-from-json-lines	JSON Lines ファイルから

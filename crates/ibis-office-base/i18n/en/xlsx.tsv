@@ -1908,6 +1908,9 @@ xlsx.links-banner.close	Dismiss
 xlsx.links-banner.updated	Updated the values of {count} link(s).
 xlsx.links-banner.partly	Updated {count} link(s). Files not found: {missing}
 xlsx.query-from-table	From Table/Range…
+xlsx.query-from-sqlite	From SQLite File
+query.sqlite-tables	Select a SQLite Table
+query.sqlite-no-tables	The SQLite file has no tables to import
 xlsx.query-from-avro	From Avro File
 xlsx.query-from-arrow-ipc	From Arrow IPC File
 xlsx.query-from-json-lines	From JSON Lines File

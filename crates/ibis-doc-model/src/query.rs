@@ -23,6 +23,10 @@ pub use arrow_ipc_source::read_arrow_ipc;
 mod avro_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use avro_source::read_avro;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod sqlite_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use sqlite_source::{read_sqlite_table, sqlite_tables};
 mod book;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod parquet_source;
@@ -325,6 +329,8 @@ pub struct Parameter {
 /// What a query starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
+    /// A table in a local SQLite file. Only the display name and table are stored.
+    Sqlite { name: String, table: String },
     /// A local Avro object container file. Only the display name is stored.
     Avro { name: String },
     /// A local Arrow IPC file. Only the display name is stored.

@@ -275,6 +275,7 @@ pub fn encode_queries(queries: &[Query], parameters: &[Parameter]) -> String {
     for q in queries {
         out.push_str(&format!("query\t{}\t{}\n", esc(&q.name), q.output.as_deref().map(esc).unwrap_or_default()));
         match &q.source {
+            Source::Sqlite { name, table } => out.push_str(&format!("source\tsqlite\t{}\t{}\n", esc(name), esc(table))),
             Source::Avro { name } => out.push_str(&format!("source\tavro\t{}\n", esc(name))),
             Source::ArrowIpc { name } => out.push_str(&format!("source\tarrow-ipc\t{}\n", esc(name))),
             Source::JsonLines { name } => out.push_str(&format!("source\tjson-lines\t{}\n", esc(name))),
@@ -320,6 +321,7 @@ pub fn decode_queries(text: &str) -> (Vec<Query>, Vec<Parameter>) {
             Some("source") => {
                 if let Some(q) = queries.last_mut() {
                     q.source = match f.get(1).copied() {
+                        Some("sqlite") if f.len() == 4 => Source::Sqlite { name: unesc(f[2]), table: unesc(f[3]) },
                         Some("avro") if f.len() == 3 => Source::Avro { name: unesc(f[2]) },
                         Some("arrow-ipc") if f.len() == 3 => Source::ArrowIpc { name: unesc(f[2]) },
                         Some("json-lines") if f.len() == 3 => Source::JsonLines { name: unesc(f[2]) },

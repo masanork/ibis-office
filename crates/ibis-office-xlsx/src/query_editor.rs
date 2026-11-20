@@ -98,6 +98,13 @@ pub(crate) enum SingleFileQuery {
     Avro,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) struct SqliteSelection {
+    path: std::path::PathBuf,
+    tables: Vec<String>,
+    selected: usize,
+}
+
 #[ibis_office_macros::editor_ext(QueryEditorExt)]
 impl SlideEditor {
     /// The sheet's name a slide has.
@@ -347,6 +354,109 @@ impl SlideEditor {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn pick_sqlite_query(&mut self, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_cell_edit(cx);
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true, directories: false,
+            extensions: ["sqlite", "sqlite3", "db"].map(String::from).to_vec(),
+            multiple: false, prompt: None,
+        });
+        let document_id = self.file_id;
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            if let Some(Source::Sqlite { table, .. }) = existing.as_ref().map(|query| &query.source) {
+                let table = table.clone();
+                this.update_in(cx, |this, window, cx| {
+                    if this.file_id == document_id {
+                        this.read_sqlite_query(path, table, existing, refresh, window, cx);
+                    }
+                }).ok();
+                return;
+            }
+            let tables = cx.background_executor().spawn({
+                let path = path.clone();
+                async move { query::sqlite_tables(&path) }
+            }).await;
+            this.update_in(cx, |this, _, cx| {
+                if this.file_id != document_id {
+                    return;
+                }
+                let tables = match tables {
+                    Ok(tables) if !tables.is_empty() => tables,
+                    Ok(_) => {
+                        this.set_status(crate::shell::i18n::text("query.sqlite-no-tables").to_string(), cx);
+                        return;
+                    }
+                    Err(error) => {
+                        this.set_status(error, cx);
+                        return;
+                    }
+                };
+                let state = this.wb_mut();
+                state.close_settings();
+                state.panels.sqlite_selection = Some(SqliteSelection { path, tables, selected: 0 });
+                this.sidebar_open = true;
+                cx.notify();
+            }).ok();
+        }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn sqlite_tables_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        use gpui_kit::component::radio::{Radio, RadioGroup};
+        use crate::shell::chrome::{ActionButtonKind, ActionDefinition, action_bar};
+
+        let selection = self.sheet_state()?.panels.sqlite_selection.as_ref()?;
+        let text = crate::shell::i18n::text;
+        let choices = RadioGroup::vertical("sqlite-tables")
+            .children(selection.tables.iter().enumerate().map(|(index, table)| {
+                Radio::new(("sqlite-table", index)).label(table.clone())
+            }))
+            .selected_index(Some(selection.selected))
+            .on_change(cx.listener(|this, index, _, cx| {
+                if let Some(selection) = this.wb_mut().panels.sqlite_selection.as_mut() {
+                    selection.selected = *index;
+                    cx.notify();
+                }
+            }));
+        let body = v_flex().px(px(18.)).py(px(8.)).child(choices);
+        let actions = action_bar()
+            .action(ActionDefinition::new("sqlite-table-cancel", "", ActionButtonKind::Normal)
+                .label(text("_shell.close"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.wb_mut().panels.sqlite_selection = None;
+                    cx.notify();
+                })))
+            .action(ActionDefinition::new("sqlite-table-load", "", ActionButtonKind::Primary)
+                .label(text("_xlsx.load"))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let Some(selection) = this.wb_mut().panels.sqlite_selection.take() else { return };
+                    let Some(table) = selection.tables.into_iter().nth(selection.selected) else { return };
+                    this.read_sqlite_query(selection.path, table, None, false, window, cx);
+                    cx.notify();
+                })));
+        Some(SidebarPanel::with_footer(text("query.sqlite-tables"), body.into_any_element(), actions))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn read_sqlite_query(&mut self, path: std::path::PathBuf, table: String, existing: Option<Query>, refresh: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let document_id = self.file_id;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn({
+                let table = table.clone();
+                async move { query::read_sqlite_table(&path, &table) }
+            }).await;
+            this.update_in(cx, |this, window, cx| {
+                if this.file_id == document_id {
+                    this.finish_external_query(Source::Sqlite { name, table }, result, existing, refresh, window, cx);
+                }
+            }).ok();
+        }).detach();
+    }
+
     /// The editor on a query (a new one, or one of the workbook's to edit).
     pub(crate) fn open_query_editor(&mut self, query: Query, window: &mut Window, cx: &mut Context<Self>) {
         let source = match query::read_source(self.presentation(), &query.source) {
@@ -414,7 +524,7 @@ impl SlideEditor {
         let mut base = ed.query.clone();
         base.name = ed.name.read(cx).value().to_string();
         let result = query::m_to_query(&code, &base).map_err(|e| crate::shell::i18n::format(&format!("query.code-error.{}", e.key), &[("detail", &e.detail)]));
-        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. } | Source::Avro { .. }) && q.source == ed.query.source {
+        let result = result.and_then(|q| match if matches!(q.source, Source::Parquet { .. } | Source::JsonLines { .. } | Source::ArrowIpc { .. } | Source::Avro { .. } | Source::Sqlite { .. }) && q.source == ed.query.source {
             Ok(ed.source.clone())
         } else {
             query::read_source(self.presentation(), &q.source)
@@ -666,6 +776,7 @@ impl SlideEditor {
             Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), false, window, cx),
             Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), false, window, cx),
             Source::Avro { .. } => return self.pick_single_file_query(SingleFileQuery::Avro, Some(query), false, window, cx),
+            Source::Sqlite { .. } => return self.pick_sqlite_query(Some(query), false, window, cx),
             _ => {}
         }
         self.open_query_editor(query, window, cx);
@@ -698,6 +809,7 @@ impl SlideEditor {
             Source::JsonLines { .. } => return self.pick_single_file_query(SingleFileQuery::JsonLines, Some(query), true, _window, cx),
             Source::ArrowIpc { .. } => return self.pick_single_file_query(SingleFileQuery::ArrowIpc, Some(query), true, _window, cx),
             Source::Avro { .. } => return self.pick_single_file_query(SingleFileQuery::Avro, Some(query), true, _window, cx),
+            Source::Sqlite { .. } => return self.pick_sqlite_query(Some(query), true, _window, cx),
             _ => {}
         }
         let table = match query::result_of(self.presentation(), &query, &wb.queries, &wb.query_parameters, 0) {
@@ -744,6 +856,7 @@ impl SlideEditor {
                 Source::JsonLines { name } => format!("JSON Lines · {name}"),
                 Source::ArrowIpc { name } => format!("Arrow IPC · {name}"),
                 Source::Avro { name } => format!("Avro · {name}"),
+                Source::Sqlite { name, table } => format!("SQLite · {name} · {table}"),
                 Source::Parquet { names, .. } => format!("Parquet · {}", names.join(", ")),
                 Source::Blank => crate::shell::i18n::text("query.source-blank").to_string(),
                 Source::Table(t) => t.clone(),
