@@ -972,7 +972,11 @@ fn parse_markdown_into(
             ..doc.page
         };
         doc.restart_numbering = section.restart_numbering;
-        for (index, target) in [&mut doc.header, &mut doc.footer].into_iter().enumerate() {
+        doc.title_page = section.title_page;
+        for (index, target) in [
+            &mut doc.header, &mut doc.footer, &mut doc.header_first, &mut doc.footer_first,
+            &mut doc.header_even, &mut doc.footer_even,
+        ].into_iter().enumerate() {
             doc.linked[index] = section.parts[index].is_none();
             *target = section.parts[index].clone().unwrap_or_default();
         }
@@ -1114,8 +1118,12 @@ fn parse_markdown_into(
     // Resolve all paragraphs against final styles.
     doc.styles = Arc::new(ctx.styles);
     resolve_all_blocks(&mut doc.body, &doc.styles);
-    resolve_all_blocks(&mut doc.header, &doc.styles);
-    resolve_all_blocks(&mut doc.footer, &doc.styles);
+    for part in [
+        &mut doc.header, &mut doc.footer, &mut doc.header_first, &mut doc.footer_first,
+        &mut doc.header_even, &mut doc.footer_even,
+    ] {
+        resolve_all_blocks(part, &doc.styles);
+    }
 
     // If a `[[toc]]` placeholder was inserted, populate its entries from the document headings.
     populate_toc_blocks(doc);
@@ -1479,6 +1487,9 @@ fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_
     }
 
     // Header & Footer
+    if let Some(value) = map.get("even_and_odd_headers") {
+        doc.even_and_odd = parse_bool(value);
+    }
     if let Some(h) = map.get("header") {
         if !h.is_empty() {
             let p = build_header_footer_paragraph(h, false, ctx);
@@ -1672,6 +1683,9 @@ fn parse_hex_rgb(s: &str) -> Option<Rgb> {
 // ============================================================================
 
 const SECTION_MARKER: &str = "::: section ";
+const SECTION_PART_KEYS: [&str; 6] = [
+    "header", "footer", "header_first", "footer_first", "header_even", "footer_even",
+];
 
 fn parse_section_marker(
     input: &str,
@@ -1722,10 +1736,13 @@ fn parse_section_marker(
         section.page.first_page = first_page.as_u64().and_then(|value| u32::try_from(value).ok()).ok_or_else(invalid)?;
         section.restart_numbering = true;
     }
-    for (index, key) in ["header", "footer"].into_iter().enumerate() {
+    if let Some(value) = data.get("title_page") {
+        section.title_page = value.as_bool().ok_or_else(invalid)?;
+    }
+    for (kind, key) in ibis_doc_model::PartKind::ALL.into_iter().zip(SECTION_PART_KEYS) {
         if let Some(part) = data.get(key) {
             let text = part.as_str().ok_or_else(invalid)?;
-            section.parts[index] = Some(vec![Block::Paragraph(build_header_footer_paragraph(text, index == 1, ctx))]);
+            section.parts[kind.index()] = Some(vec![Block::Paragraph(build_header_footer_paragraph(text, kind.is_footer(), ctx))]);
         }
     }
     Ok((kind, section))
@@ -1736,8 +1753,8 @@ fn write_section_marker(
     kind: ibis_doc_model::SectionBreak,
     page: &PageSetup,
     restart_numbering: bool,
-    header: Option<&[Block]>,
-    footer: Option<&[Block]>,
+    title_page: bool,
+    parts: [Option<&[Block]>; 6],
 ) {
     use ibis_doc_model::SectionBreak;
     let kind = match kind {
@@ -1760,7 +1777,10 @@ fn write_section_marker(
     if restart_numbering {
         data["first_page"] = page.first_page.into();
     }
-    for (key, blocks) in [("header", header), ("footer", footer)] {
+    if title_page {
+        data["title_page"] = true.into();
+    }
+    for (key, blocks) in SECTION_PART_KEYS.into_iter().zip(parts) {
         if let Some(blocks) = blocks {
             data[key] = serialize_header_footer(blocks).into();
         }
@@ -4590,16 +4610,21 @@ fn export_markdown_with_positions<'a>(
             && let Some(section) = &paragraph.section
         {
             write_section_marker(&mut out, paragraph.section_break, &section.page, section.restart_numbering,
-                section.parts[0].as_deref(), section.parts[1].as_deref());
+                section.title_page, section.parts.each_ref().map(Option::as_deref));
             has_sections = true;
             prev_was_list = false;
         }
         i += 1;
     }
 
-    if has_sections {
+    let parts = [
+        &doc.header, &doc.footer, &doc.header_first, &doc.footer_first,
+        &doc.header_even, &doc.footer_even,
+    ];
+    if has_sections || doc.title_page || parts[2..].iter().any(|blocks| !blocks.is_empty()) {
+        let parts = std::array::from_fn(|index| (!doc.linked[index]).then_some(parts[index].as_slice()));
         write_section_marker(&mut out, ibis_doc_model::SectionBreak::None, &doc.page, doc.restart_numbering,
-            (!doc.linked[0]).then_some(doc.header.as_slice()), (!doc.linked[1]).then_some(doc.footer.as_slice()));
+            doc.title_page, parts);
     }
 
     // 3. Footnotes and endnotes have independent OOXML ID spaces.
@@ -5294,6 +5319,9 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
 
 fn serialize_frontmatter(doc: &FlowDocument) -> String {
     let mut lines = Vec::new();
+    if doc.even_and_odd {
+        lines.push("even_and_odd_headers: true".to_owned());
+    }
     let props: &DocProperties = &doc.properties;
     if let Some(title) = props.title.as_deref().filter(|s| !s.is_empty()) {
         lines.push(format!("title: {}", quote_yaml_if_needed(title)));
@@ -8376,6 +8404,47 @@ xychart-beta
         assert!(matches!(&flow.endnotes[0].blocks[..], [
             Block::Paragraph(_), Block::Paragraph(item)
         ] if item.list.is_some()));
+    }
+
+    #[test]
+    fn docx_first_and_even_page_parts_round_trip_with_inheritance() {
+        let input = r#"---
+even_and_odd_headers: true
+---
+
+First section.
+
+::: section {"break":"next-page","title_page":true,"header":"Odd {page}","header_first":"Cover","footer_first":"","header_even":"Even {page}","footer_even":"Total {numpages}"}
+
+Second section.
+
+::: section {"break":"end","title_page":true,"header_first":"","footer_even":"Section {section}"}
+"#;
+        let first = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
+        let markdown = export_docx_to_markdown(&first).unwrap();
+        assert!(markdown.contains("even_and_odd_headers: true"));
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let opened = crate::read_docx(&rebuilt).unwrap();
+        let doc = opened.flow.as_ref().unwrap();
+        assert!(doc.even_and_odd && doc.title_page);
+        let section = doc.body.iter().find_map(|block| match block {
+            Block::Paragraph(p) => p.section.as_deref(),
+            _ => None,
+        }).unwrap();
+        assert!(section.title_page);
+        let text = |part: ibis_doc_model::PartKind| {
+            serialize_header_footer(section.parts[part.index()].as_deref().unwrap())
+        };
+        use ibis_doc_model::PartKind::*;
+        assert_eq!(text(HeaderFirst), "Cover");
+        assert_eq!(text(FooterFirst), "");
+        assert_eq!(text(HeaderEven), "Even {page}");
+        assert_eq!(text(FooterEven), "Total {numpages}");
+        assert!(doc.linked[HeaderEven.index()]);
+        assert!(doc.linked[FooterFirst.index()]);
+        assert!(!doc.linked[HeaderFirst.index()]);
+        assert_eq!(serialize_header_footer(&doc.header_first), "");
+        assert_eq!(serialize_header_footer(&doc.footer_even), "Section {section}");
     }
 
     #[test]
