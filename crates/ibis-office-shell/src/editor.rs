@@ -644,6 +644,12 @@ static NEXT_FILE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 impl SlideEditor {
     pub fn new(mut presentation: Presentation, window: &mut Window, cx: &mut Context<Self>) -> Self {
         crate::app::track_start_window(cx.entity_id(),Some(window.window_handle()),true,cx);
+        #[cfg(target_os = "macos")]
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                cx.notify();
+            }
+        }).detach();
         let owner = window.window_handle();
         let editor = cx.weak_entity();
         let dialog_keystrokes = cx.intercept_keystrokes(move |event, window, app| {
@@ -4084,7 +4090,7 @@ impl Render for SlideEditor {
         }
         crate::access_key::begin_frame(window);
         let theme = cx.theme();
-        v_flex()
+        let root = v_flex()
             .id("slide-editor").relative()
             .children(with_format!(self, root_event_surface(self, cx)))
             .child(gpui_kit::component::popup_guard::begin())
@@ -4238,7 +4244,10 @@ impl Render for SlideEditor {
                 #[cfg(not(target_family = "wasm"))]
                 let d = d.when_some(self.render_window_switcher(window, cx), |d, list| d.child(list));
                 d
-            })
+            });
+        #[cfg(target_os = "macos")]
+        crate::macos_menu::sync(self, window, cx);
+        root
     }
 }
 
@@ -4305,7 +4314,7 @@ impl SlideEditor {
         }
         d.when((mobile_viewer || narrow_android) && !focus, |d| d.child(self.render_mobile_viewer_bar(narrow_android, cx)))
             .when(!narrow_android && !compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
-            .when(!mobile_viewer && !compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
+            .when(!mobile_viewer && !compact && !focus && show_menu_bar && !cfg!(target_os = "macos"), |d| d.child(self.render_menu_bar(window, cx)))
             .when(!mobile_viewer && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
             .child(
                 div()

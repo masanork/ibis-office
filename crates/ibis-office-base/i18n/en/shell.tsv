@@ -24,6 +24,7 @@ slideshow.rehearsal.resume	Resume
 file.recent.none	No Recent Files
 view.sidebar	Show Sidebar
 view.menus	Hide Menus
+view.compact	Compact View
 view.zoom-100	100%
 tools.dictionary	Dictionary
 tools.word-count	Word Count…
@@ -719,6 +720,8 @@ _shell.saved-with-password	Saved with password
 _shell.saved-without-password	Saved without password
 _shell.show-menus-f	Show Menus (⌃⇧F)
 _shell.hide-menus-f	Hide Menus (⌃⇧F)
+_shell.exit-compact	Exit Compact View (⌃⇧F)
+_shell.enter-compact	Enter Compact View (⌃⇧F)
 _shell.currency-symbols	Currency Symbols
 _shell.arrows	Arrows
 _shell.normal-text	Normal Text

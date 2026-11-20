@@ -293,7 +293,8 @@ pub fn view_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 cx.notify();
             })
             .into(),
-        MenuItem::tr("view.menus")
+        MenuItem::new("view.menus", if cfg!(target_os = "macos") { "view.compact" } else { "view.menus" })
+            .checked(cfg!(target_os = "macos") && editor.chrome_compact)
             .shortcut("⌃⇧F")
             .on(|this, _, cx| {
                 this.chrome_compact = !this.chrome_compact;

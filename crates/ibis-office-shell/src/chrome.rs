@@ -2006,6 +2006,12 @@ impl SlideEditor {
             folded.remove(0);
         }
         let compact = self.chrome_compact || !self.show_menu_bar;
+        let toggle_label = match (cfg!(target_os = "macos"), compact) {
+            (true, true) => "_shell.exit-compact",
+            (true, false) => "_shell.enter-compact",
+            (false, true) => "_shell.show-menus-f",
+            (false, false) => "_shell.hide-menus-f",
+        };
         let more = (!folded.is_empty()).then(|| {
             // The window's width less the bar's own margin and the ︙ and ^ buttons at its right, and a margin at the left.
             let overflow_limit = (f32::from(window.viewport_size().width) - paddings_total(window) - 72.).max(120.);
@@ -2043,7 +2049,7 @@ impl SlideEditor {
             .child(gap)
             .children(more)
             .child(tool_item(
-                &ToolButton::new("toggle-menus", if compact { "keyboard_arrow_down" } else { "keyboard_arrow_up" }, if compact { "_shell.show-menus-f" } else { "_shell.hide-menus-f" })
+                &ToolButton::new("toggle-menus", if compact { "keyboard_arrow_down" } else { "keyboard_arrow_up" }, toggle_label)
                     .click(|this, _, cx| {
                         if !this.show_menu_bar {
                             this.show_menu_bar = true;

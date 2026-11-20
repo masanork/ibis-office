@@ -84,6 +84,29 @@ fn quit_asking_to_save_now(cx: &mut App) {
 /// The app's menu bar (macOS's), in the UI's language: set again when the language changes and when the list of recent files does.
 /// The start window has the same lines (`start_menu.rs`; on Windows and Linux in its own menu bar).
 pub fn set_app_menus(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    if crate::macos_menu::refresh(cx) {
+        return;
+    }
+    cx.set_menus(start_app_menus());
+}
+
+pub(crate) fn application_menu() -> Menu {
+    use crate::i18n::text;
+    Menu::new("Docs").items([
+        MenuItem::action(text("help.about"), OpenAbout),
+        MenuItem::separator(),
+        MenuItem::action(text("app.settings"), OpenSettings),
+        MenuItem::separator(),
+        MenuItem::os_submenu(text("app.services"), SystemMenuType::Services),
+        MenuItem::separator(),
+        MenuItem::action(text("app.hide"), HideApp),
+        MenuItem::separator(),
+        MenuItem::action(text("app.quit"), Quit),
+    ])
+}
+
+pub(crate) fn start_app_menus() -> [Menu; 4] {
     use crate::i18n::text;
     // ファイル > 最近使ったファイル: the start view's list (the files that were opened last).
     #[cfg(not(target_family = "wasm"))]
@@ -101,18 +124,8 @@ pub fn set_app_menus(cx: &mut App) {
     };
     #[cfg(target_family = "wasm")]
     let recent: Vec<MenuItem> = vec![MenuItem::action(text("file.recent.none"), OpenStartWindow).disabled(true)];
-    cx.set_menus([
-        Menu::new("Docs").items([
-            MenuItem::action(text("help.about"), OpenAbout),
-            MenuItem::separator(),
-            MenuItem::action(text("app.settings"), OpenSettings),
-            MenuItem::separator(),
-            MenuItem::os_submenu(text("app.services"), SystemMenuType::Services),
-            MenuItem::separator(),
-            MenuItem::action(text("app.hide"), HideApp),
-            MenuItem::separator(),
-            MenuItem::action(text("app.quit"), Quit),
-        ]),
+    [
+        application_menu(),
         Menu::new(text("menu.file")).items([
             MenuItem::action(text("file.start-window"), OpenStartWindow),
             MenuItem::separator(),
@@ -130,7 +143,7 @@ pub fn set_app_menus(cx: &mut App) {
         ]),
         Menu::new(text("menu.window")).items([MenuItem::action(text("window.minimize"), MinimizeWindow), MenuItem::action(text("window.list"), WindowList)]),
         Menu::new(text("menu.help")).items([MenuItem::action(text("help.check-update"), CheckForUpdates)]),
-    ]);
+    ]
 }
 
 /// The modifier of shortcuts such as undo: Command on a Mac, Control elsewhere.

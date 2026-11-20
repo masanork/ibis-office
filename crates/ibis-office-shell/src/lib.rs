@@ -156,6 +156,8 @@ pub(crate) mod modify_password;
 pub mod password_window;
 pub mod icons;
 pub mod palette;
+#[cfg(target_os = "macos")]
+mod macos_menu;
 pub mod menu_bar;
 pub mod menu_context;
 #[cfg(not(target_family = "wasm"))]

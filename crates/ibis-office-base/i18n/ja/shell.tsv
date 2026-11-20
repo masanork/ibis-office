@@ -24,6 +24,7 @@ slideshow.rehearsal.resume	再開
 file.recent.none	最近開いたファイルはありません
 view.sidebar	サイドバーの表示／非表示
 view.menus	メニューを非表示
+view.compact	コンパクト表示
 view.zoom-100	100%
 tools.dictionary	辞書
 tools.word-count	文字カウント…
@@ -717,6 +718,8 @@ _shell.saved-with-password	パスワードを付けて保存しました
 _shell.saved-without-password	パスワードを解除して保存しました
 _shell.show-menus-f	メニューを表示（⌃⇧F）
 _shell.hide-menus-f	メニューを非表示（⌃⇧F）
+_shell.exit-compact	通常表示に戻す（⌃⇧F）
+_shell.enter-compact	コンパクト表示に切り替え（⌃⇧F）
 _shell.currency-symbols	通貨
 _shell.arrows	矢印
 _shell.normal-text	標準テキスト

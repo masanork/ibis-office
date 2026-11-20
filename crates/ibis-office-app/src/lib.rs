@@ -342,7 +342,9 @@ pub fn init(cx: &mut App) {
     }
     cx.on_action(|_: &MinimizeWindow, cx| {
         if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, _| window.minimize_window());
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, _| window.minimize_window());
+            });
         }
     });
     cx.on_action(|_: &HideApp, cx| cx.hide());
