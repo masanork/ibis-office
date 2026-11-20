@@ -2640,8 +2640,9 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
         let parquet = MenuItem::tr("xlsx.query-from-parquet").icon("table_chart").on(|this, window, cx| this.pick_parquet_query(None, false, window, cx));
         let arrow = MenuItem::tr("xlsx.query-from-arrow-ipc").icon("table_chart").on(|this, window, cx| this.pick_single_file_query(crate::query_editor::SingleFileQuery::ArrowIpc, None, false, window, cx));
         let avro = MenuItem::tr("xlsx.query-from-avro").icon("table_chart").on(|this, window, cx| this.pick_single_file_query(crate::query_editor::SingleFileQuery::Avro, None, false, window, cx));
-        let sqlite = MenuItem::tr("xlsx.query-from-sqlite").icon("table_chart").on(|this, window, cx| this.pick_sqlite_query(None, false, window, cx));
-        for mut source in [sqlite.into(), avro.into(), arrow.into(), json_lines.into(), parquet.into()] {
+        let sqlite = MenuItem::tr("xlsx.query-from-sqlite").icon("table_chart").on(|this, window, cx| this.pick_record_source(false, None, false, window, cx));
+        let json = MenuItem::tr("xlsx.query-from-json-array").icon("table_chart").on(|this, window, cx| this.pick_record_source(true, None, false, window, cx));
+        for mut source in [sqlite.into(), json.into(), avro.into(), arrow.into(), json_lines.into(), parquet.into()] {
             for (_, entries) in menus.menus.iter_mut() {
                 match insert_after(entries, "xlsx.import-text", source) {
                     Ok(()) => break,

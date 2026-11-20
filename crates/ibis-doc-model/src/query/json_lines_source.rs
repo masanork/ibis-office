@@ -31,9 +31,7 @@ pub fn read_json_lines(path: &Path) -> Result<QTable, String> {
 }
 
 fn read_records(mut reader: impl BufRead) -> Result<QTable, String> {
-    let mut table = QTable::default();
-    let mut indices = HashMap::<String, usize>::new();
-    let mut types = Vec::<Option<QType>>::new();
+    let mut output = Records::default();
     let mut line = Vec::new();
     let mut bytes = 0;
     for line_number in 1.. {
@@ -54,38 +52,51 @@ fn read_records(mut reader: impl BufRead) -> Result<QTable, String> {
         }
         let fields = serde_json::from_slice::<BTreeMap<String, &RawValue>>(&line)
             .map_err(|error| format!("Line {line_number}: expected one JSON object ({error})"))?;
-        let width = indices.len()
+        output.push(fields, &format!("Line {line_number}"))?;
+    }
+    output.finish()
+}
+
+#[derive(Default)]
+struct Records {
+    table: QTable,
+    indices: HashMap<String, usize>,
+    types: Vec<Option<QType>>,
+}
+
+impl Records {
+    fn push(&mut self, fields: BTreeMap<String, &RawValue>, location: &str) -> Result<(), String> {
+        let width = self.indices.len()
             + fields
                 .keys()
-                .filter(|key| !indices.contains_key(*key))
+                .filter(|key| !self.indices.contains_key(*key))
                 .count();
-        let height = table.rows.len() + 1;
+        let height = self.table.rows.len() + 1;
         if width > MAX_COLUMNS || height > MAX_DATA_ROWS || width.saturating_mul(height) > MAX_CELLS
         {
             return Err(format!(
-                "Line {line_number}: JSON Lines source exceeds the table size limit"
+                "{location}: JSON Lines source exceeds the table size limit"
             ));
         }
         let mut row = vec![CellValue::Empty; width];
         for (name, value) in fields {
             if exceeds_text_limit(&name) {
                 return Err(format!(
-                    "Line {line_number}: field name exceeds the spreadsheet cell limit"
+                    "{location}: field name exceeds the spreadsheet cell limit"
                 ));
             }
-            let index = *indices.entry(name.clone()).or_insert_with(|| {
-                let index = table.columns.len();
-                table.columns.push(QColumn {
+            let index = *self.indices.entry(name.clone()).or_insert_with(|| {
+                let index = self.table.columns.len();
+                self.table.columns.push(QColumn {
                     name: name.clone(),
                     ty: QType::Any,
                 });
-                types.push(None);
+                self.types.push(None);
                 index
             });
-            let (cell, ty) =
-                cell(value).map_err(|error| format!("Line {line_number}, {name}: {error}"))?;
+            let (cell, ty) = cell(value).map_err(|error| format!("{location}, {name}: {error}"))?;
             if let Some(ty) = ty {
-                types[index] = Some(match (types[index], ty) {
+                self.types[index] = Some(match (self.types[index], ty) {
                     (None, ty) => ty,
                     (Some(previous), ty) if previous == ty => previous,
                     (Some(QType::Whole), QType::Decimal) | (Some(QType::Decimal), QType::Whole) => {
@@ -96,18 +107,85 @@ fn read_records(mut reader: impl BufRead) -> Result<QTable, String> {
             }
             row[index] = cell;
         }
-        table.rows.push(row);
+        self.table.rows.push(row);
+        Ok(())
     }
-    if table.columns.is_empty() {
-        return Err("JSON Lines source contains no fields".into());
+
+    fn finish(mut self) -> Result<QTable, String> {
+        if self.table.columns.is_empty() {
+            return Err("JSON source contains no fields".into());
+        }
+        for (column, ty) in self.table.columns.iter_mut().zip(self.types) {
+            column.ty = ty.unwrap_or(QType::Any);
+        }
+        for row in &mut self.table.rows {
+            row.resize(self.table.columns.len(), CellValue::Empty);
+        }
+        Ok(self.table)
     }
-    for (column, ty) in table.columns.iter_mut().zip(types) {
-        column.ty = ty.unwrap_or(QType::Any);
+}
+
+fn json_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    File::open(path)
+        .and_then(|file| {
+            file.take((MAX_SOURCE_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_SOURCE_BYTES {
+        return Err("JSON source exceeds the byte limit".into());
     }
-    for row in &mut table.rows {
-        row.resize(table.columns.len(), CellValue::Empty);
+    Ok(bytes)
+}
+
+/// The root array, or the names of array-valued fields in the root object.
+pub fn json_array_choices(path: &Path) -> Result<Vec<Option<String>>, String> {
+    let bytes = json_bytes(path)?;
+    let document: &RawValue = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if document.get().starts_with('[') {
+        return Ok(vec![None]);
     }
-    Ok(table)
+    let fields: BTreeMap<String, &RawValue> =
+        serde_json::from_str(document.get()).map_err(|error| error.to_string())?;
+    let choices: Vec<_> = fields
+        .into_iter()
+        .filter(|(_, value)| value.get().starts_with('['))
+        .map(|(key, _)| Some(key))
+        .collect();
+    if choices.len() > 1024 {
+        return Err("JSON source has too many arrays to list".into());
+    }
+    Ok(choices)
+}
+
+pub fn read_json_array(path: &Path, key: Option<&str>) -> Result<QTable, String> {
+    let bytes = json_bytes(path)?;
+    records_from_array(&bytes, key)
+}
+
+fn records_from_array(bytes: &[u8], key: Option<&str>) -> Result<QTable, String> {
+    let document: &RawValue = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let array = match key {
+        Some(key) => {
+            let fields: BTreeMap<String, &RawValue> =
+                serde_json::from_str(document.get()).map_err(|error| error.to_string())?;
+            *fields
+                .get(key)
+                .ok_or_else(|| format!("Missing JSON array: {key}"))?
+        }
+        None => document,
+    };
+    let rows: Vec<&RawValue> =
+        serde_json::from_str(array.get()).map_err(|error| error.to_string())?;
+    let mut output = Records::default();
+    for (index, row) in rows.into_iter().enumerate() {
+        let location = format!("Record {}", index + 1);
+        let fields = serde_json::from_str(row.get())
+            .map_err(|error| format!("{location}: expected an object ({error})"))?;
+        output.push(fields, &location)?;
+    }
+    output.finish()
 }
 
 fn cell(raw: &RawValue) -> Result<(CellValue, Option<QType>), String> {
@@ -210,4 +288,17 @@ mod tests {
         );
         assert!(read_records(&b"{}"[..]).is_err());
     }
+}
+
+#[cfg(test)]
+#[test]
+fn chooses_json_array_and_preserves_record_types() {
+    let bytes = br#"{"packages":[{"code":"001","n":2},{"n":2.5,"extra":true}],"items":[1]}"#;
+    let table = records_from_array(bytes, Some("packages")).unwrap();
+    assert_eq!(table.names(), ["code", "n", "extra"]);
+    assert_eq!(table.rows[0][0], CellValue::Text("001".into()));
+    assert_eq!(table.rows[1][0], CellValue::Empty);
+    assert_eq!(table.columns[1].ty, QType::Decimal);
+    assert!(records_from_array(bytes, Some("items")).is_err());
+    assert!(records_from_array(br#"[{"n":1}]"#, None).is_ok());
 }

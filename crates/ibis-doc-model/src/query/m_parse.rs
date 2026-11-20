@@ -1062,6 +1062,7 @@ pub fn m_to_query(code: &str, base: &Query) -> Result<Query, CodeError> {
             let mut from = if matches!((body.as_str(), &base.source),
                 ("Ibis.ParquetSource()", Source::Parquet { .. })
                 | ("Ibis.JsonLinesSource()", Source::JsonLines { .. })
+                | ("Ibis.JsonArraySource()", Source::JsonArray { .. })
                 | ("Ibis.SqliteSource()", Source::Sqlite { .. })
                 | ("Ibis.AvroSource()", Source::Avro { .. })
                 | ("Ibis.ArrowIpcSource()", Source::ArrowIpc { .. })

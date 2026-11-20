@@ -3110,3 +3110,6 @@ query.m-error.syntax	Line {line}: The code cannot be read: {message}
 query.m-error.raised	{reason}: {message}
 query.m-error.limit	The code took too long to run or went too deep: {message}
 query.m-error.not-table	The result is not a table (it is a {type}).
+xlsx.query-from-json-array	From JSON File
+query.json-arrays	Select a JSON Array
+query.json-no-arrays	No JSON arrays to import

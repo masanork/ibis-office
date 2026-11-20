@@ -3107,3 +3107,6 @@ query.m-error.syntax	{line} 行目：コードを読み取れません：{messag
 query.m-error.raised	{reason}：{message}
 query.m-error.limit	コードの実行に時間がかかりすぎるか、入れ子が深すぎます：{message}
 query.m-error.not-table	結果が表ではありません（{type} です）。
+xlsx.query-from-json-array	JSON ファイルから
+query.json-arrays	取り込む JSON 配列を選択
+query.json-no-arrays	取り込める JSON 配列がありません

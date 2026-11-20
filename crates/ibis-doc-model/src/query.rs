@@ -33,7 +33,7 @@ mod parquet_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod json_lines_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use json_lines_source::read_json_lines;
+pub use json_lines_source::{json_array_choices, read_json_array, read_json_lines};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use parquet_source::{parquet_columns, parquet_files_columns, read_parquet, read_parquet_columns, read_parquet_files, ParquetColumn};
 mod codec;
@@ -462,6 +462,7 @@ pub struct Parameter {
 /// What a query starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
+    JsonArray { name: String, key: Option<String> },
     /// A table in a local SQLite file. Only the display name and table are stored.
     Sqlite { name: String, table: String },
     /// A local Avro object container file. Only the display name is stored.

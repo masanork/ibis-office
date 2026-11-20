@@ -22,7 +22,7 @@ pub struct EditPanels {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     pub(crate) parquet_selection: Option<super::query_editor::ParquetSelection>,
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    pub(crate) sqlite_selection: Option<super::query_editor::SqliteSelection>,
+    pub(crate) record_source_selection: Option<super::query_editor::RecordSourceSelection>,
     /// データ > クエリと接続.
     pub(crate) queries: Option<super::query_editor::QueriesPanel>,
     /// 挿入… / 削除… of the cell menu.
@@ -183,7 +183,7 @@ impl EditPanels {
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         {
             self.parquet_selection = None;
-            self.sqlite_selection = None;
+            self.record_source_selection = None;
         }
         self.queries = None;
         self.cells_dialog = None;
@@ -262,8 +262,8 @@ impl crate::shell::editor::SlideEditor {
             return Some(panel.modal_named("parquet_columns_panel"));
         }
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if let Some(panel) = self.sqlite_tables_panel(cx) {
-            return Some(panel.modal_named("sqlite_tables_panel"));
+        if let Some(panel) = self.record_sources_panel(cx) {
+            return Some(panel.modal_named("record_sources_panel"));
         }
         self.dedupe_panel(cx).map(|panel| panel.modal_named("dedupe_panel"))
             .or_else(|| self.recommended_charts_panel(cx).map(|panel| panel.modal_named("recommended_charts_panel")))

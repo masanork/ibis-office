@@ -175,6 +175,7 @@ pub(crate) fn csv_records(text: &str, delimiter: char, quoted: bool) -> Vec<Vec<
 /// their values), a defined name's range, or a range of a sheet (the columns `Column1`, `Column2`…).
 pub fn read_source(p: &Presentation, source: &Source) -> Result<QTable, String> {
     match source {
+        Source::JsonArray { .. } => Err("Select the JSON source".into()),
         Source::Sqlite { .. } => Err("Select the SQLite database source file".into()),
         Source::Avro { .. } => Err("Select the Avro source file".into()),
         Source::ArrowIpc { .. } => Err("Select the Arrow IPC source file".into()),
