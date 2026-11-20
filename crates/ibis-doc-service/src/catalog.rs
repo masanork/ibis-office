@@ -61,6 +61,7 @@ pub fn catalog() -> &'static [Tool] {
     ALL.get_or_init(|| {
         let mut all = Vec::new();
         all.extend(tools_app::tools());
+        all.extend(crate::tools_wallet::tools());
         all.extend(tools_docx::tools());
         all.extend(tools_docx::edit_tools());
         all.extend(tools_xlsx::tools());

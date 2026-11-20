@@ -113,3 +113,31 @@ The server talks over standard input and output (stdio) today; SSE and streaming
 - Macros are not run, and nothing is fetched from the network (links and picture URLs are values, not requests).
 - The text of a document is data. A result that holds it says so, and the assistant should not follow instructions that are in it.
 - A digitally signed file loses its signature when an edit is saved (the result says so).
+
+## Wallet presentation diagnostics
+
+The read-only `presentation_compare` tool compares a single compact SD-JWT
+or hex/base64url mdoc with the caller's expected claim paths. For SD-JWT,
+`iss` and `vct` are treated as metadata. For mdoc the paths follow the
+worksheet importer, which qualifies repeated element identifiers with their
+namespace. Pass the token itself, rather than the enclosing OID4VP response.
+The tool returns paths and diagnostic results without claim values.
+
+Supply a public issuer JWK to check the issuer signature. For SD-JWT, the
+report separates the holder signature, presentation hash, nonce and audience.
+`null` marks a check without sufficient input. The report does not evaluate
+issuer trust, time validity, DCQL policies or mdoc device authentication.
+A match on claim paths alone is not a successful verification.
+
+Run the offline synthetic Wallet through the CLI and real MCP stdio server:
+
+```sh
+cargo build --locked -p ibis-doc-service --example wallet_fixture -p ibis-mcp --example presentation_compare --bin ibisOffice-mcp
+python3 scripts/test-wallet-presentation.py
+target/debug/examples/wallet_fixture sd-jwt extra | target/debug/examples/presentation_compare
+```
+
+The fixture Wallet uses public demo keys and synthetic claims. Its mdoc cases
+exercise issuer-signed selective disclosure without a device-authenticated
+session. Its SD-JWT cases exercise valid key binding and a signed response
+with the wrong nonce. No network or external wallet service is required.

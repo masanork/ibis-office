@@ -16,6 +16,8 @@ mod tools_app;
 mod tools_docx;
 mod tools_pptx;
 mod tools_xlsx;
+mod tools_wallet;
+pub use tools_wallet::run_cli as compare_presentation;
 
 pub use catalog::{Access, Tool, catalog};
 pub use error::ToolError;

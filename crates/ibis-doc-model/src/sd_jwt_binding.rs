@@ -98,7 +98,7 @@ impl ClaimValue {
             bytes: input.as_bytes(),
             pos: 0,
         };
-        let value = parser.parse_value()?;
+        let value = parser.parse_value(0)?;
         parser.skip_ws();
         if parser.pos < parser.bytes.len() {
             return Err(format!("unexpected trailing characters at byte {}", parser.pos));
@@ -244,15 +244,18 @@ impl<'a> JsonParser<'a> {
         Ok(b)
     }
 
-    fn parse_value(&mut self) -> Result<ClaimValue, String> {
+    fn parse_value(&mut self, depth: usize) -> Result<ClaimValue, String> {
+        if depth >= 64 {
+            return Err("JSON nesting limit exceeded".into());
+        }
         self.skip_ws();
         match self.peek() {
             Some(b'n') => self.parse_literal(b"null", ClaimValue::Null),
             Some(b't') => self.parse_literal(b"true", ClaimValue::Bool(true)),
             Some(b'f') => self.parse_literal(b"false", ClaimValue::Bool(false)),
             Some(b'"') => self.parse_string().map(ClaimValue::String),
-            Some(b'[') => self.parse_array(),
-            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(depth + 1),
+            Some(b'{') => self.parse_object(depth + 1),
             Some(b'-' | b'0'..=b'9') => self.parse_number(),
             Some(b) => Err(format!("unexpected byte '{}' at {}", b as char, self.pos)),
             None => Err("unexpected end of JSON".to_string()),
@@ -392,7 +395,7 @@ impl<'a> JsonParser<'a> {
         Ok(ClaimValue::Float(f))
     }
 
-    fn parse_array(&mut self) -> Result<ClaimValue, String> {
+    fn parse_array(&mut self, depth: usize) -> Result<ClaimValue, String> {
         self.next_byte()?; // '['
         let mut items = Vec::new();
         self.skip_ws();
@@ -401,7 +404,7 @@ impl<'a> JsonParser<'a> {
             return Ok(ClaimValue::Array(items));
         }
         loop {
-            items.push(self.parse_value()?);
+            items.push(self.parse_value(depth)?);
             self.skip_ws();
             match self.next_byte()? {
                 b',' => continue,
@@ -411,7 +414,7 @@ impl<'a> JsonParser<'a> {
         }
     }
 
-    fn parse_object(&mut self) -> Result<ClaimValue, String> {
+    fn parse_object(&mut self, depth: usize) -> Result<ClaimValue, String> {
         self.next_byte()?; // '{'
         let mut map = BTreeMap::new();
         self.skip_ws();
@@ -426,7 +429,7 @@ impl<'a> JsonParser<'a> {
             if self.next_byte()? != b':' {
                 return Err("expected ':' after object key".to_string());
             }
-            let val = self.parse_value()?;
+            let val = self.parse_value(depth)?;
             map.insert(key, val);
             self.skip_ws();
             match self.next_byte()? {

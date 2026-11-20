@@ -511,11 +511,11 @@ pub fn parse_sd_jwt(
     collect_sd_jwt_object(
         payload_obj,
         &[],
-        &disclosures_by_digest,
+        &mut disclosures_by_digest,
         &mut claims,
         &mut digests_verified,
         &mut digests_total,
-    );
+    )?;
 
     Ok(ParsedCredential {
         format: ParsedCredentialFormat::SdJwt,
@@ -532,11 +532,14 @@ pub fn parse_sd_jwt(
 fn collect_sd_jwt_object(
     obj: &BTreeMap<String, ClaimValue>,
     prefix: &[String],
-    disclosures: &BTreeMap<String, (Option<String>, ClaimValue)>,
+    disclosures: &mut BTreeMap<String, (Option<String>, ClaimValue)>,
     out: &mut Vec<ParsedClaim>,
     digests_verified: &mut usize,
     digests_total: &mut usize,
-) {
+) -> Result<(), String> {
+    if prefix.len() >= 64 {
+        return Err("SD-JWT claim nesting limit exceeded".into());
+    }
     // 1. Plain claims (skip metadata fields at root)
     for (k, v) in obj {
         if k == "_sd" || k == "_sd_alg" {
@@ -549,7 +552,7 @@ fn collect_sd_jwt_object(
         path.push(k.clone());
         match v {
             ClaimValue::Object(child) if child.contains_key("_sd") || !child.is_empty() => {
-                collect_sd_jwt_object(child, &path, disclosures, out, digests_verified, digests_total);
+                collect_sd_jwt_object(child, &path, disclosures, out, digests_verified, digests_total)?;
             }
             ClaimValue::Array(items) => {
                 let resolved = resolve_sd_jwt_array(items, disclosures, digests_verified, digests_total);
@@ -580,24 +583,24 @@ fn collect_sd_jwt_object(
                 continue;
             };
             *digests_total += 1;
-            if let Some((Some(claim_name), claim_val)) = disclosures.get(digest) {
+            if let Some((Some(claim_name), claim_val)) = disclosures.remove(digest) {
                 *digests_verified += 1;
                 let mut path = prefix.to_vec();
                 path.push(claim_name.clone());
                 match claim_val {
                     ClaimValue::Object(child) if child.contains_key("_sd") => {
                         collect_sd_jwt_object(
-                            child,
+                            &child,
                             &path,
                             disclosures,
                             out,
                             digests_verified,
                             digests_total,
-                        );
+                        )?;
                     }
                     ClaimValue::Array(items) => {
                         let resolved = resolve_sd_jwt_array(
-                            items,
+                            &items,
                             disclosures,
                             digests_verified,
                             digests_total,
@@ -623,11 +626,12 @@ fn collect_sd_jwt_object(
             }
         }
     }
+    Ok(())
 }
 
 fn resolve_sd_jwt_array(
     items: &[ClaimValue],
-    disclosures: &BTreeMap<String, (Option<String>, ClaimValue)>,
+    disclosures: &mut BTreeMap<String, (Option<String>, ClaimValue)>,
     digests_verified: &mut usize,
     digests_total: &mut usize,
 ) -> Vec<ClaimValue> {
@@ -638,9 +642,9 @@ fn resolve_sd_jwt_array(
             && let Some(digest) = obj.get("...").and_then(ClaimValue::as_str)
         {
             *digests_total += 1;
-            if let Some((None, elem_val)) = disclosures.get(digest) {
+            if let Some((None, elem_val)) = disclosures.remove(digest) {
                 *digests_verified += 1;
-                resolved.push(elem_val.clone());
+                resolved.push(elem_val);
             }
         } else {
             resolved.push(item.clone());
@@ -760,7 +764,7 @@ impl CborValue {
 /// Decodes a single RFC 8949 CBOR item from `bytes`.
 pub fn decode_cbor(bytes: &[u8]) -> Result<CborValue, String> {
     let mut pos = 0usize;
-    decode_cbor_at(bytes, &mut pos)
+    decode_cbor_at(bytes, &mut pos, 0)
 }
 
 fn read_cbor_arg(bytes: &[u8], pos: &mut usize, ai: u8) -> Result<u64, String> {
@@ -798,7 +802,10 @@ fn read_cbor_arg(bytes: &[u8], pos: &mut usize, ai: u8) -> Result<u64, String> {
     }
 }
 
-fn decode_cbor_at(bytes: &[u8], pos: &mut usize) -> Result<CborValue, String> {
+fn decode_cbor_at(bytes: &[u8], pos: &mut usize, depth: usize) -> Result<CborValue, String> {
+    if depth >= 64 {
+        return Err("CBOR nesting limit exceeded".into());
+    }
     let initial = *bytes
         .get(*pos)
         .ok_or_else(|| "unexpected end of CBOR input".to_string())?;
@@ -813,17 +820,19 @@ fn decode_cbor_at(bytes: &[u8], pos: &mut usize) -> Result<CborValue, String> {
             Ok(CborValue::Negative(-1 - (arg as i128)))
         }
         2 => {
-            let len = read_cbor_arg(bytes, pos, ai)? as usize;
+            let len = usize::try_from(read_cbor_arg(bytes, pos, ai)?)
+                .map_err(|_| "CBOR length exceeds address space".to_string())?;
             let slice = bytes
-                .get(*pos..*pos + len)
+                .get(*pos..).and_then(|tail| tail.get(..len))
                 .ok_or_else(|| "CBOR byte string exceeds input".to_string())?;
             *pos += len;
             Ok(CborValue::Bytes(slice.to_vec()))
         }
         3 => {
-            let len = read_cbor_arg(bytes, pos, ai)? as usize;
+            let len = usize::try_from(read_cbor_arg(bytes, pos, ai)?)
+                .map_err(|_| "CBOR length exceeds address space".to_string())?;
             let slice = bytes
-                .get(*pos..*pos + len)
+                .get(*pos..).and_then(|tail| tail.get(..len))
                 .ok_or_else(|| "CBOR text string exceeds input".to_string())?;
             *pos += len;
             let s = std::str::from_utf8(slice)
@@ -831,26 +840,28 @@ fn decode_cbor_at(bytes: &[u8], pos: &mut usize) -> Result<CborValue, String> {
             Ok(CborValue::Text(s.to_string()))
         }
         4 => {
-            let len = read_cbor_arg(bytes, pos, ai)? as usize;
+            let len = usize::try_from(read_cbor_arg(bytes, pos, ai)?)
+                .map_err(|_| "CBOR length exceeds address space".to_string())?;
             let mut items = Vec::with_capacity(len.min(1024));
             for _ in 0..len {
-                items.push(decode_cbor_at(bytes, pos)?);
+                items.push(decode_cbor_at(bytes, pos, depth + 1)?);
             }
             Ok(CborValue::Array(items))
         }
         5 => {
-            let len = read_cbor_arg(bytes, pos, ai)? as usize;
+            let len = usize::try_from(read_cbor_arg(bytes, pos, ai)?)
+                .map_err(|_| "CBOR length exceeds address space".to_string())?;
             let mut entries = Vec::with_capacity(len.min(1024));
             for _ in 0..len {
-                let k = decode_cbor_at(bytes, pos)?;
-                let v = decode_cbor_at(bytes, pos)?;
+                let k = decode_cbor_at(bytes, pos, depth + 1)?;
+                let v = decode_cbor_at(bytes, pos, depth + 1)?;
                 entries.push((k, v));
             }
             Ok(CborValue::Map(entries))
         }
         6 => {
             let tag = read_cbor_arg(bytes, pos, ai)?;
-            let inner = decode_cbor_at(bytes, pos)?;
+            let inner = decode_cbor_at(bytes, pos, depth + 1)?;
             Ok(CborValue::Tag(tag, Box::new(inner)))
         }
         7 => match ai {
@@ -944,19 +955,37 @@ pub fn parse_mdoc_text(
     input: &str,
     issuer_jwk_json: Option<&str>,
 ) -> Result<ParsedCredential, String> {
+    parse_mdoc_bytes(&decode_mdoc_text(input)?, issuer_jwk_json)
+}
+
+/// Reads a single mdoc or single-document DeviceResponse for diagnostic comparisons.
+pub fn parse_single_mdoc_text(
+    input: &str,
+    issuer_jwk_json: Option<&str>,
+) -> Result<ParsedCredential, String> {
+    let bytes = decode_mdoc_text(input)?;
+    let root = decode_cbor(&bytes)?;
+    if let Some(documents) = root.map_get("documents")
+        && !documents.as_array().is_some_and(|docs| docs.len() == 1)
+    {
+        return Err("expected exactly one mDOC document".into());
+    }
+    parse_mdoc_document(&root, issuer_jwk_json)
+}
+
+fn decode_mdoc_text(input: &str) -> Result<Vec<u8>, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("empty mDOC input".to_string());
     }
-    let bytes = if trimmed.bytes().all(|b| b.is_ascii_hexdigit() || b.is_ascii_whitespace()) {
+    if trimmed.bytes().all(|b| b.is_ascii_hexdigit() || b.is_ascii_whitespace()) {
         let hex_clean: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
-        decode_hex(&hex_clean).ok_or_else(|| "invalid hex in mDOC input".to_string())?
+        decode_hex(&hex_clean).ok_or_else(|| "invalid hex in mDOC input".to_string())
     } else {
         base64url_decode(trimmed)
             .or_else(|| base64_std_decode(trimmed))
-            .ok_or_else(|| "mDOC input must be hex or base64/base64url".to_string())?
-    };
-    parse_mdoc_bytes(&bytes, issuer_jwk_json)
+            .ok_or_else(|| "mDOC input must be hex or base64/base64url".to_string())
+    }
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
@@ -988,12 +1017,18 @@ pub fn parse_mdoc_bytes(
     cbor_bytes: &[u8],
     issuer_jwk_json: Option<&str>,
 ) -> Result<ParsedCredential, String> {
-    let root = decode_cbor(cbor_bytes)?;
+    parse_mdoc_document(&decode_cbor(cbor_bytes)?, issuer_jwk_json)
+}
+
+fn parse_mdoc_document(
+    root: &CborValue,
+    issuer_jwk_json: Option<&str>,
+) -> Result<ParsedCredential, String> {
     let doc = if let Some(docs) = root.map_get("documents").and_then(CborValue::as_array) {
         docs.first()
             .ok_or_else(|| "mDOC DeviceResponse contains no documents".to_string())?
     } else {
-        &root
+        root
     };
 
     let doc_type = doc
