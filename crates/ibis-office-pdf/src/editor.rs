@@ -105,8 +105,9 @@ fn pdf_point(editor: &SlideEditor, at: Point<Pixels>) -> Option<(usize, f32, f32
 /// The page at the top of what is shown (the one the status bar says).
 fn page_at_top(editor: &SlideEditor) -> Option<usize> {
     let viewer = viewer_of(editor)?;
+    let scale = page_scale(editor);
     let guard = viewer.lock().expect("pdf viewer lock");
-    let tops = page_tops(&guard, page_scale(editor));
+    let tops = page_tops(&guard, scale);
     let seen = -f32::from(editor.workspace_scroll.offset().y) + PAGE_GAP_PX;
     tops.iter().position(|(t, h)| seen < t + h + PAGE_GAP_PX / 2.0).or(tops.len().checked_sub(1))
 }
@@ -467,7 +468,6 @@ impl FormatEditor for PdfDocument {
     }
 
     fn workspace_content(editor: &SlideEditor, workspace: Size<Pixels>) -> WorkspaceContent {
-        let scale = page_scale(editor);
         let Some(state) = editor.format_state::<State>() else {
             return WorkspaceContent {
                 size: workspace,
@@ -476,6 +476,18 @@ impl FormatEditor for PdfDocument {
             };
         };
         let guard = state.viewer.lock().expect("pdf viewer lock");
+        let scale_at_100 = 96.0 / 72.0;
+        let scale = editor.zoom.unwrap_or_else(|| {
+            if cfg!(target_family = "wasm") && workspace.width < px(600.) {
+                let width_at_100 = guard.pages.iter()
+                    .map(|page| page.crop_box.width() * scale_at_100)
+                    .fold(0.0_f32, f32::max);
+                if width_at_100 > 0.0 {
+                    return ((f32::from(workspace.width) - PAGE_PAD_PX * 2.0) / width_at_100).clamp(0.1, 1.0);
+                }
+            }
+            1.0
+        }) * scale_at_100;
         let mut max_w = 0.0f32;
         let mut total_h = PAGE_PAD_PX;
         for page in &guard.pages {
@@ -550,12 +562,12 @@ impl FormatEditor for PdfDocument {
         let ui = state.ui.clone();
         let (find_open, page_open) = (state.find_open, state.page_open);
         let (find_input, page_input) = (state.find_input.clone(), state.page_input.clone());
-        let scale = page_scale(editor);
         let workspace = editor
             .workspace_bounds
             .map(|b| b.size)
             .unwrap_or(size(px(1200.0), px(800.0)));
         let content = Self::workspace_content(editor, workspace);
+        let scale = content.scale;
         let entity = cx.entity().downgrade();
         let find_bar = find_open.then(|| find_bar(editor, &find_input, cx));
         let page_bar = page_open.then(|| page_bar(editor, &page_input, cx));

@@ -86,14 +86,49 @@ mod stack_tests {
     }
 }
 
-pub(crate) fn read_xdw(raw: std::sync::Arc<[u8]>) -> Result<ibis_doc_model::Presentation, String> {
-    let page_boxes: Vec<_> = ibis_xdw::XdwContainer::from_bytes(raw.clone())
-        .map_err(|error| error.to_string())?
-        .page_infos()
-        .into_iter()
-        .map(|page| (page.crop_box.width(), page.crop_box.height()))
-        .collect();
-    Ok(fixed_layout(raw, &page_boxes))
+pub(crate) enum FixedLayoutFormat {
+    Pdf,
+    Ofd,
+    Xps,
+    Xdw,
+}
+
+impl FixedLayoutFormat {
+    pub(crate) fn detect(extension: Option<&str>, data: &[u8]) -> Option<Self> {
+        let extension = extension.map(str::to_ascii_lowercase);
+        if extension.as_deref() == Some("xdw") || ibis_xdw::is_xdw(data) {
+            return Some(Self::Xdw);
+        }
+        if data.starts_with(b"%PDF-") {
+            return Some(Self::Pdf);
+        }
+        if ibis_ofd::is_ofd(data) {
+            return Some(Self::Ofd);
+        }
+        if ibis_xps::is_xps(data) {
+            return Some(Self::Xps);
+        }
+        match extension.as_deref() {
+            Some("pdf") => Some(Self::Pdf),
+            Some("ofd") => Some(Self::Ofd),
+            Some("xps" | "oxps") => Some(Self::Xps),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn read(self, raw: std::sync::Arc<[u8]>) -> Result<ibis_doc_model::Presentation, String> {
+        let pages = match self {
+            Self::Pdf => {
+                let mut container = ibis_pdf::PdfContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
+                ibis_pdf::scene::collect_pages(&mut container).map_err(|e| e.to_string())?
+            }
+            Self::Ofd => ibis_ofd::OfdContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?.page_infos(),
+            Self::Xps => ibis_xps::XpsContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?.page_infos(),
+            Self::Xdw => ibis_xdw::XdwContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?.page_infos(),
+        };
+        let page_boxes: Vec<_> = pages.iter().map(|page| (page.crop_box.width(), page.crop_box.height())).collect();
+        Ok(fixed_layout(raw, &page_boxes))
+    }
 }
 
 fn fixed_layout(raw: std::sync::Arc<[u8]>, page_boxes: &[(f32, f32)]) -> ibis_doc_model::Presentation {
@@ -153,35 +188,9 @@ fn read_file_data(
     mut data: Vec<u8>,
     read_t0: crate::clock::Instant,
 ) -> Result<Loaded, String> {
-    let is_xdw = path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("xdw"))
-        || ibis_xdw::is_xdw(&data);
-    if is_xdw || path.extension().and_then(|e| e.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf") || ext.eq_ignore_ascii_case("ofd") || ext.eq_ignore_ascii_case("xps") || ext.eq_ignore_ascii_case("oxps")) || data.starts_with(b"%PDF-") || ibis_ofd::is_ofd(&data) || ibis_xps::is_xps(&data) {
-        let raw: std::sync::Arc<[u8]> = data.into();
-        let presentation = if is_xdw {
-            read_xdw(raw)?
-        } else {
-            let page_boxes: Vec<(f32, f32)> = if ibis_ofd::is_ofd(&raw) {
-                let ofd = ibis_ofd::OfdContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
-                ofd.page_infos()
-                    .into_iter()
-                    .map(|p| (p.crop_box.width(), p.crop_box.height()))
-                    .collect()
-            } else if ibis_xps::is_xps(&raw) {
-                let xps = ibis_xps::XpsContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
-                xps.page_infos()
-                    .into_iter()
-                    .map(|p| (p.crop_box.width(), p.crop_box.height()))
-                    .collect()
-            } else {
-                let mut container = ibis_pdf::PdfContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?;
-                ibis_pdf::scene::collect_pages(&mut container)
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .map(|p| (p.crop_box.width(), p.crop_box.height()))
-                    .collect()
-            };
-            fixed_layout(raw, &page_boxes)
-        };
+    let extension = path.extension().and_then(|ext| ext.to_str());
+    if let Some(format) = FixedLayoutFormat::detect(extension, &data) {
+        let presentation = format.read(data.into())?;
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
         return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, exr_exposure: None, image_provenance: None });

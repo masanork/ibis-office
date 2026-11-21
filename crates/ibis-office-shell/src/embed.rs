@@ -218,6 +218,10 @@ impl SlideEditor {
             embed_action_js("download", self.file_name.as_deref().unwrap_or(""), Some(bytes.to_vec()));
             return;
         }
+        if let Some(bytes) = self.presentation().pdf_bytes.as_ref() {
+            embed_action_js("download", self.file_name.as_deref().unwrap_or(""), Some(bytes.to_vec()));
+            return;
+        }
         let Some(source) = self.source.clone() else {
             self.status = Some(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").into());
             return cx.notify();

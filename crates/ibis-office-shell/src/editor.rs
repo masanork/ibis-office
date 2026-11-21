@@ -995,7 +995,14 @@ impl SlideEditor {
     }
 
     fn file_is_read_only(&self) -> bool {
-        self.read_only || self.standard_read_only || self.structured_preview || self.is_xdw() || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+        self.read_only || self.standard_read_only || self.structured_preview || self.is_fixed_layout_read_only() || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+    }
+
+    fn is_fixed_layout_read_only(&self) -> bool {
+        #[cfg(target_family = "wasm")]
+        { self.presentation().pdf_bytes.is_some() }
+        #[cfg(not(target_family = "wasm"))]
+        { self.is_xdw() }
     }
 
     pub(crate) fn is_xdw(&self) -> bool {
@@ -1337,7 +1344,7 @@ impl SlideEditor {
         // fitted to the width without it): `FormatEditor::sidebar_on_request`.
         self.sidebar_open = !self.is_read_only() && !with_format!(self, sidebar_on_request());
         self.document = Document::new(presentation);
-        self.document.set_read_only(self.read_only || self.phone_view_only());
+        self.document.set_read_only(self.read_only || self.phone_view_only() || self.is_fixed_layout_read_only());
         self.reflow_chains_on_load();
         self.document_memory = Default::default();
         self.source = None;
@@ -1531,10 +1538,9 @@ impl SlideEditor {
             // Let the empty document show before reading the file, which
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
-            let is_xdw = name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("xdw"))
-                || ibis_xdw::is_xdw(&data);
-            if is_xdw {
-                let result = crate::read_file::read_xdw(data.into());
+            let extension = name.rsplit_once('.').map(|(_, ext)| ext);
+            if let Some(format) = crate::read_file::FixedLayoutFormat::detect(extension, &data) {
+                let result = format.read(data.into());
                 this.update_in(cx, |this, window, cx| {
                     if this.closed != closed || this.web_open_generation != generation { return; }
                     match result {
@@ -1563,7 +1569,6 @@ impl SlideEditor {
             }
             // A download-enabled embed needs the original package to write
             // edits back; ordinary initial previews keep the lighter read path.
-            let extension = name.rsplit_once('.').map(|(_, ext)| ext);
             let production_image = extension.is_some_and(ibis_formats::production_image::supports_extension);
             if initial && !production_image && !crate::embed::show_download() {
                 let mut result = ibis_formats::read(&data).map_err(|e| e.to_string());
@@ -2270,7 +2275,7 @@ impl SlideEditor {
     /// The zoom shown, 1.0 being 100%.
     pub fn current_zoom(&self) -> f32 {
         if self.kind() == ibis_formats::Kind::Pdf {
-            return self.zoom.unwrap_or(1.0);
+            return self.zoom.or_else(|| self.workspace_content().map(|content| content.scale * 72.0 / 96.0)).unwrap_or(1.0);
         }
         self.zoom.or_else(|| self.slide_layout().map(|l| l.zoom(self.px_per_inch_at_100()))).unwrap_or(1.0)
     }

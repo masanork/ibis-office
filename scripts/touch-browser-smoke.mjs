@@ -278,6 +278,95 @@ try {
   assert.deepEqual(failures, [], 'switching phone modes must not panic');
   await viewer.context().close();
 
+  // A fixed-layout file must render its page, including both sides on a phone.
+  // Generate the fixtures here so the browser test needs no local documents.
+  const stream = '0 0.8 0 rg 12 642 588 120 re f';
+  const pdfObjects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = pdfObjects.map((object, index) => {
+    const offset = pdf.length;
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return String(offset).padStart(10, '0');
+  });
+  pdf += `xref\n0 5\n0000000000 65535 f \n${offsets.map(o => `${o} 00000 n \n`).join('')}trailer\n<< /Root 1 0 R /Size 5 >>\nstartxref\n${pdf.length}\n%%EOF\n`;
+  const ofd = execFileSync('python3', ['-c', `
+import io, sys, zipfile
+buf = io.BytesIO()
+ns = 'xmlns="http://www.ofdspec.org/2016"'
+with zipfile.ZipFile(buf, 'w') as z:
+    z.writestr('OFD.xml', f'<OFD {ns}><DocBody><DocRoot>Doc/Document.xml</DocRoot></DocBody></OFD>')
+    z.writestr('Doc/Document.xml', f'<Document {ns}><CommonData><PageArea><PhysicalBox>0 0 210 297</PhysicalBox></PageArea></CommonData><Pages><Page ID="1" BaseLoc="Page.xml"/></Pages></Document>')
+    z.writestr('Doc/Page.xml', f'<Page {ns}><Content><Layer ID="1"><PathObject ID="2" Boundary="4 10 202 42" Fill="true" Stroke="false"><FillColor Value="0 0 204"/><AbbreviatedData>M 0 0 L 202 0 L 202 42 L 0 42 C</AbbreviatedData></PathObject></Layer></Content></Page>')
+sys.stdout.buffer.write(buf.getvalue())
+`]);
+  const xps = execFileSync('python3', ['-c', `
+import io, sys, zipfile
+buf = io.BytesIO()
+ns = 'xmlns="http://schemas.microsoft.com/xps/2005/06"'
+with zipfile.ZipFile(buf, 'w') as z:
+    z.writestr('FixedDocSeq.fdseq', f'<FixedDocumentSequence {ns}><DocumentReference Source="Document.fdoc"/></FixedDocumentSequence>')
+    z.writestr('Document.fdoc', f'<FixedDocument {ns}><PageContent Source="Page.fpage"/></FixedDocument>')
+    z.writestr('Page.fpage', f'<FixedPage {ns} Width="800" Height="1100"><Path Data="M 16,40 L 784,40 L 784,200 L 16,200 Z" Fill="#FFCC0000"/></FixedPage>')
+sys.stdout.buffer.write(buf.getvalue())
+`]);
+  const fixed = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  fixed.on('pageerror', error => failures.push(error.message));
+  await fixed.addInitScript(version => {
+    localStorage.setItem('ibisOffice.app.last-started-version', version);
+    localStorage.setItem('ibisOffice.font-setup.checked-version', version);
+  }, wasmVersion);
+  await fixed.route('**/synthetic.pdf', route => route.fulfill({ body: pdf, contentType: 'application/pdf' }));
+  const fixedUrl = new URL(url);
+  fixedUrl.searchParams.set('open', './synthetic.pdf');
+  await fixed.goto(fixedUrl.href);
+  await fixed.waitForFunction(() => !document.querySelector('#status'), null, { timeout: 180_000 });
+  const assertPageFitted = async (format, channel) => {
+    const deadline = Date.now() + 15_000;
+    do {
+      const screenshot = await fixed.screenshot();
+      const fits = await fixed.evaluate(async ({ data, channel }) => {
+        const img = new Image();
+        img.src = `data:image/png;base64,${data}`;
+        await img.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const matches = (x, y) => {
+          const rgb = ctx.getImageData(x, y, 1, 1).data.subarray(0, 3);
+          return rgb.every((value, i) => i === channel ? value > 130 : value < 80);
+        };
+        for (let y = 80; y < 220; y += 4) {
+          if (matches(48, y) && matches(342, y) && !matches(24, y) && !matches(366, y)) return true;
+        }
+        return false;
+      }, { data: screenshot.toString('base64'), channel });
+      if (fits) return;
+      await fixed.waitForTimeout(250);
+    } while (Date.now() < deadline);
+    if (process.env.IBIS_TOUCH_ARTIFACTS) await fixed.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/fixed-layout-${format}.png` });
+    assert.fail(`${format} must render its page fitted to the phone width`);
+  };
+  await assertPageFitted('PDF', 1);
+  for (const [format, name, mimeType, buffer, channel] of [
+    ['OFD', 'synthetic.ofd', 'application/ofd', ofd, 2],
+    ['XPS', 'synthetic.xps', 'application/vnd.ms-xpsdocument', xps, 0],
+  ]) {
+    const chooser = fixed.waitForEvent('filechooser', { timeout: 15_000 });
+    await fixed.touchscreen.tap(342, 24); // Read-only bar has only Open.
+    await (await chooser).setFiles({ name, mimeType, buffer });
+    await fixed.waitForFunction(name => document.title.includes(name), name);
+    await assertPageFitted(format, channel);
+  }
+  assert.deepEqual(failures, [], 'fixed-layout previews must not panic');
+  await fixed.context().close();
+
   // Open from the file picker, whose source is retained for the download action.
   const editing = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   editing.on('pageerror', error => failures.push(error.message));
