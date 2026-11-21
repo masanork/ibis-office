@@ -28,6 +28,16 @@ view.compact	コンパクト表示
 view.zoom-100	100%
 tools.dictionary	辞書
 tools.word-count	文字カウント…
+compare.law-command	新旧対照条文を作成…
+compare.pick-baseline	比較する現行法令を選択（法令XML・Lawtext・法令Markdown）
+compare.failed	文書を比較できません
+compare.different-laws	二つの文書の法令番号が一致しません。
+compare.current	現行
+compare.amended	改正後
+compare.open-result	文書として開く
+compare.swap	前後を入れ替え
+compare.law-preview	新旧対照条文を作成
+compare.law-result	新旧対照条文
 tools.accessibility	ユーザー補助
 tools.settings	設定…
 help.search	メニューを検索

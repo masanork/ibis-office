@@ -208,6 +208,16 @@ impl SlideEditor {
                 MenuItem::tr("shell.file-name-menu.rename").icon("edit").on(|e, window, cx| e.open_rename_file_dialog(window, cx)).into(),
             ]
         };
+        #[cfg(not(target_family = "wasm"))]
+        let items = if !on_host && self.has_law_source() {
+            let mut items = items;
+            items.push(MenuEntry::Separator);
+            items.push(MenuItem::tr("compare.law-command").icon("compare")
+                .on(|e, window, cx| e.compare_documents(window, cx)).into());
+            items
+        } else {
+            items
+        };
         let editor = editor.clone();
         let id = "title-file-menu";
         let button = Button::new(id)

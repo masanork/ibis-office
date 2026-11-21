@@ -4421,7 +4421,17 @@ impl SlideEditor {
             cx.spawn_in(window, async move |this, cx| {
                 let Ok(Ok(Some(paths))) = picked.await else { return };
                 let Some(path) = paths.into_iter().next() else { return };
-                this.update(cx, |this, cx| this.compare_with_file(&path, cx)).ok();
+                let probe = path.clone();
+                let statute = cx.background_executor().spawn(async move {
+                    SlideEditor::is_law_comparison_file(&probe)
+                }).await;
+                this.update_in(cx, |this, window, cx| {
+                    if statute {
+                        this.compare_law_with_file(path, window, cx);
+                    } else {
+                        this.compare_with_file(&path, cx);
+                    }
+                }).ok();
             })
             .detach();
         }

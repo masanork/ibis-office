@@ -16,6 +16,7 @@ pub mod assistant;
 pub mod diff;
 pub mod lint;
 mod print;
+pub use print::open_comparison_document;
 pub mod refs;
 pub use aratame::{
     AratameClause, AratameDraft, VerifyResult, apply_aratame, generate_aratame_draft,
@@ -1321,6 +1322,19 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                         _ => {}
                     }
                 }
+            }
+        }
+    }
+
+    // An editable DOCX keeps the visible heading and number when exporting
+    // back to Markdown, even if the law-specific front matter is absent.
+    if let Some(number) = body.lines().find_map(|line| line.trim().strip_prefix("> 法令番号:")) {
+        if doc.law_num.is_empty() {
+            doc.law_num = number.trim().to_owned();
+        }
+        if doc.law_title.is_empty() {
+            if let Some(title) = body.lines().find_map(|line| line.trim().strip_prefix("# ")) {
+                doc.law_title = title.trim().to_owned();
             }
         }
     }

@@ -171,7 +171,7 @@ pub(crate) fn parse_law_input_str(text: &str) -> Result<ibis_formats::lawtext::L
     ibis_formats::lawtext::parse_law_input(text).map_err(|e| e.to_string())
 }
 
-fn presentation_law(
+pub(crate) fn presentation_law(
     presentation: &ibis_doc_model::Presentation,
 ) -> Result<ibis_formats::lawtext::LawDoc, String> {
     let markdown = ibis_formats::markdown::export_presentation_to_markdown(presentation)

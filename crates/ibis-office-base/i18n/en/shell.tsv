@@ -28,6 +28,16 @@ view.compact	Compact View
 view.zoom-100	100%
 tools.dictionary	Dictionary
 tools.word-count	Word Count…
+compare.law-command	Create Statute Comparison…
+compare.pick-baseline	Choose the current statute (law XML, Lawtext, or law Markdown)
+compare.failed	Could Not Compare Documents
+compare.different-laws	The two documents have different statute numbers.
+compare.current	Current
+compare.amended	Amended
+compare.open-result	Open as Document
+compare.swap	Swap Versions
+compare.law-preview	Create Statute Comparison
+compare.law-result	Statute Comparison
 tools.accessibility	Accessibility
 tools.settings	Settings…
 help.search	Search Menus

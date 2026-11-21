@@ -11,7 +11,7 @@ use ibis_doc_model::{
     CellDirection, DocGridType, Emu, EmuSize, FlowAlign, PageSetup, PartKind, Rgb,
 };
 
-use super::Legislation5SetPackage;
+use super::{LawDoc, Legislation5SetPackage, generate_shinkyu_markdown};
 use crate::{Error, SaveOptions, markdown};
 
 const COMPARISON_BOOKMARK: &str = "lawtext_comparison";
@@ -54,15 +54,7 @@ impl Legislation5SetPackage {
                 .join("\n\n"),
         );
         // Keep the comparison markup and contents from the common diff pipeline.
-        let comparison = self
-            .shinkyu_markdown
-            .replacen(
-                " 新旧対照表\n",
-                &format!(" 新旧対照条文 {{#{COMPARISON_BOOKMARK}}}\n"),
-                1,
-            )
-            .replacen("\n| 改正後 |", "\n| 改正案 |", 1)
-            .replacen("| 改正後 |\n", "| 改正案 |\n", 1);
+        let comparison = comparison_markdown(&self.shinkyu_markdown);
         let outline = numbered_outline(&self.youkou_markdown);
         let bill_and_reason = format!(
             "{}\n\n\\newpage\n\n{}",
@@ -148,23 +140,59 @@ impl Legislation5SetPackage {
         flow.linked[footer_index] = false;
 
         let available = comparison_page.size.height - comparison_page.top - comparison_page.bottom;
-        let table = flow
-            .body
-            .iter_mut()
-            .skip_while(|block| {
-                !matches!(block, Block::Paragraph(p)
-                if p.bookmarks.iter().any(|name| name == COMPARISON_BOOKMARK))
-            })
-            .find_map(|block| match block {
-                Block::Table(table) => Some(table),
-                _ => None,
-            })
-            .ok_or_else(|| Error::new("新旧対照条文の表を組版できません"))?;
-        format_comparison(table, available);
+        format_comparison_table(flow, available)?;
         opened
             .source
             .save(&opened.presentation, SaveOptions::default())
     }
+}
+
+/// Open an editable DOCX containing just the vertical law comparison.
+pub fn open_comparison_document(old: &LawDoc, new: &LawDoc) -> Result<crate::Opened, Error> {
+    let comparison = comparison_markdown(&generate_shinkyu_markdown(old, new));
+    let mut opened = markdown::open_markdown(format!("{PAGE_STYLE}{comparison}").into_bytes())?;
+    let flow = Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+    flow.page.direction = CellDirection::TbRl;
+    flow.page.line_pitch = None;
+    flow.page.doc_grid_type = DocGridType::Default;
+    flow.page.footer = 12 * MM;
+    let available = flow.page.size.height - flow.page.top - flow.page.bottom;
+    format_comparison_table(flow, available)?;
+    let bytes = opened
+        .source
+        .save(&opened.presentation, SaveOptions::default())?;
+    crate::open(bytes)
+}
+
+fn comparison_markdown(markdown: &str) -> String {
+    markdown
+        .replacen(
+            " 新旧対照表\n",
+            &format!(" 新旧対照条文 {{#{COMPARISON_BOOKMARK}}}\n"),
+            1,
+        )
+        .replacen("\n| 改正後 |", "\n| 改正案 |", 1)
+        .replacen("| 改正後 |\n", "| 改正案 |\n", 1)
+}
+
+fn format_comparison_table(
+    flow: &mut ibis_doc_model::flow::FlowDocument,
+    available: Emu,
+) -> Result<(), Error> {
+    let table = flow
+        .body
+        .iter_mut()
+        .skip_while(|block| {
+            !matches!(block, Block::Paragraph(p)
+            if p.bookmarks.iter().any(|name| name == COMPARISON_BOOKMARK))
+        })
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .ok_or_else(|| Error::new("新旧対照条文の表を組版できません"))?;
+    format_comparison(table, available);
+    Ok(())
 }
 
 fn bill_page(portrait: PageSetup) -> PageSetup {
@@ -279,6 +307,30 @@ mod tests {
     use super::*;
     use crate::lawtext::{ShinkyuOptions, build_5set_package, parse_law_input};
     use ibis_doc_model::flow::FlowRunKind;
+
+    #[test]
+    fn direct_comparison_preserves_visible_statute_metadata_from_editable_document() {
+        let old = parse_law_input("試験法（令和七年法律第一号）\n第一条　赤色を用いる。").unwrap();
+        let new = parse_law_input("試験法（令和七年法律第一号）\n第一条　青色を用いる。").unwrap();
+        let rendered =
+            markdown::open_markdown(super::super::to_markdown(&new).into_bytes()).unwrap();
+        let exported = markdown::export_presentation_to_markdown(&rendered.presentation).unwrap();
+        let new = super::super::parse_markdown_law(&exported).unwrap();
+        assert_eq!(new.law_title, old.law_title);
+        assert_eq!(new.law_num, old.law_num);
+        let result = open_comparison_document(&old, &new).unwrap();
+        let flow = result.presentation.flow.unwrap();
+        assert_eq!(flow.page.direction, CellDirection::TbRl);
+        assert_eq!(
+            flow.body
+                .iter()
+                .filter(|block| matches!(block, Block::Table(_)))
+                .count(),
+            1
+        );
+        let plain = markdown::export_markdown(&flow, &result.presentation.media);
+        assert!(plain.contains("新旧対照条文") && plain.contains("青色") && plain.contains("赤色"));
+    }
 
     #[test]
     fn print_docx_preserves_page_breaks_rules_and_change_marks() {
