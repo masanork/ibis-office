@@ -5,6 +5,7 @@
 
 mod cineon;
 mod dpx;
+mod large_tiff;
 #[cfg(target_os = "macos")]
 mod heic;
 
@@ -28,6 +29,7 @@ enum Format {
     Raster(ImageFormat),
     Jpeg2000,
     Photoshop,
+    Tiff,
     OpenExr,
     Dpx,
     Cineon,
@@ -44,7 +46,7 @@ fn format(ext: &str) -> Option<Format> {
         "jpg" | "jpeg" => Some(Format::Raster(ImageFormat::Jpeg)),
         "png" => Some(Format::Raster(ImageFormat::Png)),
         "tga" => Some(Format::Raster(ImageFormat::Tga)),
-        "tif" | "tiff" => Some(Format::Raster(ImageFormat::Tiff)),
+        "tif" | "tiff" => Some(Format::Tiff),
         "jp2" | "j2k" | "j2c" => Some(Format::Jpeg2000),
         _ => None,
     }
@@ -107,6 +109,14 @@ pub fn open_with_dpx_color(
         Format::OpenExr => {
             let exposure = ExrExposure(decode_openexr(bytes)?);
             (exposure.preview_png(0)?, Some(exposure))
+        }
+        Format::Tiff => {
+            let image = match decode_raster_with_limits(bytes, ImageFormat::Tiff, 4) {
+                Ok(image) => image,
+                Err(image::ImageError::Limits(_)) => large_tiff::preview(bytes)?,
+                Err(error) => return Err(error.to_string()),
+            };
+            (encode_png(image)?, None)
         }
         Format::Raster(format) => (encode_png(decode_raster(bytes, format, 4)?)?, None),
         Format::Jpeg2000 => (encode_png(decode_jpeg2000(bytes)?)?, None),
@@ -243,13 +253,21 @@ fn decode_raster(
     format: ImageFormat,
     bytes_per_pixel: u64,
 ) -> Result<DynamicImage, String> {
+    decode_raster_with_limits(bytes, format, bytes_per_pixel).map_err(|error| error.to_string())
+}
+
+fn decode_raster_with_limits(
+    bytes: &[u8],
+    format: ImageFormat,
+    bytes_per_pixel: u64,
+) -> Result<DynamicImage, image::ImageError> {
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(MAX_PIXELS * bytes_per_pixel);
     reader.limits(limits);
-    reader.decode().map_err(|error| error.to_string())
+    reader.decode()
 }
 
 fn decode_openexr(bytes: &[u8]) -> Result<image::Rgba32FImage, String> {
