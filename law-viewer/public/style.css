@@ -85,3 +85,12 @@ details{margin-top:.65rem;font-size:.9rem}summary{cursor:pointer}textarea{displa
     overflow: visible;
   }
 }
+
+.document {
+  min-width: 0;
+}
+@media (max-width: 730px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

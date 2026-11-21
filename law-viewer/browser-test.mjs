@@ -67,6 +67,15 @@ try {
   assert.equal(await writingMode(), "horizontal-tb");
   const pdf = await page.pdf({ format: "A4" });
   assert.equal(pdf.subarray(0, 4).toString(), "%PDF");
+  const mobile = await browser.newPage({
+    viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
+  });
+  await mobile.goto(url);
+  await mobile.locator("#output table").waitFor({ timeout: 45000 });
+  const mobileFits = await mobile.locator("#output").evaluate(el =>
+    document.documentElement.scrollWidth <= window.innerWidth && el.scrollWidth > el.clientWidth,
+  );
+  assert.ok(mobileFits, "Vertical scrolling stays inside the reading pane on mobile");
   assert.deepEqual(errors, []);
   console.log(`Verified law search, e-Gov revisions, WASM comparison, vertical writing, DOCX downloads and print PDF at ${url}`);
 } finally {
