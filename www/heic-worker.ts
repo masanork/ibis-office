@@ -10,6 +10,9 @@ self.onmessage = async ({data}: MessageEvent<Uint8Array>) => {
     const png = decode_heic_png(data);
     self.postMessage({png}, {transfer: [png.buffer]});
   } catch (error) {
-    self.postMessage({error: String(error)});
+    const reason = String(error) === 'HEIC image exceeds the preview dimensions'
+      ? 'dimensions'
+      : 'decode';
+    self.postMessage({reason});
   }
 };

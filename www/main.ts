@@ -736,6 +736,11 @@ function downloadFile(name: string, bytes: Uint8Array, type: string): void {
 window.ibisOfficeDownloadDocx = (name, bytes) => downloadFile(name, bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 window.ibisOfficeDownloadHtml = (name, bytes) => downloadFile(name, bytes, 'text/html;charset=utf-8');
 
+function heicDimensionsError(): string {
+  return ja ? 'HEIC画像がプレビューの寸法上限を超えています。'
+    : 'HEIC image exceeds the preview dimensions.';
+}
+
 function decodeHeicInWorker(bytes: Uint8Array): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./heic-worker.js', import.meta.url), {type: 'module'});
@@ -754,7 +759,12 @@ function decodeHeicInWorker(bytes: Uint8Array): Promise<Uint8Array> {
       fail();
     };
     worker.onmessageerror = fail;
-    worker.onmessage = ({data}: MessageEvent<{png?: Uint8Array}>) => {
+    worker.onmessage = ({data}: MessageEvent<{png?: Uint8Array; reason?: string}>) => {
+      if (data?.reason === 'dimensions') {
+        finish();
+        reject(heicDimensionsError());
+        return;
+      }
       if (!(data?.png instanceof Uint8Array)) return fail();
       finish();
       resolve(data.png);
@@ -782,8 +792,7 @@ async function decodeHeic(bytes: Uint8Array): Promise<Uint8Array> {
     }
     const {naturalWidth: width, naturalHeight: height} = image;
     if (width < 1 || height < 1 || width > 8192 || height > 8192 || width * height > 32 * 1024 * 1024) {
-      throw ja ? 'HEIC画像がプレビューの寸法上限を超えています。'
-        : 'HEIC image exceeds the preview dimensions.';
+      throw heicDimensionsError();
     }
     const canvas = document.createElement('canvas');
     canvas.width = width;

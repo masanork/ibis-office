@@ -10,6 +10,7 @@ use zune_heic::{
 
 const MAX_SIDE: usize = 8192;
 const MAX_PIXELS: usize = 32 * 1024 * 1024;
+const DIMENSIONS_ERROR: &str = "HEIC image exceeds the preview dimensions";
 const MAX_BYTES: usize = 128 * 1024 * 1024;
 
 #[cfg_attr(target_family = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
@@ -24,14 +25,24 @@ pub fn decode_heic_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut decoder = HeifDecoder::new_with_options(ZCursor::new(bytes), options);
     decoder
         .decode_headers()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let message = error.to_string();
+            // zune-heic reports its configured dimension limits as generic errors.
+            if message.contains("greater than configured maximum width")
+                || message.contains("greater than configured maximum height")
+            {
+                DIMENSIONS_ERROR.into()
+            } else {
+                message
+            }
+        })?;
     let width = decoder.width().ok_or("Missing HEIC width")?;
     let height = decoder.height().ok_or("Missing HEIC height")?;
     if !(1..=MAX_SIDE).contains(&width)
         || !(1..=MAX_SIDE).contains(&height)
         || width * height > MAX_PIXELS
     {
-        return Err("HEIC image exceeds the preview dimensions".into());
+        return Err(DIMENSIONS_ERROR.into());
     }
     let (color, channels) = match decoder.colorspace() {
         Some(ColorSpace::RGB) => (png::ColorType::Rgb, 3),
