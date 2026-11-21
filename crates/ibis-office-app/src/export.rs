@@ -54,8 +54,16 @@ pub enum Format {
     Png,
     /// Vector graphics.
     Pdf,
+    /// Vector PDF with the PDF/A-2b archival profile.
+    PdfA2b,
     /// A picture per page.
     PdfImage,
+}
+
+impl Format {
+    fn is_vector_pdf(self) -> bool {
+        matches!(self, Self::Pdf | Self::PdfA2b)
+    }
 }
 
 pub struct Options {
@@ -1505,7 +1513,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
     lap("headless app", &mut lap_at);
     // Picture decoding runs on real threads.
     cx.allow_parking();
-    if options.format == Format::Pdf {
+    if options.format.is_vector_pdf() {
         let (normalized, _) = ibis_doc_model::pup_compat::normalize_presentation_compat_pup(&presentation);
         if let std::borrow::Cow::Owned(p) = normalized {
             presentation = p;
@@ -1524,7 +1532,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
         // coordinates PowerPoint's (2026-10-06, tasks/doc/pptx-pdf-vs-png.md:
         // exact matched PowerPoint's PDF coordinates in 32 more tests and in
         // none fewer).
-        resources.exact = presentation.flow.is_some() || presentation.workbook.is_some() || options.format == Format::Pdf;
+        resources.exact = presentation.flow.is_some() || presentation.workbook.is_some() || options.format.is_vector_pdf();
         // Printed with every picture.
         resources.preload.wait_all();
         resources
@@ -1578,16 +1586,22 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
 
     lap("pictures, density", &mut lap_at);
     let mut pages = Vec::new();
-    crate::render::shape_view::record_table_cells(options.format == Format::Pdf);
+    crate::render::shape_view::record_table_cells(options.format.is_vector_pdf());
     // A flowing document's links per page (they are found from its layout, not from the slides the pages are painted as).
     // Where the text of each shape of the page last drawn is (the PDF's links of the runs that are links).
     let link_positions: Rc<RefCell<Vec<(ibis_doc_model::ShapeId, crate::render::rich_text::TextPositions)>>> = Rc::new(RefCell::new(Vec::new()));
-    let document_links = (options.format == Format::Pdf).then(|| presentation.flow.as_ref().map(|f| crate::docx::flow_layout::page_links(f, &resources))).flatten();
-    let mut vector = (options.format == Format::Pdf).then(|| {
-        let mut writer = crate::pdf_vector::PdfWriter::new(ts.clone());
+    let document_links = (options.format.is_vector_pdf()).then(|| presentation.flow.as_ref().map(|f| crate::docx::flow_layout::page_links(f, &resources))).flatten();
+    let mut vector = if options.format.is_vector_pdf() {
+        let mut writer = if options.format == Format::PdfA2b {
+            crate::pdf_vector::PdfWriter::new_pdfa2b(ts.clone(), &options.name)?
+        } else {
+            crate::pdf_vector::PdfWriter::new(ts.clone())
+        };
         writer.set_print_color(options.color);
-        writer
-    });
+        Some(writer)
+    } else {
+        None
+    };
     // 配布資料, ノート ページ and アウトライン of a presentation in the vector PDF: the slides' records are kept to be put on those pages.
     let pages_asked = vector.is_some() && (options.handout.is_some() || options.notes_pages || options.outline_pages) && presentation.workbook.is_none() && presentation.flow.is_none();
     let mut slide_records: Vec<crate::export_print::SlideRecords> = Vec::new();
@@ -1815,7 +1829,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
                 }
             }
             Format::PdfImage => pages.push((image, (area.width as f32 / 12_700.0, area.height as f32 / 12_700.0))),
-            Format::Pdf => {}
+            Format::Pdf | Format::PdfA2b => {}
         }
     }
     lap("all pages", &mut lap_at);

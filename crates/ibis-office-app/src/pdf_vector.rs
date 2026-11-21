@@ -119,8 +119,41 @@ pub struct PdfWriter {
 
 impl PdfWriter {
     pub fn new(text_system: Arc<TextSystem>) -> Self {
+        Self::with_document(text_system, Document::new())
+    }
+
+    pub(crate) fn new_pdfa2b(text_system: Arc<TextSystem>, title: &str) -> Result<Self, String> {
+        use krilla::configure::{Archival, ConfigurationBuilder};
+        let configuration = ConfigurationBuilder::new()
+            .with_archival_validator(Archival::A2_B)
+            .finish()
+            .map_err(|error| format!("PDF/A-2b: {error:?}"))?;
+        let mut document = Document::new_with(krilla::SerializeSettings {
+            configuration,
+            ..Default::default()
+        });
+        let utc = ibis_doc_model::date_field::LocalTime::from_seconds(
+            (crate::clock::unix_millis() / 1000) as i64,
+        );
+        let created = krilla::metadata::DateTime::new(utc.year as u16)
+            .month(utc.month as u8)
+            .day(utc.day as u8)
+            .hour(utc.hour as u8)
+            .minute(utc.minute as u8)
+            .second(utc.second as u8)
+            .utc_offset_hour(0);
+        document.set_metadata(
+            krilla::metadata::Metadata::new()
+                .title(title.to_owned())
+                .creator("ibisOffice".into())
+                .creation_date(created),
+        );
+        Ok(Self::with_document(text_system, document))
+    }
+
+    fn with_document(text_system: Arc<TextSystem>, document: Document) -> Self {
         crate::render::glyph_text::set_recording(true);
-        Self { pages: Vec::new(), document: Document::new(), fonts: HashMap::new(), images: HashMap::new(), images_by_content: HashMap::new(), missing_glyphs: 0, text_system, given_fonts: HashMap::new(), print_color: crate::export_print::PrintColor::Color }
+        Self { pages: Vec::new(), document, fonts: HashMap::new(), images: HashMap::new(), images_by_content: HashMap::new(), missing_glyphs: 0, text_system, given_fonts: HashMap::new(), print_color: crate::export_print::PrintColor::Color }
     }
 
     /// Add a page `page_pt` points large from `records`, painted in a window
@@ -562,8 +595,9 @@ impl PdfWriter {
                 &[("error", &format!("{} glyphs have unavailable font data", self.missing_glyphs))],
             ));
         }
-        let pdf = self.document.finish().map_err(|e| crate::shell::i18n::format("_app.cannot-write-the-pdf-error", &[("error", &format!("{e:?}"))]))?;
+        let pdf = self.document.finish();
         crate::render::glyph_text::set_recording(false);
+        let pdf = pdf.map_err(|e| crate::shell::i18n::format("_app.cannot-write-the-pdf-error", &[("error", &format!("{e:?}"))]))?;
         Ok((pdf, outlined, self.missing_glyphs))
     }
 }

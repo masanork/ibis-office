@@ -391,7 +391,7 @@ pub fn init(cx: &mut App) {
 ///
 /// ```text
 /// ibisOffice [--slide <number>] [<file.pptx|file.xlsx|file.docx>]
-/// ibisOffice --export png|pdf|pdf-image [--out-dir <dir>] [--width <px>] [--range 1,3-5] [--include-layout] <file.pptx|file.xlsx|file.docx>
+/// ibisOffice --export png|pdf|pdfa-2b|pdf-image [--out-dir <dir>] [--width <px>] [--range 1,3-5] [--include-layout] <file.pptx|file.xlsx|file.docx>
 /// ibisOffice --export ui [--out-dir <dir>] [--steps start,pagedown,end] [<file.pptx|file.xlsx|file.docx>]
 /// ibisOffice [--timing] [--quit-after-first-frame] [<file>]
 /// ```
@@ -754,8 +754,9 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             }
             "png" => export::Format::Png,
             "pdf" => export::Format::Pdf,
+            "pdfa-2b" => export::Format::PdfA2b,
             "pdf-image" => export::Format::PdfImage,
-            other => return Err(format!("--export takes png, pdf, pdf-image, md, row-heights or ui: {other}")),
+            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdf-image, md, row-heights or ui: {other}")),
         };
         let path = args.path.as_deref().ok_or("name the .pptx, .xlsx or .docx file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
