@@ -31,6 +31,39 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
+                name: "create_scatter_chart",
+                description: "Create an editable XY scatter chart linked to cells in this workbook. Specify a shared numeric X column and each numeric Y column, excluding headers. Blank, text and error cells are gaps. Use an empty area or a separate sheet for placement.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "sheet": { "type": "string", "description": "Data sheet (defaults to the active sheet)." },
+                        "destination_sheet": { "type": "string", "description": "Chart sheet (defaults to the active sheet)." },
+                        "anchor": { "type": "string", "description": "Top-left chart cell on the destination sheet, e.g. F2." },
+                        "x_range": { "type": "string", "description": "Single-column A1 range for X values, e.g. A2:A1660." },
+                        "series": {
+                            "type": "array", "minItems": 1, "maxItems": 8,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "y_range": { "type": "string", "description": "Single-column A1 range with as many rows as x_range." },
+                                    "name_cell": { "type": "string", "description": "Optional series label cell on the data sheet, e.g. B1." }
+                                },
+                                "required": ["y_range"],
+                                "additionalProperties": false
+                            }
+                        },
+                        "title": { "type": "string", "description": "Chart title." },
+                        "x_title": { "type": "string", "description": "Optional horizontal axis title with unit." },
+                        "y_title": { "type": "string", "description": "Optional vertical axis title with unit." }
+                    },
+                    "required": ["anchor", "x_range", "series", "title"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
                 name: "get_workbook_overview",
                 description: "Get sheet names, active sheet, used ranges, and current selection in the workbook.",
                 parameters: json!({
@@ -545,6 +578,106 @@ struct ClearCellsArgs {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScatterChartArgs {
+    pub(crate) sheet: Option<String>,
+    pub(crate) destination_sheet: Option<String>,
+    anchor: String,
+    x_range: String,
+    series: Vec<ScatterSeriesArgs>,
+    title: String,
+    x_title: Option<String>,
+    y_title: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScatterSeriesArgs {
+    y_range: String,
+    name_cell: Option<String>,
+}
+
+impl ScatterChartArgs {
+    pub(crate) fn frame(&self, sheet: &ibis_doc_model::Sheet, origin: ibis_doc_model::EmuRect) -> Result<ibis_doc_model::EmuRect, String> {
+        let (row, column) = ibis_doc_model::ai_sheet::parse_cell_ref(&self.anchor)
+            .filter(|&(row, column)| row < 1_048_576 && column < 16_384)
+            .ok_or("anchor must be a single A1 cell")?;
+        let cell = sheet.cell_bounds_emu(column, row);
+        Ok(ibis_doc_model::EmuRect::new(origin.x + cell.x, origin.y + cell.y, 5_486_400, 3_429_000))
+    }
+
+    pub(crate) fn refs(&self, name: &str, sheet: &ibis_doc_model::Sheet) -> Result<Vec<ibis_formats::SeriesRefs>, String> {
+        let column = |address: &str| {
+            parse_cell_range(address).filter(|r| {
+                r.first_column == r.last_column && r.last_column < 16_384
+                    && r.last_row < 1_048_576 && r.last_row - r.first_row < 10_000
+            }).ok_or_else(|| format!("expected a single-column A1 range of up to 10,000 rows: {address}"))
+        };
+        if !(1..=8).contains(&self.series.len()) {
+            return Err("provide one to eight series".into());
+        }
+        if self.title.trim().is_empty() || [self.title.as_str(), self.x_title.as_deref().unwrap_or(""), self.y_title.as_deref().unwrap_or("")]
+            .iter().any(|title| title.chars().count() > 200)
+        {
+            return Err("title is required and each title must be at most 200 characters".into());
+        }
+        let x = column(&self.x_range)?;
+        let quoted = ibis_formats::quote_sheet(name);
+        let reference = |range| ibis_formats::format_ref(&quoted, range);
+        let numeric = |row, col| sheet.cell(row, col).is_some_and(|cell| {
+            matches!(cell.value, ibis_doc_model::CellValue::Number(n) if n.is_finite())
+        });
+        let mut has_point = false;
+        let mut refs = Vec::with_capacity(self.series.len());
+        for series in &self.series {
+            let y = column(&series.y_range)?;
+            if x.last_row - x.first_row != y.last_row - y.first_row {
+                return Err("each Y range must have as many rows as the X range".into());
+            }
+            has_point |= (x.first_row..=x.last_row).zip(y.first_row..=y.last_row)
+                .any(|(xr, yr)| numeric(xr, x.first_column) && numeric(yr, y.first_column));
+            let name = series.name_cell.as_deref().map(|cell| {
+                ibis_doc_model::ai_sheet::parse_cell_ref(cell)
+                    .filter(|&(row, col)| row < 1_048_576 && col < 16_384)
+                    .and_then(|_| parse_cell_range(cell))
+                    .map(reference)
+                    .ok_or("name_cell must be a single A1 cell")
+            }).transpose()?;
+            refs.push(ibis_formats::SeriesRefs {
+                name,
+                categories: Some(reference(x)),
+                values: Some(reference(y)),
+                sizes: None,
+            });
+        }
+        if !has_point {
+            return Err("the ranges contain no numeric X/Y pair".into());
+        }
+        Ok(refs)
+    }
+
+    pub(crate) fn label(&self, chart: &mut ibis_doc_model::Chart) {
+        use ibis_doc_model::chart::{ChartText, ChartTitle, Side};
+        let title = |text: &str, size| ChartTitle {
+            text: text.to_owned(),
+            style: ChartText { size, ..Default::default() },
+            at: None,
+        };
+        chart.title = Some(title(&self.title, 1400));
+        for axis in &mut chart.axes {
+            let label = match axis.side {
+                Side::Bottom => self.x_title.as_deref(),
+                Side::Left => self.y_title.as_deref(),
+                _ => None,
+            };
+            if let Some(label) = label {
+                axis.title = Some(title(label, 1100));
+            }
+        }
+    }
 }
 
 pub fn parse_range_arg(arguments_json: &str) -> Result<CellRange, String> {
@@ -1612,6 +1745,51 @@ pub fn build_replace_paragraph_command(paragraph: u32, old_len: usize, text: Str
 mod tests {
     use super::*;
     use ibis_doc_model::sheet_command::{CellInput, SheetCommand};
+
+    #[test]
+    fn ai_scatter_chart_round_trips_sparse_series() {
+        use ibis_doc_model::{Document, ShapeKind, sheet_calc::sheet_of_slide};
+        use ibis_formats::{Kind, NewChartKind, SaveOptions};
+        let opened = ibis_formats::open(ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
+        let mut doc = Document::new(opened.presentation.clone());
+        let slide = doc.presentation().slides[0].id;
+        let edit = parse_set_cells_command(slide, r#"{"edits":[
+            {"cell":"A2","value":195.6},{"cell":"A3","value":23.7},{"cell":"A4","value":5.1},
+            {"cell":"B1","value":"同区分"},{"cell":"B3","value":254.38},{"cell":"B4","value":"=NA()"},
+            {"cell":"C1","value":"選択団体"},{"cell":"C2","value":105.81}
+        ]}"#).unwrap();
+        doc.execute(vec![edit]).unwrap();
+        let args_json = json!({
+            "anchor":"E2", "x_range":"A2:A4",
+            "series":[{"y_range":"B2:B4","name_cell":"B1"},{"y_range":"C2:C4","name_cell":"C1"}],
+            "title":"人口と運用経費の増減率", "x_title":"人口（万人）", "y_title":"増減率（%）"
+        });
+        let args: ScatterChartArgs = serde_json::from_value(args_json.clone()).unwrap();
+        let model = &doc.presentation().slides[0];
+        let sheet = sheet_of_slide(model).unwrap();
+        let refs = args.refs(model.name.as_deref().unwrap(), sheet).unwrap();
+        let frame = args.frame(sheet, model.shapes[0].frame).unwrap();
+        let mut invalid = args_json;
+        invalid["series"][0]["y_range"] = json!("B2:B3");
+        let invalid: ScatterChartArgs = serde_json::from_value(invalid).unwrap();
+        assert!(invalid.refs(model.name.as_deref().unwrap(), sheet).is_err());
+
+        let id = doc.ids().new_shape_id();
+        let mut shape = opened.source.new_sheet_chart(doc.presentation(), slide, id, frame, NewChartKind::Scatter, refs.clone()).unwrap();
+        let ShapeKind::Chart(chart) = &mut shape.kind else { panic!("expected chart") };
+        args.label(chart);
+        doc.execute(vec![Command::InsertShape { slide, shapes: vec![(1, shape)] }]).unwrap();
+        let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
+        let reopened = ibis_formats::read(&saved).unwrap();
+        let ShapeKind::Chart(chart) = &reopened.slides[0].shapes[1].kind else { panic!("expected chart") };
+        assert_eq!(chart.title.as_ref().unwrap().text, "人口と運用経費の増減率");
+        assert!(chart.axes.iter().any(|axis| axis.title.as_ref().is_some_and(|title| title.text == "増減率（%）")));
+        assert_eq!(chart.groups[0].series[0].name, "同区分");
+        assert_eq!(chart.groups[0].series[0].values.iter().map(|n| n.map(|n| n.0)).collect::<Vec<_>>(), [None, Some(254.38), None]);
+        assert_eq!(chart.cell_refs[1].values, refs[1].values);
+        assert!(doc.undo());
+        assert_eq!(doc.presentation().slides[0].shapes.len(), 1);
+    }
 
     #[test]
     fn parses_set_cells_json() {

@@ -46,7 +46,7 @@ use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
     FetchEgovLawArgs, GetVcPublicKeysArgs, GenerateLawtext5SetArgs, LintLawtextArgs, MAX_READ_CELLS,
-    MoveSlideArgs, OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs,
+    MoveSlideArgs, OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs, ScatterChartArgs,
     VerifyLawtextAratameArgs, claim_value_to_json, resolve_vc_holder_key,
     resolve_vc_issuer_key, vc_public_keys_json,
     ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
@@ -619,6 +619,7 @@ impl SlideEditor {
                         "You are an AI spreadsheet assistant inside ibisOffice. \
                          Use the provided tools to inspect the workbook and apply edits or formatting. \
                          Always inspect relevant cells with read_range before modifying existing data. \
+                         For an XY scatter chart, inspect the headers and a small sample, then use create_scatter_chart with full cell ranges to keep the chart linked to the workbook. \
                          For SD-JWT Verifiable Credentials (VC) tasks, use inspect_vc_bindings, apply_vc_template, infer_vc_schema, bind_vc_claim, issue_vc_preview, parse_vc_token, and prepare_oid4vp_presentation, and clearly explain mandatory claims (claim.*, e.g. vct, iss) vs selective-disclosure claims (sd.* with disclose.* toggles) and OID4VP Key Binding (aud/nonce). \
                          Respond concisely in the user's language."
                     }
@@ -771,7 +772,7 @@ impl SlideEditor {
 
                             for call in &out.tool_calls {
                                 let (result_json, cmd_opt, log_text) =
-                                    editor.execute_ai_tool(kind, call, cx);
+                                    editor.execute_ai_tool(kind, call, &turn_commands, cx);
                                 if let Some(cmd) = cmd_opt {
                                     turn_commands.push(cmd);
                                 }
@@ -1375,13 +1376,58 @@ impl SlideEditor {
         &mut self,
         kind: AiDocKind,
         call: &ToolCall,
+        pending: &[Command],
         cx: &mut Context<Self>,
     ) -> (String, Option<Command>, String) {
         match kind {
+            AiDocKind::Xlsx if call.function.name == "create_scatter_chart" => {
+                match self.stage_ai_scatter_chart(&call.function.arguments, pending) {
+                    Ok(command) => (json!({ "ok": true }).to_string(), Some(command), "✓ create_scatter_chart".into()),
+                    Err(error) => (json!({ "error": error }).to_string(), None, format!("✗ create_scatter_chart: {error}")),
+                }
+            }
             AiDocKind::Xlsx => self.execute_xlsx_tool(call, cx),
             AiDocKind::Pptx => self.execute_pptx_tool(call, cx),
             AiDocKind::Docx => self.execute_docx_tool(call, cx),
         }
+    }
+
+    fn stage_ai_scatter_chart(&mut self, arguments: &str, pending: &[Command]) -> Result<Command, String> {
+        let args: ScatterChartArgs = serde_json::from_str(arguments)
+            .map_err(|error| format!("invalid arguments: {error}"))?;
+        // The assistant applies the turn as a single edit. The chart can already use cells written earlier in that turn.
+        let mut work = self.presentation().clone();
+        for command in pending {
+            work.apply(command.clone()).map_err(|error| error.to_string())?;
+        }
+        let workbook = work.workbook.as_ref().ok_or("no active workbook")?;
+        let data_id = resolve_sheet_slide(workbook, args.sheet.as_deref(), self.current_slide)?;
+        let destination = resolve_sheet_slide(workbook, args.destination_sheet.as_deref(), self.current_slide)?;
+        let data_slide = work.slide(data_id).ok_or("data sheet not found")?;
+        let name = data_slide.name.as_deref().ok_or("data sheet has no name")?;
+        let data = sheet_of_slide(data_slide).ok_or("data sheet not found")?;
+        let refs = args.refs(name, data)?;
+        let destination_slide = work.slide(destination).ok_or("destination sheet not found")?;
+        let (sheet, origin) = destination_slide.shapes.iter().find_map(|shape| {
+            if let ShapeKind::Sheet(sheet) = &shape.kind { Some((sheet, shape.frame)) } else { None }
+        }).ok_or("destination sheet not found")?;
+        let frame = args.frame(sheet, origin)?;
+        let index = destination_slide.shapes.len();
+        let source = match &self.source {
+            Some(source) => source.clone(),
+            None => {
+                let bytes = ibis_formats::blank_file(ibis_formats::Kind::Workbook).map_err(|error| error.to_string())?;
+                std::sync::Arc::new(ibis_formats::open(bytes).map_err(|error| error.to_string())?.source)
+            }
+        };
+        let id = self.document.ids().new_shape_id();
+        let mut shape = source.new_sheet_chart(&work, destination, id, frame, ibis_formats::NewChartKind::Scatter, refs)
+            .map_err(|error| error.to_string())?;
+        if let ShapeKind::Chart(chart) = &mut shape.kind {
+            args.label(chart);
+        }
+        self.source.get_or_insert(source);
+        Ok(Command::InsertShape { slide: destination, shapes: vec![(index, shape)] })
     }
 
     fn execute_xlsx_tool(
