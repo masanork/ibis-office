@@ -1,0 +1,9 @@
+{
+  "sheet": "入構申請",
+  "mappings": [
+    {"target": "applicant_name"},
+    {"target": "training_name", "source_path": "研修名"},
+    {"target": "completion_date", "source_path": "修了日"},
+    {"target": "record_number", "source_path": "管理番号"}
+  ]
+}

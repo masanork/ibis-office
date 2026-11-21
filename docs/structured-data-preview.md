@@ -64,3 +64,26 @@ upstream への提案前に、Wallet の実装を知らない利用者にこの�
 日付や項目を見つけにくければ表示を改善します。違いの説明で迷うなら
 比較表示を優先します。読み取りと比較ができ、転記だけが手間なら、
 名前付きセルへの入力候補と変更前後のプレビューを試作します。
+
+## Excel への事前入力を確認する
+
+合成のWallet提示を元に、入構申請書の名前付きセルへの転記候補を
+CLIまたはMCPで確認できます。次の例は、提示に含まれる研修名と修了日を
+B5／B6への候補として表示します。氏名は手入力、提示にない管理番号は
+「このファイルに含まれない」と判定します。
+
+```sh
+cargo build --locked -p ibis-mcp --example prefill_preview
+target/debug/examples/prefill_preview \
+  test/fixtures/structured-preview/site-entry-form.xlsx \
+  test/fixtures/structured-preview/training.sd-jwt \
+  test/fixtures/structured-preview/prefill-sd-jwt.json
+```
+
+MCPでは `app_open_document` の後に、`xlsx_preview_prefill` へ
+`document_id`、`sheet`、`format`、`source`（ファイルの内容）、
+`mappings`（転記元パスと転記先の名前）を渡します。元の値と候補を返す
+読み取り専用ツールです。保護されたシート、数式、結合セル、非表示の
+行・列は転記対象外とし、値がある欄は上書き候補から区別します。
+資格情報の発行元の信頼性は `not_checked` と表示します。
+この試作には、変更の反映やPDFへの転記は含まれません。

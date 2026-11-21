@@ -18,6 +18,7 @@ jobs:
         with:
           toolchain: nightly-2026-10-28
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked -p ibis-doc-service --example wallet_fixture -p ibis-mcp --example presentation_compare --bin ibisOffice-mcp
+      - run: cargo build --locked -p ibis-doc-service --example wallet_fixture -p ibis-mcp --example presentation_compare --example prefill_preview --bin ibisOffice-mcp
       - run: python3 scripts/test-wallet-presentation.py
+      - run: python3 scripts/test-prefill-preview.py
       - run: cargo test --locked -p ibis-formats --test structured_preview
