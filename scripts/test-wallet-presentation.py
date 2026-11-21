@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 
 build = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug")
@@ -193,3 +196,50 @@ for format_name in ("sd-jwt", "mdoc"):
         assert result["isError"], result
     assert mcp_compare({**args, "vp_token": json.loads(vp_token)})["isError"]
     print(f"{format_name} / direct_post form and state: OK")
+
+for format_name, scenario, nonce_matches in (
+    ("sd-jwt", "wrong-nonce", False),
+    ("mdoc", "extra", None),
+):
+    wallet = json.loads(run("examples/wallet_fixture", format_name, scenario, "--vp-token"))
+    state = "http-session"
+    body = urlencode({"vp_token": json.dumps(wallet.pop("vp_token")), "state": state})
+    wallet["expected_state"] = state
+    expected = mcp_compare({**wallet, "direct_post_body": body})["structuredContent"]
+    assert expected["state_matches"] is True and expected["nonce_matches"] is nonce_matches, expected
+    with TemporaryDirectory() as tmp:
+        config = Path(tmp) / "request.json"
+        config.write_text(json.dumps(wallet), encoding="utf-8")
+        capture = subprocess.Popen(
+            [sys.executable, "scripts/wallet-capture.py", str(config),
+             "--inspector", str(build / "examples/presentation_compare"), "--timeout", "10"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            url = json.loads(capture.stdout.readline())["response_uri"]
+            assert url.startswith("http://127.0.0.1:"), url
+            form = "application/x-www-form-urlencoded"
+
+            def post(target, data, media_type=form):
+                request = Request(target, data=data.encode(), headers={"Content-Type": media_type})
+                try:
+                    with urlopen(request, timeout=5) as reply:
+                        return reply.status, reply.read()
+                except HTTPError as error:
+                    with error:
+                        return error.code, error.read()
+
+            assert post(url + "/wrong", body) == (404, b"{}")
+            assert post(url, body, "application/json") == (415, b"{}")
+            assert post(url, "vp_token=invalid") == (400, b"{}")
+            assert post(url, body) == (200, b"{}")
+            stdout, stderr = capture.communicate(timeout=5)
+            assert capture.returncode == 0, stderr
+            assert json.loads(stdout) == expected, stdout
+            assert "2000-01-01" not in stdout and state not in stdout
+            assert not stderr, stderr
+        finally:
+            if capture.poll() is None:
+                capture.kill()
+                capture.communicate()
+    print(f"{format_name} / loopback HTTP capture: OK")

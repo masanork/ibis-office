@@ -132,7 +132,7 @@ to get a separate `state_matches` result. An absent or different response
 state yields `false`; without an expectation the result is `null`.
 Only the `vp_token` and optional `state` fields are accepted in the capture.
 Duplicate parameters, malformed percent escapes and encrypted responses
-return an error. Capture or HTTP transport is handled by the caller.
+return an error. The comparison tool itself does not open a network listener.
 The tool returns paths and diagnostic results without claim values.
 
 Supply a public issuer JWK to check the issuer signature. For SD-JWT, the
@@ -164,3 +164,30 @@ The fixture Wallet uses public demo keys and synthetic claims. Its mdoc cases
 exercise issuer-signed selective disclosure without a device-authenticated
 session. Its SD-JWT cases exercise valid key binding and a signed response
 with the wrong nonce. No network or external wallet service is required.
+
+### Capture a local Wallet response over HTTP
+
+After building the examples above, write the request expectations to
+`request.json`. Include `format` and `dcql_query`, plus any
+`expected_state`, `audience`, `nonce` or public `issuer_jwk` that you need
+to compare. The synthetic Wallet can produce a starting configuration:
+
+```sh
+target/debug/examples/wallet_fixture sd-jwt normal --vp-token | jq 'del(.vp_token)' > request.json
+python3 scripts/wallet-capture.py request.json
+```
+
+In another terminal, set `RESPONSE_URI` to the printed URI and send a
+synthetic response:
+
+```sh
+target/debug/examples/wallet_fixture sd-jwt extra --vp-token | jq -cj '.vp_token' |
+  curl --data-urlencode 'vp_token@-' "$RESPONSE_URI"
+```
+
+The receiver binds to IPv4 loopback and exits after one
+decodable presentation or a timeout. It acknowledges receipt with an empty
+JSON object and prints the local comparison report separately. An HTTP 200
+does not indicate that the presentation passed its checks. The receiver is
+for local testing with HTTP-capable clients. It does not generate or sign an
+authorization request, provide HTTPS, or handle `direct_post.jwt`.
