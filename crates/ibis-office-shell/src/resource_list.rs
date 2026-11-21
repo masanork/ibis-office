@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn the_published_list_has_the_18_transition_sounds_with_their_files() {
-        let list = parse_list(include_str!("../../../publish/docs/resource-list.txt"));
+        let list = parse_list(include_str!("../../../docs/resource-list.txt"));
         assert_eq!(list.len(), 18);
         assert!(list.iter().all(|e| e.kind == "transition-sound" && e.size > 1000 && e.sha256.is_some() && e.url.ends_with(&format!("/{0}/{0}.ogg", e.id))));
         // Each file is the one the desktop build carries (the same size and checksum).

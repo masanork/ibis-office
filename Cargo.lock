@@ -4985,6 +4985,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ibis-image-provenance-check"
+version = "0.8.0"
+dependencies = [
+ "ibis-office-app",
+ "ibis-office-shell",
+]
+
+[[package]]
 name = "ibis-imgdiff"
 version = "0.8.0"
 dependencies = [

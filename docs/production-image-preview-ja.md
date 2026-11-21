@@ -35,6 +35,8 @@ Web版も原本のバイト列に対してブラウザー内でC2PAを検証し�
 
 macOS（Apple Silicon）のローカル検証版では、公式リストで信頼される署名付きPNG、署名者の信頼を確認できないテストJPEG、原本とのハッシュ不一致、マニフェスト未検出のTIFF、外部マニフェストを参照するJPEGを開き、表示を確認しました。Cineonに切り替えると前の素材の来歴表示は消えます。署名付きPNGから保存したDOCXでは、全RGBA画素が原本と一致し、C2PAマニフェストは含まれていませんでした。[署名付きPNGの公開サンプル](https://c2paview.com/samples/enoggera-creek.png) [外部マニフェストの公開サンプル](https://contentauth.github.io/example-assets/images/crater-lake-cr.jpg)
 
+合成画像と専用のテスト証明書を使った自動回帰テスト、保存後の来歴表示、サイズ・処理時間の計測方法は [C2PA検証の受け入れ確認](c2pa-verification.md) を参照してください。
+
 ## JPEG 2000の色と互換性
 
 - グレーおよびRGB系の画像を8ビット表示用に変換します。埋め込みのRGB・CMYK ICCプロファイルはsRGBに変換し、対応するストレートアルファは保持します。

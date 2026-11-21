@@ -75,6 +75,11 @@ jobs:
         run: cargo test --locked -p ibis-office-updater
       - name: Test Office 2007 encryption
         run: cargo test --locked -p ibis-ooxml --test standard_encryption
+      - name: Test offline image Content Credentials
+        run: cargo test --locked -p ibis-office-shell --lib --no-default-features image_provenance
+      - name: Test image provenance in the native editor
+        if: matrix.platform == 'macos-arm64'
+        run: cargo run --locked -p ibis-image-provenance-check
       - name: Build and verify macOS app
         if: matrix.platform == 'macos-arm64'
         shell: bash

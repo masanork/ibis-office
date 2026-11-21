@@ -463,6 +463,8 @@ impl SlideEditor {
         // A newly created file becomes recent as soon as its first save succeeds.
         self.recent_files = crate::recent_files::add(&path);
         self.set_file_path(Some(path.clone()));
+        // This window now represents the saved document, not the verified image.
+        self.image_provenance = None;
         // Written in a current format: no longer Compatibility Mode.
         if !path.extension().and_then(|e| e.to_str()).is_some_and(|x| ["xls", "ppt", "pps", "pot", "doc", "dot"].iter().any(|o| x.eq_ignore_ascii_case(o))) {
             self.opened_from_legacy = false;

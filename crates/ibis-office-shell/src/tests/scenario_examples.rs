@@ -8,6 +8,6 @@
 /// (The first example, a presentation's, moved to `pptx/scenarios.rs` as
 /// `pptx::edit_text_make_bold_save_and_reopen`.)
 pub fn all() -> Vec<(&'static str, fn())> {
-    Vec::new()
+    vec![("shell::image_provenance_open_save", crate::image_provenance::tests::image_provenance_open_save)]
 }
 

@@ -17,7 +17,7 @@ const MAX_ITEMS: usize = 8;
 const MANIFEST_TRUST: &str = include_str!("../data/c2pa/C2PA-TRUST-LIST.pem");
 const TSA_TRUST: &str = include_str!("../data/c2pa/C2PA-TSA-TRUST-LIST.pem");
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Report {
     status: &'static str,
     signer: Option<String>,
@@ -37,8 +37,11 @@ fn mime_type(extension: &str) -> Option<&'static str> {
 
 fn offline_settings() -> Settings {
     let mut settings = Settings::new();
+    settings.verify.verify_after_reading = true;
     settings.verify.ocsp_fetch = false;
     settings.verify.remote_manifest_fetch = false;
+    // Keep every SDK resolver offline even if another dependency enables HTTP.
+    settings.core.allowed_network_hosts = Some(Vec::new());
     settings.trust.anchors = Some(vec![
         TrustAnchor {
             trust_anchors: MANIFEST_TRUST.into(),
@@ -58,10 +61,14 @@ fn offline_settings() -> Settings {
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn inspect(extension: &str, original: &[u8]) -> Option<Report> {
     let mime = mime_type(extension)?;
-    let result = C2paContext::new()
-        .with_settings(offline_settings())
-        .and_then(|context| Reader::from_context(context).with_stream(mime, Cursor::new(original)));
-    Some(report(result))
+    Some(report(read_original(mime, original, offline_settings())))
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn read_original(mime: &str, original: &[u8], settings: Settings) -> Result<Reader, Error> {
+    C2paContext::new()
+        .with_settings(settings)
+        .and_then(|context| Reader::from_context(context).with_stream(mime, Cursor::new(original)))
 }
 
 #[cfg(target_family = "wasm")]
@@ -226,25 +233,5 @@ impl SlideEditor {
     }
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unsigned_png_opens_without_credentials() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("logo/png/ico/ibisOffice_icon_win_16px.png");
-        let loaded = crate::read_file::read_file(&path).unwrap();
-        assert_eq!(
-            loaded.image_provenance.unwrap().status,
-            "view.provenance-absent"
-        );
-        assert!(!loaded.presentation.media.is_empty());
-    }
-
-    #[test]
-    fn unsupported_formats_have_no_report() {
-        assert!(inspect("j2k", &[]).is_none());
-        assert!(inspect("exr", &[]).is_none());
-    }
-}
+#[cfg(all(any(test, feature = "scenarios"), not(target_family = "wasm")))]
+pub(crate) mod tests;
