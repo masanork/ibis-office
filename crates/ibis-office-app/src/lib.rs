@@ -873,11 +873,13 @@ pub fn run_native() {
     // One ibisOffice to a user (GitHub issue #239): where one is running, a second start (the app's icon, a file association, the command line) hands its
     // file, or a new window, to it and ends. macOS does that itself (Launch Services). Not for a run that is measured or read only, nor with
     // `IBIS_NO_SINGLE_INSTANCE` set (the tests and the scenario runs that start the program).
+    // An AI citation also opens in this process because the handoff only sends the file path.
     #[cfg(any(windows, target_os = "linux"))]
     let single = !args.quit_after_first_frame
         && !args.timing
         && !args.read_only
         && args.slide.is_none()
+        && args.ai_query.is_none()
         && std::env::var_os("IBIS_NO_SINGLE_INSTANCE").is_none();
     #[cfg(any(windows, target_os = "linux"))]
     if single && single_instance::hand_over(&single_instance::requests_for(args.path.as_deref())) {

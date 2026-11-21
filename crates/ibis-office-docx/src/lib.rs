@@ -1892,10 +1892,11 @@ impl SlideEditor {
 }
 
 
-/// Scroll to a paragraph identified in the snapshot just loaded.
+/// Scroll to a body paragraph, including one inside a table, in the snapshot just loaded.
 pub fn reveal_body_paragraph(editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>) {
-    if editor.presentation().flow.as_ref().is_some_and(|flow| flow.body.iter()
-        .any(|block| matches!(block, ibis_doc_model::Block::Paragraph(p) if p.id == id)))
+    if editor.presentation().flow.as_ref().is_some_and(|flow| {
+        ibis_doc_model::flow_command::all_paragraphs(flow).iter().any(|paragraph| paragraph.id == id)
+    })
     {
         editor.jump_to(id, cx);
     }

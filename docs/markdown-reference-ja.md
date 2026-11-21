@@ -676,7 +676,7 @@ DOCX のページ脚注と文末脚注に同じ ID がある場合、Markdown �
 
 `--export ai-locate --ai-query citation.json report.docx` は、指定範囲と重なる段落・表・脚注、条文、セルを標準出力に JSON で返します。`citation.json` には `version: 1` に相当する JSON フィールドと、書き出し時の `sourceSha256`、引用した `markdownBytes`、その範囲と完全に一致する `quote` を入れます。入力のハッシュが変わっていた場合や、UTF-8 の文字境界・引用が一致しない場合はエラーになります。
 
-デスクトップ版では `ibisOffice --ai-query citation.json report.docx` で原本を開き、該当段落の先頭へ移動できます。対象は一つの本文段落に対応する引用です。複数段落をまたぐ引用、表や脚注、法令と表計算の位置は `ai-locate` で確認できます。DOCX の表を引用したときは、`matches` に表全体、`tableCellMatches` に引用範囲が重なるセルが入ります。
+デスクトップ版では `ibisOffice --ai-query citation.json report.docx` で原本を開き、該当段落の先頭へ移動できます。対象は一つの本文段落、または一つの表セルの中に収まる引用です。表セルの場合はセル内の最初の段落へ移動します。複数段落・セルをまたぐ引用や脚注、法令と表計算の位置は `ai-locate` で確認できます。DOCX の表を引用したときは、`matches` に表全体、`tableCellMatches` に引用範囲が重なるセルが入り、`paragraphModelId` はそのセルの最初の段落を指します。
 
 ### 段落の編集案を確認して適用する
 

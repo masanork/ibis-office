@@ -5239,11 +5239,28 @@ fn locate_ai_export(export: &serde_json::Value, query: &serde_json::Value) -> Re
     Ok(result)
 }
 
-/// A desktop jump requires a citation resolving to one body paragraph.
+/// Locate the paragraph to reveal for a verified desktop citation.
 pub fn locate_ai_paragraph(data: &[u8], query: &serde_json::Value) -> Result<u32, Error> {
     let citation = locate_ai_source(data, query)?;
-    let entry = ai_body_paragraph_entry(&citation)?;
-    entry["source"]["modelId"].as_u64().and_then(|id| u32::try_from(id).ok())
+    let matches = citation["matches"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let paragraph_id = match matches {
+        [entry] if entry["source"]["part"] == "body" && entry["source"]["kind"] == "paragraph" => {
+            &entry["source"]["modelId"]
+        }
+        [entry] if entry["source"]["part"] == "body" && entry["source"]["kind"] == "table" => {
+            let cells = citation["tableCellMatches"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let [cell] = cells else {
+                return Err(Error::new("The AI citation must identify one table cell"));
+            };
+            let ranges = ai_byte_range(&citation["markdownBytes"]).zip(ai_byte_range(&cell["markdownBytes"]));
+            if !ranges.is_some_and(|((start, end), (left, right))| left <= start && end <= right) {
+                return Err(Error::new("The AI citation extends outside the table cell"));
+            }
+            &cell["source"]["paragraphModelId"]
+        }
+        _ => return Err(Error::new("The AI citation must identify one body paragraph or table cell")),
+    };
+    paragraph_id.as_u64().and_then(|id| u32::try_from(id).ok())
         .ok_or_else(|| Error::new("The AI citation has no paragraph ID"))
 }
 
@@ -5801,6 +5818,14 @@ fn ai_table_structure(
     })
 }
 
+fn first_paragraph_in_blocks(blocks: &[Block]) -> Option<&FlowParagraph> {
+    blocks.iter().find_map(|block| match block {
+        Block::Paragraph(paragraph) => Some(paragraph),
+        Block::Table(table) => table.rows.iter().flat_map(|row| &row.cells)
+            .find_map(|cell| first_paragraph_in_blocks(&cell.blocks)),
+    })
+}
+
 /// Markdown, table structure, and snapshot-relative locations for DOCX body blocks and notes.
 pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Value, Error> {
     use serde_json::json;
@@ -5815,6 +5840,7 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
                 "source": {
                     "part": "body", "kind": "tableCell", "index": index, "tableModelId": table.id,
                     "modelId": cell.id, "row": row, "column": column,
+                    "paragraphModelId": first_paragraph_in_blocks(&cell.blocks).map(|p| p.id),
                 },
                 "markdownBytes": [start, end],
             }));

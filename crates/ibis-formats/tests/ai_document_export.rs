@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+use ibis_doc_model::flow_command;
 use ibis_formats::markdown;
 use serde_json::Value;
 
@@ -309,7 +310,19 @@ fn docx_table_citations_distinguish_equal_text_in_different_cells() {
     );
     assert_eq!(result["matches"].as_array().unwrap().len(), 1);
 
+    let target = markdown::locate_ai_paragraph(&docx, &citation(start, start + quote.len())).unwrap();
+    let presentation = ibis_formats::read_docx(&docx).unwrap();
+    let flow = presentation.flow.as_deref().unwrap();
+    let (table, row, column) = flow_command::find_table_cell_for_paragraph(flow, target).unwrap();
+    assert_eq!((row, column), (1, 2));
+    assert_eq!(serde_json::json!(table.id), matches[0]["source"]["tableModelId"]);
+    assert_eq!(serde_json::json!(target), matches[0]["source"]["paragraphModelId"]);
+
     let first = text.find(quote).unwrap();
+    let first_target = markdown::locate_ai_paragraph(&docx, &citation(first, first + quote.len())).unwrap();
+    assert_ne!(first_target, target);
+    assert!(markdown::locate_ai_paragraph(&docx, &citation(first, start + quote.len())).is_err());
+    assert!(markdown::locate_ai_paragraph(&docx, &citation(start - 1, start + quote.len())).is_err());
     let across = markdown::locate_ai_source(&docx, &citation(first, start + quote.len())).unwrap();
     assert_eq!(across["tableCellMatches"].as_array().unwrap().len(), 2);
     let separators =
