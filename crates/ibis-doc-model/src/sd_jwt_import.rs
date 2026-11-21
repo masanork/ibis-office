@@ -968,8 +968,15 @@ pub fn parse_single_mdoc_text(
     input: &str,
     issuer_jwk_json: Option<&str>,
 ) -> Result<ParsedCredential, String> {
-    let bytes = decode_mdoc_text(input)?;
-    let root = decode_cbor(&bytes)?;
+    parse_single_mdoc_bytes(&decode_mdoc_text(input)?, issuer_jwk_json)
+}
+
+/// Reads one binary mdoc without silently ignoring further presented documents.
+pub fn parse_single_mdoc_bytes(
+    bytes: &[u8],
+    issuer_jwk_json: Option<&str>,
+) -> Result<ParsedCredential, String> {
+    let root = decode_cbor(bytes)?;
     if let Some(documents) = root.map_get("documents")
         && !documents.as_array().is_some_and(|docs| docs.len() == 1)
     {

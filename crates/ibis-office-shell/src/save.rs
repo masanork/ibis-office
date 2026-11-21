@@ -134,7 +134,9 @@ impl SlideEditor {
 
     /// `refuse_save`, told in the words of what was asked for (saving, exporting, saving a copy, printing).
     pub fn refuse_as(&mut self, way: RefusedWay, cx: &mut Context<Self>) -> bool {
-        let refusal = if self.is_csv_streaming { Some(crate::i18n::text("file.csv-loading-blocked").to_string()) }
+        let refusal = if self.structured_preview {
+            Some(crate::i18n::text("structured-preview.read-only").to_string())
+        } else if self.is_csv_streaming { Some(crate::i18n::text("file.csv-loading-blocked").to_string()) }
             else { crate::format::with_format!(self, save_refused(self)) };
         match refusal {
             Some(why) => {
@@ -386,6 +388,7 @@ impl SlideEditor {
     /// Save to `path`, and make it the file's path.
     #[cfg(not(target_family = "wasm"))]
     pub fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
+        if self.structured_preview { return Err(crate::i18n::text("structured-preview.read-only").to_string()); }
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::production_image::supports_extension) {
             return Err("Choose a document extension to save the imported image".into());

@@ -51,6 +51,7 @@ mod chart_ex;
 pub mod csv;
 pub mod dicom;
 pub mod production_image;
+pub mod structured_preview;
 pub mod dpc;
 pub mod fhir;
 pub mod pii_preflight;
@@ -258,7 +259,7 @@ impl Kind {
     }
 
     /// The extensions of the files that can be opened (what `from_extension` knows), for the file dialog.
-    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc", "md", "markdown", "pdf", "ofd", "xps", "oxps", "xdw", "cin", "dpx", "exr", "psd", "tga", "tif", "tiff", "jp2", "j2k", "j2c"];
+    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc", "json", "xml", "sd-jwt", "mdoc", "md", "markdown", "pdf", "ofd", "xps", "oxps", "xdw", "cin", "dpx", "exr", "psd", "tga", "tif", "tiff", "jp2", "j2k", "j2c"];
 
     /// The kind of document contained in `presentation`.
     pub fn of(presentation: &Presentation) -> Self {

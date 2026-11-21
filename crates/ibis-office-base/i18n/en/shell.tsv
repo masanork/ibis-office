@@ -1552,3 +1552,10 @@ window.minimize	Minimize
 app.services	Services
 app.hide	Hide ibisOffice
 file.copy-download	Save a Copy (Download)
+structured-preview.title	Structured data preview
+structured-preview.read-only	Read-only preview
+structured-preview.credential-type	Credential type
+structured-preview.issuer	Issuer identifier in the file
+structured-preview.received-only	Only fields included in this file are shown. Other fields may exist in the original credential.
+structured-preview.unverified	Issuer trust, signature and holder or device binding have not been verified.
+structured-preview.matching-digests	Disclosures matching a digest in the file

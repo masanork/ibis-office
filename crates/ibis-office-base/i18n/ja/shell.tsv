@@ -1550,3 +1550,10 @@ window.minimize	しまう
 app.services	サービス
 app.hide	ibisOffice を隠す
 file.copy-download	コピーの保存（ダウンロード）
+structured-preview.title	構造化データのプレビュー
+structured-preview.read-only	読み取り専用のプレビューです
+structured-preview.credential-type	資格情報の種類
+structured-preview.issuer	ファイルに記載された発行元
+structured-preview.received-only	このファイルに含まれる項目を表示しています。元の資格情報には別の項目がある場合があります。
+structured-preview.unverified	発行元の信頼性、署名、保有者・端末との結び付きは未確認です。
+structured-preview.matching-digests	ファイル内の照合値と一致した開示項目数

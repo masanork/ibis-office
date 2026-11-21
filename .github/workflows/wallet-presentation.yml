@@ -20,3 +20,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p ibis-doc-service --example wallet_fixture -p ibis-mcp --example presentation_compare --bin ibisOffice-mcp
       - run: python3 scripts/test-wallet-presentation.py
+      - run: cargo test --locked -p ibis-formats --test structured_preview

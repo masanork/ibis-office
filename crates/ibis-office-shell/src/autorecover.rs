@@ -436,9 +436,9 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         match crate::read_file::read_file(&entry.path) {
             Ok(loaded) => {
-                if loaded.jtd_original.is_some() {
+                if loaded.jtd_original.is_some() || loaded.structured_preview {
                     if let Some(panel) = self.recover_unsaved.as_mut() {
-                        panel.message = text("jtd.read-only").to_string();
+                        panel.message = text(if loaded.structured_preview { "structured-preview.read-only" } else { "jtd.read-only" }).to_string();
                     }
                     cx.notify();
                     return;

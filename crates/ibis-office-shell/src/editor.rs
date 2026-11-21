@@ -608,6 +608,7 @@ pub struct SlideEditor {
     phone_view_only: bool,
     /// A Standard-encrypted document remains read-only until saved as a copy.
     pub standard_read_only: bool,
+    pub(crate) structured_preview: bool,
     /// Preserve the original path even after creating an editable copy.
     #[cfg(not(target_family = "wasm"))]
     pub standard_source_path: Option<std::path::PathBuf>,
@@ -940,6 +941,7 @@ impl SlideEditor {
             #[cfg(any(target_os = "android", target_family = "wasm"))]
             phone_view_only: false,
             standard_read_only: false,
+            structured_preview: false,
             #[cfg(not(target_family = "wasm"))]
             standard_source_path: None,
             jtd_original: None,
@@ -993,7 +995,7 @@ impl SlideEditor {
     }
 
     fn file_is_read_only(&self) -> bool {
-        self.read_only || self.standard_read_only || self.is_xdw() || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
+        self.read_only || self.standard_read_only || self.structured_preview || self.is_xdw() || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
     }
 
     pub(crate) fn is_xdw(&self) -> bool {
@@ -1027,7 +1029,7 @@ impl SlideEditor {
             window.dismiss_virtual_keyboard();
         }
         self.phone_view_only = viewing;
-        let model_read_only = viewing || self.read_only || self.standard_read_only || self.is_jtd_read_only();
+        let model_read_only = viewing || self.read_only || self.standard_read_only || self.structured_preview || self.is_jtd_read_only();
         self.document.set_read_only(model_read_only);
     }
 
@@ -1276,6 +1278,7 @@ impl SlideEditor {
     /// Replace the open presentation, dropping undo history and selection.
     pub fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.standard_read_only = false;
+        self.structured_preview = false;
         #[cfg(any(target_os = "android", target_family = "wasm"))]
         {
             self.phone_editing = false;
@@ -1753,6 +1756,14 @@ impl SlideEditor {
                         this.load_jtd(loaded.presentation, name, bytes, loaded.jtd_gallery, window, cx);
                         this.set_file_path(Some(path.clone()));
                         this.watch.known = stamp_before_read;
+                    } else if loaded.structured_preview {
+                        this.load(loaded.presentation, name, window, cx);
+                        this.structured_preview = true;
+                        this.document.set_read_only(true);
+                        this.sidebar_open = false;
+                        this.set_file_path(Some(path.clone()));
+                        this.watch.known = stamp_before_read;
+                        this.set_status(crate::i18n::text("structured-preview.read-only").to_string(), cx);
                     } else if is_tmpl {
                         let tmpl_name = crate::file_actions::next_new_file_name(ibis_formats::Kind::of(&loaded.presentation));
                         this.load(loaded.presentation, tmpl_name, window, cx);
@@ -2431,6 +2442,7 @@ impl SlideEditor {
     pub fn new_window(&mut self, cx: &mut App) {
         let document_memory=self.document_memory.clone();
         let standard_read_only = self.standard_read_only;
+        let structured_preview = self.structured_preview;
         #[cfg(not(target_family = "wasm"))]
         let standard_source_path = self.standard_source_path.clone();
         #[cfg(not(target_family = "wasm"))]
@@ -2476,6 +2488,7 @@ impl SlideEditor {
                 editor.current_csv_original = current_csv_original;
                 editor.current_csv_slide = current_csv_slide;
                 editor.standard_read_only = standard_read_only;
+                editor.structured_preview = structured_preview;
                 #[cfg(not(target_family = "wasm"))]
                 { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; }
                 editor.jtd_original = jtd_original;

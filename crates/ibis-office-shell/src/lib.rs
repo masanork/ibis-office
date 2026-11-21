@@ -33,6 +33,8 @@ pub mod web;
 pub mod web_pdf;
 pub mod app;
 pub mod read_file;
+#[cfg(not(target_family = "wasm"))]
+mod structured_preview;
 pub mod jtd_preview;
 #[cfg(not(target_family = "wasm"))]
 pub mod timing;

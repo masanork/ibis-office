@@ -140,8 +140,8 @@ impl SlideEditor {
             this.update_in(cx, |this, window, cx| match result {
                 _ if this.closed != closed => {}
                 Ok(loaded) => {
-                    if loaded.jtd_original.is_some() {
-                        this.fail_loading(crate::i18n::text("jtd.read-only").to_string(), cx);
+                    if loaded.jtd_original.is_some() || loaded.structured_preview {
+                        this.fail_loading(crate::i18n::text(if loaded.structured_preview { "structured-preview.read-only" } else { "jtd.read-only" }).to_string(), cx);
                         return;
                     }
                     let name: SharedString = next_new_file_name(ibis_formats::Kind::of(&loaded.presentation));

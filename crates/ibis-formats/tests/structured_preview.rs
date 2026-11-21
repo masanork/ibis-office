@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+use ibis_doc_model::sd_jwt::base64url_decode;
+use ibis_formats::structured_preview;
+
+const JSON: &[u8] = include_bytes!("../../../test/fixtures/structured-preview/training.json");
+const XML: &[u8] = include_bytes!("../../../test/fixtures/structured-preview/training.xml");
+const SD_JWT: &[u8] = include_bytes!("../../../test/fixtures/structured-preview/training.sd-jwt");
+const MDOC: &[u8] = include_bytes!("../../../test/fixtures/structured-preview/training.mdoc");
+
+#[test]
+fn training_record_fields_are_visible_and_undisclosed_values_are_absent() {
+    let binary = base64url_decode(std::str::from_utf8(MDOC).unwrap().trim()).unwrap();
+    for (extension, data) in [
+        ("json", JSON),
+        ("xml", XML),
+        ("sd-jwt", SD_JWT),
+        ("mdoc", MDOC),
+        ("mdoc", binary.as_slice()),
+    ] {
+        let preview = structured_preview::read(extension, data).unwrap();
+        assert!(
+            preview
+                .fields
+                .iter()
+                .any(|field| field.name == "研修名" && field.value.contains("安全研修"))
+        );
+        assert!(
+            preview
+                .fields
+                .iter()
+                .any(|field| field.name == "修了日" && field.value.contains("2026-04-01"))
+        );
+        if let Some(credential) = preview.credential {
+            assert_eq!(credential.matching_digests, 2);
+            assert!(
+                !preview
+                    .fields
+                    .iter()
+                    .any(|field| field.name == "管理番号" || field.value.contains("00123"))
+            );
+        } else {
+            let field = preview
+                .fields
+                .iter()
+                .find(|field| field.name == "管理番号")
+                .unwrap();
+            assert_eq!(
+                field.value,
+                if extension == "xml" {
+                    "00123"
+                } else {
+                    "\"00123\""
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_values_keep_distinct_paths_and_xml_does_not_resolve_entities() {
+    let json = structured_preview::read(
+        "JSON",
+        br#"{"a/b":[1, false, null],"a":{"b":2},"big":1234567890123456789012345}"#,
+    )
+    .unwrap();
+    let fields: Vec<_> = json
+        .fields
+        .iter()
+        .map(|field| (field.path.as_str(), field.value.as_str()))
+        .collect();
+    assert!(fields.contains(&("/a~1b/1", "false")));
+    assert!(fields.contains(&("/a/b", "2")));
+    assert!(fields.contains(&("/big", "1234567890123456789012345")));
+
+    let data = br#"<r xmlns:p="urn:sample"><p:item code="001">x</p:item><p:item>y</p:item></r>"#;
+    let xml = structured_preview::read("xml", data).unwrap();
+    let paths: Vec<_> = xml.fields.iter().map(|field| field.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/r/{urn:sample}item[1]/@code",
+            "/r/{urn:sample}item[1]/#text[1]",
+            "/r/{urn:sample}item[2]/#text[1]"
+        ]
+    );
+    assert!(
+        structured_preview::read(
+            "xml",
+            br#"<!DOCTYPE r [<!ENTITY external SYSTEM "file:///unavailable">]><r>&external;</r>"#
+        )
+        .is_err()
+    );
+    assert!(structured_preview::read("json", b"{not-json").is_err());
+}
