@@ -296,6 +296,4 @@ The runner saves a new copy with `actual_failures` in column E and
 numbers. A finished run writes the report even when some cases fail.
 The source and any existing destination are kept intact. The JSON output
 includes the saved path and any workbook save warnings.
-The XLSX writer requires a workbook with a styles part, as generated
-by Excel. A stripped-down XLSX without styles can still be used for
-JSON-only runs.
+An unstyled input workbook can also be saved as a report.

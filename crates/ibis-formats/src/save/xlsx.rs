@@ -5877,6 +5877,11 @@ impl StylesWriter {
     }
 
     fn xf_for(&mut self, package: &mut Package, part: Option<&str>, style: &CellStyle, complement: Option<usize>) -> Result<u32, Error> {
+        // With no styles part, an unstyled cell uses the implicit default.
+        // Index zero is serialized without an s attribute.
+        if part.is_none() && style == &CellStyle::default() {
+            return Ok(0);
+        }
         let base_xf = style.xf.unwrap_or(0);
         let base = self.read.get(&base_xf).cloned();
         if base.as_ref() == Some(style) {

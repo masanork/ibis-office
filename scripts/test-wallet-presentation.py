@@ -359,28 +359,31 @@ else:
     print("external Wallet command / success, state mismatch and invalid output: OK")
 
 
-def write_case_sheet(path, rows):
+def write_case_sheet(path, rows, *, styles=True):
     ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     office = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     rels = "http://schemas.openxmlformats.org/package/2006/relationships"
+    styles_type = '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' if styles else ""
+    styles_rel = f'<Relationship Id="rId2" Type="{office}/styles" Target="styles.xml"/>' if styles else ""
     with ZipFile(path, "w") as archive:
-        archive.writestr("[Content_Types].xml", """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+        archive.writestr("[Content_Types].xml", f"""<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+{styles_type}
 </Types>""")
         archive.writestr("_rels/.rels", f'<Relationships xmlns="{rels}"><Relationship Id="rId1" Type="{office}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
         archive.writestr("xl/workbook.xml", f'<workbook xmlns="{ns}" xmlns:r="{office}"><sheets><sheet name="Wallet Cases" sheetId="1" r:id="rId1"/></sheets></workbook>')
-        archive.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="{rels}"><Relationship Id="rId1" Type="{office}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="{office}/styles" Target="styles.xml"/></Relationships>')
-        archive.writestr("xl/styles.xml", f"""<styleSheet xmlns="{ns}">
-<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
-<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
-<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
-<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
-<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
-</styleSheet>""")
+        archive.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="{rels}"><Relationship Id="rId1" Type="{office}/worksheet" Target="worksheets/sheet1.xml"/>{styles_rel}</Relationships>')
+        if styles:
+            archive.writestr("xl/styles.xml", f"""<styleSheet xmlns="{ns}">
+    <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+    <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+    <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+    <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+    <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+    <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+    </styleSheet>""")
         data = []
         for index, row in enumerate(rows, 1):
             cells = "".join(
@@ -402,7 +405,7 @@ with TemporaryDirectory() as tmp:
         ("mDL over-disclosure", "mdoc", "extra", "unexpected_paths"),
     ]
     command = [sys.executable, "scripts/wallet-matrix.py", str(workbook), "--build-dir", str(build)]
-    write_case_sheet(workbook, rows)
+    write_case_sheet(workbook, rows, styles=False)
     original = workbook.read_bytes()
     report_path = Path(tmp) / "wallet results.xlsx"
     report_command = [*command, "--report-xlsx", str(report_path)]
@@ -412,6 +415,9 @@ with TemporaryDirectory() as tmp:
     assert output["passed"] is True and len(output["cases"]) == 3, output
     assert output["cases"][1]["actual_failures"] == ["nonce"], output
     assert output["report_xlsx"]["path"] == str(report_path), output
+    for book in (workbook, report_path):
+        with ZipFile(book) as archive:
+            assert "xl/styles.xml" not in archive.namelist(), book
     assert [case["row"] for case in output["cases"]] == [2, 4, 5], output
     session = runpy.run_path("scripts/wallet-matrix.py")["mcp_session"]
     with session(report_path, build.resolve()) as call:
