@@ -406,7 +406,8 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
             None => (0, 0),
         };
         content.cells = markdown_workbook_cells(flow, marker.is_some(), &mut content, date1904, origin)?.into();
-        if let Some(MarkdownSheetMarker { name, .. }) = marker {
+        if let Some(MarkdownSheetMarker { name, validations, .. }) = marker {
+            content.validations = validations;
             if !valid_sheet_name(presentation, &name, (index == 0).then_some(0)) {
                 return Err(Error::new(format!("無効または重複したシート名です: {name}")));
             }
@@ -436,15 +437,16 @@ const XLSX_SHEET_MARKER: &str = "<!-- xlsx-sheet ";
 struct MarkdownSheetMarker {
     name: String,
     origin: Option<String>,
+    validations: Vec<ibis_doc_model::Validation>,
 }
 
 fn parse_markdown_sheet_marker(encoded: &str) -> Option<MarkdownSheetMarker> {
     let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
     if let Some(name) = value.as_str() {
-        return Some(MarkdownSheetMarker { name: name.to_owned(), origin: None });
+        return Some(MarkdownSheetMarker { name: name.to_owned(), origin: None, validations: Vec::new() });
     }
     let object = value.as_object()?;
-    if object.keys().any(|key| key != "name" && key != "origin") {
+    if object.keys().any(|key| !matches!(key.as_str(), "name" | "origin" | "validations")) {
         return None;
     }
     let name = object.get("name")?.as_str()?.to_owned();
@@ -452,7 +454,70 @@ fn parse_markdown_sheet_marker(encoded: &str) -> Option<MarkdownSheetMarker> {
         Some(value) => Some(value.as_str()?.to_owned()),
         None => None,
     };
-    Some(MarkdownSheetMarker { name, origin })
+    let validations = match object.get("validations") {
+        Some(value) => value.as_array()?.iter().map(parse_markdown_validation).collect::<Option<_>>()?,
+        None => Vec::new(),
+    };
+    Some(MarkdownSheetMarker { name, origin, validations })
+}
+
+fn parse_markdown_validation(value: &serde_json::Value) -> Option<ibis_doc_model::Validation> {
+    let ranges = value["ranges"].as_array()?.iter().map(|range| {
+        ibis_doc_model::ai_sheet::parse_cell_range(range.as_str()?)
+    }).collect::<Option<Vec<_>>>()?;
+    let kind = value["type"].as_str()?;
+    let operator = value["operator"].as_str()?;
+    if ranges.is_empty()
+        || !matches!(kind, "none" | "whole" | "decimal" | "list" | "date" | "time" | "textLength" | "custom")
+        || !matches!(operator, "between" | "notBetween" | "equal" | "notEqual" | "lessThan" | "lessThanOrEqual" | "greaterThan" | "greaterThanOrEqual")
+    {
+        return None;
+    }
+    let rule = ibis_doc_model::Validation {
+        ranges,
+        kind: kind.to_owned(),
+        operator: operator.to_owned(),
+        formula1: serde_json::from_value(value["formula1"].clone()).ok()?,
+        formula2: serde_json::from_value(value["formula2"].clone()).ok()?,
+        allow_blank: value["allowBlank"].as_bool()?,
+        dropdown: value["dropdown"].as_bool()?,
+        prompt: serde_json::from_value(value["prompt"].clone()).ok()?,
+        error: serde_json::from_value(value["error"].clone()).ok()?,
+    };
+    let text = rule.formula1.iter().chain(&rule.formula2)
+        .chain(rule.prompt.iter().flat_map(|(title, message)| [title, message]))
+        .chain(rule.error.iter().flat_map(|(_, title, message)| [title, message]));
+    if rule.error.as_ref().is_some_and(|(style, _, _)| !matches!(style.as_str(), "stop" | "warning" | "information"))
+        || text.flat_map(|value| value.chars()).any(|ch| {
+            matches!(ch, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}')
+        })
+    {
+        return None;
+    }
+    Some(rule)
+}
+
+fn validation_range_label(range: &ibis_doc_model::CellRange) -> String {
+    use ibis_calc::formula::{MAX_COLUMN, MAX_ROW};
+    use ibis_doc_model::cell_name;
+
+    let first = cell_name(range.first_column, range.first_row);
+    let last = cell_name(range.last_column.min(MAX_COLUMN), range.last_row.min(MAX_ROW));
+    if first == last { first } else { format!("{first}:{last}") }
+}
+
+fn markdown_validation(rule: &ibis_doc_model::Validation) -> serde_json::Value {
+    serde_json::json!({
+        "ranges": rule.ranges.iter().map(validation_range_label).collect::<Vec<_>>(),
+        "type": rule.kind,
+        "operator": rule.operator,
+        "formula1": rule.formula1,
+        "formula2": rule.formula2,
+        "allowBlank": rule.allow_blank,
+        "dropdown": rule.dropdown,
+        "prompt": rule.prompt,
+        "error": rule.error,
+    })
 }
 
 fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMarker>, &str)>, Error> {
@@ -702,11 +767,17 @@ pub fn export_presentation_to_markdown(presentation: &Presentation) -> Result<St
 
 /// Export visible worksheets in a workbook [`Presentation`] as GFM Markdown tables.
 pub fn export_workbook_markdown(p: &Presentation) -> Result<String, Error> {
-    export_workbook_markdown_with_positions(p, |_, _, _, _, _, _| {})
+    export_workbook_markdown_with_positions(p, false, |_, _, _, _, _, _| {})
+}
+
+/// Export visible worksheets with data validation metadata for XLSX reconstruction.
+pub fn export_workbook_markdown_with_validations(p: &Presentation) -> Result<String, Error> {
+    export_workbook_markdown_with_positions(p, true, |_, _, _, _, _, _| {})
 }
 
 fn export_workbook_markdown_with_positions(
     p: &Presentation,
+    include_validations: bool,
     mut record: impl FnMut(&str, u32, u32, Option<&ibis_doc_model::SheetCell>, usize, usize),
 ) -> Result<String, Error> {
     use ibis_doc_model::{CellAlign, SheetState};
@@ -749,14 +820,25 @@ fn export_workbook_markdown_with_positions(
             out.push('\n');
         }
         out.push_str(XLSX_SHEET_MARKER);
-        let encoded = match bounds {
-            Some((row, _, column, _)) if (row, column) != (0, 0) => serde_json::to_string(&serde_json::json!({
-                "name": sheet_ref.name,
-                "origin": ibis_doc_model::cell_name(column, row),
-            })),
-            _ => serde_json::to_string(&sheet_ref.name),
-        }.expect("sheet metadata is JSON serializable");
-        out.push_str(&encoded.replace("--", r"-\u002d"));
+        let origin = bounds
+            .filter(|&(row, _, column, _)| (row, column) != (0, 0))
+            .map(|(row, _, column, _)| ibis_doc_model::cell_name(column, row));
+        let mut marker = serde_json::json!(sheet_ref.name);
+        if origin.is_some() || (include_validations && !sheet.validations.is_empty()) {
+            marker = serde_json::json!({"name": sheet_ref.name});
+            if let Some(origin) = origin {
+                marker["origin"] = serde_json::json!(origin);
+            }
+            if include_validations && !sheet.validations.is_empty() {
+                let rules: Vec<_> = sheet.validations.iter().map(markdown_validation).collect();
+                if rules.iter().any(|rule| parse_markdown_validation(rule).is_none()) {
+                    return Err(Error::new(format!("シート {} の入力規則を Markdown に変換できません", sheet_ref.name)));
+                }
+                marker["validations"] = serde_json::json!(rules);
+            }
+        }
+        let encoded = marker.to_string();
+        out.push_str(&encoded.replace('<', r"\u003c").replace('>', r"\u003e").replace("--", r"-\u002d"));
         out.push_str(" -->\n\n");
         out.push_str("## ");
         out.push_str(&sheet_ref.name);
@@ -5261,8 +5343,8 @@ fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
 }
 
 /// Known workbook omissions from Markdown export. Reports locations without cell contents.
-pub fn workbook_markdown_omissions(p: &Presentation) -> Vec<serde_json::Value> {
-    use ibis_doc_model::{SheetState, cell_name, sheet_calc::sheet_of_slide};
+pub fn workbook_markdown_omissions(p: &Presentation, include_validations: bool) -> Vec<serde_json::Value> {
+    use ibis_doc_model::{SheetState, sheet_calc::sheet_of_slide};
     use serde_json::json;
 
     let mut diagnostics = Vec::new();
@@ -5298,12 +5380,9 @@ pub fn workbook_markdown_omissions(p: &Presentation) -> Vec<serde_json::Value> {
             }
         }
 
-        let ranges: Vec<_> = sheet.validations.iter().flat_map(|rule| &rule.ranges).map(|range| {
-            let first = cell_name(range.first_column, range.first_row);
-            let last = cell_name(range.last_column, range.last_row);
-            if first == last { first } else { format!("{first}:{last}") }
-        }).collect();
-        if !sheet.validations.is_empty() {
+        if !include_validations && !sheet.validations.is_empty() {
+            let ranges: Vec<_> = sheet.validations.iter().flat_map(|rule| &rule.ranges)
+                .map(validation_range_label).collect();
             diagnostics.push(json!({
                 "code": "data_validation_omitted",
                 "source": {"sheet": name, "ranges": ranges},
@@ -5340,7 +5419,7 @@ pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> 
     use serde_json::json;
 
     let mut cells = Vec::new();
-    let markdown = export_workbook_markdown_with_positions(p, |sheet, row, column, cell, start, end| {
+    let markdown = export_workbook_markdown_with_positions(p, false, |sheet, row, column, cell, start, end| {
         let (kind, value) = match cell.map(|cell| &cell.value) {
             None | Some(CellValue::Empty) => ("empty", json!(null)),
             Some(CellValue::Number(number)) if number.is_finite() => ("number", json!(number)),
@@ -5362,7 +5441,7 @@ pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> 
         json!({ "code": "visible_sheet_cells_only" }),
         json!({ "code": "first_exported_row_used_as_markdown_header" }),
     ];
-    diagnostics.extend(workbook_markdown_omissions(p));
+    diagnostics.extend(workbook_markdown_omissions(p, false));
     Ok(json!({
         "version": 1,
         "kind": "workbook",
@@ -8733,6 +8812,57 @@ xychart-beta
         assert_eq!(sheet.cell(4, 3).unwrap().text, "Right");
         assert!(sheet.cell(3, 1).is_none());
         assert!(sheet.cell(4, 2).is_none());
+    }
+
+    #[test]
+    fn workbook_validation_rules_round_trip_with_explicit_markdown_export() {
+        let list = serde_json::json!({
+            "ranges": ["C4:C7", "E9", "G1:G1048576"],
+            "type": "list", "operator": "between",
+            "formula1": "\"内製,外注\"", "allowBlank": true, "dropdown": false,
+            "prompt": ["区分", "選択してください -->"],
+            "error": ["warning", "確認", "一覧から選択してください"],
+        });
+        let number = serde_json::json!({
+            "ranges": ["J2:J4"], "type": "whole", "operator": "notBetween",
+            "formula1": "1", "formula2": "10", "allowBlank": false, "dropdown": true,
+        });
+        let first = serde_json::json!({"name": "入力", "origin": "C3", "validations": [list]});
+        let second = serde_json::json!({"name": "予備", "validations": [number]});
+        let source = format!(
+            "<!-- xlsx-sheet {} -->\n\n| 見出し |\n| --- |\n| 内製 |\n\n<!-- xlsx-sheet {second} -->\n",
+            first.to_string().replace("--", r"-\u002d"),
+        );
+
+        let bytes = import_markdown_to_xlsx_bytes(source.as_bytes()).unwrap();
+        let original = crate::read(&bytes).unwrap();
+        let rules = |workbook: &Presentation| {
+            workbook.slides.iter().map(|slide| {
+                ibis_doc_model::sheet_calc::sheet_of_slide(slide).unwrap().validations.clone()
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(rules(&original), vec![
+            vec![parse_markdown_validation(&list).unwrap()],
+            vec![parse_markdown_validation(&number).unwrap()],
+        ]);
+
+        let plain = export_workbook_markdown(&original).unwrap();
+        assert!(!plain.contains("validations"));
+        assert!(!plain.contains("一覧から選択してください"));
+        assert_eq!(workbook_markdown_omissions(&original, false).len(), 2);
+        assert!(workbook_markdown_omissions(&original, true).is_empty());
+        let ai = export_ai_source(&bytes).unwrap();
+        assert_eq!(ai["markdown"], plain);
+        assert!(!ai.to_string().contains("一覧から選択してください"));
+
+        let exported = export_workbook_markdown_with_validations(&original).unwrap();
+        assert!(exported.contains(r"選択してください -\u002d\u003e"));
+        let edited = exported.replace("| 内製 |", "| 外注 |");
+        let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(edited.as_bytes()).unwrap()).unwrap();
+        assert_eq!(rules(&rebuilt), rules(&original));
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        assert_eq!(sheet.cell(3, 2).unwrap().text, "外注");
+        assert!(import_markdown_to_xlsx_bytes(exported.replace("G1:G1048576", "G1:G1048577").as_bytes()).is_err());
     }
 
     #[test]

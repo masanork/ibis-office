@@ -74,6 +74,8 @@ ibisOffice --read-only report.docx
 
 `--ai-receipt` を `ai-apply` に付けると、保存後に出力先と SHA-256 を含む JSON を標準出力に返します。
 
+`--include-xlsx-validations` を XLSX の `--export md` に付けると、表示シートの入力規則を Markdown に含めます。`--export xlsx` で規則を復元できます。[Markdown リファレンスの XLSX 往復](markdown-reference-ja.md#対応状況と残るギャップ)
+
 ウィンドウを一切表示せず、GPU / CPU レンダリングによりバックグラウンドで高速に出力を行い、完了後に即座に終了します。サーバー環境や自動化スクリプトに最適です。
 
 | オプション | 引数 | 説明 |
