@@ -9,6 +9,8 @@ from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
+from xml.sax.saxutils import escape
+from zipfile import ZipFile
 
 build = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug")
 
@@ -354,3 +356,55 @@ else:
             assert output["report"]["nonce_matches"] is True, output
             assert "do-not-print-this-state" not in result.stdout and not result.stderr
     print("external Wallet command / success, state mismatch and invalid output: OK")
+
+
+def write_case_sheet(path, rows):
+    ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    office = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    rels = "http://schemas.openxmlformats.org/package/2006/relationships"
+    with ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>""")
+        archive.writestr("_rels/.rels", f'<Relationships xmlns="{rels}"><Relationship Id="rId1" Type="{office}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        archive.writestr("xl/workbook.xml", f'<workbook xmlns="{ns}" xmlns:r="{office}"><sheets><sheet name="Wallet Cases" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        archive.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="{rels}"><Relationship Id="rId1" Type="{office}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        data = []
+        for index, row in enumerate(rows, 1):
+            cells = "".join(
+                f'<c r="{column}{index}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
+                for column, value in zip("ABCD", row) if value is not None
+            )
+            data.append(f'<row r="{index}">{cells}</row>')
+        archive.writestr("xl/worksheets/sheet1.xml", f'<worksheet xmlns="{ns}"><sheetData>{"".join(data)}</sheetData></worksheet>')
+
+
+with TemporaryDirectory() as tmp:
+    workbook = Path(tmp) / "wallet cases.xlsx"
+    headers = ("case", "format", "scenario", "expected_failures")
+    rows = [
+        headers,
+        ("SD-JWT age check", "sd-jwt", "normal", None),
+        ("Bad nonce", "sd-jwt", "wrong-nonce", "nonce"),
+        ("mDL over-disclosure", "mdoc", "extra", "unexpected_paths"),
+    ]
+    command = [sys.executable, "scripts/wallet-matrix.py", str(workbook), "--build-dir", str(build)]
+    write_case_sheet(workbook, rows)
+    original = workbook.read_bytes()
+    result = subprocess.run(command, text=True, capture_output=True, timeout=45)
+    assert result.returncode == 0 and not result.stderr, result.stderr
+    output = json.loads(result.stdout)
+    assert output["passed"] is True and len(output["cases"]) == 3, output
+    assert output["cases"][1]["actual_failures"] == ["nonce"], output
+    assert workbook.read_bytes() == original
+    write_case_sheet(workbook, [headers, ("Unexpected failure", "mdoc", "extra", None)])
+    result = subprocess.run(command, text=True, capture_output=True, timeout=25)
+    assert result.returncode == 1, result.stderr
+    output = json.loads(result.stdout)
+    assert output["passed"] is False and output["cases"][0]["actual_failures"] == ["unexpected_paths"], output
+    write_case_sheet(workbook, [headers, ("Invalid fixture", "mdoc", "wrong-nonce", None)])
+    result = subprocess.run(command, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 2 and not result.stdout and "row 2" in result.stderr, result
+    print("XLSX Wallet case matrix / expected failures, mismatch and invalid row: OK")

@@ -249,3 +249,29 @@ The fixture accepts its synthetic age-check query and echoes the supplied
 state. For SD-JWT it also binds the presentation to the supplied nonce and
 client ID. This unsigned loopback flow is intended for local fixtures and
 does not exercise production Wallet trust or mdoc device authentication.
+
+### Keep a regression matrix in XLSX
+
+Create a sheet named `Wallet Cases` with these four columns starting at A1:
+
+| case | format | scenario | expected_failures |
+|---|---|---|---|
+| Age check | sd-jwt | normal | |
+| Bad nonce | sd-jwt | wrong-nonce | nonce |
+| mDL over-disclosure | mdoc | extra | unexpected_paths |
+
+Use unique case names and literal cells. Leave the last cell blank for a
+clean result, or list expected diagnostic failures separated by commas.
+The workbook can hold up to 100 cases. After building the examples and
+`ibisOffice-mcp` as shown above, run:
+
+```sh
+python3 scripts/wallet-matrix.py "wallet cases.xlsx"
+```
+
+The runner reads the workbook through the existing read-only MCP XLSX
+tools and runs each row through the synthetic Wallet and loopback
+verifier. The JSON report compares the exact expected and actual failure
+sets. Exit code 0 means every row matched, 1 means at least one differed,
+and 2 means the workbook or runner could not complete. Use `--sheet`
+to select another tab. The workbook is not modified.
