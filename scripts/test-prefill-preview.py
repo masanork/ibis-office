@@ -23,7 +23,11 @@ with subprocess.Popen(
                    "params": {"name": name, "arguments": arguments}}
         server.stdin.write(json.dumps(request) + "\n")
         server.stdin.flush()
-        result = json.loads(server.stdout.readline())["result"]
+        response = json.loads(server.stdout.readline())
+        if "error" in response:
+            assert error, response
+            return response
+        result = response["result"]
         assert result["isError"] is error, result
         return result["structuredContent"]
 
@@ -59,6 +63,10 @@ with subprocess.Popen(
                     encoding="utf-8", capture_output=True, check=True, timeout=10,
                 )
                 assert json.loads(completed.stdout) == report, completed.stdout
+                denied = call("xlsx_apply_prefill", {
+                    **args, "preview_id": report["preview_id"], "targets": ["training_name"],
+                }, error=True)
+                assert denied["error"]["message"] == "unknown tool xlsx_apply_prefill", denied
             duplicate = {**args, "mappings": [mappings[1], mappings[1]]}
             call("xlsx_preview_prefill", duplicate, error=True)
         cells = call("xlsx_get_cells", {"document_id": doc, "sheet": settings["sheet"], "range": "B4:B7"})
@@ -88,3 +96,66 @@ with TemporaryDirectory() as folder:
 
 assert workbook.read_bytes() == original
 print("Prefill preview: four source formats, CLI/MCP parity, duplicate rejection, occupied and formula targets, and no edits")
+
+with TemporaryDirectory() as folder:
+    folder = Path(folder)
+    binary = str(build / "examples/prefill_preview")
+    presentation = fixtures / "training.sd-jwt"
+    base = [binary, str(workbook), str(presentation), str(mapping)]
+    review = folder / "review.json"
+    reviewed = subprocess.run(base, encoding="utf-8", capture_output=True, check=True, timeout=10)
+    review.write_text(reviewed.stdout, encoding="utf-8")
+    output = folder / "filled.xlsx"
+    decision = ["--apply", str(review), str(output)]
+    result = subprocess.run([*base, *decision, "training_name"], capture_output=True, check=True, timeout=10)
+    assert json.loads(result.stdout)["applied_targets"] == ["training_name"], result.stdout
+    result = subprocess.run([binary, str(output), str(presentation), str(mapping)],
+                            capture_output=True, check=True, timeout=10)
+    filled = json.loads(result.stdout)["changes"]
+    assert filled[1]["current_value"] == "安全研修（サンプル）" and filled[1]["status"] == "occupied", filled
+    assert filled[2]["current_value"] is None and filled[3]["current_value"] is None, filled
+    saved = output.read_bytes()
+    duplicate = subprocess.run([*base, *decision, "training_name"], capture_output=True, timeout=10)
+    assert duplicate.returncode != 0 and output.read_bytes() == saved, duplicate
+    overwrite = subprocess.run([*base, "--apply", str(review), str(workbook), "training_name"],
+                               capture_output=True, timeout=10)
+    assert overwrite.returncode != 0 and workbook.read_bytes() == original, overwrite
+
+    refused = folder / "refused.xlsx"
+    blocked = subprocess.run([*base, "--apply", str(review), str(refused), "training_name", "record_number"],
+                             capture_output=True, timeout=10)
+    assert blocked.returncode != 0 and not refused.exists(), blocked
+    source_changed = folder / "changed.sd-jwt"
+    source_changed.write_bytes(presentation.read_bytes() + b"\n")
+    stale = subprocess.run([binary, str(workbook), str(source_changed), str(mapping),
+                            "--apply", str(review), str(refused), "training_name"], capture_output=True, timeout=10)
+    assert stale.returncode != 0 and b"stale_preview" in stale.stderr and not refused.exists(), stale
+    workbook_changed = folder / "changed.xlsx"
+    workbook_changed.write_bytes(workbook.read_bytes())
+    with ZipFile(workbook_changed, "a") as changed_zip:
+        changed_zip.comment = b"edited after preview"
+    stale = subprocess.run([binary, str(workbook_changed), str(presentation), str(mapping),
+                            "--apply", str(review), str(refused), "training_name"], capture_output=True, timeout=10)
+    assert stale.returncode != 0 and b"stale_preview" in stale.stderr and not refused.exists(), stale
+
+    literal = folder / "literal.json"
+    literal.write_text(json.dumps({"text": "=1+1", "too_large": 1234567890123456}), encoding="utf-8")
+    literal_mapping = folder / "mapping.json"
+    literal_mapping.write_text(json.dumps({"sheet": settings["sheet"], "mappings": [
+        {"target": "training_name", "source_path": "/text"},
+        {"target": "record_number", "source_path": "/too_large"},
+    ]}), encoding="utf-8")
+    base = [binary, str(workbook), str(literal), str(literal_mapping)]
+    result = subprocess.run(base, encoding="utf-8", capture_output=True, check=True, timeout=10)
+    assert json.loads(result.stdout)["changes"][1]["status"] == "unsupported_value", result
+    review.write_text(result.stdout, encoding="utf-8")
+    output = folder / "literal.xlsx"
+    subprocess.run([*base, "--apply", str(review), str(output), "training_name"],
+                   capture_output=True, check=True, timeout=10)
+    result = subprocess.run([binary, str(output), str(literal), str(literal_mapping)],
+                            capture_output=True, check=True, timeout=10)
+    cell = json.loads(result.stdout)["changes"][0]
+    assert cell["current_value"] == "=1+1" and cell["status"] == "occupied", cell
+
+assert workbook.read_bytes() == original
+print("Prefill apply: selected cells, stale review, refusal, and literal text")

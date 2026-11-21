@@ -5018,6 +5018,7 @@ version = "0.8.0"
 dependencies = [
  "ibis-doc-service",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

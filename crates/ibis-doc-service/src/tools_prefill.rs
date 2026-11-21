@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Plan, but do not apply, transfers from structured data into named cells.
+//! Review and apply explicit transfers from structured data into named cells.
 
 use std::collections::BTreeSet;
 
 use ibis_calc::formula::parser::{Expr, parse};
-use ibis_doc_model::{CellValue, sheet::cell_name};
+use ibis_doc_model::sheet_command::{CellEdit, CellInput, SheetCommand};
+use ibis_doc_model::{CellValue, Command, SlideId, sheet::cell_name};
 use ibis_formats::structured_preview;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
+use crate::a1::parse_range;
 use crate::catalog::{Access, Tool, document_id, object, string};
+use crate::edit::{edited, execute};
 use crate::service::Args;
 use crate::tools_xlsx::{find_sheet, sheets_of, value_json};
 use crate::{Service, ToolError};
@@ -19,38 +23,67 @@ pub(crate) fn tool() -> Tool {
         description: "Preview explicit field-to-named-cell mappings from structured data. Returns existing and proposed values without editing the workbook.",
         access: Access::Read,
         returns_content: true,
-        schema: || {
-            object(
-                &[
-                    document_id(),
-                    ("sheet", string("Name of the destination sheet.")),
-                    ("format", json!({"enum":["json", "xml", "sd-jwt", "mdoc"]})),
-                    (
-                        "source",
-                        string("UTF-8 structured data. For mdoc, supply hex or base64url text."),
-                    ),
-                    (
-                        "mappings",
-                        json!({"type":"array", "minItems":1, "maxItems":100, "items":{
-                            "type":"object", "additionalProperties":false, "required":["target"],
-                            "properties":{
-                                "target":{"type":"string"},
-                                "source_path":{"type":["string","null"]}
-                            }
-                        }}),
-                    ),
-                ],
-                &["document_id", "sheet", "format", "source", "mappings"],
-            )
-        },
+        schema: || schema(false),
         run: preview,
     }
 }
 
+pub(crate) fn apply_tool() -> Tool {
+    Tool {
+        name: "xlsx_apply_prefill",
+        description: "Apply explicitly selected ready fields from an unchanged prefill preview as one undo step in the open workbook. Does not save.",
+        access: Access::Edit,
+        returns_content: false,
+        schema: || schema(true),
+        run: apply,
+    }
+}
+
+fn schema(apply: bool) -> Value {
+    let mut schema = object(
+        &[
+            document_id(),
+            ("sheet", string("Name of the destination sheet.")),
+            ("format", json!({"enum":["json", "xml", "sd-jwt", "mdoc"]})),
+            (
+                "source",
+                string("UTF-8 structured data. For mdoc, supply hex or base64url text."),
+            ),
+            (
+                "mappings",
+                json!({"type":"array", "minItems":1, "maxItems":100, "items":{
+                    "type":"object", "additionalProperties":false, "required":["target"],
+                    "properties":{
+                        "target":{"type":"string"},
+                        "source_path":{"type":["string","null"]}
+                    }
+                }}),
+            ),
+        ],
+        &["document_id", "sheet", "format", "source", "mappings"],
+    );
+    if apply {
+        schema["properties"]["preview_id"] = string("The ID returned by xlsx_preview_prefill.");
+        schema["properties"]["targets"] = json!({
+            "type":"array", "items":{"type":"string"}, "minItems":1, "maxItems":100, "uniqueItems":true
+        });
+        schema["required"]
+            .as_array_mut()
+            .unwrap()
+            .extend([json!("preview_id"), json!("targets")]);
+    }
+    schema
+}
+
 fn preview(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    plan(service, args).map(|(report, _)| report)
+}
+
+fn plan(service: &mut Service, args: &Value) -> Result<(Value, SlideId), ToolError> {
     let format = args.str_arg("format")?;
-    let source = structured_preview::read(format, args.str_arg("source")?.as_bytes())
-        .map_err(ToolError::invalid)?;
+    let source_input = args.str_arg("source")?;
+    let source =
+        structured_preview::read(format, source_input.as_bytes()).map_err(ToolError::invalid)?;
     let mappings = args["mappings"]
         .as_array()
         .filter(|mappings| (1..=100).contains(&mappings.len()))
@@ -133,7 +166,12 @@ fn preview(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             }
             None => None,
         };
-        let status = if sheet.protection.is_some()
+        let status = if open.signed
+            || sheet.protection.is_some()
+            || sheet.spills.values().any(|range| {
+                (range.first_row..=range.last_row).contains(&row)
+                    && (range.first_column..=range.last_column).contains(&col)
+            })
             || sheet.hidden_rows.contains_key(&row)
             || sheet.hidden_columns.contains_key(&col)
             || sheet.merge_at(row, col).is_some()
@@ -144,7 +182,7 @@ fn preview(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             match (&proposed, path) {
                 (_, None) => "manual",
                 (None, _) => "not_in_source",
-                (Some(Value::Null | Value::Array(_) | Value::Object(_)), _) => "unsupported_value",
+                (Some(value), _) if literal_cell_value(value).is_none() => "unsupported_value",
                 (Some(_), _)
                     if current.is_some_and(|cell| !matches!(cell.value, CellValue::Empty)) =>
                 {
@@ -158,8 +196,82 @@ fn preview(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             "current_value": before, "proposed_value": proposed, "status": status,
         }));
     }
-    Ok(json!({
+    let mut report = json!({
         "sheet":sheet_name, "source_format":source.format, "changes":rows,
         "credential_trust": if source.credential.is_some() { "not_checked" } else { "not_applicable" },
-    }))
+    });
+    let mut checksum = Sha256::new();
+    checksum.update(b"ibis-prefill-v1");
+    checksum.update(open.fingerprint.sha256);
+    checksum.update(Sha256::digest(source_input.as_bytes()));
+    checksum.update(report.to_string().as_bytes());
+    report["preview_id"] = json!(format!("{:x}", checksum.finalize()));
+    Ok((report, slide))
+}
+
+fn literal_cell_value(value: &Value) -> Option<CellValue> {
+    match value {
+        Value::String(text) => Some(CellValue::Text(text.clone())),
+        Value::Bool(value) => Some(CellValue::Bool(*value)),
+        Value::Number(value) => value
+            .as_i64()
+            .filter(|value| value.unsigned_abs() <= 999_999_999_999_999)
+            .map(|value| CellValue::Number(value as f64)),
+        _ => None,
+    }
+}
+
+fn apply(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let expected = args.str_arg("preview_id")?;
+    let (report, sheet) = plan(service, args)?;
+    let stale = || {
+        ToolError::new(
+            "stale_preview",
+            "the prefill plan changed; preview it again",
+        )
+    };
+    if report["preview_id"] != expected {
+        return Err(stale());
+    }
+    let changes = report["changes"].as_array().ok_or_else(stale)?;
+    let targets = args["targets"]
+        .as_array()
+        .filter(|targets| (1..=100).contains(&targets.len()))
+        .ok_or_else(|| ToolError::invalid("select one or more ready targets"))?;
+    let mut seen = BTreeSet::new();
+    let mut edits = Vec::with_capacity(targets.len());
+    for target in targets {
+        let name = target
+            .as_str()
+            .ok_or_else(|| ToolError::invalid("targets must be names"))?;
+        if !seen.insert(name) {
+            return Err(ToolError::invalid("duplicate selected target"));
+        }
+        let change = changes
+            .iter()
+            .find(|change| change["target"] == name && change["status"] == "ready")
+            .ok_or_else(|| ToolError::invalid("selected target is not ready in the preview"))?;
+        let cell = parse_range(change["cell"].as_str().ok_or_else(stale)?)?;
+        let value = literal_cell_value(&change["proposed_value"]).ok_or_else(stale)?;
+        edits.push(CellEdit {
+            row: cell.first_row,
+            column: cell.first_column,
+            input: CellInput::Value(value),
+        });
+    }
+    let id = args.str_arg("document_id")?;
+    let open = service.open_document(id)?;
+    if !open.fingerprint.still(&open.path) {
+        return Err(stale());
+    }
+    execute(
+        open,
+        vec![Command::Sheet(SheetCommand::SetCells { sheet, edits })],
+    )?;
+    Ok(edited(
+        id,
+        open,
+        json!({"applied_targets":targets}),
+        Vec::new(),
+    ))
 }

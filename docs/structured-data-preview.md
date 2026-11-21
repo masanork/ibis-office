@@ -86,4 +86,27 @@ MCPでは `app_open_document` の後に、`xlsx_preview_prefill` へ
 読み取り専用ツールです。保護されたシート、数式、結合セル、非表示の
 行・列は転記対象外とし、値がある欄は上書き候補から区別します。
 資格情報の発行元の信頼性は `not_checked` と表示します。
-この試作には、変更の反映やPDFへの転記は含まれません。
+この試作はExcelを対象としています。
+
+### 選んだ候補を新しいXLSXに反映する
+
+上のCLIコマンドの出力を `review.json` に保存し、値と転記先を確認します。
+同じ3つの引数に `--apply`、確認結果、まだ存在しない出力先、
+選んだ名前付きセルを追加します。
+
+```sh
+target/debug/examples/prefill_preview \
+  test/fixtures/structured-preview/site-entry-form.xlsx \
+  test/fixtures/structured-preview/training.sd-jwt \
+  test/fixtures/structured-preview/prefill-sd-jwt.json \
+  --apply review.json filled-entry-form.xlsx training_name completion_date
+```
+
+元のブックとソース、転記計画が確認時点と一致し、選択した候補がすべて
+`ready` のときだけ出力します。文字列は `=` で始まっても文字として
+扱います。反映できる型は文字列、真偽値、15桁以内の整数です。
+署名付きブック、数式、スピル範囲、既存値のある欄は反映対象外です。
+
+書き込み可能なMCPセッションでは同じ引数に `preview_id` と選択した
+`targets` を添えて `xlsx_apply_prefill` を呼び出せます。反映は
+取り消し可能な1ステップで、ファイル保存は別の操作です。

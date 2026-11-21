@@ -66,6 +66,7 @@ pub fn catalog() -> &'static [Tool] {
         all.extend(tools_docx::edit_tools());
         all.extend(tools_xlsx::tools());
         all.push(crate::tools_prefill::tool());
+        all.push(crate::tools_prefill::apply_tool());
         all.extend(tools_xlsx::edit_tools());
         all.extend(tools_pptx::tools());
         all.extend(tools_pptx::edit_tools());
