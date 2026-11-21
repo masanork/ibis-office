@@ -46,7 +46,7 @@ use crate::ai_tools::{
     AddSlideArgs, ApplyVcTemplateArgs, BindVcClaimArgs, FindCellsArgs, FindTextArgs,
     InferVcSchemaArgs, InsertTableArgs, InsertTextArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
     FetchEgovLawArgs, GetVcPublicKeysArgs, GenerateLawtext5SetArgs, LintLawtextArgs, MAX_READ_CELLS,
-    MoveSlideArgs, OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs, ScatterChartArgs,
+    MoveSlideArgs, OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ReadParagraphsArgs, ChartArgs,
     VerifyLawtextAratameArgs, claim_value_to_json, resolve_vc_holder_key,
     resolve_vc_issuer_key, vc_public_keys_json,
     ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
@@ -619,7 +619,7 @@ impl SlideEditor {
                         "You are an AI spreadsheet assistant inside ibisOffice. \
                          Use the provided tools to inspect the workbook and apply edits or formatting. \
                          Always inspect relevant cells with read_range before modifying existing data. \
-                         For an XY scatter chart, inspect the headers and a small sample, then use create_scatter_chart with full cell ranges to keep the chart linked to the workbook. \
+                         For charts, inspect the headers and a small sample, then use create_chart with a chart kind and full cell ranges to keep the chart linked to the workbook. \
                          For SD-JWT Verifiable Credentials (VC) tasks, use inspect_vc_bindings, apply_vc_template, infer_vc_schema, bind_vc_claim, issue_vc_preview, parse_vc_token, and prepare_oid4vp_presentation, and clearly explain mandatory claims (claim.*, e.g. vct, iss) vs selective-disclosure claims (sd.* with disclose.* toggles) and OID4VP Key Binding (aud/nonce). \
                          Respond concisely in the user's language."
                     }
@@ -1380,10 +1380,10 @@ impl SlideEditor {
         cx: &mut Context<Self>,
     ) -> (String, Option<Command>, String) {
         match kind {
-            AiDocKind::Xlsx if call.function.name == "create_scatter_chart" => {
-                match self.stage_ai_scatter_chart(&call.function.arguments, pending) {
-                    Ok(command) => (json!({ "ok": true }).to_string(), Some(command), "✓ create_scatter_chart".into()),
-                    Err(error) => (json!({ "error": error }).to_string(), None, format!("✗ create_scatter_chart: {error}")),
+            AiDocKind::Xlsx if call.function.name == "create_chart" => {
+                match self.stage_ai_chart(&call.function.arguments, pending) {
+                    Ok(command) => (json!({ "ok": true }).to_string(), Some(command), "✓ create_chart".into()),
+                    Err(error) => (json!({ "error": error }).to_string(), None, format!("✗ create_chart: {error}")),
                 }
             }
             AiDocKind::Xlsx => self.execute_xlsx_tool(call, cx),
@@ -1392,8 +1392,8 @@ impl SlideEditor {
         }
     }
 
-    fn stage_ai_scatter_chart(&mut self, arguments: &str, pending: &[Command]) -> Result<Command, String> {
-        let args: ScatterChartArgs = serde_json::from_str(arguments)
+    fn stage_ai_chart(&mut self, arguments: &str, pending: &[Command]) -> Result<Command, String> {
+        let args: ChartArgs = serde_json::from_str(arguments)
             .map_err(|error| format!("invalid arguments: {error}"))?;
         // The assistant applies the turn as a single edit. The chart can already use cells written earlier in that turn.
         let mut work = self.presentation().clone();
@@ -1406,7 +1406,7 @@ impl SlideEditor {
         let data_slide = work.slide(data_id).ok_or("data sheet not found")?;
         let name = data_slide.name.as_deref().ok_or("data sheet has no name")?;
         let data = sheet_of_slide(data_slide).ok_or("data sheet not found")?;
-        let refs = args.refs(name, data)?;
+        let refs = args.refs(&work, name, data)?;
         let destination_slide = work.slide(destination).ok_or("destination sheet not found")?;
         let (sheet, origin) = destination_slide.shapes.iter().find_map(|shape| {
             if let ShapeKind::Sheet(sheet) = &shape.kind { Some((sheet, shape.frame)) } else { None }
@@ -1421,7 +1421,7 @@ impl SlideEditor {
             }
         };
         let id = self.document.ids().new_shape_id();
-        let mut shape = source.new_sheet_chart(&work, destination, id, frame, ibis_formats::NewChartKind::Scatter, refs)
+        let mut shape = source.new_sheet_chart(&work, destination, id, frame, args.kind(), refs)
             .map_err(|error| error.to_string())?;
         if let ShapeKind::Chart(chart) = &mut shape.kind {
             args.label(chart);

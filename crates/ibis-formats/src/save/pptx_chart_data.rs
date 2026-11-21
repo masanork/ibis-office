@@ -12,7 +12,7 @@
 //! elements (`pptx_chart::GROUP_ELEMENTS`) and their `c:ser`, as the model's
 //! groups and series are.
 
-use ibis_doc_model::{CellRange, Chart, Number, Presentation, ShapeKind, Sheet, SheetCell};
+use ibis_doc_model::{CellRange, CellValue, Chart, Number, Presentation, ShapeKind, Sheet, SheetCell};
 use ibis_ooxml::{NodeId, Package, XmlDocument};
 
 use super::pptx::{next_part_name, relative};
@@ -1188,4 +1188,164 @@ mod tests {
         let odd = vec![SeriesRefs { name: None, categories: None, values: Some("Sheet1!$B$2:$B$3".into()), ..Default::default() }];
         assert_eq!(grown_refs(&book, &odd), odd);
     }
+}
+
+/// A chartEx chart over one column: its heading (if text) names the series, the numbers below are its values.
+fn ex_refs_of_column(current: &ibis_doc_model::Presentation, sheet: &str, range: CellRange) -> Option<Vec<SeriesRefs>> {
+    if range.last_column != range.first_column {
+        return None;
+    }
+    let model = sheet_of(current, sheet)?;
+    let heading = matches!(model.cell(range.first_row, range.first_column).map(|c| &c.value), Some(ibis_doc_model::CellValue::Text(_)));
+    let first = range.first_row + u32::from(heading);
+    if first > range.last_row {
+        return None;
+    }
+    let one = |r0: u32, r1: u32| format_ref(sheet, CellRange { first_row: r0, last_row: r1, ..range });
+    Some(vec![SeriesRefs { name: heading.then(|| one(range.first_row, range.first_row)), categories: None, values: Some(one(first, range.last_row)), ..Default::default() }])
+}
+
+/// A hierarchy for a treemap or a sunburst: a column of text for each level, the last column the sizes, under a
+/// heading row if the sizes' heading is text. The categories are all the columns before the last.
+fn ex_refs_of_hierarchy(current: &ibis_doc_model::Presentation, sheet: &str, range: CellRange) -> Option<Vec<SeriesRefs>> {
+    if range.last_column <= range.first_column {
+        return None;
+    }
+    let model = sheet_of(current, sheet)?;
+    let size_column = range.last_column;
+    let heading = matches!(model.cell(range.first_row, size_column).map(|c| &c.value), Some(ibis_doc_model::CellValue::Text(_)));
+    let first = range.first_row + u32::from(heading);
+    if first > range.last_row {
+        return None;
+    }
+    let sizes_are_numbers = (first..=range.last_row).all(|r| matches!(model.cell(r, size_column).map(|c| &c.value), Some(ibis_doc_model::CellValue::Number(_)) | None));
+    if !sizes_are_numbers {
+        return None;
+    }
+    let part = |r0: u32, c0: u32, r1: u32, c1: u32| format_ref(sheet, CellRange { first_row: r0, first_column: c0, last_row: r1, last_column: c1 });
+    Some(vec![SeriesRefs {
+        name: heading.then(|| part(range.first_row, size_column, range.first_row, size_column)),
+        categories: Some(part(first, range.first_column, range.last_row, size_column - 1)),
+        values: Some(part(first, size_column, range.last_row, size_column)),
+        ..Default::default()
+    }])
+}
+
+/// Fallback series references for any range that has at least one numeric cell (#137).
+/// Handles single-column, single-row, headerless numeric ranges, and repeats columns when a chart kind
+/// (such as Bubble or Stock) requires multiple value series.
+fn fallback_series_refs(
+    current: &ibis_doc_model::Presentation,
+    sheet: &str,
+    range: CellRange,
+    kind: NewChartKind,
+    by_columns: bool,
+) -> Option<Vec<SeriesRefs>> {
+    let model = sheet_of(current, sheet)?;
+    let is_number = |r: u32, c: u32| matches!(model.cell(r, c).map(|x| &x.value), Some(CellValue::Number(_)));
+    let has_any_number = (range.first_row..=range.last_row).any(|r| (range.first_column..=range.last_column).any(|c| is_number(r, c)));
+    if !has_any_number {
+        return None;
+    }
+    let (r0, c0, r1, c1) = (range.first_row, range.first_column, range.last_row, range.last_column);
+    let one = |ra: u32, ca: u32, rb: u32, cb: u32| format_ref(sheet, CellRange { first_row: ra, first_column: ca, last_row: rb, last_column: cb });
+
+    if by_columns {
+        let has_header = r1 > r0 && (c0..=c1).any(|c| !is_number(r0, c)) && (c0..=c1).any(|c| (r0 + 1..=r1).any(|r| is_number(r, c)));
+        let data_r0 = if has_header { r0 + 1 } else { r0 };
+        let has_cat_col = c1 > c0 && (data_r0..=r1).all(|r| !is_number(r, c0));
+        let val_c0 = if has_cat_col { c0 + 1 } else { c0 };
+        let cat_ref = has_cat_col.then(|| one(data_r0, c0, r1, c0));
+        let mut num_cols: Vec<u32> = (val_c0..=c1).filter(|&c| (data_r0..=r1).any(|r| is_number(r, c))).collect();
+        if num_cols.is_empty() {
+            num_cols.push(val_c0);
+        }
+        let needed = match kind {
+            NewChartKind::StockHLC => 3,
+            NewChartKind::StockOHLC | NewChartKind::StockVHLC => 4,
+            NewChartKind::StockVOHLC => 5,
+            NewChartKind::ComboColumnLine | NewChartKind::ComboColumnLineSecondaryAxis | NewChartKind::ComboAreaColumn => 2,
+            _ if kind.is_chart_ex() => 1,
+            _ => num_cols.len(),
+        };
+        let mut out = Vec::with_capacity(needed.max(1));
+        for k in 0..needed.max(1) {
+            let c = num_cols[k % num_cols.len()];
+            let val_ref = one(data_r0, c, r1, c);
+            let size_ref = if matches!(kind, NewChartKind::Bubble) {
+                let sc = num_cols.get(k + 1).copied().unwrap_or(c);
+                Some(one(data_r0, sc, r1, sc))
+            } else {
+                None
+            };
+            out.push(SeriesRefs {
+                name: has_header.then(|| one(r0, c, r0, c)),
+                categories: cat_ref.clone(),
+                values: Some(val_ref),
+                sizes: size_ref,
+            });
+        }
+        Some(out)
+    } else {
+        let has_header = c1 > c0 && !is_number(r0, c0) && (c0 + 1..=c1).any(|c| is_number(r0, c));
+        let data_c0 = if has_header { c0 + 1 } else { c0 };
+        let val_ref = one(r0, data_c0, r0, c1);
+        let needed = match kind {
+            NewChartKind::StockHLC => 3,
+            NewChartKind::StockOHLC | NewChartKind::StockVHLC => 4,
+            NewChartKind::StockVOHLC => 5,
+            NewChartKind::ComboColumnLine | NewChartKind::ComboColumnLineSecondaryAxis | NewChartKind::ComboAreaColumn => 2,
+            _ => 1,
+        };
+        let mut out = Vec::with_capacity(needed);
+        for _ in 0..needed {
+            out.push(SeriesRefs {
+                name: has_header.then(|| one(r0, c0, r0, c0)),
+                categories: None,
+                values: Some(val_ref.clone()),
+                sizes: matches!(kind, NewChartKind::Bubble).then(|| val_ref.clone()),
+            });
+        }
+        Some(out)
+    }
+}
+
+/// The cells a new chart of `kind` is read from, as the series it shows (as 挿入 > グラフ inserts it, and the
+/// recommended-charts panel and the menu's pictures draw it).
+pub fn refs_for_new_chart(current: &ibis_doc_model::Presentation, sheet: &str, range: CellRange, kind: NewChartKind) -> Vec<SeriesRefs> {
+    // Prefer the orientation supported by the cell types, then point count.
+    let scatter = matches!(kind, NewChartKind::Scatter | NewChartKind::ScatterSmooth | NewChartKind::ScatterLines);
+    // X-Y charts and stock charts read their own layout (X column, date, high, low, close), so Excel's rule applies: in columns unless the range is wider than tall.
+    let by_columns = if scatter || matches!(kind, NewChartKind::Bubble | NewChartKind::StockHLC | NewChartKind::StockOHLC | NewChartKind::StockVHLC | NewChartKind::StockVOHLC) {
+        range.last_row - range.first_row >= range.last_column - range.first_column
+    } else {
+        preferred_series_columns(current,sheet,range)
+    };
+    // A scatter chart: the first column the X values, a heading row of text above numbers.
+    let bubble = matches!(kind, NewChartKind::Bubble);
+    let is_stock = matches!(kind, NewChartKind::StockHLC | NewChartKind::StockOHLC | NewChartKind::StockVHLC | NewChartKind::StockVOHLC);
+    let refs = if matches!(kind, NewChartKind::Treemap | NewChartKind::Sunburst) {
+        // A hierarchy: the columns of text are its levels, the last column the sizes.
+        ex_refs_of_hierarchy(current, sheet, range)
+    } else if kind.is_chart_ex() {
+        // One series: the categories (not for a histogram) and the values; or one column of numbers.
+        refs_for_range(current, sheet, range, true).or_else(|| ex_refs_of_column(current, sheet, range))
+    } else if bubble {
+        bubble_refs_for_range(current, sheet, range, by_columns)
+            .or_else(|| bubble_refs_for_range(current, sheet, range, !by_columns))
+    } else if is_stock {
+        stock_refs_for_range(current, sheet, range, kind, by_columns)
+            .or_else(|| stock_refs_for_range(current, sheet, range, kind, !by_columns))
+    } else {
+        if scatter {
+            scatter_refs_for_range(current, sheet, range, by_columns)
+                .or_else(|| scatter_refs_for_range(current, sheet, range, !by_columns))
+        } else {
+            None
+        }
+        .or_else(|| refs_for_range(current, sheet, range, by_columns))
+        .or_else(|| refs_for_range(current, sheet, range, !by_columns))
+    }
+    .or_else(|| fallback_series_refs(current, sheet, range, kind, by_columns));
+    refs.unwrap_or_default()
 }
