@@ -5260,6 +5260,80 @@ fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
     (left < right).then_some((left, right))
 }
 
+/// Known workbook omissions from Markdown export. Reports locations without cell contents.
+pub fn workbook_markdown_omissions(p: &Presentation) -> Vec<serde_json::Value> {
+    use ibis_doc_model::{SheetState, cell_name, sheet_calc::sheet_of_slide};
+    use serde_json::json;
+
+    let mut diagnostics = Vec::new();
+    let Some(book) = &p.workbook else {
+        return diagnostics;
+    };
+    for sheet_ref in &book.sheets {
+        let name = &sheet_ref.name;
+        if sheet_ref.other {
+            diagnostics.push(json!({"code": "non_worksheet_omitted", "source": {"sheet": name}}));
+            continue;
+        }
+        if sheet_ref.state != SheetState::Visible {
+            diagnostics.push(json!({"code": "hidden_sheet_omitted", "source": {"sheet": name}}));
+            continue;
+        }
+        let Some(sheet) = sheet_ref.slide.and_then(|id| p.slide(id)).and_then(sheet_of_slide) else {
+            continue;
+        };
+
+        for (code, ranges) in [
+            (
+                "hidden_rows_omitted",
+                hidden_axis_ranges(&sheet.hidden_rows, &sheet.rows, |row| (row + 1).to_string()),
+            ),
+            (
+                "hidden_columns_omitted",
+                hidden_axis_ranges(&sheet.hidden_columns, &sheet.columns, crate::xls_formula::column_letters),
+            ),
+        ] {
+            if !ranges.is_empty() {
+                diagnostics.push(json!({"code": code, "source": {"sheet": name, "ranges": ranges}}));
+            }
+        }
+
+        let ranges: Vec<_> = sheet.validations.iter().flat_map(|rule| &rule.ranges).map(|range| {
+            let first = cell_name(range.first_column, range.first_row);
+            let last = cell_name(range.last_column, range.last_row);
+            if first == last { first } else { format!("{first}:{last}") }
+        }).collect();
+        if !sheet.validations.is_empty() {
+            diagnostics.push(json!({
+                "code": "data_validation_omitted",
+                "source": {"sheet": name, "ranges": ranges},
+            }));
+        }
+    }
+    diagnostics
+}
+
+fn hidden_axis_ranges(
+    hidden: &std::collections::BTreeMap<u32, ibis_doc_model::Emu>,
+    sizes: &[ibis_doc_model::Emu],
+    label: impl Fn(u32) -> String,
+) -> Vec<String> {
+    let zero_sizes = sizes.iter().enumerate()
+        .filter(|&(_, size)| *size == 0)
+        .map(|(index, _)| index as u32);
+    let mut indices: Vec<_> = hidden.keys().copied().chain(zero_sizes).collect();
+    indices.sort_unstable();
+    indices.dedup();
+
+    let mut ranges = Vec::new();
+    for run in indices.chunk_by(|left, right| *right - *left == 1) {
+        let first = run[0];
+        let last = run[run.len() - 1];
+        ranges.push(format!("{}:{}", label(first), label(last)));
+    }
+    ranges
+}
+
 /// Markdown and original sheet coordinates, with display text and stored values kept separate.
 pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> {
     use ibis_doc_model::CellValue;
@@ -5284,15 +5358,17 @@ pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> 
             "formula": cell.and_then(|cell| cell.formula.as_deref()),
         }));
     })?;
+    let mut diagnostics = vec![
+        json!({ "code": "visible_sheet_cells_only" }),
+        json!({ "code": "first_exported_row_used_as_markdown_header" }),
+    ];
+    diagnostics.extend(workbook_markdown_omissions(p));
     Ok(json!({
         "version": 1,
         "kind": "workbook",
         "markdown": markdown,
         "cells": cells,
-        "diagnostics": [
-            { "code": "visible_sheet_cells_only" },
-            { "code": "first_exported_row_used_as_markdown_header" },
-        ],
+        "diagnostics": diagnostics,
     }))
 }
 
@@ -8615,7 +8691,34 @@ xychart-beta
         sheet.hidden_rows.insert(3, sheet.default_row);
         sheet.hidden_columns.insert(2, sheet.default_column);
 
+        sheet.hidden_rows.insert(7, sheet.default_row);
+        sheet.hidden_rows.insert(8, sheet.default_row);
+        sheet.validations.push(ibis_doc_model::Validation {
+            ranges: vec![
+                ibis_doc_model::CellRange {
+                    first_row: 2, first_column: 1, last_row: 4, last_column: 3,
+                },
+                ibis_doc_model::CellRange {
+                    first_row: 9, first_column: 4, last_row: 9, last_column: 4,
+                },
+            ],
+            formula1: Some("PRIVATE_VALIDATION_EXPRESSION".into()),
+            ..Default::default()
+        });
+        let book = Arc::make_mut(workbook.workbook.as_mut().unwrap());
+        let mut hidden = book.sheets[0].clone();
+        hidden.name = "非表示".into();
+        hidden.state = ibis_doc_model::SheetState::VeryHidden;
+        book.sheets.push(hidden);
+
         let ai = export_ai_workbook(&workbook).unwrap();
+        assert_eq!(ai["diagnostics"].as_array().unwrap()[2..], [
+            serde_json::json!({"code": "hidden_rows_omitted", "source": {"sheet": "Visible", "ranges": ["4:4", "8:9"]}}),
+            serde_json::json!({"code": "hidden_columns_omitted", "source": {"sheet": "Visible", "ranges": ["C:C"]}}),
+            serde_json::json!({"code": "data_validation_omitted", "source": {"sheet": "Visible", "ranges": ["B3:D5", "E10"]}}),
+            serde_json::json!({"code": "hidden_sheet_omitted", "source": {"sheet": "非表示"}}),
+        ]);
+        assert!(!ai.to_string().contains("PRIVATE_VALIDATION_EXPRESSION"));
         let markdown = ai["markdown"].as_str().unwrap();
         assert!(!markdown.contains("HIDDEN"));
         assert!(markdown.contains("| H1 |  | H3 |"));

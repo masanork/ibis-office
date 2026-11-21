@@ -722,6 +722,9 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 let out_path = out_dir.join(format!("{stem}.md"));
                 std::fs::write(&out_path, md.as_bytes())
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
+                for diagnostic in ibis_formats::markdown::workbook_markdown_omissions(&presentation) {
+                    eprintln!("{diagnostic}");
+                }
             }
         }
         return Ok(());
