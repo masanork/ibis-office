@@ -79,8 +79,11 @@ impl SlideEditor {
     /// Show `opened`, a new file named `name` that has no path yet.
     pub(crate) fn show_new(&mut self, opened: ibis_formats::Opened, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.load(opened.presentation, name, window, cx);
-        #[cfg(target_os = "android")]
-        { self.phone_editing = true; }
+        #[cfg(any(target_os = "android", target_family = "wasm"))]
+        {
+            self.phone_editing = true;
+            self.update_phone_view(Self::narrow_phone_editor(window), window, cx);
+        }
         self.source = Some(std::sync::Arc::new(opened.source));
         // (A document gets its default design; a new presentation opens without the speaker notes.)
         with_format!(self, new_file_shown(self, cx));

@@ -3,7 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
 import init, {
-  configure_fonts, enable_dynamic_fonts, enable_face_fonts, add_dynamic_font, add_face_font, set_phone_viewer,
+  configure_fonts, enable_dynamic_fonts, enable_face_fonts, add_dynamic_font, add_face_font, set_phone_viewer, set_phone_editor,
   run,
   set_embed_options,
   set_font_prompt,
@@ -133,13 +133,14 @@ function flag(params: URLSearchParams, name: string): boolean | undefined {
   return !(value === '0' || value === 'false' || value === 'no' || value === 'off');
 }
 
+const standaloneEditor = document.body.hasAttribute('data-phone-editor');
+
 /** The embedding options: JavaScript's over the URL's, and everything off by default. */
 function embedOptions(): Required<Omit<EmbedOptions, 'eventTarget' | 'chunk'>> & Pick<EmbedOptions, 'eventTarget'> {
   const params = new URLSearchParams(location.search);
   const js = window.ibisOfficeOptions ?? {};
-  // The standalone phone experience starts as a viewer. Embedded pages and
-  // explicit URL or JavaScript options retain their existing behavior.
-  const phoneViewer = window.self === window.top && matchMedia('(max-width: 600px)').matches
+  // The standalone editor owns its phone mode in the shell.
+  const phoneViewer = !standaloneEditor && window.self === window.top && matchMedia('(max-width: 600px)').matches
     && js.view === undefined && !params.has('view');
   const view = js.view ?? flag(params, 'view') ?? phoneViewer;
   return {
@@ -931,7 +932,10 @@ if (!('gpu' in navigator)) {
     // the icon loader fetches with reqwest, which rejects relative URLs.
     const base = new URL('.', location.href).href.replace(/\/$/, '');
     set_embed_options(embed.close, embed.download, embed.view, embed.menuBar, embed.toolBar);
-    set_phone_viewer(window.self === window.top && embed.view && !embed.menuBar && !embed.toolBar);
+    const topLevel = window.self === window.top;
+    set_phone_viewer(topLevel && embed.view && !embed.menuBar && !embed.toolBar);
+    set_phone_editor(topLevel && !hostLoader && standaloneEditor
+      && !embed.view && !embed.close && !embed.download);
     set_font_prompt(embed.fd);
     if (hostSession) {
       set_host_mode(resolveOptionUrls(hostSession.options, document.baseURI), [...hostSession.capabilities]);

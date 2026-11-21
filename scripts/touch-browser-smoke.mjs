@@ -222,21 +222,22 @@ try {
   assert(forward.score > 0.5 && forward.foreground > 1000, `phone swipe up must move document pixels upward: ${JSON.stringify(forward)}`);
   assert(reverse.score > 0.5 && reverse.foreground > 1000, `phone swipe down must move document pixels downward: ${JSON.stringify(reverse)}`);
   assert(stationary.score < 0.5, `stationary document pixels must not count as a scroll: ${JSON.stringify(stationary)}`);
-  // 0.8.7 folds menus that do not fit into the arrow after the visible menus.
+  // The menu overflow is available after switching the phone to editing.
+  await tap(phoneTouch, 8, 350, 24);
+  await phone.waitForTimeout(1000);
   const menuPopup = () => phone.screenshot({ clip: { x: 150, y: 66, width: 230, height: 300 } });
   const beforePopup = await menuPopup();
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
   // The English system font on Linux makes the preceding menu labels narrower.
   const overflowX = process.platform === 'linux' ? 331 : 354;
-  await tap(phoneTouch, 9, overflowX, 49);
+  await tap(phoneTouch, 9, overflowX, 61);
   await phone.waitForTimeout(1000);
   assert(!beforePopup.equals(await menuPopup()), 'the overflow menu must open on touch');
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
   assert.deepEqual(failures, [], 'phone interactions must not panic');
   await phone.context().close();
 
-  // A standalone phone now starts in a compact read-only viewer. Its open
-  // button must still invoke the browser file picker.
+  // A standalone phone opens files in viewing mode and can switch to editing.
   const viewer = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   viewer.on('pageerror', error => failures.push(error.message));
   await viewer.addInitScript(version => {
@@ -249,17 +250,32 @@ try {
   await viewer.waitForTimeout(1000);
   const viewerCdp = await viewer.context().newCDPSession(viewer);
   const viewerTouch = (type, touchPoints) => viewerCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
-  await tap(viewerTouch, 99, 120, 150);
-  await viewer.waitForTimeout(300);
   const viewerMirror = viewer.locator('textarea');
-  if (await viewerMirror.count()) {
-    assert.equal(await viewerMirror.first().getAttribute('inputmode'), 'none', 'viewing must not open the virtual keyboard');
-  }
+  await tap(viewerTouch, 99, 120, 150);
+  assert.equal(await viewerMirror.getAttribute('inputmode'), 'none', 'viewing must not open the virtual keyboard');
   const viewerChooser = viewer.waitForEvent('filechooser', { timeout: 15_000 });
-  await tap(viewerTouch, 100, 350, 24);
+  await tap(viewerTouch, 100, 260, 24);
   await (await viewerChooser).setFiles('www/samples/sorane-welcome.docx');
   await viewer.waitForTimeout(1000);
-  assert.deepEqual(failures, [], 'phone viewer must open another file without a panic');
+
+  await tap(viewerTouch, 101, 350, 24); // Edit
+  await viewer.waitForTimeout(500);
+  await tap(viewerTouch, 102, 120, 200);
+  await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'text');
+  await viewer.keyboard.insertText('Mode switch test');
+  await viewer.waitForFunction(() => document.querySelector('textarea')?.value.includes('Mode switch test'));
+
+  await tap(viewerTouch, 103, 350, 24); // Viewing
+  await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'none');
+  await tap(viewerTouch, 104, 120, 150);
+  assert.equal(await viewerMirror.getAttribute('inputmode'), 'none', 'returning to viewing must suppress the keyboard');
+
+  await tap(viewerTouch, 105, 350, 24); // Edit again
+  await viewer.waitForTimeout(500);
+  await tap(viewerTouch, 106, 120, 200);
+  await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'text');
+  assert((await viewerMirror.inputValue()).includes('Mode switch test'), 'edits must survive a round trip through viewing mode');
+  assert.deepEqual(failures, [], 'switching phone modes must not panic');
   await viewer.context().close();
 
   // Open from the file picker, whose source is retained for the download action.

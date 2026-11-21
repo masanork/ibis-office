@@ -24,6 +24,8 @@ static VIEW_ONLY: AtomicBool = AtomicBool::new(false);
 static SHOW_MENU_BAR: AtomicBool = AtomicBool::new(true);
 static SHOW_TOOL_BAR: AtomicBool = AtomicBool::new(true);
 static PHONE_VIEWER: AtomicBool = AtomicBool::new(false);
+#[cfg(target_family = "wasm")]
+static PHONE_EDITOR: AtomicBool = AtomicBool::new(false);
 static FONT_PROMPT: AtomicBool = AtomicBool::new(true);
 
 /// Whether the browser version leads the user to the fonts that can be downloaded (`?fd=0` turns it off; default on): the
@@ -73,8 +75,21 @@ pub fn set_phone_viewer(enabled: bool) {
     PHONE_VIEWER.store(enabled, Ordering::Relaxed);
 }
 
+#[cfg(target_family = "wasm")]
 pub(crate) fn phone_viewer() -> bool {
     PHONE_VIEWER.load(Ordering::Relaxed)
+}
+
+/// Enable the phone-sized viewing/editing layout in the standalone editor.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen]
+pub fn set_phone_editor(enabled: bool) {
+    PHONE_EDITOR.store(enabled, Ordering::Relaxed);
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) fn phone_editor() -> bool {
+    PHONE_EDITOR.load(Ordering::Relaxed)
 }
 
 #[allow(dead_code)]
