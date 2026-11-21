@@ -2009,6 +2009,7 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
     let mut col_chars: HashMap<u32, f64> = HashMap::new();
     let mut hidden_columns = std::collections::BTreeMap::new();
     let mut spills = std::collections::BTreeMap::new();
+    let mut fixed_arrays = std::collections::BTreeMap::new();
     let mut data_tables: Vec<ibis_doc_model::DataTable> = Vec::new();
     let mut outline_rows = std::collections::BTreeMap::new();
     let mut outline_columns = std::collections::BTreeMap::new();
@@ -2223,17 +2224,25 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
                 text = String::new();
             }
             let kind = CellKind::of(&value);
-            // A dynamic array formula (`cm` with an array formula): the area its result fills.
-            if unqualified_attr(c, "cm").and_then(metadata_index).is_some_and(|index| dynamic_metadata.contains(&index))
-                && c.has_tag_name(("http://schemas.openxmlformats.org/spreadsheetml/2006/main", "c"))
+            // Excel uses the same formula type for fixed arrays and dynamic
+            // arrays. Only the latter carry a recognized dynamic metadata record.
+            if c.has_tag_name(("http://schemas.openxmlformats.org/spreadsheetml/2006/main", "c"))
                 && let Some(f) = elements(c).find(|n| n.has_tag_name(("http://schemas.openxmlformats.org/spreadsheetml/2006/main", "f")))
                 && f.has_tag_name(("http://schemas.openxmlformats.org/spreadsheetml/2006/main", "f"))
                 && unqualified_attr(f, "t") == Some("array")
                 && let Some(range) = unqualified_attr(f, "ref").and_then(parse_range)
             {
-                spills.insert((row_index, column), range);
+                let anchor = (row_index, column);
+                if unqualified_attr(c, "cm").and_then(metadata_index).is_some_and(|index| dynamic_metadata.contains(&index)) {
+                    spills.insert(anchor, range);
+                } else if (range.first_row, range.first_column) == anchor
+                    && range.last_row <= ibis_calc::formula::MAX_ROW
+                    && range.last_column <= ibis_calc::formula::MAX_COLUMN
+                {
+                    fixed_arrays.insert(anchor, range);
+                }
             }
-            if value == CellValue::Error(CellError::Spill) {
+            if value == CellValue::Error(CellError::Spill) && !fixed_arrays.contains_key(&(row_index, column)) {
                 spills.entry((row_index, column)).or_insert(CellRange {
                     first_row: row_index,
                     first_column: column,
@@ -2584,6 +2593,7 @@ pub(crate) fn read_sheet(root: Node, styles: &Styles, strings: &[String], extras
         widened_columns: Default::default(),
         hidden_columns,
         spills,
+        fixed_arrays,
         conditional: read_conditional(root, styles, colors),
         conditional_x14: read_conditional_x14_only(root, colors),
         validations: read_validations(root),

@@ -170,6 +170,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
             widened_columns: Default::default(),
                             hidden_columns: Default::default(),
                             spills: Default::default(),
+                            fixed_arrays: Default::default(),
                             validations: Vec::new(),
                             hyperlinks: Vec::new(),
                             outline_rows: Default::default(),
@@ -1042,6 +1043,7 @@ impl Writer<'_> {
             widened_columns: Default::default(),
             hidden_columns: Default::default(),
             spills: Default::default(),
+            fixed_arrays: Default::default(),
             frozen: None,
             split: None,
             protection: None,
@@ -1233,6 +1235,17 @@ impl Writer<'_> {
             }
         }
         changes.sort_by_key(|c| (c.0, c.1));
+        // Existing fixed arrays remain in the source XML. A generated sheet
+        // or a sheet copy can add them when writing the anchor formula.
+        if old.fixed_arrays.iter().any(|(anchor, range)| new.fixed_arrays.get(anchor) != Some(range))
+            || new.fixed_arrays.keys().any(|&(row, column)| {
+                !old.fixed_arrays.contains_key(&(row, column))
+                    && (new.cell(row, column).is_none_or(|cell| cell.formula.is_none())
+                        || old.cell(row, column).is_some_and(|cell| cell.formula.is_some()))
+            })
+        {
+            return Err(unsupported("固定範囲配列数式の変更"));
+        }
         // Dynamic arrays whose area changed (their cells may not have).
         let respilled: Vec<(u32, u32)> = new.spills.iter().filter(|(a, r)| old.spills.get(a) != Some(r)).map(|(a, _)| *a).filter(|a| !changes.iter().any(|c| (c.0, c.1) == *a)).collect();
         if changes.is_empty() && respilled.is_empty() && old.data_tables == new.data_tables {
@@ -1364,7 +1377,15 @@ impl Writer<'_> {
                             sheet.doc.set_text(f, &file_formula_in(&self.books, formula, table_at(new, row, column))?);
                             if !new.spills.contains_key(&(row, column)) { sheet.doc.remove_attr(c, "cm"); }
                             if let Some(index) = activated_metadata.get(&(row,column)) { sheet.doc.set_attr(c,"cm",index); }
-                            write_dynamic(&mut sheet, c, f, new, row, column, cm.as_deref(), &self.multi_names);
+                            if let Some(range) = new.fixed_arrays.get(&(row, column)) {
+                                sheet.doc.set_attr(f, "t", "array");
+                                let anchor = cell_name(column, row);
+                                let end = cell_name(range.last_column, range.last_row);
+                                let reference = if anchor == end { anchor } else { format!("{anchor}:{end}") };
+                                sheet.doc.set_attr(f, "ref", &reference);
+                            } else {
+                                write_dynamic(&mut sheet, c, f, new, row, column, cm.as_deref(), &self.multi_names);
+                            }
                         } else {
                             if let Some(f) = sheet.formula(c) { sheet.doc.detach(f); }
                             if let Some(Some(index)) = literal_metadata.get(&(row,column)) { sheet.doc.set_attr(c,"cm",index); }

@@ -238,6 +238,19 @@ fn change_sheet(sheet: &mut Sheet, axis: Axis, at: u32, count: i64) {
             Some(((row, column), r))
         })
         .collect();
+    sheet.fixed_arrays = std::mem::take(&mut sheet.fixed_arrays).into_values()
+        .filter_map(|range| {
+            // Deleting the anchor removes its formula. The remaining cells
+            // have no fixed array without it.
+            let anchor = match axis {
+                Axis::Rows => range.first_row,
+                Axis::Columns => range.first_column,
+            };
+            move_index(anchor, at, count)?;
+            let range = move_range(range, axis, at, count)?;
+            Some(((range.first_row, range.first_column), range))
+        })
+        .collect();
     let outline = match axis {
         Axis::Rows => &mut sheet.outline_rows,
         Axis::Columns => &mut sheet.outline_columns,

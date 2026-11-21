@@ -823,16 +823,22 @@ fn markdown_workbook_cells(
                         let mut trimmed = txt.trim();
                         let mut formula = None;
                         let mut spill_end = None;
+                        let mut fixed_end = None;
                         if named && !trimmed.ends_with(XLSX_TEXT_CELL_MARKER)
                             && let Some((display, encoded)) = trimmed.strip_suffix(XLSX_CELL_MARKER_END)
                             .and_then(|text| text.rsplit_once(XLSX_FORMULA_CELL_MARKER))
                             .filter(|(_, encoded)| !encoded.contains(XLSX_CELL_MARKER_END))
                         {
-                            let invalid = || Error::new("xlsx-formula の数式またはスピル範囲が不正です");
+                            let invalid = || Error::new("xlsx-formula の数式または配列範囲が不正です");
                             let value: serde_json::Value = serde_json::from_str(encoded.trim()).map_err(|_| invalid())?;
                             let expression = if let Some(object) = value.as_object().filter(|object| object.len() == 2) {
-                                spill_end = Some(object.get("spill").and_then(serde_json::Value::as_str)
-                                    .and_then(ibis_doc_model::ai_sheet::parse_cell_ref).ok_or_else(invalid)?);
+                                let end = |key| object.get(key).and_then(serde_json::Value::as_str)
+                                    .and_then(ibis_doc_model::ai_sheet::parse_cell_ref);
+                                spill_end = end("spill");
+                                fixed_end = end("fixedArray");
+                                if spill_end.is_none() && fixed_end.is_none() {
+                                    return Err(invalid());
+                                }
                                 object.get("formula").and_then(serde_json::Value::as_str)
                             } else {
                                 value.as_str()
@@ -902,6 +908,14 @@ fn markdown_workbook_cells(
                                 first_row: row, first_column: column, last_row, last_column,
                             });
                         }
+                        if let Some((last_row, last_column)) = fixed_end {
+                            if last_row < row || last_column < column {
+                                return Err(Error::new("xlsx-formula の固定配列範囲が不正です"));
+                            }
+                            sheet.fixed_arrays.insert((row, column), CellRange {
+                                first_row: row, first_column: column, last_row, last_column,
+                            });
+                        }
                         cells.push(SheetCell {
                             row,
                             column,
@@ -921,7 +935,48 @@ fn markdown_workbook_cells(
         }
     }
 
+    if !sheet.fixed_arrays.is_empty() {
+        validate_markdown_array_ranges(&cells, sheet)?;
+    }
     Ok(cells)
+}
+
+fn validate_markdown_array_ranges(
+    cells: &[ibis_doc_model::SheetCell],
+    sheet: &ibis_doc_model::Sheet,
+) -> Result<(), Error> {
+    use ibis_doc_model::CellRange;
+    use std::{cmp::Reverse, collections::{BTreeMap, BinaryHeap}};
+
+    // Each ordinary formula occupies just its own cell. Include it so
+    // an imported array cannot claim a second formula as a cached result.
+    let ranges = cells.iter().filter(|cell| cell.formula.is_some()).map(|cell| {
+        let (row, column) = (cell.row, cell.column);
+        sheet.fixed_arrays.get(&(row, column)).or_else(|| sheet.spills.get(&(row, column)))
+            .copied().unwrap_or(CellRange {
+                first_row: row, first_column: column, last_row: row, last_column: column,
+            })
+    });
+    let mut columns = BTreeMap::<u32, u32>::new();
+    let mut expires = BinaryHeap::<Reverse<(u32, u32)>>::new();
+    // Markdown tables yield cells in row-major order.
+    for range in ranges {
+        while let Some(&Reverse((last_row, start_column))) = expires.peek() {
+            if last_row >= range.first_row {
+                break;
+            }
+            expires.pop();
+            columns.remove(&start_column);
+        }
+        if columns.range(..=range.last_column).next_back()
+            .is_some_and(|(_, &end)| end >= range.first_column)
+        {
+            return Err(Error::new("配列数式の範囲が別の数式と重複しています"));
+        }
+        columns.insert(range.first_column, range.last_column);
+        expires.push(Reverse((range.last_row, range.first_column)));
+    }
+    Ok(())
 }
 
 /// Export a `.docx` file's bytes to deterministic Rich Markdown.
@@ -1143,6 +1198,11 @@ fn export_workbook_markdown_with_positions(
                         push_xlsx_json_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &serde_json::json!({
                             "formula": formula,
                             "spill": end,
+                        }));
+                    } else if let Some(range) = sheet.fixed_arrays.get(&(r, c)) {
+                        push_xlsx_json_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &serde_json::json!({
+                            "formula": formula,
+                            "fixedArray": ibis_doc_model::cell_name(range.last_column, range.last_row),
                         }));
                     } else {
                         push_xlsx_string_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &formula);
@@ -9302,6 +9362,41 @@ xychart-beta
         for position in [(0, 5, 2), (1, 1, 0)] {
             assert!(recalculated.iter().any(|cell| cell.cell == position && cell.value == CellValue::Number(10.0)));
         }
+    }
+
+    #[test]
+    fn workbook_fixed_arrays_round_trip_without_dynamic_metadata() {
+        let input = r#"<!-- xlsx-sheet {"name":"配列","origin":"C3"} -->
+
+| 1 | 3 <!-- xlsx-formula:{"formula":"=C3:C4*3","fixedArray":"D4"} --> |
+| --- | --- |
+| 2 | 6 |
+
+<!-- xlsx-sheet "単一" -->
+
+| 3 <!-- xlsx-formula:{"formula":"=SUM({1,2})","fixedArray":"A1"} --> |
+| --- |
+"#;
+        let bytes = import_markdown_to_xlsx_bytes(input.as_bytes()).unwrap();
+        let workbook = crate::read(&bytes).unwrap();
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&workbook.slides[0]).unwrap();
+        assert_eq!(sheet.fixed_arrays[&(2, 3)], ibis_doc_model::CellRange {
+            first_row: 2, first_column: 3, last_row: 3, last_column: 3,
+        });
+        assert!(sheet.spills.is_empty());
+        let package = ibis_ooxml::Package::open(bytes.clone()).unwrap();
+        let xml = String::from_utf8(package.read("xl/worksheets/sheet1.xml").unwrap()).unwrap();
+        assert!(xml.contains(r#"t="array" ref="D3:D4""#));
+        assert!(!xml.contains(r#" cm="#));
+        let markdown = export_workbook_markdown(&workbook).unwrap();
+        assert!(markdown.contains(r#"xlsx-formula:{"fixedArray":"D4","formula":"=C3:C4*3"}"#));
+        assert!(markdown.contains(r#""fixedArray":"A1""#));
+        let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let rebuilt = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        assert_eq!(rebuilt.fixed_arrays, sheet.fixed_arrays);
+        assert_eq!(rebuilt.cell(3, 3).unwrap().value, ibis_doc_model::CellValue::Number(6.0));
+        assert!(import_markdown_to_xlsx_bytes(input.replace(r#""fixedArray":"D4""#, r#""fixedArray":"C4""#).as_bytes()).is_err());
+        assert!(import_markdown_to_xlsx_bytes(input.replace("| 2 | 6 |", r#"| 2 | 6 <!-- xlsx-formula:"=2*3" --> |"#).as_bytes()).is_err());
     }
 
     #[test]

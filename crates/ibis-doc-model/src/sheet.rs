@@ -976,6 +976,9 @@ pub struct Sheet {
     /// the cell shows `#SPILL!`, that area was blocked and holds nothing
     /// of it; otherwise its other cells hold the result's values.
     pub spills: std::collections::BTreeMap<(u32, u32), CellRange>,
+    /// Legacy array formulas, keyed by their anchor cell (row, column).
+    /// The range is fixed in the file and does not spill when recalculated.
+    pub fixed_arrays: std::collections::BTreeMap<(u32, u32), CellRange>,
     /// Conditional formats (`conditionalFormatting`), in the file's order.
     pub conditional: Vec<ConditionalFormat>,
     /// Rules only Excel 2010 has (`x14:cfRule` in the sheet's `extLst` that no rule of 2007 names: the icon sets
@@ -1086,6 +1089,7 @@ impl Default for Sheet {
             widened_columns: std::collections::BTreeSet::new(),
             hidden_columns: std::collections::BTreeMap::new(),
             spills: std::collections::BTreeMap::new(),
+            fixed_arrays: std::collections::BTreeMap::new(),
             conditional: Vec::new(),
             conditional_x14: Vec::new(),
             validations: Vec::new(),
