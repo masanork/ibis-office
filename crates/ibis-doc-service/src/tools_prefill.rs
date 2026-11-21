@@ -264,8 +264,31 @@ fn apply(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     if report["preview_id"] != expected {
         return Err(stale());
     }
-    let changes = report["changes"].as_array().ok_or_else(stale)?;
-    let targets = args["targets"]
+    let command = reviewed_prefill_command(&report, sheet, &args["targets"])?;
+    let targets = &args["targets"];
+    let id = args.str_arg("document_id")?;
+    let open = service.open_document(id)?;
+    if !open.fingerprint.still(&open.path) {
+        return Err(stale());
+    }
+    execute(open, vec![command])?;
+    Ok(edited(
+        id,
+        open,
+        json!({"applied_targets":targets}),
+        Vec::new(),
+    ))
+}
+
+/// Build the single undoable edit for explicit selections from a freshly checked preview.
+pub fn reviewed_prefill_command(
+    report: &Value,
+    sheet: SlideId,
+    targets: &Value,
+) -> Result<Command, ToolError> {
+    let invalid = || ToolError::invalid("invalid prefill plan");
+    let changes = report["changes"].as_array().ok_or_else(invalid)?;
+    let targets = targets
         .as_array()
         .filter(|targets| (1..=100).contains(&targets.len()))
         .ok_or_else(|| ToolError::invalid("select one or more ready targets"))?;
@@ -282,27 +305,13 @@ fn apply(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             .iter()
             .find(|change| change["target"] == name && change["status"] == "ready")
             .ok_or_else(|| ToolError::invalid("selected target is not ready in the preview"))?;
-        let cell = parse_range(change["cell"].as_str().ok_or_else(stale)?)?;
-        let value = literal_cell_value(&change["proposed_value"]).ok_or_else(stale)?;
+        let cell = parse_range(change["cell"].as_str().ok_or_else(invalid)?)?;
+        let value = literal_cell_value(&change["proposed_value"]).ok_or_else(invalid)?;
         edits.push(CellEdit {
             row: cell.first_row,
             column: cell.first_column,
             input: CellInput::Value(value),
         });
     }
-    let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
-    if !open.fingerprint.still(&open.path) {
-        return Err(stale());
-    }
-    execute(
-        open,
-        vec![Command::Sheet(SheetCommand::SetCells { sheet, edits })],
-    )?;
-    Ok(edited(
-        id,
-        open,
-        json!({"applied_targets":targets}),
-        Vec::new(),
-    ))
+    Ok(Command::Sheet(SheetCommand::SetCells { sheet, edits }))
 }

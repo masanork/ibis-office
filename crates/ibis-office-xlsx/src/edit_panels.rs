@@ -86,7 +86,7 @@ pub struct EditPanels {
     pub(crate) control_properties: Option<super::control_insert::ControlPropertiesPanel>,
     /// 開発 > SD-JWT の生成とプレビュー…
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    pub(crate) prefill_preview: Option<Result<serde_json::Value, String>>,
+    pub(crate) prefill_preview: Option<Result<super::prefill_panel::PrefillReview, String>>,
     pub(crate) sd_jwt: Option<super::sd_jwt_panel::SdJwtPanel>,
     /// 挿入 > 描画（インク）
     pub ink: Option<super::ink::InkPanel>,
@@ -313,7 +313,7 @@ impl crate::shell::editor::SlideEditor {
             .or_else(|| self.control_properties_panel(cx).map(|panel| panel.modal_named("control_properties_panel")))
             .or_else(|| {
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-                { self.prefill_review_panel().map(|panel| panel.modal_named("prefill_review_panel")) }
+                { self.prefill_review_panel(cx).map(|panel| panel.modal_named("prefill_review_panel")) }
                 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
                 { None }
             })

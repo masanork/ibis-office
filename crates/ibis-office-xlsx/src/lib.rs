@@ -99,6 +99,9 @@ pub(crate) mod pivot_pane;
 pub(crate) mod pivot_protect;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod prefill_panel;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod prefill_copy;
+
 pub(crate) mod sd_jwt_panel;
 pub mod row_fit;
 pub(crate) mod table_design;

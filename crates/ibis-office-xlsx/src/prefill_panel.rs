@@ -1,16 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The desktop entry point for reviewing named-cell transfers.
 
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use gpui_kit::component::{Disableable as _, checkbox::Checkbox};
 use gpui_kit::*;
 use serde_json::Value;
 
 use crate::ext::*;
+use crate::prefill_copy::{ReviewInput, is_xlsx, read_text, save_reviewed_copy};
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::text;
+
+pub(crate) struct PrefillReview {
+    input: Arc<ReviewInput>,
+    selected: BTreeSet<String>,
+    saving: bool,
+    message: Option<String>,
+}
+
+fn can_select(row: &Value) -> bool {
+    row["status"] == "ready"
+        && row["proposed_value"]
+            .as_str()
+            .is_none_or(|value| value.chars().count() <= 250)
+}
 
 fn prompt(extensions: &[&str], message: &str) -> PathPromptOptions {
     PathPromptOptions {
@@ -20,17 +37,6 @@ fn prompt(extensions: &[&str], message: &str) -> PathPromptOptions {
         multiple: false,
         prompt: Some(text(message).into()),
     }
-}
-
-fn read_text(path: &Path) -> Result<String, String> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| file.take(1_048_577).read_to_end(&mut bytes))
-        .map_err(|error| error.to_string())?;
-    if bytes.len() > 1_048_576 {
-        return Err(text("xlsx.prefill.too-large").to_string());
-    }
-    String::from_utf8(bytes).map_err(|_| text("xlsx.prefill.utf8").to_string())
 }
 
 #[ibis_office_macros::editor_ext(PrefillPanel)]
@@ -87,8 +93,9 @@ impl SlideEditor {
                         .and_then(|ext| ext.to_str())
                         .unwrap_or("")
                         .to_ascii_lowercase();
-                    let source = read_text(&source)?;
-                    let settings: Value = serde_json::from_str(&read_text(&mapping)?)
+                    let source_text = read_text(&source)?;
+                    let mapping_text = read_text(&mapping)?;
+                    let settings: Value = serde_json::from_str(&mapping_text)
                         .map_err(|_| text("xlsx.prefill.invalid-mapping").to_string())?;
                     let slide = context.1;
                     let sheet = presentation
@@ -100,15 +107,28 @@ impl SlideEditor {
                     let signed = package
                         .as_ref()
                         .is_some_and(|source| source.has_package_signatures().unwrap_or(true));
-                    ibis_doc_service::review_prefill(
+                    let report = ibis_doc_service::review_prefill(
                         &presentation,
                         slide,
                         signed,
                         &format,
-                        &source,
+                        &source_text,
                         &settings["mappings"],
                     )
-                    .map_err(|error| error.message)
+                    .map_err(|error| error.message)?;
+                    Ok(PrefillReview {
+                        input: Arc::new(ReviewInput {
+                            source,
+                            mapping,
+                            source_text,
+                            mapping_text,
+                            format,
+                            report,
+                        }),
+                        selected: BTreeSet::new(),
+                        saving: false,
+                        message: None,
+                    })
                 })
                 .await;
             this.update_in(cx, |this, _, cx| {
@@ -125,12 +145,116 @@ impl SlideEditor {
         .detach();
     }
 
-    pub(crate) fn prefill_review_panel(&self) -> Option<SidebarPanel> {
+    fn can_save_prefill_copy(&self) -> bool {
+        !self.is_read_only()
+            && self.protection_password.is_none()
+            && self.file_path().is_some_and(|path| is_xlsx(&path))
+            && self.source.is_some()
+    }
+
+    fn save_prefill_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_save_prefill_copy() {
+            return;
+        }
+        let Some(workbook) = self.file_path().filter(|path| is_xlsx(path)) else {
+            return;
+        };
+        let Some(directory) = workbook.parent() else {
+            return;
+        };
+        let context = (self.file_id, self.current_slide);
+        let Some(Ok(review)) = self.wb_mut().panels.prefill_preview.as_mut() else {
+            return;
+        };
+        if review.selected.is_empty() || review.saving {
+            return;
+        }
+        review.saving = true;
+        review.message = None;
+        let input = review.input.clone();
+        let targets = review.selected.clone();
+        let stem = workbook.file_stem().unwrap_or_default().to_string_lossy();
+        let picked = cx.prompt_for_new_path(directory, Some(&format!("{stem}-filled.xlsx")));
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = match picked.await {
+                Ok(Ok(Some(output))) => {
+                    let Ok(Some(snapshot)) = this.update_in(cx, |this, _, _| {
+                        let review = this
+                            .sheet_state()?
+                            .panels
+                            .prefill_preview
+                            .as_ref()?
+                            .as_ref()
+                            .ok()?;
+                        if context != (this.file_id, this.current_slide)
+                            || !Arc::ptr_eq(&input, &review.input)
+                            || this.file_path().as_ref() != Some(&workbook)
+                            || !this.can_save_prefill_copy()
+                        {
+                            return None;
+                        }
+                        Some((this.presentation().clone(), this.source.clone()))
+                    }) else {
+                        return;
+                    };
+                    let input_for_save = input.clone();
+                    let name = output.display().to_string();
+                    cx.background_executor()
+                        .spawn(async move {
+                            let (presentation, package) = snapshot;
+                            let package = package
+                                .ok_or_else(|| text("xlsx.prefill.save-unavailable").to_string())?;
+                            save_reviewed_copy(
+                                &input_for_save,
+                                presentation,
+                                &package,
+                                context.1,
+                                &workbook,
+                                &output,
+                                &targets,
+                            )?;
+                            Ok::<_, String>(Some(name))
+                        })
+                        .await
+                }
+                Ok(Ok(None)) => Ok(None),
+                _ => Err(text("xlsx.prefill.save-unavailable").to_string()),
+            };
+            this.update_in(cx, |this, _, cx| {
+                if context != (this.file_id, this.current_slide) {
+                    return;
+                }
+                let Some(Ok(review)) = this.wb_mut().panels.prefill_preview.as_mut() else {
+                    return;
+                };
+                if !Arc::ptr_eq(&input, &review.input) {
+                    return;
+                }
+                review.saving = false;
+                review.message = match result {
+                    Ok(Some(path)) => Some(crate::shell::i18n::format(
+                        "xlsx.prefill.saved",
+                        &[("path", &path)],
+                    )),
+                    Ok(None) => None,
+                    Err(error) => Some(error),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn prefill_review_panel(&self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let result = self.sheet_state()?.panels.prefill_preview.as_ref()?;
         let mut body = div().flex().flex_col().gap(px(10.)).text_sm();
         match result {
             Err(error) => body = body.child(error.clone()),
-            Ok(report) => {
+            Ok(review) => {
+                let report = &review.input.report;
+                let can_save = self.can_save_prefill_copy();
                 body = body.child(text("xlsx.prefill.read-only"));
                 if report["credential_trust"] == "not_checked" {
                     body = body.child(text("xlsx.prefill.unverified"));
@@ -168,6 +292,29 @@ impl SlideEditor {
                             .gap(px(3.))
                             .child(format!("{label}  ({cell})"))
                             .child(text(status));
+                        if can_save && can_select(row) {
+                            let target = target.to_string();
+                            item = item.child(
+                                Checkbox::new(SharedString::from(format!("prefill-{cell}")))
+                                    .label(text("xlsx.prefill.choose"))
+                                    .checked(review.selected.contains(&target))
+                                    .disabled(review.saving)
+                                    .on_change(cx.listener(move |this, checked, _, cx| {
+                                        if let Some(Ok(review)) =
+                                            this.wb_mut().panels.prefill_preview.as_mut()
+                                        {
+                                            if *checked {
+                                                review.selected.insert(target.clone());
+                                            } else {
+                                                review.selected.remove(&target);
+                                            }
+                                        }
+                                        cx.notify();
+                                    })),
+                            );
+                        } else if row["status"] == "ready" && !can_select(row) {
+                            item = item.child(text("xlsx.prefill.long-value"));
+                        }
                         if label != target {
                             item = item.child(div().text_xs().child(target.to_string()));
                         }
@@ -188,6 +335,19 @@ impl SlideEditor {
                         }
                         body = body.child(item);
                     }
+                }
+                if let Some(message) = &review.message {
+                    body = body.child(message.clone());
+                }
+                if can_save {
+                    body = body.child(
+                        crate::shell::chrome::action_button("prefill-save")
+                            .label(text("xlsx.prefill.save-copy"))
+                            .disabled(review.selected.is_empty() || review.saving)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_prefill_copy(window, cx)
+                            })),
+                    );
                 }
             }
         }

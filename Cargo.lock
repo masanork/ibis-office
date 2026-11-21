@@ -5289,6 +5289,7 @@ dependencies = [
  "image",
  "log",
  "serde_json",
+ "tempfile",
  "ttf-parser",
 ]
 

@@ -3132,3 +3132,10 @@ xlsx.prefill.empty	（空欄）
 xlsx.prefill.source	転記元:
 xlsx.prefill.current	現在の値:
 xlsx.prefill.proposed	入力候補:
+xlsx.prefill.choose	この欄を入力する
+xlsx.prefill.save-copy	選んだ欄を新しいXLSXに保存…
+xlsx.prefill.new-file	まだ存在しないXLSXファイルを指定してください。
+xlsx.prefill.changed	転記元またはブックが変わりました。入力候補を再表示してください。
+xlsx.prefill.save-unavailable	入力済みのコピーを保存できませんでした。
+xlsx.prefill.saved	入力済みのコピーを {path} に保存しました
+xlsx.prefill.long-value	この画面で選択するには値が長すぎます。

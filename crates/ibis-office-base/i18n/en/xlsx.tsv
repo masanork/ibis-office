@@ -3135,3 +3135,10 @@ xlsx.prefill.empty	(empty)
 xlsx.prefill.source	From:
 xlsx.prefill.current	Current:
 xlsx.prefill.proposed	Proposed:
+xlsx.prefill.choose	Include this field
+xlsx.prefill.save-copy	Save selected fields to a new XLSX…
+xlsx.prefill.new-file	Choose a new XLSX filename.
+xlsx.prefill.changed	The source or workbook changed. Preview it again.
+xlsx.prefill.save-unavailable	The workbook copy could not be saved.
+xlsx.prefill.saved	Saved the filled copy to {path}
+xlsx.prefill.long-value	This value is too long to select in this preview.
