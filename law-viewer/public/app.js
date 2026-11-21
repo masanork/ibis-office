@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import init, { compare_laws, export_docx, export_comparison_docx } from "./engine.js";
+import init, { compare_laws, export_comparison_docx } from "./engine.js";
 
 const $ = id => document.getElementById(id);
 const displayButtons = [...document.querySelectorAll("[data-view]")];
@@ -12,8 +12,6 @@ const demo = {
 let selected;
 let comparison;
 let activeView = "shinkyu";
-const verticalViews = new Set(["shinkyu", "bill", "riyuu"]);
-let inputs;
 let generation = 0;
 let gitVersion;
 const initial = new URLSearchParams(location.search);
@@ -31,7 +29,6 @@ async function request(endpoint, params, asText = false) {
 
 function clearComparison() {
   comparison = undefined;
-  inputs = undefined;
   $("toolbar").hidden = true;
   $("git-old").hidden = $("git-new").hidden = true;
   $("output").replaceChildren();
@@ -44,7 +41,6 @@ function status(message) {
 async function search(useLink = false) {
   const task = ++generation;
   selected = undefined;
-  $("memo-panel").hidden = true;
   clearComparison();
   $("results").replaceChildren();
   $("law-title").textContent = "法令を選択";
@@ -82,8 +78,6 @@ async function selectLaw(law, button, useLink = false) {
   const id = law.law_info.law_id;
   selected = law;
   gitVersion = undefined;
-  $("memo-panel").hidden = true;
-  $("memo").value = "";
   for (const item of $("results").children) item.setAttribute("aria-current", String(item === button));
   $("law-title").textContent = law.revision_info.law_title;
   $("number").textContent = law.law_info.law_num;
@@ -137,7 +131,6 @@ async function selectLaw(law, button, useLink = false) {
       }
     }
     $("old").disabled = $("new").disabled = $("compare-button").disabled = false;
-    $("memo-panel").hidden = false;
     await compare();
   } catch (error) {
     if (task === generation) status(error.message);
@@ -161,8 +154,7 @@ async function compare() {
       wasm,
     ]);
     if (task !== generation) return;
-    inputs = [lawXml(old), lawXml(newer), $("memo").value];
-    comparison = JSON.parse(compare_laws(...inputs));
+    comparison = JSON.parse(compare_laws(lawXml(old), lawXml(newer)));
     $("toolbar").hidden = false;
     const params = new URLSearchParams({ q: $("query").value, law: selected.law_info.law_id });
     for (const side of ["old", "new"]) {
@@ -177,8 +169,7 @@ async function compare() {
     }
     window.history.replaceState(null, "", `?${params}`);
     render("shinkyu");
-    const exact = comparison.package.deterministic_outputs.aratame_verification.is_exact_match;
-    status(exact ? "比較完了。改め文の逆適用が一致しました。" : "比較完了。改め文の検算に要確認事項があります。");
+    status("");
   } catch (error) {
     if (task === generation) status(error.message);
   } finally {
@@ -210,7 +201,7 @@ function appendInline(node, source) {
 
 function updateWritingMode() {
   const mode = $("writing-mode").value;
-  const vertical = mode === "vertical" || (mode === "auto" && verticalViews.has(activeView));
+  const vertical = mode === "vertical" || (mode === "auto" && activeView === "shinkyu");
   const output = $("output");
   output.classList.toggle("vertical", vertical);
   $("reading-hint").hidden = !vertical;
@@ -229,7 +220,7 @@ function render(view) {
   if (!comparison) return;
   activeView = view;
   for (const button of displayButtons) button.setAttribute("aria-pressed", String(button.dataset.view === view));
-  const content = comparison[view] ?? comparison.package.documents[view];
+  const content = comparison[view];
   const output = $("output");
   output.dataset.view = view;
   updateWritingMode();
@@ -288,20 +279,14 @@ for (const control of [$("old"), $("new")]) control.addEventListener("change", (
 });
 $("writing-mode").addEventListener("change", updateWritingMode);
 for (const button of displayButtons) button.addEventListener("click", () => render(button.dataset.view));
-$("docx").addEventListener("click", () => {
-  if (!inputs) return;
-  try {
-    download(export_docx(...inputs), "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-  } catch (error) { status(error.message); }
-});
 $("comparison-docx").addEventListener("click", () => {
   if (!comparison) return;
   try {
-    download(export_comparison_docx(comparison.package.documents.shinkyu), "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    download(export_comparison_docx(comparison.shinkyu), "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
   } catch (error) { status(error.message); }
 });
 $("json").addEventListener("click", () => {
-  if (comparison) download(JSON.stringify(comparison.package, null, 2), "json", "application/json");
+  if (comparison) download(JSON.stringify(comparison.amendment_ir, null, 2), "json", "application/json");
 });
 $("print").addEventListener("click", () => {
   if (comparison) window.print();

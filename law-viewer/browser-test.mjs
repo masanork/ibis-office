@@ -8,7 +8,7 @@ const browser = await chromium.launch(
   process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {},
 );
 try {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1000 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(url);
@@ -26,6 +26,14 @@ try {
   const output = page.locator("#output");
   const writingMode = () => output.evaluate(el => getComputedStyle(el).writingMode);
   assert.equal(await writingMode(), "vertical-rl");
+  assert.deepEqual(await page.locator("button[data-view]").evaluateAll(
+    buttons => buttons.map(button => button.dataset.view)
+  ), ["shinkyu", "old", "new"]);
+  assert.equal(await page.locator("#memo-panel, #docx").count(), 0);
+  assert.ok(await output.evaluate(el => {
+    const pane = el.getBoundingClientRect();
+    return pane.left < 50 && innerWidth - pane.right < 50;
+  }), "Wide desktop uses almost the entire viewport for reading");
   const [amended, current] = await page.locator("#output th").evaluateAll(
     cells => cells.map(cell => ({ top: cell.getBoundingClientRect().top, text: cell.textContent })),
   );
@@ -41,11 +49,8 @@ try {
   await page.locator("#writing-mode").selectOption("horizontal");
   assert.equal(await writingMode(), "horizontal-tb");
   await page.locator("#writing-mode").selectOption("auto");
-  await page.getByRole("button", { name: "要綱", exact: true }).click();
-  assert.equal(await writingMode(), "horizontal-tb");
-  await page.getByRole("button", { name: "改め文", exact: true }).click();
-  assert.equal(await writingMode(), "vertical-rl");
   await page.getByRole("button", { name: "新版本文" }).click();
+  assert.equal(await writingMode(), "horizontal-tb");
   await page.locator("#writing-mode").selectOption("vertical");
   assert.equal(await writingMode(), "vertical-rl");
   await page.locator("#writing-mode").selectOption("auto");
@@ -53,13 +58,18 @@ try {
   await page.getByRole("button", { name: "旧版本文" }).click();
   assert.match(await page.locator("#output").textContent(), /ワクチン/);
   await page.getByRole("button", { name: "新旧対照条文", exact: true }).click();
-  for (const id of ["comparison-docx", "docx"]) {
-    const pending = page.waitForEvent("download");
-    await page.locator(`#${id}`).click();
-    const download = await pending;
-    assert.match(download.suggestedFilename(), /\.docx$/);
-    assert.equal((await readFile(await download.path())).subarray(0, 4).toString("hex"), "504b0304");
-  }
+  const pendingDocx = page.waitForEvent("download");
+  await page.locator("#comparison-docx").click();
+  const docx = await pendingDocx;
+  assert.match(docx.suggestedFilename(), /\.docx$/);
+  assert.equal((await readFile(await docx.path())).subarray(0, 4).toString("hex"), "504b0304");
+
+  const pendingJson = page.waitForEvent("download");
+  await page.locator("#json").click();
+  const json = await pendingJson;
+  const changes = JSON.parse(await readFile(await json.path(), "utf-8"));
+  assert.ok(changes.article_changes.length > 0);
+  assert.equal("assistant_prompts" in changes, false);
   if (process.env.LAW_VIEWER_SCREENSHOT) {
     await page.screenshot({ path: process.env.LAW_VIEWER_SCREENSHOT });
   }
@@ -77,7 +87,7 @@ try {
   );
   assert.ok(mobileFits, "Vertical scrolling stays inside the reading pane on mobile");
   assert.deepEqual(errors, []);
-  console.log(`Verified law search, e-Gov revisions, WASM comparison, vertical writing, DOCX downloads and print PDF at ${url}`);
+  console.log(`Verified law search, e-Gov revisions, WASM comparison, full-width vertical reading, comparison export and print PDF at ${url}`);
 } finally {
   await browser.close();
 }

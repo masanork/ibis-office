@@ -13,7 +13,6 @@
 <main>
   <section class="intro">
     <h1>法令履歴</h1>
-    <p>法令を探し、改正前後の条文を比べる。</p>
     <form id="search" role="search">
       <label for="query" class="visually-hidden">法令名・法令番号</label>
       <input id="query" type="search" required maxlength="100" value="予防接種法" placeholder="法令名・法令番号">
@@ -22,10 +21,14 @@
   </section>
   <div class="workspace">
     <aside>
-      <h2>法令</h2>
-      <div id="results"></div>
-      <h2>資料</h2>
-      <div class="sources"><a id="git-source" hidden>houritsu の本文（Git）</a><a id="git-history" hidden>houritsu のGit履歴</a><a id="git-old" hidden>旧版のGit資料</a><a id="git-new" hidden>新版のGit資料</a><a id="egov" hidden>e-Gov 法令検索</a></div>
+      <section>
+        <h2>法令</h2>
+        <div id="results"></div>
+      </section>
+      <section>
+        <h2>資料</h2>
+        <div class="sources"><a id="git-source" hidden>houritsu の本文（Git）</a><a id="git-history" hidden>houritsu のGit履歴</a><a id="git-old" hidden>旧版のGit資料</a><a id="git-new" hidden>新版のGit資料</a><a id="egov" hidden>e-Gov 法令検索</a></div>
+      </section>
     </aside>
     <section class="document" aria-labelledby="law-title">
       <h2 id="law-title">法令を選択</h2>
@@ -35,20 +38,12 @@
         <label>新版<select id="new" required disabled></select></label>
         <button id="compare-button" type="submit" disabled>比較</button>
       </form>
-      <details id="memo-panel" hidden><summary>五点セット用の担当者メモ</summary>
-        <label for="memo" class="visually-hidden">改正の背景・必要性</label>
-        <textarea id="memo" maxlength="10000" rows="3" placeholder="改正の背景・必要性を入力し、比較を更新"></textarea>
-      </details>
       <p id="status" role="status" aria-live="polite"></p>
       <div id="toolbar" hidden>
         <nav aria-label="表示形式">
           <button data-view="shinkyu">新旧対照条文</button>
           <button data-view="old">旧版本文</button>
           <button data-view="new">新版本文</button>
-          <button data-view="bill">改め文</button>
-          <button data-view="youkou">要綱</button>
-          <button data-view="riyuu">理由</button>
-          <button data-view="sansho">参照条文</button>
         </nav>
         <div class="reading-controls">
           <label for="writing-mode">組方向</label>
@@ -61,7 +56,6 @@
         </div>
         <div class="downloads">
           <button id="comparison-docx">新旧対照条文DOCX</button>
-          <button id="docx">五点セットDOCX</button>
           <button id="json">差分JSON</button>
           <button id="print">横書きで印刷 / PDF</button>
         </div>
