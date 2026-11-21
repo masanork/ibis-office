@@ -426,6 +426,7 @@ struct Args {
     /// Emit a JSON receipt after saving the edit output.
     ai_receipt: bool,
     include_xlsx_validations: bool,
+    include_xlsx_hidden_axes: bool,
     width: Option<u32>,
     slides: Option<String>,
     layout: bool,
@@ -482,6 +483,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             "--require-preview" => args.require_preview = true,
             "--ai-receipt" => args.ai_receipt = true,
             "--include-xlsx-validations" => args.include_xlsx_validations = true,
+            "--include-xlsx-hidden-axes" => args.include_xlsx_hidden_axes = true,
             "--out-dir" => args.out_dir = Some(value()?.into()),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
             "--range" => args.slides = Some(value()?),
@@ -533,6 +535,9 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     }
     if args.include_xlsx_validations && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
         return Err("--include-xlsx-validations requires --export md".into());
+    }
+    if args.include_xlsx_hidden_axes && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
+        return Err("--include-xlsx-hidden-axes requires --export md".into());
     }
     Ok(args)
 }
@@ -722,15 +727,19 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 } else {
                     ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };
-                let md = if args.include_xlsx_validations {
-                    ibis_formats::markdown::export_workbook_markdown_with_validations(&presentation)
+                let options = ibis_formats::markdown::WorkbookMarkdownOptions {
+                    include_validations: args.include_xlsx_validations,
+                    include_hidden_axes: args.include_xlsx_hidden_axes,
+                };
+                let md = if options.include_validations || options.include_hidden_axes {
+                    ibis_formats::markdown::export_workbook_markdown_with_options(&presentation, options)
                 } else {
                     ibis_formats::markdown::export_presentation_to_markdown(&presentation)
                 }.map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.md"));
                 std::fs::write(&out_path, md.as_bytes())
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
-                for diagnostic in ibis_formats::markdown::workbook_markdown_omissions(&presentation, args.include_xlsx_validations) {
+                for diagnostic in ibis_formats::markdown::workbook_markdown_omissions(&presentation, options) {
                     eprintln!("{diagnostic}");
                 }
             }

@@ -188,6 +188,8 @@ ibisOffice --export xlsx --out-dir rebuilt markdown/workbook.md
 
 表示シートの入力規則を `xlsx-sheet` コメント内の `validations` に保存します。適用範囲は元シートの A1 座標です。規則の種類、比較方法、式、ドロップダウン、入力時の案内とエラー時のメッセージを保持します。表の行・列を移動した場合は、必要に応じて適用範囲と式も編集してください。入力規則が参照する非表示シートやブックの定義名は再構成されません。入力規則の式やメッセージも Markdown ファイルに含まれるため、共有前に内容を確認できます。
 
+表示シートの非表示行・列も保持するには、`--export md` に `--include-xlsx-hidden-axes` を付けます。`--include-xlsx-validations` と併用できます。非表示セルの値と式が Markdown の表に入り、`xlsx-sheet` コメントの `hiddenRows` と `hiddenColumns` に元の行・列の範囲が入ります。`--export xlsx` で値・式・非表示状態を復元します。非表示シート全体は引き続き省略されます。非表示解除時の行高・列幅には既定値を使います。通常の Markdown と AI JSON には非表示セルの値を含めません。
+
 ### PPTX の要素の位置と重なり順
 
 PPTX を Markdown に書き出すと、スライドの大きさは `pptx_size`、各要素の位置と大きさは `pptx-shape` の `frame` に入ります。単位は EMU で、`frame` は左、上、幅、高さの順です。ファイル内で後ろにある要素ほど手前に重なります。要素の注記を残して本文を編集すると、別々のテキストボックスとして指定した位置に戻ります。

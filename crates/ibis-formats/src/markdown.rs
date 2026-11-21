@@ -406,8 +406,10 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
             None => (0, 0),
         };
         content.cells = markdown_workbook_cells(flow, marker.is_some(), &mut content, date1904, origin)?.into();
-        if let Some(MarkdownSheetMarker { name, validations, .. }) = marker {
+        if let Some(MarkdownSheetMarker { name, validations, hidden_rows, hidden_columns, .. }) = marker {
             content.validations = validations;
+            apply_markdown_hidden_axis(&hidden_rows, &mut content.rows, &mut content.hidden_rows, content.default_row);
+            apply_markdown_hidden_axis(&hidden_columns, &mut content.columns, &mut content.hidden_columns, content.default_column);
             if !valid_sheet_name(presentation, &name, (index == 0).then_some(0)) {
                 return Err(Error::new(format!("無効または重複したシート名です: {name}")));
             }
@@ -438,15 +440,20 @@ struct MarkdownSheetMarker {
     name: String,
     origin: Option<String>,
     validations: Vec<ibis_doc_model::Validation>,
+    hidden_rows: Vec<(u32, u32)>,
+    hidden_columns: Vec<(u32, u32)>,
 }
 
 fn parse_markdown_sheet_marker(encoded: &str) -> Option<MarkdownSheetMarker> {
     let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
     if let Some(name) = value.as_str() {
-        return Some(MarkdownSheetMarker { name: name.to_owned(), origin: None, validations: Vec::new() });
+        return Some(MarkdownSheetMarker {
+            name: name.to_owned(), origin: None, validations: Vec::new(),
+            hidden_rows: Vec::new(), hidden_columns: Vec::new(),
+        });
     }
     let object = value.as_object()?;
-    if object.keys().any(|key| !matches!(key.as_str(), "name" | "origin" | "validations")) {
+    if object.keys().any(|key| !matches!(key.as_str(), "name" | "origin" | "validations" | "hiddenRows" | "hiddenColumns")) {
         return None;
     }
     let name = object.get("name")?.as_str()?.to_owned();
@@ -458,7 +465,47 @@ fn parse_markdown_sheet_marker(encoded: &str) -> Option<MarkdownSheetMarker> {
         Some(value) => value.as_array()?.iter().map(parse_markdown_validation).collect::<Option<_>>()?,
         None => Vec::new(),
     };
-    Some(MarkdownSheetMarker { name, origin, validations })
+    let hidden_rows = parse_markdown_hidden_axis(object.get("hiddenRows"), |label| {
+        label.parse::<u32>().ok()?.checked_sub(1).filter(|&row| row <= ibis_calc::formula::MAX_ROW)
+    })?;
+    let hidden_columns = parse_markdown_hidden_axis(object.get("hiddenColumns"), |label| {
+        (label.len() <= 3).then(|| ibis_calc::formula::parser::column_index(label)).flatten()
+    })?;
+    Some(MarkdownSheetMarker { name, origin, validations, hidden_rows, hidden_columns })
+}
+
+fn parse_markdown_hidden_axis(
+    value: Option<&serde_json::Value>,
+    index: impl Fn(&str) -> Option<u32>,
+) -> Option<Vec<(u32, u32)>> {
+    let Some(value) = value else { return Some(Vec::new()) };
+    let mut ranges = Vec::new();
+    for range in value.as_array()? {
+        let (first, last) = range.as_str()?.split_once(':')?;
+        let (first, last) = (index(first)?, index(last)?);
+        if first > last || ranges.last().is_some_and(|&(_, previous_last)| previous_last >= first) {
+            return None;
+        }
+        ranges.push((first, last));
+    }
+    Some(ranges)
+}
+
+fn apply_markdown_hidden_axis(
+    ranges: &[(u32, u32)],
+    sizes: &mut Vec<ibis_doc_model::Emu>,
+    hidden: &mut std::collections::BTreeMap<u32, ibis_doc_model::Emu>,
+    default_size: ibis_doc_model::Emu,
+) {
+    let Some(&(_, last)) = ranges.last() else { return };
+    sizes.resize(sizes.len().max(last as usize + 1), default_size);
+    for &(first, last) in ranges {
+        for index in first..=last {
+            let size = &mut sizes[index as usize];
+            hidden.insert(index, *size);
+            *size = 0;
+        }
+    }
 }
 
 fn parse_markdown_validation(value: &serde_json::Value) -> Option<ibis_doc_model::Validation> {
@@ -767,17 +814,27 @@ pub fn export_presentation_to_markdown(presentation: &Presentation) -> Result<St
 
 /// Export visible worksheets in a workbook [`Presentation`] as GFM Markdown tables.
 pub fn export_workbook_markdown(p: &Presentation) -> Result<String, Error> {
-    export_workbook_markdown_with_positions(p, false, |_, _, _, _, _, _| {})
+    export_workbook_markdown_with_options(p, WorkbookMarkdownOptions::default())
 }
 
-/// Export visible worksheets with data validation metadata for XLSX reconstruction.
-pub fn export_workbook_markdown_with_validations(p: &Presentation) -> Result<String, Error> {
-    export_workbook_markdown_with_positions(p, true, |_, _, _, _, _, _| {})
+/// Workbook metadata explicitly included in a Markdown export.
+#[derive(Clone, Copy, Default)]
+pub struct WorkbookMarkdownOptions {
+    pub include_validations: bool,
+    pub include_hidden_axes: bool,
+}
+
+/// Export visible worksheets with the requested metadata for XLSX reconstruction.
+pub fn export_workbook_markdown_with_options(
+    p: &Presentation,
+    options: WorkbookMarkdownOptions,
+) -> Result<String, Error> {
+    export_workbook_markdown_with_positions(p, options, |_, _, _, _, _, _| {})
 }
 
 fn export_workbook_markdown_with_positions(
     p: &Presentation,
-    include_validations: bool,
+    options: WorkbookMarkdownOptions,
     mut record: impl FnMut(&str, u32, u32, Option<&ibis_doc_model::SheetCell>, usize, usize),
 ) -> Result<String, Error> {
     use ibis_doc_model::{CellAlign, SheetState};
@@ -804,11 +861,12 @@ fn export_workbook_markdown_with_positions(
             continue;
         };
         let row_vis = |r: u32| {
-            !sheet.hidden_rows.contains_key(&r) && sheet.rows.get(r as usize).is_none_or(|v| *v != 0)
+            options.include_hidden_axes
+                || (!sheet.hidden_rows.contains_key(&r) && sheet.rows.get(r as usize).is_none_or(|v| *v != 0))
         };
         let col_vis = |c: u32| {
-            !sheet.hidden_columns.contains_key(&c)
-                && sheet.columns.get(c as usize).is_none_or(|v| *v != 0)
+            options.include_hidden_axes || (!sheet.hidden_columns.contains_key(&c)
+                && sheet.columns.get(c as usize).is_none_or(|v| *v != 0))
         };
         let occupied = sheet.cells.iter().filter(|cell| row_vis(cell.row) && col_vis(cell.column));
         let bounds = occupied
@@ -823,21 +881,32 @@ fn export_workbook_markdown_with_positions(
         let origin = bounds
             .filter(|&(row, _, column, _)| (row, column) != (0, 0))
             .map(|(row, _, column, _)| ibis_doc_model::cell_name(column, row));
-        let mut marker = serde_json::json!(sheet_ref.name);
-        if origin.is_some() || (include_validations && !sheet.validations.is_empty()) {
-            marker = serde_json::json!({"name": sheet_ref.name});
-            if let Some(origin) = origin {
-                marker["origin"] = serde_json::json!(origin);
+        let mut metadata = serde_json::Map::new();
+        if let Some(origin) = origin {
+            metadata.insert("origin".to_owned(), serde_json::json!(origin));
+        }
+        if options.include_validations && !sheet.validations.is_empty() {
+            let rules: Vec<_> = sheet.validations.iter().map(markdown_validation).collect();
+            if rules.iter().any(|rule| parse_markdown_validation(rule).is_none()) {
+                return Err(Error::new(format!("シート {} の入力規則を Markdown に変換できません", sheet_ref.name)));
             }
-            if include_validations && !sheet.validations.is_empty() {
-                let rules: Vec<_> = sheet.validations.iter().map(markdown_validation).collect();
-                if rules.iter().any(|rule| parse_markdown_validation(rule).is_none()) {
-                    return Err(Error::new(format!("シート {} の入力規則を Markdown に変換できません", sheet_ref.name)));
-                }
-                marker["validations"] = serde_json::json!(rules);
+            metadata.insert("validations".to_owned(), serde_json::json!(rules));
+        }
+        if options.include_hidden_axes {
+            let (rows, columns) = workbook_hidden_axis_ranges(sheet);
+            if !rows.is_empty() {
+                metadata.insert("hiddenRows".to_owned(), serde_json::json!(rows));
+            }
+            if !columns.is_empty() {
+                metadata.insert("hiddenColumns".to_owned(), serde_json::json!(columns));
             }
         }
-        let encoded = marker.to_string();
+        let encoded = if metadata.is_empty() {
+            serde_json::json!(sheet_ref.name).to_string()
+        } else {
+            metadata.insert("name".to_owned(), serde_json::json!(sheet_ref.name));
+            serde_json::Value::Object(metadata).to_string()
+        };
         out.push_str(&encoded.replace('<', r"\u003c").replace('>', r"\u003e").replace("--", r"-\u002d"));
         out.push_str(" -->\n\n");
         out.push_str("## ");
@@ -5343,7 +5412,7 @@ fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
 }
 
 /// Known workbook omissions from Markdown export. Reports locations without cell contents.
-pub fn workbook_markdown_omissions(p: &Presentation, include_validations: bool) -> Vec<serde_json::Value> {
+pub fn workbook_markdown_omissions(p: &Presentation, options: WorkbookMarkdownOptions) -> Vec<serde_json::Value> {
     use ibis_doc_model::{SheetState, sheet_calc::sheet_of_slide};
     use serde_json::json;
 
@@ -5365,22 +5434,16 @@ pub fn workbook_markdown_omissions(p: &Presentation, include_validations: bool) 
             continue;
         };
 
-        for (code, ranges) in [
-            (
-                "hidden_rows_omitted",
-                hidden_axis_ranges(&sheet.hidden_rows, &sheet.rows, |row| (row + 1).to_string()),
-            ),
-            (
-                "hidden_columns_omitted",
-                hidden_axis_ranges(&sheet.hidden_columns, &sheet.columns, crate::xls_formula::column_letters),
-            ),
-        ] {
-            if !ranges.is_empty() {
-                diagnostics.push(json!({"code": code, "source": {"sheet": name, "ranges": ranges}}));
+        if !options.include_hidden_axes {
+            let (rows, columns) = workbook_hidden_axis_ranges(sheet);
+            for (code, ranges) in [("hidden_rows_omitted", rows), ("hidden_columns_omitted", columns)] {
+                if !ranges.is_empty() {
+                    diagnostics.push(json!({"code": code, "source": {"sheet": name, "ranges": ranges}}));
+                }
             }
         }
 
-        if !include_validations && !sheet.validations.is_empty() {
+        if !options.include_validations && !sheet.validations.is_empty() {
             let ranges: Vec<_> = sheet.validations.iter().flat_map(|rule| &rule.ranges)
                 .map(validation_range_label).collect();
             diagnostics.push(json!({
@@ -5390,6 +5453,13 @@ pub fn workbook_markdown_omissions(p: &Presentation, include_validations: bool) 
         }
     }
     diagnostics
+}
+
+fn workbook_hidden_axis_ranges(sheet: &ibis_doc_model::Sheet) -> (Vec<String>, Vec<String>) {
+    (
+        hidden_axis_ranges(&sheet.hidden_rows, &sheet.rows, |row| (row + 1).to_string()),
+        hidden_axis_ranges(&sheet.hidden_columns, &sheet.columns, crate::xls_formula::column_letters),
+    )
 }
 
 fn hidden_axis_ranges(
@@ -5419,7 +5489,7 @@ pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> 
     use serde_json::json;
 
     let mut cells = Vec::new();
-    let markdown = export_workbook_markdown_with_positions(p, false, |sheet, row, column, cell, start, end| {
+    let markdown = export_workbook_markdown_with_positions(p, WorkbookMarkdownOptions::default(), |sheet, row, column, cell, start, end| {
         let (kind, value) = match cell.map(|cell| &cell.value) {
             None | Some(CellValue::Empty) => ("empty", json!(null)),
             Some(CellValue::Number(number)) if number.is_finite() => ("number", json!(number)),
@@ -5441,7 +5511,7 @@ pub fn export_ai_workbook(p: &Presentation) -> Result<serde_json::Value, Error> 
         json!({ "code": "visible_sheet_cells_only" }),
         json!({ "code": "first_exported_row_used_as_markdown_header" }),
     ];
-    diagnostics.extend(workbook_markdown_omissions(p, false));
+    diagnostics.extend(workbook_markdown_omissions(p, WorkbookMarkdownOptions::default()));
     Ok(json!({
         "version": 1,
         "kind": "workbook",
@@ -8815,6 +8885,45 @@ xychart-beta
     }
 
     #[test]
+    fn workbook_hidden_axes_round_trip_with_explicit_markdown_export() {
+        let input = r#"<!-- xlsx-sheet {"name":"入力","origin":"B3","hiddenRows":["4:4","10000:10001"],"hiddenColumns":["C:C","XFC:XFD"]} -->
+
+| Key | HIDDEN_COLUMN | Visible |
+| --- | --- | --- |
+| HIDDEN_ROW | HIDDEN_FORMULA <!-- xlsx-formula:"=1+2" --> | HIDDEN_ROW |
+| Key | HIDDEN_COLUMN | Visible |
+
+<!-- xlsx-sheet {"name":"空","hiddenRows":["9:9"],"hiddenColumns":["F:F"]} -->
+"#;
+        let bytes = import_markdown_to_xlsx_bytes(input.as_bytes()).unwrap();
+        let original = crate::read(&bytes).unwrap();
+        let ai = export_ai_source(&bytes).unwrap();
+        assert!(!ai.to_string().contains("HIDDEN"));
+        assert_eq!(ai["diagnostics"].as_array().unwrap().len(), 6);
+        let options = WorkbookMarkdownOptions { include_hidden_axes: true, ..Default::default() };
+        assert!(workbook_markdown_omissions(&original, options).is_empty());
+        let markdown = export_workbook_markdown_with_options(&original, options).unwrap();
+        assert!(markdown.contains(r#""hiddenRows":["4:4","10000:10001"]"#));
+        assert!(markdown.contains(r#""hiddenColumns":["C:C","XFC:XFD"]"#));
+        assert!(markdown.contains("HIDDEN_ROW"));
+        assert!(markdown.contains("HIDDEN_COLUMN"));
+        let bytes = import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap();
+        let rebuilt = crate::read(&bytes).unwrap();
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        assert_eq!(sheet.hidden_rows.keys().copied().collect::<Vec<_>>(), [3, 9999, 10000]);
+        assert_eq!(sheet.hidden_columns.keys().copied().collect::<Vec<_>>(), [2, 16382, 16383]);
+        assert_eq!(sheet.cell(3, 1).unwrap().text, "HIDDEN_ROW");
+        assert_eq!(sheet.cell(2, 2).unwrap().text, "HIDDEN_COLUMN");
+        assert_eq!(sheet.cell(3, 2).unwrap().formula.as_deref(), Some("1+2"));
+        let empty = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[1]).unwrap();
+        assert!(empty.cells.is_empty());
+        assert!(empty.hidden_rows.contains_key(&8));
+        assert!(empty.hidden_columns.contains_key(&5));
+        assert!(import_markdown_to_xlsx_bytes(input.replace("XFC:XFD", "XFC:XFE").as_bytes()).is_err());
+        assert!(import_markdown_to_xlsx_bytes(input.replace("10000:10001", "4:10001").as_bytes()).is_err());
+    }
+
+    #[test]
     fn workbook_validation_rules_round_trip_with_explicit_markdown_export() {
         let list = serde_json::json!({
             "ranges": ["C4:C7", "E9", "G1:G1048576"],
@@ -8849,13 +8958,14 @@ xychart-beta
         let plain = export_workbook_markdown(&original).unwrap();
         assert!(!plain.contains("validations"));
         assert!(!plain.contains("一覧から選択してください"));
-        assert_eq!(workbook_markdown_omissions(&original, false).len(), 2);
-        assert!(workbook_markdown_omissions(&original, true).is_empty());
+        let options = WorkbookMarkdownOptions { include_validations: true, ..Default::default() };
+        assert_eq!(workbook_markdown_omissions(&original, Default::default()).len(), 2);
+        assert!(workbook_markdown_omissions(&original, options).is_empty());
         let ai = export_ai_source(&bytes).unwrap();
         assert_eq!(ai["markdown"], plain);
         assert!(!ai.to_string().contains("一覧から選択してください"));
 
-        let exported = export_workbook_markdown_with_validations(&original).unwrap();
+        let exported = export_workbook_markdown_with_options(&original, options).unwrap();
         assert!(exported.contains(r"選択してください -\u002d\u003e"));
         let edited = exported.replace("| 内製 |", "| 外注 |");
         let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(edited.as_bytes()).unwrap()).unwrap();

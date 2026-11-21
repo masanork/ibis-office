@@ -155,9 +155,9 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
             for edit in edits {
                 structure::replay(package, map, &b, edit)?;
                 // The new XML part is initially empty. Compare imported or copied
-                // cells, merges, and validation rules against an empty baseline.
+                // cells, merges, validation rules, and hidden axes against an empty baseline.
                 let edit = match edit {
-                    ibis_doc_model::sheet_ops::StructureEdit::AddSheet { sheet, name, slide, shape, content } if !content.cells.is_empty() || !content.merges.is_empty() || !content.validations.is_empty() => {
+                    ibis_doc_model::sheet_ops::StructureEdit::AddSheet { sheet, name, slide, shape, content } if !content.cells.is_empty() || !content.merges.is_empty() || !content.validations.is_empty() || !content.hidden_rows.is_empty() || !content.hidden_columns.is_empty() => {
                         let blank = Sheet {
                             cells: Default::default(),
                             styles: Vec::new(),

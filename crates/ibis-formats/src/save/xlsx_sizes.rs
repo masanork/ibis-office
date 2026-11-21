@@ -52,15 +52,15 @@ pub(crate) fn write_sizes(doc: &mut XmlDocument, old: &Sheet, new: &Sheet, digit
     // `customWidth`, one fitted to the contents, a column hidden or shown again) except a width the sheet chose by itself (a number
     // entered wider than the column), so the file opens with that column as it was (as Excel's); a fixed width given back to the sheet
     // is a change, and saved.
-    let in_range = |c: u32| (c as usize) < new.columns.len() && (c as usize) < old.columns.len();
+    let old_width = |c: u32| old.columns.get(c as usize).copied().unwrap_or(old.default_column);
     let mut runs: Vec<(u32, u32, Emu, bool)> = Vec::new();
-    for c in 0..new.columns.len().max(old.columns.len()) as u32 {
-        if !in_range(c) {
+    for (c, &w) in new.columns.iter().enumerate() {
+        if c >= old.columns.len() && !new.hidden_columns.contains_key(&(c as u32)) {
             continue;
         }
-        let w = new.columns[c as usize];
+        let c = c as u32;
         let (fixed, was_fixed) = (new.custom_columns.contains(&c), old.custom_columns.contains(&c));
-        let changed = old.columns[c as usize] != w || fixed != was_fixed;
+        let changed = old_width(c) != w || fixed != was_fixed;
         if !changed || (w != 0 && new.widened_columns.contains(&c) && !was_fixed) {
             continue;
         }
@@ -137,7 +137,7 @@ pub(crate) fn write_sizes(doc: &mut XmlDocument, old: &Sheet, new: &Sheet, digit
                 if w == 0 {
                     doc.set_attr(e, "hidden", "1");
                     if doc.attr(e, "width").is_none() {
-                        doc.set_attr(e, "width", &number(width_chars(old.columns[a as usize].max(1), digit)));
+                        doc.set_attr(e, "width", &number(width_chars(old_width(a).max(1), digit)));
                     }
                 } else {
                     doc.remove_attr(e, "hidden");
@@ -153,24 +153,33 @@ pub(crate) fn write_sizes(doc: &mut XmlDocument, old: &Sheet, new: &Sheet, digit
     }
     // Rows.
     let data = doc.child(root, "sheetData").ok_or_else(|| Error::new("シートに sheetData がありません"))?;
-    let changed_rows: Vec<u32> = (0..new.rows.len().min(old.rows.len()) as u32).filter(|&r| (old.rows[r as usize] != new.rows[r as usize] && new.fitted_rows.get(&r) != Some(&new.rows[r as usize])) || (new.rows[r as usize] > 0 && new.custom_rows.contains(&r) != old.custom_rows.contains(&r))).collect();
+    let changed_rows = new.rows.iter().enumerate().filter_map(|(r, &height)| {
+        let row = r as u32;
+        let previous = old.rows.get(r).copied().or_else(|| new.hidden_rows.contains_key(&row).then_some(old.default_row))?;
+        let resized = previous != height && new.fitted_rows.get(&row) != Some(&height);
+        let fixed = height > 0 && new.custom_rows.contains(&row) != old.custom_rows.contains(&row);
+        (resized || fixed).then_some(row)
+    });
+    let existing_rows: std::collections::BTreeMap<u32, _> = doc.children_named(data, "row")
+        .filter_map(|node| Some((doc.attr(node, "r")?.parse().ok()?, node)))
+        .collect();
     for r in changed_rows {
         let h = new.rows[r as usize];
-        let found = doc.children_named(data, "row").find(|&n| doc.attr(n, "r").and_then(|v| v.parse::<u32>().ok()) == Some(r + 1));
-        let row = match found {
+        let row_number = r + 1;
+        let row = match existing_rows.get(&row_number).copied() {
             Some(n) => n,
             None => {
-                let e = detached(doc, &format!("{prefix}row"));
-                doc.set_attr(e, "r", &(r + 1).to_string());
-                let next = doc.children_named(data, "row").find(|&n| doc.attr(n, "r").and_then(|v| v.parse::<u32>().ok()).is_some_and(|x| x > r + 1));
-                match next {
-                    Some(n) => doc.insert_before(n, e),
-                    None => {
-                        let n = doc.children(data).len();
-                        doc.insert(data, n, e);
+                let name = format!("{prefix}row");
+                let row = match existing_rows.range((row_number + 1)..).next() {
+                    Some((_, &next)) => {
+                        let row = detached(doc, &name);
+                        doc.insert_before(next, row);
+                        row
                     }
-                }
-                e
+                    None => doc.append_element(data, &name),
+                };
+                doc.set_attr(row, "r", &row_number.to_string());
+                row
             }
         };
         if h == 0 {
