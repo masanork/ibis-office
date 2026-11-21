@@ -80,6 +80,8 @@ ibisOffice --read-only report.docx
 
 `--include-xlsx-hidden-sheets` を XLSX の `--export md` に付けると、非表示ワークシートを Markdown に含めます。`--export xlsx` でシートの順序、内容、`hidden` と `veryHidden` の状態を復元できます。入力規則や非表示行・列のオプションと併用できます。
 
+`--include-xlsx-defined-names` を XLSX の `--export md` に付けると、ブック全体とシート単位の定義名を Markdown に含めます。`--export xlsx` で定義式とスコープを復元できます。
+
 ウィンドウを一切表示せず、GPU / CPU レンダリングによりバックグラウンドで高速に出力を行い、完了後に即座に終了します。サーバー環境や自動化スクリプトに最適です。
 
 | オプション | 引数 | 説明 |

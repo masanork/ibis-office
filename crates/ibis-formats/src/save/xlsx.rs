@@ -132,7 +132,7 @@ fn conditional_source_ids(p: &Presentation) -> Vec<Option<Vec<Option<usize>>>> {
     }).collect()).unwrap_or_default()
 }
 
-pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &Presentation, current: &Presentation, chart_data: &super::pptx_chart_data::ChartDataEdits, new_charts: &HashMap<ibis_doc_model::ShapeId, super::NewChartEntry>, sheet_states: &[(usize, ibis_doc_model::SheetState)]) -> Result<(), Error> {
+pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &Presentation, current: &Presentation, chart_data: &super::pptx_chart_data::ChartDataEdits, new_charts: &HashMap<ibis_doc_model::ShapeId, super::NewChartEntry>, workbook_import: super::WorkbookImportSettings<'_>) -> Result<(), Error> {
     let has_svg = current.media.iter().any(|m| m.format == ibis_doc_model::MediaFormat::Svg)
         || package.names().any(|n| n.ends_with(".svg"));
     if has_svg && package.content_type("dummy.svg")?.is_none() {
@@ -140,7 +140,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     }
     // What older versions wrote and Excel cannot open or reads differently, rewritten as it is written now, edited or not (#258).
     repair_legacy_formulas(package, map, baseline)?;
-    if sheet_states.is_empty() && super::pptx::same_content(baseline, current) && baseline.workbook == current.workbook && conditional_source_ids(baseline)==conditional_source_ids(current) {
+    if workbook_import.sheet_states.is_empty() && super::pptx::same_content(baseline, current) && baseline.workbook == current.workbook && conditional_source_ids(baseline)==conditional_source_ids(current) {
         return Ok(());
     }
     let ids = |p: &Presentation| p.slides.iter().map(|s| s.id).collect::<Vec<_>>();
@@ -199,7 +199,10 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     // Defined names changed: written into the workbook part.
     let names = |p: &Presentation| p.workbook.as_ref().map(|w| w.names.clone()).unwrap_or_default();
     if names(baseline) != names(current) {
-        write_names(package, &map.workbook, &names(baseline), &names(current), &external_book_names(current))?;
+        write_names(
+            package, &map.workbook, &names(baseline), &names(current),
+            &external_book_names(current), workbook_import.preserve_name_formulas,
+        )?;
     }
     let custom_styles = |p: &Presentation| p.workbook.as_ref().map(|w| w.custom_cell_styles.clone()).unwrap_or_default();
     if custom_styles(baseline) != custom_styles(current) {
@@ -321,8 +324,8 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     if let Some(wb) = current.workbook.as_deref() {
         write_active_tab(package, map, wb.active_tab, &wb.selected_tabs)?;
     }
-    if !sheet_states.is_empty() {
-        structure::set_sheet_states(package, map, sheet_states)?;
+    if !workbook_import.sheet_states.is_empty() {
+        structure::set_sheet_states(package, map, workbook_import.sheet_states)?;
     }
     if (current.media.iter().any(|m| m.format == ibis_doc_model::MediaFormat::Svg)
         || package.names().any(|n| n.ends_with(".svg")))
@@ -403,7 +406,7 @@ pub(super) fn file_formula_in(books: &[String], formula: &str, table: Option<&st
 /// The defined names as the model has them, in `workbook/definedNames`:
 /// changed ones get their new formula, deleted ones go, new ones are added
 /// (others are left as written).
-fn write_names(package: &mut Package, workbook: &str, old: &[ibis_doc_model::DefinedName], new: &[ibis_doc_model::DefinedName], books: &[String]) -> Result<(), Error> {
+fn write_names(package: &mut Package, workbook: &str, old: &[ibis_doc_model::DefinedName], new: &[ibis_doc_model::DefinedName], books: &[String], preserve_formulas: bool) -> Result<(), Error> {
     let doc = package.xml_mut(workbook)?;
     let root = doc.root_element().ok_or_else(|| Error::new("ブックの XML が空です"))?;
     let prefix = prefix_of(doc, root);
@@ -435,6 +438,10 @@ fn write_names(package: &mut Package, workbook: &str, old: &[ibis_doc_model::Def
         .unwrap_or_default();
     let default_sheet = sheet_names.first().cloned().unwrap_or_else(|| "Sheet1".to_string());
     let format_formula = |n: &ibis_doc_model::DefinedName| -> String {
+        if preserve_formulas {
+            // Markdown carries original relative and absolute references.
+            return to_file(&ibis_calc::formula::books_by_index(&n.formula, books));
+        }
         let sheet_name = n.sheet.and_then(|idx| sheet_names.get(idx)).unwrap_or(&default_sheet);
         let qualified = ibis_calc::formula::rewrite_references(&n.formula, |area| {
             if area.sheet.is_none() {

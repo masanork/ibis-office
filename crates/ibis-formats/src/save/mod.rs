@@ -121,6 +121,13 @@ pub struct Source {
     chart_data: Arc<std::sync::Mutex<pptx_chart_data::ChartDataEdits>>,
 }
 
+/// Metadata to apply when finishing a workbook generated from Markdown.
+#[derive(Default)]
+pub(crate) struct WorkbookImportSettings<'a> {
+    pub sheet_states: &'a [(usize, ibis_doc_model::SheetState)],
+    pub preserve_name_formulas: bool,
+}
+
 /// A file read for editing: its model, and what saving it needs.
 pub struct Opened {
     pub presentation: Presentation,
@@ -786,15 +793,14 @@ impl Source {
 
 
     fn save_as_is(&self, current: &Presentation, options: SaveOptions) -> Result<Vec<u8>, Error> {
-        self.save_with_sheet_states(current, options, &[])
+        self.save_with_workbook_import_settings(current, options, WorkbookImportSettings::default())
     }
 
-    /// Finish a generated workbook by hiding sheets after their cells have been written.
-    pub(crate) fn save_with_sheet_states(
+    pub(crate) fn save_with_workbook_import_settings(
         &self,
         current: &Presentation,
         options: SaveOptions,
-        sheet_states: &[(usize, ibis_doc_model::SheetState)],
+        workbook_import: WorkbookImportSettings<'_>,
     ) -> Result<Vec<u8>, Error> {
         let mut package = self.package.clone();
         match &self.map {
@@ -807,7 +813,7 @@ impl Source {
             SourceMap::Workbook(map) => {
                 let chart_data = self.chart_data.lock().unwrap_or_else(|e| e.into_inner());
                 let new_charts = self.new_charts.lock().unwrap_or_else(|e| e.into_inner());
-                xlsx::write_changes(&mut package, map, &self.baseline, current, &chart_data, &new_charts, sheet_states)?
+                xlsx::write_changes(&mut package, map, &self.baseline, current, &chart_data, &new_charts, workbook_import)?
             }
             SourceMap::Document(map) => {
                 let chart_data = self.chart_data.lock().unwrap_or_else(|e| e.into_inner());

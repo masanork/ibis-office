@@ -428,6 +428,7 @@ struct Args {
     include_xlsx_validations: bool,
     include_xlsx_hidden_axes: bool,
     include_xlsx_hidden_sheets: bool,
+    include_xlsx_defined_names: bool,
     width: Option<u32>,
     slides: Option<String>,
     layout: bool,
@@ -486,6 +487,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             "--include-xlsx-validations" => args.include_xlsx_validations = true,
             "--include-xlsx-hidden-axes" => args.include_xlsx_hidden_axes = true,
             "--include-xlsx-hidden-sheets" => args.include_xlsx_hidden_sheets = true,
+            "--include-xlsx-defined-names" => args.include_xlsx_defined_names = true,
             "--out-dir" => args.out_dir = Some(value()?.into()),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
             "--range" => args.slides = Some(value()?),
@@ -543,6 +545,9 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     }
     if args.include_xlsx_hidden_sheets && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
         return Err("--include-xlsx-hidden-sheets requires --export md".into());
+    }
+    if args.include_xlsx_defined_names && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
+        return Err("--include-xlsx-defined-names requires --export md".into());
     }
     Ok(args)
 }
@@ -736,8 +741,9 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     include_validations: args.include_xlsx_validations,
                     include_hidden_axes: args.include_xlsx_hidden_axes,
                     include_hidden_sheets: args.include_xlsx_hidden_sheets,
+                    include_defined_names: args.include_xlsx_defined_names,
                 };
-                let md = if options.include_validations || options.include_hidden_axes || options.include_hidden_sheets {
+                let md = if options.include_validations || options.include_hidden_axes || options.include_hidden_sheets || options.include_defined_names {
                     ibis_formats::markdown::export_workbook_markdown_with_options(&presentation, options)
                 } else {
                     ibis_formats::markdown::export_presentation_to_markdown(&presentation)

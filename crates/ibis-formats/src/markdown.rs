@@ -378,6 +378,7 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
     let text = std::str::from_utf8(&data).map_err(|_| Error::new("Markdown ファイルが UTF-8 ではありません"))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let date1904 = text.lines().next().is_some_and(|line| line == XLSX_1904_MARKER);
+    let (defined_names, text) = parse_markdown_defined_names(text)?;
     let sections = markdown_workbook_sections(text)?;
     let sheet_states: Vec<_> = sections.iter().enumerate().filter_map(|(index, (marker, _))| {
         marker.as_ref().and_then(|marker| marker.state).map(|state| (index, state))
@@ -435,17 +436,129 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
             shape.kind = ShapeKind::Sheet(Arc::new(content));
         }
     }
+    let workbook = Arc::make_mut(presentation.workbook.as_mut().unwrap());
+    let preserve_name_formulas = !defined_names.is_empty();
+    if preserve_name_formulas {
+        workbook.names = resolve_markdown_defined_names(defined_names, workbook)?;
+    }
+    workbook.active_tab = active_tab;
     ibis_doc_model::sheet_command::sync_sheet_book_context(presentation);
-    if sheet_states.is_empty() {
+    if sheet_states.is_empty() && !preserve_name_formulas {
         return Ok(opened);
     }
-    Arc::make_mut(opened.presentation.workbook.as_mut().unwrap()).active_tab = active_tab;
-    let bytes = opened.source.save_with_sheet_states(&opened.presentation, SaveOptions::default(), &sheet_states)?;
+    let settings = crate::save::WorkbookImportSettings { sheet_states: &sheet_states, preserve_name_formulas };
+    let bytes = opened.source.save_with_workbook_import_settings(&opened.presentation, SaveOptions::default(), settings)?;
     crate::save::open(bytes)
 }
 
 const XLSX_1904_MARKER: &str = "<!-- xlsx-date-system:1904 -->";
 const XLSX_SHEET_MARKER: &str = "<!-- xlsx-sheet ";
+
+const XLSX_DEFINED_NAMES_MARKER: &str = "<!-- xlsx-defined-names ";
+
+struct MarkdownDefinedName {
+    name: ibis_doc_model::DefinedName,
+    scope: Option<String>,
+}
+
+fn parse_markdown_defined_names(text: &str) -> Result<(Vec<MarkdownDefinedName>, &str), Error> {
+    let header = match text.split_once('\n') {
+        Some((line, rest)) if line.trim_end_matches('\r') == XLSX_1904_MARKER => rest,
+        _ => text,
+    };
+    let header = header.trim_start_matches(['\n', '\r']);
+    let Some(line) = header.lines().next() else { return Ok((Vec::new(), text)) };
+    let Some(encoded) = line.trim_end().strip_prefix(XLSX_DEFINED_NAMES_MARKER) else {
+        return Ok((Vec::new(), text));
+    };
+    let malformed = || Error::new("xlsx-defined-names の指定が不正です");
+    let value: serde_json::Value = serde_json::from_str(encoded.strip_suffix(" -->").ok_or_else(malformed)?)
+        .map_err(|_| malformed())?;
+    let names = value.as_array().ok_or_else(malformed)?.iter()
+        .map(|value| parse_markdown_defined_name(value).ok_or_else(malformed))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (_, body) = header.split_once('\n').unwrap_or((header, ""));
+    Ok((names, body))
+}
+
+fn parse_markdown_defined_name(value: &serde_json::Value) -> Option<MarkdownDefinedName> {
+    if value.as_object()?.keys().any(|key| !matches!(key.as_str(), "name" | "formula" | "sheet" | "hidden")) {
+        return None;
+    }
+    let name = value["name"].as_str()?;
+    let first = name.chars().next()?;
+    if !(first.is_alphabetic() || matches!(first, '_' | '\\'))
+        || name.chars().count() > 255
+        || ibis_calc::formula::parser::parse_cell(name).is_some()
+        || matches!(name.to_ascii_uppercase().as_str(), "TRUE" | "FALSE" | "R" | "C")
+        || !name.chars().all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '.' | '\\' | '?'))
+    {
+        return None;
+    }
+    let formula = value["formula"].as_str()?;
+    if formula.starts_with('=') || !is_xml_text(formula) {
+        return None;
+    }
+    let scope = match value.get("sheet") {
+        None => None,
+        Some(scope) => Some(scope.as_str()?.to_owned()),
+    };
+    let hidden = match value.get("hidden") {
+        None => false,
+        Some(hidden) => hidden.as_bool()?,
+    };
+    Some(MarkdownDefinedName {
+        name: ibis_doc_model::DefinedName { name: name.to_owned(), sheet: None, formula: formula.to_owned(), hidden },
+        scope,
+    })
+}
+
+fn resolve_markdown_defined_names(
+    names: Vec<MarkdownDefinedName>,
+    workbook: &ibis_doc_model::Workbook,
+) -> Result<Vec<ibis_doc_model::DefinedName>, Error> {
+    let mut existing = std::collections::HashSet::new();
+    names.into_iter().map(|entry| {
+        let mut name = entry.name;
+        if let Some(scope) = entry.scope {
+            name.sheet = Some(workbook.sheet_index(&scope)
+                .ok_or_else(|| Error::new(format!("定義名のシートが見つかりません: {scope}")))?);
+        }
+        if !existing.insert((name.name.to_lowercase(), name.sheet)) {
+            return Err(Error::new(format!("定義名が重複しています: {}", name.name)));
+        }
+        Ok(name)
+    }).collect()
+}
+
+fn workbook_markdown_names(
+    p: &Presentation,
+    workbook: &ibis_doc_model::Workbook,
+    options: WorkbookMarkdownOptions,
+) -> Result<Vec<serde_json::Value>, Error> {
+    let mut names = Vec::new();
+    for name in &workbook.names {
+        let mut entry = serde_json::json!({"name": name.name, "formula": name.formula, "hidden": name.hidden});
+        if let Some(index) = name.sheet {
+            let Some(sheet) = workbook.sheets.get(index) else { continue };
+            if workbook_markdown_sheet(p, sheet, options.include_hidden_sheets).is_none() {
+                continue;
+            }
+            entry["sheet"] = serde_json::json!(sheet.name);
+        }
+        if parse_markdown_defined_name(&entry).is_none() {
+            return Err(Error::new(format!("定義名を Markdown に変換できません: {}", name.name)));
+        }
+        names.push(entry);
+    }
+    Ok(names)
+}
+
+fn is_xml_text(value: &str) -> bool {
+    !value.chars().any(|ch| {
+        matches!(ch, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}')
+    })
+}
 
 struct MarkdownSheetMarker {
     name: String,
@@ -553,9 +666,7 @@ fn parse_markdown_validation(value: &serde_json::Value) -> Option<ibis_doc_model
         .chain(rule.prompt.iter().flat_map(|(title, message)| [title, message]))
         .chain(rule.error.iter().flat_map(|(_, title, message)| [title, message]));
     if rule.error.as_ref().is_some_and(|(style, _, _)| !matches!(style.as_str(), "stop" | "warning" | "information"))
-        || text.flat_map(|value| value.chars()).any(|ch| {
-            matches!(ch, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}')
-        })
+        || text.into_iter().any(|value| !is_xml_text(value))
     {
         return None;
     }
@@ -592,8 +703,11 @@ fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMar
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim_end();
-        if !is_fenced_line(trimmed, &mut fence)
-            && let Some(encoded) = trimmed.strip_prefix(XLSX_SHEET_MARKER)
+        let fenced = is_fenced_line(trimmed, &mut fence);
+        if !fenced && trimmed.starts_with(XLSX_DEFINED_NAMES_MARKER) {
+            return Err(Error::new("xlsx-defined-names はブックの先頭に1回だけ指定できます"));
+        }
+        if !fenced && let Some(encoded) = trimmed.strip_prefix(XLSX_SHEET_MARKER)
         {
             let marker = encoded.strip_suffix(" -->").and_then(parse_markdown_sheet_marker)
                 .ok_or_else(|| Error::new("xlsx-sheet の指定が不正です"))?;
@@ -841,6 +955,7 @@ pub struct WorkbookMarkdownOptions {
     pub include_validations: bool,
     pub include_hidden_axes: bool,
     pub include_hidden_sheets: bool,
+    pub include_defined_names: bool,
 }
 
 /// Export visible worksheets with the requested metadata for XLSX reconstruction.
@@ -849,6 +964,11 @@ pub fn export_workbook_markdown_with_options(
     options: WorkbookMarkdownOptions,
 ) -> Result<String, Error> {
     export_workbook_markdown_with_positions(p, options, |_, _, _, _, _, _| {})
+}
+
+fn push_workbook_metadata(out: &mut String, value: &serde_json::Value) {
+    out.push_str(&value.to_string().replace('<', r"\u003c").replace('>', r"\u003e").replace("--", r"-\u002d"));
+    out.push_str(" -->\n\n");
 }
 
 fn workbook_markdown_sheet<'a>(
@@ -879,6 +999,13 @@ fn export_workbook_markdown_with_positions(
     if book.date1904 {
         out.push_str(XLSX_1904_MARKER);
         out.push('\n');
+    }
+    if options.include_defined_names {
+        let names = workbook_markdown_names(p, book, options)?;
+        if !names.is_empty() {
+            out.push_str(XLSX_DEFINED_NAMES_MARKER);
+            push_workbook_metadata(&mut out, &serde_json::json!(names));
+        }
     }
     let mut total_cells = 0u64;
 
@@ -941,14 +1068,13 @@ fn export_workbook_markdown_with_positions(
                 metadata.insert("hiddenColumns".to_owned(), serde_json::json!(columns));
             }
         }
-        let encoded = if metadata.is_empty() {
-            serde_json::json!(sheet_ref.name).to_string()
+        let marker = if metadata.is_empty() {
+            serde_json::json!(sheet_ref.name)
         } else {
             metadata.insert("name".to_owned(), serde_json::json!(sheet_ref.name));
-            serde_json::Value::Object(metadata).to_string()
+            serde_json::Value::Object(metadata)
         };
-        out.push_str(&encoded.replace('<', r"\u003c").replace('>', r"\u003e").replace("--", r"-\u002d"));
-        out.push_str(" -->\n\n");
+        push_workbook_metadata(&mut out, &marker);
         out.push_str("## ");
         out.push_str(&sheet_ref.name);
         out.push_str("\n\n");
@@ -5463,6 +5589,14 @@ pub fn workbook_markdown_omissions(p: &Presentation, options: WorkbookMarkdownOp
     let Some(book) = &p.workbook else {
         return diagnostics;
     };
+    let omitted_names = book.names.iter().filter(|name| {
+        !options.include_defined_names || name.sheet.is_some_and(|index| {
+            book.sheets.get(index).and_then(|sheet| workbook_markdown_sheet(p, sheet, options.include_hidden_sheets)).is_none()
+        })
+    }).count();
+    if omitted_names > 0 {
+        diagnostics.push(json!({"code": "defined_names_omitted", "count": omitted_names}));
+    }
     for sheet_ref in &book.sheets {
         let name = &sheet_ref.name;
         if sheet_ref.other {
@@ -8924,6 +9058,61 @@ xychart-beta
         assert_eq!(sheet.cell(4, 3).unwrap().text, "Right");
         assert!(sheet.cell(3, 1).is_none());
         assert!(sheet.cell(4, 2).is_none());
+    }
+
+    #[test]
+    fn workbook_defined_names_preserve_scope_and_relative_formulas() {
+        let input = r#"<!-- xlsx-date-system:1904 -->
+<!-- xlsx-defined-names [{"name":"Choices","formula":"'選択肢'!$A$1:$A$2"},{"name":"LocalName","sheet":"入力","formula":"A1"},{"name":"InternalValue","sheet":"選択肢","formula":"17","hidden":true},{"name":"Label","formula":"\"A-->B\""}] -->
+
+<!-- xlsx-sheet {"name":"選択肢","state":"hidden"} -->
+
+| 内製 |
+| --- |
+| 外注 |
+
+<!-- xlsx-sheet {"name":"入力","validations":[{"ranges":["B1"],"type":"list","operator":"between","formula1":"Choices","allowBlank":true,"dropdown":true}]} -->
+
+| 名前付き参照 |
+| --- |
+| 値 <!-- xlsx-formula:"=LocalName" --> |
+"#;
+        let bytes = import_markdown_to_xlsx_bytes(input.as_bytes()).unwrap();
+        let original = crate::read(&bytes).unwrap();
+        let book = original.workbook.as_deref().unwrap();
+        assert!(book.date1904);
+        assert_eq!(book.names.len(), 4);
+        assert_eq!(book.names[1].sheet, Some(1));
+        assert_eq!(book.names[1].formula, "A1");
+        assert_eq!(book.names[2].sheet, Some(0));
+        assert!(book.names[2].hidden);
+        let ai = export_ai_source(&bytes).unwrap();
+        assert!(!ai.to_string().contains("InternalValue"));
+        assert!(ai["diagnostics"].as_array().unwrap().contains(
+            &serde_json::json!({"code": "defined_names_omitted", "count": 4}),
+        ));
+
+        let options = WorkbookMarkdownOptions { include_defined_names: true, ..Default::default() };
+        let partial = export_workbook_markdown_with_options(&original, options).unwrap();
+        let partial = crate::read(&import_markdown_to_xlsx_bytes(partial.as_bytes()).unwrap()).unwrap();
+        let scoped = &partial.workbook.as_deref().unwrap().names;
+        assert_eq!(scoped.len(), 3);
+        assert_eq!(scoped[1].sheet, Some(0));
+        assert_eq!(scoped[1].formula, "A1");
+        assert!(workbook_markdown_omissions(&original, options).contains(
+            &serde_json::json!({"code": "defined_names_omitted", "count": 1}),
+        ));
+
+        let options = WorkbookMarkdownOptions { include_hidden_sheets: true, include_validations: true, ..options };
+        let markdown = export_workbook_markdown_with_options(&original, options).unwrap();
+        assert!(workbook_markdown_omissions(&original, options).is_empty());
+        assert!(markdown.contains(r"A-\u002d\u003eB"));
+        let rebuilt = crate::read(&import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        assert_eq!(rebuilt.workbook.as_deref().unwrap().names, book.names);
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        assert_eq!(sheet.validations[0].formula1.as_deref(), Some("Choices"));
+        assert!(import_markdown_to_xlsx_bytes(input.replace(r#""sheet":"入力""#, r#""sheet":"存在しない""#).as_bytes()).is_err());
+        assert!(import_markdown_to_xlsx_bytes(input.replace(r#""name":"Label""#, r#""name":"choices""#).as_bytes()).is_err());
     }
 
     #[test]
