@@ -51,3 +51,7 @@ path = "src/bin/geometry.rs"
 [[bin]]
 name = "ibis-calc-check"
 path = "src/bin/calc_check.rs"
+
+[[bin]]
+name = "ibis-lawtext-5set"
+path = "src/bin/lawtext_5set.rs"

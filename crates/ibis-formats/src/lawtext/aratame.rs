@@ -85,7 +85,9 @@ impl VerifyResult {
 /// Generate a rule-based 改め文 draft from `old` and `new` [`LawDoc`]s.
 pub fn generate_aratame_draft(old: &LawDoc, new: &LawDoc) -> AratameDraft {
     let ir = diff_laws(old, new);
-    let law_title = if !ir.law_title.is_empty() {
+    let law_title = if !old.law_title.is_empty() {
+        old.law_title.clone()
+    } else if !ir.law_title.is_empty() {
         ir.law_title.clone()
     } else {
         "対象法令".to_string()
@@ -471,13 +473,27 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
 
 /// Apply a 改め文 text to `old` [`LawDoc`] and verify the result against `expected_new`.
 pub fn verify_aratame(old: &LawDoc, aratame_text: &str, expected_new: &LawDoc) -> VerifyResult {
-    let (simulated_new, applied_ops, diagnostics) = apply_aratame(old, aratame_text);
+    let (simulated_new, applied_ops, mut diagnostics) = apply_aratame(old, aratame_text);
     let residual_diff = diff_laws(&simulated_new, expected_new);
-    let is_exact_match = diagnostics.is_empty()
-        && residual_diff.title_change.is_none()
-        && residual_diff.division_changes.is_empty()
-        && residual_diff.article_changes.is_empty()
-        && residual_diff.appdx_table_changes.is_empty();
+    for (scope, matches) in [
+        ("題名", simulated_new.law_title == expected_new.law_title),
+        ("制定文", simulated_new.enact_statement == expected_new.enact_statement),
+        ("前文", simulated_new.preamble == expected_new.preamble),
+        ("本則", simulated_new.main_provision == expected_new.main_provision),
+        ("附則", simulated_new.suppl_provisions == expected_new.suppl_provisions),
+        ("別表", simulated_new.appdx_tables == expected_new.appdx_tables),
+    ] {
+        if !matches {
+            diagnostics.push(format!("{scope}に逆適用後の差分が残っています。"));
+        }
+    }
+    if !expected_new.law_num.is_empty()
+        && !simulated_new.law_num.is_empty()
+        && simulated_new.law_num != expected_new.law_num
+    {
+        diagnostics.push("現行と改正後の法令番号が一致しません。".into());
+    }
+    let is_exact_match = diagnostics.is_empty();
 
     VerifyResult {
         is_exact_match,

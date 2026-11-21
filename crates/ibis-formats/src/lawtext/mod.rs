@@ -20,7 +20,7 @@ pub use aratame::{
     AratameClause, AratameDraft, VerifyResult, apply_aratame, generate_aratame_draft,
     verify_aratame,
 };
-pub use assistant::{Legislation5SetPackage, build_5set_package};
+pub use assistant::{Legislation5SetPackage, build_5set_package, build_5set_package_with_sources};
 pub use diff::{
     AmendmentIr, ArticleChange, ArticleChangeKind, DiffOp, DivisionChange, DivisionChangeKind,
     ItemChange, NodeChangeKind, ParagraphChange, ShinkyuOptions, SubitemChange, SupplChange,
@@ -182,6 +182,22 @@ impl Default for LawDoc {
             appdx_tables: Vec::new(),
         }
     }
+}
+
+/// Parse explicit legislative drafting input as e-Gov XML, law Markdown or Lawtext.
+pub fn parse_law_input(text: &str) -> Result<LawDoc, Error> {
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    let doc = if text.starts_with('<') {
+        parse_law_xml(text)?
+    } else if text.starts_with("---") && text.contains("type: lawtext") {
+        parse_markdown_law(text)?
+    } else {
+        parse_lawtext(text)?
+    };
+    if doc.main_provision.is_empty() && doc.suppl_provisions.is_empty() && doc.appdx_tables.is_empty() {
+        return Err(Error::new("解析できる本則・附則・別表がありません"));
+    }
+    Ok(doc)
 }
 
 /// Return `true` when `data` looks like an e-Gov 法令標準XML document.

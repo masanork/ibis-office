@@ -61,6 +61,7 @@ Our aim is simple: a document made in Microsoft Office should look the same when
   [![ibisOffice introduction video](asset/video-en.jpg)](https://www.youtube.com/watch?v=nk2BRzMC2vw)
 
 - **Command-line interface**: for batch headless conversion to PDF/PNG, print settings, and performance benchmarking, see [Command-Line Options](docs/cli-options.md).
+- **Japanese legislative drafting**: generate five draft documents from e-Gov XML or Lawtext using the [five-document workflow](docs/lawtext-five-set-ja.md) (Japanese).
 - **Markdown, Mermaid, and Lawtext**: see the [Reference Manual and demo](docs/markdown-reference-ja.md) (Japanese).
 - **Embedding the browser version**: put it on your own web server and open documents from your system, with optional Close and Download buttons that hand your page an event; see [Embedding the browser version](docs/web-embedding.md).
 

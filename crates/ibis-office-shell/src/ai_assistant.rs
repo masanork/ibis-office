@@ -168,13 +168,19 @@ fn column_letters(mut col: u32) -> String {
 }
 
 pub(crate) fn parse_law_input_str(text: &str) -> Result<ibis_formats::lawtext::LawDoc, String> {
-    if ibis_formats::lawtext::is_law_xml(text.as_bytes()) {
-        ibis_formats::lawtext::parse_law_xml(text).map_err(|e| e.to_string())
-    } else if text.trim_start().starts_with("---") && text.contains("type: lawtext") {
-        ibis_formats::lawtext::parse_markdown_law(text).map_err(|e| e.to_string())
-    } else {
-        ibis_formats::lawtext::parse_lawtext(text).map_err(|e| e.to_string())
+    ibis_formats::lawtext::parse_law_input(text).map_err(|e| e.to_string())
+}
+
+fn presentation_law(
+    presentation: &ibis_doc_model::Presentation,
+) -> Result<ibis_formats::lawtext::LawDoc, String> {
+    let markdown = ibis_formats::markdown::export_presentation_to_markdown(presentation)
+        .map_err(|e| e.to_string())?;
+    let law = ibis_formats::lawtext::parse_markdown_law(&markdown).map_err(|e| e.to_string())?;
+    if law.main_provision.is_empty() && law.suppl_provisions.is_empty() && law.appdx_tables.is_empty() {
+        return Err("作業中の文書に解析できる本則・附則・別表がありません".into());
     }
+    Ok(law)
 }
 
 fn paragraph_plain_text(p: &FlowParagraph) -> String {
@@ -624,7 +630,7 @@ impl SlideEditor {
                     AiDocKind::Docx => {
                         "You are an AI document assistant inside ibisOffice. \
                          Use the provided tools to inspect paragraphs and edit or format document text. \
-                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
+                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, use the documents fields as the five initial drafts, leave unsupplied policy and commencement details open for review, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
                          Respond concisely in the user's language."
                     }
                 };
@@ -3338,41 +3344,40 @@ impl SlideEditor {
                                 "✗ generate_lawtext_5set: missing old_lawtext".to_string(),
                             );
                         };
-                        match (
-                        parse_law_input_str(old_str),
-                        match a.new_lawtext.as_deref() {
-                            Some(s) => parse_law_input_str(s),
-                            None => ibis_formats::lawtext::export_presentation_to_lawtext(
-                                self.presentation(),
-                            )
-                            .map_err(|e| e.to_string())
-                            .and_then(|lt| parse_law_input_str(&lt)),
-                        },
-                    ) {
-                        (Ok(old_doc), Ok(new_doc)) => {
-                            let opts = ibis_formats::lawtext::ShinkyuOptions {
-                                new_on_left: !a.old_on_left.unwrap_or(false),
-                                ..Default::default()
-                            };
-                            let pkg = ibis_formats::lawtext::build_5set_package(
-                                &old_doc,
-                                &new_doc,
-                                a.policy_memo.as_deref().unwrap_or(""),
-                                &opts,
-                            );
-                            let exact = pkg.aratame_verification.is_exact_match;
-                            (
-                                pkg.to_json_value().to_string(),
+                        let new_doc = match a.new_lawtext.as_deref() {
+                            Some(text) => parse_law_input_str(text),
+                            None => presentation_law(self.presentation()),
+                        };
+                        let sources = a.reference_laws.as_deref().unwrap_or_default()
+                            .iter()
+                            .map(|text| parse_law_input_str(text))
+                            .collect::<Result<Vec<_>, _>>();
+                        match (parse_law_input_str(old_str), new_doc, sources) {
+                            (Ok(old), Ok(new), Ok(sources)) => {
+                                let opts = ibis_formats::lawtext::ShinkyuOptions {
+                                    new_on_left: !a.old_on_left.unwrap_or(false),
+                                    ..Default::default()
+                                };
+                                let pkg = ibis_formats::lawtext::build_5set_package_with_sources(
+                                    &old,
+                                    &new,
+                                    a.policy_memo.as_deref().unwrap_or(""),
+                                    &opts,
+                                    &sources,
+                                );
+                                let exact = pkg.aratame_verification.is_exact_match;
+                                (
+                                    pkg.to_json_value().to_string(),
+                                    None,
+                                    format!("✓ generate_lawtext_5set (aratame_exact={exact})"),
+                                )
+                            }
+                            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => (
+                                json!({ "error": e }).to_string(),
                                 None,
-                                format!("✓ generate_lawtext_5set (aratame_exact={exact})"),
-                            )
+                                format!("✗ generate_lawtext_5set: {e}"),
+                            ),
                         }
-                        (Err(e), _) | (_, Err(e)) => (
-                            json!({ "error": e }).to_string(),
-                            None,
-                            format!("✗ generate_lawtext_5set: {e}"),
-                        ),
-                    }
                     }
                 }
             }
@@ -3406,11 +3411,7 @@ impl SlideEditor {
                         parse_law_input_str(old_str),
                         match a.expected_new_lawtext.as_deref() {
                             Some(s) => parse_law_input_str(s),
-                            None => ibis_formats::lawtext::export_presentation_to_lawtext(
-                                self.presentation(),
-                            )
-                            .map_err(|e| e.to_string())
-                            .and_then(|lt| parse_law_input_str(&lt)),
+                            None => presentation_law(self.presentation()),
                         },
                     ) {
                         (Ok(old_doc), Ok(new_doc)) => {
@@ -3446,11 +3447,7 @@ impl SlideEditor {
                     Ok(a) => {
                         let new_res = match a.new_lawtext.as_deref() {
                             Some(s) => parse_law_input_str(s),
-                            None => ibis_formats::lawtext::export_presentation_to_lawtext(
-                                self.presentation(),
-                            )
-                            .map_err(|e| e.to_string())
-                            .and_then(|lt| parse_law_input_str(&lt)),
+                            None => presentation_law(self.presentation()),
                         };
                         let old_src = a
                             .old_lawtext
@@ -3513,7 +3510,7 @@ impl SlideEditor {
                                     if let Some(p) = self.ai_assistant.as_mut() {
                                         p.pending_old_lawtext = Some((
                                             format!("{}.xml", doc.law_title),
-                                            lt.clone(),
+                                            xml,
                                         ));
                                     }
                                 }

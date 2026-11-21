@@ -6,6 +6,8 @@ title: "Docs Markdown Reference Manual"
 
 ## ibisOffice と Docs
 
+改正前後の法令から文書を生成する手順は [法令XML・Lawtextから法案五点セットを起案する](lawtext-five-set-ja.md) を参照してください。
+
 ibisOffice は、Word（DOCX）、Excel（XLSX）、PowerPoint（PPTX）のファイルを開き、編集して保存できるオフィススイートです。製品全体については [ibisOffice の日本語 README](../README-ja.md) を参照してください。
 
 **Docs** は、ibisOffice の `masanork` フォークのビルドをパッケージ化して提供する際の配布名です。ソースコードのライセンスには ibisOffice の商標の使用許諾が含まれず、派生版の製品名に「ibisOffice」を使うには株式会社アイビスの許可が必要です。このフォークは Docs の名前で配布しています。詳しくは [ibisOffice の商標ガイド](TRADEMARK.md) を参照してください。

@@ -75,10 +75,18 @@ pub fn extract_references(doc: &LawDoc) -> Vec<LawReference> {
 
 /// Generate a 参照条文 Markdown document for the amended/added articles between `old` and `new`.
 pub fn generate_sansho_markdown(old: &LawDoc, new: &LawDoc) -> String {
+    generate_sansho_markdown_with_sources(old, new, &[])
+}
+
+/// Resolve external references against explicitly supplied statute snapshots.
+pub fn generate_sansho_markdown_with_sources(
+    old: &LawDoc,
+    new: &LawDoc,
+    sources: &[LawDoc],
+) -> String {
     let ir = diff_laws(old, new);
     let all_refs = extract_references(new);
     let new_articles = collect_articles(&new.main_provision);
-    let old_articles = collect_articles(&old.main_provision);
 
     let changed_titles: Vec<String> = ir
         .article_changes
@@ -97,7 +105,7 @@ pub fn generate_sansho_markdown(old: &LawDoc, new: &LawDoc) -> String {
 
     let relevant: Vec<&LawReference> = all_refs
         .iter()
-        .filter(|r| changed_titles.is_empty() || changed_titles.contains(&r.source_article))
+        .filter(|r| changed_titles.contains(&r.source_article))
         .collect();
 
     if relevant.is_empty() {
@@ -109,7 +117,9 @@ pub fn generate_sansho_markdown(old: &LawDoc, new: &LawDoc) -> String {
     for r in relevant {
         let key = (
             r.external_law.clone(),
+            r.external_law_num.clone(),
             r.target_article_num.clone(),
+            r.source_article.clone(),
             r.raw_text.clone(),
         );
         if seen_keys.contains(&key) {
@@ -127,35 +137,42 @@ pub fn generate_sansho_markdown(old: &LawDoc, new: &LawDoc) -> String {
                 "## {ext_law}{num_part}（参照元: {}）\n\n",
                 r.source_article
             ));
-            out.push_str(&format!("> 引用表記: `{}`（外部法令・要条文取得）\n\n", r.raw_text));
+            let candidates: Vec<_> = sources.iter().filter(|source| {
+                if let Some(number) = &r.external_law_num {
+                    source.law_num == *number
+                } else {
+                    source.law_title == *ext_law
+                }
+            }).collect();
+            let article = match (candidates.as_slice(), &r.target_article_num) {
+                ([source], Some(number)) => collect_articles(&source.main_provision)
+                    .into_iter().find(|article| article.num == *number),
+                _ => None,
+            };
+            out.push_str(&format!("> 引用表記: `{}`\n\n", r.raw_text));
+            if let Some(article) = article {
+                if let [source] = candidates.as_slice() {
+                    out.push_str(&format!("資料: {}（{}）\n\n", source.law_title, source.law_num));
+                }
+                render_reference_article(&mut out, article);
+            } else {
+                let message = if candidates.len() > 1 {
+                    "参照資料が複数あります。適用時点を確認してください。"
+                } else {
+                    "参照資料または対象条文が見つかりません。"
+                };
+                out.push_str(&format!("> {message}\n\n"));
+            }
         } else if let Some(target_num) = &r.target_article_num {
             if let Some(target_art) = new_articles
                 .iter()
-                .chain(old_articles.iter())
                 .find(|a| a.num == *target_num)
             {
-                let cap = target_art
-                    .caption
-                    .as_deref()
-                    .map(|c| format!(" {c}"))
-                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "## {}{cap}（参照元: {} / `{}`）\n\n",
+                    "## {}（参照元: {} / `{}`）\n\n",
                     target_art.title, r.source_article, r.raw_text
                 ));
-                for (i, p) in target_art.paragraphs.iter().enumerate() {
-                    if i == 0 {
-                        out.push_str(&format!("{} {}\n\n", target_art.title, p.sentence));
-                    } else {
-                        out.push_str(&format!("{} {}\n\n", super::to_fullwidth_digits(&p.num), p.sentence));
-                    }
-                    for it in &p.items {
-                        out.push_str(&format!("- {} {}\n", it.title, it.sentence));
-                    }
-                    if !p.items.is_empty() {
-                        out.push('\n');
-                    }
-                }
+                render_reference_article(&mut out, target_art);
             } else {
                 out.push_str(&format!(
                     "## {}（参照元: {}）\n\n> 条文テキストが見つかりません。\n\n",
@@ -171,6 +188,34 @@ pub fn generate_sansho_markdown(old: &LawDoc, new: &LawDoc) -> String {
     }
 
     out
+}
+
+fn render_reference_article(out: &mut String, article: &LawArticle) {
+    if let Some(caption) = &article.caption {
+        out.push_str(&format!("{caption}\n\n"));
+    }
+    for (index, paragraph) in article.paragraphs.iter().enumerate() {
+        let label = if index == 0 {
+            article.title.clone()
+        } else {
+            super::to_fullwidth_digits(&paragraph.num)
+        };
+        out.push_str(&format!("{label} {}\n\n", paragraph.sentence));
+        for item in &paragraph.items {
+            out.push_str(&format!("- {} {}\n", item.title, item.sentence));
+            render_reference_subitems(out, &item.subitems, 1);
+        }
+        if !paragraph.items.is_empty() {
+            out.push('\n');
+        }
+    }
+}
+
+fn render_reference_subitems(out: &mut String, subitems: &[LawSubitem], depth: usize) {
+    for subitem in subitems {
+        out.push_str(&format!("{}- {} {}\n", "  ".repeat(depth), subitem.title, subitem.sentence));
+        render_reference_subitems(out, &subitem.children, depth + 1);
+    }
 }
 
 fn collect_articles<'a>(nodes: &'a [LawNode]) -> Vec<&'a LawArticle> {
@@ -424,4 +469,19 @@ mod tests {
         assert!(md.contains("## 行政手続法（平成五年法律第八十八号）"));
         assert!(md.contains("基本事項及び応用事項を定める。"));
     }
+
+    #[test]
+    fn resolves_only_unambiguous_source_snapshots() {
+        let old = parse_lawtext("試験法（令和七年法律第一号）\n第一条 旧規定。").unwrap();
+        let new = parse_lawtext(
+            "試験法（令和七年法律第一号）\n第一条 参照法（令和六年法律第二号）第三条を準用する。",
+        ).unwrap();
+        let source = parse_lawtext("参照法（令和六年法律第二号）\n第三条 引用される規定。").unwrap();
+        let resolved = generate_sansho_markdown_with_sources(&old, &new, std::slice::from_ref(&source));
+        assert!(resolved.contains("第三条 引用される規定。"));
+        let ambiguous = generate_sansho_markdown_with_sources(&old, &new, &[source.clone(), source]);
+        assert!(ambiguous.contains("参照資料が複数あります"));
+        assert!(!ambiguous.contains("引用される規定。"));
+    }
+
 }

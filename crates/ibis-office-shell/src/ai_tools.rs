@@ -1077,13 +1077,14 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
             kind: "function",
             function: ToolFunctionDef {
                 name: "generate_lawtext_5set",
-                description: "Generate the Japanese legislative 5-piece package (AmendmentIr, 新旧対照表 Markdown, 改め文 draft + verification, 参照条文 Markdown, and prompts for 要綱/理由) from old and new Lawtext or e-Gov XML. If new_lawtext is omitted, the active document is used as the new version.",
+                description: "Generate five Japanese legislative Markdown drafts (要綱, 法律案, 理由, 新旧対照表, 参照条文) with AmendmentIr, reverse-application verification, lint findings, and optional AI drafting prompts from old and new Lawtext or e-Gov XML. If new_lawtext is omitted, the active document is used as the new version.",
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML format. Optional if already loaded via the file picker." },
                         "new_lawtext": { "type": "string", "description": "Optional amended (改正後) statute in Lawtext or e-Gov XML. Defaults to the active document." },
                         "policy_memo": { "type": "string", "description": "Optional policy background memo for drafting 要綱 and 理由." },
+                        "reference_laws": { "type": "array", "items": { "type": "string" }, "description": "Optional external law snapshots in Lawtext or e-Gov XML for 参照条文." },
                         "old_on_left": { "type": "boolean", "description": "Put 現行 on the left column of 新旧対照表 (default false: 改正後 | 現行)." }
                     },
                     "additionalProperties": false
@@ -1184,6 +1185,7 @@ pub struct GenerateLawtext5SetArgs {
     pub new_lawtext: Option<String>,
     pub policy_memo: Option<String>,
     pub old_on_left: Option<bool>,
+    pub reference_laws: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
