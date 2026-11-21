@@ -288,3 +288,14 @@ python3 scripts/wallet-matrix.py "wallet cases.xlsx" --verifier-dir ./verifiers 
 
 The command and its arguments apply to all rows. Cells select verifier
 settings only. The report includes the verifier filename for each case.
+
+To review the results in a spreadsheet, add
+`--report-xlsx "wallet results.xlsx"` before any `--wallet-command`.
+The runner saves a new copy with `actual_failures` in column E and
+`result` in column F of the case sheet, aligned to the original row
+numbers. A finished run writes the report even when some cases fail.
+The source and any existing destination are kept intact. The JSON output
+includes the saved path and any workbook save warnings.
+The XLSX writer requires a workbook with a styles part, as generated
+by Excel. A stripped-down XLSX without styles can still be used for
+JSON-only runs.

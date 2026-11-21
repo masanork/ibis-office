@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -367,10 +368,19 @@ def write_case_sheet(path, rows):
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>""")
         archive.writestr("_rels/.rels", f'<Relationships xmlns="{rels}"><Relationship Id="rId1" Type="{office}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
         archive.writestr("xl/workbook.xml", f'<workbook xmlns="{ns}" xmlns:r="{office}"><sheets><sheet name="Wallet Cases" sheetId="1" r:id="rId1"/></sheets></workbook>')
-        archive.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="{rels}"><Relationship Id="rId1" Type="{office}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        archive.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="{rels}"><Relationship Id="rId1" Type="{office}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="{office}/styles" Target="styles.xml"/></Relationships>')
+        archive.writestr("xl/styles.xml", f"""<styleSheet xmlns="{ns}">
+<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>""")
         data = []
         for index, row in enumerate(rows, 1):
             cells = "".join(
@@ -387,27 +397,53 @@ with TemporaryDirectory() as tmp:
     rows = [
         headers,
         ("SD-JWT age check", "sd-jwt", "normal", None),
+        (None, None, None, None),
         ("Bad nonce", "sd-jwt", "wrong-nonce", "nonce"),
         ("mDL over-disclosure", "mdoc", "extra", "unexpected_paths"),
     ]
     command = [sys.executable, "scripts/wallet-matrix.py", str(workbook), "--build-dir", str(build)]
     write_case_sheet(workbook, rows)
     original = workbook.read_bytes()
-    result = subprocess.run(command, text=True, capture_output=True, timeout=45)
+    report_path = Path(tmp) / "wallet results.xlsx"
+    report_command = [*command, "--report-xlsx", str(report_path)]
+    result = subprocess.run(report_command, text=True, capture_output=True, timeout=45)
     assert result.returncode == 0 and not result.stderr, result.stderr
     output = json.loads(result.stdout)
     assert output["passed"] is True and len(output["cases"]) == 3, output
     assert output["cases"][1]["actual_failures"] == ["nonce"], output
+    assert output["report_xlsx"]["path"] == str(report_path), output
+    assert [case["row"] for case in output["cases"]] == [2, 4, 5], output
+    session = runpy.run_path("scripts/wallet-matrix.py")["mcp_session"]
+    with session(report_path, build.resolve()) as call:
+        doc = call("app_open_document", {"path": str(report_path)})["document_id"]
+        cells = call("xlsx_get_cells", {"document_id": doc, "sheet": "Wallet Cases", "range": "D1:F5"})["rows"]
+    assert cells == [
+        ["expected_failures", "actual_failures", "result"],
+        [None, None, "PASS"], [None, None, None],
+        ["nonce", "nonce", "PASS"], ["unexpected_paths", "unexpected_paths", "PASS"],
+    ], cells
     assert workbook.read_bytes() == original
+    saved = report_path.read_bytes()
+    for occupied in (report_path, workbook):
+        collision = subprocess.run([*command, "--report-xlsx", str(occupied)], text=True,
+                                   capture_output=True, timeout=10)
+        assert collision.returncode == 2 and not collision.stdout, collision
+    assert report_path.read_bytes() == saved and workbook.read_bytes() == original
     write_case_sheet(workbook, [headers, ("Unexpected failure", "mdoc", "extra", None)])
-    result = subprocess.run(command, text=True, capture_output=True, timeout=25)
+    failed_path = Path(tmp) / "failed cases.xlsx"
+    result = subprocess.run([*command, "--report-xlsx", str(failed_path)], text=True,
+                            capture_output=True, timeout=25)
     assert result.returncode == 1, result.stderr
     output = json.loads(result.stdout)
     assert output["passed"] is False and output["cases"][0]["actual_failures"] == ["unexpected_paths"], output
+    with session(failed_path, build.resolve()) as call:
+        doc = call("app_open_document", {"path": str(failed_path)})["document_id"]
+        cells = call("xlsx_get_cells", {"document_id": doc, "sheet": "Wallet Cases", "range": "E2:F2"})["rows"]
+    assert cells == [["unexpected_paths", "FAIL"]], cells
     write_case_sheet(workbook, [headers, ("Invalid fixture", "mdoc", "wrong-nonce", None)])
     result = subprocess.run(command, text=True, capture_output=True, timeout=10)
     assert result.returncode == 2 and not result.stdout and "row 2" in result.stderr, result
-    print("XLSX Wallet case matrix / expected failures, mismatch and invalid row: OK")
+    print("XLSX Wallet case matrix / expected failures, report copy, mismatch and invalid row: OK")
 
 with TemporaryDirectory() as tmp:
     tmp = Path(tmp)
