@@ -181,6 +181,29 @@ failure, or 2 if the run cannot complete. Use `--build-dir` for a Cargo
 output directory other than `target/debug`. The mdoc check covers issuer
 signature, digests and claims. Device authentication is outside this fixture.
 
+### Run your own Wallet command
+
+An adapter can connect your Wallet CLI to the same loopback regression:
+
+```sh
+python3 scripts/wallet-run.py sd-jwt --request-settings verifier.json \
+  --wallet-command ./wallet-adapter --profile test
+```
+
+Put `--wallet-command` last. The runner starts the program directly with
+the supplied arguments. The adapter reads one unsigned authorization
+request JSON object from stdin and writes one response JSON object with
+`vp_token` and `state` to stdout. The runner sends it to the callback over
+HTTP. An adapter can use stderr for logs. Its exit status and malformed
+output are treated as execution errors.
+
+In `verifier.json`, set `audience` to the verifier's client ID and supply
+the `dcql_query` and public ES256 `issuer_jwk` for the test credential.
+The runner supplies a fresh nonce and state. The same report and exit
+codes apply. For mdoc, a passing result covers the issuer signature,
+digests, attributes and response state. It does not establish device
+authentication.
+
 ### Capture a local Wallet response over HTTP
 
 After building the examples above, write the request expectations to

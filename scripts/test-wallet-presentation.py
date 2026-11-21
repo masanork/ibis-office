@@ -304,3 +304,53 @@ for format_name, scenario, failures in (
     assert output["report"]["state_matches"] is True, output
     assert not result.stderr, result.stderr
     print(f"{format_name} / {scenario} / one-command Wallet run: OK")
+
+with TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    settings = json.loads(run("examples/wallet_fixture", "sd-jwt", "normal", "--vp-token"))
+    del settings["nonce"], settings["vp_token"]
+    settings["audience"] = "https://custom-verifier.example"
+    settings["dcql_query"]["credentials"][0]["id"] = "team-wallet"
+    config = tmp / "request.json"
+    config.write_text(json.dumps(settings), encoding="utf-8")
+    # A separate executable interface verifies stdin, argv, stdout and state handling.
+    adapter = tmp / "test wallet adapter.py"
+    adapter.write_text("""
+import json
+import subprocess
+import sys
+
+wallet, scenario = sys.argv[1:]
+request = json.load(sys.stdin)
+assert request["client_id"] == "https://custom-verifier.example"
+assert request["dcql_query"]["credentials"][0]["id"] == "team-wallet"
+if scenario == "malformed":
+    print("not JSON")
+else:
+    response = subprocess.run([wallet, "sd-jwt", "normal", "--request"],
+                              input=json.dumps(request), capture_output=True,
+                              text=True, check=True)
+    result = json.loads(response.stdout)
+    if scenario == "wrong-state":
+        result["state"] = "do-not-print-this-state"
+    print(json.dumps(result))
+""", encoding="utf-8")
+    runner = [sys.executable, "scripts/wallet-run.py", "sd-jwt", "--build-dir", str(build),
+              "--request-settings", str(config), "--wallet-command", sys.executable,
+              str(adapter), str((build / "examples/wallet_fixture").resolve())]
+    for scenario, code, failures in (
+        ("normal", 0, []),
+        ("wrong-state", 1, ["state"]),
+        ("malformed", 2, None),
+    ):
+        result = subprocess.run([*runner, scenario], text=True, capture_output=True, timeout=40)
+        assert result.returncode == code, result.stderr
+        if failures is None:
+            assert not result.stdout and "one JSON object" in result.stderr, result
+        else:
+            output = json.loads(result.stdout)
+            assert output["failed_checks"] == failures, output
+            assert output["report"]["vp_token_credential_id"] == "team-wallet", output
+            assert output["report"]["nonce_matches"] is True, output
+            assert "do-not-print-this-state" not in result.stdout and not result.stderr
+    print("external Wallet command / success, state mismatch and invalid output: OK")
