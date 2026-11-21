@@ -38,6 +38,23 @@ jq -r '.documents.sansho' bill-drafts.json > sansho.md
 
 通常は草案を書き出せれば終了コードは `0` です。`--require-match` を指定した場合、逆適用が一致しなければ草案を書き出したうえで `2` を返します。入出力や解析のエラーは `1` です。JSON の `deterministic_outputs` から残差の構造化差分、逆適用の診断、lint結果を確認できます。
 
+## 縦書きのセット版を DOCX と PDF にする
+
+`--docx` は要綱、法律案、理由、新旧対照条文、参照条文をこの順に収録した一つの DOCX を出力します。A4縦判に右から左へ縦組みし、各文書は新しいページから始まります。新旧対照条文は、上段が改正案、下段が現行で、境界を黒罫で区切り、両段の変更箇所を傍線で示します。`--old-on-left` を付けると縦組みでは現行が上段になります。
+
+組版の参考にした厚生労働省の公開例では、法律案は縦組みで、新旧対照条文は改正案と現行を上下に対照しています。公開例の要綱は横組みです。このセット版は五点を縦組みにそろえています。提出先に指定の様式があれば、編集用の DOCX で調整します。[法律案・理由](https://www.mhlw.go.jp/content/001686250.pdf) · [新旧対照条文](https://www.mhlw.go.jp/content/001686251.pdf) · [要綱](https://www.mhlw.go.jp/content/001686248.pdf) · [参照条文](https://www.mhlw.go.jp/content/001686254.pdf)
+
+```sh
+mkdir -p out
+cargo run --locked -p ibis-formats --bin ibis-lawtext-5set -- \
+  current.xml amended.lawtext --memo policy.md --reference cited-law.xml \
+  --docx > out/bill-set.docx
+cargo run --locked -p ibis-office-app --bin ibisOffice -- \
+  --export pdf --out-dir out out/bill-set.docx
+```
+
+同じ DOCX から `out/bill-set.pdf` を生成します。Docs のデスクトップ版で DOCX を開き、編集後にPDFへ書き出すこともできます。指定書体は Noto Serif CJK JP です。PDFを作る環境ではこの書体を利用できるようにし、改ページ、傍線、罫線、文字のはみ出しを確認してください。lint と逆適用の診断一覧は上記の Markdown または JSON 出力で確認できます。
+
 ## Docs の AI Assistant で起案する
 
 1. デスクトップ版の文書画面で改正後本文を開きます。

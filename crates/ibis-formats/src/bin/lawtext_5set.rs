@@ -12,7 +12,7 @@ use ibis_formats::lawtext::{
     LawDoc, ShinkyuOptions, build_5set_package_with_sources, parse_law_input,
 };
 
-const USAGE: &str = "Usage: ibis-lawtext-5set OLD NEW [--memo FILE] [--reference FILE]... [--old-on-left] [--json] [--require-match]\n    Inputs: UTF-8 e-Gov XML, Lawtext or law Markdown. Output: combined Markdown or JSON to stdout.\n    --require-match exits with status 2 after writing drafts if reverse application differs.";
+const USAGE: &str = "Usage: ibis-lawtext-5set OLD NEW [--memo FILE] [--reference FILE]... [--old-on-left] [--json | --docx] [--require-match]\n    Inputs: UTF-8 e-Gov XML, Lawtext or law Markdown. Output: combined Markdown, JSON or vertical DOCX to stdout.\n    --require-match exits with status 2 after writing drafts if reverse application differs.";
 
 fn read(path: &OsStr) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("{}: {e}", Path::new(path).display()))
@@ -37,6 +37,7 @@ fn run() -> Result<ExitCode, String> {
     let mut sources = Vec::new();
     let mut options = ShinkyuOptions::default();
     let mut json = false;
+    let mut docx = false;
     let mut require_match = false;
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -52,6 +53,7 @@ fn run() -> Result<ExitCode, String> {
             }
             Some("--old-on-left") => options.new_on_left = false,
             Some("--json") => json = true,
+            Some("--docx") => docx = true,
             Some("--require-match") => require_match = true,
             _ => {
                 return Err(format!(
@@ -62,6 +64,9 @@ fn run() -> Result<ExitCode, String> {
         }
     }
 
+    if json && docx {
+        return Err("--json and --docx are mutually exclusive".into());
+    }
     let old = read_law(&old)?;
     let new = read_law(&new)?;
     if !old.law_num.is_empty() && !new.law_num.is_empty() && old.law_num != new.law_num {
@@ -72,7 +77,10 @@ fn run() -> Result<ExitCode, String> {
     }
     let package = build_5set_package_with_sources(&old, &new, &memo, &options, &sources);
     let mut stdout = io::stdout().lock();
-    if json {
+    if docx {
+        let bytes = package.to_print_docx().map_err(|e| e.to_string())?;
+        stdout.write_all(&bytes).map_err(|e| e.to_string())?;
+    } else if json {
         serde_json::to_writer_pretty(&mut stdout, &package.to_json_value())
             .map_err(|e| e.to_string())?;
         writeln!(stdout).map_err(|e| e.to_string())?;

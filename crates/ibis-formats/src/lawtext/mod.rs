@@ -15,6 +15,7 @@ pub mod aratame;
 pub mod assistant;
 pub mod diff;
 pub mod lint;
+mod print;
 pub mod refs;
 pub use aratame::{
     AratameClause, AratameDraft, VerifyResult, apply_aratame, generate_aratame_draft,
