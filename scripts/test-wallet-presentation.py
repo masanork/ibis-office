@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from urllib.parse import urlencode
 
 build = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug")
 
@@ -155,3 +156,40 @@ for format_name, scenario, expected_nonce in [
     assert mcp_compare({**args, "token": token})["isError"]
     assert mcp_compare({**args, "expected_paths": ["age_over_18"]})["isError"]
     print(f"{format_name} / {scenario} / OpenID4VP envelope and invalid responses: OK")
+
+for format_name in ("sd-jwt", "mdoc"):
+    args = json.loads(run("examples/wallet_fixture", format_name, "normal", "--vp-token"))
+    envelope = mcp_compare(args)["structuredContent"]
+    vp_token = json.dumps(args.pop("vp_token"))
+    state = "request + 検査&="
+    body = urlencode({"vp_token": vp_token, "state": state})
+    args["direct_post_body"] = body
+    args["expected_state"] = state
+    result = mcp_compare(args)
+    assert not result["isError"], result
+    report = result["structuredContent"]
+    assert report == {**envelope, "state_matches": True}, report
+    assert report == json.loads(run("examples/presentation_compare", input_text=json.dumps(args))), report
+    assert state not in json.dumps(report, ensure_ascii=False)
+    for next_body in (
+        urlencode({"vp_token": vp_token, "state": "another request"}),
+        urlencode({"vp_token": vp_token}),
+    ):
+        report = mcp_compare({**args, "direct_post_body": next_body})["structuredContent"]
+        assert report["state_matches"] is False, report
+        assert report["nonce_matches"] == envelope["nonce_matches"], report
+    for bad_body in (
+        body + "&%73tate=duplicate",
+        body + "&vp_token=duplicate",
+        body + "&unknown",
+        body.replace("state=", "state=%ZZ"),
+        body.replace("state=", "state=%FF"),
+        "vp_token=invalid-json",
+        "response=encrypted",
+        "error=access_denied",
+        "state=without-presentation",
+    ):
+        result = mcp_compare({**args, "direct_post_body": bad_body})
+        assert result["isError"], result
+    assert mcp_compare({**args, "vp_token": json.loads(vp_token)})["isError"]
+    print(f"{format_name} / direct_post form and state: OK")

@@ -37,6 +37,16 @@ pub(crate) fn tools() -> [Tool; 1] {
                         "expected_paths",
                         json!({"type": "array", "items": {"type": "string"}}),
                     ),
+                    (
+                        "direct_post_body",
+                        string("Raw application/x-www-form-urlencoded OpenID4VP response body."),
+                    ),
+                    (
+                        "expected_state",
+                        string(
+                            "Expected state from the corresponding authorization request (direct_post only).",
+                        ),
+                    ),
                     ("dcql_query", json!({"type": "object"})),
                     ("issuer_jwk", json!({"type": "object"})),
                     ("nonce", string("Expected SD-JWT key binding nonce.")),
@@ -44,16 +54,14 @@ pub(crate) fn tools() -> [Tool; 1] {
                 ],
                 &["format"],
             );
-            schema["oneOf"] = json!([
-                {"required": ["token", "expected_paths"], "not": {"anyOf": [
-                    {"required": ["vp_token"]}, {"required": ["dcql_query"]}
-                ]}},
-                {"required": ["token", "dcql_query"], "not": {"anyOf": [
-                    {"required": ["vp_token"]}, {"required": ["expected_paths"]}
-                ]}},
-                {"required": ["vp_token", "dcql_query"], "not": {"anyOf": [
-                    {"required": ["token"]}, {"required": ["expected_paths"]}
-                ]}}
+            schema["allOf"] = json!([
+                {"oneOf": [
+                    {"required": ["token"]}, {"required": ["vp_token"]},
+                    {"required": ["direct_post_body"]}
+                ]},
+                {"oneOf": [{"required": ["expected_paths"]}, {"required": ["dcql_query"]}]},
+                {"if": {"not": {"required": ["token"]}}, "then": {"required": ["dcql_query"]}},
+                {"if": {"required": ["expected_state"]}, "then": {"required": ["direct_post_body"]}}
             ]);
             schema
         },
@@ -96,8 +104,11 @@ fn key_binding(token: &str) -> Option<(Value, bool)> {
     Some((payload, valid))
 }
 
-fn presentation_input(args: &Value) -> Result<(&str, Option<&str>), ToolError> {
-    match (args.get("token"), args.get("vp_token")) {
+fn presentation_input<'a>(
+    args: &'a Value,
+    vp_token: Option<&'a Value>,
+) -> Result<(&'a str, Option<&'a str>), ToolError> {
+    match (args.get("token"), vp_token) {
         (Some(_), None) => Ok((args.str_arg("token")?, None)),
         (None, Some(vp_token)) => {
             if args.get("expected_paths").is_some() {
@@ -130,7 +141,25 @@ fn presentation_input(args: &Value) -> Result<(&str, Option<&str>), ToolError> {
 }
 
 fn compare(args: &Value) -> Result<Value, ToolError> {
-    let (token, credential_id) = presentation_input(args)?;
+    let body = args.opt_str("direct_post_body")?;
+    let expected_state = args.opt_str("expected_state")?;
+    if body.is_some() && (args.get("vp_token").is_some() || args.get("token").is_some()) {
+        return Err(ToolError::invalid("provide exactly one presentation input"));
+    }
+    if expected_state.is_some() && body.is_none() {
+        return Err(ToolError::invalid(
+            "expected_state requires direct_post_body",
+        ));
+    }
+    let direct_post = body.map(crate::wallet_direct_post::parse).transpose()?;
+    let vp_token = direct_post
+        .as_ref()
+        .map(|post| &post.vp_token)
+        .or_else(|| args.get("vp_token"));
+    let state_matches = expected_state.map(|expected| {
+        direct_post.as_ref().and_then(|post| post.state.as_deref()) == Some(expected)
+    });
+    let (token, credential_id) = presentation_input(args, vp_token)?;
     let token = token.trim();
     if token.len() > 1024 * 1024 {
         return Err(ToolError::invalid("presentation exceeds 1 MiB"));
@@ -220,6 +249,7 @@ fn compare(args: &Value) -> Result<Value, ToolError> {
         "format": format,
         "dcql": dcql,
         "vp_token_credential_id": credential_id,
+        "state_matches": state_matches,
         "disclosed_paths": actual,
         "missing_paths": expected.difference(&actual).collect::<Vec<_>>(),
         "unexpected_paths": actual.difference(&expected).collect::<Vec<_>>(),

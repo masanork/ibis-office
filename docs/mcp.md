@@ -125,8 +125,14 @@ namespace. Pass the raw presentation string as `token`, or use
 For example, `"vp_token": {"age_check": ["<presentation>"]}` must
 contain exactly the credential ID from the query and one presentation string.
 The response reports the matched ID as `vp_token_credential_id`. Extract the
-JSON value of `vp_token` from the response before calling the tool. HTTP form
-decoding and encrypted responses are outside this comparison.
+JSON value of `vp_token` from the response, or pass a captured
+`application/x-www-form-urlencoded` response body as `direct_post_body`
+with `dcql_query`. Pass the original request's `state` as `expected_state`
+to get a separate `state_matches` result. An absent or different response
+state yields `false`; without an expectation the result is `null`.
+Only the `vp_token` and optional `state` fields are accepted in the capture.
+Duplicate parameters, malformed percent escapes and encrypted responses
+return an error. Capture or HTTP transport is handled by the caller.
 The tool returns paths and diagnostic results without claim values.
 
 Supply a public issuer JWK to check the issuer signature. For SD-JWT, the
