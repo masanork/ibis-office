@@ -389,7 +389,7 @@ fn collect_text(node: roxmltree::Node<'_, '_>) -> String {
 
 fn collect_text_into(node: roxmltree::Node<'_, '_>, out: &mut String) {
     if node.is_text() {
-        if let Some(t) = node.text() {
+        if let Some(t) = node.text().filter(|t| !(t.contains('\n') && t.trim().is_empty())) {
             out.push_str(t);
         }
         return;

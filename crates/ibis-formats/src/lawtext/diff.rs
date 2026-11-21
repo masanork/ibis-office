@@ -1719,12 +1719,19 @@ fn diff_clause_tokens(old_text: &str, new_text: &str) -> (String, String) {
 
 fn escape_md_cell(s: &str) -> String {
     s.replace('|', "\\|")
+        .replace("\r\n", "<br>")
+        .replace(['\r', '\n'], "<br>")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lawtext::parse_lawtext;
+
+    #[test]
+    fn table_cells_remain_on_one_markdown_row() {
+        assert_eq!(escape_md_cell("甲|乙\r\n丙\n丁"), "甲\\|乙<br>丙<br>丁");
+    }
 
     #[test]
     fn diffs_items_subitems_and_omits_unchanged() {

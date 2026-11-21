@@ -113,20 +113,32 @@ pub fn generate_sansho_markdown_with_sources(
         return out;
     }
 
-    let mut seen_keys = Vec::new();
-    for r in relevant {
-        let key = (
-            r.external_law.clone(),
-            r.external_law_num.clone(),
-            r.target_article_num.clone(),
-            r.source_article.clone(),
-            r.raw_text.clone(),
-        );
-        if seen_keys.contains(&key) {
+    // A whole target article is printed once even when cited by several
+    // provisions or by multiple paragraph-level citations from one of them.
+    let same_target = |a: &LawReference, b: &LawReference| {
+        match (&a.external_law_num, &b.external_law_num) {
+            (Some(a), Some(b)) if a == b => {}
+            (None, None) if a.external_law == b.external_law => {}
+            _ => return false,
+        }
+        match (&a.target_article_num, &b.target_article_num) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => a.source_article == b.source_article && a.raw_text == b.raw_text,
+            _ => false,
+        }
+    };
+    for (index, &r) in relevant.iter().enumerate() {
+        if relevant[..index].iter().any(|prior| same_target(prior, r)) {
             continue;
         }
-        seen_keys.push(key);
-
+        let mut source_articles = Vec::new();
+        for citation in relevant[index..].iter().filter(|other| same_target(r, other)) {
+            let title = citation.source_article.as_str();
+            if !source_articles.contains(&title) {
+                source_articles.push(title);
+            }
+        }
+        let origin = source_articles.join("・");
         if let Some(ext_law) = &r.external_law {
             let num_part = r
                 .external_law_num
@@ -135,7 +147,7 @@ pub fn generate_sansho_markdown_with_sources(
                 .unwrap_or_default();
             out.push_str(&format!(
                 "## {ext_law}{num_part}（参照元: {}）\n\n",
-                r.source_article
+                origin
             ));
             let candidates: Vec<_> = sources.iter().filter(|source| {
                 if let Some(number) = &r.external_law_num {
@@ -170,19 +182,19 @@ pub fn generate_sansho_markdown_with_sources(
             {
                 out.push_str(&format!(
                     "## {}（参照元: {} / `{}`）\n\n",
-                    target_art.title, r.source_article, r.raw_text
+                    target_art.title, origin, r.raw_text
                 ));
                 render_reference_article(&mut out, target_art);
             } else {
                 out.push_str(&format!(
                     "## {}（参照元: {}）\n\n> 条文テキストが見つかりません。\n\n",
-                    r.raw_text, r.source_article
+                    r.raw_text, origin
                 ));
             }
         } else {
             out.push_str(&format!(
                 "## {}（参照元: {}）\n\n> 相対参照（要文脈確認）\n\n",
-                r.raw_text, r.source_article
+                r.raw_text, origin
             ));
         }
     }

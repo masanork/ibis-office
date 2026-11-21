@@ -38,11 +38,18 @@ jq -r '.documents.sansho' bill-drafts.json > sansho.md
 
 通常は草案を書き出せれば終了コードは `0` です。`--require-match` を指定した場合、逆適用が一致しなければ草案を書き出したうえで `2` を返します。入出力や解析のエラーは `1` です。JSON の `deterministic_outputs` から残差の構造化差分、逆適用の診断、lint結果を確認できます。
 
-## 縦書きのセット版を DOCX と PDF にする
+## 公開例の組版に合わせたセット版を DOCX と PDF にする
 
-`--docx` は要綱、法律案、理由、新旧対照条文、参照条文をこの順に収録した一つの DOCX を出力します。A4縦判に右から左へ縦組みし、各文書は新しいページから始まります。新旧対照条文は、上段が改正案、下段が現行で、境界を黒罫で区切り、両段の変更箇所を傍線で示します。`--old-on-left` を付けると縦組みでは現行が上段になります。
+`--docx` は要綱、法律案、理由、新旧対照条文、参照条文をこの順に収録した一つの DOCX を出力します。各文書は新しいページから始まります。厚生労働省の第221回国会提出資料のうち「予防接種法の一部を改正する法律案」を組版の参照例としました。[要綱](https://www.mhlw.go.jp/content/001709107.pdf) · [法律案・理由](https://www.mhlw.go.jp/content/001709112.pdf) · [新旧対照条文](https://www.mhlw.go.jp/content/001709113.pdf) · [参照条文](https://www.mhlw.go.jp/content/001709114.pdf)
 
-組版の参考にした厚生労働省の公開例では、法律案は縦組みで、新旧対照条文は改正案と現行を上下に対照しています。公開例の要綱は横組みです。このセット版は五点を縦組みにそろえています。提出先に指定の様式があれば、編集用の DOCX で調整します。[法律案・理由](https://www.mhlw.go.jp/content/001686250.pdf) · [新旧対照条文](https://www.mhlw.go.jp/content/001686251.pdf) · [要綱](https://www.mhlw.go.jp/content/001686248.pdf) · [参照条文](https://www.mhlw.go.jp/content/001686254.pdf)
+| 文書 | 用紙と組方向 |
+| --- | --- |
+| 要綱 | A4縦判・横組み一段 |
+| 法律案・理由 | A4縦判・右から左への縦組み。理由を改ページ |
+| 新旧対照条文 | A4縦判・縦組み。上段が改正案、下段が現行。黒罫と両段の傍線を使用 |
+| 参照条文 | A4横判・横組み二段 |
+
+`--old-on-left` を付けると新旧対照条文の上段が現行になります。この構成は選んだ公開例に合わせています。目次、頁番号の位置、抜粋範囲、提出先ごとの細則は DOCX で調整できます。
 
 ```sh
 mkdir -p out
@@ -54,6 +61,27 @@ cargo run --locked -p ibis-office-app --bin ibisOffice -- \
 ```
 
 同じ DOCX から `out/bill-set.pdf` を生成します。Docs のデスクトップ版で DOCX を開き、編集後にPDFへ書き出すこともできます。指定書体は Noto Serif CJK JP です。PDFを作る環境ではこの書体を利用できるようにし、改ページ、傍線、罫線、文字のはみ出しを確認してください。lint と逆適用の診断一覧は上記の Markdown または JSON 出力で確認できます。
+
+## 字詰めとOOXML互換性
+
+2021年4月2日の衆議院内閣委員会で、内閣法制局は閣議請議の法律案・政令案について、縦書き・一行48字・一ページ13行詰めと説明しました。同じ答弁で、Wordの使用に問題はなく、法令審査支援システムはWordと一太郎の両方に対応していると述べています。デジタル庁の調査では、字下げ、禁則、字数・行数、行間の調整が法制執務の負担として挙げられています。[衆議院内閣委員会会議録](https://www.shugiin.go.jp/internet/itdb_kaigiroku.nsf/html/kaigiroku/000220420210402014.htm) · [デジタル庁調査](https://www.digital.go.jp/assets/contents/node/basic_page/field_ref_resources/76a86fd3-eec1-42c5-bf42-6cc3fe32e9da/99a9a6c0/20231027_meeting_digital-system-reform-wg-legal-practice_outline_04.pdf)
+
+このセット版では案文と理由に、公表PDFから観測した約14.05ポイントの字送り、34ポイントの行送りを設定しています。本文領域は全角48字・縦13行分です。別の文書である要綱、新旧対照条文、参照条文には、このグリッドを適用しません。
+
+DOCXでは標準のセクション設定、`w:textDirection`、`w:docGrid`（`linesAndChars`、`linePitch`、`charSpace`）、段落の両端揃えを使います。文字グリッドの基準となるNormalスタイルは14ポイントです。文字列は編集可能なままです。和欧混植、約物の禁則・追い込み、ルビ、フォント代替、WordとDocsの版差で行末や改ページが変わり得ます。48字は全角換算の枠であり、各行に48個のUnicode文字を入れる指定ではありません。Wordでの印刷結果と提出用PDFを照合してください。[OOXML文書グリッド](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.docgrid?view=openxml-3.0.1) · [グリッドへの文字配置](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.snaptogrid?view=openxml-3.0.1)
+
+## 実法案を探して検証する
+
+`houritsu` の Git 履歴は、施行時点ごとの改正箇所、e-Gov の版ID、改正の対象法令、衆議院の議案情報を結び付ける索引に使えます。コミットと親の差分を読むと候補を絞れます。Markdownの front matter や表の表現は `houritsu` 独自なので、Docsへの入力にはそこに書かれた版IDから取得した **e-Gov 法令標準XML** を使います。提出時の案文・理由・要綱と正式な新旧対照条文は提出府省の資料で照合します。段階施行や同日施行があるときは、対象法令ごとに前後のXMLを確認します。[houritsuの記事](https://zenn.dev/koheiwada/articles/houritsu-japanese-laws-as-git) · [e-Gov法令API](https://laws.e-gov.go.jp/api/2/swagger-ui)
+
+実例の「予防接種法の一部を改正する法律案」は、第221回国会の閣法第63号、公布法は令和8年法律第76号です。`houritsu` の改正コミットから、予防接種法と新型インフルエンザ等対策特別措置法の二法が対象と確認できます。予防接種法の比較には次のXMLを使用しました。日付は版の識別子として記載しています。施行日は公布法・政令で確認してください。[houritsuの改正コミット](https://github.com/Kohei-Wada/houritsu/commit/741ba6ebb75fea3105fbaf8e0455d51ad63eb8ed) · [衆議院の議案情報](https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/honbun/g22109063.htm)
+
+| 版 | e-Gov 法令改正履歴ID |
+| --- | --- |
+| 改正前 | `323AC0000000068_20261001_507AC0000000087` |
+| 改正後 | `323AC0000000068_20270130_508AC0000000076` |
+
+API の `GET /api/2/law_data/{law_revision_id}?response_format=xml` から各版を取得し、応答の `<Law>` 要素を取り出して入力します。七つの本則条文が差分として検出され、公開新旧対照条文の本則の対象と一致しました。今回の自動生成は予防接種法の部分を対象とする草案です。逆適用検算では本則の差分は解消され、附則の差分が残りました。別法の改正と実際の要綱・理由は厚生労働省の提出資料で確認できます。[提出資料一覧](https://www.mhlw.go.jp/stf/topics/bukyoku/soumu/houritu/221.html)
 
 ## Docs の AI Assistant で起案する
 

@@ -7,23 +7,33 @@ use std::sync::Arc;
 use ibis_doc_model::flow::{
     Block, BorderStyle, FlowBorder, FlowTable, UnderlineStyle, format_list_number,
 };
-use ibis_doc_model::{FlowAlign, Rgb};
+use ibis_doc_model::{
+    CellDirection, DocGridType, Emu, EmuSize, FlowAlign, PageSetup, PartKind, Rgb,
+};
 
 use super::Legislation5SetPackage;
 use crate::{Error, SaveOptions, markdown};
 
 const COMPARISON_BOOKMARK: &str = "lawtext_comparison";
 
+const SECTION_BREAK: &str = "\n\n::: section {\"break\":\"next-page\"}\n\n";
+const TWIP: Emu = 635;
+const MM: Emu = 36_000;
+// The Cabinet submission body has 48 full-width slots and 13 vertical lines.
+// The pitches approximate the published A4 bill measured in PDF points.
+const BILL_CHAR_PITCH: Emu = 281 * TWIP;
+const BILL_LINE_PITCH: Emu = 680 * TWIP;
+const BILL_FONT_SIZE: u32 = 1_400;
+
 const PAGE_STYLE: &str = "\
 ---
 size: A4
-direction: vertical
 margins.top: 24mm
 margins.bottom: 24mm
 margins.left: 22mm
 margins.right: 22mm
 font: Noto Serif CJK JP
-font_size: 11pt
+font_size: 14pt
 paragraph_spacing: compact
 footer: '- {page} -'
 ---
@@ -31,7 +41,7 @@ footer: '- {page} -'
 ";
 
 impl Legislation5SetPackage {
-    /// Produce a single editable, A4 vertical-writing DOCX of the five drafts.
+    /// Produce one editable DOCX with section layouts based on published bill sets.
     pub fn to_print_docx(&self) -> Result<Vec<u8>, Error> {
         let bill = self.bill_markdown.replace(
             &self.aratame_draft.full_text,
@@ -54,20 +64,90 @@ impl Legislation5SetPackage {
             .replacen("\n| 改正後 |", "\n| 改正案 |", 1)
             .replacen("| 改正後 |\n", "| 改正案 |\n", 1);
         let outline = numbered_outline(&self.youkou_markdown);
+        let bill_and_reason = format!(
+            "{}\n\n\\newpage\n\n{}",
+            bill.trim_end(),
+            self.riyuu_markdown.trim_end()
+        );
+        let references = reference_paragraphs(&self.sansho_markdown);
         let document = [
             outline.trim_end(),
-            bill.trim_end(),
-            self.riyuu_markdown.trim_end(),
+            &bill_and_reason,
             comparison.trim_end(),
-            self.sansho_markdown.trim_end(),
+            references.trim_end(),
         ]
-        .join("\n\n\\newpage\n\n");
+        .join(SECTION_BREAK);
 
         let mut opened = markdown::open_markdown(format!("{PAGE_STYLE}{document}").into_bytes())?;
         let flow = Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
-        // Place the running number below the table's lower rule.
-        flow.page.footer = 12 * 36_000;
-        let available = flow.page.size.height - flow.page.top - flow.page.bottom;
+
+        let portrait = PageSetup {
+            line_pitch: None,
+            doc_grid_type: DocGridType::Default,
+            ..flow.page
+        };
+        let bill = bill_page(portrait);
+        let comparison_page = PageSetup {
+            direction: CellDirection::TbRl,
+            footer: 12 * MM,
+            ..portrait
+        };
+        let mut footer = std::mem::take(&mut flow.footer);
+        for block in &mut footer {
+            if let Block::Paragraph(paragraph) = block {
+                set_font_size(paragraph, 1_000);
+            }
+        }
+        let footer_index = PartKind::Footer.index();
+        let mut section = 0;
+        if let Some(Block::Paragraph(title)) = flow.body.first_mut() {
+            title.direct.align = Some(FlowAlign::Center);
+        }
+        for block in &mut flow.body {
+            let Block::Paragraph(paragraph) = block else {
+                continue;
+            };
+            if section == 1 {
+                paragraph.direct.before = Some(0);
+                paragraph.direct.after = Some(0);
+                paragraph.direct.align = Some(FlowAlign::Justify);
+                set_font_size(paragraph, BILL_FONT_SIZE);
+            } else {
+                let size = match paragraph.style.as_deref() {
+                    Some("Heading1") => 1_400,
+                    Some(style) if style.starts_with("Heading") => 1_200,
+                    _ => 1_100,
+                };
+                set_font_size(paragraph, size);
+            }
+            if let Some(setup) = &mut paragraph.section {
+                let setup = Arc::make_mut(setup);
+                setup.page = match section {
+                    0 => portrait,
+                    1 => bill,
+                    _ => comparison_page,
+                };
+                setup.restart_numbering = section != 0;
+                if section != 0 {
+                    setup.parts[footer_index] = Some(footer.clone());
+                }
+                section += 1;
+            }
+        }
+
+        flow.page = PageSetup {
+            size: EmuSize::new(portrait.size.height, portrait.size.width),
+            columns: ibis_doc_model::PageColumns {
+                count: 2,
+                space: 10 * MM,
+                ..Default::default()
+            },
+            ..portrait
+        };
+        // Explicitly end the numbered footer carried over from the comparison.
+        flow.linked[footer_index] = false;
+
+        let available = comparison_page.size.height - comparison_page.top - comparison_page.bottom;
         let table = flow
             .body
             .iter_mut()
@@ -84,6 +164,33 @@ impl Legislation5SetPackage {
         opened
             .source
             .save(&opened.presentation, SaveOptions::default())
+    }
+}
+
+fn bill_page(portrait: PageSetup) -> PageSetup {
+    let top = 27 * MM / TWIP * TWIP;
+    let right = 27 * MM / TWIP * TWIP;
+    PageSetup {
+        top,
+        right,
+        bottom: portrait.size.height - top - 48 * BILL_CHAR_PITCH,
+        left: portrait.size.width - right - 13 * BILL_LINE_PITCH,
+        footer: 12 * MM,
+        direction: CellDirection::TbRl,
+        line_pitch: Some(BILL_LINE_PITCH),
+        // OOXML stores the addition to the Normal style's full-width advance.
+        char_space: Some(
+            BILL_CHAR_PITCH - (BILL_FONT_SIZE as Emu * ibis_doc_model::EMU_PER_POINT / 100),
+        ),
+        doc_grid_type: DocGridType::LinesAndChars,
+        ..portrait
+    }
+}
+
+fn set_font_size(paragraph: &mut ibis_doc_model::FlowParagraph, size: u32) {
+    paragraph.mark_format.size = Some(size);
+    for run in &mut paragraph.runs {
+        run.format.size = Some(size);
     }
 }
 
@@ -107,10 +214,24 @@ fn numbered_outline(outline: &str) -> String {
         .collect()
 }
 
+fn reference_paragraphs(references: &str) -> String {
+    references
+        .lines()
+        .map(|line| {
+            if let Some(text) = line.trim_start().strip_prefix("- ") {
+                let depth = (line.len() - line.trim_start().len()) / 2;
+                format!("{}　{text}\n\n", "　".repeat(depth))
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect()
+}
+
 fn format_comparison(table: &mut FlowTable, available: ibis_doc_model::Emu) {
     // In a vertical section, the logical table columns occupy the upper and
     // lower bands of the paper. Let Word and the PDF renderer split long rows.
-    let width = available / 2 / 635 * 635;
+    let width = available / 2 / TWIP * TWIP;
     table.columns = vec![width; 2];
     table.style = None;
     let rule = FlowBorder {
@@ -135,6 +256,7 @@ fn format_comparison(table: &mut FlowTable, available: ibis_doc_model::Emu) {
                     continue;
                 };
                 paragraph.table_style = None;
+                set_font_size(paragraph, 1_100);
                 if index == 0 {
                     paragraph.direct.align = Some(FlowAlign::Center);
                 }
@@ -166,7 +288,42 @@ mod tests {
         let bytes = set.to_print_docx().unwrap();
         let opened = crate::open(bytes).unwrap();
         let flow = opened.presentation.flow.unwrap();
-        assert_eq!(flow.page.direction, ibis_doc_model::CellDirection::TbRl);
+        use ibis_doc_model::flow_command::{section_setup, sections};
+        let pages: Vec<_> = sections(&flow)
+            .iter()
+            .map(|&id| section_setup(&flow, id).unwrap().page)
+            .collect();
+        assert_eq!(
+            pages.iter().map(|p| p.direction).collect::<Vec<_>>(),
+            [
+                CellDirection::LrTb,
+                CellDirection::TbRl,
+                CellDirection::TbRl,
+                CellDirection::LrTb
+            ]
+        );
+        let bill = pages[1];
+        assert_eq!(bill.doc_grid_type, DocGridType::LinesAndChars);
+        assert_eq!(bill.line_pitch, Some(BILL_LINE_PITCH));
+        let normal = flow.styles.default_paragraph.as_deref().unwrap();
+        assert_eq!(flow.styles.styles[normal].run.size, Some(BILL_FONT_SIZE));
+        assert_eq!(bill.char_space, Some(635));
+        assert_eq!(
+            bill.size.height - bill.top - bill.bottom,
+            48 * BILL_CHAR_PITCH
+        );
+        assert_eq!(
+            bill.size.width - bill.left - bill.right,
+            13 * BILL_LINE_PITCH
+        );
+        assert!(flow.page.size.width > flow.page.size.height);
+        assert_eq!(flow.page.columns.count, 2);
+        assert!(
+            pages
+                .iter()
+                .enumerate()
+                .all(|(i, p)| i == 1 || p.doc_grid_type == DocGridType::Default)
+        );
         assert!(flow.page.footer < flow.page.bottom);
         assert!(flow.body.iter().any(|block| matches!(block, Block::Paragraph(p)
             if p.runs.iter().any(|run| matches!(&run.kind, FlowRunKind::Text(t) if t.starts_with("一　第一条"))))));
@@ -178,7 +335,7 @@ mod tests {
                 matches!(run.kind, FlowRunKind::PageBreak)))
             })
             .count();
-        assert_eq!(breaks, 4);
+        assert_eq!(breaks, 1);
         let table = flow
             .body
             .iter()
@@ -193,7 +350,7 @@ mod tests {
         assert_eq!(table.columns.len(), 2);
         assert!(
             (table.columns.iter().sum::<ibis_doc_model::Emu>()
-                - (flow.page.size.height - flow.page.top - flow.page.bottom))
+                - (pages[2].size.height - pages[2].top - pages[2].bottom))
                 .abs()
                 <= 1_270
         );

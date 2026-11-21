@@ -813,6 +813,7 @@ fn parse_art_para_target(target: &str) -> Option<(String, Option<String>)> {
 }
 
 fn parse_full_target(target: &str) -> Option<(String, Option<String>, Option<String>, Option<String>)> {
+    let target = target.trim().trim_end_matches("各号列記以外の部分");
     let (art_t, para_n) = parse_art_para_target(target)?;
     let mut item_t = None;
     let mut sub_t = None;
@@ -1017,6 +1018,14 @@ fn to_kanji_or_num(num: &str) -> String {
 mod tests {
     use super::*;
     use crate::lawtext::parse_lawtext;
+
+    #[test]
+    fn resolves_paragraph_text_before_enumerated_items() {
+        assert_eq!(
+            parse_full_target("第二条第一項各号列記以外の部分"),
+            Some(("第二条".into(), Some("1".into()), None, None))
+        );
+    }
 
     #[test]
     fn generates_and_verifies_aratame_roundtrip() {

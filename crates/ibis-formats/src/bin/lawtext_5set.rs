@@ -12,7 +12,7 @@ use ibis_formats::lawtext::{
     LawDoc, ShinkyuOptions, build_5set_package_with_sources, parse_law_input,
 };
 
-const USAGE: &str = "Usage: ibis-lawtext-5set OLD NEW [--memo FILE] [--reference FILE]... [--old-on-left] [--json | --docx] [--require-match]\n    Inputs: UTF-8 e-Gov XML, Lawtext or law Markdown. Output: combined Markdown, JSON or vertical DOCX to stdout.\n    --require-match exits with status 2 after writing drafts if reverse application differs.";
+const USAGE: &str = "Usage: ibis-lawtext-5set OLD NEW [--memo FILE] [--reference FILE]... [--old-on-left] [--json | --docx] [--require-match]\n    Inputs: UTF-8 e-Gov XML, Lawtext or law Markdown. Output: combined Markdown, JSON or print-layout DOCX to stdout.\n    --require-match exits with status 2 after writing drafts if reverse application differs.";
 
 fn read(path: &OsStr) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("{}: {e}", Path::new(path).display()))
