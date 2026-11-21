@@ -58,6 +58,26 @@ fn read_file_with_stack(path: &std::path::Path, password: Option<&str>, encoding
         .join().map_err(|_| "File reader thread failed".to_string())?
 }
 
+#[cfg(not(target_family = "wasm"))]
+pub fn read_dpx_with_color(path: &std::path::Path, color: ibis_formats::production_image::DpxColor) -> Result<Loaded, String> {
+    catch_read_panic(path, || {
+        let data = std::fs::read(path).map_err(|error| error.to_string())?;
+        let (opened, exposure) = ibis_formats::production_image::open_with_dpx_color(Some("dpx"), &data, Some(color))?
+            .ok_or("DPX preview is unavailable")?;
+        Ok(load_production_image(opened, exposure, None))
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn load_production_image(
+    opened: ibis_formats::Opened,
+    exr_exposure: Option<ibis_formats::production_image::ExrExposure>,
+    image_provenance: Option<crate::image_provenance::Report>,
+) -> Loaded {
+    crate::render::preload::Preload::start_for_next(&opened.presentation);
+    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, exr_exposure, image_provenance }
+}
+
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
 /// process, so a panic here would take the other open documents with it (review 0.8.5, C1). The panic is caught and becomes
 /// this file's open error. (No `panic = "abort"` is set anywhere in the workspace, so the unwind reaches this frame.)
@@ -198,8 +218,7 @@ fn read_file_data(
     let extension = path.extension().and_then(|e| e.to_str());
     if let Some((opened, exr_exposure)) = ibis_formats::production_image::open_with_exposure(extension, &data)? {
         let image_provenance = extension.and_then(|ext| crate::image_provenance::inspect(ext, &data));
-        crate::render::preload::Preload::start_for_next(&opened.presentation);
-        return Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, exr_exposure, image_provenance });
+        return Ok(load_production_image(opened, exr_exposure, image_provenance));
     }
     if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::jtd::is_extension) || ibis_formats::jtd::is_jtd(&data) {
         let (presentation, jtd_gallery) = crate::jtd_preview::read(&data)?;

@@ -22,6 +22,32 @@ use crate::chrome::SidebarPanel;
 use crate::format::{FormatState, state_for_model, with_format};
 use crate::actions::{CancelTool, CloseFile, DeleteSelection, NextSlide, Open, PreviousSlide, Redo, Undo};
 
+use ibis_formats::production_image::{DpxColor, DPX_NEEDS_COLOR};
+
+fn prompt_dpx_color(window: &mut Window, cx: &mut App) -> futures::channel::oneshot::Receiver<usize> {
+    use crate::i18n::text;
+    let buttons = [
+        PromptButton::ok(text("file.dpx-color.linear")),
+        PromptButton::new(text("file.dpx-color.video")),
+        PromptButton::cancel(text("_shell.cancel")),
+    ];
+    window.prompt(
+        PromptLevel::Info,
+        &text("file.dpx-color.title"),
+        Some(&text("file.dpx-color.detail")),
+        &buttons,
+        cx,
+    )
+}
+
+fn dpx_color_answer(answer: Option<usize>) -> Option<DpxColor> {
+    match answer {
+        Some(0) => Some(DpxColor::LinearRec709),
+        Some(1) => Some(DpxColor::VideoRec709),
+        _ => None,
+    }
+}
+
 /// Key context of the editor; see the bindings in `ibis_office_app::init`.
 pub const CONTEXT: &str = "SlideEditor";
 /// Key context of the workspace with the slide (the editor's focus).
@@ -1590,7 +1616,22 @@ impl SlideEditor {
             let mut result = if extension.is_some_and(ibis_formats::production_image::is_heic_extension) {
                 crate::web::open_heic(&data).await.map(|opened| (opened, None))
             } else {
-                match ibis_formats::production_image::open_with_exposure(extension, &data) {
+                let mut preview = ibis_formats::production_image::open_with_exposure(extension, &data);
+                if preview.as_ref().is_err_and(|error| error == DPX_NEEDS_COLOR) {
+                    let Ok(Some(receiver)) = this.update_in(cx, |this, window, cx| {
+                        (this.closed == closed && this.web_open_generation == generation)
+                            .then(|| prompt_dpx_color(window, cx))
+                    }) else { return; };
+                    let color = dpx_color_answer(receiver.await.ok());
+                    let still_opening = this.update(cx, |this, cx| {
+                        if this.closed != closed || this.web_open_generation != generation { return false; }
+                        if color.is_none() { this.fail_loading(String::new(), cx); }
+                        true
+                    }).unwrap_or(false);
+                    let Some(color) = color.filter(|_| still_opening) else { return; };
+                    preview = ibis_formats::production_image::open_with_dpx_color(extension, &data, Some(color));
+                }
+                match preview {
                     Ok(Some(result)) => {
                         if let Some(extension) = extension {
                             image_provenance = crate::image_provenance::inspect(extension, &data).await;
@@ -1700,7 +1741,7 @@ impl SlideEditor {
         let closed = self.closed;
         cx.spawn_in(window, async move |this, cx| {
             let sequence_path = path.clone();
-            let (mut result, sequence) = cx.background_executor().spawn(async move {
+            let (mut result, mut sequence) = cx.background_executor().spawn(async move {
                 let result = read();
                 let sequence = if result.is_ok() && sequence_path.extension().and_then(|ext| ext.to_str())
                     .is_some_and(ibis_formats::production_image::supports_extension)
@@ -1711,6 +1752,33 @@ impl SlideEditor {
                 };
                 (result, sequence)
             }).await;
+            if result.as_ref().is_err_and(|error| error == DPX_NEEDS_COLOR) {
+                let Ok(Some(receiver)) = this.update_in(cx, |this, window, cx| {
+                    (this.closed == closed && this.watch.opening_path.as_deref() == Some(path.as_path()))
+                        .then(|| prompt_dpx_color(window, cx))
+                }) else { return; };
+                let color = dpx_color_answer(receiver.await.ok());
+                let still_opening = this.update(cx, |this, cx| {
+                    if this.closed != closed || this.watch.opening_path.as_deref() != Some(path.as_path()) { return false; }
+                    if color.is_none() {
+                        this.watch.opening_path = None;
+                        this.fail_loading(String::new(), cx);
+                    }
+                    true
+                }).unwrap_or(false);
+                let Some(color) = color.filter(|_| still_opening) else { return; };
+                let chosen_path = path.clone();
+                let expected = stamp_before_read.clone();
+                (result, sequence) = cx.background_executor().spawn(async move {
+                    let changed = || crate::file_watch::DiskStamp::stat(&chosen_path) != expected;
+                    let changed_error = || Err(crate::i18n::text("file.dpx-color.changed").to_string());
+                    if expected.is_none() || changed() { return (changed_error(), None); }
+                    let opened = crate::read_file::read_dpx_with_color(&chosen_path, color);
+                    if changed() { return (changed_error(), None); }
+                    let sequence = opened.as_ref().ok().and_then(|_| crate::image_sequence::ImageSequence::discover(&chosen_path));
+                    (opened, sequence)
+                }).await;
+            }
             let ambiguous = result.as_ref().ok().and_then(|loaded| loaded.source.original_csv_format())
                 .is_some_and(|format| matches!(format.encoding, ibis_formats::csv::OriginalEncoding::AsciiAmbiguous | ibis_formats::csv::OriginalEncoding::Utf8OrCp932));
             if ambiguous {

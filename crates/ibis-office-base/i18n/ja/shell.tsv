@@ -1267,6 +1267,11 @@ shell.font-setup.done	インストールしました。書体の一覧から選�
 file.csv-encoding.title	CSV の文字コードを選択
 file.csv-encoding.detail	このファイルの文字コードを一意に判定できません。読み込みと上書き保存に使う文字コードを選んでください。Shift_JIS は Windows の CP932 として扱います。
 file.csv-encoding.changed	選択中にファイルが変更されました。もう一度開いてください。
+file.dpx-color.title	DPX の色解釈を選択
+file.dpx-color.detail	DPX の色タグが不足しています。プレビューと確認用 DOCX に使う元素材の色解釈を選んでください。参照範囲の指定がない場合、リニアはコード値 0–1023、ビデオは 64–940 を使います。
+file.dpx-color.linear	リニア Rec.709
+file.dpx-color.video	ビデオ Rec.709
+file.dpx-color.changed	選択中に DPX が変更されました。もう一度開いてください。
 file.csv-loading-blocked	CSV の読み込みが完了するまでお待ちください。
 file.csv-error.external-change	CSV が外部で変更されたため上書き保存できません。
 file.csv-error.untracked-edits	追跡できない編集があるため CSV を上書き保存できません。名前を付けて保存を使用してください。

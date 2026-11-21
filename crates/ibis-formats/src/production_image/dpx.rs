@@ -8,7 +8,12 @@ use image::{Rgb, RgbImage};
 const GENERIC_HEADER_SIZE: usize = 1664;
 const MAX_CODE: u32 = 1023;
 
-pub(super) fn decode(bytes: &[u8]) -> Result<RgbImage, &'static str> {
+use super::{DPX_NEEDS_COLOR, DpxColor};
+
+pub(super) fn decode(
+    bytes: &[u8],
+    selected_color: Option<DpxColor>,
+) -> Result<RgbImage, &'static str> {
     let header = bytes
         .get(..GENERIC_HEADER_SIZE)
         .ok_or("Incomplete DPX header")?;
@@ -87,19 +92,28 @@ pub(super) fn decode(bytes: &[u8]) -> Result<RgbImage, &'static str> {
         .ok_or("Invalid DPX image size")?;
     let pixels = bytes.get(offset..end).ok_or("Truncated DPX pixel data")?;
 
-    let transfer = header[801];
-    if !matches!((transfer, header[802]), (2, 6) | (6, 6)) {
-        return Err("DPX preview requires linear or video Rec.709 color");
-    }
-    let (low, high) = match (u32_at(784), u32_at(792)) {
-        (u32::MAX, u32::MAX) if transfer == 2 => (0, MAX_CODE),
-        (low, high) if low < high && high <= MAX_CODE => (low, high),
+    let (tagged_color, can_choose) = match (header[801], header[802]) {
+        (2, 6) => (Some(DpxColor::LinearRec709), false),
+        (6, 6) => (Some(DpxColor::VideoRec709), false),
+        (0 | 255, 0 | 255 | 6) | (2 | 6, 0 | 255) => (None, true),
+        _ => return Err("DPX preview requires linear or video Rec.709 color"),
+    };
+    let range = match (u32_at(784), u32_at(792)) {
+        (u32::MAX, u32::MAX) => None,
+        (low, high) if low < high && high <= MAX_CODE => Some((low, high)),
+        _ => return Err("DPX preview requires a valid reference code range"),
+    };
+    let color = tagged_color.or(selected_color).ok_or(DPX_NEEDS_COLOR)?;
+    let (low, high) = match (range, color) {
+        (Some(range), _) => range,
+        (None, DpxColor::LinearRec709) => (0, MAX_CODE),
+        (None, DpxColor::VideoRec709) if can_choose => (64, 940),
         _ => return Err("DPX preview requires a valid reference code range"),
     };
 
     let lookup: [u8; 1024] = std::array::from_fn(|code| {
         let signal = ((code as f32 - low as f32) / (high - low) as f32).clamp(0.0, 1.0);
-        let linear = if transfer == 2 {
+        let linear = if color == DpxColor::LinearRec709 {
             signal
         } else if signal < 0.081 {
             signal / 4.5
@@ -202,18 +216,64 @@ mod tests {
         let word = (940u32 << 22) | (502 << 12) | (64 << 2);
         bytes[1664..1668].copy_from_slice(&word.to_be_bytes());
         assert_eq!(
-            super::decode(&bytes).unwrap().get_pixel(0, 0).0,
+            super::decode(&bytes, None).unwrap().get_pixel(0, 0).0,
             [255, 139, 0]
         );
+    }
+
+    #[test]
+    fn chooses_color_for_missing_tags_without_overriding_valid_tags() {
+        use super::{DPX_NEEDS_COLOR, DpxColor};
+
+        let mut bytes = fixture(false, 1);
+        let tagged = super::decode(&bytes, Some(DpxColor::VideoRec709)).unwrap();
+        assert_eq!(tagged, super::decode(&bytes, None).unwrap());
+        bytes[801..803].fill(0);
+        bytes[784..788].fill(255);
+        bytes[792..796].fill(255);
+        assert_eq!(super::decode(&bytes, None).unwrap_err(), DPX_NEEDS_COLOR);
+        let linear = super::decode(&bytes, Some(DpxColor::LinearRec709)).unwrap();
+        let video = super::decode(&bytes, Some(DpxColor::VideoRec709)).unwrap();
+        assert_eq!(linear, tagged);
+        assert_eq!(video.get_pixel(0, 0).0, [255, 142, 0]);
+        bytes.truncate(bytes.len() - 5);
+        assert!(
+            super::decode(&bytes, None)
+                .unwrap_err()
+                .contains("Truncated")
+        );
+    }
+
+    #[test]
+    fn exported_docx_contains_the_selected_preview_pixels() {
+        let mut bytes = fixture(false, 1);
+        bytes[801..803].fill(0);
+        for color in [super::DpxColor::LinearRec709, super::DpxColor::VideoRec709] {
+            let (opened, _) = super::super::open_with_dpx_color(Some("dpx"), &bytes, Some(color))
+                .unwrap()
+                .unwrap();
+            let docx = opened
+                .source
+                .save(&opened.presentation, Default::default())
+                .unwrap();
+            let reopened = crate::open(docx).unwrap();
+            let media = reopened.presentation.media.last().unwrap();
+            let exported = image::load_from_memory(&media.data).unwrap().to_rgb8();
+            assert_eq!(exported, super::decode(&bytes, Some(color)).unwrap());
+        }
     }
 
     #[test]
     fn rejects_unimplemented_color_and_truncated_rows() {
         let mut bytes = fixture(false, 1);
         bytes[801] = 1;
-        assert!(super::decode(&bytes).unwrap_err().contains("Rec.709"));
+        assert!(super::decode(&bytes, None).unwrap_err().contains("Rec.709"));
         bytes[801] = 2;
         bytes.truncate(bytes.len() - 5);
-        assert!(super::decode(&bytes).unwrap_err().contains("Truncated"));
+        assert!(
+            super::decode(&bytes, None)
+                .unwrap_err()
+                .contains("Truncated")
+        );
     }
 }

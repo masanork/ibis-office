@@ -1269,6 +1269,11 @@ shell.font-setup.done	Installed. The fonts are in the font lists now.
 file.csv-encoding.title	Choose the CSV encoding
 file.csv-encoding.detail	The encoding cannot be determined uniquely. Choose the encoding used to open and overwrite this file. Shift_JIS is treated as Windows CP932.
 file.csv-encoding.changed	The file changed while you were choosing. Open it again.
+file.dpx-color.title	Choose the DPX color interpretation
+file.dpx-color.detail	The DPX color tags are incomplete. Choose the source color interpretation for the preview and the exported DOCX. If the reference range is unspecified, linear uses codes 0–1023 and video uses 64–940.
+file.dpx-color.linear	Linear Rec.709
+file.dpx-color.video	Video Rec.709
+file.dpx-color.changed	The DPX changed while you were choosing. Open it again.
 file.csv-loading-blocked	Wait until the CSV has finished loading.
 file.csv-error.external-change	The CSV file was modified externally and cannot be overwritten.
 file.csv-error.untracked-edits	The CSV contains edits that cannot be safely saved in place. Use Save As instead.

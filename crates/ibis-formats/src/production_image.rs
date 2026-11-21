@@ -15,6 +15,15 @@ use std::io::Cursor;
 const MAX_PIXELS: u64 = 32 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 128 * 1024 * 1024;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DpxColor {
+    LinearRec709,
+    VideoRec709,
+}
+
+/// A supported DPX layout whose missing color tags require a user choice.
+pub const DPX_NEEDS_COLOR: &str = "DPX preview requires an explicit Rec.709 color interpretation";
+
 enum Format {
     Raster(ImageFormat),
     Jpeg2000,
@@ -54,6 +63,14 @@ pub fn open_with_exposure(
     extension: Option<&str>,
     bytes: &[u8],
 ) -> Result<Option<(crate::Opened, Option<ExrExposure>)>, String> {
+    open_with_dpx_color(extension, bytes, None)
+}
+
+pub fn open_with_dpx_color(
+    extension: Option<&str>,
+    bytes: &[u8],
+    dpx_color: Option<DpxColor>,
+) -> Result<Option<(crate::Opened, Option<ExrExposure>)>, String> {
     let Some(format) = extension.and_then(format) else {
         return Ok(None);
     };
@@ -84,7 +101,7 @@ pub fn open_with_exposure(
             None,
         ),
         Format::Dpx => (
-            encode_png(DynamicImage::ImageRgb8(dpx::decode(bytes)?))?,
+            encode_png(DynamicImage::ImageRgb8(dpx::decode(bytes, dpx_color)?))?,
             None,
         ),
         Format::OpenExr => {
