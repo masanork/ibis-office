@@ -951,13 +951,27 @@ fn move_sheet(package: &mut Package, map: &mut SourceMap, from: usize, to: usize
 /// `sheet/@state` hidden or not; the book's active tab (and first tab
 /// shown) moved off a sheet hidden.
 fn hide_sheet(package: &mut Package, map: &mut SourceMap, index: usize, hidden: bool) -> Result<(), Error> {
+    use ibis_doc_model::SheetState;
+    let state = if hidden { SheetState::Hidden } else { SheetState::Visible };
+    set_sheet_states(package, map, &[(index, state)])
+}
+
+pub(super) fn set_sheet_states(
+    package: &mut Package,
+    map: &SourceMap,
+    states: &[(usize, ibis_doc_model::SheetState)],
+) -> Result<(), Error> {
+    use ibis_doc_model::SheetState;
+
     let doc = package.xml_mut(&map.workbook)?;
     let (_, list) = sheet_elements(doc).ok_or_else(|| Error::new("ブックに sheets がありません"))?;
-    let element = *list.get(index).ok_or_else(|| Error::new("シートが見つかりません"))?;
-    if hidden {
-        doc.set_attr(element, "state", "hidden");
-    } else {
-        doc.remove_attr(element, "state");
+    for &(index, state) in states {
+        let element = *list.get(index).ok_or_else(|| Error::new("シートが見つかりません"))?;
+        match state {
+            SheetState::Visible => doc.remove_attr(element, "state"),
+            SheetState::Hidden => doc.set_attr(element, "state", "hidden"),
+            SheetState::VeryHidden => doc.set_attr(element, "state", "veryHidden"),
+        }
     }
     let visible: Vec<usize> = list.iter().enumerate().filter(|(_, e)| doc.attr(**e, "state").is_none_or(|s| s == "visible")).map(|(i, _)| i).collect();
     let Some(&first) = visible.first() else { return Err(unsupported("すべてのシートを非表示にすること")) };
@@ -977,10 +991,12 @@ fn hide_sheet(package: &mut Package, map: &mut SourceMap, index: usize, hidden: 
         }
     }
     // A hidden sheet's tab is not selected.
-    if hidden
-        && let Some(Some(part)) = map.sheet_parts.get(index).cloned()
-    {
-        let doc = package.xml_mut(&part)?;
+    for &(index, state) in states {
+        let Some(Some(part)) = map.sheet_parts.get(index) else { continue };
+        if state == SheetState::Visible {
+            continue;
+        }
+        let doc = package.xml_mut(part)?;
         let views: Vec<_> = doc.descendants(doc.root_element().unwrap_or(ibis_ooxml::XmlDocument::ROOT)).into_iter().filter(|&n| doc.local_name(n) == "sheetView").collect();
         for v in views {
             doc.remove_attr(v, "tabSelected");

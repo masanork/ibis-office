@@ -786,6 +786,16 @@ impl Source {
 
 
     fn save_as_is(&self, current: &Presentation, options: SaveOptions) -> Result<Vec<u8>, Error> {
+        self.save_with_sheet_states(current, options, &[])
+    }
+
+    /// Finish a generated workbook by hiding sheets after their cells have been written.
+    pub(crate) fn save_with_sheet_states(
+        &self,
+        current: &Presentation,
+        options: SaveOptions,
+        sheet_states: &[(usize, ibis_doc_model::SheetState)],
+    ) -> Result<Vec<u8>, Error> {
         let mut package = self.package.clone();
         match &self.map {
             SourceMap::Presentation(map) => {
@@ -797,7 +807,7 @@ impl Source {
             SourceMap::Workbook(map) => {
                 let chart_data = self.chart_data.lock().unwrap_or_else(|e| e.into_inner());
                 let new_charts = self.new_charts.lock().unwrap_or_else(|e| e.into_inner());
-                xlsx::write_changes(&mut package, map, &self.baseline, current, &chart_data, &new_charts)?
+                xlsx::write_changes(&mut package, map, &self.baseline, current, &chart_data, &new_charts, sheet_states)?
             }
             SourceMap::Document(map) => {
                 let chart_data = self.chart_data.lock().unwrap_or_else(|e| e.into_inner());

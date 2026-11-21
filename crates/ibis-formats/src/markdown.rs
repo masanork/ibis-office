@@ -379,6 +379,12 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let date1904 = text.lines().next().is_some_and(|line| line == XLSX_1904_MARKER);
     let sections = markdown_workbook_sections(text)?;
+    let sheet_states: Vec<_> = sections.iter().enumerate().filter_map(|(index, (marker, _))| {
+        marker.as_ref().and_then(|marker| marker.state).map(|state| (index, state))
+    }).collect();
+    let active_tab = sections.iter().position(|(marker, _)| {
+        marker.as_ref().is_none_or(|marker| marker.state.is_none())
+    }).ok_or_else(|| Error::new("少なくとも1枚の表示シートが必要です"))?;
     let blank = if date1904 {
         crate::csv::blank_workbook_with_1904_dates()?
     } else {
@@ -430,7 +436,12 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
         }
     }
     ibis_doc_model::sheet_command::sync_sheet_book_context(presentation);
-    Ok(opened)
+    if sheet_states.is_empty() {
+        return Ok(opened);
+    }
+    Arc::make_mut(opened.presentation.workbook.as_mut().unwrap()).active_tab = active_tab;
+    let bytes = opened.source.save_with_sheet_states(&opened.presentation, SaveOptions::default(), &sheet_states)?;
+    crate::save::open(bytes)
 }
 
 const XLSX_1904_MARKER: &str = "<!-- xlsx-date-system:1904 -->";
@@ -439,6 +450,7 @@ const XLSX_SHEET_MARKER: &str = "<!-- xlsx-sheet ";
 struct MarkdownSheetMarker {
     name: String,
     origin: Option<String>,
+    state: Option<ibis_doc_model::SheetState>,
     validations: Vec<ibis_doc_model::Validation>,
     hidden_rows: Vec<(u32, u32)>,
     hidden_columns: Vec<(u32, u32)>,
@@ -448,18 +460,24 @@ fn parse_markdown_sheet_marker(encoded: &str) -> Option<MarkdownSheetMarker> {
     let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
     if let Some(name) = value.as_str() {
         return Some(MarkdownSheetMarker {
-            name: name.to_owned(), origin: None, validations: Vec::new(),
+            name: name.to_owned(), origin: None, state: None, validations: Vec::new(),
             hidden_rows: Vec::new(), hidden_columns: Vec::new(),
         });
     }
     let object = value.as_object()?;
-    if object.keys().any(|key| !matches!(key.as_str(), "name" | "origin" | "validations" | "hiddenRows" | "hiddenColumns")) {
+    if object.keys().any(|key| !matches!(key.as_str(), "name" | "origin" | "state" | "validations" | "hiddenRows" | "hiddenColumns")) {
         return None;
     }
     let name = object.get("name")?.as_str()?.to_owned();
     let origin = match object.get("origin") {
         Some(value) => Some(value.as_str()?.to_owned()),
         None => None,
+    };
+    let state = match object.get("state").map(serde_json::Value::as_str) {
+        None | Some(Some("visible")) => None,
+        Some(Some("hidden")) => Some(ibis_doc_model::SheetState::Hidden),
+        Some(Some("veryHidden")) => Some(ibis_doc_model::SheetState::VeryHidden),
+        _ => return None,
     };
     let validations = match object.get("validations") {
         Some(value) => value.as_array()?.iter().map(parse_markdown_validation).collect::<Option<_>>()?,
@@ -471,7 +489,7 @@ fn parse_markdown_sheet_marker(encoded: &str) -> Option<MarkdownSheetMarker> {
     let hidden_columns = parse_markdown_hidden_axis(object.get("hiddenColumns"), |label| {
         (label.len() <= 3).then(|| ibis_calc::formula::parser::column_index(label)).flatten()
     })?;
-    Some(MarkdownSheetMarker { name, origin, validations, hidden_rows, hidden_columns })
+    Some(MarkdownSheetMarker { name, origin, state, validations, hidden_rows, hidden_columns })
 }
 
 fn parse_markdown_hidden_axis(
@@ -822,6 +840,7 @@ pub fn export_workbook_markdown(p: &Presentation) -> Result<String, Error> {
 pub struct WorkbookMarkdownOptions {
     pub include_validations: bool,
     pub include_hidden_axes: bool,
+    pub include_hidden_sheets: bool,
 }
 
 /// Export visible worksheets with the requested metadata for XLSX reconstruction.
@@ -830,6 +849,20 @@ pub fn export_workbook_markdown_with_options(
     options: WorkbookMarkdownOptions,
 ) -> Result<String, Error> {
     export_workbook_markdown_with_positions(p, options, |_, _, _, _, _, _| {})
+}
+
+fn workbook_markdown_sheet<'a>(
+    p: &'a Presentation,
+    entry: &'a ibis_doc_model::WorkbookSheet,
+    include_hidden: bool,
+) -> Option<&'a ibis_doc_model::Sheet> {
+    if entry.other {
+        return None;
+    }
+    if entry.state == ibis_doc_model::SheetState::Visible {
+        return entry.slide.and_then(|id| p.slide(id)).and_then(ibis_doc_model::sheet_calc::sheet_of_slide).map(|sheet| &**sheet);
+    }
+    if include_hidden { entry.hidden.as_deref() } else { None }
 }
 
 fn export_workbook_markdown_with_positions(
@@ -849,17 +882,21 @@ fn export_workbook_markdown_with_positions(
     }
     let mut total_cells = 0u64;
 
+    let mut has_visible_sheet = false;
+    let mut has_hidden_sheet = false;
     for sheet_ref in &book.sheets {
-        if sheet_ref.state != SheetState::Visible || sheet_ref.other {
-            continue;
-        }
-        let Some(sheet) = sheet_ref
-            .slide
-            .and_then(|id| p.slide(id))
-            .and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
-        else {
+        let Some(sheet) = workbook_markdown_sheet(p, sheet_ref, options.include_hidden_sheets) else {
             continue;
         };
+        let state = match sheet_ref.state {
+            SheetState::Visible => {
+                has_visible_sheet = true;
+                None
+            }
+            SheetState::Hidden => Some("hidden"),
+            SheetState::VeryHidden => Some("veryHidden"),
+        };
+        has_hidden_sheet |= state.is_some();
         let row_vis = |r: u32| {
             options.include_hidden_axes
                 || (!sheet.hidden_rows.contains_key(&r) && sheet.rows.get(r as usize).is_none_or(|v| *v != 0))
@@ -882,6 +919,9 @@ fn export_workbook_markdown_with_positions(
             .filter(|&(row, _, column, _)| (row, column) != (0, 0))
             .map(|(row, _, column, _)| ibis_doc_model::cell_name(column, row));
         let mut metadata = serde_json::Map::new();
+        if let Some(state) = state {
+            metadata.insert("state".to_owned(), serde_json::json!(state));
+        }
         if let Some(origin) = origin {
             metadata.insert("origin".to_owned(), serde_json::json!(origin));
         }
@@ -1001,6 +1041,9 @@ fn export_workbook_markdown_with_positions(
                 out.push('\n');
             }
         }
+    }
+    if has_hidden_sheet && !has_visible_sheet {
+        return Err(Error::new("少なくとも1枚の表示シートが必要です"));
     }
     Ok(out)
 }
@@ -5413,7 +5456,7 @@ fn ai_byte_range(value: &serde_json::Value) -> Option<(usize, usize)> {
 
 /// Known workbook omissions from Markdown export. Reports locations without cell contents.
 pub fn workbook_markdown_omissions(p: &Presentation, options: WorkbookMarkdownOptions) -> Vec<serde_json::Value> {
-    use ibis_doc_model::{SheetState, sheet_calc::sheet_of_slide};
+    use ibis_doc_model::SheetState;
     use serde_json::json;
 
     let mut diagnostics = Vec::new();
@@ -5426,11 +5469,10 @@ pub fn workbook_markdown_omissions(p: &Presentation, options: WorkbookMarkdownOp
             diagnostics.push(json!({"code": "non_worksheet_omitted", "source": {"sheet": name}}));
             continue;
         }
-        if sheet_ref.state != SheetState::Visible {
-            diagnostics.push(json!({"code": "hidden_sheet_omitted", "source": {"sheet": name}}));
-            continue;
-        }
-        let Some(sheet) = sheet_ref.slide.and_then(|id| p.slide(id)).and_then(sheet_of_slide) else {
+        let Some(sheet) = workbook_markdown_sheet(p, sheet_ref, options.include_hidden_sheets) else {
+            if sheet_ref.state != SheetState::Visible {
+                diagnostics.push(json!({"code": "hidden_sheet_omitted", "source": {"sheet": name}}));
+            }
             continue;
         };
 
@@ -8882,6 +8924,65 @@ xychart-beta
         assert_eq!(sheet.cell(4, 3).unwrap().text, "Right");
         assert!(sheet.cell(3, 1).is_none());
         assert!(sheet.cell(4, 2).is_none());
+    }
+
+    #[test]
+    fn workbook_hidden_sheets_round_trip_with_explicit_markdown_export() {
+        use ibis_doc_model::SheetState;
+
+        let input = r#"<!-- xlsx-sheet {"name":"内訳","state":"hidden","origin":"C4","hiddenRows":["5:5"]} -->
+
+| 10 <!-- xlsx-number:10 --> |
+| --- |
+| PRIVATE_ROW |
+
+<!-- xlsx-sheet "集計" -->
+
+| 10 <!-- xlsx-formula:"=内訳!C4" --> |
+| --- |
+
+<!-- xlsx-sheet {"name":"保管","state":"veryHidden"} -->
+
+| PRIVATE_SHEET |
+| --- |
+"#;
+        let opened = open_markdown_workbook(input.as_bytes().to_vec()).unwrap();
+        let book = opened.presentation.workbook.as_deref().unwrap();
+        assert_eq!(book.active_tab, 1);
+        assert_eq!(opened.presentation.slides.len(), 1);
+        assert_eq!(book.sheets.iter().map(|sheet| (&*sheet.name, sheet.state)).collect::<Vec<_>>(), [
+            ("内訳", SheetState::Hidden), ("集計", SheetState::Visible), ("保管", SheetState::VeryHidden),
+        ]);
+        let bytes = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+        let ai = export_ai_source(&bytes).unwrap();
+        assert!(!ai.to_string().contains("PRIVATE"));
+        assert!(!ai["markdown"].as_str().unwrap().contains(r#""state":"hidden""#));
+
+        let options = WorkbookMarkdownOptions { include_hidden_sheets: true, ..Default::default() };
+        let partial = export_workbook_markdown_with_options(&opened.presentation, options).unwrap();
+        assert!(!partial.contains("PRIVATE_ROW"));
+        assert!(partial.contains("PRIVATE_SHEET"));
+        let diagnostics = workbook_markdown_omissions(&opened.presentation, options);
+        assert_eq!(diagnostics, [serde_json::json!({
+            "code": "hidden_rows_omitted", "source": {"sheet": "内訳", "ranges": ["5:5"]},
+        })]);
+        let options = WorkbookMarkdownOptions { include_hidden_axes: true, ..options };
+        let markdown = export_workbook_markdown_with_options(&opened.presentation, options).unwrap();
+        assert!(workbook_markdown_omissions(&opened.presentation, options).is_empty());
+        assert!(markdown.contains("PRIVATE_ROW"));
+        let edited = markdown.replace("PRIVATE_SHEET", "編集済み");
+        let bytes = import_markdown_to_xlsx_bytes(edited.as_bytes()).unwrap();
+        let rebuilt = crate::read(&bytes).unwrap();
+        let book = rebuilt.workbook.as_deref().unwrap();
+        assert_eq!(book.active_tab, 1);
+        assert_eq!(book.sheets[0].state, SheetState::Hidden);
+        assert!(book.sheets[0].hidden.as_deref().unwrap().hidden_rows.contains_key(&4));
+        assert_eq!(book.sheets[2].state, SheetState::VeryHidden);
+        assert_eq!(book.sheets[2].hidden.as_deref().unwrap().cell(0, 0).unwrap().text, "編集済み");
+        let summary = ibis_doc_model::sheet_calc::sheet_of_slide(&rebuilt.slides[0]).unwrap();
+        assert_eq!(summary.cell(0, 0).unwrap().formula.as_deref(), Some("内訳!C4"));
+        assert!(import_markdown_to_xlsx_bytes(br#"<!-- xlsx-sheet {"name":"Sheet1","state":"hidden"} -->"#).is_err());
+        assert!(import_markdown_to_xlsx_bytes(br#"<!-- xlsx-sheet {"name":"Sheet1","state":"private"} -->"#).is_err());
     }
 
     #[test]

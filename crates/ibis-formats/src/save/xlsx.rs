@@ -132,7 +132,7 @@ fn conditional_source_ids(p: &Presentation) -> Vec<Option<Vec<Option<usize>>>> {
     }).collect()).unwrap_or_default()
 }
 
-pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &Presentation, current: &Presentation, chart_data: &super::pptx_chart_data::ChartDataEdits, new_charts: &HashMap<ibis_doc_model::ShapeId, super::NewChartEntry>) -> Result<(), Error> {
+pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &Presentation, current: &Presentation, chart_data: &super::pptx_chart_data::ChartDataEdits, new_charts: &HashMap<ibis_doc_model::ShapeId, super::NewChartEntry>, sheet_states: &[(usize, ibis_doc_model::SheetState)]) -> Result<(), Error> {
     let has_svg = current.media.iter().any(|m| m.format == ibis_doc_model::MediaFormat::Svg)
         || package.names().any(|n| n.ends_with(".svg"));
     if has_svg && package.content_type("dummy.svg")?.is_none() {
@@ -140,7 +140,7 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     }
     // What older versions wrote and Excel cannot open or reads differently, rewritten as it is written now, edited or not (#258).
     repair_legacy_formulas(package, map, baseline)?;
-    if super::pptx::same_content(baseline, current) && baseline.workbook == current.workbook && conditional_source_ids(baseline)==conditional_source_ids(current) {
+    if sheet_states.is_empty() && super::pptx::same_content(baseline, current) && baseline.workbook == current.workbook && conditional_source_ids(baseline)==conditional_source_ids(current) {
         return Ok(());
     }
     let ids = |p: &Presentation| p.slides.iter().map(|s| s.id).collect::<Vec<_>>();
@@ -320,6 +320,9 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     }
     if let Some(wb) = current.workbook.as_deref() {
         write_active_tab(package, map, wb.active_tab, &wb.selected_tabs)?;
+    }
+    if !sheet_states.is_empty() {
+        structure::set_sheet_states(package, map, sheet_states)?;
     }
     if (current.media.iter().any(|m| m.format == ibis_doc_model::MediaFormat::Svg)
         || package.names().any(|n| n.ends_with(".svg")))
