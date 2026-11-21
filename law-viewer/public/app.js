@@ -11,6 +11,8 @@ const demo = {
 };
 let selected;
 let comparison;
+let activeView = "shinkyu";
+const verticalViews = new Set(["shinkyu", "bill", "riyuu"]);
 let inputs;
 let generation = 0;
 let gitVersion;
@@ -206,11 +208,31 @@ function appendInline(node, source) {
   }
 }
 
+function updateWritingMode() {
+  const mode = $("writing-mode").value;
+  const vertical = mode === "vertical" || (mode === "auto" && verticalViews.has(activeView));
+  const output = $("output");
+  output.classList.toggle("vertical", vertical);
+  $("reading-hint").hidden = !vertical;
+  if (vertical) {
+    output.tabIndex = 0;
+    output.setAttribute("aria-describedby", "reading-hint");
+  } else {
+    output.removeAttribute("tabindex");
+    output.removeAttribute("aria-describedby");
+  }
+  output.scrollLeft = 0;
+  output.scrollTop = 0;
+}
+
 function render(view) {
   if (!comparison) return;
+  activeView = view;
   for (const button of displayButtons) button.setAttribute("aria-pressed", String(button.dataset.view === view));
   const content = comparison[view] ?? comparison.package.documents[view];
   const output = $("output");
+  output.dataset.view = view;
+  updateWritingMode();
   output.replaceChildren();
   let table;
   let frontmatter = content.startsWith("---\n");
@@ -264,6 +286,7 @@ for (const control of [$("old"), $("new")]) control.addEventListener("change", (
   $("compare-button").disabled = false;
   status("比較する版を選択しました。");
 });
+$("writing-mode").addEventListener("change", updateWritingMode);
 for (const button of displayButtons) button.addEventListener("click", () => render(button.dataset.view));
 $("docx").addEventListener("click", () => {
   if (!inputs) return;

@@ -50,14 +50,23 @@
           <button data-view="riyuu">理由</button>
           <button data-view="sansho">参照条文</button>
         </nav>
+        <div class="reading-controls">
+          <label for="writing-mode">組方向</label>
+          <select id="writing-mode">
+            <option value="auto">文書に合わせる</option>
+            <option value="vertical">縦書き</option>
+            <option value="horizontal">横書き</option>
+          </select>
+          <span id="reading-hint" hidden>右から左へ読み進めます。横スクロールで続きを読む。</span>
+        </div>
         <div class="downloads">
           <button id="comparison-docx">新旧対照条文DOCX</button>
           <button id="docx">五点セットDOCX</button>
           <button id="json">差分JSON</button>
-          <button id="print">表示を印刷 / PDF</button>
+          <button id="print">横書きで印刷 / PDF</button>
         </div>
       </div>
-      <article id="output"></article>
+      <article id="output" aria-label="法令文書"></article>
     </section>
   </div>
 </main>

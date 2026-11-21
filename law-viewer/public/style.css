@@ -32,3 +32,56 @@ footer{padding:1rem 1.25rem;text-align:center;font-size:.875rem;color:#50657b}
 details{margin-top:.65rem;font-size:.9rem}summary{cursor:pointer}textarea{display:block;width:100%;margin-top:.45rem;padding:.55rem;border:1px solid #acbdcf;border-radius:.4rem;font:inherit}
 @media print{details{display:none}}
 #compare select{width:100%;min-width:0;text-overflow:ellipsis}
+
+.reading-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-top: .65rem;
+  font-size: .9rem;
+}
+#reading-hint {
+  color: #405b75;
+}
+#output.vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  direction: ltr;
+  width: 100%;
+  min-width: 0;
+  height: clamp(24rem, 68vh, 42rem);
+  padding: .8rem;
+  border: 1px solid var(--rule);
+  border-radius: .4rem;
+  scrollbar-gutter: stable;
+}
+#output.vertical h2,
+#output.vertical h3,
+#output.vertical p {
+  margin-block: 0 .8rem;
+  margin-inline: 0;
+}
+#output.vertical table {
+  inline-size: 100%;
+  block-size: auto;
+  table-layout: fixed;
+}
+#output.vertical th,
+#output.vertical td {
+  text-align: start;
+  vertical-align: top;
+  text-underline-position: right;
+}
+#output.vertical[data-view="shinkyu"] th {
+  text-align: center;
+}
+@media print {
+  #output.vertical {
+    writing-mode: horizontal-tb;
+    height: auto;
+    padding: 0;
+    border: none;
+    overflow: visible;
+  }
+}
