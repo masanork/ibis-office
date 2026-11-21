@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the offline Wallet process, CLI inspector and MCP server over stdio."""
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import subprocess
@@ -197,6 +198,43 @@ for format_name in ("sd-jwt", "mdoc"):
     assert mcp_compare({**args, "vp_token": json.loads(vp_token)})["isError"]
     print(f"{format_name} / direct_post form and state: OK")
 
+@contextmanager
+def start_capture(settings, *flags):
+    with TemporaryDirectory() as tmp:
+        config = Path(tmp) / "request.json"
+        config.write_text(json.dumps(settings), encoding="utf-8")
+        capture = subprocess.Popen(
+            [sys.executable, "scripts/wallet-capture.py", str(config),
+             "--inspector", str(build / "examples/presentation_compare"),
+             "--timeout", "15", *flags],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            ready = json.loads(capture.stdout.readline())
+            assert ready["response_uri"].startswith("http://127.0.0.1:"), ready
+            yield capture, ready
+        finally:
+            if capture.poll() is None:
+                capture.kill()
+                capture.communicate()
+
+
+def post(target, data, media_type="application/x-www-form-urlencoded"):
+    request = Request(target, data=data.encode(), headers={"Content-Type": media_type})
+    try:
+        with urlopen(request, timeout=5) as reply:
+            return reply.status, reply.read()
+    except HTTPError as error:
+        with error:
+            return error.code, error.read()
+
+
+def capture_report(capture):
+    stdout, stderr = capture.communicate(timeout=5)
+    assert capture.returncode == 0 and not stderr, stderr
+    return json.loads(stdout)
+
+
 for format_name, scenario, nonce_matches in (
     ("sd-jwt", "wrong-nonce", False),
     ("mdoc", "extra", None),
@@ -207,39 +245,43 @@ for format_name, scenario, nonce_matches in (
     wallet["expected_state"] = state
     expected = mcp_compare({**wallet, "direct_post_body": body})["structuredContent"]
     assert expected["state_matches"] is True and expected["nonce_matches"] is nonce_matches, expected
-    with TemporaryDirectory() as tmp:
-        config = Path(tmp) / "request.json"
-        config.write_text(json.dumps(wallet), encoding="utf-8")
-        capture = subprocess.Popen(
-            [sys.executable, "scripts/wallet-capture.py", str(config),
-             "--inspector", str(build / "examples/presentation_compare"), "--timeout", "10"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        try:
-            url = json.loads(capture.stdout.readline())["response_uri"]
-            assert url.startswith("http://127.0.0.1:"), url
-            form = "application/x-www-form-urlencoded"
-
-            def post(target, data, media_type=form):
-                request = Request(target, data=data.encode(), headers={"Content-Type": media_type})
-                try:
-                    with urlopen(request, timeout=5) as reply:
-                        return reply.status, reply.read()
-                except HTTPError as error:
-                    with error:
-                        return error.code, error.read()
-
-            assert post(url + "/wrong", body) == (404, b"{}")
-            assert post(url, body, "application/json") == (415, b"{}")
-            assert post(url, "vp_token=invalid") == (400, b"{}")
-            assert post(url, body) == (200, b"{}")
-            stdout, stderr = capture.communicate(timeout=5)
-            assert capture.returncode == 0, stderr
-            assert json.loads(stdout) == expected, stdout
-            assert "2000-01-01" not in stdout and state not in stdout
-            assert not stderr, stderr
-        finally:
-            if capture.poll() is None:
-                capture.kill()
-                capture.communicate()
+    with start_capture(wallet) as (capture, ready):
+        url = ready["response_uri"]
+        assert post(url + "/wrong", body) == (404, b"{}")
+        assert post(url, body, "application/json") == (415, b"{}")
+        assert post(url, "vp_token=invalid") == (400, b"{}")
+        assert post(url, body) == (200, b"{}")
+        report = capture_report(capture)
+        assert report == expected, report
+        assert "2000-01-01" not in json.dumps(report) and state not in json.dumps(report)
     print(f"{format_name} / loopback HTTP capture: OK")
+
+
+for format_name in ("sd-jwt", "mdoc"):
+    settings = json.loads(run("examples/wallet_fixture", format_name, "normal", "--vp-token"))
+    del settings["vp_token"], settings["nonce"]
+    settings["dcql_query"]["credentials"][0]["id"] = "custom-age-check"
+    settings["audience"] = "https://local-test.example"
+    with start_capture(settings, "--generate-request") as (capture, ready):
+        auth = ready["authorization_request"]
+        assert auth["response_uri"] == ready["response_uri"]
+        assert auth["client_id"] == settings["audience"]
+        response = json.loads(run("examples/wallet_fixture", format_name, "normal", "--request",
+                                  input_text=json.dumps(auth)))
+        assert response["state"] == auth["state"]
+        assert set(response["vp_token"]) == {"custom-age-check"}
+        body = urlencode({"vp_token": json.dumps(response["vp_token"]), "state": response["state"]})
+        assert post(ready["response_uri"], body) == (200, b"{}")
+        report = capture_report(capture)
+        assert report["state_matches"] is True, report
+        assert report["nonce_matches"] is (True if format_name == "sd-jwt" else None), report
+        assert report["audience_matches"] is (True if format_name == "sd-jwt" else None), report
+        assert report["missing_paths"] == report["unexpected_paths"] == [], report
+    with start_capture(settings, "--generate-request") as (capture, next_ready):
+        next_auth = next_ready["authorization_request"]
+        assert auth["nonce"] != next_auth["nonce"] and auth["state"] != next_auth["state"]
+        assert post(next_ready["response_uri"], body) == (200, b"{}")
+        report = capture_report(capture)
+        assert report["state_matches"] is False, report
+        assert report["nonce_matches"] is (False if format_name == "sd-jwt" else None), report
+    print(f"{format_name} / generated request and cross-session replay diagnostics: OK")

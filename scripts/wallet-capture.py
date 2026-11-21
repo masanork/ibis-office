@@ -26,9 +26,23 @@ class CaptureServer(HTTPServer):
         sock.settimeout(max(0.01, min(5, self.deadline - time.monotonic())))
         return sock, addr
 
-    def capture(self):
+    def capture(self, generate_request):
         host, port = self.server_address
-        print(json.dumps({"response_uri": f"http://{host}:{port}{self.response_path}"}), flush=True)
+        response_uri = f"http://{host}:{port}{self.response_path}"
+        ready = {"response_uri": response_uri}
+        if generate_request:
+            nonce, state = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+            self.request_args.update(nonce=nonce, expected_state=state)
+            ready["authorization_request"] = {
+                "response_type": "vp_token",
+                "response_mode": "direct_post",
+                "response_uri": response_uri,
+                "client_id": self.request_args["audience"],
+                "dcql_query": self.request_args["dcql_query"],
+                "nonce": nonce,
+                "state": state,
+            }
+        print(json.dumps(ready), flush=True)
         while self.report is None:
             self.timeout = self.deadline - time.monotonic()
             if self.timeout <= 0:
@@ -104,6 +118,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("request", type=Path, help="JSON with format, dcql_query and optional expectations")
     parser.add_argument("--inspector", type=Path, default=Path("target/debug/examples/presentation_compare"))
+    parser.add_argument("--generate-request", action="store_true",
+                        help="emit an unsigned local request with fresh state and nonce")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--timeout", type=int, default=60, metavar="SECONDS")
     args = parser.parse_args()
@@ -119,8 +135,14 @@ def main():
             or {"token", "vp_token", "expected_paths", "direct_post_body"} & request_args.keys()
         ):
             parser.error("request must provide format and dcql_query, with no presentation input")
+        if args.generate_request and (
+            not isinstance(request_args.get("audience"), str)
+            or not request_args["audience"]
+            or {"nonce", "expected_state"} & request_args.keys()
+        ):
+            parser.error("--generate-request requires audience and generates nonce and expected_state")
         with CaptureServer(args.port, args.timeout, inspector, request_args) as server:
-            print(json.dumps(server.capture()), flush=True)
+            print(json.dumps(server.capture(args.generate_request)), flush=True)
     except (OSError, ValueError, TimeoutError) as error:
         print(f"wallet capture: {error}", file=sys.stderr)
         return 1

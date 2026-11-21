@@ -189,5 +189,24 @@ The receiver binds to IPv4 loopback and exits after one
 decodable presentation or a timeout. It acknowledges receipt with an empty
 JSON object and prints the local comparison report separately. An HTTP 200
 does not indicate that the presentation passed its checks. The receiver is
-for local testing with HTTP-capable clients. It does not generate or sign an
-authorization request, provide HTTPS, or handle `direct_post.jwt`.
+for local testing with HTTP-capable clients. It does not provide HTTPS,
+sign authorization requests, or handle `direct_post.jwt`.
+
+To generate an unsigned local authorization request, remove `nonce` and
+`expected_state` from the settings, set `audience` to the test verifier's
+client identifier, and start the receiver with `--generate-request`. It
+adds an `authorization_request` object to the first output line with the
+DCQL query, callback URL, and fresh nonce and state. The same session
+values are used for the diagnostic comparison. Save just the nested
+object as `authorization-request.json` and give it to the synthetic Wallet:
+
+```sh
+target/debug/examples/wallet_fixture sd-jwt normal --request < authorization-request.json > wallet-response.json
+curl --data-urlencode "vp_token=$(jq -c '.vp_token' wallet-response.json)" \
+     --data-urlencode "state=$(jq -r '.state' wallet-response.json)" "$RESPONSE_URI"
+```
+
+The fixture accepts its synthetic age-check query and echoes the supplied
+state. For SD-JWT it also binds the presentation to the supplied nonce and
+client ID. This unsigned loopback flow is intended for local fixtures and
+does not exercise production Wallet trust or mdoc device authentication.
