@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run synthetic Wallet regression cases from an XLSX sheet."""
+"""Run Wallet regression cases from an XLSX sheet."""
 import argparse
 import json
 from pathlib import Path
@@ -7,7 +7,6 @@ import re
 import subprocess
 import sys
 
-HEADERS = ["case", "format", "scenario", "expected_failures"]
 RUNNER = Path(__file__).with_name("wallet-run.py")
 
 
@@ -44,44 +43,60 @@ def read_rows(workbook, sheet, build):
                 server.kill()
 
 
-def cases_from_rows(rows):
-    if rows[0] != HEADERS:
-        raise ValueError("row 1 must contain case, format, scenario, expected_failures")
+def cases_from_rows(rows, verifier_dir):
+    source = "verifier" if verifier_dir is not None else "scenario"
+    headers = ["case", "format", source, "expected_failures"]
+    if rows[0] != headers:
+        raise ValueError("row 1 must contain " + ", ".join(headers))
     cases = []
     names = set()
-    for number, (name, format_name, scenario, failures) in enumerate(rows[1:], start=2):
-        if all(value is None for value in (name, format_name, scenario, failures)):
+    for number, (name, format_name, selection, failures) in enumerate(rows[1:], start=2):
+        if all(value is None for value in (name, format_name, selection, failures)):
             continue
         if not isinstance(name, str) or not name.strip() or name.startswith("=") or name in names:
             raise ValueError(f"row {number}: case name must be nonempty, literal and unique")
-        if format_name not in ("sd-jwt", "mdoc") or scenario not in ("normal", "extra", "wrong-nonce"):
-            raise ValueError(f"row {number}: invalid fixture format or scenario")
-        if format_name == "mdoc" and scenario == "wrong-nonce":
-            raise ValueError(f"row {number}: wrong-nonce is only available for SD-JWT")
+        if format_name not in ("sd-jwt", "mdoc"):
+            raise ValueError(f"row {number}: invalid format")
+        if verifier_dir is None:
+            if selection not in ("normal", "extra", "wrong-nonce"):
+                raise ValueError(f"row {number}: invalid fixture scenario")
+            if format_name == "mdoc" and selection == "wrong-nonce":
+                raise ValueError(f"row {number}: wrong-nonce is only available for SD-JWT")
+            options = ["--scenario", selection]
+        else:
+            if not isinstance(selection, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*\.json", selection):
+                raise ValueError(f"row {number}: verifier must be a JSON filename")
+            path = (verifier_dir / selection).resolve()
+            if path.parent != verifier_dir or not path.is_file():
+                raise ValueError(f"row {number}: verifier file must exist in --verifier-dir")
+            options = ["--request-settings", str(path)]
         if failures is not None and not isinstance(failures, str):
             raise ValueError(f"row {number}: expected_failures must be text or empty")
         checks = [part.strip() for part in (failures or "").split(",")] if failures else []
         if any(not re.fullmatch(r"[a-z][a-z_]*", check) for check in checks) or len(checks) != len(set(checks)):
             raise ValueError(f"row {number}: invalid expected failure names")
         names.add(name)
-        cases.append((name, format_name, scenario, sorted(checks)))
+        cases.append((name, format_name, source, selection, sorted(checks), options))
     if not cases:
         raise ValueError("case sheet contains no test cases")
     return cases
 
 
-def run_cases(cases, build):
+def run_cases(cases, build, wallet_command):
     reports = []
-    for name, format_name, scenario, expected in cases:
+    for name, format_name, source, selection, expected, options in cases:
+        command = [sys.executable, str(RUNNER), format_name, "--build-dir", str(build), *options]
+        if wallet_command:
+            command.extend(["--wallet-command", *wallet_command])
         result = subprocess.run(
-            [sys.executable, str(RUNNER), format_name, "--scenario", scenario, "--build-dir", str(build)],
+            command,
             text=True, encoding="utf-8", capture_output=True, timeout=45,
         )
         if result.returncode not in (0, 1):
             raise ValueError(f"Wallet execution failed for case {name!r}")
         comparison = json.loads(result.stdout)
         actual = sorted(comparison["failed_checks"])
-        reports.append({"case": name, "format": format_name, "scenario": scenario,
+        reports.append({"case": name, "format": format_name, source: selection,
                         "expected_failures": expected, "actual_failures": actual,
                         "passed": expected == actual, "report": comparison["report"]})
     return reports
@@ -92,13 +107,22 @@ def main():
     parser.add_argument("workbook", type=Path)
     parser.add_argument("--sheet", default="Wallet Cases")
     parser.add_argument("--build-dir", type=Path, default=Path("target/debug"))
+    parser.add_argument("--verifier-dir", type=Path, help="directory of row-selected verifier JSON files")
+    parser.add_argument("--wallet-command", nargs=argparse.REMAINDER, metavar="ARG",
+                        help="external command shared by all rows (must come last)")
     args = parser.parse_args()
+    if args.wallet_command == [] or bool(args.wallet_command) != bool(args.verifier_dir):
+        parser.error("--verifier-dir and a nonempty --wallet-command must be supplied together")
     try:
         workbook = args.workbook.resolve(strict=True)
         if workbook.suffix.lower() != ".xlsx" or not workbook.is_file():
             raise ValueError("case manifest must be an XLSX file")
         build = args.build_dir.resolve()
-        reports = run_cases(cases_from_rows(read_rows(workbook, args.sheet, build)), build)
+        verifier_dir = args.verifier_dir.resolve(strict=True) if args.verifier_dir else None
+        if verifier_dir is not None and not verifier_dir.is_dir():
+            raise ValueError("--verifier-dir must be a directory")
+        cases = cases_from_rows(read_rows(workbook, args.sheet, build), verifier_dir)
+        reports = run_cases(cases, build, args.wallet_command)
         passed = all(report["passed"] for report in reports)
         print(json.dumps({"passed": passed, "cases": reports}))
         return int(not passed)

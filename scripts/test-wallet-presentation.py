@@ -408,3 +408,42 @@ with TemporaryDirectory() as tmp:
     result = subprocess.run(command, text=True, capture_output=True, timeout=10)
     assert result.returncode == 2 and not result.stdout and "row 2" in result.stderr, result
     print("XLSX Wallet case matrix / expected failures, mismatch and invalid row: OK")
+
+with TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    workbook = tmp / "external-wallet.xlsx"
+    verifier_dir = tmp / "verifiers"
+    verifier_dir.mkdir()
+    settings = json.loads(run("examples/wallet_fixture", "sd-jwt", "normal", "--vp-token"))
+    del settings["nonce"], settings["vp_token"]
+    for name in ("age-basic", "age_custom"):
+        settings["dcql_query"]["credentials"][0]["id"] = name
+        settings["audience"] = f"https://{name}.example"
+        (verifier_dir / f"{name}.json").write_text(json.dumps(settings), encoding="utf-8")
+    headers = ("case", "format", "verifier", "expected_failures")
+    command = [sys.executable, "scripts/wallet-matrix.py", str(workbook), "--build-dir", str(build),
+               "--verifier-dir", str(verifier_dir), "--wallet-command",
+               str((build / "examples/wallet_fixture").resolve()), "sd-jwt", "wrong-nonce", "--request"]
+    write_case_sheet(workbook, [
+        headers, ("First verifier", "sd-jwt", "age-basic.json", "nonce"),
+        ("Other verifier", "sd-jwt", "age_custom.json", "nonce"),
+    ])
+    result = subprocess.run(command, text=True, capture_output=True, timeout=40)
+    assert result.returncode == 0 and not result.stderr, result
+    output = json.loads(result.stdout)
+    assert output["passed"] is True, output
+    assert [case["verifier"] for case in output["cases"]] == ["age-basic.json", "age_custom.json"], output
+    assert [case["report"]["vp_token_credential_id"] for case in output["cases"]] == ["age-basic", "age_custom"], output
+    assert all(case["actual_failures"] == ["nonce"] and case["report"]["audience_matches"]
+               for case in output["cases"]), output
+    for selection in ("../outside.json", "missing.json"):
+        write_case_sheet(workbook, [headers, ("Disallowed verifier", "sd-jwt", selection, None)])
+        result = subprocess.run(command, text=True, capture_output=True, timeout=10)
+        assert result.returncode == 2 and not result.stdout and "row 2" in result.stderr, result
+    outside = tmp / "outside.json"
+    outside.write_text(json.dumps(settings), encoding="utf-8")
+    (verifier_dir / "outside.json").symlink_to(outside)
+    write_case_sheet(workbook, [headers, ("Escaping symlink", "sd-jwt", "outside.json", None)])
+    result = subprocess.run(command, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 2 and not result.stdout and "row 2" in result.stderr, result
+    print("external Wallet XLSX matrix / per-row verifier settings and invalid paths: OK")

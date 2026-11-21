@@ -275,3 +275,16 @@ verifier. The JSON report compares the exact expected and actual failure
 sets. Exit code 0 means every row matched, 1 means at least one differed,
 and 2 means the workbook or runner could not complete. Use `--sheet`
 to select another tab. The workbook is not modified.
+
+To run an external Wallet across the workbook, use the same layout with
+`verifier` instead of `scenario` in column C. Put a verifier settings
+filename such as `age-check.json` in each row. The files have the same format
+as `--request-settings` and must reside directly in the supplied directory.
+
+```sh
+python3 scripts/wallet-matrix.py "wallet cases.xlsx" --verifier-dir ./verifiers \
+  --wallet-command ./wallet-adapter --profile test
+```
+
+The command and its arguments apply to all rows. Cells select verifier
+settings only. The report includes the verifier filename for each case.
