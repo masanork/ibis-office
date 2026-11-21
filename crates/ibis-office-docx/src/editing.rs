@@ -4437,7 +4437,7 @@ impl SlideEditor {
             .detach();
         }
         #[cfg(target_family = "wasm")]
-        let _ = (window, cx);
+        self.compare_law_with_browser_file(window, cx);
     }
 
     /// 比較の設定: `which` 0 formatting, 1 case, 2 tables, 3 white space, 4 headers, 5 footnotes, 6 comments, 7 fields.

@@ -16,7 +16,7 @@ pub mod assistant;
 pub mod diff;
 pub mod lint;
 mod print;
-pub use print::open_comparison_document;
+pub use print::{comparison_docx, open_comparison_document};
 pub mod refs;
 pub use aratame::{
     AratameClause, AratameDraft, VerifyResult, apply_aratame, generate_aratame_draft,

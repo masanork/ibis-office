@@ -52,7 +52,6 @@ pub mod pdf_picture;
 pub mod caret;
 pub mod gesture;
 pub mod document_memory;
-#[cfg(not(target_family = "wasm"))]
 mod document_compare;
 pub mod selection_handles;
 pub mod autocorrect;

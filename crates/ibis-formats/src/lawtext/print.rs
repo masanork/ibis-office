@@ -149,6 +149,11 @@ impl Legislation5SetPackage {
 
 /// Open an editable DOCX containing just the vertical law comparison.
 pub fn open_comparison_document(old: &LawDoc, new: &LawDoc) -> Result<crate::Opened, Error> {
+    crate::open(comparison_docx(old, new)?)
+}
+
+/// Serialize the standalone vertical statute comparison as an editable DOCX.
+pub fn comparison_docx(old: &LawDoc, new: &LawDoc) -> Result<Vec<u8>, Error> {
     let comparison = comparison_markdown(&generate_shinkyu_markdown(old, new));
     let mut opened = markdown::open_markdown(format!("{PAGE_STYLE}{comparison}").into_bytes())?;
     let flow = Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
@@ -158,10 +163,7 @@ pub fn open_comparison_document(old: &LawDoc, new: &LawDoc) -> Result<crate::Ope
     flow.page.footer = 12 * MM;
     let available = flow.page.size.height - flow.page.top - flow.page.bottom;
     format_comparison_table(flow, available)?;
-    let bytes = opened
-        .source
-        .save(&opened.presentation, SaveOptions::default())?;
-    crate::open(bytes)
+    opened.source.save(&opened.presentation, SaveOptions::default())
 }
 
 fn comparison_markdown(markdown: &str) -> String {

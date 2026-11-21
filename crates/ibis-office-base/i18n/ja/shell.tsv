@@ -35,6 +35,9 @@ compare.different-laws	二つの文書の法令番号が一致しません。
 compare.current	現行
 compare.amended	改正後
 compare.open-result	文書として開く
+compare.download-result	DOCXをダウンロード
+compare.open-law-first	比較する法令XMLまたはLawtextを開いてください。
+compare.browser-unedited	ブラウザの比較では元の法令ファイルを使います。編集していない法令XMLまたはLawtextを開いてください。
 compare.swap	前後を入れ替え
 compare.law-preview	新旧対照条文を作成
 compare.law-result	新旧対照条文

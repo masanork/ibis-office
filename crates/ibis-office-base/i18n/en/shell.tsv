@@ -35,6 +35,9 @@ compare.different-laws	The two documents have different statute numbers.
 compare.current	Current
 compare.amended	Amended
 compare.open-result	Open as Document
+compare.download-result	Download DOCX
+compare.open-law-first	Open a statute XML or Lawtext document to compare.
+compare.browser-unedited	Browser comparison uses the original statute files. Open an unedited statute XML or Lawtext document.
 compare.swap	Swap Versions
 compare.law-preview	Create Statute Comparison
 compare.law-result	Statute Comparison

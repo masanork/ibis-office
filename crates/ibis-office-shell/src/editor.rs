@@ -506,6 +506,9 @@ pub struct SlideEditor {
     pub(crate) closed: u32,
     #[cfg(target_family = "wasm")]
     web_open_generation: u64,
+    /// Exact input for comparison while this law has no edits.
+    #[cfg(target_family = "wasm")]
+    pub(crate) web_law_source: Option<std::sync::Arc<Vec<u8>>>,
     /// An empty document stands in for the file being read (`begin_loading`).
     pub loading: bool,
     /// What only the open document's format has (see `shell/format.rs`).
@@ -895,6 +898,8 @@ impl SlideEditor {
             closed: 0,
             #[cfg(target_family = "wasm")]
             web_open_generation: 0,
+            #[cfg(target_family = "wasm")]
+            web_law_source: None,
             loading: false,
             format,
             format_prefs: crate::format::drivers().iter().map(|(_, driver)| driver.new_prefs()).collect(),
@@ -1312,6 +1317,8 @@ impl SlideEditor {
     pub fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.standard_read_only = false;
         self.structured_preview = false;
+        #[cfg(target_family = "wasm")]
+        { self.web_law_source = None; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
         {
             self.phone_editing = false;
@@ -1593,10 +1600,13 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
+            let law_input =
+                ibis_formats::lawtext::path_input_to_markdown(std::path::Path::new(name.as_ref()), &data)
+                    .transpose();
             // A download-enabled embed needs the original package to write
             // edits back; ordinary initial previews keep the lighter read path.
             let production_image = extension.is_some_and(ibis_formats::production_image::supports_extension);
-            if initial && !production_image && !crate::embed::show_download() {
+            if initial && law_input.is_none() && !production_image && !crate::embed::show_download() {
                 let mut result = ibis_formats::read(&data).map_err(|e| e.to_string());
                 if let Ok(presentation) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
@@ -1613,7 +1623,14 @@ impl SlideEditor {
                 return;
             }
             let mut image_provenance = None;
-            let mut result = if extension.is_some_and(ibis_formats::production_image::is_heic_extension) {
+            let mut law_source = None;
+            let mut result = if let Some(markdown) = law_input {
+                law_source = Some(std::sync::Arc::new(data));
+                markdown
+                    .and_then(|text| ibis_formats::markdown::open_markdown(text.into_bytes()))
+                    .map(|opened| (opened, None))
+                    .map_err(|e| e.to_string())
+            } else if extension.is_some_and(ibis_formats::production_image::is_heic_extension) {
                 crate::web::open_heic(&data).await.map(|opened| (opened, None))
             } else {
                 let mut preview = ibis_formats::production_image::open_with_exposure(extension, &data);
@@ -1659,6 +1676,7 @@ impl SlideEditor {
                         name
                     };
                     this.load(opened.presentation, doc_name, window, cx);
+                    this.web_law_source = law_source;
                     this.set_production_image_view(production_image, exposure);
                     this.image_provenance = image_provenance;
                     this.set_opened_source(std::sync::Arc::new(opened.source), production_image);
