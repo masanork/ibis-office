@@ -4992,6 +4992,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ibis-law-viewer"
+version = "0.8.0"
+dependencies = [
+ "ibis-formats",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "ibis-m-lang"
 version = "0.8.0"
 
