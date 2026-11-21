@@ -712,6 +712,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::fn_random_numbers", fn_random_numbers),
         ("xlsx::fn_cell_info", fn_cell_info),
         ("xlsx::query001_editor", query001_editor),
+        ("xlsx::query_dependent_pivots", query_dependent_pivots),
         ("xlsx::query_code_edit_issue_173", query_code_edit_issue_173),
         ("xlsx::query_steps_scroll_issue_172", query_steps_scroll_issue_172),
         ("xlsx::query_layout_issue_173", query_layout_issue_173),
@@ -21799,6 +21800,75 @@ fn query_layout_issue_173() {
     assert!(apply.bottom() <= side_now.bottom() && text.bottom() <= side_now.bottom(), "nothing runs out of the pane");
     assert!(apply.top() - text.bottom() < px(40.) && text.size.height > px(200.), "the text area takes the height that is left: {text:?} {apply:?}");
     s.screenshot("layout-long-code");
+}
+
+fn query_dependent_pivots() {
+    use ibis_doc_model::query::{QColumn, QTable, QType, Query, Source, Step};
+    use ibis_doc_model::{CellEdit, CellInput, Command, ShapeKind, SheetCommand};
+
+    let mut s = Scenario::open("crates/ibis-odf/tests/fixtures/ods_features.xlsx");
+    s.update(|e, window, cx| {
+        let sheet = e.current_slide;
+        let text = |value: &str| CellValue::Text(value.into());
+        let values = [
+            [text("Year"), text("Amount")],
+            [text("r8"), CellValue::Number(7.0)],
+            [text("r8"), CellValue::Number(5.0)],
+        ];
+        let edits = values.into_iter().enumerate().flat_map(|(row, cells)| {
+            cells.into_iter().enumerate().map(move |(column, value)| CellEdit {
+                row: row as u32, column: column as u32, input: CellInput::Value(value),
+            })
+        }).collect();
+        let mut query = Query::new("Query output", Source::Range {
+            sheet: "Data".into(),
+            range: "A1:B3".into(),
+        });
+        query.steps.push(Step::PromoteHeaders);
+        let table = QTable {
+            columns: vec![
+                QColumn { name: "Year".into(), ty: QType::Text },
+                QColumn { name: "Amount".into(), ty: QType::Whole },
+            ],
+            rows: vec![vec![text("r8"), CellValue::Number(3.0)]],
+        };
+        e.document.execute(vec![
+            Command::Sheet(SheetCommand::SetCells { sheet, edits }),
+            Command::Sheet(SheetCommand::LoadQuery { sheet, query, table }),
+        ]).unwrap();
+        let output = e.presentation().slides.iter().find(|slide| slide.name.as_deref() == Some("Query output")).unwrap().id;
+        e.select_slide(output, window, cx);
+    });
+    s.click_cell("A1");
+    s.update(|e, window, cx| e.open_recommended_pivots(window, cx));
+    s.update(|e, _, cx| {
+        e.insert_pivot_chart((e.current_slide, 0), cx).expect("insert a linked chart");
+    });
+    let check = |s: &mut Scenario, value: f64, last_row: u32| {
+        assert_eq!(s.value("B4"), CellValue::Number(value));
+        s.with(move |e, _| {
+            let sheet = sheet_of_slide(e.slide()).unwrap();
+            assert_eq!(sheet.pivots[0].source.range.unwrap().last_row, last_row);
+            let chart = e.slide().shapes.iter().find_map(|shape| {
+                if let ShapeKind::Chart(chart) = &shape.kind { Some(chart) } else { None }
+            }).unwrap();
+            assert_eq!(chart.groups[0].series[0].values[0].unwrap().0, value);
+            let output = e.presentation().slides.iter().find(|slide| slide.name.as_deref() == Some("Query output")).unwrap();
+            assert_eq!(sheet_of_slide(output).unwrap().cell(2, 1).map(|cell| cell.value.clone()),
+                (last_row == 2).then_some(CellValue::Number(5.0)));
+        });
+    };
+    check(&mut s, 3.0, 1);
+    s.update(|e, window, cx| e.refresh_query(0, window, cx));
+    check(&mut s, 12.0, 2);
+    s.update(|e, window, cx| e.undo(&crate::Undo, window, cx));
+    check(&mut s, 3.0, 1);
+    s.update(|e, window, cx| e.redo(&crate::Redo, window, cx));
+    check(&mut s, 12.0, 2);
+    s.save_as("query-dependent-pivots.xlsx");
+    let reopened = s.reopen();
+    let pivot = sheet_of_slide(&reopened.slides[0]).unwrap().pivots.first().unwrap();
+    assert_eq!(pivot.source.range.unwrap().last_row, 2);
 }
 
 /// XLSX-PQ-009〜020 データ > テーブルまたは範囲から: the クエリ エディター. The

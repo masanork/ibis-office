@@ -202,49 +202,70 @@ impl SlideEditor {
         if targets.is_empty() {
             return;
         }
-        // Built one after another on a copy (several on one sheet).
         let mut work = self.presentation().clone();
-        let default_size = work.workbook.as_ref().and_then(|w| w.default_style.as_ref()).map_or(11.0, |s| s.font_size as f32 / 100.0);
-        let ts = cx.text_system().clone();
-        let mut changed: Vec<SlideId> = Vec::new();
-        for (slide, index) in targets {
-            let Some(mut sheet) = ibis_formats::refreshed_pivot(&work, slide, index) else { continue };
-            let before = work.slide(slide).and_then(|s| s.shapes.iter().find_map(|sh| if let ShapeKind::Sheet(s) = &sh.kind { Some(s.clone()) } else { None }));
-            if before.is_some_and(|old| covers_others(&old, &sheet, index)) {
-                return self.refuse_overlap(cx);
-            }
-            let fitted_widths = fitted_for(&sheet, &[index], default_size, &self.resources, &ts);
-        set_fitted_widths(&mut sheet, fitted_widths);
-            if let Some(s) = work.slide_mut(slide)
-                && let Some(ShapeKind::Sheet(target)) = s.shapes.iter_mut().map(|sh| &mut sh.kind).find(|k| matches!(k, ShapeKind::Sheet(_)))
-            {
-                *target = Arc::new(sheet);
-            }
-            if !changed.contains(&slide) {
-                changed.push(slide);
-            }
-        }
-        let mut commands: Vec<Command> = changed
-            .into_iter()
-            .filter_map(|slide| {
-                let sheet = work.slide(slide)?.shapes.iter().find_map(|sh| if let ShapeKind::Sheet(s) = &sh.kind { Some((**s).clone()) } else { None })?;
-                Some(Command::Sheet(SheetCommand::ReplaceSheet { sheet: slide, replacement: Box::new(sheet) }))
-            })
-            .collect();
-        // Also sync any PivotCharts linked to refreshed pivots
-        for slide in self.presentation().slides.iter() {
-            let sheet = work.slide(slide.id).and_then(|s| s.shapes.iter().find_map(|sh| if let ShapeKind::Sheet(sheet) = &sh.kind { Some((**sheet).clone()) } else { None }));
-            if let Some(sheet) = sheet {
-                for pivot in &sheet.pivots {
-                    commands.extend(self.sync_pivot_charts_commands(slide.id, &sheet, pivot));
-                }
-            }
-        }
+        let commands = match self.rebuild_pivot_commands(&mut work, targets.into_iter().map(|(slide, index)| (slide, index, None)), false, cx) {
+            Ok(commands) => commands,
+            Err(_) => return self.refuse_overlap(cx),
+        };
         self.status = match self.document.execute(commands) {
             Ok(_) => None,
             Err(err) => Some(crate::shell::i18n::format("edit.refused", &[("error", &err)]).into()),
         };
         cx.notify();
+    }
+
+    /// Plan pivot and chart changes against a working copy so they can be committed with the source edit.
+    pub(crate) fn rebuild_pivot_commands(
+        &self,
+        work: &mut Presentation,
+        targets: impl IntoIterator<Item = (SlideId, usize, Option<ibis_doc_model::CellRange>)>,
+        require_source: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<Vec<Command>, SharedString> {
+        use ibis_doc_model::sheet_calc::sheet_of_slide;
+        let default_size = work.workbook.as_ref().and_then(|w| w.default_style.as_ref())
+            .map_or(11.0, |s| s.font_size as f32 / 100.0);
+        let ts = cx.text_system().clone();
+        let mut changed = Vec::new();
+        let mut rebuilt = Vec::new();
+        for (slide, index, range) in targets {
+            let Some(before) = work.slide(slide).and_then(sheet_of_slide) else { continue };
+            let pivot = range.and_then(|range| {
+                let mut pivot = before.pivots.get(index)?.clone();
+                pivot.source.range = Some(range);
+                Some(pivot)
+            });
+            let Some(mut sheet) = ibis_formats::rebuilt_pivot(work, slide, index, pivot) else {
+                if require_source {
+                    return Err(text("_xlsx.the-pivottable-source-could-not-be-read"));
+                }
+                continue;
+            };
+            if covers_others(before, &sheet, index) {
+                return Err(text("_xlsx.the-pivottable-would-overlap-other-cells-or-anot"));
+            }
+            let fitted_widths = fitted_for(&sheet, &[index], default_size, &self.resources, &ts);
+            set_fitted_widths(&mut sheet, fitted_widths);
+            if let Some(s) = work.slide_mut(slide)
+                && let Some(ShapeKind::Sheet(target)) = s.shapes.iter_mut().map(|sh| &mut sh.kind).find(|k| matches!(k, ShapeKind::Sheet(_)))
+            {
+                *target = Arc::new(sheet);
+                if !changed.contains(&slide) {
+                    changed.push(slide);
+                }
+                rebuilt.push((slide, index));
+            }
+        }
+        let mut commands: Vec<_> = changed.into_iter().filter_map(|slide| {
+            let sheet = work.slide(slide).and_then(sheet_of_slide)?;
+            Some(Command::Sheet(SheetCommand::ReplaceSheet { sheet: slide, replacement: Box::new((**sheet).clone()) }))
+        }).collect();
+        for (slide, index) in rebuilt {
+            if let Some(sheet) = work.slide(slide).and_then(sheet_of_slide) {
+                commands.extend(Self::pivot_chart_commands(work, slide, sheet, &sheet.pivots[index]));
+            }
+        }
+        Ok(commands)
     }
 
     /// ピボットテーブルのデータセルに対して詳細データを展開する（Show Details / Drill Down）。
@@ -1419,21 +1440,25 @@ impl SlideEditor {
 
     /// Build `SetKind` commands to update all PivotCharts in the workbook linked to `pivot` on `pivot_slide`.
     fn sync_pivot_charts_commands(&self, pivot_slide: SlideId, sheet: &Sheet, pivot: &PivotTable) -> Vec<Command> {
-        let pivot_sheet_name = self.sheet_name_of(pivot_slide);
+        Self::pivot_chart_commands(self.presentation(), pivot_slide, sheet, pivot)
+    }
+
+    fn pivot_chart_commands(presentation: &Presentation, pivot_slide: SlideId, sheet: &Sheet, pivot: &PivotTable) -> Vec<Command> {
+        let pivot_sheet_name = presentation.slide(pivot_slide).and_then(|s| s.name.as_deref());
         // Most tables have no PivotChart: building the table again only for the charts would be for nothing.
-        let linked = |c: &ibis_doc_model::Chart| ibis_doc_model::pivot::pivot_source_matches(c.pivot_source.as_deref(), pivot_sheet_name.as_deref(), &pivot.name);
-        if !self.presentation().slides.iter().flat_map(|s| &s.shapes).any(|sh| matches!(&sh.kind, ShapeKind::Chart(c) if linked(c))) {
+        let linked = |c: &ibis_doc_model::Chart| ibis_doc_model::pivot::pivot_source_matches(c.pivot_source.as_deref(), pivot_sheet_name, &pivot.name);
+        if !presentation.slides.iter().flat_map(|s| &s.shapes).any(|sh| matches!(&sh.kind, ShapeKind::Chart(c) if linked(c))) {
             return Vec::new();
         }
-        let Some(data) = ibis_formats::pivot_source(self.presentation(), sheet, pivot) else {
+        let Some(data) = ibis_formats::pivot_source(presentation, sheet, pivot) else {
             return Vec::new();
         };
         let built = pivot.build(&data);
         let mut commands = Vec::new();
-        for s in &self.presentation().slides {
+        for s in &presentation.slides {
             for sh in &s.shapes {
                 if let ShapeKind::Chart(c) = &sh.kind {
-                    if ibis_doc_model::pivot::pivot_source_matches(c.pivot_source.as_deref(), pivot_sheet_name.as_deref(), &pivot.name) {
+                    if ibis_doc_model::pivot::pivot_source_matches(c.pivot_source.as_deref(), pivot_sheet_name, &pivot.name) {
                         let mut updated_chart = (**c).clone();
                         ibis_doc_model::pivot::update_chart_from_pivot(&mut updated_chart, pivot, &built);
                         if &updated_chart != c.as_ref() {
@@ -1630,7 +1655,7 @@ fn subtotals_of(p: &PivotTable) -> Subtotals {
 }
 
 /// The cells a pivot table covers: its place and its report filters'.
-fn pivot_area(p: &ibis_doc_model::PivotTable) -> Vec<ibis_doc_model::CellRange> {
+pub(super) fn pivot_area(p: &ibis_doc_model::PivotTable) -> Vec<ibis_doc_model::CellRange> {
     let loc = p.location;
     let pages = p.page_fields.len() as u32;
     let mut out = vec![loc];

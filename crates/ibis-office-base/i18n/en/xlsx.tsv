@@ -504,6 +504,7 @@ _xlsx.var	Var
 _xlsx.varp	Varp
 _xlsx.create-pivottable	Create PivotTable
 _xlsx.pivottable-fields	PivotTable Fields
+_xlsx.the-pivottable-source-could-not-be-read	The PivotTable source could not be read
 _xlsx.the-pivottable-would-overlap-other-cells-or-anot	The PivotTable would overlap other cells or another PivotTable, so it cannot be changed.
 _xlsx.select-field	Select field
 _xlsx.all-2	(All)
@@ -1922,6 +1923,7 @@ query.edit	Edit
 query.refresh	Refresh
 query.delete	Delete
 query.deleted	Deleted the query {name}. The sheet it loaded stays.
+query.pivot-columns-changed	A column used by a dependent PivotTable changed.
 query.refresh-failed	Cannot refresh {name}: {error}
 query.refreshed	Refreshed {name} ({rows} rows).
 query.queries-title	Queries & Connections

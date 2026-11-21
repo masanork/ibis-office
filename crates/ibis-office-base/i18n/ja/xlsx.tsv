@@ -829,6 +829,7 @@ _xlsx.var	標本分散
 _xlsx.varp	分散
 _xlsx.create-pivottable	ピボットテーブルの作成
 _xlsx.pivottable-fields	ピボットテーブルのフィールド
+_xlsx.the-pivottable-source-could-not-be-read	ピボットテーブルのデータ ソースを読み込めませんでした
 _xlsx.the-pivottable-would-overlap-other-cells-or-anot	ピボットテーブルがほかのセルやピボットテーブルに重なるため、変更できません。
 _xlsx.select-field	フィールドの選択
 _xlsx.all-2	(すべて)
@@ -1919,6 +1920,7 @@ query.edit	編集
 query.refresh	更新
 query.delete	削除
 query.deleted	クエリ {name} を削除しました。読み込んだシートは残ります。
+query.pivot-columns-changed	連動するピボットテーブルの参照列が変更されています。
 query.refresh-failed	{name} を更新できません：{error}
 query.refreshed	{name} を更新しました（{rows} 行）。
 query.queries-title	クエリと接続

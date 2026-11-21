@@ -382,50 +382,49 @@ mod tests {
 /// The data of `pivot`'s source: a range on its sheet (by name) or on
 /// `sheet` itself, or from a table's or defined name's source.
 pub fn pivot_source(presentation: &ibis_doc_model::Presentation, sheet: &ibis_doc_model::Sheet, pivot: &PivotTable) -> Option<ibis_doc_model::pivot::PivotData> {
+    let (slide, range) = pivot_source_location(presentation, pivot)?;
+    let source = match slide {
+        Some(id) => ibis_doc_model::sheet_calc::sheet_of_slide(presentation.slide(id)?)?,
+        None => sheet,
+    };
+    Some(ibis_doc_model::pivot::source_data(source, range))
+}
+
+/// Resolve the source range without reading its cells. A missing slide means the pivot's own sheet.
+pub fn pivot_source_location(presentation: &ibis_doc_model::Presentation, pivot: &PivotTable) -> Option<(Option<ibis_doc_model::SlideId>, ibis_doc_model::CellRange)> {
+    let named_slide = |name: &str| {
+        presentation.slides.iter().find(|s| s.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+    };
     if let Some(name) = &pivot.source.name {
-        // 1. Look for a table matching `name` across all sheets
         for slide in &presentation.slides {
-            if let Some(source_sheet) = slide.shapes.iter().find_map(|sh| if let ibis_doc_model::ShapeKind::Sheet(s) = &sh.kind { Some(s.clone()) } else { None }) {
-                if let Some(tbl) = source_sheet.tables.iter().find(|t| t.name.eq_ignore_ascii_case(name)) {
-                    let range = ibis_doc_model::CellRange {
-                        first_row: tbl.range.first_row,
-                        last_row: tbl.range.last_row.saturating_sub(tbl.totals_rows),
-                        first_column: tbl.range.first_column,
-                        last_column: tbl.range.last_column,
-                    };
-                    return Some(ibis_doc_model::pivot::source_data(&source_sheet, range));
-                }
+            let table = ibis_doc_model::sheet_calc::sheet_of_slide(slide)
+                .and_then(|sheet| sheet.tables.iter().find(|t| t.name.eq_ignore_ascii_case(name)));
+            if let Some(table) = table {
+                let mut range = table.range;
+                range.last_row = range.last_row.saturating_sub(table.totals_rows);
+                return Some((Some(slide.id), range));
             }
         }
-
-        // 2. Look for a defined name matching `name` in workbook
-        if let Some(wb) = &presentation.workbook {
-            if let Some(dn) = wb.names.iter().find(|n| n.name.eq_ignore_ascii_case(name)) {
-                let trimmed = dn.formula.trim().trim_start_matches('=');
-                if let Some(range) = crate::xlsx::parse_range(trimmed) {
-                    if let Some((sh_name, _)) = trimmed.split_once('!') {
-                        let clean_sh = sh_name.trim().trim_matches('\'');
-                        if let Some(slide) = presentation.slides.iter().find(|s| s.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(clean_sh))) {
-                            if let Some(source_sheet) = slide.shapes.iter().find_map(|sh| if let ibis_doc_model::ShapeKind::Sheet(s) = &sh.kind { Some(s.clone()) } else { None }) {
-                                return Some(ibis_doc_model::pivot::source_data(&source_sheet, range));
-                            }
-                        }
-                    }
-                    return Some(ibis_doc_model::pivot::source_data(sheet, range));
-                }
+        if let Some(defined) = presentation.workbook.as_ref()
+            .and_then(|wb| wb.names.iter().find(|n| n.name.eq_ignore_ascii_case(name)))
+        {
+            let formula = defined.formula.trim().trim_start_matches('=');
+            if let Some(range) = crate::xlsx::parse_range(formula) {
+                let slide = formula.split_once('!')
+                    .and_then(|(sheet, _)| named_slide(sheet.trim().trim_matches('\'')))
+                    .filter(|s| ibis_doc_model::sheet_calc::sheet_of_slide(s).is_some())
+                    .map(|s| s.id);
+                return Some((slide, range));
             }
         }
     }
 
     let range = pivot.source.range?;
-    match &pivot.source.sheet {
-        Some(name) => {
-            let slide = presentation.slides.iter().find(|s| s.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name)))?;
-            let source = slide.shapes.iter().find_map(|sh| if let ibis_doc_model::ShapeKind::Sheet(s) = &sh.kind { Some(s.clone()) } else { None })?;
-            Some(ibis_doc_model::pivot::source_data(&source, range))
-        }
-        None => Some(ibis_doc_model::pivot::source_data(sheet, range)),
-    }
+    let slide = match &pivot.source.sheet {
+        Some(name) => Some(named_slide(name)?.id),
+        None => None,
+    };
+    Some((slide, range))
 }
 
 /// The data of the source of the pivot table `index` on `slide`.

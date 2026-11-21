@@ -911,11 +911,77 @@ impl SlideEditor {
 
     fn load_refreshed_query(&mut self, query: Query, table: QTable, cx: &mut Context<Self>) {
         let rows = table.rows.len();
-        let slide = self.current_slide;
-        if let Err(e) = self.document.execute(vec![Command::Sheet(SheetCommand::LoadQuery { sheet: slide, query: query.clone(), table })]) {
+        let targets = match self.query_dependent_pivots(&query, &table) {
+            Ok(targets) => targets,
+            Err(error) => return self.queries_message(crate::shell::i18n::format("query.refresh-failed", &[("name", &query.name), ("error", &error)]), cx),
+        };
+        let load = Command::Sheet(SheetCommand::LoadQuery { sheet: self.current_slide, query: query.clone(), table });
+        let mut commands = vec![load];
+        if !targets.is_empty() {
+            let mut work = self.presentation().clone();
+            if let Err(error) = work.apply(commands[0].clone()) {
+                return self.queries_message(error.to_string(), cx);
+            }
+            match self.rebuild_pivot_commands(&mut work, targets, true, cx) {
+                Ok(pivots) => commands.extend(pivots),
+                Err(error) => return self.queries_message(crate::shell::i18n::format("query.refresh-failed", &[("name", &query.name), ("error", &error)]), cx),
+            }
+        }
+        if let Err(e) = self.document.execute(commands) {
             return self.queries_message(e.to_string(), cx);
         }
         self.queries_message(crate::shell::i18n::format("query.refreshed", &[("name", &query.name), ("rows", &rows)]), cx);
+    }
+
+    fn query_dependent_pivots(&self, query: &Query, table: &QTable) -> Result<Vec<(ibis_doc_model::SlideId, usize, Option<ibis_doc_model::CellRange>)>, SharedString> {
+        use ibis_doc_model::{CellRange, sheet_calc::sheet_of_slide};
+        let book = self.presentation();
+        let Some(output) = query.output.as_ref().and_then(|name| {
+            let workbook = book.workbook.as_ref()?;
+            workbook.sheets[workbook.sheet_index(name)?].slide
+        }) else { return Ok(Vec::new()) };
+        let Some(old_sheet) = book.slide(output).and_then(sheet_of_slide) else { return Ok(Vec::new()) };
+        let mut targets = Vec::new();
+        for slide in &book.slides {
+            let Some(sheet) = sheet_of_slide(slide) else { continue };
+            for (index, pivot) in sheet.pivots.iter().enumerate() {
+                let Some((source, range)) = ibis_formats::pivot_source_location(book, pivot) else { continue };
+                if source.unwrap_or(slide.id) == output {
+                    if slide.id == output && crate::pivot::pivot_area(pivot).iter().any(|area| {
+                        area.first_row as usize <= table.rows.len()
+                            && (area.first_column as usize) < table.columns.len()
+                    }) {
+                        return Err(crate::shell::i18n::text("_xlsx.the-pivottable-would-overlap-other-cells-or-anot"));
+                    }
+                    if range.first_row == 0 && (range.first_column..=range.last_column).any(|column| {
+                        let old = old_sheet.cell(0, column).map(|cell| cell.text.as_str()).unwrap_or_default();
+                        let new = table.columns.get(column as usize).map(|col| col.name.as_str()).unwrap_or_default();
+                        old != new
+                    }) {
+                        return Err(crate::shell::i18n::text("query.pivot-columns-changed"));
+                    }
+                    targets.push((slide.id, index, range, pivot.source.name.is_none()));
+                }
+            }
+        }
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // A plain range covering the entire previous output follows changes in row count.
+        // Explicit subranges, table references and defined names keep their own bounds.
+        let old_extent = old_sheet.cells.iter().fold(CellRange::default(), |mut extent, cell| {
+            extent.last_row = extent.last_row.max(cell.row);
+            extent.last_column = extent.last_column.max(cell.column);
+            extent
+        });
+        let new_last_row = table.rows.len() as u32;
+        let resize = table.columns.len() == old_extent.last_column as usize + 1 && new_last_row != old_extent.last_row;
+        Ok(targets.into_iter().map(|(slide, index, range, direct)| {
+            let new_range = (direct && resize && range == old_extent)
+                .then_some(CellRange { last_row: new_last_row, ..range });
+            (slide, index, new_range)
+        }).collect())
     }
 
     pub fn queries_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {

@@ -77,7 +77,7 @@ mod style;
 mod table_style;
 pub use table_style::styled_with_table;
 pub use xlsx_external::{link_display, link_path, new_external_book, read_external_book, refreshed_sheets};
-pub use xlsx_pivot::{pivot_data, pivot_source, rebuilt_pivot, refreshed_pivot};
+pub use xlsx_pivot::{pivot_data, pivot_source, pivot_source_location, rebuilt_pivot, refreshed_pivot};
 #[doc(hidden)]
 pub mod test_files;
 pub mod svg_convert;
