@@ -285,3 +285,22 @@ for format_name in ("sd-jwt", "mdoc"):
         assert report["state_matches"] is False, report
         assert report["nonce_matches"] is (False if format_name == "sd-jwt" else None), report
     print(f"{format_name} / generated request and cross-session replay diagnostics: OK")
+
+for format_name, scenario, failures in (
+    ("sd-jwt", "normal", []),
+    ("sd-jwt", "wrong-nonce", ["nonce"]),
+    ("mdoc", "normal", []),
+    ("mdoc", "extra", ["unexpected_paths"]),
+):
+    result = subprocess.run(
+        [sys.executable, "scripts/wallet-run.py", format_name, "--scenario", scenario,
+         "--build-dir", str(build)],
+        text=True, capture_output=True, timeout=40,
+    )
+    assert result.returncode == int(bool(failures)), result.stderr
+    output = json.loads(result.stdout)
+    assert output["passed"] is (not failures), output
+    assert output["failed_checks"] == failures, output
+    assert output["report"]["state_matches"] is True, output
+    assert not result.stderr, result.stderr
+    print(f"{format_name} / {scenario} / one-command Wallet run: OK")

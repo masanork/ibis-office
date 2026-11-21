@@ -165,6 +165,22 @@ exercise issuer-signed selective disclosure without a device-authenticated
 session. Its SD-JWT cases exercise valid key binding and a signed response
 with the wrong nonce. No network or external wallet service is required.
 
+### Run the synthetic Wallet in one command
+
+After building the examples, run:
+
+```sh
+python3 scripts/wallet-run.py sd-jwt
+python3 scripts/wallet-run.py mdoc --scenario extra
+```
+
+The runner starts the local HTTP capture, generates a fresh request, invokes
+the fixture Wallet and submits its response. It prints one JSON result and
+returns exit code 0 when every fixture check passes, 1 on a comparison
+failure, or 2 if the run cannot complete. Use `--build-dir` for a Cargo
+output directory other than `target/debug`. The mdoc check covers issuer
+signature, digests and claims. Device authentication is outside this fixture.
+
 ### Capture a local Wallet response over HTTP
 
 After building the examples above, write the request expectations to
