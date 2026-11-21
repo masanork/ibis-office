@@ -35,6 +35,11 @@ impl FormatInput {
 }
 
 impl InputHandler for FormatInput {
+    #[cfg(target_os = "android")]
+    fn accepts_text_input(&mut self, _: &mut Window, cx: &mut App) -> bool {
+        self.editor.update(cx, |editor, _| !editor.is_read_only())
+    }
+
     fn element_bounds(&mut self, _: &mut Window, _: &mut App) -> Option<Bounds<Pixels>> {
         Some(self.bounds)
     }

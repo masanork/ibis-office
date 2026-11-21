@@ -332,6 +332,10 @@ impl PlatformWindow for AndroidWindow {
         Capslock::default()
     }
 
+    fn hide_soft_keyboard(&self) {
+        crate::jni_bridge::hide_keyboard();
+    }
+
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
         *self.inner.input_handler.borrow_mut() = Some(input_handler);
     }
