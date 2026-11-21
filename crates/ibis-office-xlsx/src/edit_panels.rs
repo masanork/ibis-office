@@ -6,6 +6,8 @@
 //! the state's other fields.
 
 use crate::ext::*;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use crate::prefill_panel::PrefillPanelCrate as _;
 
 #[derive(Default)]
 pub struct EditPanels {
@@ -83,6 +85,8 @@ pub struct EditPanels {
     /// 開発 > コントロールの書式設定/プロパティ…
     pub(crate) control_properties: Option<super::control_insert::ControlPropertiesPanel>,
     /// 開発 > SD-JWT の生成とプレビュー…
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) prefill_preview: Option<Result<serde_json::Value, String>>,
     pub(crate) sd_jwt: Option<super::sd_jwt_panel::SdJwtPanel>,
     /// 挿入 > 描画（インク）
     pub ink: Option<super::ink::InkPanel>,
@@ -212,6 +216,8 @@ impl EditPanels {
         self.slicer_insert = None;
         self.timeline_insert = None;
         self.control_properties = None;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        { self.prefill_preview = None; }
         self.sd_jwt = None;
         self.slicer_settings = None;
         self.error_options = None;
@@ -305,6 +311,12 @@ impl crate::shell::editor::SlideEditor {
             .or_else(|| self.slicer_insert_panel(cx).map(|panel| panel.modal_named("slicer_insert_panel")))
             .or_else(|| self.timeline_insert_panel(cx).map(|panel| panel.modal_named("timeline_insert_panel")))
             .or_else(|| self.control_properties_panel(cx).map(|panel| panel.modal_named("control_properties_panel")))
+            .or_else(|| {
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                { self.prefill_review_panel().map(|panel| panel.modal_named("prefill_review_panel")) }
+                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                { None }
+            })
             .or_else(|| self.sd_jwt_panel(cx).map(|panel| panel.modal_named("sd_jwt_panel")))
             .or_else(|| self.slicer_settings_panel(cx).map(|panel| panel.modal_named("slicer_settings_panel")))
             .or_else(|| self.error_options_panel(cx).map(|panel| panel.modal_named("error_options_panel")))

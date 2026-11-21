@@ -50,6 +50,9 @@ with subprocess.Popen(
             assert report["credential_trust"] == trust, report
             changes = report["changes"]
             assert [row["cell"] for row in changes] == ["B4", "B5", "B6", "B7"], changes
+            assert [row["target_label"] for row in changes] == [
+                "申請者氏名", "受講した研修", "修了年月日", "研修記録の管理番号",
+            ], changes
             assert [row["proposed_value"] for row in changes] == [
                 None, "安全研修（サンプル）", "2026-04-01", number,
             ], changes

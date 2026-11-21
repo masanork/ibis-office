@@ -3116,3 +3116,22 @@ query.json-no-arrays	No JSON arrays to import
 xlsx.query-from-delimited	From CSV or TSV (Query)
 query.delimited-headers	Use First Row as Column Headers
 xlsx.query-from-parquet-folder	From Parquet Folder
+xlsx.prefill.title	Preview form input…
+xlsx.prefill.select-source	Choose the source record
+xlsx.prefill.select-mapping	Choose the field mapping
+xlsx.prefill.too-large	The preview accepts files up to 1 MiB.
+xlsx.prefill.utf8	Choose a UTF-8 file. Text mdoc can use hex or base64url.
+xlsx.prefill.invalid-mapping	The field mapping is not valid JSON.
+xlsx.prefill.wrong-sheet	The mapping names a different sheet. Open that sheet first.
+xlsx.prefill.read-only	Review the proposed values for the current sheet. The workbook has not been edited.
+xlsx.prefill.unverified	The credential’s issuer and trust have not been verified.
+xlsx.prefill.ready	Input candidate
+xlsx.prefill.manual	Enter manually
+xlsx.prefill.missing	Not included in this source
+xlsx.prefill.occupied	Already filled
+xlsx.prefill.blocked	Cell is not available for prefill
+xlsx.prefill.unsupported	Unsupported value
+xlsx.prefill.empty	(empty)
+xlsx.prefill.source	From:
+xlsx.prefill.current	Current:
+xlsx.prefill.proposed	Proposed:

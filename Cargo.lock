@@ -5279,6 +5279,7 @@ dependencies = [
  "gpui-kit",
  "ibis-calc",
  "ibis-doc-model",
+ "ibis-doc-service",
  "ibis-formats",
  "ibis-odf",
  "ibis-office-base",
@@ -5287,6 +5288,7 @@ dependencies = [
  "ibis-office-shell",
  "image",
  "log",
+ "serde_json",
  "ttf-parser",
 ]
 

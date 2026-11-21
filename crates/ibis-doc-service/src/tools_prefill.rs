@@ -5,7 +5,9 @@ use std::collections::BTreeSet;
 
 use ibis_calc::formula::parser::{Expr, parse};
 use ibis_doc_model::sheet_command::{CellEdit, CellInput, SheetCommand};
-use ibis_doc_model::{CellValue, Command, SlideId, sheet::cell_name};
+use ibis_doc_model::{
+    CellValue, Command, Presentation, SlideId, sheet::cell_name, sheet_calc::sheet_of_slide,
+};
 use ibis_formats::structured_preview;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -55,6 +57,7 @@ fn schema(apply: bool) -> Value {
                     "type":"object", "additionalProperties":false, "required":["target"],
                     "properties":{
                         "target":{"type":"string"},
+                                "label":{"type":"string"},
                         "source_path":{"type":["string","null"]}
                     }
                 }}),
@@ -80,19 +83,48 @@ fn preview(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 }
 
 fn plan(service: &mut Service, args: &Value) -> Result<(Value, SlideId), ToolError> {
-    let format = args.str_arg("format")?;
-    let source_input = args.str_arg("source")?;
-    let source =
-        structured_preview::read(format, source_input.as_bytes()).map_err(ToolError::invalid)?;
-    let mappings = args["mappings"]
+    let source = args.str_arg("source")?;
+    let open = service.open_document(args.str_arg("document_id")?)?;
+    let sheets = sheets_of(open)?;
+    let (index, _, _) = find_sheet(&sheets, args.str_arg("sheet")?)?;
+    let presentation = open.document.presentation();
+    let slide = presentation.slides[*index].id;
+    let mut report = review_prefill(
+        presentation,
+        slide,
+        open.signed,
+        args.str_arg("format")?,
+        source,
+        &args["mappings"],
+    )?;
+    let mut checksum = Sha256::new();
+    checksum.update(b"ibis-prefill-v1");
+    checksum.update(open.fingerprint.sha256);
+    checksum.update(Sha256::digest(source.as_bytes()));
+    checksum.update(report.to_string().as_bytes());
+    report["preview_id"] = json!(format!("{:x}", checksum.finalize()));
+    Ok((report, slide))
+}
+
+/// Inspect explicit mappings against a snapshot of an open sheet without editing it.
+pub fn review_prefill(
+    presentation: &Presentation,
+    slide: SlideId,
+    signed: bool,
+    format: &str,
+    source: &str,
+    mappings: &Value,
+) -> Result<Value, ToolError> {
+    let source = structured_preview::read(format, source.as_bytes()).map_err(ToolError::invalid)?;
+    let mappings = mappings
         .as_array()
         .filter(|mappings| (1..=100).contains(&mappings.len()))
         .ok_or_else(|| ToolError::invalid("mappings must contain 1–100 entries"))?;
-    let open = service.open_document(args.str_arg("document_id")?)?;
-    let sheets = sheets_of(open)?;
-    let (index, sheet_name, sheet) = find_sheet(&sheets, args.str_arg("sheet")?)?;
-    let presentation = open.document.presentation();
-    let slide = presentation.slides[*index].id;
+    let selected = presentation
+        .slide(slide)
+        .ok_or_else(|| ToolError::invalid("missing destination sheet"))?;
+    let sheet =
+        sheet_of_slide(selected).ok_or_else(|| ToolError::invalid("missing destination sheet"))?;
     let workbook = presentation
         .workbook
         .as_ref()
@@ -166,7 +198,7 @@ fn plan(service: &mut Service, args: &Value) -> Result<(Value, SlideId), ToolErr
             }
             None => None,
         };
-        let status = if open.signed
+        let status = if signed
             || sheet.protection.is_some()
             || sheet.spills.values().any(|range| {
                 (range.first_row..=range.last_row).contains(&row)
@@ -192,21 +224,20 @@ fn plan(service: &mut Service, args: &Value) -> Result<(Value, SlideId), ToolErr
             }
         };
         rows.push(json!({
-            "target": chosen.name, "cell": cell_name(col, row), "source_path": path,
+            "target": chosen.name, "target_label": mapping.opt_str("label")?,
+            "cell": cell_name(col, row), "source_path": path,
             "current_value": before, "proposed_value": proposed, "status": status,
         }));
     }
-    let mut report = json!({
+    let sheet_name = local_index
+        .and_then(|index| workbook.sheets.get(index))
+        .map(|entry| entry.name.as_str())
+        .or(selected.name.as_deref())
+        .unwrap_or("");
+    Ok(json!({
         "sheet":sheet_name, "source_format":source.format, "changes":rows,
         "credential_trust": if source.credential.is_some() { "not_checked" } else { "not_applicable" },
-    });
-    let mut checksum = Sha256::new();
-    checksum.update(b"ibis-prefill-v1");
-    checksum.update(open.fingerprint.sha256);
-    checksum.update(Sha256::digest(source_input.as_bytes()));
-    checksum.update(report.to_string().as_bytes());
-    report["preview_id"] = json!(format!("{:x}", checksum.finalize()));
-    Ok((report, slide))
+    }))
 }
 
 fn literal_cell_value(value: &Value) -> Option<CellValue> {

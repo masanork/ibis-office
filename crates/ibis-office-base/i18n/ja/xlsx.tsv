@@ -3113,3 +3113,22 @@ query.json-no-arrays	取り込める JSON 配列がありません
 xlsx.query-from-delimited	CSV／TSV クエリ
 query.delimited-headers	先頭行を列名にする
 xlsx.query-from-parquet-folder	Parquet フォルダから
+xlsx.prefill.title	フォームの入力候補を確認…
+xlsx.prefill.select-source	入力に使う記録を選択
+xlsx.prefill.select-mapping	項目の対応表を選択
+xlsx.prefill.too-large	1 MiB以下のファイルを選択してください。
+xlsx.prefill.utf8	UTF-8のファイルを選択してください。mdocは16進またはbase64urlのテキスト形式を使用できます。
+xlsx.prefill.invalid-mapping	項目の対応表が正しいJSONではありません。
+xlsx.prefill.wrong-sheet	対応表に指定されたシートを開いてから実行してください。
+xlsx.prefill.read-only	このシートの入力候補を確認できます。ブックへの変更はまだありません。
+xlsx.prefill.unverified	資格情報の発行元の信頼性は未確認です。
+xlsx.prefill.ready	入力候補
+xlsx.prefill.manual	手入力
+xlsx.prefill.missing	この記録には含まれていません
+xlsx.prefill.occupied	入力済み
+xlsx.prefill.blocked	事前入力できないセル
+xlsx.prefill.unsupported	対応していない値
+xlsx.prefill.empty	（空欄）
+xlsx.prefill.source	転記元:
+xlsx.prefill.current	現在の値:
+xlsx.prefill.proposed	入力候補:

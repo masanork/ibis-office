@@ -20,6 +20,7 @@ mod tools_wallet;
 mod tools_prefill;
 mod wallet_dcql;
 mod wallet_direct_post;
+pub use tools_prefill::review_prefill;
 pub use tools_wallet::run_cli as compare_presentation;
 
 pub use catalog::{Access, Tool, catalog};
