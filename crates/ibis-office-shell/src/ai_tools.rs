@@ -922,8 +922,89 @@ pub fn parse_clear_cells_command(slide: SlideId, arguments_json: &str) -> Result
 }
 
 /// Tool definitions exposed to the OpenAI-compatible API for presentations (PPTX).
-pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
+/// Source representations the document or presentation editor can edit.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditableSourceKind {
+    Markdown,
+    Mermaid,
+}
+
+pub struct EditableSource {
+    pub target: String,
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReadEditableSource {
+    pub kind: EditableSourceKind,
+    pub start_line: Option<usize>,
+    pub line_count: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReplaceSourceText {
+    pub kind: EditableSourceKind,
+    pub target: String,
+    pub expected: String,
+    pub replacement: String,
+}
+
+fn source_tool_definitions(markdown: bool) -> Vec<ToolDefinition> {
+    let kinds = if markdown { vec!["markdown", "mermaid"] } else { vec!["mermaid"] };
     vec![
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "read_editable_source",
+                description: "Read an active Markdown document or the source of the selected Mermaid image. Returns a target token for a subsequent edit.",
+                parameters: json!({
+                    "type": "object", "required": ["kind"], "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "enum": kinds },
+                        "start_line": { "type": "integer", "minimum": 1, "description": "First line, defaults to 1." },
+                        "line_count": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Maximum lines, defaults to 100." }
+                    }
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "replace_source_text",
+                description: "Replace one unique, exact fragment of editable source. First read it with read_editable_source and pass its target token. This applies one undoable edit immediately.",
+                parameters: json!({
+                    "type": "object", "required": ["kind", "target", "expected", "replacement"], "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "enum": kinds },
+                        "target": { "type": "string", "description": "Target token from read_editable_source." },
+                        "expected": { "type": "string", "description": "Nonempty literal source fragment to replace, including original whitespace." },
+                        "replacement": { "type": "string", "description": "Replacement source text. Empty removes the fragment." }
+                    }
+                }),
+            },
+        },
+    ]
+}
+
+pub(crate) fn replace_unique_source(text: &str, expected: &str, replacement: &str) -> Result<String, &'static str> {
+    if expected.is_empty() || expected.len() > 32_768 || replacement.len() > 65_536 {
+        return Err("expected must be nonempty; the source fragment or replacement exceeds its size limit");
+    }
+    let start = text.find(expected).ok_or("expected source was not found; read the current source again")?;
+    let next = start + expected.chars().next().unwrap().len_utf8();
+    if text[next..].contains(expected) {
+        return Err("expected source occurs more than once; include more surrounding text");
+    }
+    let mut result = text.to_owned();
+    result.replace_range(start..start + expected.len(), replacement);
+    Ok(result)
+}
+
+pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
+    let mut tools = vec![
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
@@ -1105,12 +1186,14 @@ pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
-    ]
+    ];
+    tools.extend(source_tool_definitions(false));
+    tools
 }
 
 /// Tool definitions exposed to the OpenAI-compatible API for word-processing documents (DOCX).
 pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
+    let mut tools = vec![
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
@@ -1353,7 +1436,9 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
-    ]
+    ];
+    tools.extend(source_tool_definitions(true));
+    tools
 }
 
 #[derive(Deserialize)]
@@ -1809,6 +1894,18 @@ pub fn build_replace_paragraph_command(paragraph: u32, old_len: usize, text: Str
 mod tests {
     use super::*;
     use ibis_doc_model::sheet_command::{CellInput, SheetCommand};
+
+    #[test]
+    fn source_patch_is_literal_and_requires_a_unique_match() {
+        assert_eq!(replace_unique_source("前置き
+A --> B
+", "A --> B", "A --> C").unwrap(), "前置き
+A --> C
+");
+        assert!(replace_unique_source("aaaa", "aaa", "x").is_err());
+        assert!(replace_unique_source("本文", "", "x").is_err());
+        assert!(replace_unique_source("本文", "なし", "x").is_err());
+    }
 
     #[test]
     fn ai_create_chart_infers_categories_and_values_from_a_table() {

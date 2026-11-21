@@ -132,76 +132,16 @@ impl SlideEditor {
             .filter(|(picture, _, original)| {
                 picture.media == edit.media && *original == edit.original
             });
-        let error = if let Some((picture, frame, original)) = current {
-            if source == original {
-                self.close_dialog(window, cx);
-                return;
-            }
-            if let Some(MermaidOutput::Svg {
-                bytes,
-                width_px,
-                height_px,
-            }) = render_mermaid(&source)
-                && width_px > 0
-                && height_px > 0
-                && frame.width > 0
-                && frame.height > 0
-            {
-                let mut picture = picture.clone();
-                // Keep the diagram inside its current frame and keep the rotation center.
-                let scale = (frame.width as f64 / f64::from(width_px))
-                    .min(frame.height as f64 / f64::from(height_px));
-                let width = (f64::from(width_px) * scale).round().max(1.) as i64;
-                let height = (f64::from(height_px) * scale).round().max(1.) as i64;
-                let updated = EmuRect::new(
-                    frame.x + (frame.width - width) / 2,
-                    frame.y + (frame.height - height) / 2,
-                    width,
-                    height,
-                );
-                let media = self
-                    .document
-                    .ids()
-                    .add_media(MediaFormat::Svg, bytes.clone());
-                self.resources.add_picture(media, MediaFormat::Svg, &bytes);
-                picture.media = media;
-                let alt_text = ibis_doc_model::AltText {
-                    title: "__mermaid__".to_string(),
-                    description: source,
-                };
-                self.run(
-                    vec![
-                        Command::SetShapeKind {
-                            slide,
-                            shape,
-                            kind: Box::new(ShapeKind::Picture(picture)),
-                        },
-                        Command::SetShapeAltText {
-                            slide,
-                            shape,
-                            alt_text,
-                        },
-                        Command::SetFrame {
-                            slide,
-                            frames: vec![(shape, updated)],
-                            with_attached: false,
-                        },
-                    ],
-                    cx,
-                );
-                if self
-                    .mermaid_picture(slide, shape)
-                    .is_some_and(|(picture, _, _)| picture.media == media)
-                {
+        let error = if current.is_none() {
+            "docx.picture.mermaid-source.stale"
+        } else {
+            match self.replace_pptx_mermaid_picture(slide, shape, source, cx) {
+                Ok(()) => {
                     self.close_dialog(window, cx);
                     return;
                 }
-                "docx.picture.mermaid-source.rejected"
-            } else {
-                "docx.picture.mermaid-source.invalid"
+                Err(error) => error,
             }
-        } else {
-            "docx.picture.mermaid-source.stale"
         };
         if let Some(edit) = self
             .pptx_mut()
@@ -210,6 +150,47 @@ impl SlideEditor {
             edit.error = Some(error);
         }
         cx.notify();
+    }
+
+    pub(crate) fn ai_selected_mermaid_source(&self) -> Option<(SlideId, ShapeId, MediaId, String)> {
+        let (slide, shape) = self.selected_mermaid_picture()?;
+        let (picture, _, source) = self.mermaid_picture(slide, shape)?;
+        Some((slide, shape, picture.media, source.to_owned()))
+    }
+
+    pub(crate) fn replace_pptx_mermaid_picture(&mut self, slide: SlideId, shape: ShapeId, source: String, cx: &mut Context<Self>) -> Result<(), &'static str> {
+        let (picture, frame, original) = self.mermaid_picture(slide, shape).ok_or("docx.picture.mermaid-source.stale")?;
+        if source == original {
+            return Ok(());
+        }
+        let Some(MermaidOutput::Svg { bytes, width_px, height_px }) = render_mermaid(&source)
+            .filter(|output| matches!(output, MermaidOutput::Svg { width_px, height_px, .. } if *width_px > 0 && *height_px > 0))
+        else {
+            return Err("docx.picture.mermaid-source.invalid");
+        };
+        if frame.width <= 0 || frame.height <= 0 {
+            return Err("docx.picture.mermaid-source.invalid");
+        }
+        let mut picture = picture.clone();
+        // Keep the diagram inside its current frame and keep the rotation center.
+        let scale = (frame.width as f64 / f64::from(width_px)).min(frame.height as f64 / f64::from(height_px));
+        let width = (f64::from(width_px) * scale).round().max(1.) as i64;
+        let height = (f64::from(height_px) * scale).round().max(1.) as i64;
+        let updated = EmuRect::new(frame.x + (frame.width - width) / 2, frame.y + (frame.height - height) / 2, width, height);
+        let media = self.document.ids().add_media(MediaFormat::Svg, bytes.clone());
+        self.resources.add_picture(media, MediaFormat::Svg, &bytes);
+        picture.media = media;
+        let alt_text = ibis_doc_model::AltText { title: "__mermaid__".into(), description: source };
+        self.run(vec![
+            Command::SetShapeKind { slide, shape, kind: Box::new(ShapeKind::Picture(picture)) },
+            Command::SetShapeAltText { slide, shape, alt_text },
+            Command::SetFrame { slide, frames: vec![(shape, updated)], with_attached: false },
+        ], cx);
+        if self.mermaid_picture(slide, shape).is_some_and(|(picture, _, _)| picture.media == media) {
+            Ok(())
+        } else {
+            Err("docx.picture.mermaid-source.rejected")
+        }
     }
 
     pub(crate) fn pptx_mermaid_dialog(

@@ -349,6 +349,14 @@ pub trait FormatEditor {
         None
     }
 
+    fn ai_editable_source(_editor: &SlideEditor, _kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String> {
+        Err("editable source is unavailable in this format".into())
+    }
+
+    fn apply_ai_source(_editor: &mut SlideEditor, _kind: crate::ai_tools::EditableSourceKind, _source: String, _cx: &mut Context<SlideEditor>) -> Result<(), String> {
+        Err("editable source is unavailable in this format".into())
+    }
+
     /// Capture an editable text selection for a proposed assistant replacement.
     fn ai_replacement_target(_editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget> {
         None
@@ -1363,6 +1371,8 @@ pub trait FormatDriver: Sync {
     fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange);
     fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32>;
     fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String>;
+    fn ai_editable_source(&self, editor: &SlideEditor, kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String>;
+    fn apply_ai_source(&self, editor: &mut SlideEditor, kind: crate::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String>;
     fn ai_replacement_target(&self, editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget>;
     fn apply_ai_replacement(&self, editor: &mut SlideEditor, target: &crate::ai_assistant::AiReplacementTarget, text: &str, cx: &mut Context<SlideEditor>) -> bool;
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
@@ -1627,6 +1637,12 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String> {
         F::ai_selection_plain_text(_editor)
+    }
+    fn ai_editable_source(&self, editor: &SlideEditor, kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String> {
+        F::ai_editable_source(editor, kind)
+    }
+    fn apply_ai_source(&self, editor: &mut SlideEditor, kind: crate::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String> {
+        F::apply_ai_source(editor, kind, source, cx)
     }
     fn ai_replacement_target(&self, editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget> {
         F::ai_replacement_target(editor)

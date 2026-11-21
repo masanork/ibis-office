@@ -8167,6 +8167,22 @@ fn mermaid_source_edit_roundtrip() {
         (shape.clone(), e.slide().shape_alt_texts.get(&shape.id).cloned())
     });
     let before = snapshot(&mut s);
+    use crate::shell::ai_tools::EditableSourceKind::Mermaid;
+    s.update(|editor, _, cx| {
+        let read = crate::shell::format::with_format!(editor, ai_editable_source(editor, Mermaid)).unwrap();
+        assert_eq!(read.text, original);
+        let invalid = "unsupported diagram".to_owned();
+        assert!(crate::shell::format::with_format!(editor, apply_ai_source(editor, Mermaid, invalid, cx)).is_err());
+    });
+    assert_eq!(snapshot(&mut s), before);
+    s.update(|editor, _, cx| {
+        let text = updated.to_owned();
+        crate::shell::format::with_format!(editor, apply_ai_source(editor, Mermaid, text, cx)).unwrap();
+        let read = crate::shell::format::with_format!(editor, ai_editable_source(editor, Mermaid)).unwrap();
+        assert_eq!(read.text, updated);
+    });
+    s.key("cmd-z");
+    assert_eq!(snapshot(&mut s), before);
     s.update(|e, window, cx| e.open_pptx_mermaid_source(window, cx));
     assert!(s.with(|e, _| e.dialog_is_modal()));
     let apply = |s: &mut Scenario, source: &str| s.update(|e, window, cx| {

@@ -582,6 +582,50 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
 }
 
 impl FormatEditor for Document {
+    fn ai_editable_source(editor: &SlideEditor, kind: crate::shell::ai_tools::EditableSourceKind) -> Result<crate::shell::ai_tools::EditableSource, String> {
+        use crate::shell::ai_tools::{EditableSource, EditableSourceKind};
+        if editor.is_markdown_source_mode() {
+            return Err("return to the rendered document before editing source with the assistant".into());
+        }
+        match kind {
+            EditableSourceKind::Markdown => {
+                if !editor.file_name.as_ref().is_some_and(|name| {
+                    std::path::Path::new(name.as_ref()).extension().and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+                }) {
+                    return Err("open a Markdown document to edit its source".into());
+                }
+                let doc = editor.flow().ok_or("no active document")?;
+                let text = ibis_formats::markdown::export_markdown(doc, &editor.presentation().media);
+                Ok(EditableSource { target: format!("markdown:{}", editor.file_id), text })
+            }
+            EditableSourceKind::Mermaid => {
+                let (at, media, text) = editor.ai_selected_mermaid_source().ok_or("select a Mermaid image with retained source first")?;
+                Ok(EditableSource { target: format!("mermaid:{}:{}:{}:{}", editor.file_id, at.para, at.offset, media.0), text })
+            }
+        }
+    }
+
+    fn apply_ai_source(editor: &mut SlideEditor, kind: crate::shell::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String> {
+        use crate::shell::ai_tools::EditableSourceKind;
+        if editor.is_read_only() || editor.is_jtd_read_only() || editor.is_viewing_mode() || editor.is_protection_read_only() {
+            return Err("the document is read-only".into());
+        }
+        match kind {
+            EditableSourceKind::Markdown => {
+                if !editor.replace_markdown_text(&source, cx) {
+                    return Err("could not apply the Markdown source".into());
+                }
+                editor.relayout_now(cx);
+                Ok(())
+            }
+            EditableSourceKind::Mermaid => {
+                let (at, _, _) = editor.ai_selected_mermaid_source().ok_or("select a Mermaid image with retained source first")?;
+                editor.replace_mermaid_picture(at, source, cx).map_err(|key| crate::shell::i18n::text(key).to_string())
+            }
+        }
+    }
+
     fn ai_docx_cursor_paragraph(editor: &crate::shell::editor::SlideEditor) -> Option<u32> {
         editor.doc_state().and_then(|s| s.caret).map(|p| p.para)
     }

@@ -361,6 +361,27 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
 }
 
 impl FormatEditor for Presentation {
+    fn ai_editable_source(editor: &SlideEditor, kind: crate::shell::ai_tools::EditableSourceKind) -> Result<crate::shell::ai_tools::EditableSource, String> {
+        use crate::shell::ai_tools::{EditableSource, EditableSourceKind};
+        if !matches!(kind, EditableSourceKind::Mermaid) {
+            return Err("only selected Mermaid images have editable source in presentations".into());
+        }
+        let (slide, shape, media, text) = editor.ai_selected_mermaid_source().ok_or("select a Mermaid image with retained source first")?;
+        Ok(EditableSource { target: format!("mermaid:{}:{}:{}:{}", editor.file_id, slide.0, shape.0, media.0), text })
+    }
+
+    fn apply_ai_source(editor: &mut SlideEditor, kind: crate::shell::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String> {
+        use crate::shell::ai_tools::EditableSourceKind;
+        if !matches!(kind, EditableSourceKind::Mermaid) {
+            return Err("only selected Mermaid images have editable source in presentations".into());
+        }
+        if editor.is_read_only() || editor.is_pptx_mark_as_final() || editor.is_pptx_read_only_blocked() {
+            return Err("the presentation is read-only".into());
+        }
+        let (slide, shape, _, _) = editor.ai_selected_mermaid_source().ok_or("select a Mermaid image with retained source first")?;
+        editor.replace_pptx_mermaid_picture(slide, shape, source, cx).map_err(|key| crate::shell::i18n::text(key).to_string())
+    }
+
     const INFO: &'static crate::shell::format::FormatInfo = &crate::shell::format::FormatInfo {
         order: 2,
         extension: "pptx",

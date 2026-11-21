@@ -63,6 +63,8 @@ use crate::ai_tools::{docx_tool_definitions, pptx_tool_definitions, spreadsheet_
 use crate::chrome::SidebarPanel;
 use crate::editor::SlideEditor;
 
+use crate::ai_tools::{ReadEditableSource, ReplaceSourceText, replace_unique_source};
+
 const MAX_TOOL_STEPS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -625,12 +627,12 @@ impl SlideEditor {
                     }
                     AiDocKind::Pptx => {
                         "You are an AI presentation assistant inside ibisOffice. \
-                         Use the provided tools to inspect slides, edit shape text, update speaker notes, or add slides. \
+                         Use the provided tools to inspect slides, edit shape text, update speaker notes, or add slides. For a selected Mermaid image, use read_editable_source then replace_source_text. \
                          Respond concisely in the user's language."
                     }
                     AiDocKind::Docx => {
                         "You are an AI document assistant inside ibisOffice. \
-                         Use the provided tools to inspect paragraphs and edit or format document text. \
+                         Use the provided tools to inspect paragraphs and edit or format document text. For Markdown source or a selected Mermaid image, use read_editable_source then replace_source_text. \
                          For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, use the documents fields as the five initial drafts, leave unsupplied policy and commencement details open for review, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
                          Respond concisely in the user's language."
                     }
@@ -657,6 +659,7 @@ impl SlideEditor {
 
         cx.spawn(async move |this, cx| {
             let mut turn_commands: Vec<Command> = Vec::new();
+            let mut applied_source_edit = false;
             for _step in 0..MAX_TOOL_STEPS {
                 let is_active = this
                     .read_with(cx, |editor, _| {
@@ -735,8 +738,8 @@ impl SlideEditor {
                             }
 
                             if out.tool_calls.is_empty() {
-                                let applied_edits = !turn_commands.is_empty();
-                                if applied_edits {
+                                let applied_edits = applied_source_edit || !turn_commands.is_empty();
+                                if !turn_commands.is_empty() {
                                     let cmds = std::mem::take(&mut turn_commands);
                                     let grouped = if cmds.len() == 1 {
                                         cmds.into_iter().next().expect("single cmd")
@@ -775,6 +778,9 @@ impl SlideEditor {
                                     editor.execute_ai_tool(kind, call, &turn_commands, cx);
                                 if let Some(cmd) = cmd_opt {
                                     turn_commands.push(cmd);
+                                }
+                                if call.function.name == "replace_source_text" && serde_json::from_str::<serde_json::Value>(&result_json).ok().and_then(|value| value["changed"].as_bool()) == Some(true) {
+                                    applied_source_edit = true;
                                 }
                                 let tool_msg = ChatMessage::tool_result(&call.id, result_json);
                                 messages_to_send.push(tool_msg.clone());
@@ -1379,6 +1385,16 @@ impl SlideEditor {
         pending: &[Command],
         cx: &mut Context<Self>,
     ) -> (String, Option<Command>, String) {
+        if matches!(kind, AiDocKind::Docx | AiDocKind::Pptx)
+            && matches!(call.function.name.as_str(), "read_editable_source" | "replace_source_text")
+        {
+            let name = &call.function.name;
+            let result = self.execute_source_tool(name, &call.function.arguments, pending, cx);
+            return match result {
+                Ok(value) => (value.to_string(), None, format!("✓ {name}")),
+                Err(error) => (json!({ "error": error }).to_string(), None, format!("✗ {name}: {error}")),
+            };
+        }
         match kind {
             AiDocKind::Xlsx if call.function.name == "create_chart" => {
                 match self.stage_ai_chart(&call.function.arguments, pending) {
@@ -1390,6 +1406,50 @@ impl SlideEditor {
             AiDocKind::Pptx => self.execute_pptx_tool(call, cx),
             AiDocKind::Docx => self.execute_docx_tool(call, cx),
         }
+    }
+
+    fn execute_source_tool(&mut self, name: &str, arguments: &str, pending: &[Command], cx: &mut Context<Self>) -> Result<serde_json::Value, String> {
+        if name == "read_editable_source" {
+            let args: ReadEditableSource = serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
+            let start = args.start_line.unwrap_or(1);
+            let count = args.line_count.unwrap_or(100);
+            if start == 0 || !(1..=200).contains(&count) {
+                return Err("start_line must be at least 1 and line_count must be 1 to 200".into());
+            }
+            let current = with_format!(self, ai_editable_source(self, args.kind))?;
+            let mut source = String::new();
+            let mut lines = current.text.split_inclusive('\n').skip(start - 1).peekable();
+            let mut next = start;
+            while next - start < count {
+                let Some(line) = lines.peek() else { break };
+                if source.len() + line.len() > 32_768 {
+                    if source.is_empty() {
+                        return Err("this source line exceeds the 32 KiB read limit".into());
+                    }
+                    break;
+                }
+                source.push_str(lines.next().unwrap());
+                next += 1;
+            }
+            return Ok(json!({
+                "target": current.target, "start_line": start, "source": source,
+                "next_line": lines.peek().map(|_| next),
+            }));
+        }
+        if !pending.is_empty() {
+            return Err("finish the pending document edits before changing its source".into());
+        }
+        let args: ReplaceSourceText = serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
+        let current = with_format!(self, ai_editable_source(self, args.kind))?;
+        if current.target != args.target {
+            return Err("the source target changed; read it again".into());
+        }
+        let replacement = replace_unique_source(&current.text, &args.expected, &args.replacement)?;
+        let changed = replacement != current.text;
+        if changed {
+            with_format!(self, apply_ai_source(self, args.kind, replacement, cx))?;
+        }
+        Ok(json!({ "ok": true, "changed": changed }))
     }
 
     fn stage_ai_chart(&mut self, arguments: &str, pending: &[Command]) -> Result<Command, String> {

@@ -786,6 +786,18 @@ impl SlideEditor {
             return true;
         }
 
+        let applied = self.replace_markdown_text(&text, cx);
+        if applied {
+            self.relayout_now(cx);
+            if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+                ms.dirty = false;
+                ms.last_error = None;
+            }
+        }
+        applied
+    }
+
+    pub(crate) fn replace_markdown_text(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
         let Some(current_doc) = self.flow().cloned() else {
             return false;
         };
@@ -799,7 +811,7 @@ impl SlideEditor {
         let baseline_pres = self.presentation().clone();
 
         let parsed = ibis_formats::markdown::reparse_markdown_document(
-            &text,
+            text,
             &current_doc,
             &mut media,
             source.as_deref(),
@@ -843,15 +855,7 @@ impl SlideEditor {
         }
         remap_document_media(&mut new_doc, &media_remap);
 
-        let applied = self.run_flow(vec![FlowCommand::ReplaceDocument(Box::new(new_doc))], cx);
-        if applied {
-            self.relayout_now(cx);
-            if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
-                ms.dirty = false;
-                ms.last_error = None;
-            }
-        }
-        applied
+        self.run_flow(vec![FlowCommand::ReplaceDocument(Box::new(new_doc))], cx)
     }
 
     /// Exit Markdown source view and return to the rendered document view.

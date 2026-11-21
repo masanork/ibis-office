@@ -10208,6 +10208,22 @@ fn mermaid_source_edit_roundtrip() {
     });
     scenario.click_text(at);
     let before = scenario.document();
+    use crate::shell::ai_tools::EditableSourceKind::Mermaid;
+    scenario.update(|editor, _, cx| {
+        let read = crate::shell::format::with_format!(editor, ai_editable_source(editor, Mermaid)).unwrap();
+        assert_eq!(read.text, original);
+        let invalid = "unsupported diagram".to_owned();
+        assert!(crate::shell::format::with_format!(editor, apply_ai_source(editor, Mermaid, invalid, cx)).is_err());
+    });
+    assert_eq!(scenario.document(), before);
+    scenario.update(|editor, _, cx| {
+        let text = replacement.to_owned();
+        crate::shell::format::with_format!(editor, apply_ai_source(editor, Mermaid, text, cx)).unwrap();
+        let read = crate::shell::format::with_format!(editor, ai_editable_source(editor, Mermaid)).unwrap();
+        assert_eq!(read.text, replacement);
+    });
+    scenario.menu("edit.undo");
+    assert_eq!(scenario.document(), before);
     scenario.menu("docx.picture.mermaid-source");
     assert!(scenario.with(|editor, _| editor.dialog_is_modal()));
     let apply = |scenario: &mut Scenario, source: &str| {
@@ -10247,6 +10263,23 @@ fn mermaid_source_edit_roundtrip() {
     let svg = reopened.media(saved_media).unwrap();
     assert_eq!(svg.format, ibis_doc_model::MediaFormat::Svg);
     assert!(std::str::from_utf8(&svg.data).unwrap().contains("After"));
+    drop(scenario);
+    let markdown_path = directory.join("ai-source-edit.md");
+    std::fs::write(&markdown_path, &markdown).unwrap();
+    let mut markdown_editor = Scenario::open(markdown_path.to_str().unwrap());
+    use crate::shell::ai_tools::EditableSourceKind::Markdown;
+    markdown_editor.update(|editor, _, cx| {
+        let read = crate::shell::format::with_format!(editor, ai_editable_source(editor, Markdown)).unwrap();
+        assert!(read.text.contains(original));
+        let changed = read.text.replace(original, replacement);
+        crate::shell::format::with_format!(editor, apply_ai_source(editor, Markdown, changed, cx)).unwrap();
+        let read = crate::shell::format::with_format!(editor, ai_editable_source(editor, Markdown)).unwrap();
+        assert!(read.text.contains(replacement));
+    });
+    markdown_editor.menu("edit.undo");
+    assert!(markdown_editor.with(|editor, _| {
+        crate::shell::format::with_format!(editor, ai_editable_source(editor, Markdown)).unwrap().text.contains(original)
+    }));
 }
 
 /// 画像選択時の「代替テキスト…」メニュー（docx.picture.alt-text）、サイドバーパネルでのタイトル・説明文入力、

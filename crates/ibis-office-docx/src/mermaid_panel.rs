@@ -131,50 +131,16 @@ impl SlideEditor {
         let current = self.mermaid_picture_at(at).filter(|(media, _, look)| {
             *media == edit.media && look.alt_text.description == edit.original
         });
-        let error = if let Some((_, size, look)) = current {
-            if source == edit.original {
-                self.close_dialog(window, cx);
-                return;
-            }
-            if let Some(MermaidOutput::Svg {
-                bytes,
-                width_px,
-                height_px,
-            }) = render_mermaid(&source)
-                && width_px > 0
-                && height_px > 0
-            {
-                let mut look = look.clone();
-                look.alt_text.description = source;
-                let height = size.width.saturating_mul(i64::from(height_px)) / i64::from(width_px);
-                let size = EmuSize::new(size.width, height.max(1));
-                let media = self
-                    .document
-                    .ids()
-                    .add_media(MediaFormat::Svg, bytes.clone());
-                self.resources
-                    .images
-                    .insert(media, Arc::new(Image::from_bytes(ImageFormat::Svg, bytes)));
-                if self.run_flow(
-                    vec![
-                        FlowCommand::ReplacePicture {
-                            at,
-                            media,
-                            size: Some(size),
-                        },
-                        FlowCommand::SetPictureLook { at, look },
-                    ],
-                    cx,
-                ) {
+        let error = if current.is_none() {
+            "docx.picture.mermaid-source.stale"
+        } else {
+            match self.replace_mermaid_picture(at, source, cx) {
+                Ok(()) => {
                     self.close_dialog(window, cx);
                     return;
                 }
-                "docx.picture.mermaid-source.rejected"
-            } else {
-                "docx.picture.mermaid-source.invalid"
+                Err(error) => error,
             }
-        } else {
-            "docx.picture.mermaid-source.stale"
         };
         if let Some(edit) = self
             .doc_state_mut()
@@ -183,6 +149,38 @@ impl SlideEditor {
             edit.error = Some(error);
         }
         cx.notify();
+    }
+
+    pub(crate) fn ai_selected_mermaid_source(&self) -> Option<(FlowPos, MediaId, String)> {
+        let (at, _, _) = self.picture_at_caret()?;
+        let (media, _, look) = self.mermaid_picture_at(at)?;
+        Some((at, media, look.alt_text.description.clone()))
+    }
+
+    pub(crate) fn replace_mermaid_picture(&mut self, at: FlowPos, source: String, cx: &mut Context<Self>) -> Result<(), &'static str> {
+        let (_, size, look) = self.mermaid_picture_at(at).ok_or("docx.picture.mermaid-source.stale")?;
+        if source == look.alt_text.description {
+            return Ok(());
+        }
+        let Some(MermaidOutput::Svg { bytes, width_px, height_px }) = render_mermaid(&source)
+            .filter(|output| matches!(output, MermaidOutput::Svg { width_px, height_px, .. } if *width_px > 0 && *height_px > 0))
+        else {
+            return Err("docx.picture.mermaid-source.invalid");
+        };
+        let mut look = look.clone();
+        look.alt_text.description = source;
+        let height = size.width.saturating_mul(i64::from(height_px)) / i64::from(width_px);
+        let size = EmuSize::new(size.width, height.max(1));
+        let media = self.document.ids().add_media(MediaFormat::Svg, bytes.clone());
+        self.resources.images.insert(media, Arc::new(Image::from_bytes(ImageFormat::Svg, bytes)));
+        if self.run_flow(vec![
+            FlowCommand::ReplacePicture { at, media, size: Some(size) },
+            FlowCommand::SetPictureLook { at, look },
+        ], cx) {
+            Ok(())
+        } else {
+            Err("docx.picture.mermaid-source.rejected")
+        }
     }
 
     pub(crate) fn mermaid_dialog(&self, cx: &mut Context<Self>) -> Option<chrome::SidebarPanel> {
