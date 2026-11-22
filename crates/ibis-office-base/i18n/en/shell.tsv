@@ -1580,3 +1580,14 @@ git.revised	Revised
 git.revised-selected	Revised ✓
 git.compare	Compare Revisions
 git.no-changes	No changes.
+git.files	Files
+git.changes	Changes
+git.staged	Staged
+git.unstaged	Unstaged
+git.stage	Stage
+git.unstage	Unstage
+git.commit-message	Commit message
+git.commit-message-required	Enter a commit message.
+git.commit-staged	Commit Staged
+git.refresh	Refresh
+git.commit-refresh-failed	Committed. The view could not be refreshed.

@@ -4,11 +4,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::button::Button;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::{editor::SlideEditor, i18n::text};
+
+mod working_tree;
+use working_tree::WorkingTree;
 
 const HISTORY_SCAN: usize = 1500;
 const HISTORY_PAGE: usize = 24;
@@ -43,6 +46,7 @@ pub(crate) struct GitWorkspace {
     base: Option<gix::ObjectId>,
     revised: Option<gix::ObjectId>,
     busy: bool,
+    working: WorkingTree,
 }
 
 impl GitWorkspace {
@@ -75,6 +79,7 @@ impl GitWorkspace {
             base: None,
             revised: None,
             busy: false,
+            working: WorkingTree::default(),
         })
     }
 }
@@ -630,6 +635,21 @@ impl SlideEditor {
                     .truncate()
                     .child(format!("{} · {}", state.title, state.branch)),
             )
+            .when(state.worktree.is_some(), |bar| {
+                bar.child(
+                    Button::new("git-working-mode")
+                        .xsmall()
+                        .disabled(state.busy)
+                        .label(text(if state.working.is_open() {
+                            "git.files"
+                        } else {
+                            "git.changes"
+                        }))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.git_show_changes(window, cx)),
+                        ),
+                )
+            })
             .child(
                 Button::new("git-close")
                     .xsmall()
@@ -709,8 +729,12 @@ impl SlideEditor {
                 .when(state.busy, |pane| {
                     pane.child(div().px_2().child(text("git.loading")))
                 })
-                .child(tree)
-                .child(bottom)
+                .when_some(self.render_git_changes(state, cx), |pane, changes| {
+                    pane.child(changes)
+                })
+                .when(!state.working.is_open(), |pane| {
+                    pane.child(tree).child(bottom)
+                })
                 .into_any_element(),
         )
     }

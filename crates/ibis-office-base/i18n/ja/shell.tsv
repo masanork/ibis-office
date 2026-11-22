@@ -1578,3 +1578,14 @@ git.revised	新版
 git.revised-selected	新版 ✓
 git.compare	二版を比較
 git.no-changes	変更はありません。
+git.files	ファイル
+git.changes	変更
+git.staged	ステージ済み
+git.unstaged	未ステージ
+git.stage	ステージ
+git.unstage	解除
+git.commit-message	コミットメッセージ
+git.commit-message-required	コミットメッセージを入力してください。
+git.commit-staged	ステージ済みをコミット
+git.refresh	更新
+git.commit-refresh-failed	コミット済みです。表示を更新できませんでした。
