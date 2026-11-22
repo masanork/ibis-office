@@ -830,6 +830,39 @@ test('repos branches and diff API support branch creation, cross-branch commits,
     assert.ok(html.includes('id="diff-card"'));
     assert.ok(html.includes('draft/review-1'));
 
+    const state = artifactsRepos.values().next().value;
+    let parent = state.commitMap.get(putBranch.commit);
+    for (let index = 0; index < 30; index++) {
+      const hash = createHash('sha1').update('unrelated-' + index).digest('hex');
+      parent = { ...parent, hash, parents: [parent.hash], message: 'Unrelated commit ' + index };
+      state.commitMap.set(hash, parent);
+    }
+    state.refs.set('draft/review-1', parent.hash);
+    const historyUrl = `/repos/${created.id}?ref=draft/review-1&file=README.md`;
+    const firstPage = await worker.fetch(req(historyUrl, { token: 'owner-token' }), env);
+    const firstHistory = (await firstPage.text()).split('id="commit-history"')[1];
+    assert.match(firstHistory, /さらに古い履歴/);
+    assert.match(firstHistory, new RegExp('before=' + putBranch.commit));
+    assert.doesNotMatch(firstHistory.split('<script>')[0], /Unrelated commit/);
+    const older = await worker.fetch(
+      req(historyUrl + '&before=' + putBranch.commit, { token: 'owner-token' }), env,
+    );
+    assert.equal(older.status, 200);
+    const olderHistory = (await older.text()).split('id="commit-history"')[1];
+    assert.match(olderHistory, /Update README on draft branch/);
+    assert.ok(olderHistory.includes(`data-set-base="${putBranch.commit}"`));
+    assert.ok(olderHistory.includes(`ref=${putBranch.commit}&amp;plain=1`));
+    const immutable = await worker.fetch(
+      req(`/api/repos/${created.id}/blob/README.md?ref=${putBranch.commit}&plain=1`, { token: 'owner-token' }), env,
+    );
+    assert.match(immutable.headers.get('Content-Type'), /^text\/plain/);
+    assert.match(await immutable.text(), /Edited on draft branch/);
+    const filtered = await worker.fetch(
+      req(`/api/repos/${created.id}/diff?base=main&head=${putBranch.commit}&path=README.md`, { token: 'owner-token' }), env,
+    );
+    assert.equal(filtered.status, 200);
+    assert.deepEqual((await filtered.json()).files, diff.files);
+
     // Other user cannot access diff or branches
     const otherDiff = await worker.fetch(
       req(`/api/repos/${created.id}/diff?base=main&head=draft/review-1`, { token: 'other-token' }),

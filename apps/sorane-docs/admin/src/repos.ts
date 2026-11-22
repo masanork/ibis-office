@@ -25,6 +25,7 @@ import {
 } from './git-pack';
 import {
   computeLineDiff,
+  type TreeDiffEntry,
   diffCommitTrees,
   isTextDiffablePath,
   looksLikeBinary,
@@ -517,7 +518,8 @@ export async function readRepoBlob(
   const path = normalizeRepoPath(decodeURIComponent(rawPath));
   if (!path) fail(400, 'invalid_path');
 
-  const ref = new URL(request.url).searchParams.get('ref')?.trim() || row.default_branch;
+  const params = new URL(request.url).searchParams;
+  const ref = params.get('ref')?.trim() || row.default_branch;
   using repo = await artifacts.get(row.repo_name);
   const commits = await repo.log({ ref, limit: 1 });
   const headHash = commits[0]?.hash ?? '';
@@ -525,9 +527,13 @@ export async function readRepoBlob(
   if (!blob) fail(404, 'not_found');
 
   const headers = baseHeaders(env);
-  headers.set('Content-Type', contentTypeForPath(path));
+  headers.set('Content-Type', params.get('plain') === '1' && isTextDiffablePath(path)
+    ? 'text/plain; charset=utf-8'
+    : contentTypeForPath(path));
   const fileName = path.split('/').pop() ?? 'document';
-  headers.set('Content-Disposition', `inline; filename="${fileName}"`);
+  const asciiName = fileName.replace(/[^ -~]|["\\]/g, '_');
+  const encodedName = encodeURIComponent(fileName).replace(/['()*]/g, (char) => '%' + char.charCodeAt(0).toString(16));
+  headers.set('Content-Disposition', `inline; filename="${asciiName}"; filename*=UTF-8''${encodedName}`);
   if (headHash) headers.set('ETag', quoteEtag(headHash));
 
   if (request.method === 'HEAD') {
@@ -706,13 +712,21 @@ export async function diffRepo(request: Request, env: RepoEnv, id: string): Prom
     baseCommit = await resolveCommit(repo, headCommit.parents[0]);
   }
 
-  let changes = await diffCommitTrees(
-    repo,
-    baseCommit ? baseCommit.treeHash : null,
-    headCommit.treeHash,
-  );
+  let changes: TreeDiffEntry[];
   if (pathFilter) {
-    changes = changes.filter((c) => c.path === pathFilter);
+    const readFileEntry = treeFileReader(repo, pathFilter);
+    const [before, after] = await Promise.all([
+      readFileEntry(baseCommit?.treeHash),
+      readFileEntry(headCommit.treeHash),
+    ]);
+    changes = sameFileEntry(before, after) ? [] : [{
+      path: pathFilter,
+      status: !before ? 'added' : !after ? 'deleted' : 'modified',
+      oldHash: before?.hash ?? null,
+      newHash: after?.hash ?? null,
+    }];
+  } else {
+    changes = await diffCommitTrees(repo, baseCommit?.treeHash ?? null, headCommit.treeHash);
   }
 
   const totalChanged = changes.length;
@@ -1036,6 +1050,59 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
   return reposPage(env, 'リポジトリ一覧', html, '/repos', 200, fresh ? browser : undefined);
 }
 
+const HISTORY_BATCH = 30;
+
+function treeFileReader(repo: ArtifactsRepo, path: string) {
+  const segments = path.split('/');
+  const trees = new Map<string, Promise<ArtifactsTreeEntry[] | null>>();
+  return async (root: string | undefined) => {
+    if (!root) return null;
+    let hash = root;
+    for (const [index, name] of segments.entries()) {
+      let tree = trees.get(hash);
+      if (!tree) {
+        tree = repo.readTree(hash);
+        trees.set(hash, tree);
+      }
+      const entry = (await tree)?.find((item) => item.name === name);
+      if (!entry) return null;
+      if (index === segments.length - 1) {
+        return entry.type === 'blob' || entry.type === 'exec' ? entry : null;
+      }
+      if (entry.type !== 'tree') return null;
+      hash = entry.hash;
+    }
+    return null;
+  };
+}
+
+function sameFileEntry(before: ArtifactsTreeEntry | null, after: ArtifactsTreeEntry | null): boolean {
+  return before?.hash === after?.hash && before?.mode === after?.mode;
+}
+
+async function readHistory(repo: ArtifactsRepo, ref: string, path: string | null) {
+  const commits = await repo.log({ ref, limit: HISTORY_BATCH + 1 });
+  const fileVersion = path ? treeFileReader(repo, path) : null;
+  const rows = [];
+  for (const [index, commit] of commits.slice(0, HISTORY_BATCH).entries()) {
+    if (!fileVersion) {
+      rows.push({ commit, status: null });
+      continue;
+    }
+    const next = commits[index + 1];
+    const parent = next?.hash === commit.parents[0] ? next
+      : commit.parents[0] ? await repo.readCommit(commit.parents[0]) : null;
+    const [before, after] = await Promise.all([
+      fileVersion(parent?.treeHash),
+      fileVersion(commit.treeHash),
+    ]);
+    if (!sameFileEntry(before, after)) {
+      rows.push({ commit, status: !before ? '追加' : !after ? '削除' : '変更' });
+    }
+  }
+  return { rows, next: commits[HISTORY_BATCH]?.hash };
+}
+
 export async function repoDetailPage(request: Request, env: RepoEnv, id: string): Promise<Response> {
   const { browser, fresh } = await ensureBrowser(request);
   const session = await current(request, env);
@@ -1064,7 +1131,27 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
     branches.unshift({ name: activeRef, sha: '' });
   }
   const { entries } = await readTreeAtPath(repo, activeRef, dirPath);
-  const commits = await repo.log({ ref: activeRef, limit: 20 });
+  const rawHistoryPath = url.searchParams.get('file');
+  const historyPath = rawHistoryPath === null ? null : normalizeRepoPath(rawHistoryPath);
+  const cursor = url.searchParams.get('before');
+  if (rawHistoryPath !== null && !historyPath) fail(400, 'invalid_path');
+  if (cursor !== null && !/^[0-9a-f]{40}$/.test(cursor)) fail(400, 'invalid_commit');
+  const history = await readHistory(repo, cursor ?? activeRef, historyPath);
+  const repoUrl = '/repos/' + encodeURIComponent(row.id);
+  const pageParams = new URLSearchParams({ ref: activeRef });
+  if (dirPath) pageParams.set('path', dirPath);
+  const compareBase = url.searchParams.get('compareBase') ?? '';
+  const compareHead = url.searchParams.get('compareHead') ?? '';
+  function historyUrl(file: string | null, before?: string) {
+    const params = new URLSearchParams(pageParams);
+    if (file) params.set('file', file);
+    if (before) params.set('before', before);
+    if (file === historyPath) {
+      if (compareBase) params.set('compareBase', compareBase);
+      if (compareHead) params.set('compareHead', compareHead);
+    }
+    return repoUrl + '?' + params.toString() + '#commit-history';
+  }
 
   const refQuery = activeRef !== row.default_branch ? `?ref=${encodeURIComponent(activeRef)}` : '';
 
@@ -1081,15 +1168,32 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       const openBtn = isEditableInIbis(entry.name)
         ? `<a class="btn btn-primary" href="${escape(editorUrl)}">Docs で開く</a>`
         : '';
-      const diffBtn = `<button type="button" class="diff-file-btn" data-path="${escape(fullPath)}">履歴比較</button>`;
+      const diffBtn = `<a class="btn" href="${escape(historyUrl(fullPath))}">履歴</a>`;
       return `<div class="row"><div>📄 <strong>${escape(entry.name)}</strong> <span class="muted">${escape(entry.hash.slice(0, 7))}</span></div><div style="display:flex;gap:.5rem;flex-wrap:wrap">${openBtn}${diffBtn}<a class="btn" href="${escape(blobUrl)}" target="_blank">Raw</a></div></div>`;
     })
     .join('');
 
-  const commitRows = commits
-    .map((c) => {
-      const when = new Date(c.committedAt * 1000).toLocaleString('ja-JP');
-      return `<div class="row"><div><strong>${escape(c.message)}</strong><div class="muted">${escape(c.author.name)} · ${escape(when)}</div></div><div style="display:flex;gap:.5rem;align-items:center"><button type="button" class="diff-commit-btn" data-commit="${escape(c.hash)}">比較 (Diff)</button><code class="badge">${escape(c.hash.slice(0, 7))}</code></div></div>`;
+  const commitRows = history.rows
+    .map(({ commit: c, status }) => {
+      const when = new Date(c.committedAt * 1000).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+      const snapshot = repoUrl + '?' + new URLSearchParams({ ref: c.hash });
+      const raw = historyPath && status !== '削除'
+        ? '/api/repos/' + row.id + '/blob/' + historyPath.split('/').map(encodeURIComponent).join('/') + '?ref=' + c.hash + '&plain=1'
+        : null;
+      const [subject, ...details] = c.message.split('\n');
+      const message = details.join('\n').trim();
+      return `<div class="row">
+        <div><strong>${escape(subject)}</strong>${status ? ` <span class="badge">${status}</span>` : ''}
+          <div class="muted">${escape(when)} · ${escape(c.author.name)} · <a href="${escape(snapshot)}"><code>${escape(c.hash.slice(0, 12))}</code></a></div>
+          ${message ? `<details><summary>コミットメッセージ</summary><pre style="white-space:pre-wrap">${escape(message)}</pre></details>` : ''}
+          ${c.parents.length > 1 ? `<div class="muted">親コミット ${c.parents.map((parent) => `<a href="${escape(repoUrl + '?' + new URLSearchParams({ ref: parent }))}">${escape(parent.slice(0, 12))}</a>`).join(' · ')}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          ${raw ? `<a class="btn" href="${escape(raw)}">この版の本文</a>` : ''}
+          <button type="button" class="diff-commit-btn" data-commit="${escape(c.hash)}">親と比較</button>
+          <button type="button" data-set-base="${escape(c.hash)}">旧に設定</button>
+          <button type="button" data-set-head="${escape(c.hash)}">新に設定</button>
+        </div></div>`;
     })
     .join('');
 
@@ -1102,8 +1206,8 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
 
   const compareOptions = [
     ...branches.map((b) => `<option value="${escape(b.name)}">${escape(b.name)}</option>`),
-    ...commits.map(
-      (c) =>
+    ...history.rows.map(
+      ({ commit: c }) =>
         `<option value="${escape(c.hash)}">${escape(c.hash.slice(0, 7))} · ${escape(c.message.slice(0, 32))}</option>`,
     ),
   ].join('');
@@ -1182,21 +1286,37 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
 
     <div class="card" id="diff-card">
       <div class="card-hd">
-        <strong>新旧比較 (Diff)</strong>
+        <strong>${historyPath ? escape(historyPath) + ' の比較' : '新旧比較 (Diff)'}</strong>
         <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
-          <label style="margin:0;font-weight:400;display:inline-flex;align-items:center;gap:.3rem">旧 <select id="diff-base" style="width:auto"><option value="">(直前の親)</option>${compareOptions}</select></label>
-          <label style="margin:0;font-weight:400;display:inline-flex;align-items:center;gap:.3rem">新 <select id="diff-head" style="width:auto">${compareOptions}</select></label>
+          <label style="margin:0;font-weight:400;display:inline-flex;align-items:center;gap:.3rem">旧 <input id="diff-base" list="diff-refs" placeholder="新の親コミット" value="${escape(compareBase)}"></label>
+          <label style="margin:0;font-weight:400;display:inline-flex;align-items:center;gap:.3rem">新 <input id="diff-head" list="diff-refs" value="${escape(compareHead || activeRef)}"></label>
+          <datalist id="diff-refs">${compareOptions}</datalist>
           <button id="run-diff-btn" type="button">比較する</button>
         </div>
       </div>
       <div class="card-bd" id="diff-body">
-        <p class="muted">コミット履歴の「比較 (Diff)」または上の版セレクタから差分を表示できます。</p>
+        <p class="muted">履歴から旧版・新版を選ぶか、ブランチ名・コミットSHAを入力してください。</p>
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-hd"><strong>コミット履歴</strong><span class="badge">${commits.length} 件</span></div>
-      ${commitRows || '<div class="card-bd"><p class="muted">まだコミットがありません。</p></div>'}
+    <div class="card" id="commit-history">
+      <div class="card-hd"><strong>${historyPath ? escape(historyPath) + ' の履歴' : 'コミット履歴'}</strong>
+        ${historyPath || cursor ? `<a class="btn" data-history-page href="${escape(historyUrl(historyPath))}">最新へ</a>` : ''}
+        ${historyPath ? `<a class="btn" href="${escape(historyUrl(null))}">全体の履歴</a>` : ''}
+      </div>
+      <div class="card-bd">
+        <form id="history-ref-form" method="get" action="${escape(repoUrl)}#commit-history" style="display:flex;gap:.5rem;align-items:end;flex-wrap:wrap">
+          <label>履歴の起点 <input name="ref" required placeholder="ブランチ名またはコミットSHA" value="${escape(activeRef)}"></label>
+          ${historyPath ? `<input type="hidden" name="file" value="${escape(historyPath)}">` : ''}
+          <input type="hidden" name="compareBase" value="${escape(compareBase)}">
+          <input type="hidden" name="compareHead" value="${escape(compareHead)}">
+          <button type="submit">移動</button>
+        </form>
+        <p><a href="#diff-card">比較欄へ</a> <span id="history-selection" class="muted" role="status"></span></p>
+        <p class="muted">選択した版から第1親をたどります。ファイルの履歴は同じパスの追加・変更・削除を表示します。</p>
+      </div>
+      ${commitRows || '<div class="card-bd"><p class="muted">この範囲に該当するコミットはありません。</p></div>'}
+      ${history.next ? `<div class="card-bd"><a class="btn" data-history-page href="${escape(historyUrl(historyPath, history.next))}">さらに古い履歴</a></div>` : ''}
     </div>
 
     <style>
@@ -1213,7 +1333,8 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
     <script>
       const csrf = ${JSON.stringify(csrf)};
       const repoId = ${JSON.stringify(row.id)};
-      const activeRef = ${JSON.stringify(activeRef)};
+      const activeRef = ${JSON.stringify(activeRef).replace(/</g, '\\u003c')};
+      const historyPath = ${JSON.stringify(historyPath).replace(/</g, '\\u003c')};
       const defaultBranch = ${JSON.stringify(row.default_branch)};
       const status = document.querySelector('#status');
       const tokenBox = document.querySelector('#token-box');
@@ -1352,8 +1473,33 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
         renderDiffResponse(d);
       }
 
+      function syncComparison() {
+        const base = diffBase.value.trim();
+        const head = diffHead.value.trim();
+        const updateUrl = (url) => {
+          if (base) url.searchParams.set('compareBase', base);
+          else url.searchParams.delete('compareBase');
+          if (head && head !== activeRef) url.searchParams.set('compareHead', head);
+          else url.searchParams.delete('compareHead');
+          return url;
+        };
+        history.replaceState(null, '', updateUrl(new URL(location.href)));
+        document.querySelectorAll('[data-history-page]').forEach((link) => {
+          link.href = updateUrl(new URL(link.href));
+        });
+        const form = document.querySelector('#history-ref-form');
+        form.elements.compareBase.value = base;
+        form.elements.compareHead.value = head === activeRef ? '' : head;
+        const shortRef = (ref) => /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 12) : ref;
+        document.querySelector('#history-selection').textContent =
+          '旧: ' + (shortRef(base) || '新の親') + ' ／ 新: ' + shortRef(head || activeRef);
+      }
+      diffBase.addEventListener('change', syncComparison);
+      diffHead.addEventListener('change', syncComparison);
+      syncComparison();
+
       document.querySelector('#run-diff-btn').addEventListener('click', () => {
-        loadDiff(diffHead.value || activeRef, diffBase.value || '', '');
+        loadDiff(diffHead.value.trim() || activeRef, diffBase.value.trim(), historyPath);
       });
       document.querySelectorAll('.diff-commit-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -1361,18 +1507,17 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
           if (sha) {
             diffHead.value = sha;
             diffBase.value = '';
-            loadDiff(sha, '', '');
+            syncComparison();
+            loadDiff(sha, '', historyPath);
             document.querySelector('#diff-card').scrollIntoView({ behavior: 'smooth' });
           }
         });
       });
-      document.querySelectorAll('.diff-file-btn').forEach((btn) => {
+      document.querySelectorAll('[data-set-base], [data-set-head]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          const filePath = btn.getAttribute('data-path');
-          if (filePath) {
-            loadDiff(activeRef, '', filePath);
-            document.querySelector('#diff-card').scrollIntoView({ behavior: 'smooth' });
-          }
+          if (btn.dataset.setBase) diffBase.value = btn.dataset.setBase;
+          else diffHead.value = btn.dataset.setHead;
+          syncComparison();
         });
       });
 
