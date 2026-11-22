@@ -52,7 +52,11 @@ enum SnapshotTarget {
     Prefix(String),
 }
 
-fn find_commit_prefix(repo: &gix::Repository, root: &Path, prefix: &str) -> Result<gix::ObjectId> {
+pub(super) fn find_commit_prefix(
+    repo: &gix::Repository,
+    root: &Path,
+    prefix: &str,
+) -> Result<gix::ObjectId> {
     if !(4..=repo.object_hash().len_in_hex()).contains(&prefix.len())
         || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit())
     {

@@ -1673,3 +1673,7 @@ git.jump	コミットへ移動
 git.jump-invalid	4桁以上の16進数でコミットIDを入力してください。
 git.jump-not-found	このIDに一致するローカルのコミットはありません。
 git.jump-ambiguous	このIDに一致するコミットが複数あります。より長いIDを入力してください。
+git.base-by-id	比較元のコミットID
+git.set-base-id	旧版に指定
+git.base-same-as-revised	新版と異なるコミットを旧版に指定してください。
+git.base-file-missing	指定されたコミットには、このパスにファイルがありません。

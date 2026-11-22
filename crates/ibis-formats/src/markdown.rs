@@ -4646,6 +4646,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     let mut explicit_w: Option<Emu> = None;
                     let mut explicit_h: Option<Emu> = None;
                     let mut anchor = None;
+                    let mut look = PictureLook::default();
                     let after_paren = &after_open_paren[url_end + 1..];
                     if let Some(attr_open) = after_paren.strip_prefix('{') {
                         if let Some(attr_close) = attr_open.find('}') {
@@ -4657,6 +4658,14 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                                     explicit_h = Some(h);
                                 } else if let Some(encoded) = part.strip_prefix(picture_anchor::ATTRIBUTE) {
                                     anchor = picture_anchor::decode(encoded);
+                                } else if let Some(crop) = part.strip_prefix("docx-crop=").and_then(parse_picture_crop) {
+                                    look.crop = crop;
+                                } else if let Some((rotation, flip_h, flip_v)) =
+                                    part.strip_prefix("docx-transform=").and_then(parse_picture_transform)
+                                {
+                                    look.rotation = rotation;
+                                    look.flip_h = flip_h;
+                                    look.flip_v = flip_v;
                                 }
                             }
                             total_consumed += 1 + attr_close + 1;
@@ -4671,19 +4680,22 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                             format,
                             data: data.into(),
                         });
-                        let mut look = PictureLook::default();
                         if !alt.is_empty() {
                             look.alt_text.description = alt.to_string();
                         }
                         let kind = if let Some(anchor) = anchor {
                             let mut picture = ibis_doc_model::Picture::new(media_id);
                             picture.alt_text = look.alt_text;
+                            picture.crop = look.crop;
                             let mut shape = Shape::new(
                                 ctx.fresh_shape_id(),
                                 EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
                                 ShapeKind::Picture(picture),
                             );
                             shape.floating = Some(anchor);
+                            shape.rotation = look.rotation;
+                            shape.flip_h = look.flip_h;
+                            shape.flip_v = look.flip_v;
                             FlowRunKind::Shape(Box::new(shape))
                         } else {
                             FlowRunKind::Picture { media: media_id, size: img_size, look }
@@ -6885,6 +6897,55 @@ fn markdown_endnote_id(label: &str) -> Option<u32> {
     id.parse().ok()
 }
 
+fn parse_picture_crop(value: &str) -> Option<ibis_doc_model::Crop> {
+    let mut sides = value.split(',');
+    let mut next = || sides.next()?.parse().ok();
+    let crop = ibis_doc_model::Crop {
+        left: next()?,
+        top: next()?,
+        right: next()?,
+        bottom: next()?,
+    };
+    sides.next().is_none().then_some(crop)
+}
+
+fn parse_picture_transform(value: &str) -> Option<(i32, bool, bool)> {
+    let mut parts = value.split(',');
+    let rotation = parts.next()?.parse().ok()?;
+    let flip_h = parts.next()?.parse().ok()?;
+    let flip_v = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((rotation, flip_h, flip_v))
+}
+
+fn picture_attributes(
+    mut image: String,
+    crop: ibis_doc_model::Crop,
+    rotation: i32,
+    flip_h: bool,
+    flip_v: bool,
+    anchor: Option<&ibis_doc_model::FloatingAnchor>,
+) -> String {
+    use std::fmt::Write as _;
+
+    if !image.ends_with('}') {
+        return image;
+    }
+    image.pop();
+    if crop != ibis_doc_model::Crop::default() {
+        let _ = write!(image, " docx-crop={},{},{},{}", crop.left, crop.top, crop.right, crop.bottom);
+    }
+    if rotation != 0 || flip_h || flip_v {
+        let _ = write!(image, " docx-transform={rotation},{flip_h},{flip_v}");
+    }
+    if let Some(anchor) = anchor {
+        image.push(' ');
+        image.push_str(picture_anchor::ATTRIBUTE);
+        image.push_str(&picture_anchor::encode(anchor));
+    }
+    image.push('}');
+    image
+}
+
 fn serialize_picture(
     media: &[Media],
     id: MediaId,
@@ -6980,32 +7041,19 @@ fn serialize_runs(
                     String::new()
                 }
             }
-            FlowRunKind::Picture {
-                media: mid,
-                size,
-                look,
-            } => {
-                serialize_picture(media, *mid, *size, &look.alt_text)
-            }
+            FlowRunKind::Picture { media: mid, size, look } => picture_attributes(
+                serialize_picture(media, *mid, *size, &look.alt_text),
+                look.crop, look.rotation, look.flip_h, look.flip_v, None,
+            ),
             FlowRunKind::Shape(shape) => match &shape.kind {
-                ShapeKind::Picture(picture) => {
-                    let mut image = serialize_picture(
-                        media,
-                        picture.media,
+                ShapeKind::Picture(picture) => picture_attributes(
+                    serialize_picture(
+                        media, picture.media,
                         EmuSize::new(shape.frame.width, shape.frame.height),
                         &picture.alt_text,
-                    );
-                    if let Some(anchor) = &shape.floating
-                        && image.ends_with('}')
-                    {
-                        image.pop();
-                        image.push(' ');
-                        image.push_str(picture_anchor::ATTRIBUTE);
-                        image.push_str(&picture_anchor::encode(anchor));
-                        image.push('}');
-                    }
-                    image
-                }
+                    ),
+                    picture.crop, shape.rotation, shape.flip_h, shape.flip_v, shape.floating.as_ref(),
+                ),
                 ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
                     .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text))
                     .filter(|image| !image.is_empty())
@@ -8021,8 +8069,8 @@ mod tests {
     fn docx_markdown_round_trips_inline_and_floating_pictures() {
         let emf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf");
         let wmf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.wmf");
-        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm}}", encode_base64(emf));
-        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm}}", encode_base64(wmf));
+        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm docx-crop=12500,5000,0,0 docx-transform=1800000,true,false}}", encode_base64(emf));
+        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm docx-crop=0,0,7500,2500 docx-transform=0,false,true}}", encode_base64(wmf));
         let source = format!("{floating}\n\n{inline}");
         let original = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         let mut package = ibis_ooxml::Package::open(original).unwrap();
@@ -8049,6 +8097,8 @@ mod tests {
         assert_eq!(anchor.offset_y, -72_000);
         let markdown = export_docx_to_markdown(&docx).unwrap();
         assert_eq!(markdown.matches(picture_anchor::ATTRIBUTE).count(), 1);
+        assert_eq!(markdown.matches("docx-crop=").count(), 2);
+        assert_eq!(markdown.matches("docx-transform=").count(), 2);
         let slide = crate::read(&import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap()).unwrap();
         assert_eq!(
             slide.slides.iter().flat_map(|s| &s.shapes)
@@ -8062,10 +8112,16 @@ mod tests {
         let pictures = ibis_doc_model::flow_command::all_paragraphs(flow).into_iter()
             .flat_map(|p| &p.runs)
             .filter_map(|run| match &run.kind {
-                FlowRunKind::Picture { media, size, .. } => Some((presentation.media(*media).unwrap(), *size)),
+                FlowRunKind::Picture { media, size, look } => {
+                    assert_eq!(look.crop, parse_picture_crop("0,0,7500,2500").unwrap());
+                    assert_eq!((look.rotation, look.flip_h, look.flip_v), (0, false, true));
+                    Some((presentation.media(*media).unwrap(), *size))
+                }
                 FlowRunKind::Shape(shape) => {
                     let ShapeKind::Picture(picture) = &shape.kind else { return None };
                     assert_eq!(shape.floating.as_ref(), Some(&anchor));
+                    assert_eq!(picture.crop, parse_picture_crop("12500,5000,0,0").unwrap());
+                    assert_eq!((shape.rotation, shape.flip_h, shape.flip_v), (1_800_000, true, false));
                     floating_count += 1;
                     Some((presentation.media(picture.media).unwrap(),
                         EmuSize::new(shape.frame.width, shape.frame.height)))
