@@ -5096,6 +5096,7 @@ dependencies = [
  "moxcms",
  "notify",
  "objc",
+ "roxmltree 0.21.1",
  "same-file",
  "serde_json",
  "skrifa 0.42.1",

@@ -21,6 +21,8 @@ pub(crate) use ibis_office_shell::jtd_preview;
 mod open_with;
 #[cfg(not(target_family = "wasm"))]
 mod single_instance;
+#[cfg(not(target_family = "wasm"))]
+mod pdfa_validation;
 // The presentation screen is its own crate (tasks/doc/crate-split-plan.md, 14); the app and its tests name it `crate::pptx`.
 pub(crate) use ibis_office_pptx as pptx;
 mod render;
@@ -392,6 +394,7 @@ pub fn init(cx: &mut App) {
 /// ```text
 /// ibisOffice [--slide <number>] [<file.pptx|file.xlsx|file.docx>]
 /// ibisOffice --export pdfa-info <file.pdf>
+/// ibisOffice --export pdfa-validate --pdfa-profile 2b [--verapdf <program>] <file.pdf>
 /// ibisOffice --export png|pdf|pdfa-2b|pdf-image [--out-dir <dir>] [--width <px>] [--range 1,3-5] [--include-layout] <file.pptx|file.xlsx|file.docx>
 /// ibisOffice --export ui [--out-dir <dir>] [--steps start,pagedown,end] [<file.pptx|file.xlsx|file.docx>]
 /// ibisOffice [--timing] [--quit-after-first-frame] [<file>]
@@ -418,6 +421,8 @@ struct Args {
     path: Option<std::path::PathBuf>,
     slide: Option<usize>,
     export: Option<String>,
+    pdfa_profile: Option<String>,
+    verapdf: Option<std::path::PathBuf>,
     out_dir: Option<std::path::PathBuf>,
     /// `--export row-heights <file> [out.tsv]`: the second file name.
     out_file: Option<std::path::PathBuf>,
@@ -475,12 +480,15 @@ fn parse_args() -> Result<Args, String> {
 fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut args = Args::default();
     let mut iter = arguments.into_iter();
+    let mut input_count = 0;
     while let Some(arg) = iter.next() {
         let mut value = || iter.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "--read-only" => args.read_only = true,
             "--slide" => args.slide = Some(value()?.parse().map_err(|_| "--slide needs a slide number".to_string())?),
             "--export" => args.export = Some(value()?),
+            "--pdfa-profile" => args.pdfa_profile = Some(value()?),
+            "--verapdf" => args.verapdf = Some(value()?.into()),
             "--out-file" => args.out_file = Some(value()?.into()),
             "--ai-query" => args.ai_query = Some(value()?.into()),
             "--require-preview" => args.require_preview = true,
@@ -529,8 +537,23 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             "--quit-after-first-frame" => args.quit_after_first_frame = true,
             other if other.starts_with("--") => return Err(format!("unknown option: {other}")),
             _ if args.path.is_some() && args.export.as_deref() == Some("row-heights") => args.out_file = Some(arg.into()),
-            _ => args.path = Some(arg.into()),
+            _ => {
+                input_count += 1;
+                args.path = Some(arg.into());
+            }
         }
+    }
+    if args.export.as_deref() == Some("pdfa-validate") {
+        if !args.pdfa_profile.as_deref().is_some_and(|profile| matches!(
+            profile, "1a" | "1b" | "2a" | "2b" | "2u" | "3a" | "3b" | "3u" | "4" | "4e" | "4f"
+        )) {
+            return Err("--export pdfa-validate requires --pdfa-profile 1a, 1b, 2a, 2b, 2u, 3a, 3b, 3u, 4, 4e or 4f".into());
+        }
+        if input_count != 1 {
+            return Err("--export pdfa-validate requires exactly one PDF file".into());
+        }
+    } else if args.pdfa_profile.is_some() || args.verapdf.is_some() {
+        return Err("--pdfa-profile and --verapdf require --export pdfa-validate".into());
     }
     if args.require_preview && args.export.as_deref() != Some("ai-apply") {
         return Err("--require-preview requires --export ai-apply".into());
@@ -806,7 +829,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             "pdf" => export::Format::Pdf,
             "pdfa-2b" => export::Format::PdfA2b,
             "pdf-image" => export::Format::PdfImage,
-            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdfa-info, pdf-image, md, row-heights or ui: {other}")),
+            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdfa-info, pdfa-validate, pdf-image, md, row-heights or ui: {other}")),
         };
         let path = args.path.as_deref().ok_or("name the .pptx, .xlsx or .docx file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
@@ -879,6 +902,19 @@ pub fn run_native() {
             std::process::exit(2);
         }
     };
+    if args.export.as_deref() == Some("pdfa-validate") {
+        match pdfa_validation::run(
+            args.path.as_deref().expect("PDF path checked by parser"),
+            args.pdfa_profile.as_deref().expect("PDF/A profile checked by parser"),
+            args.verapdf.as_deref().unwrap_or_else(|| std::path::Path::new("verapdf")),
+        ) {
+            Ok(compliant) => std::process::exit(if compliant { 0 } else { 3 }),
+            Err(err) => {
+                eprintln!("ibisOffice: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
     if let Some(format) = &args.export {
         if let Err(err) = run_export(&args, format) {
             eprintln!("ibisOffice: {err}");

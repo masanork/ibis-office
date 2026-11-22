@@ -52,10 +52,34 @@ def verify_identification(binary, pdf, archival):
     }, report
 
 
-def verify_conformance(validator, pdf):
-    xml = run([validator, "--format", "xml", "--flavour", "2b", pdf])
-    reports = ElementTree.fromstring(xml).findall(".//{*}validationReport")
-    assert len(reports) == 1 and reports[0].get("isCompliant") == "true", xml.decode(errors="replace")
+def verify_conformance(binary, validator, pdf, compliant):
+    result = subprocess.run(
+        [binary, "--export", "pdfa-validate", "--pdfa-profile", "2b",
+         "--verapdf", validator, pdf],
+        capture_output=True, timeout=100,
+    )
+    assert result.returncode == (0 if compliant else 3), result
+    report = json.loads(result.stdout)
+    assert report["profile"] == "PDF/A-2b", report
+    assert report["validator"] == "veraPDF", report
+    assert report["validation"] == ("compliant" if compliant else "non_compliant"), report
+    assert bool(report["failed_rules"]) != compliant, report
+    if not compliant:
+        assert all(rule["clause"] and rule["description"] and rule["failed_checks"] > 0
+                   for rule in report["failed_rules"]), report
+
+
+def verify_validator_errors(binary, pdf):
+    for options, expected_code in [
+        ([], 2),
+        (["--pdfa-profile", "0"], 2),
+        (["--pdfa-profile", "2b", "--verapdf", str(pdf.parent / "missing-validator")], 1),
+    ]:
+        result = subprocess.run(
+            [binary, "--export", "pdfa-validate", *options, pdf],
+            capture_output=True, timeout=15,
+        )
+        assert result.returncode == expected_code and not result.stdout, result
 
 
 def main():
@@ -76,7 +100,7 @@ def main():
             verify_identification(binary, pdf, archival=True)
             assert run(["pdftotext", pdf, "-"]).strip(), fixture
             if args.verapdf:
-                verify_conformance(args.verapdf, pdf)
+                verify_conformance(binary, args.verapdf, pdf, compliant=True)
             print(f"{source.suffix[1:]}: PDF/A-2b metadata and text OK"
                   + ("; veraPDF compliant" if args.verapdf else ""))
         source = root / FIXTURES[-1]
@@ -84,6 +108,10 @@ def main():
         pdf = directory / (source.stem + ".pdf")
         verify_metadata(pdf, archival=False)
         verify_identification(binary, pdf, archival=False)
+        verify_validator_errors(binary, pdf)
+        if args.verapdf:
+            verify_conformance(binary, args.verapdf, pdf, compliant=False)
+            print("ordinary PDF: veraPDF reported non-compliance and failed rules")
 
 
 if __name__ == "__main__":

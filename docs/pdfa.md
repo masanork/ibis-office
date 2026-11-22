@@ -46,3 +46,25 @@ PDF/A-2bが必要な場合は次のように実行します。
 ```sh
 verapdf --flavour 2b document.pdf
 ```
+
+## 提出先が求めるプロファイルで検証する
+
+```sh
+ibisOffice --export pdfa-validate --pdfa-profile 2b document.pdf
+```
+
+別途インストールしたveraPDF CLIを使います。PATHにない場合は
+`--verapdf /path/to/verapdf` で実行ファイルを指定できます。
+プロファイルは必須です。PDF/A-1の `1a`・`1b`、PDF/A-2と3の
+`a`・`b`・`u`、PDF/A-4の `4`・`4e`・`4f` を指定できます。
+
+結果はJSONで、適合の場合は `compliant`、違反がある場合は
+`non_compliant` を返します。違反ルールごとに規格番号、条項、説明、
+失敗した検査の件数、最初の該当箇所を出力します。検証は90秒で打ち切ります。
+
+| 終了コード | 意味 |
+| --- | --- |
+| 0 | 適合 |
+| 3 | 非適合 |
+| 1 | PDFを読み取れない、検証器を実行できない、または結果を取得できない |
+| 2 | CLIの引数が不正 |
