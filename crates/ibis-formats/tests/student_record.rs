@@ -61,3 +61,18 @@ fn rejects_duplicate_forms_and_a_missing_pupil_name_label() {
     table.rows[2].cells[1].blocks.clear();
     assert!(extract(&doc).is_none());
 }
+
+#[test]
+fn reads_the_full_demo_alongside_the_instruction_records() {
+    let bytes = include_bytes!("../../../test/fixtures/student-record/elementary-school-full.docx");
+    let doc = ibis_formats::read_docx(bytes).unwrap().flow.unwrap();
+    let record = extract(&doc).unwrap();
+    assert_eq!(record.name.text, "紅葉 葵");
+    assert_eq!(record.birth_date.text, "平成３１年４月２日生");
+    assert_eq!(
+        record.next_school.text,
+        "架空市立そよかぜ中学校\n架空市ひなた町１丁目"
+    );
+    let source = ibis_doc_model::flow_command::paragraph(&doc, record.name.paragraph).unwrap();
+    assert!(matches!(&source.runs[0].kind, FlowRunKind::Text(text) if text == "紅葉 葵"));
+}
