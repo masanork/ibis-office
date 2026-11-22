@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -50,6 +51,7 @@ pub(crate) struct GitWorkspace {
     revisions: Vec<Revision>,
     older: Option<gix::ObjectId>,
     base: Option<gix::ObjectId>,
+    base_input: Option<Entity<InputState>>,
     revised: Option<gix::ObjectId>,
     busy: bool,
     working: WorkingTree,
@@ -86,6 +88,7 @@ impl GitWorkspace {
             revisions: Vec::new(),
             older: None,
             base: None,
+            base_input: None,
             revised: None,
             busy: false,
             working: WorkingTree::default(),
@@ -370,6 +373,9 @@ impl SlideEditor {
             return;
         };
         state.file = Some(path);
+        state.base_input.get_or_insert_with(|| {
+            cx.new(|cx| InputState::new(window, cx).placeholder(text("git.base-by-id")))
+        });
         state.revisions.clear();
         state.base = None;
         state.revised = None;
@@ -410,6 +416,58 @@ impl SlideEditor {
                         if state.base.is_none() {
                             state.base = present.next().map(|row| row.id);
                         }
+                    }
+                    Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn git_set_base_by_id(&mut self, prefix: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.git_workspace.as_mut().filter(|state| !state.busy) else {
+            return;
+        };
+        let Some(path) = state.file.clone() else {
+            return;
+        };
+        let repo = state.repo.clone();
+        let root = state.worktree.clone().unwrap_or_else(|| repo.clone());
+        let revised = state.revised.unwrap_or(state.snapshot);
+        state.busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let read = || -> Result<_> {
+                        let repo = gix::open(repo)?;
+                        let id = graph::find_commit_prefix(&repo, &root, &prefix)?;
+                        if id == revised {
+                            return Err(text("git.base-same-as-revised").to_string().into());
+                        }
+                        let tree = repo.find_commit(id)?.tree()?;
+                        if !tree
+                            .lookup_entry_by_path(&path)?
+                            .is_some_and(|entry| entry.mode().is_blob())
+                        {
+                            return Err(text("git.base-file-missing").to_string().into());
+                        }
+                        Ok(id)
+                    };
+                    read().map_err(|error| error.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |editor, cx| {
+                let Some(state) = editor.git_workspace.as_mut() else {
+                    return;
+                };
+                state.busy = false;
+                match result {
+                    Ok(id) => {
+                        state.base = Some(id);
+                        state.revised = Some(revised);
                     }
                     Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
                 }
@@ -745,6 +803,43 @@ impl SlideEditor {
                             )
                         }),
                 )
+                .when_some(
+                    state.base_input.as_ref().filter(|_| state.file.is_some()),
+                    |pane, input| {
+                        let draft = input.clone();
+                        pane.child(
+                            h_flex()
+                                .px_2()
+                                .py_1()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(Input::new(input).small().disabled(state.busy)),
+                                )
+                                .child(
+                                    Button::new("git-set-base-id")
+                                        .xsmall()
+                                        .disabled(state.busy)
+                                        .label(text("git.set-base-id"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            let prefix = draft.read(cx).value().trim().to_owned();
+                                            this.git_set_base_by_id(prefix, window, cx);
+                                        })),
+                                ),
+                        )
+                    },
+                )
+                .when_some(pair, |pane, (base, revised)| {
+                    pane.child(div().px_2().truncate().child(format!(
+                        "{} {} → {} {}",
+                        text("git.base"),
+                        short(base),
+                        text("git.revised"),
+                        short(revised)
+                    )))
+                })
                 .child(revisions);
         Some(
             div()

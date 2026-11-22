@@ -1675,3 +1675,7 @@ git.jump	Go to commit
 git.jump-invalid	Enter a commit ID with at least four hexadecimal characters.
 git.jump-not-found	No local commit matches this ID.
 git.jump-ambiguous	Multiple local commits match this ID. Enter a longer commit ID.
+git.base-by-id	Base commit ID
+git.set-base-id	Set base
+git.base-same-as-revised	Choose a base commit different from the revised version.
+git.base-file-missing	The selected file does not exist at this path in the base commit.
