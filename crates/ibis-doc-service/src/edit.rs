@@ -3,19 +3,36 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! What the edit tools share: running commands as one undo step, the result of an edit, and the shapes of the format arguments (design 6.6).
 
-use ibis_doc_model::{Command, Rgb};
+use ibis_doc_model::{Command, Document, Rgb};
 use serde_json::{Value, json};
 
 use crate::error::ToolError;
-use crate::service::Open;
+use crate::service::ToolDocument;
 
 /// The commands as one step of the undo history (a failure puts the document back as it was).
-pub(crate) fn execute(open: &mut Open, commands: Vec<Command>) -> Result<(), ToolError> {
-    open.document.execute(commands).map_err(|e| ToolError::new("edit_rejected", format!("{e:?}")))
+pub(crate) fn execute(open: &mut ToolDocument, commands: Vec<Command>) -> Result<(), ToolError> {
+    record_edit(open, commands, Document::execute)
+}
+
+pub(crate) fn amend(open: &mut ToolDocument, commands: Vec<Command>) -> Result<(), ToolError> {
+    record_edit(open, commands, Document::amend_last)
+}
+
+fn record_edit(
+    open: &mut ToolDocument,
+    commands: Vec<Command>,
+    apply: fn(&mut Document, Vec<Command>) -> Result<(), ibis_doc_model::command::EditError>,
+) -> Result<(), ToolError> {
+    let recorded = open.recorded_edits.as_ref().map(|_| commands.clone());
+    apply(&mut open.document, commands).map_err(|e| ToolError::new("edit_rejected", format!("{e:?}")))?;
+    if let (Some(recorded), Some(edits)) = (recorded, &mut open.recorded_edits) {
+        edits.extend(recorded);
+    }
+    Ok(())
 }
 
 /// The result of an edit tool: the handle, whether there are unsaved changes, the undo state, and what was changed besides what was asked.
-pub(crate) fn edited(id: &str, open: &Open, mut extra: Value, warnings: Vec<Value>) -> Value {
+pub(crate) fn edited(id: &str, open: &ToolDocument, mut extra: Value, warnings: Vec<Value>) -> Value {
     if !extra.is_object() {
         extra = json!({});
     }

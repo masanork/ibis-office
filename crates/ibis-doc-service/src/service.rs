@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, Hasher};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use ibis_doc_model::Document;
 use ibis_formats::{Kind, Source};
@@ -58,15 +59,32 @@ impl Fingerprint {
     }
 }
 
-/// A file that is open.
-pub(crate) struct Open {
+/// The document state used by tools that can also run against an editor draft.
+pub(crate) struct ToolDocument {
     pub kind: Kind,
     pub document: Document,
-    pub source: Source,
+    pub(crate) recorded_edits: Option<Vec<ibis_doc_model::Command>>,
+}
+
+/// A file that is open.
+pub(crate) struct Open {
+    pub model: ToolDocument,
+    pub source: Arc<Source>,
     pub path: PathBuf,
     pub fingerprint: Fingerprint,
     pub signed: bool,
     pub has_macros: bool,
+}
+
+#[derive(Default)]
+pub struct DraftToolContext {
+    pub source: Option<Arc<Source>>,
+    pub workbook: crate::WorkbookToolContext,
+}
+
+struct Draft {
+    model: ToolDocument,
+    context: DraftToolContext,
 }
 
 pub struct Service {
@@ -79,12 +97,13 @@ pub struct Service {
     /// The version of the app, for `app_get_version`.
     pub(crate) version: String,
     counter: u64,
+    draft: Option<Draft>,
 }
 
 impl Service {
     /// A service that may touch the files under `allow_dirs` (none: no file at all).
     pub fn new(allow_dirs: &[PathBuf], read_only: bool, limits: Limits) -> Self {
-        Self { allow_dirs: paths::canonical_dirs(allow_dirs), read_only, limits, documents: BTreeMap::new(), exporter: None, version: env!("CARGO_PKG_VERSION").to_string(), counter: 0 }
+        Self { allow_dirs: paths::canonical_dirs(allow_dirs), read_only, limits, documents: BTreeMap::new(), exporter: None, version: env!("CARGO_PKG_VERSION").to_string(), counter: 0, draft: None }
     }
 
     /// The version `app_get_version` tells (the app's; the crate's own version when not set).
@@ -116,6 +135,36 @@ impl Service {
         self.documents.get_mut(id).ok_or_else(|| ToolError::new("no_such_document", format!("no open document {id}")))
     }
 
+    pub(crate) fn tool_document(&mut self, id: &str) -> Result<&mut ToolDocument, ToolError> {
+        if let Some(draft) = &mut self.draft {
+            return if id == DRAFT_ID { Ok(&mut draft.model) } else { Err(ToolError::invalid("invalid draft document handle")) };
+        }
+        self.documents.get_mut(id).map(|open| &mut open.model)
+            .ok_or_else(|| ToolError::new("no_such_document", format!("no open document {id}")))
+    }
+
+    pub(crate) fn tool_source(&self, id: &str) -> Result<Arc<Source>, ToolError> {
+        if let Some(draft) = &self.draft {
+            if id != DRAFT_ID {
+                return Err(ToolError::invalid("invalid draft document handle"));
+            }
+            if let Some(source) = &draft.context.source {
+                return Ok(source.clone());
+            }
+            let bytes = ibis_formats::blank_file(draft.model.kind)
+                .map_err(|error| ToolError::new("internal", error.to_string()))?;
+            let opened = ibis_formats::open(bytes)
+                .map_err(|error| ToolError::new("internal", error.to_string()))?;
+            return Ok(Arc::new(opened.source));
+        }
+        self.documents.get(id).map(|open| open.source.clone())
+            .ok_or_else(|| ToolError::new("no_such_document", format!("no open document {id}")))
+    }
+
+    pub(crate) fn workbook_tool_context(&self) -> crate::WorkbookToolContext {
+        self.draft.as_ref().map_or_else(Default::default, |draft| draft.context.workbook)
+    }
+
     /// The tools this service offers: the catalog without the ones that change anything when it is read-only.
     pub fn tools(&self) -> Vec<&'static catalog::Tool> {
         catalog::catalog().iter().filter(|t| !self.read_only || t.access == Access::Read).collect()
@@ -132,6 +181,37 @@ impl Service {
         }
         (tool.run)(self, args)
     }
+}
+
+const DRAFT_ID: &str = "editor-draft";
+
+/// Run a catalog tool against a private editing draft and collect its replayable commands.
+pub fn run_draft_tool(
+    kind: Kind,
+    document: &mut Document,
+    context: DraftToolContext,
+    name: &str,
+    mut arguments: Value,
+) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
+    let tool = catalog::document_tools(kind).find(|tool| tool.name == name)
+        .ok_or_else(|| ToolError::new("unsupported_operation", format!("no draft tool {name}")))?;
+    let args = arguments.as_object_mut().ok_or_else(|| ToolError::invalid("the arguments are not an object"))?;
+    args.insert("document_id".into(), Value::String(DRAFT_ID.into()));
+
+    let mut service = Service::new(&[], false, Limits::default());
+    // An edit may execute several commands and allocate identifiers before
+    // returning. Work on a copy so tool failure leaves the draft untouched.
+    service.draft = Some(Draft {
+        model: ToolDocument { kind, document: document.clone(), recorded_edits: Some(Vec::new()) },
+        context,
+    });
+    let mut result = (tool.run)(&mut service, &arguments)?;
+    let draft = service.draft.take().expect("draft tools cannot close the draft").model;
+    if let Some(object) = result.as_object_mut() {
+        object.remove("document_id");
+    }
+    *document = draft.document;
+    Ok((result, draft.recorded_edits.unwrap_or_default()))
 }
 
 /// Read an argument.

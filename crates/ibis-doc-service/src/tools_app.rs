@@ -89,18 +89,18 @@ fn get_version(service: &mut Service, _: &Value) -> Result<Value, ToolError> {
 }
 
 fn describe(id: &str, open: &Open) -> Value {
-    let presentation = open.document.presentation();
+    let presentation = open.model.document.presentation();
     let mut info = json!({
         "document_id": id,
-        "kind": kind_name(open.kind),
+        "kind": kind_name(open.model.kind),
         "path": paths::shown(&open.path),
-        "dirty": open.document.is_dirty(),
+        "dirty": open.model.document.is_dirty(),
         "signed": open.signed,
         "has_macros": open.has_macros,
-        "can_undo": open.document.can_undo(),
-        "can_redo": open.document.can_redo(),
+        "can_undo": open.model.document.can_undo(),
+        "can_redo": open.model.document.can_redo(),
     });
-    match open.kind {
+    match open.model.kind {
         Kind::Document => {
             if let Some(flow) = presentation.flow.as_ref() {
                 info["paragraphs"] = json!(flow.body.iter().filter(|b| matches!(b, ibis_doc_model::flow::Block::Paragraph(_))).count());
@@ -151,7 +151,10 @@ fn open_document(service: &mut Service, args: &Value) -> Result<Value, ToolError
     let mut document = Document::new(opened.presentation);
     document.set_file(Some(paths::shown(&path)));
     let id = service.new_document_id();
-    let open = Open { kind, document, source: opened.source, path, fingerprint, signed, has_macros };
+    let open = Open {
+        model: crate::service::ToolDocument { kind, document, recorded_edits: None },
+        source: std::sync::Arc::new(opened.source), path, fingerprint, signed, has_macros,
+    };
     let info = describe(&id, &open);
     service.documents.insert(id, open);
     Ok(info)
@@ -167,7 +170,7 @@ fn close_document(service: &mut Service, args: &Value) -> Result<Value, ToolErro
     let id = args.str_arg("document_id")?;
     let discard = args.opt_bool("discard")?.unwrap_or(false);
     let open = service.open_document(id)?;
-    if open.document.is_dirty() && !discard {
+    if open.model.document.is_dirty() && !discard {
         return Err(ToolError::new("discard_required", "the document has unsaved changes: save it, or close it with discard: true"));
     }
     service.documents.remove(id);
@@ -181,15 +184,15 @@ fn steps(args: &Value) -> Result<usize, ToolError> {
 fn undo_document(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let count = steps(args)?;
     let open = service.open_document(args.str_arg("document_id")?)?;
-    let done = (0..count).take_while(|_| open.document.undo()).count();
-    Ok(json!({ "undone": done, "dirty": open.document.is_dirty(), "can_undo": open.document.can_undo(), "can_redo": open.document.can_redo() }))
+    let done = (0..count).take_while(|_| open.model.document.undo()).count();
+    Ok(json!({ "undone": done, "dirty": open.model.document.is_dirty(), "can_undo": open.model.document.can_undo(), "can_redo": open.model.document.can_redo() }))
 }
 
 fn redo_document(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let count = steps(args)?;
     let open = service.open_document(args.str_arg("document_id")?)?;
-    let done = (0..count).take_while(|_| open.document.redo()).count();
-    Ok(json!({ "redone": done, "dirty": open.document.is_dirty(), "can_undo": open.document.can_undo(), "can_redo": open.document.can_redo() }))
+    let done = (0..count).take_while(|_| open.model.document.redo()).count();
+    Ok(json!({ "redone": done, "dirty": open.model.document.is_dirty(), "can_undo": open.model.document.can_undo(), "can_redo": open.model.document.can_redo() }))
 }
 
 fn save_document(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -211,9 +214,9 @@ fn save_document(service: &mut Service, args: &Value) -> Result<Value, ToolError
             return Err(ToolError::new("file_changed_on_disk", "the file changed on disk after it was opened: pass overwrite: \"force\" to replace it anyway"));
         }
     }
-    let bytes = open.source.save(open.document.presentation(), ibis_formats::SaveOptions::default()).map_err(|e| ToolError::new("internal", e.to_string()))?;
+    let bytes = open.source.save(open.model.document.presentation(), ibis_formats::SaveOptions::default()).map_err(|e| ToolError::new("internal", e.to_string()))?;
     write_replacing(&target, &bytes)?;
-    open.document.mark_clean();
+    open.model.document.mark_clean();
     if same_file {
         open.fingerprint = Fingerprint::of_file(&target, &bytes);
     }
@@ -261,7 +264,7 @@ fn export_document(service: &mut Service, args: &Value) -> Result<Value, ToolErr
     let exporter = service.exporter.clone().ok_or_else(|| ToolError::new("unsupported_operation", "this server has no ibisOffice program to export with"))?;
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("document").to_string();
     let open = service.open_document(id)?;
-    let bytes = open.source.save(open.document.presentation(), ibis_formats::SaveOptions::default()).map_err(|e| ToolError::new("internal", e.to_string()))?;
+    let bytes = open.source.save(open.model.document.presentation(), ibis_formats::SaveOptions::default()).map_err(|e| ToolError::new("internal", e.to_string()))?;
     let extension = open.path.extension().and_then(|e| e.to_str()).unwrap_or("docx").to_string();
     // The document as it is now is written to a folder of its own, drawn there, and what is drawn is moved to where it was asked.
     let work = std::env::temp_dir().join(format!("ibisoffice-export-{}", id.trim_start_matches('d')));

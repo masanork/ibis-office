@@ -63,15 +63,29 @@ pub fn catalog() -> &'static [Tool] {
         let mut all = Vec::new();
         all.extend(tools_app::tools());
         all.extend(crate::tools_wallet::tools());
-        all.extend(tools_docx::tools());
-        all.extend(tools_docx::edit_tools());
-        all.extend(tools_xlsx::tools());
-        all.extend(tools_xlsx::workbook_tools().iter().map(|tool| tool.descriptor));
+        all.extend(document_tools(ibis_formats::Kind::Document).copied());
+        all.extend(document_tools(ibis_formats::Kind::Workbook).copied());
         all.push(crate::tools_prefill::tool());
         all.push(crate::tools_prefill::apply_tool());
-        all.extend(tools_xlsx::edit_tools());
-        all.extend(tools_pptx::tools());
-        all.extend(tools_pptx::edit_tools());
+        all.extend(document_tools(ibis_formats::Kind::Presentation).copied());
         all
     })
+}
+
+/// Catalog entries that operate on a resolved document without file or UI access.
+pub fn document_tools(kind: ibis_formats::Kind) -> impl Iterator<Item = &'static Tool> {
+    use std::sync::OnceLock;
+    use ibis_formats::Kind;
+
+    static DOCX: OnceLock<Vec<Tool>> = OnceLock::new();
+    static XLSX: OnceLock<Vec<Tool>> = OnceLock::new();
+    static PPTX: OnceLock<Vec<Tool>> = OnceLock::new();
+    let tools: &[Tool] = match kind {
+        Kind::Document => DOCX.get_or_init(|| tools_docx::tools().into_iter().chain(tools_docx::edit_tools()).collect()),
+        Kind::Workbook => XLSX.get_or_init(|| tools_xlsx::tools().into_iter().chain(tools_xlsx::edit_tools())
+            .chain(tools_xlsx::workbook_tools().iter().map(|tool| tool.descriptor)).collect()),
+        Kind::Presentation => PPTX.get_or_init(|| tools_pptx::tools().into_iter().chain(tools_pptx::edit_tools()).collect()),
+        _ => &[],
+    };
+    tools.iter().filter(|tool| tool.access != Access::File)
 }

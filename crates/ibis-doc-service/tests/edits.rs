@@ -156,6 +156,10 @@ fn mcp_xlsx_formula_reads_respect_sheet_protection() {
     let sheet = t.call("xlsx_list_sheets", json!({ "document_id": x }))["sheets"][0]["name"].as_str().unwrap().to_string();
     let formulas = t.call("xlsx_get_cells", json!({ "document_id": x, "sheet": sheet, "range": "A1:B1", "kind": "formula" }));
     assert_eq!(formulas["rows"], json!([[3.0, "=2+3"]]));
+    let hidden = t.call("xlsx_find_text", json!({"document_id":x,"sheet":sheet,"query":"1+2","search_formulas":true}));
+    assert_eq!(hidden["matches"], json!([]));
+    let visible = t.call("xlsx_find_text", json!({"document_id":x,"sheet":sheet,"query":"2+3","search_formulas":true}));
+    assert_eq!(visible["matches"][0]["formula"], "=2+3");
 }
 
 #[test]
@@ -312,4 +316,86 @@ fn mcp_docx_null_takes_a_format_back_and_a_theme_typeface_is_written() {
     let themed = t.call("docx_set_run_format", json!({ "document_id": d, "range": range, "font": { "theme": "minor" } }));
     assert!(themed["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "theme_font_resolved"), "{themed}");
     assert_eq!(t.err("docx_set_run_format", json!({ "document_id": d, "range": range, "font": { "theme": "x" } })), "invalid_argument");
+}
+
+#[test]
+fn canonical_docx_edits_replay_as_one_editor_draft() {
+    use ibis_formats::Kind;
+    use ibis_doc_model::Document;
+
+    let mut t = T::new("shared_docx_draft", &[]);
+    let bytes = ibis_formats::blank_file(Kind::Document).unwrap();
+    let base = ibis_formats::read(&bytes).unwrap();
+    std::fs::write(t.dir.join("blank.docx"), bytes).unwrap();
+    let id = t.open("blank.docx");
+    let mut live = Document::new(base.clone());
+    let mut draft = Document::new(base.clone());
+    let mut commands = Vec::new();
+
+    for (name, args) in [
+        ("docx_insert_text", json!({ "at": {"paragraph":0,"offset":0}, "text": "draft" })),
+        ("docx_set_paragraph_text", json!({ "paragraph":0, "text": "revised" })),
+        ("docx_set_paragraph_format", json!({ "paragraph":0, "align": "center" })),
+        ("docx_insert_table", json!({ "at":{"paragraph":0,"offset":7}, "rows":1,"columns":1,"cells":[["table text"]] })),
+    ] {
+        let (planned, edits) = ibis_doc_service::run_draft_tool(Kind::Document, &mut draft, Default::default(), name, args.clone()).unwrap();
+        assert!(planned.get("document_id").is_none());
+        let mut file_args = args;
+        file_args["document_id"] = json!(id);
+        let mut actual = t.call(name, file_args);
+        actual.as_object_mut().unwrap().remove("document_id");
+        assert_eq!(planned, actual);
+        commands.extend(edits);
+    }
+    for read in ["docx_get_text", "docx_list_tables"] {
+        let (planned, edits) = ibis_doc_service::run_draft_tool(Kind::Document, &mut draft, Default::default(), read, json!({})).unwrap();
+        assert!(edits.is_empty());
+        assert_eq!(planned, t.call(read, json!({ "document_id": id })));
+    }
+    assert_eq!(live.presentation(), &base);
+    live.execute(commands).unwrap();
+    assert_eq!(live.presentation(), draft.presentation());
+    assert_eq!(live.undo_len(), 1);
+    assert!(live.undo());
+    assert_eq!(live.presentation(), &base);
+
+    let rejected = ibis_doc_service::run_draft_tool(Kind::Document, &mut draft, Default::default(), "app_save_document", json!({})).unwrap_err();
+    assert_eq!(rejected.code, "unsupported_operation");
+}
+
+#[test]
+fn canonical_pptx_edits_share_targets_and_keep_mcp_undo_per_call() {
+    use ibis_formats::Kind;
+    use ibis_doc_model::Document;
+
+    let mut t = T::new("shared_pptx_draft", &[]);
+    let bytes = ibis_formats::blank_file(Kind::Presentation).unwrap();
+    let base = ibis_formats::read(&bytes).unwrap();
+    std::fs::write(t.dir.join("blank.pptx"), bytes).unwrap();
+    let id = t.open("blank.pptx");
+    let mut live = Document::new(base.clone());
+    let mut draft = Document::new(base);
+    let mut commands = Vec::new();
+    for (name, args) in [
+        ("pptx_add_slide", json!({})),
+        ("pptx_set_notes", json!({ "slide":2, "text": "speaker notes" })),
+        ("pptx_move_slide", json!({ "slide":2, "index":0 })),
+    ] {
+        let (_, edits) = ibis_doc_service::run_draft_tool(Kind::Presentation, &mut draft, Default::default(), name, args.clone()).unwrap();
+        assert!(!edits.is_empty());
+        let mut file_args = args;
+        file_args["document_id"] = json!(id);
+        t.call(name, file_args);
+        commands.extend(edits);
+    }
+    let (notes, _) = ibis_doc_service::run_draft_tool(Kind::Presentation, &mut draft, Default::default(), "pptx_get_notes", json!({"slide":1})).unwrap();
+    assert_eq!(notes, t.call("pptx_get_notes", json!({"document_id":id,"slide":1})));
+    live.execute(commands).unwrap();
+    live.reserve_ids_from(&draft);
+    assert_eq!(live.presentation(), draft.presentation());
+    assert!(live.undo());
+    assert_eq!(live.presentation().slides.len(), 1);
+    t.call("app_undo_document", json!({"document_id":id}));
+    let notes = t.call("pptx_get_notes", json!({"document_id":id,"slide":2}));
+    assert_eq!(notes["notes"], "speaker notes");
 }

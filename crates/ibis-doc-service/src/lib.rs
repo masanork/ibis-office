@@ -23,8 +23,8 @@ mod wallet_direct_post;
 pub use tools_prefill::{review_prefill, reviewed_prefill_command};
 pub use tools_wallet::run_cli as compare_presentation;
 
-pub use catalog::{Access, Tool, catalog};
+pub use catalog::{Access, Tool, catalog, document_tools};
 pub use error::ToolError;
-pub use service::{Limits, Service};
+pub use service::{DraftToolContext, Limits, Service, run_draft_tool};
 
 pub use tools_xlsx::{WorkbookTool, WorkbookToolContext, workbook_tools};

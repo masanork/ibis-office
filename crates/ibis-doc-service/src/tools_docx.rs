@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string};
 use crate::error::ToolError;
-use crate::service::{Args, Open, Service, page};
+use crate::service::{Args, Service, ToolDocument, page};
 
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
@@ -44,7 +44,7 @@ pub(crate) fn tools() -> Vec<Tool> {
 }
 
 /// The open document, which must be a docx kind.
-pub(crate) fn flow_of(open: &mut Open) -> Result<&FlowDocument, ToolError> {
+pub(crate) fn flow_of(open: &mut ToolDocument) -> Result<&FlowDocument, ToolError> {
     if open.kind != Kind::Document {
         return Err(ToolError::new("unsupported_operation", "this tool is for a docx document"));
     }
@@ -101,7 +101,7 @@ fn table_lines(t: &FlowTable, markdown: bool) -> Vec<String> {
 }
 
 fn get_outline(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let flow = flow_of(open)?;
     let headings: Vec<Value> = body_paragraphs(flow)
         .iter()
@@ -118,7 +118,7 @@ fn get_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
         Some(other) => return Err(ToolError::invalid(format!("format {other} is not markdown or plain"))),
     };
     let page_bytes = service.limits.page_bytes;
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let flow = flow_of(open)?;
     let mut lines: Vec<String> = Vec::new();
     for block in &flow.body {
@@ -152,7 +152,7 @@ fn get_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 }
 
 fn list_paragraphs(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let flow = flow_of(open)?;
     let items: Vec<Value> = body_paragraphs(flow).iter().enumerate().map(|(n, p)| json!({ "paragraph": n, "para_id": p.id, "style": p.style, "text": paragraph_text(p) })).collect();
     let (shown, next) = page(args, &items, 200)?;
@@ -169,7 +169,7 @@ fn color_text(color: &ibis_doc_model::Rgb) -> String {
 
 fn get_paragraph(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let n = args.usize_arg("paragraph")?;
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let flow = flow_of(open)?;
     let paragraphs = body_paragraphs(flow);
     let p = paragraphs.get(n).ok_or_else(|| ToolError::new("out_of_range", format!("paragraph {n}: the body has {} paragraphs", paragraphs.len())))?;
@@ -195,7 +195,7 @@ fn get_paragraph(service: &mut Service, args: &Value) -> Result<Value, ToolError
 }
 
 fn list_tables(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let flow = flow_of(open)?;
     let tables: Vec<Value> = body_tables(flow).iter().enumerate().map(|(n, t)| json!({ "table": n, "rows": t.rows.len(), "columns": t.rows.iter().map(|r| r.cells.len()).max().unwrap_or(0) })).collect();
     Ok(json!({ "tables": tables }))
@@ -208,7 +208,7 @@ fn find_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     }
     let match_case = args.opt_bool("match_case")?.unwrap_or(false);
     let limit = args.opt_usize("limit")?.unwrap_or(100).max(1);
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let flow = flow_of(open)?;
     let fold = |s: &str| if match_case { s.to_string() } else { s.to_lowercase() };
     let needle: Vec<char> = fold(query).chars().collect();
@@ -257,6 +257,26 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
             returns_content: false,
             schema: || object(&[document_id(), ("find", string("The text to find.")), ("replace", string("The new text (no line breaks).")), ("match_case", boolean("Match upper and lower case (default false).")), ("all", boolean("Replace every place (default true); false: the first one."))], &["document_id", "find", "replace"]),
             run: replace_text,
+        },
+        Tool {
+            name: "docx_set_paragraph_text",
+            description: "Replace the entire text of one body paragraph. Newlines create new paragraphs.",
+            access: Access::Edit,
+            returns_content: false,
+            schema: || object(&[document_id(), ("paragraph", integer("The body paragraph number (0-based).")), ("text", string("The replacement."))], &["document_id", "paragraph", "text"]),
+            run: set_paragraph_text,
+        },
+        Tool {
+            name: "docx_set_paragraph_format",
+            description: "Set the alignment or named style of a body paragraph.",
+            access: Access::Edit,
+            returns_content: false,
+            schema: || object(&[
+                document_id(), ("paragraph", integer("The body paragraph number (0-based).")),
+                ("align", json!({"enum": ["left", "center", "right", "justify"]})),
+                ("style", json!({"type": ["string", "null"], "description": "The paragraph style name or ID, or null to reset it."})),
+            ], &["document_id", "paragraph"]),
+            run: set_paragraph_format,
         },
         Tool {
             name: "docx_set_run_format",
@@ -321,7 +341,7 @@ fn range_of(flow: &FlowDocument, args: &Value) -> Result<(FlowPos, FlowPos), Too
 }
 
 fn flow_edit(service: &mut Service, id: &str, commands: Vec<FlowCommand>, extra: Value) -> Result<Value, ToolError> {
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     execute(open, commands.into_iter().map(Command::Flow).collect())?;
     Ok(edited(id, open, extra, Vec::new()))
 }
@@ -332,14 +352,14 @@ fn insert_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> 
     if text.contains(['\n', '\r']) {
         return Err(ToolError::invalid("text has a line break: use docx_insert_paragraph for a new paragraph"));
     }
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let at = flow_pos(flow_of(open)?, args.get("at").unwrap_or(&Value::Null), "at")?;
     flow_edit(service, id, vec![FlowCommand::InsertText { at, text: text.to_string(), format: None }], json!({ "inserted": text.chars().count() }))
 }
 
 fn delete_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let (from, to) = range_of(flow_of(open)?, args)?;
     flow_edit(service, id, vec![FlowCommand::Delete { from, to }], json!({}))
 }
@@ -355,7 +375,7 @@ fn replace_text(service: &mut Service, args: &Value) -> Result<Value, ToolError>
     }
     let match_case = args.opt_bool("match_case")?.unwrap_or(false);
     let all = args.opt_bool("all")?.unwrap_or(true);
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let flow = flow_of(open)?;
     let fold = |s: &str| -> Vec<char> { if match_case { s.chars().collect() } else { s.to_lowercase().chars().collect() } };
     let needle = fold(find);
@@ -405,7 +425,62 @@ fn replace_text(service: &mut Service, args: &Value) -> Result<Value, ToolError>
     flow_edit(service, id, vec![FlowCommand::Many(commands)], json!({ "replaced": count }))
 }
 
-fn theme_change(open: &Open, name: &str, brightness: f64) -> Result<RunChange, ToolError> {
+fn set_paragraph_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let index = args.usize_arg("paragraph")?;
+    let text = args.str_arg("text")?;
+    let open = service.tool_document(id)?;
+    let flow = flow_of(open)?;
+    let paragraphs = body_paragraphs(flow);
+    let paragraph = paragraphs.get(index).ok_or_else(|| ToolError::new("out_of_range", format!("paragraph {index}; the document has {} body paragraphs", paragraphs.len())))?;
+    let start = FlowPos::new(paragraph.id, 0);
+    let mut commands = Vec::new();
+    if paragraph.len() > 0 {
+        commands.push(FlowCommand::Delete { from: start, to: FlowPos::new(paragraph.id, paragraph.len()) });
+    }
+    if !text.is_empty() {
+        commands.push(FlowCommand::InsertText { at: start, text: text.to_string(), format: None });
+    }
+    if commands.is_empty() {
+        return Ok(edited(id, open, json!({ "paragraph": index }), Vec::new()));
+    }
+    flow_edit(service, id, vec![FlowCommand::Many(commands)], json!({ "paragraph": index }))
+}
+
+fn set_paragraph_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    use ibis_doc_model::flow::FlowAlign;
+    use ibis_doc_model::flow_command::ParaChange;
+
+    let id = args.str_arg("document_id")?;
+    let index = args.usize_arg("paragraph")?;
+    let open = service.tool_document(id)?;
+    let flow = flow_of(open)?;
+    let paragraphs = body_paragraphs(flow);
+    let paragraph = paragraphs.get(index).ok_or_else(|| ToolError::new("out_of_range", format!("paragraph {index}; the document has {} body paragraphs", paragraphs.len())))?;
+    let mut changes = Vec::new();
+    if args.get("style").is_some() {
+        changes.push(ParaChange::Style(args.opt_str("style")?.map(str::to_owned)));
+    }
+    if let Some(align) = args.opt_str("align")? {
+        let align = match align {
+            "left" => FlowAlign::Left,
+            "center" => FlowAlign::Center,
+            "right" => FlowAlign::Right,
+            "justify" => FlowAlign::Justify,
+            _ => return Err(ToolError::invalid("align is left, center, right or justify")),
+        };
+        changes.push(ParaChange::Alignment(align));
+    }
+    if changes.is_empty() {
+        return Err(ToolError::invalid("a paragraph format is required"));
+    }
+    let commands = changes.into_iter().map(|change| FlowCommand::SetParagraphFormat {
+        first: paragraph.id, last: paragraph.id, change,
+    }).collect();
+    flow_edit(service, id, commands, json!({ "paragraph": index }))
+}
+
+fn theme_change(open: &ToolDocument, name: &str, brightness: f64) -> Result<RunChange, ToolError> {
     if matches!(name, "hyperlink" | "followed_hyperlink") {
         return Err(ToolError::new("unsupported_operation", "the hyperlink theme colours are not supported yet"));
     }
@@ -420,7 +495,7 @@ fn theme_change(open: &Open, name: &str, brightness: f64) -> Result<RunChange, T
 fn set_run_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     only_known(args, &["document_id", "range", "bold", "italic", "underline", "strike", "size", "color", "font"])?;
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let (from, to) = range_of(flow_of(open)?, args)?;
     let mut changes = Vec::new();
     let mut warnings = Vec::new();
@@ -494,7 +569,7 @@ fn insert_table(service: &mut Service, args: &Value) -> Result<Value, ToolError>
     if cells.len() > rows || cells.iter().any(|r| r.len() > columns) {
         return Err(ToolError::new("out_of_range", "cells is larger than the table"));
     }
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let flow = flow_of(open)?;
     let at = flow_pos(flow, args.get("at").unwrap_or(&Value::Null), "at")?;
     let before: std::collections::HashSet<u32> = flow.body.iter().filter_map(|b| if let Block::Table(t) = b { Some(t.id) } else { None }).collect();
@@ -515,7 +590,7 @@ fn insert_table(service: &mut Service, args: &Value) -> Result<Value, ToolError>
             }
         }
         if !fill.is_empty() {
-            open.document.amend_last(fill).map_err(|e| ToolError::new("edit_rejected", format!("{e:?}")))?;
+            crate::edit::amend(open, fill)?;
         }
     }
     Ok(edited(id, open, json!({ "rows": rows, "columns": columns }), Vec::new()))

@@ -283,39 +283,6 @@ pub fn build_merge_command(
     }
 }
 
-/// Find non-empty cells whose display text (or formula) matches `query` (case-insensitive).
-pub fn find_sheet_cells(
-    sheet: &Sheet,
-    query: &str,
-    search_formulas: bool,
-    max_results: usize,
-) -> Vec<CellSnapshot> {
-    let q = query.trim().to_ascii_lowercase();
-    if q.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for cell in sheet.cells.iter() {
-        let text_match = cell.text.to_ascii_lowercase().contains(&q);
-        let formula = sheet.visible_formula(cell);
-        let formula_match = search_formulas
-            && formula.is_some_and(|f| f.to_ascii_lowercase().contains(&q));
-        if text_match || formula_match {
-            out.push(CellSnapshot {
-                cell: cell_name(cell.row, cell.column),
-                row: cell.row,
-                column: cell.column,
-                text: cell.text.clone(),
-                formula: formula.map(str::to_owned),
-            });
-            if out.len() >= max_results {
-                break;
-            }
-        }
-    }
-    out
-}
-
 /// Find cells with formula or value errors (`#REF!`, `#DIV/0!`, etc.) on `sheet`.
 pub fn audit_sheet_errors(sheet: &Sheet, max_results: usize) -> Vec<CellSnapshot> {
     let mut out = Vec::new();
@@ -422,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn find_and_audit_respect_formula_visibility() {
+    fn audit_respects_formula_visibility() {
         let mut sheet = Sheet::default();
         sheet.cells.push(SheetCell {
             row: 0,
@@ -448,14 +415,12 @@ mod tests {
         });
 
         sheet.styles.push(crate::sheet::CellStyle { formula_hidden: true, ..Default::default() });
-        assert_eq!(find_sheet_cells(&sheet, "A1*2", true, 10)[0].formula.as_deref(), Some("A1*2"));
+        assert_eq!(sheet.visible_formula(&sheet.cells[1]), Some("A1*2"));
         sheet.protection = Some(crate::sheet::SheetProtection::default());
-        assert!(find_sheet_cells(&sheet, "A1*2", true, 10).is_empty());
-        assert_eq!(find_sheet_cells(&sheet, "20", false, 10)[0].formula, None);
         sheet.cells[1].text = "#REF!".into();
         assert_eq!(audit_sheet_errors(&sheet, 10)[0].formula, None);
         sheet.protection = None;
-        assert_eq!(find_sheet_cells(&sheet, "A1*2", true, 10)[0].formula.as_deref(), Some("A1*2"));
+        assert_eq!(sheet.visible_formula(&sheet.cells[1]), Some("A1*2"));
     }
 
     #[test]
