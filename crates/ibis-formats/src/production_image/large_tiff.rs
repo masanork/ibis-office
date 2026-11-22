@@ -16,7 +16,7 @@ const MAX_PREVIEW_EDGE: u32 = 2_048;
 const MAX_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 const UNSUPPORTED: &str =
-    "Large TIFF preview requires supported 8-bit grayscale or RGB strips or tiles";
+    "Large TIFF preview requires supported 8- or 16-bit grayscale or RGB strips or tiles";
 const CHUNK_LIMIT: &str = "TIFF strip or tile exceeds the large-preview limit";
 const BAD_CHUNKS: &str = "Invalid or truncated TIFF strips or tiles";
 
@@ -60,12 +60,14 @@ pub(super) fn preview(
     let photometric = decoder
         .get_tag_unsigned::<u16>(Tag::PhotometricInterpretation)
         .map_err(|error| error.to_string())?;
-    let channels = match (
+    let (channels, sample_bytes) = match (
         decoder.colortype().map_err(|error| error.to_string())?,
         photometric,
     ) {
-        (ColorType::Gray(8), 0 | 1) => 1,
-        (ColorType::RGB(8), 2) => 3,
+        (ColorType::Gray(8), 0 | 1) => (1, 1),
+        (ColorType::Gray(16), 0 | 1) => (1, 2),
+        (ColorType::RGB(8), 2) => (3, 1),
+        (ColorType::RGB(16), 2) => (3, 2),
         _ => return Err(UNSUPPORTED.into()),
     };
     let (chunk_width, chunk_height, offsets_tag, lengths_tag) = if tiled {
@@ -94,7 +96,8 @@ pub(super) fn preview(
     let columns = width.div_ceil(chunk_width);
     let rows = height.div_ceil(chunk_height);
     let chunk_count = (columns * rows) as usize;
-    let nominal_bytes = u64::from(chunk_width) * u64::from(chunk_height) * channels as u64;
+    let pixel_bytes = channels * sample_bytes;
+    let nominal_bytes = u64::from(chunk_width) * u64::from(chunk_height) * pixel_bytes as u64;
     if !borrow_strips {
         if nominal_bytes > MAX_CHUNK_BYTES as u64 {
             return Err(CHUNK_LIMIT.into());
@@ -102,7 +105,7 @@ pub(super) fn preview(
         let raster_bytes = if tiled {
             nominal_bytes * chunk_count as u64
         } else {
-            u64::from(width) * u64::from(height) * channels as u64
+            u64::from(width) * u64::from(height) * pixel_bytes as u64
         };
         if raster_bytes > MAX_RASTER_BYTES {
             return Err("TIFF image exceeds the large-preview raster limit".into());
@@ -131,7 +134,7 @@ pub(super) fn preview(
         let origin_y = (index as u32 / columns) * chunk_height;
         let data_width = chunk_width.min(width - origin_x);
         let data_height = chunk_height.min(height - origin_y);
-        let row_bytes = data_width as usize * channels;
+        let row_bytes = data_width as usize * pixel_bytes;
         let offset = usize::try_from(offset).map_err(|_| BAD_CHUNKS)?;
         let length = usize::try_from(length).map_err(|_| BAD_CHUNKS)?;
         if !borrow_strips && length > MAX_CHUNK_BYTES {
@@ -177,33 +180,50 @@ pub(super) fn preview(
     let xs = sample_centers(width, preview_width);
     let ys = sample_centers(height, preview_height);
     let mut pixels = vec![0; preview_width as usize * preview_height as usize * channels];
+    let raw_sample_bytes = if borrow_strips { sample_bytes } else { 1 };
+    let read_sample = if bytes.starts_with(b"II") {
+        u16::from_le_bytes
+    } else {
+        u16::from_be_bytes
+    };
+    let to_u8 = |sample: u16| ((u32::from(sample) + 128) / 257) as u8;
     for (index, (left, top, data_width, data_height, raw)) in chunks.into_iter().enumerate() {
         let decoded;
         let data = if borrow_strips {
             raw
         } else {
-            let DecodingResult::U8(data) = decoder
+            decoded = match decoder
                 .read_chunk(index as u32)
                 .map_err(|error| error.to_string())?
-            else {
-                return Err(UNSUPPORTED.into());
+            {
+                DecodingResult::U8(data) => data,
+                DecodingResult::U16(data) => data.into_iter().map(to_u8).collect(),
+                _ => return Err(UNSUPPORTED.into()),
             };
-            decoded = data;
             &decoded
         };
         let x_start = xs.partition_point(|&x| x < left);
         let x_end = xs.partition_point(|&x| x < left + data_width);
         let y_start = ys.partition_point(|&y| y < top);
         let y_end = ys.partition_point(|&y| y < top + data_height);
-        let row_bytes = data_width as usize * channels;
+        let row_bytes = data_width as usize * channels * raw_sample_bytes;
         for (output_y, &y) in ys.iter().enumerate().take(y_end).skip(y_start) {
             let row = (y - top) as usize * row_bytes;
             let row = data.get(row..row + row_bytes).ok_or(BAD_CHUNKS)?;
             for (output_x, &x) in xs.iter().enumerate().take(x_end).skip(x_start) {
-                let source_x = (x - left) as usize * channels;
+                let source_x = (x - left) as usize * channels * raw_sample_bytes;
                 let output = (output_y * preview_width as usize + output_x) * channels;
-                pixels[output..output + channels]
-                    .copy_from_slice(&row[source_x..source_x + channels]);
+                let destination = &mut pixels[output..output + channels];
+                if raw_sample_bytes == 1 {
+                    destination.copy_from_slice(&row[source_x..source_x + channels]);
+                } else {
+                    for (output, sample) in destination
+                        .iter_mut()
+                        .zip(row[source_x..source_x + channels * 2].chunks_exact(2))
+                    {
+                        *output = to_u8(read_sample([sample[0], sample[1]]));
+                    }
+                }
             }
         }
     }
@@ -345,6 +365,37 @@ mod tests {
                 .unwrap()
                 .into_luma8();
             assert_eq!(image, preview);
+        }
+    }
+
+    #[test]
+    fn downconverts_16_bit_gray_and_rgb_without_losing_channel_order() {
+        for compression in [Compression::Uncompressed, Compression::Lzw] {
+            let mut file = Cursor::new(Vec::new());
+            let mut encoder = TiffEncoder::new(&mut file)
+                .unwrap()
+                .with_compression(compression);
+            let pixels: Vec<_> = (0..8_200).flat_map(|_| [128_u16, 32_768, 65_535]).collect();
+            encoder
+                .write_image::<colortype::RGB16>(8_200, 1, &pixels)
+                .unwrap();
+            let preview = preview_test(&file.into_inner()).unwrap().into_rgb8();
+            assert_eq!(preview.dimensions(), (2_048, 1));
+            assert!(preview.pixels().all(|pixel| pixel.0 == [0, 128, 255]));
+
+            let mut file = Cursor::new(Vec::new());
+            let mut encoder = TiffEncoder::new(&mut file)
+                .unwrap()
+                .with_compression(compression);
+            let pixels: Vec<_> = (0..8_200)
+                .map(|x| if x < 4_100 { 257_u16 } else { 32_767 })
+                .collect();
+            encoder
+                .write_image::<colortype::Gray16>(8_200, 1, &pixels)
+                .unwrap();
+            let preview = preview_test(&file.into_inner()).unwrap().into_luma8();
+            assert_eq!(preview.get_pixel(0, 0).0, [1]);
+            assert_eq!(preview.get_pixel(2_047, 0).0, [127]);
         }
     }
 
