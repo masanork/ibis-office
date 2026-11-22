@@ -576,8 +576,8 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     if args.include_metafile_previews && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
         return Err("--include-metafile-previews requires --export md".into());
     }
-    if args.text_layout_physical.is_some() && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
-        return Err("--text-layout requires --export md".into());
+    if args.text_layout_physical.is_some() && !matches!(args.export.as_deref(), Some("md" | "markdown" | "txt" | "text")) {
+        return Err("--text-layout requires --export md or --export txt".into());
     }
     if args.include_xlsx_validations && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
         return Err("--include-xlsx-validations requires --export md".into());
@@ -707,6 +707,25 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         let result = ibis_formats::markdown::locate_ai_source(&data, &query)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         println!("{result:#}");
+        return Ok(());
+    }
+    if matches!(format, "txt" | "text") {
+        // The characters of a PDF, XPS or OFD as lines, each page ended by a form feed: no escape, no drawing.
+        let path = args.path.as_deref().ok_or("name the PDF, XPS or OFD document to export")?;
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let layout = if args.text_layout_physical == Some(true) {
+            ibis_pdf::text_layout::TextLayout::Physical
+        } else {
+            ibis_pdf::text_layout::TextLayout::Reading
+        };
+        let text = ibis_office_pdf::text::export(&data, layout)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .ok_or_else(|| format!("{}: --export txt reads PDF, XPS and OFD documents (use --export md for others)", path.display()))?;
+        let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
+        std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
+        let out_path = out_dir.join(format!("{stem}.txt"));
+        std::fs::write(&out_path, text.as_bytes()).map_err(|e| format!("{}: {e}", out_path.display()))?;
         return Ok(());
     }
     if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "lawxml" | "lawtext" | "ai-json") {
@@ -881,7 +900,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             "pdf" => export::Format::Pdf,
             "pdfa-2b" => export::Format::PdfA2b,
             "pdf-image" => export::Format::PdfImage,
-            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdfa-info, pdfa-validate, pdf-image, md, row-heights or ui: {other}")),
+            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdfa-info, pdfa-validate, pdf-image, md, txt, row-heights or ui: {other}")),
         };
         let path = args.path.as_deref().ok_or("name the .pptx, .xlsx or .docx file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());

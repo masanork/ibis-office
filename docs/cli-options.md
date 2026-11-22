@@ -247,6 +247,12 @@ To keep the columns of tables, add `--text-layout physical`: each page's text go
 ibisOffice --export md --text-layout physical --out-dir ./out input.pdf
 ```
 
+For the text alone, use `--export txt`: each page's lines, each page ended by a form feed (as `pdftotext` ends it), with no Markdown escapes and no graphics. Nothing is drawn and no image is decoded, so it is faster than `--export md`. `--text-layout physical` works here too.
+
+```sh
+ibisOffice --export txt --text-layout physical --out-dir ./out input.pdf
+```
+
 DOCX floating pictures retain their image data and display dimensions in Markdown. The `docx-anchor` image attribute preserves the position reference, offsets, and wrapping when restoring DOCX. Images without this attribute import inline.
 
 For DOCX pictures, `docx-crop` stores the left, top, right, and bottom crop in hundred-thousandths. `docx-transform` stores rotation in 60,000ths of a degree and the horizontal and vertical flip flags.

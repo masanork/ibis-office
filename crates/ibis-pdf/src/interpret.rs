@@ -35,7 +35,7 @@ pub fn interpret_page_scene(
         .ok_or_else(|| Error::new(format!("page index {page_index} out of range")))?;
 
     let pdf = parse_for_interpretation(container)?;
-    interpret_scene(&pdf, &InterpreterCache::new(), info, true)
+    interpret_scene(&pdf, &InterpreterCache::new(), info, Purpose::View)
 }
 
 /// Visit each page for export, keeping glyph outlines only when Unicode is unavailable.
@@ -47,9 +47,35 @@ pub fn visit_export_scenes(
     let pdf = parse_for_interpretation(container)?;
     let cache = InterpreterCache::new();
     for info in pages {
-        visit(interpret_scene(&pdf, &cache, info, false)?)?;
+        visit(interpret_scene(&pdf, &cache, info, Purpose::Export)?)?;
     }
     Ok(())
+}
+
+/// Visit each page's characters only: nothing is drawn, no image decoded (the plain text export).
+/// The scenes have an empty display list.
+pub fn visit_text_scenes(
+    container: &mut PdfContainer,
+    mut visit: impl FnMut(PageScene) -> Result<()>,
+) -> Result<()> {
+    let pages = collect_pages(container)?;
+    let pdf = parse_for_interpretation(container)?;
+    let cache = InterpreterCache::new();
+    for info in pages {
+        visit(interpret_scene(&pdf, &cache, info, Purpose::Text)?)?;
+    }
+    Ok(())
+}
+
+/// What a scene is made for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// The viewer: every glyph drawn, each character's box reaching the next character (for selection).
+    View,
+    /// The Markdown export: the drawings, glyphs only where they have no Unicode; the boxes as wide as the font says.
+    Export,
+    /// The text export: the characters only.
+    Text,
 }
 
 fn parse_for_interpretation(container: &PdfContainer) -> Result<Pdf> {
@@ -61,7 +87,7 @@ fn interpret_scene<'a>(
     pdf: &'a Pdf,
     cache: &'a InterpreterCache<'a>,
     info: PageInfo,
-    include_text_outlines: bool,
+    purpose: Purpose,
 ) -> Result<PageScene> {
     let page_index = info.index;
     let page = pdf
@@ -75,7 +101,7 @@ fn interpret_scene<'a>(
     let bbox = Rect::new(0.0, 0.0, pw as f64, ph as f64);
 
     let mut ctx = Context::new(initial_transform, bbox, cache, pdf.xref(), settings);
-    let mut device = SceneDevice::new(info, include_text_outlines);
+    let mut device = SceneDevice::new(info, purpose);
     interpret_page(page, &mut ctx, &mut device);
     Ok(device.finish())
 }
@@ -85,24 +111,24 @@ struct SceneDevice {
     display_list: Vec<DisplayCmd>,
     text_index: PageTextIndex,
     op_counter: usize,
-    include_text_outlines: bool,
+    purpose: Purpose,
 }
 
 impl SceneDevice {
-    fn new(info: PageInfo, include_text_outlines: bool) -> Self {
+    fn new(info: PageInfo, purpose: Purpose) -> Self {
         Self {
             info,
             display_list: Vec::new(),
             text_index: PageTextIndex::default(),
             op_counter: 0,
-            include_text_outlines,
+            purpose,
         }
     }
 
     fn finish(mut self) -> PageScene {
         // The viewer's selection wants each box to reach the next character (ibisOffice). The export reads the gaps
         // between characters as spaces and keeps the widths the font gives: a box widened over a word space hides it.
-        if self.include_text_outlines {
+        if self.purpose == Purpose::View {
             self.text_index.fit_widths();
         }
         PageScene {
@@ -198,10 +224,15 @@ impl<'a> Device<'a> for SceneDevice {
         draw_mode: &PathDrawMode,
     ) {
         self.op_counter += 1;
-        self.push_bezpath(path, transform, paint, draw_mode);
+        if self.purpose != Purpose::Text {
+            self.push_bezpath(path, transform, paint, draw_mode);
+        }
     }
 
     fn push_clip_path(&mut self, clip_path: &ClipPath) {
+        if self.purpose == Purpose::Text {
+            return;
+        }
         let bounds = rect_to_pdf_rect(clip_path.path.bounding_box());
         self.display_list.push(DisplayCmd::PushClip(bounds));
     }
@@ -212,6 +243,9 @@ impl<'a> Device<'a> for SceneDevice {
         _mask: Option<SoftMask<'a>>,
         _blend_mode: BlendMode,
     ) {
+        if self.purpose == Purpose::Text {
+            return;
+        }
         self.display_list
             .push(DisplayCmd::PushTransparencyGroup { opacity });
     }
@@ -257,9 +291,12 @@ impl<'a> Device<'a> for SceneDevice {
                     stream_op_index: self.op_counter,
                 });
             }
-            if !self.include_text_outlines && !text.is_empty() && !text.contains('\u{fffd}') {
+            if self.purpose == Purpose::Export && !text.is_empty() && !text.contains('\u{fffd}') {
                 return;
             }
+        }
+        if self.purpose == Purpose::Text {
+            return;
         }
 
         // Emit vector outlines / Type3 instructions for GPUI rendering unless invisible.
@@ -283,6 +320,9 @@ impl<'a> Device<'a> for SceneDevice {
 
     fn draw_image(&mut self, image: Image<'a, '_>, transform: Affine) {
         self.op_counter += 1;
+        if self.purpose == Purpose::Text {
+            return;
+        }
         match image {
             Image::Stencil(s) => {
                 let unit = Rect::new(0.0, 0.0, s.width() as f64, s.height() as f64);
@@ -317,11 +357,15 @@ impl<'a> Device<'a> for SceneDevice {
     }
 
     fn pop_clip_path(&mut self) {
-        self.display_list.push(DisplayCmd::PopClip);
+        if self.purpose != Purpose::Text {
+            self.display_list.push(DisplayCmd::PopClip);
+        }
     }
 
     fn pop_transparency_group(&mut self) {
-        self.display_list.push(DisplayCmd::PopTransparencyGroup);
+        if self.purpose != Purpose::Text {
+            self.display_list.push(DisplayCmd::PopTransparencyGroup);
+        }
     }
 }
 
