@@ -3144,3 +3144,5 @@ xlsx.prefill.changed	The source or workbook changed. Preview it again.
 xlsx.prefill.save-unavailable	The workbook copy could not be saved.
 xlsx.prefill.saved	Saved the filled copy to {path}
 xlsx.prefill.long-value	This value is too long to select in this preview.
+xlsx.ai-explain-formula	Explain selected cell formula
+xlsx.ai-explain-formula-incomplete	Could not get an explanation for this formula. Try again.

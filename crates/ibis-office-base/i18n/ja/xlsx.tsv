@@ -3141,3 +3141,5 @@ xlsx.prefill.changed	転記元またはブックが変わりました。入力�
 xlsx.prefill.save-unavailable	入力済みのコピーを保存できませんでした。
 xlsx.prefill.saved	入力済みのコピーを {path} に保存しました
 xlsx.prefill.long-value	この画面で選択するには値が長すぎます。
+xlsx.ai-explain-formula	選択セルの数式を説明
+xlsx.ai-explain-formula-incomplete	数式の説明を取得できませんでした。もう一度お試しください。
