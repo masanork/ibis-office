@@ -580,6 +580,13 @@ test('repos API lifecycle: create, read/write with If-Match, nested paths, token
     assert.ok(html.includes('/editor.html?open='));
     assert.ok(html.includes('Docs で開く'));
 
+    const readSource = `/repos/${created.id}?source=README.md&ref=${created.initial_commit}`;
+    const sourceRes = await worker.fetch(req(readSource, { token: 'owner-token' }), env);
+    assert.equal(sourceRes.status, 200);
+    assert.match(await sourceRes.text(), /id="L1".*---/);
+    const anonymousSource = await worker.fetch(req(readSource), env);
+    assert.match(await anonymousSource.text(), /ログインが必要です/);
+
     // 4. Read README.md & check ETag
     const readmeRes = await worker.fetch(
       req(`/api/repos/${created.id}/blob/README.md`, { token: 'owner-token' }),
@@ -1088,6 +1095,83 @@ test('public GitHub remotes share the history and comparison UI without a Docs s
     assert.equal(files[0].additions, 1);
     assert.equal(files[0].deletions, 1);
     assert.ok(files[0].hunks[0].lines.some(line => line.text === '新条文'));
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('repository source follows Markdown links at the same commit and escapes source', async () => {
+  const { env } = createMockEnv();
+  const commit = '1'.repeat(40);
+  const root = '2'.repeat(40);
+  const docs = '3'.repeat(40);
+  const api = '4'.repeat(40);
+  const md = '5'.repeat(40);
+  const yaml = '6'.repeat(40);
+  const json = '7'.repeat(40);
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.origin, 'https://api.github.com');
+    const path = url.pathname.replace(/^\/repos\/owner\/spec/, '');
+    switch (path) {
+      case '': return Response.json({ private: false, default_branch: 'main' });
+      case '/commits/main':
+      case '/commits/' + commit:
+        return Response.json({
+          sha: commit, parents: [], commit: {
+            message: 'Specification', tree: { sha: root },
+            author: { name: 'Author', date: '2026-10-01T00:00:00Z' },
+            committer: { name: 'Author', date: '2026-10-01T00:00:00Z' },
+          },
+        });
+      case '/git/trees/' + root:
+        return Response.json({ tree: [
+          { path: 'docs', mode: '040000', sha: docs, type: 'tree' },
+          { path: 'api', mode: '040000', sha: api, type: 'tree' },
+        ] });
+      case '/git/trees/' + docs:
+        return Response.json({ tree: [{ path: 'README.md', mode: '100644', sha: md, type: 'blob' }] });
+      case '/git/trees/' + api:
+        return Response.json({ tree: [
+          { path: '契約.yaml', mode: '100644', sha: yaml, type: 'blob' },
+          { path: 'schema.json', mode: '100644', sha: json, type: 'blob' },
+        ] });
+      case '/git/blobs/' + md:
+        return new Response([
+          '# API仕様', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[external](//other.test/external.json)',
+          '[escape](../../escape.json)', '[slash](../api%2fother.json)', '```md', '[example](sample.json)', '```',
+        ].join('\n'));
+      case '/git/blobs/' + yaml:
+        return new Response('openapi: 3.1.0\ninfo: "<script>alert(1)</script>"\n');
+      case '/git/blobs/' + json:
+        return new Response('{"type":"object"}');
+      default: assert.fail(url.href);
+    }
+  };
+  try {
+    const base = '/repos/github/owner/spec';
+    const page = await worker.fetch(req(base + '?source=docs%2FREADME.md'), env);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /API仕様/);
+    const link = base + '?ref=' + commit + '&source=api%2F%E5%A5%91%E7%B4%84.yaml#L2';
+    assert.ok(html.includes('href="' + link.replace('&', '&amp;') + '"'));
+    assert.doesNotMatch(html, /href="[^"]*(external\.json|escape\.json|other\.json|sample\.json)/);
+    const linked = await worker.fetch(req(link), env);
+    assert.equal(linked.status, 200);
+    const source = await linked.text();
+    assert.match(source, /openapi: 3\.1\.0/);
+    assert.match(source, /id="L2"/);
+    assert.match(source, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    assert.match(source, new RegExp('ref=' + commit + '&amp;plain=1'));
+    const schemaLink = base + '?ref=' + commit + '&source=api%2Fschema.json';
+    assert.ok(html.includes('href="' + schemaLink.replace('&', '&amp;') + '"'));
+    const schema = await worker.fetch(req(schemaLink), env);
+    assert.equal(schema.status, 200);
+    assert.match(await schema.text(), /&quot;type&quot;:&quot;object&quot;/);
+    const invalid = await worker.fetch(req(base + '?source=..%2FREADME.md'), env);
+    assert.equal(invalid.status, 400);
   } finally {
     globalThis.fetch = original;
   }

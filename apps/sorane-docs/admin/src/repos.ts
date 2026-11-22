@@ -40,6 +40,7 @@ import {
 } from './office-file';
 import { NEXT, type FileEnv } from './files';
 import { GitHubRepo, githubCoordinates, githubUrlCoordinates } from './github-repo';
+import { isSpecSource, renderSpecSource, specSourceUrl } from './spec-source';
 
 export type RepoEnv = FileEnv & {
   ARTIFACTS?: Artifacts;
@@ -139,6 +140,8 @@ function reposPage(
     .grid2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
     @media(max-width:720px){.grid2{grid-template-columns:1fr}}
     pre.code{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:.75rem;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem;margin:0}
+    .source-line-number{display:inline-block;min-width:5ch;text-align:right;user-select:none}
+    .source-code span:target{background:#fff8c5}
     .muted{color:var(--muted);font-size:.85rem}
     #status[data-kind=error]{color:var(--danger)}
     #status[data-kind=ok]{color:var(--ok)}
@@ -1155,7 +1158,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
   const row = await ownedRepo(env, session, id);
   using repo = await artifacts.get(row.repo_name);
   const info = await repo.info();
-  const branches = await resolveBranches(repo, row.default_branch);
+  const branches = new URL(request.url).searchParams.has('source') ? [] : await resolveBranches(repo, row.default_branch);
   return renderRepoDetail(request, env, repo, {
     id: row.id, slug: row.slug, title: row.title, description: row.description,
     defaultBranch: row.default_branch, info, branches, csrf, browser: fresh ? browser : undefined,
@@ -1181,6 +1184,38 @@ async function renderRepoDetail(request: Request, env: RepoEnv, repo: ReadRepo, 
   const url = new URL(request.url);
   const dirPath = normalizeRepoPath(url.searchParams.get('path') ?? '') ?? '';
   const activeRef = url.searchParams.get('ref')?.trim() || row.defaultBranch;
+  const sourceParam = url.searchParams.get('source');
+  if (sourceParam !== null) {
+    const path = normalizeRepoPath(sourceParam);
+    if (!path || !isSpecSource(path)) fail(400, 'invalid_source_path');
+    const slash = path.lastIndexOf('/');
+    const parent = slash < 0 ? '' : path.slice(0, slash);
+    const name = path.slice(slash + 1);
+    const { entries, headCommit } = await readTreeAtPath(repo, activeRef, parent);
+    const entry = entries.find((entry) => entry.name === name && (entry.type === 'blob' || entry.type === 'exec'));
+    if (!headCommit || !entry) fail(404, 'not_found');
+    const blob = await repo.readBlob(entry.hash);
+    if (!blob) fail(404, 'not_found');
+    const commit = headCommit.hash;
+    const rawUrl = apiUrl + '/blob/' + path.split('/').map(encodeURIComponent).join('/') + '?ref=' + commit + '&plain=1';
+    const directoryUrl = repoUrl + '?' + new URLSearchParams({ ref: commit, ...(parent ? { path: parent } : {}) });
+    let content = '<p>このファイルはソース表示の上限（512 KiB）を超えています。Raw で確認できます。</p>';
+    if (blob.size <= MAX_DIFF_FILE_BYTES) {
+      try {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        if (looksLikeBinary(bytes)) fail(415, 'not_utf8_text');
+        const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+        content = renderSpecSource(path, text, repoUrl, commit);
+      } catch (error) {
+        if (error instanceof TypeError) fail(415, 'not_utf8_text');
+        throw error;
+      }
+    }
+    return reposPage(env, path, `<div class="card"><div class="card-hd"><div><strong>${escape(path)}</strong>
+      <span class="muted">${escape(row.slug)} · <code>${escape(commit.slice(0, 12))}</code></span></div>
+      <div><a class="btn" href="${escape(directoryUrl)}">ファイル一覧</a> <a class="btn" href="${escape(rawUrl)}">Raw</a></div>
+      </div><div class="card-bd">${content}</div></div>`, repoUrl, 200, row.browser);
+  }
   if (!branches.some((b) => b.name === activeRef)) {
     branches.unshift({ name: activeRef, sha: '' });
   }
@@ -1230,8 +1265,10 @@ async function renderRepoDetail(request: Request, env: RepoEnv, repo: ReadRepo, 
       const openBtn = isEditableInIbis(entry.name)
         ? `<a class="btn btn-primary" href="${escape(editorUrl)}">Docs で開く</a>`
         : '';
+      const sourceBtn = headCommit && isSpecSource(fullPath) && (entry.type === 'blob' || entry.type === 'exec')
+        ? `<a class="btn" href="${escape(specSourceUrl(repoUrl, headCommit.hash, fullPath))}">ソース</a>` : '';
       const diffBtn = `<a class="btn" href="${escape(historyUrl(fullPath))}">履歴</a>`;
-      return `<div class="row"><div>📄 <strong>${escape(entry.name)}</strong> <span class="muted">${escape(entry.hash.slice(0, 7))}</span></div><div style="display:flex;gap:.5rem;flex-wrap:wrap">${openBtn}${diffBtn}<a class="btn" href="${escape(blobUrl)}" target="_blank">Raw</a></div></div>`;
+      return `<div class="row"><div>📄 <strong>${escape(entry.name)}</strong> <span class="muted">${escape(entry.hash.slice(0, 7))}</span></div><div style="display:flex;gap:.5rem;flex-wrap:wrap">${openBtn}${sourceBtn}${diffBtn}<a class="btn" href="${escape(blobUrl)}" target="_blank">Raw</a></div></div>`;
     })
     .join('');
 
@@ -1760,7 +1797,7 @@ async function openGitHubRepo(request: Request, env: RepoEnv, coordinates: { own
   }
   return renderRepoDetail(request, env, external, {
     id: external.name, slug: external.name, title: '', description: info.description,
-    defaultBranch: info.defaultBranch, branches: await external.branches(),
+    defaultBranch: info.defaultBranch, branches: new URL(request.url).searchParams.has('source') ? [] : await external.branches(),
     info: { remote: external.remote }, repoUrl, apiUrl, external,
   });
 }

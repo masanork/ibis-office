@@ -37,6 +37,7 @@ export type TreeDiffEntry = {
 const TEXT_EXTENSIONS = new Set([
   'md',
   'markdown',
+  'mmd',
   'txt',
   'json',
   'xml',
