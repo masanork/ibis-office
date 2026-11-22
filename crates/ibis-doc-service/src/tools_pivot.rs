@@ -676,11 +676,48 @@ fn rebuild_pivot(
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn compare_query_metrics(
+    sheet: &Sheet,
+    table: &ibis_doc_model::sheet::SheetTable,
+    result: &ibis_doc_model::query::SqliteRows,
+    columns: &[&str],
+) -> Result<Vec<Value>, ToolError> {
+    use ibis_doc_model::CellValue;
+
+    columns.iter().map(|&name| {
+        let index = table.columns.iter().position(|column| column == name)
+            .ok_or_else(|| ToolError::invalid(format!("No metric column named {name}")))?;
+        let column = table.range.first_column + index as u32;
+        let invalid = || ToolError::invalid(format!("Metric column {name} requires finite numeric values or blank cells"));
+        let mut old_values = sheet.cells_in_rows(table.range.first_row, table.range.last_row)
+            .iter().filter(|cell| cell.row > table.range.first_row && cell.column == column);
+        let previous = old_values.try_fold(0.0, |sum, cell| match cell.value {
+            CellValue::Empty => Ok(sum),
+            CellValue::Number(value) if value.is_finite() => Ok(sum + value),
+            _ => Err(invalid()),
+        })?;
+        let current = result.rows.iter().try_fold(0.0, |sum, row| match &row[index] {
+            Value::Null => Ok(sum),
+            value => value.as_f64().filter(|value| value.is_finite()).map(|value| sum + value)
+                .ok_or_else(invalid),
+        })?;
+        let delta = current - previous;
+        if !previous.is_finite() || !current.is_finite() || !delta.is_finite() {
+            return Err(ToolError::invalid(format!("Metric column {name} exceeds the numeric range")));
+        }
+        let percent_change = (previous != 0.0).then(|| delta / previous.abs() * 100.0)
+            .filter(|value| value.is_finite());
+        Ok(json!({"column":name,"previous":previous,"current":current,"delta":delta,"percent_change":percent_change}))
+    }).collect()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) fn plan_query_table_refresh(
     workbook: &ibis_doc_model::Presentation,
     args: &Value,
     result: ibis_doc_model::query::SqliteRows,
     definition: &Value,
+    metric_columns: &[&str],
 ) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
     use ibis_doc_model::sheet_command::{CellInput, PutCell};
     use ibis_doc_model::{Command, Document};
@@ -720,6 +757,7 @@ pub(crate) fn plan_query_table_refresh(
             "The destination worksheet is protected.",
         ));
     }
+    let metrics = compare_query_metrics(sheet, table, &result, metric_columns)?;
     let old = table.range;
     let range = CellRange {
         last_row: old.first_row + result.rows.len() as u32,
@@ -800,7 +838,10 @@ pub(crate) fn plan_query_table_refresh(
             commands.extend(update);
         }
     }
-    let summary = json!({"sheet":sheet_name,"table":table.name,"range":range_text(&range),
+    let mut summary = json!({"sheet":sheet_name,"table":table.name,"range":range_text(&range),
         "previous_rows":old.last_row-old.first_row,"rows":result.rows.len(),"updated_pivots":updated_pivots,"updated_charts":updated_charts});
+    if !metrics.is_empty() {
+        summary["metrics"] = json!(metrics);
+    }
     Ok((summary, commands))
 }

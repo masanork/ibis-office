@@ -652,7 +652,7 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
             &mut service,
             "sqlite_query_to_table",
             json!({
-                "sql":"SELECT code, category FROM monthly ORDER BY code",
+                "sql":"SELECT code, category, CASE category WHEN 'old' THEN 12000 ELSE 6000 END AS cases FROM monthly ORDER BY code",
                 "datasets":[{"source":csv,"alias":"monthly"}],
                 "document_id":id,"destination_sheet":sheet,"anchor":anchor,
             }),
@@ -697,6 +697,34 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
         json!({"document_id":id,"sheet":sheet,"range":"G4","what":"contents"}),
     );
 
+    std::fs::write(&next, "code,category\n001,new\n002,new\n").unwrap();
+    refresh["metrics"] = json!([
+        {"table":"QueryResult1","column":"cases"},
+        {"table":"queryresult2","column":"cases"},
+    ]);
+    refresh["preview"] = json!(true);
+    let compared = call(
+        &mut service,
+        "sqlite_refresh_query_reports",
+        refresh.clone(),
+    );
+    for report in compared["reports"].as_array().unwrap() {
+        assert_eq!(report["previous_rows"], report["rows"]);
+        assert_eq!(
+            report["metrics"],
+            json!([
+                {"column":"cases","previous":24000.0,"current":12000.0,"delta":-12000.0,"percent_change":-50.0}
+            ])
+        );
+    }
+    let mut invalid = refresh.clone();
+    invalid["metrics"][1]["column"] = json!("category");
+    let error = service
+        .call("sqlite_refresh_query_reports", &invalid)
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_argument");
+    assert!(error.message.contains("finite numeric values"));
+
     std::fs::write(&next, "code,category\n").unwrap();
     refresh["preview"] = json!(true);
     let preview = call(
@@ -721,12 +749,13 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
         "sqlite_refresh_query_reports",
         refresh.clone(),
     );
-    assert_eq!(updated["reports"][0]["range"], "A1:B1");
-    assert_eq!(updated["reports"][1]["range"], "G1:H1");
+    assert_eq!(updated["reports"][0]["range"], "A1:C1");
+    assert_eq!(updated["reports"][0]["metrics"][0]["delta"], -24000.0);
+    assert_eq!(updated["reports"][1]["range"], "G1:I1");
     let cleared = call(
         &mut service,
         "xlsx_get_cells",
-        json!({"document_id":id,"sheet":sheet,"range":"A2:H3"}),
+        json!({"document_id":id,"sheet":sheet,"range":"A2:I3"}),
     );
     assert!(cleared["rows"].as_array().unwrap().iter().all(|row| {
         row.as_array()
@@ -767,13 +796,17 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
     );
 
     std::fs::write(&next, "code,category\n003,new\n").unwrap();
-    let args = json!({"bindings":{"monthly.csv":"1"}});
+    let args = json!({"bindings":{"monthly.csv":"1"},"metrics":[{"table":"QueryResult1","column":"cases"}]});
     let definitions = batch_query_report_definitions(draft.presentation(), &args).unwrap();
     let prepared = prepare_selected_report_batch(&[next], args, definitions).unwrap();
     let (result, edits) = prepared.stage(&mut draft, Default::default()).unwrap();
     assert_eq!(result["reports"][0]["previous_rows"], 0);
     assert_eq!(result["reports"][0]["rows"], 1);
     assert_eq!(result["reports"][1]["rows"], 1);
+    let metric = &result["reports"][0]["metrics"][0];
+    assert_eq!(metric["previous"], 0.0);
+    assert_eq!(metric["current"], 6000.0);
+    assert!(metric["percent_change"].is_null());
     assert_eq!(edits.len(), 3);
     std::fs::remove_dir_all(dir).unwrap();
 }

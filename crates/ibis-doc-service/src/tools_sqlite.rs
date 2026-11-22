@@ -114,6 +114,16 @@ const TOOLS: &[Tool] = &[
                 "description":"Optional query table names. Omit to refresh all reports (up to 12 per call)."}),
                     ),
                     (
+                        "metrics",
+                        json!({"type":"array","maxItems":48,
+                            "description":"Optional numeric columns to sum before and after refresh.",
+                            "items": object(&[
+                                ("table", string("Query report table to compare.")),
+                                ("column", string("Exact numeric result column name.")),
+                            ], &["table","column"]),
+                        }),
+                    ),
+                    (
                         "preview",
                         boolean("Validate without editing and report row changes (default false)."),
                     ),
@@ -805,6 +815,7 @@ fn apply_single_refresh(
         args,
         rows,
         definition,
+        &[],
     )?;
     crate::edit::execute(open, commands)?;
     Ok(crate::edit::edited(id, open, summary, Vec::new()))
@@ -955,6 +966,41 @@ fn batch_query_results(
         .collect()
 }
 
+fn batch_metrics<'a>(
+    args: &'a Value,
+    results: &[QueryReportResult],
+) -> Result<std::collections::HashMap<String, Vec<&'a str>>, ToolError> {
+    let mut columns = std::collections::HashMap::<String, Vec<&str>>::new();
+    let Some(metrics) = args.get("metrics") else {
+        return Ok(columns);
+    };
+    let metrics = metrics
+        .as_array()
+        .filter(|metrics| metrics.len() <= 48)
+        .ok_or_else(|| ToolError::invalid("metrics must be an array of up to 48 entries"))?;
+    for metric in metrics {
+        crate::edit::only_known(metric, &["table", "column"])?;
+        let table = metric.str_arg("table")?;
+        let column = metric.str_arg("column")?;
+        let result = results
+            .iter()
+            .find(|report| report.name.eq_ignore_ascii_case(table))
+            .ok_or_else(|| {
+                ToolError::invalid(format!(
+                    "Metric table {table} is outside this refresh batch"
+                ))
+            })?;
+        let selected = columns.entry(result.name.clone()).or_default();
+        if selected.contains(&column) {
+            return Err(ToolError::invalid(format!(
+                "Duplicate metric {table}.{column}"
+            )));
+        }
+        selected.push(column);
+    }
+    Ok(columns)
+}
+
 fn apply_batch_refresh(
     service: &mut Service,
     args: &Value,
@@ -962,6 +1008,7 @@ fn apply_batch_refresh(
 ) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
     let preview = args.opt_bool("preview")?.unwrap_or(false);
+    let metrics = batch_metrics(args, &results)?;
     let open = crate::tools_xlsx::workbook_document(service, id)?;
     let mut scratch = ibis_doc_model::Document::new(open.document.presentation().clone());
     let mut reports = Vec::with_capacity(results.len());
@@ -972,6 +1019,7 @@ fn apply_batch_refresh(
             &json!({"table":result.name}),
             result.rows,
             &result.definition,
+            metrics.get(&result.name).map_or(&[], Vec::as_slice),
         )
         .map_err(|error| report_error(&result.name, error))?;
         scratch.execute(update.clone()).map_err(|error| {

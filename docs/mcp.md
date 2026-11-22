@@ -82,6 +82,8 @@ Refresh replaces the data rows in place and updates PivotTables that use the tab
 
 `sqlite_refresh_query_reports` previews or refreshes several reports in one operation. Pass `bindings` as a map from saved filenames to current file paths, for example `{"monthly.csv":"/data/next.csv"}`. The assistant uses selected file numbers in place of paths. A binding is shared by all reports that reference that saved filename. Omit `tables` for all reports or provide up to 12 names. `preview: true` checks overlap and returns previous and new row counts without changing the workbook. Applying re-runs the queries and commits them in one undo step. A query or layout error leaves the entire batch untouched and identifies the failing report.
 
+Add `metrics` entries such as `{"table":"QueryResult1","column":"cases"}` to compare sums by report. Each selected column returns `previous`, `current`, `delta` and `percent_change`. Blank and NULL cells contribute zero. Text and other nonnumeric values are rejected. The percentage is relative to the absolute previous total and is null if that total is zero.
+
 The tools do not correspond one to one to the menu commands: they cover reading and the common edits, with the same tool names whatever the format. With `--read-only`, only the read tools are available.
 
 ## Connecting Claude Desktop
