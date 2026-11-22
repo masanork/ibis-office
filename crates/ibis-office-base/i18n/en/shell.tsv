@@ -1614,3 +1614,10 @@ git.pull-complete	Pull complete
 git.pull-failed	Git pull failed
 git.pull-no-upstream	A local branch with a configured remote upstream branch is required.
 git.pull-head-changed	The checked-out branch or commit changed. Reopen the repository and try again.
+git.status.no-upstream	No upstream configured
+git.status.detached	Detached HEAD
+git.status.upstream-missing	Upstream unavailable locally
+git.status.upstream-unavailable	Could not compare with upstream
+git.status.outgoing	Outgoing
+git.status.incoming	Incoming
+git.status.shallow	Partial history

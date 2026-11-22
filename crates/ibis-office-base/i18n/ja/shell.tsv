@@ -1612,3 +1612,10 @@ git.pull-complete	プル完了
 git.pull-failed	Gitのプルに失敗しました
 git.pull-no-upstream	リモートのアップストリームが設定されたローカルブランチが必要です。
 git.pull-head-changed	チェックアウト中のブランチまたはコミットが変わりました。リポジトリを開き直して再試行してください。
+git.status.no-upstream	上流ブランチ未設定
+git.status.detached	ブランチ未選択（detached HEAD）
+git.status.upstream-missing	上流ブランチのローカル参照なし
+git.status.upstream-unavailable	上流ブランチと比較できません
+git.status.outgoing	送信待ち
+git.status.incoming	取り込み待ち
+git.status.shallow	部分履歴

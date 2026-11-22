@@ -34,6 +34,7 @@ pub(super) struct CommitGraph {
     limit: usize,
     more: bool,
     completed: Option<&'static str>,
+    upstream: Option<UpstreamStatus>,
 }
 
 impl CommitGraph {
@@ -86,6 +87,93 @@ fn read_graph(root: &Path, head: gix::ObjectId, limit: usize) -> Result<(Vec<Row
         rows.push(Row { lanes, commit });
     }
     Ok((rows, false))
+}
+
+enum UpstreamStatus {
+    NoUpstream,
+    Detached,
+    Missing,
+    Unavailable,
+    Counts {
+        name: String,
+        outgoing: usize,
+        incoming: usize,
+        shallow: bool,
+    },
+}
+
+impl UpstreamStatus {
+    fn label(&self) -> String {
+        match self {
+            Self::NoUpstream => text("git.status.no-upstream").to_string(),
+            Self::Detached => text("git.status.detached").to_string(),
+            Self::Missing => text("git.status.upstream-missing").to_string(),
+            Self::Unavailable => text("git.status.upstream-unavailable").to_string(),
+            Self::Counts {
+                name,
+                outgoing,
+                incoming,
+                shallow,
+            } => {
+                let counts = format!(
+                    "{name} · {} {outgoing} · {} {incoming}",
+                    text("git.status.outgoing"),
+                    text("git.status.incoming"),
+                );
+                if *shallow {
+                    format!("{counts} · {}", text("git.status.shallow"))
+                } else {
+                    counts
+                }
+            }
+        }
+    }
+}
+
+fn upstream_status(root: &Path, head: gix::ObjectId, branch: &str) -> Result<UpstreamStatus> {
+    let repo = gix::discover(root)?;
+    let Some(local) = repo.head_name()? else {
+        return Ok(UpstreamStatus::Detached);
+    };
+    if repo.head_id()?.detach() != head || local.shorten() != branch {
+        return Ok(UpstreamStatus::Unavailable);
+    }
+    let direction = gix::remote::Direction::Fetch;
+    if repo
+        .branch_remote_ref_name(local.as_ref(), direction)
+        .transpose()?
+        .is_none()
+    {
+        return Ok(UpstreamStatus::NoUpstream);
+    }
+    let Some(tracking) = repo
+        .branch_remote_tracking_ref_name(local.as_ref(), direction)
+        .transpose()?
+    else {
+        return Ok(UpstreamStatus::Missing);
+    };
+    let Some(mut upstream) = repo.try_find_reference(tracking.as_ref())? else {
+        return Ok(UpstreamStatus::Missing);
+    };
+    let upstream_id = upstream.peel_to_id()?.detach();
+    let (outgoing, incoming) = if head == upstream_id {
+        (0, 0)
+    } else {
+        let range = format!("{head}...{upstream_id}");
+        let args = ["rev-list", "--left-right", "--count", &range, "--"];
+        let output = git(root, &args.map(OsStr::new))?;
+        let mut counts = std::str::from_utf8(&output)?.split_whitespace();
+        (
+            counts.next().ok_or("Missing Git outgoing count")?.parse()?,
+            counts.next().ok_or("Missing Git incoming count")?.parse()?,
+        )
+    };
+    Ok(UpstreamStatus::Counts {
+        name: tracking.shorten().to_string(),
+        outgoing,
+        incoming,
+        shallow: repo.is_shallow()?,
+    })
 }
 
 fn fetch_remotes(root: &Path) -> Result<()> {
@@ -256,6 +344,7 @@ impl SlideEditor {
         let Some(state) = self.git_workspace.as_mut().filter(|s| !s.busy) else {
             return;
         };
+        let check_upstream = state.graph.upstream.is_none() || action.is_some();
         let limit = if action.is_some() {
             state.graph.completed = None;
             state.graph.limit.max(PAGE)
@@ -268,7 +357,7 @@ impl SlideEditor {
         state.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let (result, sync_error, action, updated_workspace) = cx
+            let (result, sync_error, action, updated_workspace, upstream) = cx
                 .background_executor()
                 .spawn(async move {
                     let sync_error = action
@@ -290,7 +379,11 @@ impl SlideEditor {
                         .map_or(head, |workspace| workspace.head);
                     let result =
                         read_graph(&root, graph_head, limit).map_err(|error| error.to_string());
-                    (result, sync_error, action, updated_workspace)
+                    let upstream = check_upstream.then(|| {
+                        upstream_status(&root, graph_head, &branch)
+                            .unwrap_or(UpstreamStatus::Unavailable)
+                    });
+                    (result, sync_error, action, updated_workspace, upstream)
                 })
                 .await;
             let _ = this.update(cx, |editor, cx| {
@@ -308,6 +401,9 @@ impl SlideEditor {
                     Ok(None) => None,
                     Err(error) => Some(error),
                 };
+                if let Some(upstream) = upstream {
+                    state.graph.upstream = Some(upstream);
+                }
                 if action.is_some() && sync_error.is_none() {
                     state.graph.completed = action.as_ref().map(SyncAction::completion);
                 }
@@ -592,6 +688,22 @@ impl SlideEditor {
                 .flex_1()
                 .min_h_0()
                 .child(toolbar)
+                .when_some(state.graph.upstream.as_ref(), |pane, status| {
+                    let label: SharedString = status.label().into();
+                    pane.child(
+                        div()
+                            .id("git-upstream-status")
+                            .px_2()
+                            .pb_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(muted)
+                            .child(label.clone())
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(label.clone()).build(window, cx)
+                            }),
+                    )
+                })
                 .child(body)
                 .into_any_element(),
         )
