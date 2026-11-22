@@ -17,6 +17,7 @@ ag-psd = "0.3.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "tiff", "exr"] }
 tiff = { version = "0.11", default-features = false, features = ["deflate", "fax", "lzw"] }
 ibis-ooxml.workspace = true
+ibis-emf.workspace = true
 miniz_oxide = "0.8"
 roxmltree = "0.21"
 encoding_rs = "0.8"
@@ -48,7 +49,6 @@ ibis-heic-web = { path = "../ibis-heic-web" }
 [dev-dependencies]
 ibis-odf.workspace = true
 dicom-core = "0.10.1"
-ibis-emf.workspace = true
 
 [[bin]]
 name = "ibis-office-roundtrip"
