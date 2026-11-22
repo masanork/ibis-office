@@ -17,7 +17,6 @@ use ibis_doc_model::command::{Command, Document};
 use ibis_doc_model::drawing::{Color, Fill, Geometry};
 use ibis_doc_model::flow::{Block, FlowParagraph, FlowRunKind};
 use ibis_doc_model::flow_command::FlowPos;
-use ibis_doc_model::machine_readability::{CandidateKind, candidates as mr_candidates};
 use ibis_doc_model::model::{AutoShape, Presentation, Shape, ShapeId, ShapeKind, SlideId};
 use ibis_doc_model::sd_jwt::{Oid4vpRequest, SdJwtOptions, issue_sd_jwt};
 use ibis_doc_model::sd_jwt_binding::{
@@ -2004,60 +2003,6 @@ impl SlideEditor {
                         workbook_edit_label(turn, slide, args, "セルの結合を変更"),
                     ),
                 }
-            }
-            "check_machine_readability" => {
-                let filter_sheet = match parse_sheet_arg(args) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        return (
-                            json!({ "error": e }).to_string(),
-                            None,
-                            format!("✗ check_machine_readability: {e}"),
-                        );
-                    }
-                };
-                let mut findings = Vec::new();
-                for (index, slide) in turn.draft.presentation().slides.iter().enumerate() {
-                    let Some(sheet) = sheet_of_slide(slide) else {
-                        continue;
-                    };
-                    let sheet_name = slide
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| format!("Sheet{}", index + 1));
-                    if let Some(ref target) = filter_sheet
-                        && &sheet_name != target
-                    {
-                        continue;
-                    }
-                    for c in mr_candidates(sheet) {
-                        let r = c.range;
-                        let a = format!("{}{}", column_letters(r.first_column), r.first_row + 1);
-                        let b = format!("{}{}", column_letters(r.last_column), r.last_row + 1);
-                        let address = if a == b { a } else { format!("{a}:{b}") };
-                        let kind = match c.kind {
-                            CandidateKind::MergedCells => "merged_cells",
-                            CandidateKind::HiddenRow => "hidden_row",
-                            CandidateKind::HiddenColumn => "hidden_column",
-                            CandidateKind::Formula => "formula",
-                            CandidateKind::PlatformDependentCharacters => {
-                                "platform_dependent_characters"
-                            }
-                            CandidateKind::PrivateUseCharacters => "private_use_characters",
-                        };
-                        findings.push(json!({
-                            "sheet": sheet_name,
-                            "kind": kind,
-                            "location": address,
-                        }));
-                    }
-                }
-                let count = findings.len();
-                (
-                    json!({ "count": count, "findings": findings }).to_string(),
-                    None,
-                    format!("✓ check_machine_readability ({count} findings)"),
-                )
             }
             "audit_formulas" => {
                 let filter_sheet = match parse_sheet_arg(args) {

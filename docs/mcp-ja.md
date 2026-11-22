@@ -44,10 +44,12 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 |---|---|
 | アプリ（全形式） | `app_get_version`、`app_list_documents`、`app_open_document`、`app_get_document_info`、`app_save_document`、`app_close_document`、`app_export_document`（PDF またはページごとの PNG）、`app_undo_document`、`app_redo_document` |
 | Word（.docx） | 読む：`docx_get_outline`、`docx_get_text`（Markdown またはプレーンテキスト）、`docx_list_paragraphs`、`docx_get_paragraph`、`docx_list_tables`、`docx_find_text`。編集：`docx_insert_text`、`docx_delete_text`、`docx_replace_text`、`docx_set_paragraph_text`、`docx_set_paragraph_format`、`docx_set_run_format`、`docx_insert_table` |
-| Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart` |
+| Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`、`xlsx_check_machine_readability`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart` |
 | PowerPoint（.pptx） | 読む：`pptx_list_slides`、`pptx_get_slide`、`pptx_get_shape_text`、`pptx_get_notes`、`pptx_list_layouts`。編集：`pptx_set_shape_text`、`pptx_replace_text`、`pptx_set_run_format`、`pptx_set_notes`、`pptx_add_slide`、`pptx_delete_slide`、`pptx_move_slide`、`pptx_set_frame`、`pptx_delete_shape` |
 
 `xlsx_create_chart` は、元データの `sheet` と、配置先の `destination_sheet`・`anchor`（例 `F2`）を指定します。見出しを含む `range` または明示的な `series` を渡せます。作成したグラフは元のセルを参照します。
+
+`xlsx_check_machine_readability` は、機械可読性の確認候補をシート名・種類・A1範囲で返します。`sheet` を省略すると非表示設定のない全シートを調べます。続きは `next_offset` を `offset` に渡して取得します。
 
 ツールはメニューのコマンドと 1 対 1 で対応してはいません。読み取りと、よく使う編集をそろえたもので、形式が違っても同じツール名です。`--read-only` のときは、読み取りツールだけが利用できます。
 
