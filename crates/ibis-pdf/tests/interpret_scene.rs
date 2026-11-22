@@ -191,3 +191,26 @@ fn export_reads_text_overprinted_for_bold_once_and_without_gaps() {
     );
     assert_eq!(text, "ABCD\n");
 }
+
+#[test]
+fn a_glyph_turned_a_quarter_gets_its_box_on_the_page_and_reads_as_vertical() {
+    // "AB" set running down the page (a Latin word sideways in vertical text): the text matrix turns the glyphs a
+    // quarter clockwise. Helvetica A and B are 0.667 em.
+    let stream = b"BT /F1 10 Tf 0 -1 1 0 100 700 Tm (AB) Tj ET";
+    let mut container = PdfContainer::from_bytes(build_helvetica_pdf(stream)).unwrap();
+    let mut boxes = Vec::new();
+    ibis_pdf::interpret::visit_text_scenes(&mut container, |scene| {
+        boxes = scene.text_index.chars.clone();
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(boxes.iter().map(|c| c.ch).collect::<String>(), "AB");
+    for c in &boxes {
+        assert!(c.vertical);
+        // One em across the page, the advance down it.
+        assert!((c.rect_pt.width() - 10.0).abs() < 0.01, "{:?}", c.rect_pt);
+        assert!((c.rect_pt.height() - 6.67).abs() < 0.01, "{:?}", c.rect_pt);
+    }
+    // B below A.
+    assert!(boxes[1].rect_pt.y0 > boxes[0].rect_pt.y0);
+}
