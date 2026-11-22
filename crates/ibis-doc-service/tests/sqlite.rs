@@ -833,7 +833,7 @@ fn parquet_query_report_preserves_projection_and_filter_after_reopen() {
     let query = call("sqlite_query", args.clone());
     assert_eq!(query["columns"], columns);
     assert_eq!(query["rows"], json!([[0,"00"],[1,"01"]]));
-    let filter = json!({"amount":1, "code":"01"});
+    let filter = json!({"amount":{"gte":1,"lt":2}, "code":"01"});
     let mut report = args;
     report["datasets"][0]["where"] = filter.clone();
     assert_eq!(call("sqlite_query", report.clone())["rows"], json!([[1,"01"]]));

@@ -68,7 +68,9 @@ To query CSV, Parquet or selected SQLite tables together, pass `datasets` to `sq
 
 For a Parquet entry, set `columns` to the exact names of the columns to load in the requested order, for example `["code", "amount"]`. Unselected columns are skipped before applying the input-cell limit, including unselected nested columns. Omit `columns` to load all columns. The selection is saved with query reports and reused on refresh.
 
-A Parquet entry can also specify `where`, an object of up to 16 exact column-to-value matches combined with AND. For example, `{"year": "2026", "submitted": true}` selects only matching rows. A JSON null matches a missing value. Conditions use the column type without text-to-number conversion. Filter columns can be omitted from `columns`. The reader scans the selected and filter columns, then counts only matching output cells and their text toward the input budget. Saved reports reuse these conditions on refresh.
+A Parquet entry can also specify `where`, an object of conditions on up to 16 columns, combined with AND. A scalar value is an exact match. For example, `{"year": "2026", "submitted": true}` selects only matching rows. A JSON null matches a missing value. Conditions use the column type without text-to-number conversion. Filter columns can be omitted from `columns`. The reader scans the selected and filter columns, then counts only matching output cells and their text toward the input budget. Saved reports reuse these conditions on refresh.
+
+Use `{"amount": {"gte": 100, "lt": 200}}` for a range. The operators are `gt`, `gte`, `lt`, and `lte`. Multiple bounds are combined with AND. Ranges compare numbers or strings in the column’s type, with strings compared lexicographically. Missing values are excluded from ranges.
 
 CSV uses a comma delimiter, a header row, and text fields, so leading zeros and empty strings are preserved. Parquet and SQLite reads preserve NULL. Sources that exceed the readers' exact numeric range are rejected. Up to eight dataset entries and 100,000 input cells total can be loaded. Every query loads its selected tables into a fresh in-memory database.
 

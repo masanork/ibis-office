@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
-    QColumn, QTable, QType, SqlitePredicate, SqliteRows, SqliteScalar, read_parquet_filtered,
+    ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteRows, SqliteScalar, read_parquet_filtered,
     read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_query, sqlite_query_datasets,
     sqlite_tables,
 };
@@ -390,8 +390,14 @@ fn query_properties() -> Vec<(&'static str, Value)> {
                     ("table", string("Source table name, required for SQLite files.")),
                     ("where", json!({
                         "type":"object","minProperties":1,"maxProperties":MAX_FILTERS,
-                        "additionalProperties":{"type":["string","number","boolean","null"]},
-                        "description":"Parquet only: column-to-value equality filters, combined with AND. Null matches missing values."
+                        "additionalProperties":{"anyOf":[
+                            {"type":["string","number","boolean","null"]},
+                            {"type":"object","minProperties":1,"additionalProperties":false,"properties":{
+                                "lt":{"type":["string","number"]},"lte":{"type":["string","number"]},
+                                "gt":{"type":["string","number"]},"gte":{"type":["string","number"]}
+                            }}
+                        ]},
+                        "description":"Parquet only: equality or range conditions, combined with AND. Scalar null matches missing values."
                     })),
                     ("columns", json!({
                         "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
@@ -525,6 +531,42 @@ pub fn prepare_selected_datasets_export(
     })
 }
 
+fn parquet_filter_value(value: &Value) -> Result<ibis_doc_model::CellValue, ToolError> {
+    use ibis_doc_model::CellValue;
+    match value {
+        Value::String(value) => Ok(CellValue::Text(value.clone())),
+        Value::Bool(value) => Ok(CellValue::Bool(*value)),
+        Value::Null => Ok(CellValue::Empty),
+        Value::Number(value) => value.as_f64()
+            .filter(|n| n.is_finite() && (value.is_f64() || n.abs() < (1_u64 << 53) as f64))
+            .map(CellValue::Number)
+            .ok_or_else(|| ToolError::invalid("Parquet filter number exceeds exact numeric range")),
+        _ => Err(ToolError::invalid("Parquet filter values must be scalar or null")),
+    }
+}
+
+fn parquet_predicate(value: &Value) -> Result<ParquetPredicate, ToolError> {
+    let Some(bounds) = value.as_object() else {
+        return parquet_filter_value(value).map(ParquetPredicate::Equal);
+    };
+    if bounds.is_empty() {
+        return Err(ToolError::invalid("A Parquet range must specify at least one bound"));
+    }
+    bounds.iter().map(|(key, value)| {
+        let bound = match key.as_str() {
+            "lt" => ParquetBound::Lt,
+            "lte" => ParquetBound::Le,
+            "gt" => ParquetBound::Gt,
+            "gte" => ParquetBound::Ge,
+            _ => return Err(ToolError::invalid("Parquet range operators are lt, lte, gt and gte")),
+        };
+        if !(value.is_string() || value.is_number()) {
+            return Err(ToolError::invalid("Parquet range bounds must be strings or numbers"));
+        }
+        Ok((bound, parquet_filter_value(value)?))
+    }).collect::<Result<Vec<_>, ToolError>>().map(ParquetPredicate::Range)
+}
+
 fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable)>, ToolError> {
     use ibis_doc_model::CellValue;
     let specs = specs
@@ -568,18 +610,8 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
             Some(value) => value.as_object()
                 .filter(|items| (1..=MAX_FILTERS).contains(&items.len()))
                 .ok_or_else(|| ToolError::invalid(format!("where must have 1 to {MAX_FILTERS} conditions")))?
-                .iter().map(|(name, value)| {
-                    let value = match value {
-                        Value::String(value) => CellValue::Text(value.clone()),
-                        Value::Bool(value) => CellValue::Bool(*value),
-                        Value::Null => CellValue::Empty,
-                        Value::Number(value) => CellValue::Number(value.as_f64()
-                            .filter(|n| n.is_finite() && (value.is_f64() || n.abs() < (1_u64 << 53) as f64))
-                            .ok_or_else(|| ToolError::invalid("Parquet filter number exceeds exact numeric range"))?),
-                        _ => return Err(ToolError::invalid("Parquet filter values must be scalar or null")),
-                    };
-                    Ok((name.as_str(), value))
-                }).collect::<Result<Vec<_>, ToolError>>()?,
+                .iter().map(|(name, value)| Ok((name.as_str(), parquet_predicate(value)?)))
+                .collect::<Result<Vec<_>, ToolError>>()?,
         };
         let table = if is_sqlite(&path) {
             let name = table_name.ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?;

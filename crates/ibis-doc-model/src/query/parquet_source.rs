@@ -316,11 +316,55 @@ pub fn read_parquet_bounded(
     read_parquet_filtered(path, selected, &[], max_cells, max_text)
 }
 
-/// Scan a projection and retain rows matching all typed equality conditions.
+pub enum ParquetBound {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+pub enum ParquetPredicate {
+    Equal(CellValue),
+    Range(Vec<(ParquetBound, CellValue)>),
+}
+
+impl ParquetPredicate {
+    fn accepts_type(&self, ty: QType) -> bool {
+        let ordered = |value: &CellValue| matches!((value, ty),
+            (CellValue::Text(_), QType::Text)
+            | (CellValue::Number(_), QType::Whole | QType::Decimal));
+        match self {
+            Self::Equal(value) => ordered(value) || matches!((value, ty),
+                (CellValue::Empty, _) | (CellValue::Bool(_), QType::Logical)),
+            Self::Range(bounds) => !bounds.is_empty() && bounds.iter().all(|(_, value)| ordered(value)),
+        }
+    }
+
+    fn matches(&self, value: &CellValue) -> bool {
+        match self {
+            Self::Equal(expected) => expected == value,
+            Self::Range(bounds) => bounds.iter().all(|(bound, target)| {
+                let order = match (value, target) {
+                    (CellValue::Text(a), CellValue::Text(b)) => Some(a.cmp(b)),
+                    (CellValue::Number(a), CellValue::Number(b)) => a.partial_cmp(b),
+                    _ => None,
+                };
+                order.is_some_and(|order| match bound {
+                    ParquetBound::Lt => order.is_lt(),
+                    ParquetBound::Le => order.is_le(),
+                    ParquetBound::Gt => order.is_gt(),
+                    ParquetBound::Ge => order.is_ge(),
+                })
+            }),
+        }
+    }
+}
+
+/// Scan a projection and retain rows matching all typed conditions.
 pub fn read_parquet_filtered(
     path: &Path,
     selected: &[String],
-    filters: &[(&str, CellValue)],
+    filters: &[(&str, ParquetPredicate)],
     max_cells: usize,
     max_text: usize,
 ) -> Result<QTable, String> {
@@ -332,7 +376,7 @@ fn read_columns_bounded(
     selected: &[String],
     rows_loaded: usize,
     expected: Option<&[QColumn]>,
-    filters: &[(&str, CellValue)],
+    filters: &[(&str, ParquetPredicate)],
     max_cells: usize,
     mut max_text: usize,
 ) -> Result<QTable, String> {
@@ -377,11 +421,7 @@ fn read_columns_bounded(
             None => return Err(format!("Missing Parquet column: {name}")),
         };
         let ty = column_type(field).ok_or_else(|| format!("Unsupported Parquet column: {name}"))?;
-        if !matches!((value, ty),
-            (CellValue::Empty, _) | (CellValue::Text(_), QType::Text)
-            | (CellValue::Bool(_), QType::Logical)
-            | (CellValue::Number(_), QType::Whole | QType::Decimal))
-        {
+        if !value.accepts_type(ty) {
             return Err(format!("Parquet filter has the wrong value type for column: {name}"));
         }
         let index = projected.iter().position(|field| field.name() == *name).unwrap_or_else(|| {
@@ -411,7 +451,7 @@ fn read_columns_bounded(
         for &(index, expected) in &filter_indices {
             let (name, field) = &fields[index];
             let (value, _) = cell(field.clone()).map_err(|e| format!("{name}: {e}"))?;
-            if &value != expected {
+            if !expected.matches(&value) {
                 continue 'rows;
             }
         }
@@ -474,11 +514,38 @@ mod tests {
     fn parquet_filter_can_use_an_unreturned_column_before_the_cell_limit() {
         let fixture = write_table(parquet::basic::Compression::SNAPPY, "filtered-projection", true);
         let selected = ["code".into()];
-        let table = read_parquet_filtered(&fixture, &selected, &[("amount", CellValue::Empty)], 1, 5).unwrap();
+        let table = read_parquet_filtered(&fixture, &selected, &[("amount", ParquetPredicate::Equal(CellValue::Empty))], 1, 5).unwrap();
         assert_eq!(table.names(), ["code"]);
         assert_eq!(table.rows, [vec![CellValue::Text("00001".into())]]);
         assert!(read_parquet_bounded(&fixture, &selected, 1, 5).is_err());
-        assert!(read_parquet_filtered(&fixture, &selected, &[("amount", CellValue::Text("7".into()))], 1, 5).is_err());
+        assert!(read_parquet_filtered(&fixture, &selected, &[("amount", ParquetPredicate::Equal(CellValue::Text("7".into())))], 1, 5).is_err());
+        std::fs::remove_file(fixture).unwrap();
+    }
+
+    #[test]
+    fn parquet_ranges_apply_both_bounds_and_exclude_nulls() {
+        use ParquetBound::{Ge, Gt, Le, Lt};
+        let fixture = write_table(parquet::basic::Compression::SNAPPY, "range-projection", true);
+        let selected = ["code".into()];
+        let load = |lower, upper| read_parquet_filtered(
+            &fixture,
+            &selected,
+            &[("amount", ParquetPredicate::Range(vec![
+                (lower, CellValue::Number(7.0)),
+                (upper, CellValue::Number(7.0)),
+            ]))],
+            1,
+            5,
+        ).unwrap();
+        assert_eq!(load(Ge, Le).rows, [vec![CellValue::Text("01202".into())]]);
+        assert!(load(Gt, Le).rows.is_empty());
+        assert!(load(Ge, Lt).rows.is_empty());
+
+        let text = read_parquet_filtered(&fixture, &selected, &[("code", ParquetPredicate::Range(vec![
+            (Ge, CellValue::Text("00001".into())),
+            (Lt, CellValue::Text("01202".into())),
+        ]))], 1, 5).unwrap();
+        assert_eq!(text.rows, [vec![CellValue::Text("00001".into())]]);
         std::fs::remove_file(fixture).unwrap();
     }
 
