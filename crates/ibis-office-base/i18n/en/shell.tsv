@@ -1664,3 +1664,9 @@ git.merge-confirm	Merge into the current branch?
 git.merge-complete	Merged
 git.merge-failed	Git merge failed
 git.merge-no-branch	Check out a local branch before merging.
+git.merge-in-progress	Merge in progress
+git.merge-abort	Abort merge
+git.merge-abort-confirm	Abort the current merge?
+git.merge-abort-detail	Edits made while resolving conflicts may be lost.
+git.merge-abort-changed	The merge changed or ended before it could be aborted.
+git.merge-abort-failed	Could not abort the Git merge

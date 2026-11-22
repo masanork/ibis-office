@@ -42,7 +42,7 @@ pub(super) struct WorkingTree {
     open: bool,
     changes: Vec<Change>,
     stashes: Vec<Stash>,
-    merging: bool,
+    merge_heads: Option<Vec<u8>>,
     message: Option<Entity<InputState>>,
 }
 
@@ -59,6 +59,7 @@ enum Operation {
     Commit(String),
     Stash,
     ApplyStash(gix::ObjectId),
+    AbortMerge(Vec<u8>),
 }
 
 fn git_command(root: &Path, args: &[&OsStr]) -> Command {
@@ -245,9 +246,9 @@ struct Outcome {
     changes: std::result::Result<Vec<Change>, String>,
     workspace: std::result::Result<Option<GitWorkspace>, String>,
     stashes: std::result::Result<Vec<Stash>, String>,
-    stash_error: Option<String>,
+    operation_error: Option<(&'static str, String)>,
     committed: bool,
-    merging: bool,
+    merge_heads: Option<Vec<u8>>,
 }
 
 fn perform(
@@ -262,7 +263,8 @@ fn perform(
         return Err("Git HEAD changed. Refresh the changes list and try again.".into());
     }
     let committed = matches!(operation, Operation::Commit(_));
-    let mut stash_error = None;
+    let mut operation_error = None;
+    let merge_head_path = current.repo.join("MERGE_HEAD");
     match operation {
         Operation::Refresh => {}
         Operation::Stage(path) => {
@@ -296,19 +298,30 @@ fn perform(
                 "push",
                 "--include-untracked",
             ];
-            stash_error = git(root, &args.map(OsStr::new))
+            operation_error = git(root, &args.map(OsStr::new))
                 .err()
-                .map(|error| error.to_string());
+                .map(|error| ("git.stash-failed", error.to_string()));
         }
         Operation::ApplyStash(id) => {
             let id = id.to_string();
             let args = ["--no-literal-pathspecs", "stash", "apply", "--index", &id];
-            stash_error = git(root, &args.map(OsStr::new))
+            operation_error = git(root, &args.map(OsStr::new))
                 .err()
-                .map(|error| error.to_string());
+                .map(|error| ("git.stash-failed", error.to_string()));
+        }
+        Operation::AbortMerge(expected) => {
+            let result = if std::fs::read(&merge_head_path).ok().as_ref() == Some(&expected) {
+                let args = ["--no-literal-pathspecs", "merge", "--abort"];
+                git(root, &args.map(OsStr::new)).map(|_| ())
+            } else {
+                Err(text("git.merge-abort-changed").to_string().into())
+            };
+            operation_error = result
+                .err()
+                .map(|error| ("git.merge-abort-failed", error.to_string()));
         }
     }
-    let merging = current.repo.join("MERGE_HEAD").is_file();
+    let merge_heads = std::fs::read(merge_head_path).ok();
     let workspace = if committed {
         GitWorkspace::open(root)
             .map(Some)
@@ -320,9 +333,9 @@ fn perform(
         changes: status(root).map_err(|error| error.to_string()),
         workspace,
         stashes: list_stashes(root).map_err(|error| error.to_string()),
-        stash_error,
+        operation_error,
         committed,
-        merging,
+        merge_heads,
     })
 }
 
@@ -339,6 +352,41 @@ impl SlideEditor {
             self.git_operate(Operation::Refresh, window, cx);
         }
         cx.notify();
+    }
+
+    fn git_confirm_abort_merge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.git_workspace.as_ref().filter(|state| !state.busy) else {
+            return;
+        };
+        let Some(merge_heads) = state.working.merge_heads.clone() else {
+            return;
+        };
+        let repo = state.repo.clone();
+        let head = state.head;
+        let branch = state.branch.clone();
+        let buttons = [
+            PromptButton::ok(text("git.merge-abort")),
+            PromptButton::cancel(text("_shell.cancel")),
+        ];
+        let response = window.prompt(
+            PromptLevel::Warning,
+            &text("git.merge-abort-confirm"),
+            Some(&text("git.merge-abort-detail")),
+            &buttons,
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if matches!(response.await, Ok(0)) {
+                let _ = this.update_in(cx, |editor, window, cx| {
+                    if editor.git_workspace.as_ref().is_some_and(|state| {
+                        state.repo == repo && state.head == head && state.branch == branch
+                    }) {
+                        editor.git_operate(Operation::AbortMerge(merge_heads), window, cx);
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn git_operate(&mut self, operation: Operation, window: &mut Window, cx: &mut Context<Self>) {
@@ -366,7 +414,7 @@ impl SlideEditor {
                 state.busy = false;
                 match result {
                     Ok(outcome) => {
-                        state.working.merging = outcome.merging;
+                        state.working.merge_heads = outcome.merge_heads;
                         if outcome.committed
                             && let Some(message) = &state.working.message
                         {
@@ -401,8 +449,8 @@ impl SlideEditor {
                             Ok(None) => error,
                             Err(error) => Some(error),
                         };
-                        if let Some(error) = outcome.stash_error {
-                            editor.show_alert(text("git.stash-failed"), error.into(), cx);
+                        if let Some((title, error)) = outcome.operation_error {
+                            editor.show_alert(text(title), error.into(), cx);
                         } else if let Some(error) = error.or(stash_list_error) {
                             editor.show_alert(
                                 text(if outcome.committed {
@@ -466,6 +514,7 @@ impl SlideEditor {
         if !state.working.open {
             return None;
         }
+        let merging = state.working.merge_heads.is_some();
         let theme = cx.theme();
         let message = state.working.message.as_ref()?;
         let staged = state
@@ -683,7 +732,7 @@ impl SlideEditor {
                     .child(
                         Button::new(("git-apply-stash", index))
                             .xsmall()
-                            .disabled(state.busy || has_conflict || state.working.merging)
+                            .disabled(state.busy || has_conflict || merging)
                             .label(text("git.stash-apply"))
                             .tooltip(text("git.stash-apply-tooltip"))
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -695,12 +744,12 @@ impl SlideEditor {
         let input = message.clone();
         let commit = Button::new("git-commit")
             .small()
-            .label(text(if state.working.merging {
+            .label(text(if merging {
                 "git.commit-merge"
             } else {
                 "git.commit-staged"
             }))
-            .disabled(has_conflict || (staged == 0 && !state.working.merging) || state.busy)
+            .disabled(has_conflict || (staged == 0 && !merging) || state.busy)
             .on_click(cx.listener(move |this, _, window, cx| {
                 let message = input.read(cx).value().trim().to_string();
                 if message.is_empty() {
@@ -742,7 +791,7 @@ impl SlideEditor {
                                         .disabled(
                                             state.busy
                                                 || has_conflict
-                                                || state.working.merging
+                                                || merging
                                                 || state.working.changes.is_empty(),
                                         )
                                         .label(text("git.stash"))
@@ -753,6 +802,30 @@ impl SlideEditor {
                                 ),
                         ),
                 )
+                .when(merging, |pane| {
+                    pane.child(
+                        h_flex()
+                            .px_2()
+                            .py_1()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(text("git.merge-in-progress")),
+                            )
+                            .child(
+                                Button::new("git-abort-merge")
+                                    .xsmall()
+                                    .disabled(state.busy)
+                                    .label(text("git.merge-abort"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.git_confirm_abort_merge(window, cx)
+                                    })),
+                            ),
+                    )
+                })
                 .when(state.working.changes.is_empty() && !state.busy, |pane| {
                     pane.child(div().px_2().child(text("git.no-changes")))
                 })

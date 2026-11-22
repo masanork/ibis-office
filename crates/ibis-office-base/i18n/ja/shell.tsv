@@ -1662,3 +1662,9 @@ git.merge-confirm	現在のブランチへマージしますか？
 git.merge-complete	マージ完了
 git.merge-failed	Gitのマージに失敗しました
 git.merge-no-branch	マージするにはローカルブランチに切り替えてください。
+git.merge-in-progress	マージ中
+git.merge-abort	マージを中止
+git.merge-abort-confirm	現在のマージを中止しますか？
+git.merge-abort-detail	競合の解決中に加えた編集が失われる場合があります。
+git.merge-abort-changed	中止する前にマージの内容が変わったか、マージが終了しました。
+git.merge-abort-failed	Gitのマージを中止できませんでした
