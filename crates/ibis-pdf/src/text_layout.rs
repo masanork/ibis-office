@@ -119,7 +119,9 @@ pub fn page_text(index: &PageTextIndex, layout: TextLayout) -> String {
 }
 
 /// Which characters stand in a vertical run: three or more drawn one after another, each about one character below
-/// the last in the same column. (A character the reader marked vertical counts too.)
+/// the last in the same column. Characters spaced out down a column (a name or a title set with gaps, 総　務　省)
+/// may stand up to four characters apart where they keep exactly to the column. (A character the reader marked
+/// vertical counts too.)
 fn vertical_runs(glyphs: &[Glyph], flagged: &[bool]) -> Vec<bool> {
     let n = glyphs.len();
     let mut steps = vec![false; n.saturating_sub(1)];
@@ -128,7 +130,9 @@ fn vertical_runs(glyphs: &[Glyph], flagged: &[bool]) -> Vec<bool> {
         let h = a.height().max(b.height());
         let dx = (a.center_x() - b.center_x()).abs();
         let dy = b.top - a.top;
-        steps[i] = dx <= 0.35 * h && dy >= 0.6 * h && dy <= 1.8 * h;
+        let in_column = dx <= 0.35 * h && dy >= 0.6 * h && dy <= 1.8 * h;
+        let spaced_in_column = dx <= 0.1 * h && dy >= 0.6 * h && dy <= 4.0 * h;
+        steps[i] = in_column || spaced_in_column;
     }
     let mut out: Vec<bool> = flagged.to_vec();
     out.resize(n, false);
@@ -435,6 +439,32 @@ mod tests {
         column(&mut chars, "年七月", 100.0, 40.0, 10.0);
         let text = page_text(&PageTextIndex { chars }, TextLayout::Reading);
         assert_eq!(text, "令和8年七月\n");
+    }
+
+    #[test]
+    fn characters_spaced_out_down_a_column_are_read_as_the_column() {
+        // A signature: 内閣総理大臣　高市　早苗, a character's space between the words; beside it 総　務　省 with a
+        // gap after each character (the pitch twice the size).
+        let mut chars = Vec::new();
+        column(&mut chars, "内閣総理大臣", 100.0, 10.0, 10.0);
+        column(&mut chars, "高市", 100.0, 80.0, 10.0);
+        column(&mut chars, "早苗", 100.0, 110.0, 10.0);
+        for (i, ch) in "総務省".chars().enumerate() {
+            put(&mut chars, ch, 120.0, 10.0 + i as f32 * 21.0, 10.0, 10.0);
+        }
+        let text = page_text(&PageTextIndex { chars }, TextLayout::Reading);
+        assert_eq!(text, "総 務 省\n内閣総理大臣 高市 早苗\n");
+    }
+
+    #[test]
+    fn spaced_characters_off_the_column_are_not_a_column() {
+        // Three cells one below another, three lines apart, but not on one x: lines, not a column.
+        let mut chars = Vec::new();
+        row(&mut chars, "甲", 0.0, 0.0, 10.0);
+        row(&mut chars, "乙", 2.0, 30.0, 10.0);
+        row(&mut chars, "丙", 4.0, 60.0, 10.0);
+        let text = page_text(&PageTextIndex { chars }, TextLayout::Reading);
+        assert_eq!(text, "甲\n\n乙\n\n丙\n");
     }
 
     #[test]
