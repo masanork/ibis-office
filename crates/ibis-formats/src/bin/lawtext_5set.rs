@@ -9,10 +9,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use ibis_formats::lawtext::{
-    LawDoc, ShinkyuOptions, build_5set_package_with_sources, parse_law_input,
+    LawDoc, ShinkyuOptions, build_5set_package_with_bill_supplement, parse_law_input,
 };
 
-const USAGE: &str = "Usage: ibis-lawtext-5set OLD NEW [--memo FILE] [--reference FILE]... [--old-on-left] [--json | --docx] [--require-match]\n    Inputs: UTF-8 e-Gov XML, Lawtext or law Markdown. Output: combined Markdown, JSON or print-layout DOCX to stdout.\n    --require-match exits with status 2 after writing drafts if reverse application differs.";
+const USAGE: &str = "Usage: ibis-lawtext-5set OLD NEW [--memo FILE] [--reference FILE]... [--amendment-law-num NUMBER] [--old-on-left] [--json | --docx] [--require-match]\n    Inputs: UTF-8 e-Gov XML, Lawtext or law Markdown. Output: combined Markdown, JSON or print-layout DOCX to stdout.\n    --require-match exits with status 2 after writing drafts if reverse application differs.";
 
 fn read(path: &OsStr) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("{}: {e}", Path::new(path).display()))
@@ -39,6 +39,7 @@ fn run() -> Result<ExitCode, String> {
     let mut json = false;
     let mut docx = false;
     let mut require_match = false;
+    let mut amendment_law_num = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--memo" | "--reference") => {
@@ -50,6 +51,13 @@ fn run() -> Result<ExitCode, String> {
                 } else {
                     sources.push(read_law(&path)?);
                 }
+            }
+            Some("--amendment-law-num") => {
+                let number = args.next()
+                    .and_then(|value| value.into_string().ok())
+                    .filter(|value| !value.trim().is_empty() && !value.starts_with("--"))
+                    .ok_or("Missing amendment law number for --amendment-law-num")?;
+                amendment_law_num = Some(number.trim().to_string());
             }
             Some("--old-on-left") => options.new_on_left = false,
             Some("--json") => json = true,
@@ -75,7 +83,9 @@ fn run() -> Result<ExitCode, String> {
             old.law_num, new.law_num
         ));
     }
-    let package = build_5set_package_with_sources(&old, &new, &memo, &options, &sources);
+    let package = build_5set_package_with_bill_supplement(
+        &old, &new, &memo, &options, &sources, amendment_law_num.as_deref(),
+    );
     let mut stdout = io::stdout().lock();
     if docx {
         let bytes = package.to_print_docx().map_err(|e| e.to_string())?;

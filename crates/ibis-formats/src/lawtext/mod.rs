@@ -20,9 +20,9 @@ pub use print::{comparison_docx, open_comparison_document};
 pub mod refs;
 pub use aratame::{
     AratameClause, AratameDraft, VerifyResult, apply_aratame, generate_aratame_draft,
-    verify_aratame,
+    verify_aratame, verify_aratame_with_bill_supplement,
 };
-pub use assistant::{Legislation5SetPackage, build_5set_package, build_5set_package_with_sources};
+pub use assistant::{Legislation5SetPackage, build_5set_package, build_5set_package_with_bill_supplement, build_5set_package_with_sources};
 pub use diff::{
     AmendmentIr, ArticleChange, ArticleChangeKind, DiffOp, DivisionChange, DivisionChangeKind,
     ItemChange, NodeChangeKind, ParagraphChange, ShinkyuOptions, SubitemChange, SupplChange,

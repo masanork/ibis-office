@@ -38,6 +38,8 @@ jq -r '.documents.sansho' bill-drafts.json > sansho.md
 
 通常は草案を書き出せれば終了コードは `0` です。`--require-match` を指定した場合、逆適用が一致しなければ草案を書き出したうえで `2` を返します。入出力や解析のエラーは `1` です。JSON の `deterministic_outputs` から残差の構造化差分、逆適用の診断、lint結果を確認できます。
 
+公開済みの改正を再現する際は、`--amendment-law-num '令和八年七月三一日法律第七六号'` のように、改正後XMLの `SupplProvision` にある `AmendLawNum` の値を指定できます。指定番号が改正後の版に新設された附則を一意に示す場合、検算はその附則を改正法案の確認事項として表示し、ほかの残差と区別します。JSONでは `bill_supplement_law_num` に番号が入り、`residual_diff` はそれ以外の差分を示します。全体の一致を求める `--require-match` は、この附則が残る場合も終了コード `2` を返します。
+
 ## 公開例の組版に合わせたセット版を DOCX と PDF にする
 
 `--docx` は要綱、法律案、理由、新旧対照条文、参照条文をこの順に収録した一つの DOCX を出力します。各文書は新しいページから始まります。厚生労働省の第221回国会提出資料のうち「予防接種法の一部を改正する法律案」を組版の参照例としました。[要綱](https://www.mhlw.go.jp/content/001709107.pdf) · [法律案・理由](https://www.mhlw.go.jp/content/001709112.pdf) · [新旧対照条文](https://www.mhlw.go.jp/content/001709113.pdf) · [参照条文](https://www.mhlw.go.jp/content/001709114.pdf)

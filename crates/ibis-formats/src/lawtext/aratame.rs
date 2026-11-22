@@ -59,6 +59,7 @@ impl AratameDraft {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyResult {
     pub is_exact_match: bool,
+    pub bill_supplement_law_num: Option<String>,
     pub applied_ops: usize,
     pub diagnostics: Vec<String>,
     pub simulated_new: LawDoc,
@@ -70,6 +71,7 @@ impl VerifyResult {
     pub fn to_json_value(&self) -> Value {
         json!({
             "is_exact_match": self.is_exact_match,
+            "bill_supplement_law_num": self.bill_supplement_law_num,
             "applied_ops": self.applied_ops,
             "diagnostics": self.diagnostics,
             "residual_diff": self.residual_diff.to_json_value(),
@@ -473,7 +475,42 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
 
 /// Apply a 改め文 text to `old` [`LawDoc`] and verify the result against `expected_new`.
 pub fn verify_aratame(old: &LawDoc, aratame_text: &str, expected_new: &LawDoc) -> VerifyResult {
+    verify_aratame_with_bill_supplement(old, aratame_text, expected_new, None)
+}
+
+/// Verify the amendment, reporting the bill's own supplementary provisions separately
+/// when the supplied amendment law number uniquely identifies a newly added block.
+pub fn verify_aratame_with_bill_supplement(
+    old: &LawDoc,
+    aratame_text: &str,
+    expected_new: &LawDoc,
+    amendment_law_num: Option<&str>,
+) -> VerifyResult {
     let (simulated_new, applied_ops, mut diagnostics) = apply_aratame(old, aratame_text);
+    let mut expected_in_scope = None;
+    let mut bill_supplement_law_num = None;
+    if let Some(number) = amendment_law_num {
+        let matches_number = |suppl: &super::SupplProvision| {
+            !number.is_empty() && suppl.amend_law_num.as_deref() == Some(number)
+        };
+        let mut candidates = expected_new.suppl_provisions.iter().enumerate()
+            .filter(|(_, suppl)| matches_number(suppl));
+        if let Some((index, _)) = candidates.next()
+            && candidates.next().is_none()
+            && !old.suppl_provisions.iter().any(matches_number)
+            && !simulated_new.suppl_provisions.iter().any(matches_number)
+        {
+            let mut in_scope = expected_new.clone();
+            in_scope.suppl_provisions.remove(index);
+            expected_in_scope = Some(in_scope);
+            bill_supplement_law_num = Some(number.to_string());
+        } else {
+            diagnostics.push(format!(
+                "指定した改正法番号（{number}）で、新設された附則を一意に特定できません。"
+            ));
+        }
+    }
+    let expected_new = expected_in_scope.as_ref().unwrap_or(expected_new);
     let residual_diff = diff_laws(&simulated_new, expected_new);
     for (scope, matches) in [
         ("題名", simulated_new.law_title == expected_new.law_title),
@@ -493,10 +530,11 @@ pub fn verify_aratame(old: &LawDoc, aratame_text: &str, expected_new: &LawDoc) -
     {
         diagnostics.push("現行と改正後の法令番号が一致しません。".into());
     }
-    let is_exact_match = diagnostics.is_empty();
+    let is_exact_match = diagnostics.is_empty() && bill_supplement_law_num.is_none();
 
     VerifyResult {
         is_exact_match,
+        bill_supplement_law_num,
         applied_ops,
         diagnostics,
         simulated_new,

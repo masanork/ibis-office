@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 
 use super::LawDoc;
-use super::aratame::{AratameDraft, VerifyResult, generate_aratame_draft, verify_aratame};
+use super::aratame::{AratameDraft, VerifyResult, generate_aratame_draft, verify_aratame_with_bill_supplement};
 use super::diff::{
     AmendmentIr, ArticleChangeKind, ShinkyuOptions, diff_laws,
     generate_shinkyu_markdown_with_options,
@@ -49,12 +49,15 @@ impl Legislation5SetPackage {
         out.push_str("\n\n---\n\n# 確認結果\n\n");
         if self.aratame_verification.is_exact_match {
             out.push_str("改め文の逆適用結果は、解析した改正後の条文構造と一致しました。\n\n");
-        } else {
+        } else if !self.aratame_verification.diagnostics.is_empty() {
             out.push_str("改め文の逆適用結果に要確認事項があります。\n\n");
             for diagnostic in &self.aratame_verification.diagnostics {
                 let _ = writeln!(out, "- {diagnostic}");
             }
             out.push('\n');
+        }
+        if let Some(number) = &self.aratame_verification.bill_supplement_law_num {
+            let _ = writeln!(out, "改正法案の附則（{number}）として確認してください。\n");
         }
         out.push_str(&self.lint_report.to_markdown());
         out
@@ -109,10 +112,22 @@ pub fn build_5set_package_with_sources(
     shinkyu_opts: &ShinkyuOptions,
     sources: &[LawDoc],
 ) -> Legislation5SetPackage {
+    build_5set_package_with_bill_supplement(old, new, policy_memo, shinkyu_opts, sources, None)
+}
+
+/// Build five legislative drafts, identifying the bill's own supplementary block when specified.
+pub fn build_5set_package_with_bill_supplement(
+    old: &LawDoc,
+    new: &LawDoc,
+    policy_memo: &str,
+    shinkyu_opts: &ShinkyuOptions,
+    sources: &[LawDoc],
+    amendment_law_num: Option<&str>,
+) -> Legislation5SetPackage {
     let ir = diff_laws(old, new);
     let shinkyu_markdown = generate_shinkyu_markdown_with_options(old, new, shinkyu_opts);
     let aratame_draft = generate_aratame_draft(old, new);
-    let aratame_verification = verify_aratame(old, &aratame_draft.full_text, new);
+    let aratame_verification = verify_aratame_with_bill_supplement(old, &aratame_draft.full_text, new, amendment_law_num);
     let references = extract_references(new);
     let sansho_markdown = generate_sansho_markdown_with_sources(old, new, sources);
     let lint_report = lint_amendment(old, new);
@@ -161,7 +176,7 @@ pub fn build_5set_package_with_sources(
     );
 
     let mut bill_markdown = format!("# {bill_title}（草案）\n\n");
-    if !aratame_verification.is_exact_match {
+    if !aratame_verification.diagnostics.is_empty() {
         bill_markdown
             .push_str("> 逆適用に未確認の差分があります。確認結果を参照してください。\n\n");
     }
@@ -171,6 +186,10 @@ pub fn build_5set_package_with_sources(
         bill_markdown.push_str(&aratame_draft.full_text);
     }
     bill_markdown.push_str("\n\n## 附則\n\n［施行期日・経過措置の要否と内容を確認］\n");
+
+    if let Some(number) = &aratame_verification.bill_supplement_law_num {
+        let _ = writeln!(bill_markdown, "［改正法案の附則（{number}）を確認］");
+    }
 
     let youkou_markdown = outline(&bill_title, &ir);
     let mut riyuu_markdown = format!("# 理由（草案）\n\n対象法案　{bill_title}\n\n");
@@ -291,6 +310,49 @@ mod tests {
             json["deterministic_outputs"]["aratame_verification"]["is_exact_match"],
             true
         );
+    }
+
+    #[test]
+    fn distinguishes_the_bill_supplement_from_unapplied_changes() {
+        let old = parse_lawtext(
+            "試験法（令和七年法律第一号）\n第一条 旧規定。\n附則（令和七年法律第二号）\n現行の経過措置。",
+        ).unwrap();
+        let mut new = parse_lawtext(
+            "試験法（令和七年法律第一号）\n第一条 新規定。\n附則（令和八年法律第三号）\n公布の日から施行する。\n附則（令和七年法律第二号）\n現行の経過措置。",
+        ).unwrap();
+        let number = "令和八年法律第三号";
+        let options = ShinkyuOptions::default();
+        let build = |new: &LawDoc, number| {
+            build_5set_package_with_bill_supplement(&old, new, "", &options, &[], Some(number))
+        };
+        let package = build(&new, number);
+        let verification = &package.aratame_verification;
+        assert_eq!(verification.bill_supplement_law_num.as_deref(), Some(number));
+        assert!(!verification.is_exact_match);
+        assert!(verification.diagnostics.is_empty());
+        assert!(verification.residual_diff.suppl_changes.is_empty());
+        assert!(package.to_markdown().contains("改正法案の附則（令和八年法律第三号）"));
+        assert!(package.bill_markdown.contains("改正法案の附則（令和八年法律第三号）"));
+        assert_eq!(verification.to_json_value()["bill_supplement_law_num"], number);
+
+        let existing = new.suppl_provisions.last_mut().unwrap();
+        let super::super::LawNode::Paragraph(paragraph) = &mut existing.nodes[0] else {
+            panic!("expected a supplementary paragraph");
+        };
+        paragraph.sentence = "経過措置の変更。".into();
+        let residual = build(&new, number).aratame_verification;
+        assert_eq!(residual.bill_supplement_law_num.as_deref(), Some(number));
+        assert_eq!(residual.residual_diff.suppl_changes.len(), 1);
+        assert!(residual.diagnostics.iter().any(|message| message.contains("附則に逆適用後の差分")));
+
+        let existing_number = build(&new, "令和七年法律第二号").aratame_verification;
+        assert!(existing_number.bill_supplement_law_num.is_none());
+        assert!(existing_number.diagnostics.iter().any(|message| message.contains("一意に特定")));
+
+        new.suppl_provisions.push(new.suppl_provisions[0].clone());
+        let ambiguous = build(&new, number).aratame_verification;
+        assert!(ambiguous.bill_supplement_law_num.is_none());
+        assert!(ambiguous.diagnostics.iter().any(|message| message.contains("一意に特定")));
     }
 
     #[test]
