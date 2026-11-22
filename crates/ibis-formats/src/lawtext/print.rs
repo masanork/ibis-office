@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use ibis_doc_model::flow::{
-    Block, BorderStyle, FlowBorder, FlowTable, UnderlineStyle, format_list_number,
+    Block, BorderStyle, FlowBorder, FlowRow, FlowRunKind, FlowTable, UnderlineStyle,
+    format_list_number,
 };
 use ibis_doc_model::{
     CellDirection, DocGridType, Emu, EmuSize, FlowAlign, PageSetup, PartKind, Rgb,
@@ -258,12 +259,62 @@ fn reference_paragraphs(references: &str) -> String {
         .collect()
 }
 
+fn short_comparison_text(row: &FlowRow) -> Option<[String; 2]> {
+    // A short, text-only row occupies just a few vertical lines at 11 pt.
+    // Keep rows with manual breaks, multiple paragraphs, or rich content divisible.
+    let mut text = [String::new(), String::new()];
+    if row.cells.len() != text.len() {
+        return None;
+    }
+    for (cell, value) in row.cells.iter().zip(&mut text) {
+        let [Block::Paragraph(paragraph)] = cell.blocks.as_slice() else {
+            return None;
+        };
+        for run in &paragraph.runs {
+            let FlowRunKind::Text(part) = &run.kind else {
+                return None;
+            };
+            value.push_str(part);
+        }
+        if value.contains(['\r', '\n']) || value.chars().count() > 96 {
+            return None;
+        }
+    }
+    Some(text)
+}
+
+fn keep_short_supplement_with_heading(table: &mut FlowTable) {
+    let mut index = 1;
+    while index + 1 < table.rows.len() {
+        let is_heading = |row: &FlowRow| {
+            short_comparison_text(row).is_some_and(|cells| {
+                cells
+                    .iter()
+                    .all(|text| text.split_whitespace().collect::<String>() == "附則")
+            })
+        };
+        if is_heading(&table.rows[index])
+            && short_comparison_text(&table.rows[index + 1]).is_some()
+            && !is_heading(&table.rows[index + 1])
+        {
+            let provision = table.rows.remove(index + 1);
+            let row = &mut table.rows[index];
+            row.cant_split = true;
+            for (heading, body) in row.cells.iter_mut().zip(provision.cells) {
+                heading.blocks.extend(body.blocks);
+            }
+        }
+        index += 1;
+    }
+}
+
 fn format_comparison(table: &mut FlowTable, available: ibis_doc_model::Emu) {
     // In a vertical section, the logical table columns occupy the upper and
     // lower bands of the paper. Let Word and the PDF renderer split long rows.
     let width = available / 2 / TWIP * TWIP;
     table.columns = vec![width; 2];
     table.style = None;
+    keep_short_supplement_with_heading(table);
     let rule = FlowBorder {
         width: 6_350,
         color: Rgb(0),
@@ -308,7 +359,6 @@ fn format_comparison(table: &mut FlowTable, available: ibis_doc_model::Emu) {
 mod tests {
     use super::*;
     use crate::lawtext::{ShinkyuOptions, build_5set_package, parse_law_input};
-    use ibis_doc_model::flow::FlowRunKind;
 
     #[test]
     fn direct_comparison_preserves_visible_statute_metadata_from_editable_document() {
@@ -332,6 +382,40 @@ mod tests {
         );
         let plain = markdown::export_markdown(&flow, &result.presentation.media);
         assert!(plain.contains("新旧対照条文") && plain.contains("青色") && plain.contains("赤色"));
+    }
+
+    #[test]
+    fn short_supplement_keeps_heading_and_text_together() {
+        let old = parse_law_input("試験法（令和七年法律第一号）\n第一条　目的を定める。").unwrap();
+        for (text, keep) in [
+            ("公布の日から施行する。".to_owned(), true),
+            ("公布の日から施行する。".repeat(30), false),
+        ] {
+            let new = parse_law_input(&format!(
+                "試験法（令和七年法律第一号）\n第一条　目的を定める。\n附則\n１　{text}"
+            ))
+            .unwrap();
+            let opened = open_comparison_document(&old, &new).unwrap();
+            let flow = opened.presentation.flow.unwrap();
+            let table = flow
+                .body
+                .iter()
+                .find_map(|block| match block {
+                    Block::Table(table) => Some(table),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(table.rows.len(), if keep { 2 } else { 3 });
+            let last = table.rows.last().unwrap();
+            assert_eq!(last.cant_split, keep);
+            if keep {
+                for cell in &last.cells {
+                    assert_eq!(cell.blocks.len(), 2);
+                }
+            }
+            let plain = markdown::export_markdown(&flow, &opened.presentation.media);
+            assert!(plain.contains(&text));
+        }
     }
 
     #[test]

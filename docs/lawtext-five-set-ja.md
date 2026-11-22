@@ -108,7 +108,7 @@ API の `GET /api/2/law_data/{law_revision_id}?response_format=xml` から各版
 
 ### 実例での比較・出力確認
 
-上記の予防接種法の二版を検証用リポジトリにコミットし、Linux版のファイル履歴から選択して単体の新旧対照条文を保存しました。ibisOfficeのPDFはA4縦判で6ページ、同じDOCXをLibreOfficeで開いた結果は5ページでした。いずれも縦組み、上下二欄、罫線を保持しています。ibisOfficeのPDFは附則の末尾が最終ページに続きます。Windows版のWordでの改ページは未確認です。[公開の新旧対照条文](https://www.mhlw.go.jp/content/001709113.pdf)
+上記の予防接種法の二版を検証用リポジトリにコミットし、Linux版のファイル履歴から選択して単体の新旧対照条文を保存しました。ibisOfficeのPDFはA4縦判で6ページ、同じDOCXをLibreOfficeで開いた結果は5ページでした。いずれも縦組み、上下二欄、罫線を保持しています。短い附則は見出しと本文を同じ表の行にまとめ、改ページで分割しないようにします。この実例ではibisOfficeの6ページ目に附則全体が載ります。Windows版のWordでの改ページは未確認です。[公開の新旧対照条文](https://www.mhlw.go.jp/content/001709113.pdf)
 
 ## Docs の AI Assistant で起案する
 
