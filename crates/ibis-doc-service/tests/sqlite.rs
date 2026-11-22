@@ -59,6 +59,72 @@ fn sqlite_analysis_is_shared_and_read_only() {
         .call("sqlite_count_rows", &json!({"path":path,"table":table}))
         .unwrap();
     assert_eq!(total["count"], 3);
+    let filters = json!([
+        {"column":"code","operator":"eq","value":"002"},
+        {"column":"amount","operator":"ge","value":12.5},
+        {"column":"remark","operator":"is_not_null"},
+    ]);
+    let grouped = service
+        .call(
+            "sqlite_count_rows",
+            &json!({
+                "path":path,"table":table,"group_by":"remark","filters":filters,
+            }),
+        )
+        .unwrap();
+    let assistant = run_selected_sqlite_tool(
+        &path,
+        "sqlite_count_rows",
+        json!({
+            "table":table,"group_by":"remark","filters":filters,
+        }),
+    )
+    .unwrap();
+    assert_eq!(grouped, assistant);
+    assert_eq!(grouped["groups"], json!([{"value":"ok","count":1}]));
+    assert_eq!(grouped["filters"], filters);
+    let only_null = service
+        .call(
+            "sqlite_count_rows",
+            &json!({
+                "path":path,"table":table,"filters":[{"column":"remark","operator":"is_null"}],
+            }),
+        )
+        .unwrap();
+    assert_eq!(only_null["count"], 1);
+    let literal = service.call("sqlite_count_rows", &json!({
+        "path":path,"table":table,"filters":[{"column":"remark","operator":"eq","value":"ok' OR 1=1"}],
+    })).unwrap();
+    assert_eq!(literal["count"], 0);
+    for (filter, code) in [
+        (
+            json!({"column":"remark","operator":"is_null","value":1}),
+            "invalid_argument",
+        ),
+        (
+            json!({"column":"remark","operator":"eq"}),
+            "invalid_argument",
+        ),
+        (
+            json!({"column":"remark","operator":"eq","value":u64::MAX}),
+            "invalid_argument",
+        ),
+        (
+            json!({"column":"absent","operator":"is_null"}),
+            "sqlite_error",
+        ),
+    ] {
+        let error = service
+            .call(
+                "sqlite_count_rows",
+                &json!({
+                    "path":path,"table":table,"filters":[filter],
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, code);
+    }
+
     assert!(
         service
             .call(

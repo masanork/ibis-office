@@ -4,6 +4,7 @@ use crate::CellValue;
 use std::{
     fs::{self, File},
     io::Read,
+    num::NonZeroUsize,
     path::Path,
     sync::Arc,
 };
@@ -138,11 +139,50 @@ pub fn sqlite_columns(path: &Path, table: &str) -> Result<Vec<serde_json::Value>
         .collect()
 }
 
+pub enum SqliteScalar<'a> {
+    Integer(i64),
+    Real(f64),
+    Text(&'a str),
+}
+
+pub enum SqlitePredicate<'a> {
+    Equal(SqliteScalar<'a>),
+    NotEqual(SqliteScalar<'a>),
+    LessThan(SqliteScalar<'a>),
+    AtMost(SqliteScalar<'a>),
+    GreaterThan(SqliteScalar<'a>),
+    AtLeast(SqliteScalar<'a>),
+    IsNull,
+    IsNotNull,
+}
+
+impl SqlitePredicate<'_> {
+    fn sql(&self) -> (&'static str, Option<Value>) {
+        let (op, value) = match self {
+            Self::Equal(value) => ("= ?", value),
+            Self::NotEqual(value) => ("<> ?", value),
+            Self::LessThan(value) => ("< ?", value),
+            Self::AtMost(value) => ("<= ?", value),
+            Self::GreaterThan(value) => ("> ?", value),
+            Self::AtLeast(value) => (">= ?", value),
+            Self::IsNull => return ("IS NULL", None),
+            Self::IsNotNull => return ("IS NOT NULL", None),
+        };
+        let bound = match value {
+            SqliteScalar::Integer(value) => Value::Numeric(Numeric::Integer(*value)),
+            SqliteScalar::Real(value) => Value::from_f64(*value),
+            SqliteScalar::Text(value) => Value::from_text((*value).to_owned()),
+        };
+        (op, Some(bound))
+    }
+}
+
 /// Count rows by one column using SQLite's grouping and NULL semantics.
 pub fn sqlite_count(
     path: &Path,
     table: &str,
     group_by: Option<&str>,
+    filters: &[(&str, SqlitePredicate<'_>)],
     limit: usize,
 ) -> Result<serde_json::Value, String> {
     use serde_json::{Value as Json, json};
@@ -150,23 +190,49 @@ pub fn sqlite_count(
     let (_database, connection) = open(path)?;
     let table = checked_table(&connection, table)?;
     let limit = limit.clamp(1, 100);
+    let column_identifier = |name: &str, columns: &[String]| {
+        columns
+            .iter()
+            .find(|column| column.as_str() == name)
+            .map(|column| sql_identifier(column))
+            .ok_or_else(|| format!("SQLite column does not exist: {name}"))
+    };
+    let mut columns = Vec::new();
+    if group_by.is_some() || !filters.is_empty() {
+        let stmt = connection
+            .prepare(format!("SELECT * FROM main.{table} LIMIT 0"))
+            .map_err(|error| error.to_string())?;
+        columns
+            .extend((0..stmt.num_columns()).map(|index| stmt.get_column_name(index).into_owned()));
+    }
+    let mut conditions = Vec::new();
+    let mut parameters = Vec::new();
+    for (column, predicate) in filters {
+        let column = column_identifier(column, &columns)?;
+        let (op, bound) = predicate.sql();
+        conditions.push(format!("{column} {op}"));
+        parameters.extend(bound);
+    }
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conditions.join(" AND "))
+    };
     let sql = match group_by {
         Some(column) => {
-            let columns = connection
-                .prepare(format!("SELECT * FROM main.{table} LIMIT 0"))
-                .map_err(|error| error.to_string())?;
-            let index = (0..columns.num_columns())
-                .find(|&index| columns.get_column_name(index) == column)
-                .ok_or_else(|| format!("SQLite column does not exist: {column}"))?;
-            let column = sql_identifier(&columns.get_column_name(index));
+            let column = column_identifier(column, &columns)?;
             format!(
-                "SELECT {column}, COUNT(*) FROM main.{table} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {}",
+                "SELECT {column}, COUNT(*) FROM main.{table}{where_clause} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {}",
                 limit + 1
             )
         }
-        None => format!("SELECT COUNT(*) FROM main.{table}"),
+        None => format!("SELECT COUNT(*) FROM main.{table}{where_clause}"),
     };
     let mut stmt = connection.prepare(sql).map_err(|error| error.to_string())?;
+    for (index, value) in parameters.into_iter().enumerate() {
+        stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value)
+            .map_err(|error| error.to_string())?;
+    }
     let mut groups = Vec::new();
     let mut text_budget = 32usize * 1024;
     while let Some(row) = stmt

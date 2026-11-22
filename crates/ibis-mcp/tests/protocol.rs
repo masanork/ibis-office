@@ -137,7 +137,7 @@ fn mcp_sqlite_count_is_available_in_read_only_mode() {
         request(1, "tools/list", json!({})),
         request(2, "tools/call", json!({
             "name": "sqlite_count_rows",
-            "arguments": {"path": path, "table": "sales \"2026\"", "group_by": "remark"},
+            "arguments": {"path": path, "table": "sales \"2026\"", "group_by": "remark", "filters": [{"column":"remark","operator":"is_null"}]},
         })),
     ]);
     let tools = answers[0]["result"]["tools"].as_array().unwrap();
@@ -145,5 +145,5 @@ fn mcp_sqlite_count_is_available_in_read_only_mode() {
     let result = &answers[1]["result"];
     assert_eq!(result["isError"], false);
     assert!(result["_meta"]["io.ibisoffice/untrusted-content"].is_string());
-    assert_eq!(result["structuredContent"]["groups"], json!([{"value":"ok","count":2},{"value":null,"count":1}]));
+    assert_eq!(result["structuredContent"]["groups"], json!([{"value":null,"count":1}]));
 }

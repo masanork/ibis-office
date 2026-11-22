@@ -4,7 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
-use ibis_doc_model::query::{sqlite_columns, sqlite_count, sqlite_tables};
+use ibis_doc_model::query::{
+    SqlitePredicate, SqliteScalar, sqlite_columns, sqlite_count, sqlite_tables,
+};
 use serde_json::{Value, json};
 
 use crate::catalog::{Access, Tool, integer, object, string};
@@ -13,6 +15,7 @@ use crate::{ToolError, paths};
 
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const PATH: &str = "path";
+const MAX_FILTERS: usize = 16;
 
 const TOOLS: &[Tool] = &[
     Tool {
@@ -33,7 +36,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "sqlite_count_rows",
-        description: "Count SQLite table rows, optionally grouped by one column. NULL forms its own group. Grouped results are sorted by descending count.",
+        description: "Count SQLite table rows with optional filters and grouping by one column. NULL forms its own group. Grouped results are sorted by descending count.",
         access: Access::Read,
         returns_content: true,
         schema: || {
@@ -44,6 +47,19 @@ const TOOLS: &[Tool] = &[
                     (
                         "group_by",
                         string("Optional exact column name to group by."),
+                    ),
+                    (
+                        "filters",
+                        json!({
+                            "type": "array",
+                            "description": "Include only rows that match all conditions.",
+                            "maxItems": MAX_FILTERS,
+                            "items": object(&[
+                                ("column", string("Exact column name.")),
+                                ("operator", json!({"enum": ["eq", "ne", "lt", "le", "gt", "ge", "is_null", "is_not_null"]})),
+                                ("value", json!({"type": ["string", "number"], "description": "Required for comparisons. Omit for is_null and is_not_null."})),
+                            ], &["column", "operator"]),
+                        }),
                     ),
                     (
                         "limit",
@@ -135,12 +151,83 @@ fn describe_table(service: &mut Service, args: &Value) -> Result<Value, ToolErro
     Ok(json!({"table": table, "columns": columns}))
 }
 
+fn count_filter(filter: &Value) -> Result<(&str, SqlitePredicate<'_>), ToolError> {
+    use SqlitePredicate::*;
+
+    crate::edit::only_known(filter, &["column", "operator", "value"])?;
+    let column = filter.str_arg("column")?;
+    let operator = filter.str_arg("operator")?;
+    let value = filter.get("value");
+    let predicate = match operator {
+        "is_null" | "is_not_null" if value.is_some() => {
+            return Err(ToolError::invalid("omit value for is_null and is_not_null"));
+        }
+        "is_null" => IsNull,
+        "is_not_null" => IsNotNull,
+        _ => {
+            let value = match value {
+                Some(Value::String(value)) => SqliteScalar::Text(value),
+                Some(Value::Number(value)) => {
+                    if let Some(integer) = value.as_i64() {
+                        SqliteScalar::Integer(integer)
+                    } else if value.is_f64()
+                        && let Some(real) = value.as_f64()
+                    {
+                        SqliteScalar::Real(real)
+                    } else {
+                        return Err(ToolError::invalid(
+                            "filter integer is outside SQLite's signed 64-bit range",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(ToolError::invalid(
+                        "comparison filters require a string or number value",
+                    ));
+                }
+            };
+            match operator {
+                "eq" => Equal(value),
+                "ne" => NotEqual(value),
+                "lt" => LessThan(value),
+                "le" => AtMost(value),
+                "gt" => GreaterThan(value),
+                "ge" => AtLeast(value),
+                _ => return Err(ToolError::invalid("unknown SQLite filter operator")),
+            }
+        }
+    };
+    Ok((column, predicate))
+}
+
 fn count_rows(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let table = args.str_arg("table")?;
     let group_by = args.opt_str("group_by")?;
     let limit = args.opt_usize("limit")?.unwrap_or(25).clamp(1, 100);
-    let mut result =
-        sqlite_count(&database(service, args)?, table, group_by, limit).map_err(sqlite_error)?;
+    let filters: &[Value] = match args.get("filters") {
+        None => &[],
+        Some(Value::Array(filters)) if filters.len() <= MAX_FILTERS => filters,
+        _ => {
+            return Err(ToolError::invalid(format!(
+                "filters must be an array with at most {MAX_FILTERS} conditions"
+            )));
+        }
+    };
+    let predicates = filters
+        .iter()
+        .map(count_filter)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut result = sqlite_count(
+        &database(service, args)?,
+        table,
+        group_by,
+        &predicates,
+        limit,
+    )
+    .map_err(sqlite_error)?;
+    if !filters.is_empty() {
+        result["filters"] = json!(filters);
+    }
     result["table"] = json!(table);
     if let Some(group_by) = group_by {
         result["group_by"] = json!(group_by);

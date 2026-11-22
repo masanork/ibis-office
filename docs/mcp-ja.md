@@ -60,6 +60,8 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 
 `sqlite_list_tables` は、許可フォルダ内の単独で開ける SQLite ファイルを `path` に指定してテーブルを一覧にします。取得したテーブル名を `table` に渡すと、`sqlite_describe_table` で列の宣言型や主キーを確認でき、`sqlite_count_rows` で件数を集計できます。`group_by` には列名を指定でき、NULL も一つのグループになります。`limit` は返すグループ数の上限です（既定25、最大100）。すべてのグループが返ったかは `truncated` で確認できます。デスクトップの表計算アシスタントでは、パネルで SQLite ファイルを選ぶと同じ操作を会話から使えます。
 
+`sqlite_count_rows` の `filters` には最大16個の条件を指定でき、すべてに一致する行を集計します。各条件に `column` と `operator` を指定します。`eq`、`ne`、`lt`、`le`、`gt`、`ge` では文字列または数値の `value` を渡します。`is_null` と `is_not_null` では `value` を省略します。比較には SQLite の型と NULL の規則が適用され、結果には使用した条件が含まれます。
+
 ツールはメニューのコマンドと 1 対 1 で対応してはいません。読み取りと、よく使う編集をそろえたもので、形式が違っても同じツール名です。`--read-only` のときは、読み取りツールだけが利用できます。
 
 ## Claude Desktop と接続する

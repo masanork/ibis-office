@@ -60,6 +60,8 @@ For `xlsx_create_chart`, give the source `sheet` and the placement `destination_
 
 `sqlite_list_tables` reads a standalone SQLite file with `path` under an allowed folder. Pass a table name as `table` to inspect its declared columns and primary key with `sqlite_describe_table` or count its rows with `sqlite_count_rows`. Set `group_by` to an exact column name to count by value, including a separate NULL group. `limit` caps the returned groups (default 25, maximum 100). Check `truncated` before using the returned groups as a complete distribution. In the desktop spreadsheet assistant, select the same database in the Assistant panel to use these operations in chat.
 
+`sqlite_count_rows` also accepts up to 16 `filters`, all of which must match. Each filter has a `column` and `operator`. Use `eq`, `ne`, `lt`, `le`, `gt` or `ge` with a string or number `value`. Use `is_null` or `is_not_null` without a `value`. The response includes the filters used. SQLite applies its usual type and NULL comparison rules.
+
 The tools do not correspond one to one to the menu commands: they cover reading and the common edits, with the same tool names whatever the format. With `--read-only`, only the read tools are available.
 
 ## Connecting Claude Desktop
