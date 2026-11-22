@@ -1016,3 +1016,79 @@ test('external Git import, URL validation, and push to GitHub remote work cleanl
 test.after(async () => {
   await rm(dir, { recursive: true, force: true });
 });
+
+test('public GitHub remotes share the history and comparison UI without a Docs session', async () => {
+  const { env } = createMockEnv();
+  const newer = 'a'.repeat(40);
+  const older = 'b'.repeat(40);
+  const newTree = 'c'.repeat(40);
+  const oldTree = 'd'.repeat(40);
+  const newBlob = 'e'.repeat(40);
+  const oldBlob = 'f'.repeat(40);
+  const makeCommit = (sha, tree, message, parents) => ({
+    sha, parents: parents.map(sha => ({ sha })),
+    commit: {
+      message, tree: { sha: tree },
+      author: { name: 'Author', date: '2026-10-01T00:00:00Z' },
+      committer: { name: 'Author', date: '2026-10-01T00:00:00Z' },
+    },
+  });
+  const head = makeCommit(newer, newTree, '改正', [older]);
+  const base = makeCommit(older, oldTree, '旧版', []);
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input);
+    assert.equal(init.redirect, 'error');
+    assert.equal(new Headers(init.headers).has('Authorization'), false);
+    if (url.origin === 'https://raw.githubusercontent.com') {
+      assert.equal(url.pathname, '/owner/law/' + older + '/law.md');
+      return new Response('旧条文\n');
+    }
+    assert.equal(url.origin, 'https://api.github.com');
+    assert.ok(url.pathname.startsWith('/repos/owner/law'));
+    switch (url.pathname.slice('/repos/owner/law'.length)) {
+      case '': return Response.json({ private: false, default_branch: 'main' });
+      case '/branches': return Response.json([{ name: 'main', commit: { sha: newer } }, { name: 'upcoming', commit: { sha: newer } }]);
+      case '/commits':
+        assert.equal(url.searchParams.get('path'), 'law.md');
+        assert.equal(url.searchParams.get('sha'), newer);
+        return Response.json([head, base], { headers: { Link: '<https://api.github.com/example>; rel="next"' } });
+      case '/commits/main':
+      case '/commits/' + newer: return Response.json(head);
+      case '/commits/' + older: return Response.json(base);
+      case '/git/trees/' + newTree: return Response.json({ tree: [{ path: 'law.md', mode: '100644', sha: newBlob, type: 'blob' }] });
+      case '/git/trees/' + oldTree: return Response.json({ tree: [{ path: 'law.md', mode: '100644', sha: oldBlob, type: 'blob' }] });
+      case '/git/blobs/' + newBlob: return new Response('新条文\n');
+      case '/git/blobs/' + oldBlob: return new Response('旧条文\n');
+      default: assert.fail(url.href);
+    }
+  };
+  try {
+    const open = await worker.fetch(req('/repos/open?url=https%3A%2F%2Fgithub.com%2Fowner%2Flaw.git'), env);
+    assert.equal(open.status, 303);
+    assert.equal(new URL(open.headers.get('Location')).pathname, '/repos/github/owner/law');
+    const bad = await worker.fetch(req('/repos/open?url=https%3A%2F%2Fexample.com%2Fowner%2Flaw'), env);
+    assert.equal(bad.status, 400);
+    const page = await worker.fetch(req('/repos/github/owner/law?file=law.md'), env);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /読み取り専用/);
+    assert.match(html, /upcoming/);
+    assert.ok(html.includes('before=2&amp;anchor=' + newer));
+    assert.ok(html.includes('data-set-base="' + older + '"'));
+    assert.doesNotMatch(html, /id="(commit-file|mint-write|push-external)"/);
+    const path = '/api/repos/github/owner/law';
+    const blob = await worker.fetch(req(path + '/blob/law.md?ref=' + older), env);
+    assert.equal(blob.status, 200);
+    assert.equal(await blob.text(), '旧条文\n');
+    const diff = await worker.fetch(req(path + '/diff?path=law.md&base=' + older + '&head=' + newer), env);
+    assert.equal(diff.status, 200);
+    const files = (await diff.json()).files;
+    assert.equal(files.length, 1);
+    assert.equal(files[0].additions, 1);
+    assert.equal(files[0].deletions, 1);
+    assert.ok(files[0].hunks[0].lines.some(line => line.text === '新条文'));
+  } finally {
+    globalThis.fetch = original;
+  }
+});

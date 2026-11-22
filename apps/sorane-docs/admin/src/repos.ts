@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import {
   BROWSER,
+  HttpError,
   baseHeaders,
   cookie,
   cookieHeader,
@@ -38,6 +39,7 @@ import {
   quoteEtag,
 } from './office-file';
 import { NEXT, type FileEnv } from './files';
+import { GitHubRepo, githubCoordinates, githubUrlCoordinates } from './github-repo';
 
 export type RepoEnv = FileEnv & {
   ARTIFACTS?: Artifacts;
@@ -55,6 +57,17 @@ type RepoRow = {
   created_at: number;
   updated_at: number;
 };
+
+type ReadRepo = Pick<ArtifactsRepo, 'log' | 'readCommit' | 'readTree'> & {
+  readBlob(hash: string): Promise<Pick<Blob, 'size' | 'arrayBuffer'> | null>;
+};
+
+const OPEN_REPO = `<div class="card"><div class="card-bd">
+  <form method="get" action="/repos/open">
+    <label>GitリポジトリのURL<input name="url" type="url" placeholder="https://github.com/owner/repo" required></label>
+    <button type="submit">リポジトリを開く</button>
+  </form>
+</div></div>`;
 
 const MAX_TEXT_FILE = 4 * 1024 * 1024;
 const MAX_DIFF_FILE_BYTES = 512 * 1024;
@@ -217,7 +230,7 @@ ${safeDesc ? `description: ${safeDesc}\n` : ''}---
 }
 
 async function readTreeAtPath(
-  repo: ArtifactsRepo,
+  repo: Pick<ReadRepo, 'log' | 'readTree'>,
   branch: string,
   dirPath: string,
 ): Promise<{
@@ -613,7 +626,7 @@ export async function writeRepoBlob(
 }
 
 async function resolveCommit(
-  repo: ArtifactsRepo,
+  repo: Pick<ReadRepo, 'log' | 'readCommit'>,
   refOrSha: string,
 ): Promise<ArtifactsCommitMetadata | null> {
   const trimmed = refOrSha.trim();
@@ -693,14 +706,18 @@ export async function diffRepo(request: Request, env: RepoEnv, id: string): Prom
   const session = await requireUser(request, env);
   const artifacts = requireArtifacts(env);
   const row = await ownedRepo(env, session, id);
+  using repo = await artifacts.get(row.repo_name);
+  return diffRepoResponse(request, env, repo, row.default_branch);
+}
+
+async function diffRepoResponse(request: Request, env: RepoEnv, repo: ReadRepo, defaultBranch: string) {
   const url = new URL(request.url);
-  const headRef = url.searchParams.get('head')?.trim() || row.default_branch;
+  const headRef = url.searchParams.get('head')?.trim() || defaultBranch;
   const baseParam = url.searchParams.get('base')?.trim() || '';
   const rawPathFilter = url.searchParams.get('path')?.trim() || '';
   const pathFilter = rawPathFilter ? normalizeRepoPath(rawPathFilter) : null;
   if (rawPathFilter && !pathFilter) fail(400, 'invalid_path');
 
-  using repo = await artifacts.get(row.repo_name);
   const headCommit = await resolveCommit(repo, headRef);
   if (!headCommit) fail(404, 'head_not_found');
 
@@ -930,7 +947,7 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
     return reposPage(
       env,
       'リポジトリ',
-      `<div class="card"><div class="card-bd"><h2>文書の GitHub (Cloudflare Artifacts)</h2><p>Markdown や Office 文書を Git リポジトリとして管理し、AI エージェントの GitOps とブラウザ上の ibisOffice エディターをシームレスにつなぎます。</p><form method="post" action="/login">${formCsrf(csrf)}<button class="primary">mikaki でログイン</button></form></div></div>`,
+      OPEN_REPO + `<div class="card"><div class="card-bd"><h2>Docsでリポジトリを管理</h2><form method="post" action="/login">${formCsrf(csrf)}<button class="primary">mikaki でログイン</button></form></div></div>`,
       '/repos',
       200,
       fresh ? browser : undefined,
@@ -950,7 +967,7 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
     })
     .join('');
 
-  const html = `
+  const html = OPEN_REPO + `
     <div class="grid2">
       <div class="card">
         <div class="card-hd"><strong>文書リポジトリ一覧</strong><span class="badge">${(rows.results ?? []).length} 件</span></div>
@@ -1068,7 +1085,7 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
 
 const HISTORY_BATCH = 30;
 
-function treeFileReader(repo: ArtifactsRepo, path: string) {
+function treeFileReader(repo: Pick<ReadRepo, 'readTree'>, path: string) {
   const segments = path.split('/');
   const trees = new Map<string, Promise<ArtifactsTreeEntry[] | null>>();
   return async (root: string | undefined) => {
@@ -1096,7 +1113,7 @@ function sameFileEntry(before: ArtifactsTreeEntry | null, after: ArtifactsTreeEn
   return before?.hash === after?.hash && before?.mode === after?.mode;
 }
 
-async function readHistory(repo: ArtifactsRepo, ref: string, path: string | null) {
+async function readHistory(repo: ReadRepo, ref: string, path: string | null) {
   const commits = await repo.log({ ref, limit: HISTORY_BATCH + 1 });
   const fileVersion = path ? treeFileReader(repo, path) : null;
   const rows = [];
@@ -1136,24 +1153,49 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
 
   const artifacts = requireArtifacts(env);
   const row = await ownedRepo(env, session, id);
-  const url = new URL(request.url);
-  const dirPath = normalizeRepoPath(url.searchParams.get('path') ?? '') ?? '';
-  const activeRef = url.searchParams.get('ref')?.trim() || row.default_branch;
-
   using repo = await artifacts.get(row.repo_name);
   const info = await repo.info();
   const branches = await resolveBranches(repo, row.default_branch);
+  return renderRepoDetail(request, env, repo, {
+    id: row.id, slug: row.slug, title: row.title, description: row.description,
+    defaultBranch: row.default_branch, info, branches, csrf, browser: fresh ? browser : undefined,
+    repoUrl: '/repos/' + row.id, apiUrl: '/api/repos/' + row.id,
+  });
+}
+
+async function renderRepoDetail(request: Request, env: RepoEnv, repo: ReadRepo, row: {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  defaultBranch: string;
+  info: { remote: string; source?: string | null };
+  branches: BranchRef[];
+  csrf?: string;
+  browser?: string;
+  repoUrl: string;
+  apiUrl: string;
+  external?: GitHubRepo;
+}) {
+  const { info, branches, csrf, repoUrl, apiUrl, external } = row;
+  const url = new URL(request.url);
+  const dirPath = normalizeRepoPath(url.searchParams.get('path') ?? '') ?? '';
+  const activeRef = url.searchParams.get('ref')?.trim() || row.defaultBranch;
   if (!branches.some((b) => b.name === activeRef)) {
     branches.unshift({ name: activeRef, sha: '' });
   }
-  const { entries } = await readTreeAtPath(repo, activeRef, dirPath);
+  const { entries, headCommit } = await readTreeAtPath(repo, activeRef, dirPath);
+  if (external && !headCommit) fail(404, 'not_found');
   const rawHistoryPath = url.searchParams.get('file');
   const historyPath = rawHistoryPath === null ? null : normalizeRepoPath(rawHistoryPath);
   const cursor = url.searchParams.get('before');
   if (rawHistoryPath !== null && !historyPath) fail(400, 'invalid_path');
-  if (cursor !== null && !/^[0-9a-f]{40}$/.test(cursor)) fail(400, 'invalid_commit');
-  const history = await readHistory(repo, cursor ?? activeRef, historyPath);
-  const repoUrl = '/repos/' + encodeURIComponent(row.id);
+  const anchor = url.searchParams.get('anchor');
+  if (cursor !== null && !(external ? /^[1-9][0-9]{0,5}$/ : /^[0-9a-f]{40}$/).test(cursor)) fail(400, 'invalid_commit');
+  if (anchor !== null && !/^[0-9a-f]{40}$/.test(anchor)) fail(400, 'invalid_commit');
+  const history = external && headCommit
+    ? await external.history(cursor && anchor ? anchor : headCommit.hash, historyPath, cursor ? Number(cursor) : 1)
+    : await readHistory(repo, cursor ?? activeRef, historyPath);
   const pageParams = new URLSearchParams({ ref: activeRef });
   if (dirPath) pageParams.set('path', dirPath);
   const compareBase = url.searchParams.get('compareBase') ?? '';
@@ -1161,7 +1203,10 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
   function historyUrl(file: string | null, before?: string) {
     const params = new URLSearchParams(pageParams);
     if (file) params.set('file', file);
-    if (before) params.set('before', before);
+    if (before) {
+      params.set('before', before);
+      if (external && headCommit) params.set('anchor', cursor && anchor ? anchor : headCommit.hash);
+    }
     if (file === historyPath) {
       if (compareBase) params.set('compareBase', compareBase);
       if (compareHead) params.set('compareHead', compareHead);
@@ -1169,18 +1214,19 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
     return repoUrl + '?' + params.toString() + '#commit-history';
   }
 
-  const refQuery = activeRef !== row.default_branch ? `?ref=${encodeURIComponent(activeRef)}` : '';
+  const refQuery = external && headCommit ? '?ref=' + headCommit.hash
+    : activeRef !== row.defaultBranch ? `?ref=${encodeURIComponent(activeRef)}` : '';
 
   const fileRows = entries
     .map((entry) => {
       const fullPath = dirPath ? `${dirPath}/${entry.name}` : entry.name;
       if (entry.type === 'tree') {
-        const nextUrl = `/repos/${encodeURIComponent(row.id)}?path=${encodeURIComponent(fullPath)}${activeRef !== row.default_branch ? `&ref=${encodeURIComponent(activeRef)}` : ''}`;
+        const nextUrl = `${repoUrl}?path=${encodeURIComponent(fullPath)}${activeRef !== row.defaultBranch ? `&ref=${encodeURIComponent(activeRef)}` : ''}`;
         return `<div class="row"><div>📁 <a href="${escape(nextUrl)}"><strong>${escape(entry.name)}/</strong></a></div><div class="muted">${escape(entry.hash.slice(0, 7))}</div></div>`;
       }
-      const blobBase = `/api/repos/${row.id}/blob/${fullPath.split('/').map(encodeURIComponent).join('/')}`;
+      const blobBase = `${apiUrl}/blob/${fullPath.split('/').map(encodeURIComponent).join('/')}`;
       const blobUrl = `${blobBase}${refQuery}`;
-      const editorUrl = `/editor.html?open=${encodeURIComponent(blobUrl)}&download=1`;
+      const editorUrl = `/editor.html?open=${encodeURIComponent(blobUrl)}&${external ? 'view=1' : 'download=1'}`;
       const openBtn = isEditableInIbis(entry.name)
         ? `<a class="btn btn-primary" href="${escape(editorUrl)}">Docs で開く</a>`
         : '';
@@ -1194,7 +1240,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       const when = new Date(c.committedAt * 1000).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
       const snapshot = repoUrl + '?' + new URLSearchParams({ ref: c.hash });
       const raw = historyPath && status !== '削除'
-        ? '/api/repos/' + row.id + '/blob/' + historyPath.split('/').map(encodeURIComponent).join('/') + '?ref=' + c.hash + '&plain=1'
+        ? apiUrl + '/blob/' + historyPath.split('/').map(encodeURIComponent).join('/') + '?ref=' + c.hash + '&plain=1'
         : null;
       const [subject, ...details] = c.message.split('\n');
       const message = details.join('\n').trim();
@@ -1216,7 +1262,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
   const branchOptions = branches
     .map(
       (b) =>
-        `<option value="${escape(b.name)}"${b.name === activeRef ? ' selected' : ''}>${escape(b.name)}${b.name === row.default_branch ? ' (default)' : ''}</option>`,
+        `<option value="${escape(b.name)}"${b.name === activeRef ? ' selected' : ''}>${escape(b.name)}${b.name === row.defaultBranch ? ' (default)' : ''}</option>`,
     )
     .join('');
 
@@ -1229,23 +1275,25 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
   ].join('');
 
   const parentLink = dirPath
-    ? `<a class="btn" href="/repos/${escape(row.id)}?${[dirPath.includes('/') ? `path=${encodeURIComponent(dirPath.slice(0, dirPath.lastIndexOf('/')))}` : '', activeRef !== row.default_branch ? `ref=${encodeURIComponent(activeRef)}` : ''].filter(Boolean).join('&')}">.. (上へ)</a>`
+    ? `<a class="btn" href="${escape(repoUrl)}?${[dirPath.includes('/') ? `path=${encodeURIComponent(dirPath.slice(0, dirPath.lastIndexOf('/')))}` : '', activeRef !== row.defaultBranch ? `ref=${encodeURIComponent(activeRef)}` : ''].filter(Boolean).join('&')}">.. (上へ)</a>`
     : '';
 
   const html = `
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">
       <div>
         <h1 style="margin:0;font-size:1.35rem">${escape(row.slug)} <span class="badge">${escape(activeRef)}</span></h1>
-        <div class="muted">${escape(row.title)}${row.description ? ` — ${escape(row.description)}` : ''}</div>
+        <div class="muted">${escape(row.title)}${row.description ? `${row.title ? ' — ' : ''}${escape(row.description)}` : ''}</div>
       </div>
       <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
         <select id="branch-select" aria-label="ブランチ切り替え" style="width:auto">${branchOptions}</select>
+        ${external ? `<a class="btn" href="${escape(info.remote)}">GitHub</a><span class="badge">読み取り専用</span>` : `
         <button id="new-branch-btn" type="button">+ ブランチ作成</button>
         <button id="fork-btn" type="button">Fork</button>
-        <button id="delete-btn" class="danger" type="button">削除</button>
+        <button id="delete-btn" class="danger" type="button">削除</button>`}
       </div>
     </div>
 
+    ${external ? '' : `
     <div class="card">
       <div class="card-hd">
         <strong>Git Clone / LLM GitOps</strong>
@@ -1276,6 +1324,8 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       </div>
     </div>
 
+    `}
+
     <div class="card">
       <div class="card-hd">
         <div><strong>ファイル一覧</strong> ${dirPath ? `<code>/${escape(dirPath)}</code>` : '<code>/</code>'} ${parentLink}</div>
@@ -1284,6 +1334,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       ${fileRows || '<div class="card-bd"><p class="muted">ファイルはまだありません。</p></div>'}
     </div>
 
+    ${external ? '' : `
     <div class="card">
       <div class="card-hd"><strong>新しいファイルをコミット (Web / Upload)</strong></div>
       <div class="card-bd">
@@ -1299,6 +1350,8 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
         <p id="status" role="status"></p>
       </div>
     </div>
+
+    `}
 
     <div class="card" id="diff-card">
       <div class="card-hd">
@@ -1329,7 +1382,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
           <button type="submit">移動</button>
         </form>
         <p><a href="#diff-card">比較欄へ</a> <span id="history-selection" class="muted" role="status"></span></p>
-        <p class="muted">選択した版から第1親をたどります。ファイルの履歴は同じパスの追加・変更・削除を表示します。</p>
+        <p class="muted">${external ? 'GitHubのコミット履歴を表示します。' : '選択した版から第1親をたどります。ファイルの履歴は同じパスの追加・変更・削除を表示します。'}</p>
       </div>
       ${commitRows || '<div class="card-bd"><p class="muted">この範囲に該当するコミットはありません。</p></div>'}
       ${history.next ? `<div class="card-bd"><a class="btn" data-history-page href="${escape(historyUrl(historyPath, history.next))}">さらに古い履歴</a></div>` : ''}
@@ -1349,9 +1402,10 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
     <script>
       const csrf = ${JSON.stringify(csrf)};
       const repoId = ${JSON.stringify(row.id)};
+      const apiUrl = ${JSON.stringify(apiUrl)};
       const activeRef = ${JSON.stringify(activeRef).replace(/</g, '\\u003c')};
       const historyPath = ${JSON.stringify(historyPath).replace(/</g, '\\u003c')};
-      const defaultBranch = ${JSON.stringify(row.default_branch)};
+      const defaultBranch = ${JSON.stringify(row.defaultBranch)};
       const status = document.querySelector('#status');
       const tokenBox = document.querySelector('#token-box');
       const diffBody = document.querySelector('#diff-body');
@@ -1361,12 +1415,14 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       document.querySelector('#branch-select').addEventListener('change', (e) => {
         const branch = e.currentTarget.value;
         const u = new URL(location.href);
+        u.searchParams.delete('before');
+        u.searchParams.delete('anchor');
         if (branch === defaultBranch) u.searchParams.delete('ref');
         else u.searchParams.set('ref', branch);
         location.href = u.toString();
       });
 
-      document.querySelector('#new-branch-btn').addEventListener('click', async () => {
+      document.querySelector('#new-branch-btn')?.addEventListener('click', async () => {
         const name = prompt('新しいブランチ名を入力してください（例: draft/review-1）:');
         if (!name) return;
         const r = await fetch('/api/repos/' + repoId + '/branches', {
@@ -1418,7 +1474,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
 
           const right = document.createElement('div');
           if (f.status !== 'deleted' && /\\.(md|markdown|docx|xlsx|pptx)$/i.test(f.path) && data.headCommit) {
-            const blobRefUrl = '/api/repos/' + repoId + '/blob/' + f.path.split('/').map(encodeURIComponent).join('/') + '?ref=' + encodeURIComponent(data.headCommit.hash);
+            const blobRefUrl = apiUrl + '/blob/' + f.path.split('/').map(encodeURIComponent).join('/') + '?ref=' + encodeURIComponent(data.headCommit.hash);
             const a = document.createElement('a');
             a.className = 'btn';
             a.href = '/editor.html?open=' + encodeURIComponent(blobRefUrl) + '&view=1';
@@ -1480,10 +1536,14 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
         if (head) params.set('head', head);
         if (base) params.set('base', base);
         if (pathFilter) params.set('path', pathFilter);
-        const r = await fetch('/api/repos/' + repoId + '/diff?' + params.toString(), { credentials: 'same-origin' });
+        const r = await fetch(apiUrl + '/diff?' + params.toString(), { credentials: 'same-origin' });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) {
-          diffBody.innerHTML = '<p style="color:var(--danger)">差分を取得できませんでした: ' + (d.error || r.status) + '</p>';
+          diffBody.textContent = d.error === 'narrow_to_file'
+            ? '変更範囲が広いため、対象ファイルの履歴を開いて比較してください。'
+            : d.error === 'github_rate_limit'
+              ? 'GitHubの読み取り上限に達しました。時間をおいて再度お試しください。'
+              : '差分を取得できませんでした: ' + (d.error || r.status);
           return;
         }
         renderDiffResponse(d);
@@ -1560,10 +1620,10 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
         pre.textContent = 'git clone ' + cloneUrl;
         tokenBox.append(p, pre);
       }
-      document.querySelector('#mint-read').addEventListener('click', () => mint('read'));
-      document.querySelector('#mint-write').addEventListener('click', () => mint('write'));
+      document.querySelector('#mint-read')?.addEventListener('click', () => mint('read'));
+      document.querySelector('#mint-write')?.addEventListener('click', () => mint('write'));
 
-      document.querySelector('#fork-btn').addEventListener('click', async () => {
+      document.querySelector('#fork-btn')?.addEventListener('click', async () => {
         const slug = prompt('フォーク先のスラッグを入力してください:', ${JSON.stringify(`${row.slug}-fork`)});
         if (!slug) return;
         const r = await fetch('/api/repos/' + repoId + '/fork', {
@@ -1577,7 +1637,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
         else alert('Fork に失敗しました');
       });
 
-      document.querySelector('#delete-btn').addEventListener('click', async () => {
+      document.querySelector('#delete-btn')?.addEventListener('click', async () => {
         if (!confirm('リポジトリ「${escape(row.slug)}」を削除しますか？Git 履歴も削除されます。')) return;
         const r = await fetch('/api/repos/' + repoId, {
           method: 'DELETE',
@@ -1588,7 +1648,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
         else alert('削除できませんでした');
       });
 
-      document.querySelector('#commit-file').addEventListener('submit', async (e) => {
+      document.querySelector('#commit-file')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const f = e.currentTarget;
         const path = f.path.value.trim().replace(/^\\/+/, '');
@@ -1624,7 +1684,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       });
 
       const pushStatus = document.querySelector('#push-status');
-      document.querySelector('#push-external').addEventListener('submit', async (e) => {
+      document.querySelector('#push-external')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const f = e.currentTarget;
         pushStatus.textContent = '外部リモートへ Push 中…';
@@ -1670,11 +1730,67 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       });
     </script>`;
 
-  return reposPage(env, row.slug, html, `/repos/${row.id}`, 200, fresh ? browser : undefined);
+  return reposPage(env, row.slug, html, repoUrl, 200, row.browser);
+}
+
+async function openGitHubRepo(request: Request, env: RepoEnv, coordinates: { owner: string; name: string }, operation: 'page' | 'diff' | 'blob', path?: string) {
+  const external = new GitHubRepo(coordinates.owner, coordinates.name, MAX_DIFF_FILE_BYTES);
+  const info = await external.info();
+  const repoUrl = '/repos/github/' + external.name;
+  const apiUrl = '/api' + repoUrl;
+  if (operation === 'diff') return diffRepoResponse(request, env, external, info.defaultBranch);
+  if (operation === 'blob') {
+    let filePath: string | null;
+    try {
+      filePath = normalizeRepoPath(decodeURIComponent(path ?? ''));
+    } catch {
+      filePath = null;
+    }
+    if (!filePath) fail(400, 'invalid_path');
+    const params = new URL(request.url).searchParams;
+    const ref = params.get('ref')?.trim() || info.defaultBranch;
+    const commit = /^[0-9a-f]{40}$/.test(ref) ? ref : (await external.readCommit(ref))?.hash;
+    if (!commit) fail(404, 'not_found');
+    const result = await external.raw(commit, filePath);
+    if (!result) fail(404, 'not_found');
+    const headers = baseHeaders(env);
+    headers.set('Content-Type', (params.get('plain') === '1' || /\.md$/i.test(filePath)) && isTextDiffablePath(filePath)
+      ? 'text/plain; charset=utf-8' : contentTypeForPath(filePath));
+    return new Response(result.body, { headers });
+  }
+  return renderRepoDetail(request, env, external, {
+    id: external.name, slug: external.name, title: '', description: info.description,
+    defaultBranch: info.defaultBranch, branches: await external.branches(),
+    info: { remote: external.remote }, repoUrl, apiUrl, external,
+  });
 }
 
 export async function handleReposRequest(request: Request, env: RepoEnv, path: string): Promise<Response | null> {
   if (request.method === 'GET' && path === '/repos') return await reposHome(request, env);
+  if (request.method === 'GET' && path === '/repos/open') {
+    const connection = githubUrlCoordinates(new URL(request.url).searchParams.get('url') ?? '');
+    if (!connection) return reposPage(env, 'リポジトリを開く', OPEN_REPO +
+      '<p role="alert">公開GitHubリポジトリのHTTPS URLを入力してください。</p>', '/repos', 400);
+    return Response.redirect(new URL('/repos/github/' + connection.owner + '/' + connection.name, request.url).toString(), 303);
+  }
+  if (request.method === 'GET') {
+    const externalPage = path.startsWith('/repos/github/') ? githubCoordinates(path.slice('/repos/github'.length)) : null;
+    if (externalPage) {
+      try {
+        return await openGitHubRepo(request, env, externalPage, 'page');
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.message !== 'github_rate_limit') throw error;
+        const remote = 'https://github.com/' + externalPage.owner + '/' + externalPage.name;
+        return reposPage(env, 'リポジトリを開く',
+          `<div class="card"><div class="card-bd"><p role="alert">GitHubの読み取り上限に達しました。時間をおいて再度お試しください。</p><a class="btn" href="${escape(remote)}">GitHubで開く</a></div></div>`,
+          '/repos', 429);
+      }
+    }
+    const api = /^\/api\/repos\/github(\/[^/]+\/[^/]+)\/(diff|blob\/(.+))$/.exec(path);
+    const externalApi = api ? githubCoordinates(api[1]) : null;
+    if (api && externalApi) return await openGitHubRepo(request, env, externalApi, api[2] === 'diff' ? 'diff' : 'blob', api[3]);
+  }
+
   const pageMatch = REPO_PAGE_PATH.exec(path);
   if (request.method === 'GET' && pageMatch) return await repoDetailPage(request, env, pageMatch[1]);
 
