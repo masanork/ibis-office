@@ -2774,6 +2774,8 @@ mod tests {
         let styles = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles {NAMESPACES}/>"#);
         let settings = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings {NAMESPACES}/>"#);
         let data = super::package(&document, &styles, &settings, None, &[], &[("image1.png".to_string(), vec![0x89, b'P', b'N', b'G'])]).unwrap();
+        let markdown = crate::markdown::export_docx_to_markdown(&data).unwrap();
+        assert_eq!(markdown.matches("![a dot](data:image/png;base64,").count(), 1);
         let p = crate::docx::read(&data).unwrap();
         let flow = p.flow.as_deref().unwrap();
         let shapes: Vec<_> = flow

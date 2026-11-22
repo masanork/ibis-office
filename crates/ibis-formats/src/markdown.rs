@@ -5007,6 +5007,8 @@ fn decode_data_uri_image(uri: &str) -> Option<(MediaFormat, Vec<u8>)> {
         "jpeg" | "jpg" => MediaFormat::Jpeg,
         "gif" => MediaFormat::Gif,
         "bmp" => MediaFormat::Bmp,
+        "tiff" => MediaFormat::Tiff,
+        "webp" => MediaFormat::Webp,
         "svg+xml" | "svg" => MediaFormat::Svg,
         "x-emf" | "emf" => MediaFormat::Emf,
         "x-wmf" | "wmf" => MediaFormat::Wmf,
@@ -6074,9 +6076,14 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
                 }
             }
             MarkdownSource::Body(_, Block::Paragraph(p)) => {
-                if p.runs.iter().any(|run| matches!(&run.kind, FlowRunKind::Shape(shape)
-                    if !matches!(shape.kind, ShapeKind::Chart(_)) || p.runs.len() != 1))
-                {
+                if p.runs.iter().any(|run| match &run.kind {
+                    FlowRunKind::Shape(shape) => match &shape.kind {
+                        ShapeKind::Picture(picture) => !presentation.media(picture.media).is_some_and(|m| m.format.is_image()),
+                        ShapeKind::Chart(_) => p.runs.len() != 1,
+                        _ => true,
+                    },
+                    _ => false,
+                }) {
                     warn("drawing_shape_omitted");
                 }
             }
@@ -6864,6 +6871,34 @@ fn markdown_endnote_id(label: &str) -> Option<u32> {
     id.parse().ok()
 }
 
+fn serialize_picture(
+    media: &[Media],
+    id: MediaId,
+    size: EmuSize,
+    alt_text: &ibis_doc_model::AltText,
+) -> String {
+    let Some(media) = media.iter().find(|media| media.id == id) else {
+        return String::new();
+    };
+    let mime = match media.format {
+        MediaFormat::Png => "png",
+        MediaFormat::Jpeg => "jpeg",
+        MediaFormat::Gif => "gif",
+        MediaFormat::Bmp => "bmp",
+        MediaFormat::Tiff => "tiff",
+        MediaFormat::Webp => "webp",
+        MediaFormat::Svg => "svg+xml",
+        MediaFormat::Emf => "x-emf",
+        MediaFormat::Wmf => "x-wmf",
+        _ => return String::new(),
+    };
+    let alt = if alt_text.description.is_empty() { &alt_text.title } else { &alt_text.description };
+    let b64 = encode_base64(&media.data);
+    let width = (size.width as f64 / EMU_PER_MM).round() as i64;
+    let height = (size.height as f64 / EMU_PER_MM).round() as i64;
+    format!("![{alt}](data:image/{mime};base64,{b64}){{width={width}mm height={height}mm}}")
+}
+
 fn serialize_runs(
     runs: &[FlowRun],
     media: &[Media],
@@ -6932,30 +6967,17 @@ fn serialize_runs(
                 size,
                 look,
             } => {
-                if let Some(m) = media.iter().find(|m| m.id == *mid) {
-                    let mime = match m.format {
-                        MediaFormat::Png => "png",
-                        MediaFormat::Jpeg => "jpeg",
-                        MediaFormat::Gif => "gif",
-                        MediaFormat::Bmp => "bmp",
-                        MediaFormat::Svg => "svg+xml",
-                        MediaFormat::Emf => "x-emf",
-                        MediaFormat::Wmf => "x-wmf",
-                        _ => "png",
-                    };
-                    let b64 = encode_base64(&m.data);
-                    let alt = if !look.alt_text.description.is_empty() {
-                        look.alt_text.description.as_str()
-                    } else {
-                        look.alt_text.title.as_str()
-                    };
-                    let w_mm = (size.width as f64 / EMU_PER_MM).round() as i64;
-                    let h_mm = (size.height as f64 / EMU_PER_MM).round() as i64;
-                    format!("![{alt}](data:image/{mime};base64,{b64}){{width={w_mm}mm height={h_mm}mm}}")
-                } else {
-                    String::new()
-                }
+                serialize_picture(media, *mid, *size, &look.alt_text)
             }
+            FlowRunKind::Shape(shape) => match &shape.kind {
+                ShapeKind::Picture(picture) => serialize_picture(
+                    media,
+                    picture.media,
+                    EmuSize::new(shape.frame.width, shape.frame.height),
+                    &picture.alt_text,
+                ),
+                _ => String::new(),
+            },
             _ => String::new(),
         };
 
@@ -7900,6 +7922,38 @@ mod tests {
         let flow = opened.presentation.flow.unwrap();
         let text = ibis_doc_model::flow_command::all_paragraphs(&flow).iter().map(|p| p.text()).collect::<Vec<_>>();
         assert_eq!(text, ["Shared document"]);
+    }
+
+    #[test]
+    fn docx_markdown_exports_an_anchored_picture() {
+        let emf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf");
+        let image = format!("![floating](data:image/x-emf;base64,{}){{width=40mm height=30mm}}", encode_base64(emf));
+        let original = import_markdown_to_docx_bytes(image.as_bytes()).unwrap();
+        let mut package = ibis_ooxml::Package::open(original).unwrap();
+        let part = "word/document.xml";
+        let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+        let anchored = xml
+            .replace("<wp:inline", "<wp:anchor")
+            .replace("</wp:inline>", "</wp:anchor>")
+            .replace("<wp:docPr", "<wp:wrapTopAndBottom/><wp:docPr");
+        assert!(anchored.contains("<wp:anchor"));
+        assert!(anchored.contains("<wp:wrapTopAndBottom/>"));
+        package.set_bytes(part, anchored.into_bytes());
+        let docx = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
+        assert_eq!(export_docx_to_markdown(&docx).unwrap().trim(), image);
+    }
+
+    #[test]
+    fn markdown_picture_mime_matches_tiff_and_webp() {
+        for (format, mime) in [(MediaFormat::Tiff, "tiff"), (MediaFormat::Webp, "webp")] {
+            let data = b"unchanged bytes";
+            let mut presentation = Presentation::default();
+            let id = presentation.add_media(format, data.to_vec());
+            let markdown = serialize_picture(&presentation.media, id, EmuSize::new(36000, 36000), &Default::default());
+            let uri = markdown.strip_prefix("![](").unwrap().split_once(')').unwrap().0;
+            assert!(uri.starts_with(&format!("data:image/{mime};base64,")));
+            assert_eq!(decode_data_uri_image(uri), Some((format, data.to_vec())));
+        }
     }
 
     #[test]
