@@ -502,7 +502,17 @@ impl SlideEditor {
         let Some(state) = &self.git_workspace else {
             return;
         };
-        let (Some(root), Some(file)) = (&state.worktree, &state.file) else {
+        if let Some(file) = state.file.clone() {
+            self.git_open_worktree_path(&file, cx);
+        }
+    }
+
+    fn git_open_worktree_path(&mut self, file: &Path, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .git_workspace
+            .as_ref()
+            .and_then(|state| state.worktree.as_ref())
+        else {
             return;
         };
         let result = root.canonicalize().and_then(|root| {
