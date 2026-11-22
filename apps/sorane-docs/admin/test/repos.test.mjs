@@ -1112,6 +1112,8 @@ test('repository source follows Markdown links at the same commit and escapes so
   const badYaml = '8'.repeat(40);
   const badJson = '9'.repeat(40);
   const openapi = 'a'.repeat(40);
+  const openapi30 = 'b'.repeat(40);
+  const openapi31 = 'c'.repeat(40);
   const original = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(input);
@@ -1142,6 +1144,8 @@ test('repository source follows Markdown links at the same commit and escapes so
           { path: 'broken.yaml', mode: '100644', sha: badYaml, type: 'blob' },
           { path: 'broken.json', mode: '100644', sha: badJson, type: 'blob' },
           { path: 'openapi.yaml', mode: '100644', sha: openapi, type: 'blob' },
+          { path: 'openapi30.yaml', mode: '100644', sha: openapi30, type: 'blob' },
+          { path: 'openapi31.json', mode: '100644', sha: openapi31, type: 'blob' },
         ] });
       case '/git/blobs/' + md:
         return new Response([
@@ -1170,6 +1174,15 @@ test('repository source follows Markdown links at the same commit and escapes so
           '    Rebased:', '      $id: "https://example.test/schema.json"',
           '      $ref: "schema.json#/$defs/duplicate"',
         ].join('\n'));
+      case '/git/blobs/' + openapi30:
+        return new Response([
+          'openapi: 3.0.4', 'info: {title: API, version: "1"}', 'paths:',
+          '  /first:', '    get:', '      operationId: same',
+          '  /second:', '    post:', '      operationId: same', '      responses: {}',
+          '  missing-slash: {}', '  /not-an-object: true',
+        ].join('\n'));
+      case '/git/blobs/' + openapi31:
+        return Response.json({ openapi: '3.1.1', info: { title: 'API', version: '1' }, components: {} });
       default: assert.fail(url.href);
     }
   };
@@ -1217,6 +1230,18 @@ test('repository source follows Markdown links at the same commit and escapes so
     assert.equal(apiPage.status, 200);
     const apiHtml = await apiPage.text();
     assert.match(apiHtml, /aria-label="OpenAPI 操作"/);
+    assert.match(apiHtml, /aria-label="OpenAPI 基本チェック"/);
+    assert.match(apiHtml, /info はマッピングで指定してください/);
+    assert.doesNotMatch(apiHtml, /responses はマッピングで指定してください/);
+    const diagnostics30 = await worker.fetch(req(base + '?ref=' + commit + '&source=api%2Fopenapi30.yaml'), env);
+    const html30 = await diagnostics30.text();
+    assert.match(html30, /href="#L6">6 行目<\/a> · responses はマッピングで指定してください/);
+    assert.match(html30, /href="#L9">9 行目<\/a> · operationId が同じ文書の別の操作と重複/);
+    assert.match(html30, /href="#L10">10 行目<\/a> · responses に応答コード/);
+    assert.match(html30, /href="#L11">11 行目<\/a> · パス名/);
+    assert.match(html30, /href="#L12">12 行目<\/a> · パスの定義/);
+    const diagnostics31 = await worker.fetch(req(base + '?ref=' + commit + '&source=api%2Fopenapi31.json'), env);
+    assert.match(await diagnostics31.text(), /確認対象の項目に問題は見つかりませんでした/);
     assert.match(apiHtml, /href="#L4"><code>GET \/pets<\/code>/);
     assert.match(apiHtml, /href="#L9"><code>QUERY \/pets<\/code>/);
     assert.match(apiHtml, /href="#L11"><code>COPY \/pets<\/code>/);

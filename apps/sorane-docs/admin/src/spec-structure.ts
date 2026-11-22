@@ -2,6 +2,7 @@
 import { LineCounter, isAlias, isMap, isNode, isScalar, isSeq, parseAllDocuments } from 'yaml';
 import { escape } from '../vendor/mikaki-oidc';
 import { pointerLine, renderOpenApiOperations } from './spec-navigation';
+import { renderOpenApiDiagnostics } from './spec-diagnostics';
 
 const MAX_ENTRIES = 1000;
 const MAX_DEPTH = 16;
@@ -53,6 +54,7 @@ export function renderSpecStructure(text: string, json: boolean, maxLine: number
   const root = documents.length === 1 ? documents[0].contents : null;
   const targetLine = options.pointer === null || !root ? null : pointerLine(root, options.pointer, location);
   const operations = renderOpenApiOperations(root, location);
+  const diagnostics = renderOpenApiDiagnostics(root, location);
   const missing = options.pointer !== null && targetLine === null ? notice('指定された参照先を特定できませんでした。') : '';
   let remaining = MAX_ENTRIES;
   let truncated = false;
@@ -109,7 +111,7 @@ export function renderSpecStructure(text: string, json: boolean, maxLine: number
     }
   }
   if (!tree.length) return { html: missing, targetLine };
-  const html = `${missing}${operations}<nav class="source-structure" aria-label="構造ツリー"><h2>構造ツリー</h2><ul>${tree.join('')}</ul>
+  const html = `${missing}${operations}${diagnostics}<nav class="source-structure" aria-label="構造ツリー"><h2>構造ツリー</h2><ul>${tree.join('')}</ul>
     ${truncated ? notice('構造ツリーの一部を表示しています。') : ''}</nav>`;
   return { html, targetLine };
 }
