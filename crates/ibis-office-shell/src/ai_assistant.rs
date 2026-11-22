@@ -13,12 +13,12 @@ use ibis_doc_model::ai_sheet::{
     audit_sheet_errors, find_sheet_cells, format_range, parse_cell_range, parse_hex_rgb,
     read_sheet_range, resolve_sheet_slide, workbook_overview,
 };
-use ibis_doc_model::command::Command;
+use ibis_doc_model::command::{Command, Document};
 use ibis_doc_model::drawing::{Color, Fill, Geometry};
 use ibis_doc_model::flow::{Block, FlowParagraph, FlowRunKind};
 use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange};
 use ibis_doc_model::machine_readability::{CandidateKind, candidates as mr_candidates};
-use ibis_doc_model::model::{AutoShape, Shape, ShapeId, ShapeKind, Slide, SlideId};
+use ibis_doc_model::model::{AutoShape, Presentation, Shape, ShapeId, ShapeKind, Slide, SlideId};
 use ibis_doc_model::sd_jwt::{Oid4vpRequest, SdJwtOptions, issue_sd_jwt};
 use ibis_doc_model::sd_jwt_binding::{
     BindingSource, bind_range_as_sd_claim_commands, build_sd_jwt_template_commands,
@@ -27,6 +27,7 @@ use ibis_doc_model::sd_jwt_binding::{
 use ibis_doc_model::sd_jwt_import::{ParsedCredentialFormat, parse_mdoc_text, parse_sd_jwt};
 use ibis_doc_model::sd_jwt_mdoc::{MdocOptions, issue_mdoc};
 use ibis_doc_model::sd_jwt_schema::SdJwtSchema;
+use ibis_doc_model::sheet::CellRange;
 use ibis_doc_model::sheet_calc::sheet_of_slide;
 use ibis_doc_model::sheet_command::SheetCommand;
 use ibis_doc_model::text::{TextBody, TextStyle};
@@ -144,6 +145,97 @@ pub struct AiAssistantState {
     /// The open document is over the selected model's cap, and the user has not chosen a range.
     #[allow(dead_code)]
     browser_pending: Option<BrowserPendingSend>,
+    #[cfg(not(target_family = "wasm"))]
+    workbook_review: Option<WorkbookReview>,
+    #[cfg(not(target_family = "wasm"))]
+    workbook_history_start: Option<usize>,
+}
+
+/// Workbook tool calls share a private model so reads see staged edits.
+struct WorkbookTurn {
+    base: Presentation,
+    draft: Document,
+    path: Option<std::path::PathBuf>,
+    file_id: u64,
+    source: Option<std::sync::Arc<ibis_formats::Source>>,
+    active: SlideId,
+    selection: Option<CellRange>,
+    allocated_ids: usize,
+    navigate: bool,
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct WorkbookReview {
+    turn: WorkbookTurn,
+    commands: Vec<Command>,
+    preview: String,
+    history_start: usize,
+}
+
+fn workbook_edit_label(turn: &WorkbookTurn, slide: SlideId, args: &str, label: &str) -> String {
+    let name = turn.draft.presentation().slide(slide).and_then(|slide| slide.name.as_deref()).unwrap_or("");
+    match parse_range_arg(args) {
+        Ok(range) => format!("{label}（{name}!{}）", format_range(&range)),
+        Err(_) => format!("{label}（{name}）"),
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn workbook_preview(turn: &WorkbookTurn, edits: &[String]) -> String {
+    const MAX_CELL_CHANGES: usize = 20;
+    let mut lines = edits.to_vec();
+    let mut cell_changes = 0;
+    for slide in &turn.draft.presentation().slides {
+        let Some(after) = sheet_of_slide(slide) else { continue };
+        let before = turn.base.slide(slide.id).and_then(sheet_of_slide);
+        if before.is_some_and(|before| before.cells.content_id() == after.cells.content_id()) {
+            continue;
+        }
+        let name = slide.name.as_deref().unwrap_or("");
+        let mut old = before.into_iter().flat_map(|sheet| sheet.cells.iter()).peekable();
+        let mut new = after.cells.iter().peekable();
+        while old.peek().is_some() || new.peek().is_some() {
+            let old_address = old.peek().map(|cell| (cell.row, cell.column));
+            let new_address = new.peek().map(|cell| (cell.row, cell.column));
+            let (address, before, after) = match (old_address, new_address) {
+                (Some(a), Some(b)) if a == b => (a, old.next(), new.next()),
+                (Some(a), Some(b)) if a < b => (a, old.next(), None),
+                (_, Some(b)) => (b, None, new.next()),
+                (Some(a), None) => (a, old.next(), None),
+                (None, None) => break,
+            };
+            let before_display = before.filter(|cell| !cell.text.is_empty() || cell.formula.is_some());
+            let after_display = after.filter(|cell| !cell.text.is_empty() || cell.formula.is_some());
+            if before_display.map(|cell| (&cell.text, &cell.formula))
+                == after_display.map(|cell| (&cell.text, &cell.formula))
+            {
+                continue;
+            }
+            if cell_changes == MAX_CELL_CHANGES {
+                lines.push("ほかのセルにも変更があります。".to_string());
+                return lines.join("\n");
+            }
+            let describe = |cell: Option<&ibis_doc_model::sheet::SheetCell>| {
+                let Some(cell) = cell else { return "（空欄）".to_string() };
+                let excerpt = |text: &str| {
+                    let mut chars = text.chars();
+                    let mut result: String = chars.by_ref().take(80).collect();
+                    if chars.next().is_some() { result.push('…'); }
+                    result
+                };
+                match &cell.formula {
+                    Some(formula) => format!("={} [{}]", excerpt(formula), excerpt(&cell.text)),
+                    None if cell.text.is_empty() => "（空欄）".to_string(),
+                    None => excerpt(&cell.text),
+                }
+            };
+            let (row, column) = address;
+            lines.push(format!("{name}!{}{row}  {} → {}",
+                column_letters(column), describe(before), describe(after), row = row + 1));
+            cell_changes += 1;
+        }
+    }
+    lines.join("\n")
 }
 
 /// A browser send that is waiting for the user to choose which text to include.
@@ -436,6 +528,10 @@ impl SlideEditor {
                 browser_models: Vec::new(),
                 browser_status: String::new(),
                 browser_pending: None,
+                #[cfg(not(target_family = "wasm"))]
+                workbook_review: None,
+                #[cfg(not(target_family = "wasm"))]
+                workbook_history_start: None,
             });
             prompt_input.update(cx, |input, cx| input.focus(window, cx));
         }
@@ -552,6 +648,10 @@ impl SlideEditor {
         if let Some(p) = self.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
+            #[cfg(not(target_family = "wasm"))]
+            if let Some(start) = p.workbook_history_start.take() {
+                p.history.truncate(start);
+            }
             if !p.streaming_text.is_empty() {
                 let text = std::mem::take(&mut p.streaming_text);
                 p.messages.push(UiMessage::new(UiMessageKind::Assistant, text));
@@ -570,6 +670,11 @@ impl SlideEditor {
             p.messages.clear();
             p.history.clear();
             p.browser_pending = None;
+            #[cfg(not(target_family = "wasm"))]
+            {
+                p.workbook_review = None;
+                p.workbook_history_start = None;
+            }
         }
         cx.notify();
     }
@@ -580,6 +685,10 @@ impl SlideEditor {
                 return;
             };
             if p.streaming {
+                return;
+            }
+            #[cfg(not(target_family = "wasm"))]
+            if p.workbook_review.is_some() {
                 return;
             }
             let prompt = p.prompt_input.read(cx).value().trim().to_string();
@@ -603,14 +712,33 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     fn submit_desktop_assistant(&mut self, prompt: String, cx: &mut Context<Self>) {
         let kind = self.ai_doc_kind();
-        let (run_id, mut messages_to_send) = {
+        let mut workbook = (kind == AiDocKind::Xlsx).then(|| {
+            let base = self.presentation().clone();
+            let path = self.file_path();
+            let mut draft = Document::new(base.clone());
+            draft.set_file(path.as_ref().map(|path| path.to_string_lossy().into_owned()));
+            WorkbookTurn {
+                base,
+                draft,
+                path,
+                file_id: self.file_id,
+                source: self.source.clone(),
+                active: self.current_slide,
+                selection: with_format!(self, ai_sheet_selection(self, self.current_slide)),
+                allocated_ids: 0,
+                navigate: false,
+            }
+        });
+        let (run_id, history_start, mut messages_to_send) = {
             let Some(p) = self.ai_assistant.as_mut() else {
                 return;
             };
-            if p.streaming {
+            if p.streaming || p.workbook_review.is_some() {
                 return;
             }
-            p.run_id = p.run_id.wrapping_add(1);
+            // A completion from a closed panel must never match a reopened panel.
+            static NEXT_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            p.run_id = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             p.streaming = true;
             p.streaming_text.clear();
             p.messages.push(UiMessage::new(UiMessageKind::User, prompt.clone()));
@@ -620,6 +748,7 @@ impl SlideEditor {
                     AiDocKind::Xlsx => {
                         "You are an AI spreadsheet assistant inside ibisOffice. \
                          Use the provided tools to inspect the workbook and apply edits or formatting. \
+                         Workbook edits are staged for user review. Describe them as proposed changes. \
                          Always inspect relevant cells with read_range before modifying existing data. \
                          For charts, inspect the headers and a small sample, then use create_chart with a chart kind and full cell ranges to keep the chart linked to the workbook. \
                          For SD-JWT Verifiable Credentials (VC) tasks, use inspect_vc_bindings, apply_vc_template, infer_vc_schema, bind_vc_claim, issue_vc_preview, parse_vc_token, and prepare_oid4vp_presentation, and clearly explain mandatory claims (claim.*, e.g. vct, iss) vs selective-disclosure claims (sd.* with disclose.* toggles) and OID4VP Key Binding (aud/nonce). \
@@ -639,8 +768,10 @@ impl SlideEditor {
                 };
                 p.history.push(ChatMessage::system(sys));
             }
+            let history_start = p.history.len();
+            p.workbook_history_start = workbook.as_ref().map(|_| history_start);
             p.history.push(ChatMessage::user(prompt));
-            (p.run_id, p.history.clone())
+            (p.run_id, history_start, p.history.clone())
         };
         let overview_context = self.ai_overview_json(kind);
         if let Some(last) = messages_to_send.last_mut()
@@ -660,6 +791,7 @@ impl SlideEditor {
         cx.spawn(async move |this, cx| {
             let mut turn_commands: Vec<Command> = Vec::new();
             let mut applied_source_edit = false;
+            let mut workbook_edits = Vec::new();
             for _step in 0..MAX_TOOL_STEPS {
                 let is_active = this
                     .read_with(cx, |editor, _| {
@@ -693,13 +825,26 @@ impl SlideEditor {
                 )
                 .await;
 
+                let outcome = outcome.and_then(|out| {
+                    if workbook.is_some()
+                        && (matches!(out.finish_reason.as_deref(), Some("length" | "content_filter"))
+                            || (out.finish_reason.is_none() && !out.received_done))
+                    {
+                        return Err("AIの応答が途中で終了したため、変更案を破棄しました。".into());
+                    }
+                    Ok(out)
+                });
                 match outcome {
                     Err(err) => {
                         let _ = this.update(cx, |editor, cx| {
                             if let Some(p) = editor.ai_assistant.as_mut()
+                                && p.streaming
                                 && p.run_id == run_id
                             {
                                 p.streaming = false;
+                                if let Some(start) = p.workbook_history_start.take() {
+                                    p.history.truncate(start);
+                                }
                                 p.streaming_text.clear();
                                 p.messages.push(UiMessage::new(UiMessageKind::Error, err));
                                 p.scroll_handle.scroll_to_bottom();
@@ -738,6 +883,21 @@ impl SlideEditor {
                             }
 
                             if out.tool_calls.is_empty() {
+                                if let Some(turn) = workbook.take() {
+                                    p.streaming = false;
+                                    p.workbook_history_start = None;
+                                    if !turn_commands.is_empty() && turn.draft.presentation() != &turn.base {
+                                        let preview = workbook_preview(&turn, &workbook_edits);
+                                        p.workbook_review = Some(WorkbookReview {
+                                            turn, commands: std::mem::take(&mut turn_commands),
+                                            preview, history_start,
+                                        });
+                                    } else {
+                                        editor.finish_workbook_navigation(&turn, cx);
+                                    }
+                                    cx.notify();
+                                    return;
+                                }
                                 let applied_edits = applied_source_edit || !turn_commands.is_empty();
                                 if !turn_commands.is_empty() {
                                     let cmds = std::mem::take(&mut turn_commands);
@@ -774,10 +934,32 @@ impl SlideEditor {
                             }
 
                             for call in &out.tool_calls {
-                                let (result_json, cmd_opt, log_text) =
-                                    editor.execute_ai_tool(kind, call, &turn_commands, cx);
+                                let (mut result_json, cmd_opt, mut log_text) =
+                                    if let Some(turn) = workbook.as_mut() {
+                                        Self::execute_xlsx_tool(call, turn)
+                                    } else {
+                                        editor.execute_ai_tool(kind, call, &turn_commands, cx)
+                                    };
                                 if let Some(cmd) = cmd_opt {
-                                    turn_commands.push(cmd);
+                                    if let Some(turn) = workbook.as_mut() {
+                                        match turn.draft.execute(vec![cmd.clone()]) {
+                                            Ok(()) => {
+                                                if let Command::Sheet(SheetCommand::AddSheet { sheet, .. }) = &cmd {
+                                                    turn.active = *sheet;
+                                                    turn.selection = None;
+                                                    turn.navigate = true;
+                                                }
+                                                workbook_edits.push(log_text.clone());
+                                                turn_commands.push(cmd);
+                                            }
+                                            Err(error) => {
+                                                result_json = json!({ "error": error.to_string() }).to_string();
+                                                log_text = format!("✗ {}: {error}", call.function.name);
+                                            }
+                                        }
+                                    } else {
+                                        turn_commands.push(cmd);
+                                    }
                                 }
                                 if call.function.name == "replace_source_text" && serde_json::from_str::<serde_json::Value>(&result_json).ok().and_then(|value| value["changed"].as_bool()) == Some(true) {
                                     applied_source_edit = true;
@@ -802,7 +984,10 @@ impl SlideEditor {
             }
 
             let _ = this.update(cx, |editor, cx| {
-                if !turn_commands.is_empty() {
+                if !editor.ai_assistant.as_ref().is_some_and(|p| p.streaming && p.run_id == run_id) {
+                    return;
+                }
+                if workbook.is_none() && !turn_commands.is_empty() {
                     let grouped = if turn_commands.len() == 1 {
                         turn_commands.into_iter().next().expect("single cmd")
                     } else {
@@ -814,6 +999,9 @@ impl SlideEditor {
                     && p.run_id == run_id
                 {
                     p.streaming = false;
+                    if let Some(start) = p.workbook_history_start.take() {
+                        p.history.truncate(start);
+                    }
                     p.messages.push(UiMessage::new(
                         UiMessageKind::Error,
                         format!("ツール実行が上限 ({MAX_TOOL_STEPS} 回) に達しました。"),
@@ -824,6 +1012,57 @@ impl SlideEditor {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn finish_workbook_navigation(&mut self, turn: &WorkbookTurn, cx: &mut Context<Self>) {
+        if self.file_id == turn.file_id && turn.navigate && self.presentation().slide(turn.active).is_some() {
+            if let Some(range) = turn.selection {
+                with_format!(self, set_ai_sheet_selection(self, turn.active, range));
+            } else {
+                self.current_slide = turn.active;
+                self.selection = None;
+            }
+            cx.notify();
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn finish_workbook_review(&mut self, apply: bool, cx: &mut Context<Self>) {
+        let Some(panel) = self.ai_assistant.as_mut() else { return };
+        let Some(review) = panel.workbook_review.take() else { return };
+        let WorkbookReview { turn, commands, history_start, .. } = review;
+        let (kind, message) = if !apply {
+            (UiMessageKind::Assistant, "変更案を破棄しました。")
+        } else if self.file_id != turn.file_id || self.file_path() != turn.path || self.presentation() != &turn.base {
+            (UiMessageKind::Error, "ブックが変更されました。変更案を作り直してください。")
+        } else if self.is_read_only() || self.is_pptx_mark_as_final() || self.is_pptx_read_only_blocked() {
+            (UiMessageKind::Error, "ブックは現在編集できません。")
+        } else {
+            // Reserve the same IDs the draft allocated before replaying the reviewed commands.
+            for _ in 0..turn.allocated_ids {
+                self.document.ids().new_shape_id();
+            }
+            let undo_before = self.document.undo_len();
+            self.run(commands, cx);
+            if self.document.undo_len() > undo_before {
+                if self.source.is_none() {
+                    self.source = turn.source.clone();
+                }
+                self.finish_workbook_navigation(&turn, cx);
+                (UiMessageKind::Assistant, "変更を適用しました。1回の「元に戻す」で取り消せます。")
+            } else {
+                (UiMessageKind::Error, "変更を適用できませんでした。")
+            }
+        };
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            if kind == UiMessageKind::Error || !apply {
+                panel.history.truncate(history_start);
+            }
+            panel.messages.push(UiMessage::new(kind, message));
+            panel.scroll_handle.scroll_to_bottom();
+        }
         cx.notify();
     }
 
@@ -1258,19 +1497,19 @@ impl SlideEditor {
 
     fn ai_overview_json(&self, kind: AiDocKind) -> String {
         match kind {
-            AiDocKind::Xlsx => self.ai_workbook_overview_json(),
+            AiDocKind::Xlsx => Self::ai_workbook_overview_json(
+                self.presentation(), self.current_slide,
+                with_format!(self, ai_sheet_selection(self, self.current_slide)),
+            ),
             AiDocKind::Pptx => self.ai_presentation_overview_json(),
             AiDocKind::Docx => self.ai_document_overview_json(),
         }
     }
 
-    fn ai_workbook_overview_json(&self) -> String {
-        let presentation = self.presentation();
+    fn ai_workbook_overview_json(presentation: &Presentation, active_slide: SlideId, selection: Option<CellRange>) -> String {
         let Some(wb) = presentation.workbook.as_ref() else {
             return json!({ "error": "no active workbook" }).to_string();
         };
-        let active_slide = self.current_slide;
-        let selection = with_format!(self, ai_sheet_selection(self, active_slide));
         let ov = workbook_overview(
             wb,
             active_slide,
@@ -1356,12 +1595,12 @@ impl SlideEditor {
         .to_string()
     }
 
-    fn resolve_ai_target_slide(&self, args: &str) -> Result<SlideId, String> {
+    fn resolve_ai_target_slide(turn: &WorkbookTurn, args: &str) -> Result<SlideId, String> {
         let sheet_name = parse_sheet_arg(args)?;
-        let Some(wb) = self.presentation().workbook.as_ref() else {
+        let Some(wb) = turn.draft.presentation().workbook.as_ref() else {
             return Err("no active workbook".to_string());
         };
-        resolve_sheet_slide(wb, sheet_name.as_deref(), self.current_slide)
+        resolve_sheet_slide(wb, sheet_name.as_deref(), turn.active)
     }
 
     fn resolve_pptx_slide_id(&self, slide_index: Option<usize>) -> Result<SlideId, String> {
@@ -1396,13 +1635,7 @@ impl SlideEditor {
             };
         }
         match kind {
-            AiDocKind::Xlsx if call.function.name == "create_chart" => {
-                match self.stage_ai_chart(&call.function.arguments, pending) {
-                    Ok(command) => (json!({ "ok": true }).to_string(), Some(command), "✓ create_chart".into()),
-                    Err(error) => (json!({ "error": error }).to_string(), None, format!("✗ create_chart: {error}")),
-                }
-            }
-            AiDocKind::Xlsx => self.execute_xlsx_tool(call, cx),
+            AiDocKind::Xlsx => unreachable!("workbook tools use a private draft"),
             AiDocKind::Pptx => self.execute_pptx_tool(call, cx),
             AiDocKind::Docx => self.execute_docx_tool(call, cx),
         }
@@ -1452,58 +1685,58 @@ impl SlideEditor {
         Ok(json!({ "ok": true, "changed": changed }))
     }
 
-    fn stage_ai_chart(&mut self, arguments: &str, pending: &[Command]) -> Result<Command, String> {
+    fn stage_ai_chart(turn: &mut WorkbookTurn, arguments: &str) -> Result<Command, String> {
         let args: ChartArgs = serde_json::from_str(arguments)
             .map_err(|error| format!("invalid arguments: {error}"))?;
-        // The assistant applies the turn as a single edit. The chart can already use cells written earlier in that turn.
-        let mut work = self.presentation().clone();
-        for command in pending {
-            work.apply(command.clone()).map_err(|error| error.to_string())?;
-        }
+        let id = turn.draft.ids().new_shape_id();
+        turn.allocated_ids += 1;
+        let work = turn.draft.presentation();
         let workbook = work.workbook.as_ref().ok_or("no active workbook")?;
-        let data_id = resolve_sheet_slide(workbook, args.sheet.as_deref(), self.current_slide)?;
-        let destination = resolve_sheet_slide(workbook, args.destination_sheet.as_deref(), self.current_slide)?;
+        let data_id = resolve_sheet_slide(workbook, args.sheet.as_deref(), turn.active)?;
+        let destination = resolve_sheet_slide(workbook, args.destination_sheet.as_deref(), turn.active)?;
         let data_slide = work.slide(data_id).ok_or("data sheet not found")?;
         let name = data_slide.name.as_deref().ok_or("data sheet has no name")?;
         let data = sheet_of_slide(data_slide).ok_or("data sheet not found")?;
-        let refs = args.refs(&work, name, data)?;
+        let refs = args.refs(work, name, data)?;
         let destination_slide = work.slide(destination).ok_or("destination sheet not found")?;
         let (sheet, origin) = destination_slide.shapes.iter().find_map(|shape| {
             if let ShapeKind::Sheet(sheet) = &shape.kind { Some((sheet, shape.frame)) } else { None }
         }).ok_or("destination sheet not found")?;
         let frame = args.frame(sheet, origin)?;
         let index = destination_slide.shapes.len();
-        let source = match &self.source {
+        let source = match &turn.source {
             Some(source) => source.clone(),
             None => {
                 let bytes = ibis_formats::blank_file(ibis_formats::Kind::Workbook).map_err(|error| error.to_string())?;
                 std::sync::Arc::new(ibis_formats::open(bytes).map_err(|error| error.to_string())?.source)
             }
         };
-        let id = self.document.ids().new_shape_id();
-        let mut shape = source.new_sheet_chart(&work, destination, id, frame, args.kind(), refs)
+        let mut shape = source.new_sheet_chart(work, destination, id, frame, args.kind(), refs)
             .map_err(|error| error.to_string())?;
         if let ShapeKind::Chart(chart) = &mut shape.kind {
             args.label(chart);
         }
-        self.source.get_or_insert(source);
+        turn.source.get_or_insert(source);
         Ok(Command::InsertShape { slide: destination, shapes: vec![(index, shape)] })
     }
 
     fn execute_xlsx_tool(
-        &mut self,
         call: &ToolCall,
-        cx: &mut Context<Self>,
+        turn: &mut WorkbookTurn,
     ) -> (String, Option<Command>, String) {
         let name = call.function.name.as_str();
         let args = call.function.arguments.as_str();
         match name {
             "get_workbook_overview" => {
-                let json = self.ai_workbook_overview_json();
+                let json = Self::ai_workbook_overview_json(turn.draft.presentation(), turn.active, turn.selection);
                 (json, None, "✓ get_workbook_overview".to_string())
             }
+            "create_chart" => match Self::stage_ai_chart(turn, args) {
+                Ok(command) => (json!({ "ok": true }).to_string(), Some(command), "✓ create_chart".into()),
+                Err(error) => (json!({ "error": error }).to_string(), None, format!("✗ create_chart: {error}")),
+            },
             "read_range" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1520,7 +1753,7 @@ impl SlideEditor {
                         format!("✗ read_range: {e}"),
                     ),
                     Ok(range) => {
-                        let Some(sheet) = self.presentation().slide(slide).and_then(sheet_of_slide)
+                        let Some(sheet) = turn.draft.presentation().slide(slide).and_then(sheet_of_slide)
                         else {
                             return (
                                 json!({ "error": "target sheet not found" }).to_string(),
@@ -1556,7 +1789,7 @@ impl SlideEditor {
                 }
             }
             "set_cells" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1575,12 +1808,12 @@ impl SlideEditor {
                     Ok(cmd) => (
                         json!({ "ok": true }).to_string(),
                         Some(cmd),
-                        "✓ set_cells".to_string(),
+                        workbook_edit_label(turn, slide, args, "セルを更新"),
                     ),
                 }
             }
             "set_format" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1599,12 +1832,12 @@ impl SlideEditor {
                     Ok(cmd) => (
                         json!({ "ok": true }).to_string(),
                         Some(cmd),
-                        "✓ set_format".to_string(),
+                        workbook_edit_label(turn, slide, args, "書式を変更"),
                     ),
                 }
             }
             "clear_cells" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1623,12 +1856,12 @@ impl SlideEditor {
                     Ok(cmd) => (
                         json!({ "ok": true }).to_string(),
                         Some(cmd),
-                        "✓ clear_cells".to_string(),
+                        workbook_edit_label(turn, slide, args, "セルをクリア"),
                     ),
                 }
             }
             "select_range" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1645,8 +1878,9 @@ impl SlideEditor {
                         format!("✗ select_range: {e}"),
                     ),
                     Ok(range) => {
-                        with_format!(self, set_ai_sheet_selection(self, slide, range));
-                        cx.notify();
+                        turn.active = slide;
+                        turn.selection = Some(range);
+                        turn.navigate = true;
                         let label = format_range(&range);
                         (
                             json!({ "ok": true, "selection": label }).to_string(),
@@ -1663,12 +1897,12 @@ impl SlideEditor {
                     format!("✗ switch_sheet: {e}"),
                 ),
                 Ok(sheet_name) => {
-                    let target = self
+                    let target = turn.draft
                         .presentation()
                         .workbook
                         .as_ref()
                         .and_then(|wb| {
-                            resolve_sheet_slide(wb, Some(&sheet_name), self.current_slide).ok()
+                            resolve_sheet_slide(wb, Some(&sheet_name), turn.active).ok()
                         });
                     let Some(slide) = target else {
                         return (
@@ -1678,9 +1912,9 @@ impl SlideEditor {
                             format!("✗ switch_sheet: '{sheet_name}' not found"),
                         );
                     };
-                    self.current_slide = slide;
-                    self.selection = None;
-                    cx.notify();
+                    turn.active = slide;
+                    turn.selection = None;
+                    turn.navigate = true;
                     (
                         json!({ "ok": true, "active_sheet": sheet_name }).to_string(),
                         None,
@@ -1695,48 +1929,30 @@ impl SlideEditor {
                     format!("✗ create_sheet: {e}"),
                 ),
                 Ok(name_opt) => {
-                    let index = self
+                    let index = turn.draft
                         .presentation()
                         .workbook
                         .as_ref()
                         .map_or(0, |w| w.sheets.len());
-                    let (slide, shape) = (
-                        self.document.ids().new_slide_id(),
-                        self.document.ids().new_shape_id(),
-                    );
+                    let slide = turn.draft.ids().new_slide_id();
+                    let shape = turn.draft.ids().new_shape_id();
+                    turn.allocated_ids += 2;
                     let sheet_name = name_opt.unwrap_or_else(|| format!("Sheet{}", index + 1));
                     let cmd = Command::Sheet(SheetCommand::AddSheet {
                         index,
-                        name: sheet_name,
+                        name: sheet_name.clone(),
                         sheet: slide,
                         shape,
                     });
-                    self.run(vec![cmd], cx);
-                    if self.presentation().slide(slide).is_some() {
-                        self.current_slide = slide;
-                        self.selection = None;
-                        cx.notify();
-                    }
-                    let actual_name = self
-                        .presentation()
-                        .workbook
-                        .as_ref()
-                        .and_then(|wb| {
-                            wb.sheets
-                                .iter()
-                                .find(|s| s.slide == Some(slide))
-                                .map(|s| s.name.clone())
-                        })
-                        .unwrap_or_default();
                     (
-                        json!({ "ok": true, "sheet": actual_name }).to_string(),
-                        None,
-                        format!("✓ create_sheet ({actual_name})"),
+                        json!({ "ok": true, "sheet": sheet_name }).to_string(),
+                        Some(cmd),
+                        format!("シートを追加（{sheet_name}）"),
                     )
                 }
             },
             "insert_rows_or_cols" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1755,12 +1971,12 @@ impl SlideEditor {
                     Ok(cmd) => (
                         json!({ "ok": true }).to_string(),
                         Some(cmd),
-                        "✓ insert_rows_or_cols".to_string(),
+                        workbook_edit_label(turn, slide, args, "行または列を挿入"),
                     ),
                 }
             }
             "delete_rows_or_cols" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1779,12 +1995,12 @@ impl SlideEditor {
                     Ok(cmd) => (
                         json!({ "ok": true }).to_string(),
                         Some(cmd),
-                        "✓ delete_rows_or_cols".to_string(),
+                        workbook_edit_label(turn, slide, args, "行または列を削除"),
                     ),
                 }
             }
             "merge_cells" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1803,7 +2019,7 @@ impl SlideEditor {
                     Ok(cmd) => (
                         json!({ "ok": true }).to_string(),
                         Some(cmd),
-                        "✓ merge_cells".to_string(),
+                        workbook_edit_label(turn, slide, args, "セルの結合を変更"),
                     ),
                 }
             }
@@ -1819,7 +2035,7 @@ impl SlideEditor {
                     }
                 };
                 let mut findings = Vec::new();
-                for (index, slide) in self.presentation().slides.iter().enumerate() {
+                for (index, slide) in turn.draft.presentation().slides.iter().enumerate() {
                     let Some(sheet) = sheet_of_slide(slide) else {
                         continue;
                     };
@@ -1870,7 +2086,7 @@ impl SlideEditor {
                         format!("✗ find_cells: {e}"),
                     ),
                     Ok(a) => {
-                        let slide = match self.resolve_ai_target_slide(args) {
+                        let slide = match Self::resolve_ai_target_slide(turn, args) {
                             Ok(s) => s,
                             Err(e) => {
                                 return (
@@ -1880,7 +2096,7 @@ impl SlideEditor {
                                 );
                             }
                         };
-                        let Some(sheet) = self.presentation().slide(slide).and_then(sheet_of_slide)
+                        let Some(sheet) = turn.draft.presentation().slide(slide).and_then(sheet_of_slide)
                         else {
                             return (
                                 json!({ "error": "target sheet not found" }).to_string(),
@@ -1924,7 +2140,7 @@ impl SlideEditor {
                     }
                 };
                 let mut errors = Vec::new();
-                for (index, slide) in self.presentation().slides.iter().enumerate() {
+                for (index, slide) in turn.draft.presentation().slides.iter().enumerate() {
                     let Some(sheet) = sheet_of_slide(slide) else {
                         continue;
                     };
@@ -1954,7 +2170,7 @@ impl SlideEditor {
                 )
             }
             "set_axis_size" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1973,12 +2189,12 @@ impl SlideEditor {
                     Ok(cmd) => (
                         json!({ "ok": true }).to_string(),
                         Some(cmd),
-                        "✓ set_axis_size".to_string(),
+                        workbook_edit_label(turn, slide, args, "行の高さまたは列の幅を変更"),
                     ),
                 }
             }
             "set_cell_comment" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -1997,12 +2213,12 @@ impl SlideEditor {
                     Ok(cmd) => (
                         json!({ "ok": true }).to_string(),
                         Some(cmd),
-                        "✓ set_cell_comment".to_string(),
+                        workbook_edit_label(turn, slide, args, "セルのコメントを更新"),
                     ),
                 }
             }
             "inspect_vc_bindings" => {
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -2012,7 +2228,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                match extract_sheet_claims(self.presentation(), slide) {
+                match extract_sheet_claims(turn.draft.presentation(), slide) {
                     None => (
                         json!({
                             "bound": false,
@@ -2078,7 +2294,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -2088,7 +2304,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                let cmds = build_sd_jwt_template_commands(self.presentation(), slide, kind.1);
+                let cmds = build_sd_jwt_template_commands(turn.draft.presentation(), slide, kind.1);
                 (
                     json!({ "ok": true, "template": kind.0, "command_count": cmds.len() })
                         .to_string(),
@@ -2115,7 +2331,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -2125,7 +2341,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                match SdJwtSchema::infer_from_sheet(self.presentation(), slide, arg.vct.as_deref())
+                match SdJwtSchema::infer_from_sheet(turn.draft.presentation(), slide, arg.vct.as_deref())
                 {
                     None => (
                         json!({ "error": "could not infer VC schema from this worksheet (ensure key-value labels/values or tables exist)" }).to_string(),
@@ -2136,7 +2352,7 @@ impl SlideEditor {
                         let schema_json = schema.to_json_pretty();
                         let claim_count = schema.claims.len();
                         let cmd = if arg.apply {
-                            let cmds = schema.build_sheet_commands(self.presentation(), slide);
+                            let cmds = schema.build_sheet_commands(turn.draft.presentation(), slide);
                             Some(Command::Batch(cmds))
                         } else {
                             None
@@ -2167,7 +2383,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -2185,7 +2401,7 @@ impl SlideEditor {
                     );
                 };
                 match bind_range_as_sd_claim_commands(
-                    self.presentation(),
+                    turn.draft.presentation(),
                     slide,
                     range,
                     &arg.claim_path,
@@ -2226,7 +2442,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -2236,7 +2452,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                let Some(mut bindings) = extract_sheet_claims(self.presentation(), slide) else {
+                let Some(mut bindings) = extract_sheet_claims(turn.draft.presentation(), slide) else {
                     return (
                         json!({ "error": "no SD-JWT bindings found on this worksheet" }).to_string(),
                         None,
@@ -2370,10 +2586,10 @@ impl SlideEditor {
                             })
                             .collect();
                         let cmd = if arg.import_to_sheet {
-                            match self.resolve_ai_target_slide(args) {
+                            match Self::resolve_ai_target_slide(turn, args) {
                                 Ok(slide) => {
                                     let cmds =
-                                        parsed_cred.build_sheet_commands(self.presentation(), slide);
+                                        parsed_cred.build_sheet_commands(turn.draft.presentation(), slide);
                                     Some(Command::Batch(cmds))
                                 }
                                 Err(e) => {
@@ -2427,7 +2643,7 @@ impl SlideEditor {
                         "✗ prepare_oid4vp_presentation: invalid request".to_string(),
                     );
                 };
-                let slide = match self.resolve_ai_target_slide(args) {
+                let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
                     Err(e) => {
                         return (
@@ -2437,7 +2653,7 @@ impl SlideEditor {
                         );
                     }
                 };
-                let Some(mut bindings) = extract_sheet_claims(self.presentation(), slide) else {
+                let Some(mut bindings) = extract_sheet_claims(turn.draft.presentation(), slide) else {
                     return (
                         json!({ "error": "no SD-JWT bindings found on this worksheet" }).to_string(),
                         None,
@@ -2460,7 +2676,7 @@ impl SlideEditor {
                 let cmd = if arg.apply_to_sheet && !req.requested_claims.is_empty() {
                     let req_refs: Vec<&str> =
                         req.requested_claims.iter().map(String::as_str).collect();
-                    let cmds = bindings.set_disclose_commands(self.presentation(), &req_refs, true);
+                    let cmds = bindings.set_disclose_commands(turn.draft.presentation(), &req_refs, true);
                     if cmds.is_empty() {
                         None
                     } else {
@@ -3940,7 +4156,27 @@ impl SlideEditor {
                 .into_any_element()
         });
         #[cfg(not(target_family = "wasm"))]
-        let pending_box: Option<gpui::AnyElement> = None;
+        let pending_box = panel.workbook_review.as_ref().map(|review| {
+            v_flex()
+                .gap_2()
+                .p_2()
+                .rounded_md()
+                .bg(cx.theme().secondary.opacity(0.5))
+                .child(div().text_sm().child("ブックの変更案"))
+                .child(div().text_xs().child("数式の表示値は、適用時の再計算で変わる場合があります。"))
+                .child(div().id("ai-workbook-preview").max_h(px(180.0)).overflow_y_scroll()
+                    .text_xs().child(review.preview.clone()))
+                .child(h_flex().gap_2()
+                    .child(Button::new("ai-workbook-apply").primary().small().label("適用")
+                        .on_click(cx.listener(|this, _, _, cx| this.finish_workbook_review(true, cx))))
+                    .child(Button::new("ai-workbook-discard").ghost().small().label("破棄")
+                        .on_click(cx.listener(|this, _, _, cx| this.finish_workbook_review(false, cx)))))
+                .into_any_element()
+        });
+        #[cfg(not(target_family = "wasm"))]
+        let awaiting_review = pending_box.is_some();
+        #[cfg(target_family = "wasm")]
+        let awaiting_review = false;
 
         #[cfg(not(target_family = "wasm"))]
         let (intro, quick_actions): (&str, Vec<(&'static str, &'static str, &'static str)>) =
@@ -4222,7 +4458,7 @@ impl SlideEditor {
                                 })),
                         )
                     })
-                    .when(!streaming, |row| {
+                    .when(!streaming && !awaiting_review, |row| {
                         row.child(
                             Button::new("ai-assistant-send")
                                 .primary()
@@ -4241,5 +4477,54 @@ impl SlideEditor {
             title: "Assistant".into(),
             body: body.into_any_element(),
         })
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod workbook_review_tests {
+    use super::{Document, SlideEditor, WorkbookTurn, workbook_preview};
+    use crate::ai_client::{ToolCall, ToolCallFunction};
+
+    fn call(name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: name.into(),
+            kind: "function".into(),
+            function: ToolCallFunction { name: name.into(), arguments: arguments.into() },
+        }
+    }
+
+    #[test]
+    fn workbook_draft_reads_calculated_edits_and_replays_as_one_undo() {
+        let base = ibis_formats::read(&ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+        let slide = base.slides[0].id;
+        let mut live = Document::new(base.clone());
+        let mut turn = WorkbookTurn {
+            base: base.clone(), draft: Document::new(base.clone()), path: None, file_id: 0, source: None,
+            active: slide, selection: None, allocated_ids: 0, navigate: false,
+        };
+
+        let mut commands = Vec::new();
+        for arguments in [
+            r#"{"edits":[{"cell":"A1","value":21}]}"#,
+            r#"{"edits":[{"cell":"B1","value":"=A1*2"}]}"#,
+        ] {
+            let (_, command, _) = SlideEditor::execute_xlsx_tool(&call("set_cells", arguments), &mut turn);
+            let command = command.expect("set_cells emits an edit");
+            turn.draft.execute(vec![command.clone()]).unwrap();
+            commands.push(command);
+        }
+
+        let (result, _, _) = SlideEditor::execute_xlsx_tool(&call("read_range", r#"{"range":"B1"}"#), &mut turn);
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["cells"][0]["text"], "42");
+        assert!(workbook_preview(&turn, &[]).contains("B1  （空欄） → =A1*2 [42]"));
+        assert!(!live.can_undo());
+        assert_eq!(live.presentation(), &base);
+
+        live.execute(commands).unwrap();
+        assert_eq!(live.presentation(), turn.draft.presentation());
+        assert_eq!(live.undo_len(), 1);
+        assert!(live.undo());
+        assert_eq!(live.presentation(), &base);
     }
 }
