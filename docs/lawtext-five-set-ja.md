@@ -134,3 +134,18 @@ AI Assistant の `generate_lawtext_5set` は五点の草案、構造化差分、
 逆適用検算は、起案した改め文を現行版に適用し、解析後の題名・制定文・前文・本則・附則・別表を比較します。施行期日など改正法案自体に置く附則は、担当者が根拠資料に沿って起案します。検算が一致しても、XMLの未対応要素、政策判断、提出先の様式は確認が必要です。
 
 外部法令は検出できた引用の法令番号、または法令名で指定資料と照合します。版が複数一致する場合や対象条文が見つからない場合は、参照条文に確認事項を表示します。略称、範囲指定、附則・別表をまたぐ引用は原文を確認してください。表・図・様式や入れ子構造が複雑な場合も、取込後の構造を原文と照合します。対応する構文は [Markdown・Mermaid・Lawtext リファレンス](markdown-reference-ja.md) を参照してください。
+
+## 法令XMLの変換診断
+
+`ibis-lawtext-audit` に法令XMLの `<Law>` 要素を含むファイルを渡すと、構造差をJSONで確認できます。公式スキーマも検証する場合は、ローカルに保存したXSDと `xmllint` を使います。 [e-Gov 法令標準XMLスキーマ](https://laws.e-gov.go.jp/docs/law-data-basic/419a603-xml-schema-for-japanese-law/)
+
+```sh
+cargo run --locked -p ibis-formats --bin ibis-lawtext-audit -- \
+  current.xml --xsd XMLSchemaForJapaneseLaw_v3.xsd > audit.json
+```
+
+- `xml_model_changes` は原XMLと、ibisOfficeの内部表現から書き出したXMLの差です。
+- `lawtext_roundtrip_changes` は内部表現から出したXMLと、Lawtextを経由した後のXMLの差です。
+- `output_xsd` はLawtextを経由した後のXMLのスキーマ検証結果です。`--xsd` を省略した場合は `null` になります。検証で不適合が見つかった場合は、JSONを書き出して終了コード `2` を返します。実行エラーは `1` です。
+
+差分の位置には条・項・号の `Num`、附則の `AmendLawNum` と、同じ位置キーの出現順を用います。診断は要素・属性・テキストの差を示します。属性順、整形用の空白、要素の並び順は比較対象外です。要素を失った場合は、その配下をまとめて親要素の位置に表示します。

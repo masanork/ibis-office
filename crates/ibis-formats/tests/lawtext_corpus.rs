@@ -131,3 +131,44 @@ fn verifies_amendment_after_xml_and_lawtext_round_trips() {
         );
     }
 }
+
+#[test]
+fn audit_separates_xml_model_changes_from_lawtext_losses() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("test.xml");
+    let xml = include_str!("lawtext/supplementary-amendment.xml").replace(
+        "<MainProvision>",
+        "<TOC><TOCLabel>目次</TOCLabel></TOC><MainProvision>",
+    );
+    std::fs::write(&path, xml).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ibis-lawtext-audit"))
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let model = report["xml_model_changes"].as_array().unwrap();
+    let lawtext = report["lawtext_roundtrip_changes"].as_array().unwrap();
+    assert!(model.iter().any(|change| {
+        change["kind"] == "element_removed" && change["path"] == "/Law/LawBody[1]/TOC[1]"
+    }));
+    for attr in ["Era", "Year", "Num", "LawType"] {
+        let path = format!("/Law/@{attr}");
+        assert!(model.iter().all(|change| change["path"] != path));
+        assert!(
+            lawtext
+                .iter()
+                .any(|change| { change["kind"] == "attribute_removed" && change["path"] == path })
+        );
+    }
+    assert!(
+        lawtext
+            .iter()
+            .all(|change| { !change["path"].as_str().unwrap().contains("/SupplProvision") })
+    );
+    assert!(report["output_xsd"].is_null());
+}
