@@ -1684,3 +1684,4 @@ git.base-path-invalid	Enter a path relative to the repository root, without pare
 git.pin-base	Pin as base candidate
 git.use-pinned-base	Use pinned base
 git.pinned-base	Pinned base
+git.pin-base-short	Pin base

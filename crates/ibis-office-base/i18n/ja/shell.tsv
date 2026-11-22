@@ -1682,3 +1682,4 @@ git.base-path-invalid	親ディレクトリへの移動を含まない、リポ�
 git.pin-base	旧版候補に登録
 git.use-pinned-base	候補を旧版に指定
 git.pinned-base	旧版候補
+git.pin-base-short	候補に登録

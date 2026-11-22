@@ -442,11 +442,11 @@ impl SlideEditor {
         .detach();
     }
 
-    fn git_pin_current_file(&mut self, cx: &mut Context<Self>) {
+    fn git_pin_file_revision(&mut self, id: gix::ObjectId, cx: &mut Context<Self>) {
         if let Some(state) = self.git_workspace.as_mut().filter(|state| !state.busy)
             && let Some(path) = state.file.clone()
         {
-            state.pinned_base = Some((state.snapshot, path));
+            state.pinned_base = Some((id, path));
             cx.notify();
         }
     }
@@ -680,6 +680,7 @@ impl SlideEditor {
         state.file.as_ref()?;
         let revised = state.revised.unwrap_or(state.snapshot);
         let pinned = state.pinned_base.as_ref();
+        let snapshot = state.snapshot;
         Some(
             div()
                 .px_2()
@@ -692,9 +693,9 @@ impl SlideEditor {
                                 .xsmall()
                                 .disabled(state.busy)
                                 .label(text("git.pin-base"))
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.git_pin_current_file(cx)),
-                                ),
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.git_pin_file_revision(snapshot, cx)
+                                })),
                         )
                         .when_some(pinned, |row, (id, _)| {
                             row.child(
@@ -782,6 +783,10 @@ impl SlideEditor {
             .overflow_y_scroll();
         for (index, revision) in state.revisions.iter().enumerate() {
             let id = revision.id;
+            let pinned = state
+                .pinned_base
+                .as_ref()
+                .is_some_and(|(commit, path)| *commit == id && state.file.as_ref() == Some(path));
             let row = div().px_2().py_1().border_b_1().border_color(border).child(
                 div().truncate().child(format!(
                     "{}  {}  {}",
@@ -833,6 +838,20 @@ impl SlideEditor {
                                         state.revised = Some(id);
                                     }
                                     cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new(("git-pin-file-revision", index))
+                                .xsmall()
+                                .disabled(state.busy || pinned)
+                                .label(text(if pinned {
+                                    "git.pinned-base"
+                                } else {
+                                    "git.pin-base-short"
+                                }))
+                                .tooltip(text("git.pin-base"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.git_pin_file_revision(id, cx);
                                 })),
                         ),
                 )
