@@ -1746,18 +1746,8 @@ impl SlideEditor {
         let name = call.function.name.as_str();
         let args = call.function.arguments.as_str();
         let result = (|| {
-            let mut arguments: serde_json::Value = serde_json::from_str(args)
+            let arguments = serde_json::from_str(args)
                 .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()))?;
-            if matches!(name, "xlsx_get_used_range" | "xlsx_delete_sheet" | "xlsx_rename_sheet") {
-                let object = arguments.as_object_mut().ok_or_else(|| ibis_doc_service::ToolError::invalid("the arguments are not an object"))?;
-                if object.get("sheet").is_none_or(serde_json::Value::is_null)
-                    && let Some(index) = turn.draft.presentation().slide_index(turn.active)
-                {
-                    let slide = &turn.draft.presentation().slides[index];
-                    let sheet = slide.name.clone().unwrap_or_else(|| format!("Sheet{}", index + 1));
-                    object.insert("sheet".into(), json!(sheet));
-                }
-            }
             let context = ibis_doc_service::DraftToolContext {
                 source: turn.source.clone(),
                 workbook: ibis_doc_service::WorkbookToolContext {

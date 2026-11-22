@@ -82,8 +82,7 @@ pub fn document_tools(kind: ibis_formats::Kind) -> impl Iterator<Item = &'static
     static PPTX: OnceLock<Vec<Tool>> = OnceLock::new();
     let tools: &[Tool] = match kind {
         Kind::Document => DOCX.get_or_init(|| tools_docx::tools().into_iter().chain(tools_docx::edit_tools()).collect()),
-        Kind::Workbook => XLSX.get_or_init(|| tools_xlsx::tools().into_iter().chain(tools_xlsx::edit_tools())
-            .chain(tools_xlsx::workbook_tools().iter().map(|tool| tool.descriptor)).collect()),
+        Kind::Workbook => XLSX.get_or_init(|| tools_xlsx::tools().into_iter().chain(tools_xlsx::edit_tools()).collect()),
         Kind::Presentation => PPTX.get_or_init(|| tools_pptx::tools().into_iter().chain(tools_pptx::edit_tools()).collect()),
         _ => &[],
     };

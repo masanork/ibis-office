@@ -399,3 +399,29 @@ fn canonical_pptx_edits_share_targets_and_keep_mcp_undo_per_call() {
     let notes = t.call("pptx_get_notes", json!({"document_id":id,"slide":2}));
     assert_eq!(notes["notes"], "speaker notes");
 }
+
+#[test]
+fn workbook_active_sheet_is_a_draft_default_only() {
+    use ibis_doc_model::Document;
+    use ibis_formats::Kind;
+
+    let mut t = T::new("workbook_draft_sheet_default", &[]);
+    let bytes = ibis_formats::blank_file(Kind::Workbook).unwrap();
+    let mut draft = Document::new(ibis_formats::read(&bytes).unwrap());
+    std::fs::write(t.dir.join("blank.xlsx"), bytes).unwrap();
+    let id = t.open("blank.xlsx");
+    let active = draft.presentation().slides[0].id;
+
+    assert_eq!(t.err("xlsx_get_used_range", json!({"document_id": id})), "invalid_argument");
+    for (name, args) in [
+        ("xlsx_rename_sheet", json!({"name": "Draft name"})),
+        ("xlsx_get_used_range", json!({})),
+    ] {
+        let context = ibis_doc_service::DraftToolContext {
+            workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(active), ..Default::default() },
+            ..Default::default()
+        };
+        let (result, _) = ibis_doc_service::run_draft_tool(Kind::Workbook, &mut draft, context, name, args).unwrap();
+        assert_eq!(result["sheet"], "Draft name");
+    }
+}

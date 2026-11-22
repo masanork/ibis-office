@@ -23,60 +23,17 @@ pub struct WorkbookToolContext {
     pub max_clear_contents_cells: Option<usize>,
 }
 
-/// A workbook operation that can target a file-backed document or an editor draft.
-pub struct WorkbookTool {
-    pub descriptor: Tool,
-    plan: fn(&Presentation, &Value, WorkbookToolContext) -> Result<(Value, Option<Command>), ToolError>,
-}
-
-impl WorkbookTool {
-    /// Prepare a result and an optional edit against the current workbook state.
-    /// The caller applies the command using its own undo and review policy.
-    pub fn plan(
-        &self,
-        workbook: &Presentation,
-        args: &Value,
-        context: WorkbookToolContext,
-    ) -> Result<(Value, Option<Command>), ToolError> {
-        if !args.is_object() {
-            return Err(ToolError::invalid("the arguments are not an object"));
-        }
-        (self.plan)(workbook, args, context)
-    }
-}
-
-pub fn workbook_tools() -> &'static [WorkbookTool] {
-    static TOOLS: [WorkbookTool; 4] = [GET_CELLS, SET_CELLS, CLEAR_CELLS, SET_FORMAT];
-    &TOOLS
-}
-
-fn run_workbook_tool(service: &mut Service, args: &Value, tool: &WorkbookTool) -> Result<Value, ToolError> {
-    let id = args.str_arg("document_id")?;
-    let context = service.workbook_tool_context();
+fn workbook_document<'a>(service: &'a mut Service, id: &str) -> Result<&'a mut ToolDocument, ToolError> {
     let open = service.tool_document(id)?;
     if open.kind != Kind::Workbook {
         return Err(ToolError::new("unsupported_operation", "this tool is for an xlsx workbook"));
     }
-    let (result, command) = tool.plan(open.document.presentation(), args, context)?;
-    if let Some(command) = command {
-        let commands = match command {
-            Command::Batch(commands) => commands,
-            command => vec![command],
-        };
-        execute(open, commands)?;
-    }
-    if tool.descriptor.access == Access::Edit {
-        let mut result = result;
-        let warnings = result.as_object_mut().and_then(|result| result.remove("warnings"))
-            .and_then(|warnings| warnings.as_array().cloned()).unwrap_or_default();
-        Ok(edited(id, open, result, warnings))
-    } else {
-        Ok(result)
-    }
+    Ok(open)
 }
 
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
+        GET_CELLS,
         Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook: name, used range and whether it is shown.", access: Access::Read, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: list_sheets },
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
         Tool {
@@ -153,20 +110,20 @@ fn list_sheets(service: &mut Service, args: &Value) -> Result<Value, ToolError> 
 }
 
 fn get_used_range(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let name = args.str_arg("sheet")?;
-    let open = service.tool_document(args.str_arg("document_id")?)?;
-    let sheets = sheets_of(open)?;
-    let (_, name, sheet) = find_sheet(&sheets, name)?;
+    let id = args.str_arg("document_id")?;
+    let active = service.workbook_tool_context().active_sheet;
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (_, name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
     Ok(json!({ "sheet": name, "used_range": used_range(sheet).map(|r| range_text(&r)) }))
 }
 
 fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    run_workbook_tool(service, args, &GET_CELLS)
-}
-
-fn plan_get_cells(
-    workbook: &Presentation, args: &Value, context: WorkbookToolContext,
-) -> Result<(Value, Option<Command>), ToolError> {
+    let id = args.str_arg("document_id")?;
+    let context = service.workbook_tool_context();
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
     let range = parse_range(args.str_arg("range")?)?;
     let kind = args.opt_str("kind")?.unwrap_or("value");
     if !matches!(kind, "value" | "formula" | "text" | "format") {
@@ -226,7 +183,7 @@ fn plan_get_cells(
     if end < height {
         result["next_offset"] = json!(end);
     }
-    Ok((result, None))
+    Ok(result)
 }
 
 fn find_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -276,6 +233,7 @@ use crate::tools_docx::{color_schema, font_schema};
 
 pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
+        SET_CELLS, CLEAR_CELLS, SET_FORMAT,
         Tool {
             name: "xlsx_add_sheet",
             description: "Add a sheet (at the end, or at index, 0-based).",
@@ -290,12 +248,6 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
     ]
 }
 
-fn sheet_id(open: &ToolDocument, name: &str) -> Result<(SlideId, String), ToolError> {
-    let sheets = sheets_of(open)?;
-    let (index, name, _) = find_sheet(&sheets, name)?;
-    Ok((open.document.presentation().slides[*index].id, name.clone()))
-}
-
 fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extra: Value) -> Result<Value, ToolError> {
     let open = service.tool_document(id)?;
     execute(open, commands.into_iter().map(Command::Sheet).collect())?;
@@ -303,12 +255,10 @@ fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extr
 }
 
 fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    run_workbook_tool(service, args, &SET_CELLS)
-}
-
-fn plan_set_cells(
-    workbook: &Presentation, args: &Value, context: WorkbookToolContext,
-) -> Result<(Value, Option<Command>), ToolError> {
+    let id = args.str_arg("document_id")?;
+    let context = service.workbook_tool_context();
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
     let range_arg = args.str_arg("range")?;
     let range = parse_range(range_arg)?;
     let rows = (range.last_row - range.first_row + 1) as usize;
@@ -347,16 +297,15 @@ fn plan_set_cells(
             }
         }
     }
-    Ok((json!({ "cells": count }), Some(Command::Sheet(SheetCommand::SetCells { sheet, edits }))))
+    execute(open, vec![Command::Sheet(SheetCommand::SetCells { sheet, edits })])?;
+    Ok(edited(id, open, json!({ "cells": count }), Vec::new()))
 }
 
 fn clear_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    run_workbook_tool(service, args, &CLEAR_CELLS)
-}
-
-fn plan_clear_cells(
-    workbook: &Presentation, args: &Value, context: WorkbookToolContext,
-) -> Result<(Value, Option<Command>), ToolError> {
+    let id = args.str_arg("document_id")?;
+    let context = service.workbook_tool_context();
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
     let range = parse_range(args.str_arg("range")?)?;
     let what = args.str_arg("what")?;
     if !matches!(what, "contents" | "formats" | "all") {
@@ -390,9 +339,10 @@ fn plan_clear_cells(
         commands.push(SheetCommand::ClearFormats { sheet, ranges: vec![range] });
     }
     if commands.is_empty() {
-        return Ok((json!({ "cleared": 0 }), None));
+        return Ok(edited(id, open, json!({ "cleared": 0 }), Vec::new()));
     }
-    Ok((json!({}), Some(Command::Batch(commands.into_iter().map(Command::Sheet).collect()))))
+    execute(open, commands.into_iter().map(Command::Sheet).collect())?;
+    Ok(edited(id, open, json!({}), Vec::new()))
 }
 
 fn theme_of(name: &str) -> Result<u8, ToolError> {
@@ -448,12 +398,10 @@ fn color_change(workbook: &Presentation, arg: ColorArg, fill: bool) -> Result<St
 }
 
 fn set_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    run_workbook_tool(service, args, &SET_FORMAT)
-}
-
-fn plan_set_format(
-    workbook: &Presentation, args: &Value, context: WorkbookToolContext,
-) -> Result<(Value, Option<Command>), ToolError> {
+    let id = args.str_arg("document_id")?;
+    let context = service.workbook_tool_context();
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
     only_known(args, &["document_id", "sheet", "range", "bold", "italic", "underline", "size", "color", "font", "fill", "number_format", "horizontal_alignment", "vertical_alignment", "wrap_text", "border"])?;
     let range = parse_range(args.str_arg("range")?)?;
     let sheets = workbook_sheets(workbook);
@@ -541,7 +489,8 @@ fn plan_set_format(
     if commands.is_empty() {
         return Err(ToolError::invalid("no format is given"));
     }
-    Ok((json!({ "warnings": warnings }), Some(Command::Batch(commands))))
+    execute(open, commands)?;
+    Ok(edited(id, open, json!({}), warnings))
 }
 
 fn add_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -568,9 +517,13 @@ fn add_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 
 fn delete_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let open = service.tool_document(id)?;
-    let (sheet, name) = sheet_id(open, args.str_arg("sheet")?)?;
-    if sheets_of(open)?.len() <= 1 {
+    let active = service.workbook_tool_context().active_sheet;
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (index, name, _) = workbook_sheet(workbook, &sheets, args, active)?;
+    let sheet = workbook.slides[*index].id;
+    if sheets.len() <= 1 {
         return Err(ToolError::new("unsupported_operation", "the last sheet cannot be deleted"));
     }
     sheet_edit(service, id, vec![SheetCommand::DeleteSheet { sheet }], json!({ "deleted": name }))
@@ -582,9 +535,13 @@ fn rename_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError>
     if new_name.is_empty() || new_name.chars().count() > 31 || new_name.contains(['\\', '/', '?', '*', '[', ']', ':']) {
         return Err(ToolError::invalid("a sheet's name is 1 to 31 characters, without \\ / ? * [ ] :"));
     }
-    let open = service.tool_document(id)?;
-    let (sheet, old) = sheet_id(open, args.str_arg("sheet")?)?;
-    if !old.eq_ignore_ascii_case(&new_name) && sheets_of(open)?.iter().any(|(_, n, _)| n.eq_ignore_ascii_case(&new_name)) {
+    let active = service.workbook_tool_context().active_sheet;
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (index, old, _) = workbook_sheet(workbook, &sheets, args, active)?;
+    let sheet = workbook.slides[*index].id;
+    if !old.eq_ignore_ascii_case(&new_name) && sheets.iter().any(|(_, n, _)| n.eq_ignore_ascii_case(&new_name)) {
         return Err(ToolError::invalid(format!("a sheet named {new_name} is there already")));
     }
     sheet_edit(service, id, vec![SheetCommand::RenameSheet { sheet, name: new_name.clone() }], json!({ "sheet": new_name }))
@@ -597,92 +554,80 @@ fn calculate_workbook(service: &mut Service, args: &Value) -> Result<Value, Tool
     sheet_edit(service, id, vec![SheetCommand::CalculateNow], json!({}))
 }
 
-const GET_CELLS: WorkbookTool = WorkbookTool {
-    descriptor: Tool {
-        name: "xlsx_get_cells",
-        description: "The cells of a range, row by row: value (calculated), formula, or text (as shown). Formula mode returns the calculated value when sheet protection hides the formula. Paged by rows.",
-        access: Access::Read,
-        returns_content: true,
-        schema: || {
-            object(
-                &[
-                    document_id(),
-                    ("sheet", string("The sheet's name.")),
-                    ("range", string("A1 range, e.g. B2:D10.")),
-                    ("kind", json!({ "enum": ["value", "formula", "text"], "description": "value (default), formula or text (as shown)." })),
-                    ("offset", integer("The first row of the page (0-based, from the range's first row).")),
-                    ("limit", integer("The most rows.")),
-                ],
-                &["document_id", "sheet", "range"],
-            )
-        },
-        run: get_cells,
+const GET_CELLS: Tool = Tool {
+    name: "xlsx_get_cells",
+    description: "The cells of a range, row by row: value (calculated), formula, or text (as shown). Formula mode returns the calculated value when sheet protection hides the formula. Paged by rows.",
+    access: Access::Read,
+    returns_content: true,
+    schema: || {
+        object(
+            &[
+                document_id(),
+                ("sheet", string("The sheet's name.")),
+                ("range", string("A1 range, e.g. B2:D10.")),
+                ("kind", json!({ "enum": ["value", "formula", "text"], "description": "value (default), formula or text (as shown)." })),
+                ("offset", integer("The first row of the page (0-based, from the range's first row).")),
+                ("limit", integer("The most rows.")),
+            ],
+            &["document_id", "sheet", "range"],
+        )
     },
-    plan: plan_get_cells,
+    run: get_cells,
 };
 
-const SET_CELLS: WorkbookTool = WorkbookTool {
-    descriptor: Tool {
-        name: "xlsx_set_cells",
-        description: "Put values in a range: rows of numbers, strings, true/false or null (clears the cell). A string starting with = followed by formula text is a formula. A single value fills the whole range; otherwise the rows must be as large as the range. What depends on them is calculated again.",
-        access: Access::Edit,
-        returns_content: false,
-        schema: || {
-            object(
-                &[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range; its first cell is where the values start.")), ("values", json!({ "description": "A value, or rows of values.", "oneOf": [{ "type": "array", "items": { "type": "array" } }, { "type": ["string", "number", "boolean", "null"] }] }))],
-                &["document_id", "sheet", "range", "values"],
-            )
-        },
-        run: set_cells,
+const SET_CELLS: Tool = Tool {
+    name: "xlsx_set_cells",
+    description: "Put values in a range: rows of numbers, strings, true/false or null (clears the cell). A string starting with = followed by formula text is a formula. A single value fills the whole range; otherwise the rows must be as large as the range. What depends on them is calculated again.",
+    access: Access::Edit,
+    returns_content: false,
+    schema: || {
+        object(
+            &[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range; its first cell is where the values start.")), ("values", json!({ "description": "A value, or rows of values.", "oneOf": [{ "type": "array", "items": { "type": "array" } }, { "type": ["string", "number", "boolean", "null"] }] }))],
+            &["document_id", "sheet", "range", "values"],
+        )
     },
-    plan: plan_set_cells,
+    run: set_cells,
 };
 
-const CLEAR_CELLS: WorkbookTool = WorkbookTool {
-    descriptor: Tool {
-        name: "xlsx_clear_cells",
-        description: "Clear what is in a range: contents, formats, or all.",
-        access: Access::Edit,
-        returns_content: false,
-        schema: || object(&[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range.")), ("what", json!({ "enum": ["contents", "formats", "all"] }))], &["document_id", "sheet", "range", "what"]),
-        run: clear_cells,
-    },
-    plan: plan_clear_cells,
+const CLEAR_CELLS: Tool = Tool {
+    name: "xlsx_clear_cells",
+    description: "Clear what is in a range: contents, formats, or all.",
+    access: Access::Edit,
+    returns_content: false,
+    schema: || object(&[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range.")), ("what", json!({ "enum": ["contents", "formats", "all"] }))], &["document_id", "sheet", "range", "what"]),
+    run: clear_cells,
 };
 
 fn resettable(schema: Value) -> Value {
     json!({ "anyOf": [schema, { "type": "null" }] })
 }
 
-const SET_FORMAT: WorkbookTool = WorkbookTool {
-    descriptor: Tool {
-        name: "xlsx_set_format",
-        description: "Set the format of a range: bold, italic, underline, size (pt), color, font, fill, number_format (Excel's format code), horizontal_alignment, vertical_alignment, wrap_text, border. What is not given is not changed.",
-        access: Access::Edit,
-        returns_content: false,
-        schema: || {
-            object(
-                &[
-                    document_id(),
-                    ("sheet", string("The sheet's name.")),
-                    ("range", string("A1 range.")),
-                    ("bold", resettable(boolean("Bold."))),
-                    ("italic", resettable(boolean("Italic."))),
-                    ("underline", resettable(boolean("Underline."))),
-                    ("size", resettable(json!({ "type": "number", "description": "Points, 1 to 409.5 in steps of 0.5." }))),
-                    ("color", resettable(color_schema())),
-                    ("font", resettable(font_schema())),
-                    ("fill", resettable(color_schema())),
-                    ("number_format", string("Excel's number format code, e.g. 0.00 or yyyy/m/d.")),
-                    ("horizontal_alignment", json!({ "enum": ["general", "left", "center", "right", "justify"] })),
-                    ("vertical_alignment", json!({ "enum": ["top", "center", "bottom", "justify"] })),
-                    ("wrap_text", resettable(boolean("Wrap the text in the cell."))),
-                    ("border", json!({ "enum": ["all", "outline", "bottom", "none"] })),
-                ],
-                &["document_id", "sheet", "range"],
-            )
-        },
-        run: set_format,
+const SET_FORMAT: Tool = Tool {
+    name: "xlsx_set_format",
+    description: "Set the format of a range: bold, italic, underline, size (pt), color, font, fill, number_format (Excel's format code), horizontal_alignment, vertical_alignment, wrap_text, border. What is not given is not changed.",
+    access: Access::Edit,
+    returns_content: false,
+    schema: || {
+        object(
+            &[
+                document_id(),
+                ("sheet", string("The sheet's name.")),
+                ("range", string("A1 range.")),
+                ("bold", resettable(boolean("Bold."))),
+                ("italic", resettable(boolean("Italic."))),
+                ("underline", resettable(boolean("Underline."))),
+                ("size", resettable(json!({ "type": "number", "description": "Points, 1 to 409.5 in steps of 0.5." }))),
+                ("color", resettable(color_schema())),
+                ("font", resettable(font_schema())),
+                ("fill", resettable(color_schema())),
+                ("number_format", string("Excel's number format code, e.g. 0.00 or yyyy/m/d.")),
+                ("horizontal_alignment", json!({ "enum": ["general", "left", "center", "right", "justify"] })),
+                ("vertical_alignment", json!({ "enum": ["top", "center", "bottom", "justify"] })),
+                ("wrap_text", resettable(boolean("Wrap the text in the cell."))),
+                ("border", json!({ "enum": ["all", "outline", "bottom", "none"] })),
+            ],
+            &["document_id", "sheet", "range"],
+        )
     },
-    plan: plan_set_format,
+    run: set_format,
 };
