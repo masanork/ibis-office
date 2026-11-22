@@ -335,6 +335,58 @@ mod tests {
     }
 
     #[test]
+    fn long_comparison_preserves_both_texts_and_allowable_row_splits() {
+        let body = "地方公共団体は、必要な協力を求めることができる。".repeat(70);
+        let law = |color: &str| {
+            parse_law_input(&format!(
+                "試験法（令和七年法律第一号）\n第一条　{color}を用いる。{body}記録を保存する。"
+            ))
+            .unwrap()
+        };
+        let opened = open_comparison_document(&law("赤色"), &law("青色")).unwrap();
+        let flow = opened.presentation.flow.unwrap();
+        let table = flow
+            .body
+            .iter()
+            .find_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(flow.page.direction, CellDirection::TbRl);
+        assert!(table.rows[0].header);
+        let row = &table.rows[1];
+        assert!(!row.cant_split);
+        assert_eq!(row.cells.len(), 2);
+        for (cell, color) in row.cells.iter().zip(["青色", "赤色"]) {
+            let runs = cell
+                .blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Paragraph(paragraph) => Some(paragraph.runs.iter()),
+                    _ => None,
+                })
+                .flatten();
+            let mut text = String::new();
+            let mut marked = String::new();
+            for run in runs {
+                if let FlowRunKind::Text(value) = &run.kind {
+                    text.push_str(value);
+                    if run.style.underline {
+                        marked.push_str(value);
+                    }
+                }
+            }
+            assert!(marked.contains(color), "{marked}");
+            assert!(text.contains(&body), "long passage was altered");
+            assert!(
+                text.ends_with("記録を保存する。"),
+                "lost the end of the passage"
+            );
+        }
+    }
+
+    #[test]
     fn print_docx_preserves_page_breaks_rules_and_change_marks() {
         let old = parse_law_input("試験法（令和七年法律第一号）\n第一条　赤色を用いる。").unwrap();
         let new = parse_law_input("試験法（令和七年法律第一号）\n第一条　青色を用いる。").unwrap();
