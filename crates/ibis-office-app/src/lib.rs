@@ -426,6 +426,7 @@ struct Args {
     out_dir: Option<std::path::PathBuf>,
     /// `--export row-heights <file> [out.tsv]`: the second file name.
     out_file: Option<std::path::PathBuf>,
+    sbom_review_inputs: [Option<std::path::PathBuf>; 4],
     ai_query: Option<std::path::PathBuf>,
     /// Require a matching preview digest before applying an AI edit.
     require_preview: bool,
@@ -495,6 +496,10 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             "--export" => args.export = Some(value()?),
             "--pdfa-profile" => args.pdfa_profile = Some(value()?),
             "--verapdf" => args.verapdf = Some(value()?.into()),
+            "--old-sbom" => args.sbom_review_inputs[0] = Some(value()?.into()),
+            "--new-sbom" => args.sbom_review_inputs[1] = Some(value()?.into()),
+            "--old-scan" => args.sbom_review_inputs[2] = Some(value()?.into()),
+            "--new-scan" => args.sbom_review_inputs[3] = Some(value()?.into()),
             "--out-file" => args.out_file = Some(value()?.into()),
             "--ai-query" => args.ai_query = Some(value()?.into()),
             "--require-preview" => args.require_preview = true,
@@ -569,6 +574,13 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
         }
     } else if args.pdfa_profile.is_some() || args.verapdf.is_some() {
         return Err("--pdfa-profile and --verapdf require --export pdfa-validate".into());
+    }
+    if args.export.as_deref() == Some("sbom-review") {
+        if input_count != 0 || args.sbom_review_inputs.iter().any(Option::is_none) {
+            return Err("--export sbom-review requires --old-sbom, --new-sbom, --old-scan and --new-scan".into());
+        }
+    } else if args.sbom_review_inputs.iter().any(Option::is_some) {
+        return Err("SBOM review inputs require --export sbom-review".into());
     }
     if args.require_preview && args.export.as_deref() != Some("ai-apply") {
         return Err("--require-preview requires --export ai-apply".into());
@@ -646,6 +658,39 @@ fn export_options(args: &Args, format: export::Format, out_dir: std::path::PathB
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
+    if format == "sbom-review" {
+        use std::io::{Read, Write};
+        const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
+        let mut inputs = Vec::new();
+        for path in args.sbom_review_inputs.iter().flatten() {
+            let read = || -> std::io::Result<Vec<u8>> {
+                let mut bytes = Vec::new();
+                std::fs::File::open(path)?.take(MAX_INPUT_BYTES + 1).read_to_end(&mut bytes)?;
+                Ok(bytes)
+            };
+            let bytes = read().map_err(|e| format!("{}: {e}", path.display()))?;
+            if bytes.len() as u64 > MAX_INPUT_BYTES {
+                return Err(format!("{} exceeds the 32 MiB input limit", path.display()));
+            }
+            let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+            inputs.push((name, bytes));
+        }
+        let [old_bom, new_bom, old_scan, new_scan] = inputs.as_slice() else {
+            return Err("SBOM review requires four JSON inputs".into());
+        };
+        let report = ibis_formats::sbom_review::markdown(
+            [old_bom, new_bom, old_scan, new_scan].map(|(name, bytes)| (name.as_ref(), bytes.as_slice())),
+        )?;
+        if let Some(out) = &args.out_file {
+            let parent = out.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+            let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+            file.write_all(report.as_bytes()).map_err(|e| e.to_string())?;
+            file.persist_noclobber(out).map_err(|e| format!("{}: {e}", out.display()))?;
+        } else {
+            std::io::stdout().lock().write_all(report.as_bytes()).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
     if format == "pdfa-info" {
         let path = args.path.as_deref().ok_or("--export pdfa-info requires a PDF file")?;
         let data = std::fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;

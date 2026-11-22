@@ -105,6 +105,19 @@ ibisOffice --export pdf presentation.pptx
 ibisOffice --export png --out-dir dist/ --width 2560 --range 1-3 document.docx
 ```
 
+### SBOM と脆弱性スキャンの比較（`sbom-review`）
+
+```bash
+ibisOffice --export sbom-review \
+  --old-sbom old.cdx.json --new-sbom new.cdx.json \
+  --old-scan old.osv.json --new-scan new.osv.json \
+  --out-file remediation.md
+```
+
+各リリースに対応する CycloneDX JSON と OSV-Scanner の `--format json` 出力を渡します。Markdown には旧版・新版の検出バージョン、SBOM に記載されたバージョン、勧告へのリンク、入力ファイルの SHA-256 が入ります。`--out-file` を省くと標準出力に書き出します。入力は各 32 MiB までです。
+
+検出はパッケージと OSV ID の完全一致で比較します。SBOM 側は crates.io、npm、PyPI、Go の Package URL で照合します。新版で検出されず、かつ新版 SBOM の該当パッケージが単一バージョンで旧スキャンの勧告にある `fixed` と一致する場合は、両方の事実を表示します。比較には同一条件で採取したスキャン結果を使用し、スキャン範囲と本番への反映は別途確認してください。
+
 ---
 
 ## 印刷・エクスポート詳細オプション
