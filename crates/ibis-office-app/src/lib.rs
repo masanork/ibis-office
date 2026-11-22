@@ -582,6 +582,11 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     } else if args.sbom_review_inputs.iter().any(Option::is_some) {
         return Err("SBOM review inputs require --export sbom-review".into());
     }
+    if args.export.as_deref() == Some("sbom-table")
+        && (input_count != 1 || !args.out_file.as_deref().is_some_and(is_xlsx_path))
+    {
+        return Err("--export sbom-table requires one JSON input and --out-file <report.xlsx>".into());
+    }
     if args.require_preview && args.export.as_deref() != Some("ai-apply") {
         return Err("--require-preview requires --export ai-apply".into());
     }
@@ -655,41 +660,65 @@ fn export_options(args: &Args, format: export::Format, out_dir: std::path::PathB
     })
 }
 
+fn is_xlsx_path(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn read_sbom_input(path: &std::path::Path) -> Result<(std::borrow::Cow<'_, str>, Vec<u8>), String> {
+    use std::io::Read;
+    const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
+    let read = || -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?.take(MAX_INPUT_BYTES + 1).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    };
+    let bytes = read().map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() as u64 > MAX_INPUT_BYTES {
+        return Err(format!("{} exceeds the 32 MiB input limit", path.display()));
+    }
+    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+    Ok((name, bytes))
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn write_sbom_export(out: Option<&std::path::Path>, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(out) = out {
+        let parent = out.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.persist_noclobber(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    } else {
+        std::io::stdout().lock().write_all(bytes).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
+    if format == "sbom-table" {
+        let path = args.path.as_deref().ok_or("SBOM table requires one JSON input")?;
+        let (name, bytes) = read_sbom_input(path)?;
+        let report = ibis_formats::sbom_review::table_xlsx((name.as_ref(), &bytes))?;
+        return write_sbom_export(args.out_file.as_deref(), &report);
+    }
     if format == "sbom-review" {
-        use std::io::{Read, Write};
-        const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
-        let mut inputs = Vec::new();
-        for path in args.sbom_review_inputs.iter().flatten() {
-            let read = || -> std::io::Result<Vec<u8>> {
-                let mut bytes = Vec::new();
-                std::fs::File::open(path)?.take(MAX_INPUT_BYTES + 1).read_to_end(&mut bytes)?;
-                Ok(bytes)
-            };
-            let bytes = read().map_err(|e| format!("{}: {e}", path.display()))?;
-            if bytes.len() as u64 > MAX_INPUT_BYTES {
-                return Err(format!("{} exceeds the 32 MiB input limit", path.display()));
-            }
-            let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
-            inputs.push((name, bytes));
-        }
+        let inputs = args.sbom_review_inputs.iter().flatten()
+            .map(|path| read_sbom_input(path)).collect::<Result<Vec<_>, _>>()?;
         let [old_bom, new_bom, old_scan, new_scan] = inputs.as_slice() else {
             return Err("SBOM review requires four JSON inputs".into());
         };
-        let report = ibis_formats::sbom_review::markdown(
-            [old_bom, new_bom, old_scan, new_scan].map(|(name, bytes)| (name.as_ref(), bytes.as_slice())),
-        )?;
-        if let Some(out) = &args.out_file {
-            let parent = out.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-            let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-            file.write_all(report.as_bytes()).map_err(|e| e.to_string())?;
-            file.persist_noclobber(out).map_err(|e| format!("{}: {e}", out.display()))?;
+        let inputs = [old_bom, new_bom, old_scan, new_scan]
+            .map(|(name, bytes)| (name.as_ref(), bytes.as_slice()));
+        let out = args.out_file.as_deref();
+        let report = if out.is_some_and(is_xlsx_path) {
+            ibis_formats::sbom_review::review_xlsx(inputs)?
         } else {
-            std::io::stdout().lock().write_all(report.as_bytes()).map_err(|e| e.to_string())?;
-        }
-        return Ok(());
+            ibis_formats::sbom_review::markdown(inputs)?.into_bytes()
+        };
+        return write_sbom_export(out, &report);
     }
     if format == "pdfa-info" {
         let path = args.path.as_deref().ok_or("--export pdfa-info requires a PDF file")?;

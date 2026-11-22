@@ -118,6 +118,15 @@ ibisOffice --export sbom-review \
 
 検出はパッケージと OSV ID の完全一致で比較します。SBOM 側は crates.io、npm、PyPI、Go の Package URL で照合します。新版で検出されず、かつ新版 SBOM の該当パッケージが単一バージョンで旧スキャンの勧告にある `fixed` と一致する場合は、両方の事実を表示します。比較には同一条件で採取したスキャン結果を使用し、スキャン範囲と本番への反映は別途確認してください。
 
+比較結果を表計算で開くには、出力名を `remediation.xlsx` にします。検出結果、旧版・新版の部品一覧、入力の SHA-256、判定の注意事項が別シートになります。部品一覧は SBOM に記載された構成を表示します。
+
+比較をせずに単体の SBOM やスキャン結果を表計算で開く場合は、次のように変換します。
+
+```bash
+ibisOffice --export sbom-table bom.cdx.json --out-file components.xlsx
+ibisOffice --export sbom-table scan.osv.json --out-file findings.xlsx
+```
+
 ---
 
 ## 印刷・エクスポート詳細オプション

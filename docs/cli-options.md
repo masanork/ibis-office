@@ -100,6 +100,15 @@ Supply CycloneDX JSON and OSV-Scanner `--format json` output for each release. T
 
 Findings are compared by package identity and exact OSV ID. SBOM matching uses Package URLs for crates.io, npm, PyPI and Go. When a detection disappears and the new SBOM lists a single package version matching a `fixed` event in the old scan's advisory, the report shows both observations. Use scans collected under comparable conditions and verify scan coverage and deployment separately.
 
+Use `remediation.xlsx` as the output name to create a workbook with separate findings, old and new component inventories, input hashes, and scope notes. The inventory sheets show the components supplied in each SBOM.
+
+Convert a single SBOM or scan without comparing releases as follows.
+
+```bash
+ibisOffice --export sbom-table bom.cdx.json --out-file components.xlsx
+ibisOffice --export sbom-table scan.osv.json --out-file findings.xlsx
+```
+
 ---
 
 ## Print & Export Options
