@@ -13,6 +13,7 @@ pub mod cos;
 pub mod interpret;
 pub mod pdfa;
 pub mod scene;
+pub mod text_layout;
 pub mod signature;
 pub mod xref;
 

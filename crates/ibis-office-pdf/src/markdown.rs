@@ -1,0 +1,355 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Markdown export for the fixed-layout viewer.
+
+use std::fmt::Write as _;
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use ibis_pdf::text_layout::{TextLayout, page_text};
+use ibis_pdf::{
+    DisplayCmd, Error, PdfRect, Result,
+    scene::{FillRule, PageScene, PathCmd},
+};
+use image::ImageEncoder as _;
+
+use crate::{PdfViewerState, ViewerSource};
+
+/// None means the input is outside the fixed-layout Markdown export formats.
+pub fn export(bytes: &[u8]) -> Result<Option<String>> {
+    if !bytes.starts_with(b"%PDF-") && !ibis_ofd::is_ofd(bytes) && !ibis_xps::is_xps(bytes) {
+        return Ok(None);
+    }
+    let mut markdown = String::new();
+    if bytes.starts_with(b"%PDF-") {
+        let mut container = ibis_pdf::PdfContainer::from_bytes(bytes.to_vec())?;
+        ibis_pdf::interpret::visit_export_scenes(&mut container, |scene| {
+            write_page(&scene, scene.info.index + 1, &mut markdown)
+        })?;
+        return Ok(Some(markdown));
+    }
+    let mut viewer = PdfViewerState::open(bytes.to_vec())?;
+    if !matches!(viewer.source, ViewerSource::Ofd(_) | ViewerSource::Xps(_)) {
+        return Ok(None);
+    }
+    for index in 0..viewer.pages.len() {
+        let scene = viewer
+            .page_scene(index)
+            .map_err(|error| Error::new(format!("Page {}: {error}", index + 1)))?;
+        write_page(&scene, index + 1, &mut markdown)?;
+        // The exporter consumes each page once.
+        viewer.scene_cache.remove(&index);
+    }
+    Ok(Some(markdown))
+}
+
+fn write_page(scene: &PageScene, number: usize, markdown: &mut String) -> Result<()> {
+    if number > 1 {
+        markdown.push_str("\\newpage\n\n");
+    }
+    let _ = writeln!(markdown, "<!-- fixed-layout-page: {number} -->\n");
+    let text = page_text(&scene.text_index, TextLayout::Reading);
+    if text.trim().is_empty() {
+        let _ = writeln!(markdown, "<!-- fixed-layout-diagnostic: Page {number}: no extractable text -->\n");
+    } else {
+        // Keep the original lines visible without interpreting them as Markdown.
+        for line in text.lines() {
+            if line.is_empty() {
+                markdown.push('\n');
+                continue;
+            }
+            for ch in line.chars() {
+                if ch.is_ascii_punctuation() {
+                    markdown.push('\\');
+                }
+                markdown.push(ch);
+            }
+            markdown.push_str("  \n");
+        }
+        markdown.push('\n');
+    }
+
+    let (svg, omitted_images) = graphics(scene)?;
+    if omitted_images > 0 {
+        let _ = writeln!(
+            markdown,
+            "<!-- fixed-layout-diagnostic: Page {number}: {omitted_images} image(s) could not be decoded -->\n"
+        );
+    }
+    if let Some(svg) = svg {
+        let (width, height) = page_extent(scene);
+        let scale = 140.0 / width.max(height);
+        let _ = writeln!(
+            markdown,
+            "![Page {number} graphics](data:image/svg+xml;base64,{}){{width={:.2}mm height={:.2}mm}}\n",
+            STANDARD.encode(svg),
+            width * scale,
+            height * scale,
+        );
+    }
+    Ok(())
+}
+
+fn rect_attrs(rect: PdfRect) -> String {
+    format!(
+        "x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
+        rect.x0,
+        rect.y0,
+        rect.width(),
+        rect.height()
+    )
+}
+
+fn paint_attrs(kind: &str, color: Option<[u8; 4]>) -> String {
+    let Some([r, g, b, alpha]) = color else {
+        return format!("{kind}=\"none\"");
+    };
+    format!(
+        "{kind}=\"#{r:02x}{g:02x}{b:02x}\" {kind}-opacity=\"{}\"",
+        f32::from(alpha) / 255.0,
+    )
+}
+
+fn intersect(a: PdfRect, b: PdfRect) -> PdfRect {
+    let x = a.x0.max(b.x0);
+    let y = a.y0.max(b.y0);
+    PdfRect {
+        x0: x,
+        y0: y,
+        x1: a.x1.min(b.x1).max(x),
+        y1: a.y1.min(b.y1).max(y),
+    }
+}
+
+fn page_extent(scene: &PageScene) -> (f32, f32) {
+    let (width, height) = (scene.info.crop_box.width(), scene.info.crop_box.height());
+    if matches!(scene.info.rotate, 90 | 270) {
+        (height, width)
+    } else {
+        (width, height)
+    }
+}
+
+/// A positioned, text-free layer of the graphics decoded by the viewer.
+fn graphics(scene: &PageScene) -> Result<(Option<String>, usize)> {
+    let mut svg = String::new();
+    let (width, height) = page_extent(scene);
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return Err(Error::new(format!(
+            "Invalid size on page {}",
+            scene.info.index + 1
+        )));
+    }
+    let _ = write!(
+        svg,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"{width}pt\" height=\"{height}pt\" viewBox=\"0 0 {width} {height}\">",
+    );
+    let mut has_graphics = false;
+    let mut omitted_images = 0;
+    let mut clip = None;
+    let mut clips = Vec::new();
+    let mut groups = 0;
+    for (index, command) in scene.display_list.iter().enumerate() {
+        match command {
+            DisplayCmd::SetClipRect(rect) => {
+                clip = *rect;
+                continue;
+            }
+            DisplayCmd::PushClip(rect) => {
+                clips.push(clip);
+                clip = Some(clip.map_or(*rect, |previous| intersect(previous, *rect)));
+                continue;
+            }
+            DisplayCmd::PopClip => {
+                clip = clips.pop().flatten();
+                continue;
+            }
+            DisplayCmd::PushTransparencyGroup { opacity } => {
+                let _ = write!(svg, "<g opacity=\"{}\">", opacity.clamp(0.0, 1.0));
+                groups += 1;
+                continue;
+            }
+            DisplayCmd::PopTransparencyGroup => {
+                if groups > 0 {
+                    svg.push_str("</g>");
+                    groups -= 1;
+                }
+                continue;
+            }
+            DisplayCmd::DrawGlyphRun { .. } | DisplayCmd::DrawStyledGlyphRun { .. } => continue,
+            DisplayCmd::DrawImage { rgba, .. } if rgba.is_empty() => {
+                omitted_images += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(rect) = clip {
+            let attrs = rect_attrs(rect);
+            let _ = write!(
+                svg,
+                "<defs><clipPath id=\"clip{index}\"><rect {attrs}/></clipPath></defs><g clip-path=\"url(#clip{index})\">"
+            );
+        }
+        match command {
+            DisplayCmd::DrawRect {
+                rect,
+                fill_rgba: Some(color),
+            } => {
+                let _ = write!(
+                    svg,
+                    "<rect {} {}/>",
+                    rect_attrs(*rect),
+                    paint_attrs("fill", Some(*color))
+                );
+                has_graphics = true;
+            }
+            DisplayCmd::DrawPath {
+                commands,
+                fill_rule,
+                fill_rgba,
+                stroke_rgba,
+                stroke_width,
+                ..
+            } if !commands.is_empty() && (fill_rgba.is_some() || stroke_rgba.is_some()) => {
+                let mut path = String::new();
+                for command in commands {
+                    let _ = match command {
+                        PathCmd::MoveTo(x, y) => write!(path, "M{x} {y} "),
+                        PathCmd::LineTo(x, y) => write!(path, "L{x} {y} "),
+                        PathCmd::QuadTo(x1, y1, x, y) => write!(path, "Q{x1} {y1} {x} {y} "),
+                        PathCmd::CubicTo(x1, y1, x2, y2, x, y) => {
+                            write!(path, "C{x1} {y1} {x2} {y2} {x} {y} ")
+                        }
+                        PathCmd::Close => write!(path, "Z "),
+                    };
+                }
+                let rule = if *fill_rule == FillRule::EvenOdd {
+                    "evenodd"
+                } else {
+                    "nonzero"
+                };
+                let _ = write!(
+                    svg,
+                    "<path d=\"{path}\" fill-rule=\"{rule}\" {} {} stroke-width=\"{stroke_width}\"/>",
+                    paint_attrs("fill", *fill_rgba),
+                    paint_attrs("stroke", *stroke_rgba)
+                );
+                has_graphics = true;
+            }
+            DisplayCmd::DrawImage {
+                bounds,
+                width,
+                height,
+                rgba,
+            } => {
+                let len = u64::from(*width) * u64::from(*height);
+                if *width == 0 || *height == 0 || len.checked_mul(4) != Some(rgba.len() as u64) {
+                    return Err(Error::new(format!(
+                        "Invalid image on page {}",
+                        scene.info.index + 1
+                    )));
+                }
+                let mut png = Vec::new();
+                image::codecs::png::PngEncoder::new(&mut png)
+                    .write_image(rgba, *width, *height, image::ExtendedColorType::Rgba8)
+                    .map_err(|error| Error::new(error.to_string()))?;
+                let _ = write!(
+                    svg,
+                    "<image {} preserveAspectRatio=\"none\" xlink:href=\"data:image/png;base64,{}\"/>",
+                    rect_attrs(*bounds),
+                    STANDARD.encode(png)
+                );
+                has_graphics = true;
+            }
+            _ => {}
+        }
+        if clip.is_some() {
+            svg.push_str("</g>");
+        }
+    }
+    for _ in 0..groups {
+        svg.push_str("</g>");
+    }
+    svg.push_str("</svg>");
+    Ok((has_graphics.then_some(svg), omitted_images))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ibis_pdf::{CharBox, PageInfo, PageTextIndex};
+
+    #[test]
+    fn exports_text_and_preserves_vector_and_image_commands() {
+        let rect = PdfRect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 20.0,
+            y1: 30.0,
+        };
+        let scene = PageScene {
+            info: PageInfo {
+                index: 0,
+                object_id: ibis_pdf::ObjectId::new(1, 0),
+                media_box: rect,
+                crop_box: rect,
+                rotate: 0,
+            },
+            text_index: PageTextIndex {
+                chars: vec![CharBox {
+                    ch: '#',
+                    rect_pt: rect,
+                    vertical: false,
+                    stream_op_index: 0,
+                }],
+            },
+            display_list: vec![
+                DisplayCmd::PushClip(rect),
+                DisplayCmd::DrawPath {
+                    bounds: rect,
+                    commands: vec![
+                        PathCmd::MoveTo(0.0, 0.0),
+                        PathCmd::LineTo(2.0, 3.0),
+                        PathCmd::Close,
+                    ],
+                    fill_rule: FillRule::EvenOdd,
+                    fill_rgba: Some([0, 16, 32, 128]),
+                    stroke_rgba: None,
+                    stroke_width: 0.0,
+                },
+                DisplayCmd::DrawImage {
+                    bounds: rect,
+                    width: 1,
+                    height: 1,
+                    rgba: vec![255, 0, 0, 255],
+                },
+                DisplayCmd::PopClip,
+            ],
+        };
+        let mut markdown = String::new();
+        write_page(&scene, 2, &mut markdown).unwrap();
+        assert!(markdown.starts_with("\\newpage\n"));
+        assert!(markdown.contains(r"\#"));
+        let svg = markdown
+            .split_once("data:image/svg+xml;base64,")
+            .unwrap()
+            .1
+            .split_once(')')
+            .unwrap()
+            .0;
+        let svg = String::from_utf8(STANDARD.decode(svg).unwrap()).unwrap();
+        assert!(svg.contains("viewBox=\"0 0 20 30\""));
+        assert!(svg.contains("<clipPath"));
+        assert!(svg.contains("fill-rule=\"evenodd\""));
+        let image = svg
+            .split_once("data:image/png;base64,")
+            .unwrap()
+            .1
+            .split_once('"')
+            .unwrap()
+            .0;
+        let png = STANDARD.decode(image).unwrap();
+        assert_eq!(
+            image::load_from_memory(&png).unwrap().to_rgba8().as_raw(),
+            &[255, 0, 0, 255]
+        );
+    }
+}

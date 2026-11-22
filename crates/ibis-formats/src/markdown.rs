@@ -2340,6 +2340,14 @@ fn parse_blocks(
             }
         }
 
+        if trimmed.ends_with(" -->")
+            && (trimmed.starts_with("<!-- fixed-layout-page: ")
+                || trimmed.starts_with("<!-- fixed-layout-diagnostic: "))
+        {
+            i += 1;
+            continue;
+        }
+
         if trimmed.starts_with(PPTX_SHAPE_MARKER) && trimmed.ends_with(" -->") {
             let paragraph = FlowParagraph {
                 id: ctx.fresh_id(),
@@ -7876,6 +7884,15 @@ fn fit_size_in_rect(size: EmuSize, rect: EmuRect) -> EmuRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_layout_markdown_comments_do_not_become_document_text() {
+        let markdown = b"<!-- fixed-layout-page: 1 -->\n\nShared document\n\n<!-- fixed-layout-diagnostic: Page 1: no extractable text -->\n";
+        let opened = crate::open(import_markdown_to_docx_bytes(markdown).unwrap()).unwrap();
+        let flow = opened.presentation.flow.unwrap();
+        let text = ibis_doc_model::flow_command::all_paragraphs(&flow).iter().map(|p| p.text()).collect::<Vec<_>>();
+        assert_eq!(text, ["Shared document"]);
+    }
 
     #[test]
     fn nested_table_round_trips_with_surrounding_text_and_combined_cells() {

@@ -5163,6 +5163,7 @@ dependencies = [
 name = "ibis-office-pdf"
 version = "0.8.0"
 dependencies = [
+ "base64 0.22.1",
  "gpui-kit",
  "ibis-doc-model",
  "ibis-formats",

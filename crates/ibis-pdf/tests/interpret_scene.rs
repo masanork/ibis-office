@@ -140,3 +140,20 @@ fn decodes_raster_image_xobject_to_rgba() {
         Some((2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]))
     );
 }
+
+#[test]
+fn export_scenes_keep_vector_drawings_and_do_not_repeat_decoded_text_as_paths() {
+    let mut container = PdfContainer::from_bytes(build_vector_and_text_pdf()).unwrap();
+    let mut count = 0;
+    ibis_pdf::interpret::visit_export_scenes(&mut container, |scene| {
+        count += 1;
+        assert_eq!(scene.text_index.plain_text(), "Hello ibisOffice");
+        let paths = scene.display_list.iter()
+            .filter(|command| matches!(command, DisplayCmd::DrawPath { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(paths.len(), 1);
+        assert!(matches!(paths[0], DisplayCmd::DrawPath { fill_rgba: Some([51, 102, 204, 255]), .. }));
+        Ok(())
+    }).unwrap();
+    assert_eq!(count, 1);
+}

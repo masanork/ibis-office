@@ -16,6 +16,7 @@ use ibis_pdf::{PdfContainer, Result};
 
 pub mod editor;
 pub mod render;
+pub mod markdown;
 pub use editor::PdfDocument;
 
 enum ViewerSource {

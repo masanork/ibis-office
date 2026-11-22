@@ -695,7 +695,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         let path = args
             .path
             .as_deref()
-            .ok_or("name the .docx, .pptx, .xlsx, .csv, .md, .xml, or .lawtext file to export")?;
+            .ok_or("name the Office document, PDF, XPS, OFD, CSV, Markdown or law document to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
         std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
         let stem = path
@@ -708,6 +708,20 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             let out_path = out_dir.join(format!("{stem}.ai.json"));
             std::fs::write(&out_path, format!("{export:#}\n"))
+                .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            return Ok(());
+        }
+        if matches!(format, "md" | "markdown")
+            && let Some(markdown) = ibis_office_pdf::markdown::export(&raw_data)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+        {
+            if args.include_xlsx_validations || args.include_xlsx_hidden_axes
+                || args.include_xlsx_hidden_sheets || args.include_xlsx_defined_names
+            {
+                return Err("XLSX Markdown options require a workbook".into());
+            }
+            let out_path = out_dir.join(format!("{stem}.md"));
+            std::fs::write(&out_path, markdown)
                 .map_err(|e| format!("{}: {e}", out_path.display()))?;
             return Ok(());
         }

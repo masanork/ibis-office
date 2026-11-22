@@ -246,3 +246,11 @@ ibisOffice --export pdf --handout 2 --print-color bw --print-frame \
   --handout-footer "アイビス株式会社 機密" \
   --handout-number --out-dir handouts/ strategy.pptx
 ```
+
+## 固定レイアウト文書を Markdown に書き出す
+
+```sh
+ibisOffice --export md --out-dir ./out input.pdf
+```
+
+PDF・XPS（OXPS を含む）・OFD の抽出可能な本文をページ順に書き出します。行の順序は文字の位置から推定します。ビューアで復号できた図形・画像は、ページ上の配置を持つ SVG として本文に添えます。画像だけのページは OCR を行いません。段落や表の意味構造、署名、原本と同じ組版の復元には別の処理が必要です。

@@ -34,22 +34,48 @@ pub fn interpret_page_scene(
         .cloned()
         .ok_or_else(|| Error::new(format!("page index {page_index} out of range")))?;
 
-    let raw_arc = Arc::new(container.raw_bytes().to_vec());
-    let pdf = Pdf::new(raw_arc)
-        .map_err(|e| Error::new(format!("hayro-syntax failed to parse PDF: {e:?}")))?;
+    let pdf = parse_for_interpretation(container)?;
+    interpret_scene(&pdf, &InterpreterCache::new(), info, true)
+}
+
+/// Visit each page for export, keeping glyph outlines only when Unicode is unavailable.
+pub fn visit_export_scenes(
+    container: &mut PdfContainer,
+    mut visit: impl FnMut(PageScene) -> Result<()>,
+) -> Result<()> {
+    let pages = collect_pages(container)?;
+    let pdf = parse_for_interpretation(container)?;
+    let cache = InterpreterCache::new();
+    for info in pages {
+        visit(interpret_scene(&pdf, &cache, info, false)?)?;
+    }
+    Ok(())
+}
+
+fn parse_for_interpretation(container: &PdfContainer) -> Result<Pdf> {
+    Pdf::new(Arc::new(container.raw_bytes().to_vec()))
+        .map_err(|error| Error::new(format!("hayro-syntax failed to parse PDF: {error:?}")))
+}
+
+fn interpret_scene<'a>(
+    pdf: &'a Pdf,
+    cache: &'a InterpreterCache<'a>,
+    info: PageInfo,
+    include_text_outlines: bool,
+) -> Result<PageScene> {
+    let page_index = info.index;
     let page = pdf
         .pages()
         .get(page_index)
         .ok_or_else(|| Error::new(format!("page {page_index} missing in hayro-syntax")))?;
 
     let settings = InterpreterSettings::default();
-    let cache = InterpreterCache::new();
     let initial_transform = Affine::new(page.initial_transform(true).as_coeffs());
     let (pw, ph) = page.render_dimensions();
     let bbox = Rect::new(0.0, 0.0, pw as f64, ph as f64);
 
-    let mut ctx = Context::new(initial_transform, bbox, &cache, pdf.xref(), settings);
-    let mut device = SceneDevice::new(info);
+    let mut ctx = Context::new(initial_transform, bbox, cache, pdf.xref(), settings);
+    let mut device = SceneDevice::new(info, include_text_outlines);
     interpret_page(page, &mut ctx, &mut device);
     Ok(device.finish())
 }
@@ -59,15 +85,17 @@ struct SceneDevice {
     display_list: Vec<DisplayCmd>,
     text_index: PageTextIndex,
     op_counter: usize,
+    include_text_outlines: bool,
 }
 
 impl SceneDevice {
-    fn new(info: PageInfo) -> Self {
+    fn new(info: PageInfo, include_text_outlines: bool) -> Self {
         Self {
             info,
             display_list: Vec::new(),
             text_index: PageTextIndex::default(),
             op_counter: 0,
+            include_text_outlines,
         }
     }
 
@@ -218,6 +246,9 @@ impl<'a> Device<'a> for SceneDevice {
                     vertical: false,
                     stream_op_index: self.op_counter,
                 });
+            }
+            if !self.include_text_outlines && !text.is_empty() && !text.contains('\u{fffd}') {
+                return;
             }
         }
 
