@@ -221,6 +221,22 @@ fn standalone_law_number(line: &str) -> Option<&str> {
     })).then_some(number)
 }
 
+// Lawtext permits root attributes before the title, on separate or combined lines.
+fn lawtext_attributes(mut line: &str) -> Option<Vec<(&str, String)>> {
+    let mut attributes = Vec::new();
+    while let Some(entry) = line.strip_prefix('[') {
+        let (name, value) = entry.split_once('=')?;
+        if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+            return None;
+        }
+        let mut values = serde_json::Deserializer::from_str(value).into_iter::<String>();
+        let parsed = values.next()?.ok()?;
+        line = value[values.byte_offset()..].strip_prefix(']')?.trim_start();
+        attributes.push((name, parsed));
+    }
+    (line.is_empty() && !attributes.is_empty()).then_some(attributes)
+}
+
 /// Return `true` when `data` looks like a Lawtext document (`.law.txt` / `.lawtext`)
 /// or Markdown with `type: lawtext` frontmatter.
 pub fn is_lawtext(data: &[u8]) -> bool {
@@ -231,7 +247,9 @@ pub fn is_lawtext(data: &[u8]) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    let mut lines = trimmed.lines().filter(|l| !l.trim().is_empty()).take(30);
+    let mut lines = trimmed.lines()
+        .filter(|line| !line.trim().is_empty())
+        .skip_while(|line| lawtext_attributes(line.trim()).is_some());
     let Some(first) = lines.next() else {
         return false;
     };
@@ -770,6 +788,21 @@ fn write_xml_subitem(out: &mut String, sub: &LawSubitem, depth: usize) {
 /// Export a [`LawDoc`] to human-readable Lawtext plain text.
 pub fn to_lawtext(doc: &LawDoc) -> String {
     let mut out = String::new();
+    for (name, value) in [
+        ("Era", doc.era.as_deref()),
+        ("Year", doc.year.as_deref()),
+        ("Num", doc.num.as_deref()),
+        ("LawType", doc.law_type.as_deref()),
+        ("Lang", doc.lang.as_deref().filter(|lang| *lang != "ja")),
+    ] {
+        if let Some(value) = value {
+            let quoted = serde_json::Value::String(value.to_owned());
+            out.push_str(&format!("[{name}={quoted}]\n"));
+        }
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
     if !doc.law_title.is_empty() {
         out.push_str(&doc.law_title);
         if !doc.law_num.is_empty() {
@@ -912,8 +945,22 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
         }
     };
 
-    let mut lines = text.trim_start_matches('\u{feff}').lines()
+    let lines = text.trim_start_matches('\u{feff}').lines()
         .filter(|line| !line.trim().is_empty());
+    let mut lines = lines.peekable();
+    while let Some(attributes) = lines.peek().and_then(|line| lawtext_attributes(line.trim())) {
+        for (name, value) in attributes {
+            match name {
+                "Era" => doc.era = Some(value),
+                "Year" => doc.year = Some(value),
+                "Num" => doc.num = Some(value),
+                "LawType" => doc.law_type = Some(value),
+                "Lang" => doc.lang = Some(value),
+                _ => {}
+            }
+        }
+        lines.next();
+    }
     let mut header = lines.clone();
     if let (Some(title), Some(number)) = (
         header.next().map(str::trim).filter(|title| !title.contains('（') && !title.starts_with('第')),
@@ -1154,6 +1201,9 @@ fn to_markdown_with_articles(
     }
     if let Some(lt) = doc.law_type.as_deref() {
         out.push_str(&format!("law_type: {lt}\n"));
+    }
+    if let Some(lang) = doc.lang.as_deref().filter(|lang| *lang != "ja") {
+        out.push_str(&format!("lang: {lang}\n"));
     }
     out.push_str("---\n\n");
 

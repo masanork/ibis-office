@@ -57,14 +57,7 @@ fn verifies_amendment_after_xml_and_lawtext_round_trips() {
         let original = parse_law_xml(xml).unwrap();
         let lawtext = to_lawtext(&original);
         let roundtrip = parse_law_xml(&to_law_xml(&parse_lawtext(&lawtext).unwrap())).unwrap();
-        assert_eq!(
-            roundtrip.main_provision, original.main_provision,
-            "{name} 本則"
-        );
-        assert_eq!(
-            roundtrip.suppl_provisions, original.suppl_provisions,
-            "{name} 附則"
-        );
+        assert_eq!(roundtrip, original, "{name} round trip");
         fs::write(fixture.path().join(format!("{name}.lawtext")), lawtext).unwrap();
         fs::write(fixture.path().join(format!("{name}.xml")), xml).unwrap();
     }
@@ -133,12 +126,15 @@ fn verifies_amendment_after_xml_and_lawtext_round_trips() {
 }
 
 #[test]
-fn audit_separates_xml_model_changes_from_lawtext_losses() {
+fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("test.xml");
     let xml = include_str!("lawtext/supplementary-amendment.xml").replace(
         "<MainProvision>",
-        "<TOC><TOCLabel>目次</TOCLabel></TOC><MainProvision>",
+        concat!(
+            "<EnactStatement>試験法を公布する。</EnactStatement>",
+            "<TOC><TOCLabel>目次</TOCLabel></TOC><MainProvision>",
+        ),
     );
     std::fs::write(&path, xml).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_ibis-lawtext-audit"))
@@ -156,19 +152,36 @@ fn audit_separates_xml_model_changes_from_lawtext_losses() {
     assert!(model.iter().any(|change| {
         change["kind"] == "element_removed" && change["path"] == "/Law/LawBody[1]/TOC[1]"
     }));
-    for attr in ["Era", "Year", "Num", "LawType"] {
-        let path = format!("/Law/@{attr}");
-        assert!(model.iter().all(|change| change["path"] != path));
-        assert!(
-            lawtext
-                .iter()
-                .any(|change| { change["kind"] == "attribute_removed" && change["path"] == path })
-        );
-    }
-    assert!(
-        lawtext
-            .iter()
-            .all(|change| { !change["path"].as_str().unwrap().contains("/SupplProvision") })
+    assert_eq!(
+        lawtext,
+        &[serde_json::json!({
+            "kind": "element_removed",
+            "path": "/Law/LawBody[1]/EnactStatement[1]",
+        })],
     );
     assert!(report["output_xsd"].is_null());
+}
+
+#[test]
+fn reads_combined_lawtext_root_attributes_before_a_split_title() {
+    let source = concat!(
+        "[Era=\"Reiwa\"][Year=\"07\"] [Num=\"001\"]\r\n",
+        "[LawType=\"Act\"][Lang=\"en\"]\r\n\r\n",
+        "試験法\r\n（令和七年法律第一号）\r\n\r\n第一条 規定を定める。",
+    );
+    assert!(ibis_formats::lawtext::is_lawtext(source.as_bytes()));
+    let doc = parse_lawtext(source).unwrap();
+    assert_eq!(doc.law_title, "試験法");
+    assert_eq!(doc.law_num, "令和七年法律第一号");
+    assert_eq!(doc.era.as_deref(), Some("Reiwa"));
+    assert_eq!(doc.year.as_deref(), Some("07"));
+    assert_eq!(doc.num.as_deref(), Some("001"));
+    assert_eq!(doc.law_type.as_deref(), Some("Act"));
+    assert_eq!(doc.lang.as_deref(), Some("en"));
+    assert_eq!(doc, parse_lawtext(&to_lawtext(&doc)).unwrap());
+    let markdown = input_to_markdown(source.as_bytes()).unwrap().unwrap();
+    assert_eq!(
+        doc,
+        ibis_formats::lawtext::parse_markdown_law(&markdown).unwrap()
+    );
 }
