@@ -5,6 +5,7 @@
 
 use ibis_calc::CellValue;
 use ibis_doc_model::ShapeKind;
+use ibis_doc_model::ai_sheet::parse_cell_input;
 use ibis_doc_model::sheet::{CellRange, Sheet};
 use ibis_formats::Kind;
 use serde_json::{Value, json};
@@ -202,7 +203,7 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "xlsx_set_cells",
-            description: "Put values in a range: rows of numbers, strings, true/false or null (clears the cell). A string that starts with = is a formula. A single value fills the whole range; otherwise the rows must be as large as the range. What depends on them is calculated again.",
+            description: "Put values in a range: rows of numbers, strings, true/false or null (clears the cell). A string starting with = followed by formula text is a formula. A single value fills the whole range; otherwise the rows must be as large as the range. What depends on them is calculated again.",
             access: Access::Edit,
             returns_content: false,
             schema: || {
@@ -275,46 +276,46 @@ fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extr
     Ok(edited(id, open, extra, Vec::new()))
 }
 
-fn input_of(value: &Value) -> Result<CellInput, ToolError> {
-    Ok(match value {
-        Value::Null => CellInput::Clear,
-        Value::Bool(b) => CellInput::Value(CellValue::Bool(*b)),
-        Value::Number(n) => CellInput::Value(CellValue::Number(n.as_f64().ok_or_else(|| ToolError::invalid("a number is out of range"))?)),
-        Value::String(s) => match s.strip_prefix('=') {
-            Some(formula) if !formula.is_empty() => CellInput::Formula(formula.to_string()),
-            _ => CellInput::Value(CellValue::Text(s.clone())),
-        },
-        _ => return Err(ToolError::invalid("a cell is a number, a string, true/false or null")),
-    })
-}
-
 fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let range = parse_range(args.str_arg("range")?)?;
-    let (rows, columns) = ((range.last_row - range.first_row + 1) as usize, (range.last_column - range.first_column + 1) as usize);
-    let values = args.get("values").ok_or_else(|| ToolError::invalid("values is required"))?;
-    let grid: Vec<Vec<Value>> = match values {
-        Value::Array(outer) => {
-            let grid: Vec<Vec<Value>> = outer.iter().map(|r| r.as_array().cloned().ok_or_else(|| ToolError::invalid("values is rows (arrays) of cells"))).collect::<Result<_, _>>()?;
-            if grid.len() != rows || grid.iter().any(|r| r.len() != columns) {
-                return Err(ToolError::new("out_of_range", format!("the range {} is {rows} rows by {columns} columns; values is {} rows", args.str_arg("range")?, grid.len())));
-            }
-            grid
-        }
-        single => vec![vec![single.clone(); columns]; rows],
-    };
-    if rows * columns > 100_000 {
+    let range_arg = args.str_arg("range")?;
+    let range = parse_range(range_arg)?;
+    let rows = (range.last_row - range.first_row + 1) as usize;
+    let columns = (range.last_column - range.first_column + 1) as usize;
+    let count = rows.saturating_mul(columns);
+    if count > 100_000 {
         return Err(ToolError::new("out_of_range", "more than 100000 cells in one call"));
     }
+    let values = args.get("values").ok_or_else(|| ToolError::invalid("values is required"))?;
     let open = service.open_document(id)?;
     let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
-    let mut edits = Vec::with_capacity(rows * columns);
-    for (r, row) in grid.iter().enumerate() {
-        for (c, value) in row.iter().enumerate() {
-            edits.push(CellEdit { row: range.first_row + r as u32, column: range.first_column + c as u32, input: input_of(value)? });
+    let mut edits = Vec::with_capacity(count);
+    match values {
+        Value::Array(grid) => {
+            if grid.len() != rows {
+                return Err(ToolError::new("out_of_range", format!("the range {range_arg} is {rows} rows by {columns} columns; values is {} rows", grid.len())));
+            }
+            for (r, row) in grid.iter().enumerate() {
+                let row = row.as_array().ok_or_else(|| ToolError::invalid("values is rows (arrays) of cells"))?;
+                if row.len() != columns {
+                    return Err(ToolError::new("out_of_range", format!("row {} must have {columns} cells", r + 1)));
+                }
+                for (c, value) in row.iter().enumerate() {
+                    let input = parse_cell_input(value).map_err(ToolError::invalid)?;
+                    edits.push(CellEdit { row: range.first_row + r as u32, column: range.first_column + c as u32, input });
+                }
+            }
+        }
+        single => {
+            let input = parse_cell_input(single).map_err(ToolError::invalid)?;
+            for row in range.first_row..=range.last_row {
+                for column in range.first_column..=range.last_column {
+                    edits.push(CellEdit { row, column, input: input.clone() });
+                }
+            }
         }
     }
-    sheet_edit(service, id, vec![SheetCommand::SetCells { sheet, edits }], json!({ "cells": rows * columns }))
+    sheet_edit(service, id, vec![SheetCommand::SetCells { sheet, edits }], json!({ "cells": count }))
 }
 
 fn clear_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {

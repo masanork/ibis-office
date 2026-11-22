@@ -104,6 +104,18 @@ fn mcp_docx_edits_are_one_undo_step_each_and_survive_saving() {
 }
 
 #[test]
+fn mcp_xlsx_cell_inputs_use_shared_rules() {
+    let mut t = T::new("xlsx_cell_inputs", &[]);
+    let bytes = ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap();
+    std::fs::write(t.dir.join("blank.xlsx"), bytes).unwrap();
+    let x = t.open("blank.xlsx");
+    let sheet = t.call("xlsx_list_sheets", json!({ "document_id": x }))["sheets"][0]["name"].as_str().unwrap().to_string();
+    t.call("xlsx_set_cells", json!({ "document_id": x, "sheet": sheet, "range": "AA1:AA3", "values": [["="], ["=  1+2  "], [true]] }));
+    assert_eq!(t.call("xlsx_get_cells", json!({ "document_id": x, "sheet": sheet, "range": "AA1:AA3" }))["rows"], json!([["="], [3.0], [true]]));
+    assert_eq!(t.err("xlsx_set_cells", json!({ "document_id": x, "sheet": sheet, "range": "AA1:AA100001", "values": 0 })), "out_of_range");
+}
+
+#[test]
 fn mcp_xlsx_edits_calculate_format_and_survive_saving() {
     let mut t = T::new("xlsx_edits", &["xlsx-sales.xlsx"]);
     let x = t.open("xlsx-sales.xlsx");

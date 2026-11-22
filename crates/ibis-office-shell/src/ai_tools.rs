@@ -4,7 +4,7 @@
 //! OpenAI Tool definitions and JSON argument parsers for spreadsheet operations.
 
 use ibis_doc_model::ai_sheet::{
-    AiBorderStyle, AiCellEdit, AiCellFormat, AiCellValue, build_clear_cells_command,
+    AiBorderStyle, AiCellEdit, AiCellFormat, build_clear_cells_command,
     build_delete_axis_command, build_insert_axis_command, build_merge_command,
     build_set_axis_size_command, build_set_cells_command, build_set_comment_command,
     build_set_format_command, parse_cell_range, parse_hex_rgb,
@@ -753,37 +753,9 @@ pub fn parse_range_arg(arguments_json: &str) -> Result<CellRange, String> {
 pub fn parse_set_cells_command(slide: SlideId, arguments_json: &str) -> Result<Command, String> {
     let args: SetCellsArgs =
         serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
-    let edits = args
-        .edits
-        .into_iter()
-        .map(|item| {
-            let value = match item.value {
-                Value::Null => AiCellValue::Empty,
-                Value::Bool(b) => AiCellValue::Bool(b),
-                Value::Number(n) => AiCellValue::Number(
-                    n.as_f64()
-                        .ok_or_else(|| format!("number out of f64 range for '{}'", item.cell))?,
-                ),
-                Value::String(s) => {
-                    if let Some(formula) = s.strip_prefix('=') {
-                        AiCellValue::Formula(formula.to_string())
-                    } else {
-                        AiCellValue::Text(s)
-                    }
-                }
-                other => {
-                    return Err(format!(
-                        "unsupported cell value type for '{}': {other}",
-                        item.cell
-                    ));
-                }
-            };
-            Ok(AiCellEdit {
-                cell: item.cell,
-                value,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let edits = args.edits.into_iter()
+        .map(|item| AiCellEdit { cell: item.cell, value: item.value })
+        .collect();
     build_set_cells_command(slide, edits)
 }
 
