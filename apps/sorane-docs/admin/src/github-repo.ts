@@ -60,7 +60,7 @@ export class GitHubRepo {
   private async request(url: string, accept: string, immutable = false) {
     if (--this.budget < 0) fail(422, 'narrow_to_file');
     const response = await fetch(url, {
-      redirect: 'error',
+      redirect: 'manual',
       headers: { Accept: accept, 'User-Agent': 'Sorane-Docs' },
       cf: { cacheEverything: true, cacheTtlByStatus: { '200-299': immutable ? 86400 : 120, '400-599': 0 } },
     }).catch(() => fail(502, 'github_unavailable'));

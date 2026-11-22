@@ -1038,7 +1038,7 @@ test('public GitHub remotes share the history and comparison UI without a Docs s
   const original = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const url = new URL(input);
-    assert.equal(init.redirect, 'error');
+    assert.equal(init.redirect, 'manual');
     assert.equal(new Headers(init.headers).has('Authorization'), false);
     if (url.origin === 'https://raw.githubusercontent.com') {
       assert.equal(url.pathname, '/owner/law/' + older + '/law.md');
