@@ -1624,7 +1624,7 @@ git.more-files	さらに表示
 git.first-parent	第一親との差分
 git.commit-parent-unavailable	このコミットの親は取得済みの履歴に含まれていません。
 git.branches	ブランチ
-git.no-local-branches	ローカルブランチはありません
+git.no-branches	表示できるブランチはありません
 git.branch-current	現在のブランチ
 git.switch	切り替え
 git.switch-failed	Gitブランチの切り替えに失敗しました
@@ -1641,3 +1641,8 @@ git.publish-confirm	このローカルブランチを公開し、上流に設定
 git.publish-complete	公開完了
 git.publish-failed	Gitブランチの公開に失敗しました
 git.publish-no-remote	公開するには、このリポジトリのプッシュ先リモートを設定してください。
+git.local-branches	ローカルブランチ
+git.remote-branches	リモートブランチ
+git.track	追跡して切り替え
+git.track-failed	リモートブランチを追跡できませんでした
+git.track-complete	追跡設定完了
