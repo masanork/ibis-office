@@ -1300,6 +1300,29 @@ fn render_article_change(
     }
 }
 
+fn omitted_paragraphs(
+    omitted: &[ParagraphChange],
+    number: impl Fn(&ParagraphChange) -> Option<&str>,
+) -> String {
+    let Some(numbers) = omitted
+        .iter()
+        .map(|change| number(change).filter(|number| !number.is_empty()))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return "（略）".to_string();
+    };
+    let consecutive = numbers.windows(2).all(|pair| {
+        matches!((pair[0].parse::<u32>(), pair[1].parse::<u32>()),
+            (Ok(first), Ok(second)) if first.checked_add(1) == Some(second))
+    });
+    let label = if numbers.len() >= 3 && consecutive {
+        format!("{}～{}", numbers[0], numbers[numbers.len() - 1])
+    } else {
+        numbers.join("・")
+    };
+    format!("{}（略）", to_fullwidth_digits(&label))
+}
+
 fn render_paragraph_changes(
     changes: &[ParagraphChange],
     old_art_title: Option<&str>,
@@ -1308,33 +1331,32 @@ fn render_paragraph_changes(
     new_parts: &mut Vec<String>,
     old_parts: &mut Vec<String>,
 ) {
-    let any_changed = changes.iter().any(|c| c.kind != NodeChangeKind::Unchanged);
-    let mut skipped_unchanged = false;
+    let omit = omit_unchanged && changes.iter().any(|c| c.kind != NodeChangeKind::Unchanged);
+    let mut remaining = changes.iter().enumerate().peekable();
 
-    for (idx, pc) in changes.iter().enumerate() {
-        if pc.kind == NodeChangeKind::Unchanged && omit_unchanged && any_changed {
-            if idx == 0 {
-                if let (Some(nt), Some(ot)) = (new_art_title, old_art_title) {
-                    let (dn, do_) = if nt != ot {
-                        diff_clause_tokens(ot, nt)
-                    } else {
-                        (nt.to_string(), ot.to_string())
-                    };
-                    new_parts.push(format!("{dn} （略）"));
-                    old_parts.push(format!("{do_} （略）"));
+    while let Some((idx, pc)) = remaining.next() {
+        if omit && pc.kind == NodeChangeKind::Unchanged {
+            if let (0, Some(nt), Some(ot)) = (idx, new_art_title, old_art_title) {
+                let (dn, do_) = if nt != ot {
+                    diff_clause_tokens(ot, nt)
                 } else {
-                    new_parts.push("（略）".to_string());
-                    old_parts.push("（略）".to_string());
+                    (nt.to_string(), ot.to_string())
+                };
+                new_parts.push(format!("{dn} （略）"));
+                old_parts.push(format!("{do_} （略）"));
+            } else {
+                let mut end = idx + 1;
+                while let Some((next, _)) =
+                    remaining.next_if(|(_, change)| change.kind == NodeChangeKind::Unchanged)
+                {
+                    end = next + 1;
                 }
-                skipped_unchanged = false;
-            } else if !skipped_unchanged {
-                new_parts.push("（略）".to_string());
-                old_parts.push("（略）".to_string());
-                skipped_unchanged = true;
+                let omitted = &changes[idx..end];
+                new_parts.push(omitted_paragraphs(omitted, |change| change.new_num.as_deref()));
+                old_parts.push(omitted_paragraphs(omitted, |change| change.old_num.as_deref()));
             }
             continue;
         }
-        skipped_unchanged = false;
 
         let new_prefix = if idx == 0 {
             new_art_title
@@ -1731,6 +1753,20 @@ mod tests {
     #[test]
     fn table_cells_remain_on_one_markdown_row() {
         assert_eq!(escape_md_cell("甲|乙\r\n丙\n丁"), "甲\\|乙<br>丙<br>丁");
+    }
+
+    #[test]
+    fn comparison_identifies_omitted_paragraph_ranges() {
+        let law = |color: &str| {
+            parse_lawtext(&format!(
+                "試験法（令和七年法律第一号）\n第一条　目的を定める。\n２　国の責務を定める。\n３　事業者の責務を定める。\n４　標識は{color}を用いる。\n５　記録を作成する。\n６　記録を保存する。\n７　記録を公開する。"
+            ))
+            .unwrap()
+        };
+        let table = generate_shinkyu_markdown(&law("赤色"), &law("青色"));
+        assert_eq!(table.matches("第一条 （略）<br>２・３（略）").count(), 2, "{table}");
+        assert_eq!(table.matches("５～７（略）").count(), 2, "{table}");
+        assert!(table.contains("++青色++") && table.contains("~~赤色~~"), "{table}");
     }
 
     #[test]
