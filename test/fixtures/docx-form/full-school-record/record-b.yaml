@@ -1,0 +1,467 @@
+form:
+  id: "elementary-school-record-full"
+  version: 1
+data:
+  grades:
+    "1":
+      class: 1
+      rollNumber: 23
+      year: 2025
+      principal: "青葉 司"
+      teacher: "春野 芽衣"
+      subjects:
+        japanese:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+        math:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        life:
+          knowledge: "A"
+          thinking: "A"
+          engagement: "B"
+          grade: 3
+        music:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        art:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+        physical:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+      ethics: "相手の気持ちを想像し、聞き方を工夫した。"
+      remarks: "工作では手順を確かめ、道具を丁寧に片付けた。"
+      attendance:
+        schoolDays: 200
+        excused: 0
+        required: 200
+        absent: 1
+        present: 199
+        note: ""
+      activities:
+        class: "○"
+        event: "○"
+      behavior:
+        habits: "○"
+        health: "○"
+        independence: ""
+        responsibility: "○"
+        ingenuity: "○"
+        cooperation: ""
+        careForNature: "○"
+        service: "○"
+        fairness: ""
+        citizenship: "○"
+    "2":
+      class: 1
+      rollNumber: 23
+      year: 2026
+      principal: "青葉 司"
+      teacher: "春野 芽衣"
+      subjects:
+        japanese:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        math:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "A"
+          grade: 3
+        life:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        music:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+        art:
+          knowledge: "A"
+          thinking: "A"
+          engagement: "B"
+          grade: 3
+        physical:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+      ethics: "役割を交代することの良さを考えた。"
+      remarks: "生活科の発表で、見つけた草花の特徴を絵で伝えた。"
+      attendance:
+        schoolDays: 202
+        excused: 2
+        required: 200
+        absent: 2
+        present: 198
+        note: ""
+      activities:
+        class: "○"
+        event: "○"
+      behavior:
+        habits: "○"
+        health: ""
+        independence: "○"
+        responsibility: "○"
+        ingenuity: ""
+        cooperation: "○"
+        careForNature: "○"
+        service: ""
+        fairness: "○"
+        citizenship: "○"
+    "3":
+      class: 2
+      rollNumber: 23
+      year: 2027
+      principal: "青葉 司"
+      teacher: "夏丘 渚"
+      subjects:
+        japanese:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        social:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+        math:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        science:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        music:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        art:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        physical:
+          knowledge: "A"
+          thinking: "A"
+          engagement: "B"
+          grade: 3
+      ethics: "落とし物を届ける場面で、相手の立場を考えて発言した。"
+      remarks: "算数では表と図を使って、自分の考えを説明した。"
+      attendance:
+        schoolDays: 203
+        excused: 0
+        required: 203
+        absent: 0
+        present: 203
+        note: ""
+      foreignActivity:
+        knowledge: "色や動物の言い方に親しんだ。"
+        thinking: "好きな動物を紹介した。"
+        engagement: "友達の発表に進んで応じた。"
+      integratedStudy:
+        activity: "通学路の安全を調べる"
+        criterion: "課題の設定"
+        evaluation: "歩道の広さと見通しを地図にまとめた。"
+      activities:
+        class: "○"
+        event: "○"
+      behavior:
+        habits: ""
+        health: "○"
+        independence: "○"
+        responsibility: ""
+        ingenuity: "○"
+        cooperation: "○"
+        careForNature: ""
+        service: "○"
+        fairness: "○"
+        citizenship: "○"
+    "4":
+      class: 2
+      rollNumber: 23
+      year: 2028
+      principal: "朝霧 丘"
+      teacher: "夏丘 渚"
+      subjects:
+        japanese:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+        social:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        math:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        science:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+        music:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        art:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "A"
+          grade: 3
+        physical:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+      ethics: "困っている友達に声を掛ける場面を考えた。"
+      remarks: "地域の見学では疑問をまとめ、進んで質問した。"
+      attendance:
+        schoolDays: 201
+        excused: 1
+        required: 200
+        absent: 1
+        present: 199
+        note: ""
+      foreignActivity:
+        knowledge: "数と時刻の表現を聞き取った。"
+        thinking: "日課を短い文で伝えた。"
+        engagement: "聞き返しながら会話を続けた。"
+      integratedStudy:
+        activity: "地域の公共施設を調べる"
+        criterion: "情報の収集"
+        evaluation: "利用者に質問し、施設の工夫を紹介した。"
+      activities:
+        class: "○"
+        council: "○"
+        club: "○"
+        event: "○"
+      behavior:
+        habits: "○"
+        health: "○"
+        independence: ""
+        responsibility: "○"
+        ingenuity: "○"
+        cooperation: ""
+        careForNature: "○"
+        service: "○"
+        fairness: "○"
+        citizenship: "○"
+    "5":
+      class: 1
+      rollNumber: 23
+      year: 2029
+      principal: "朝霧 丘"
+      teacher: "秋庭 実"
+      subjects:
+        japanese:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        social:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        math:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+        science:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        music:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "A"
+          grade: 3
+        art:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        home:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        physical:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "A"
+          grade: 3
+        foreign:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+      ethics: "みんなが参加できるよう、話し合いの順序を提案した。"
+      remarks: "理科の実験で条件をそろえ、班の記録を見やすくまとめた。"
+      attendance:
+        schoolDays: 202
+        excused: 0
+        required: 202
+        absent: 2
+        present: 200
+        note: ""
+      integratedStudy:
+        activity: "学校のごみを減らす"
+        criterion: "整理・分析"
+        evaluation: "分別の結果を表にし、掲示の改善を提案した。"
+      activities:
+        class: "○"
+        council: "○"
+        club: "○"
+        event: "○"
+      behavior:
+        habits: "○"
+        health: ""
+        independence: "○"
+        responsibility: "○"
+        ingenuity: ""
+        cooperation: "○"
+        careForNature: "○"
+        service: "○"
+        fairness: "○"
+        citizenship: "○"
+    "6":
+      class: 1
+      rollNumber: 23
+      year: 2030
+      principal: "朝霧 丘"
+      teacher: "冬木 澪"
+      subjects:
+        japanese:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        social:
+          knowledge: "B"
+          thinking: "B"
+          engagement: "A"
+          grade: 2
+        math:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        science:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        music:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        art:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+        home:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "A"
+          grade: 3
+        physical:
+          knowledge: "B"
+          thinking: "A"
+          engagement: "B"
+          grade: 2
+        foreign:
+          knowledge: "A"
+          thinking: "B"
+          engagement: "B"
+          grade: 3
+      ethics: "意見が分かれたとき、双方の理由を整理して話した。"
+      remarks: "図書委員会で貸出の分担を見直し、活動を続けやすくした。"
+      attendance:
+        schoolDays: 200
+        excused: 0
+        required: 200
+        absent: 0
+        present: 200
+        note: "転出入なし"
+      integratedStudy:
+        activity: "図書館の使い方を伝える"
+        criterion: "まとめ・表現"
+        evaluation: "調べ方を整理し、下級生向けの案内を作った。"
+      activities:
+        class: "○"
+        council: "○"
+        club: ""
+        event: "○"
+      behavior:
+        habits: ""
+        health: "○"
+        independence: "○"
+        responsibility: ""
+        ingenuity: "○"
+        cooperation: "○"
+        careForNature: "○"
+        service: "○"
+        fairness: "○"
+        citizenship: ""
+  pupil:
+    kana: "あおば なぎ"
+    name: "青葉 凪"
+    sex: "男"
+    address: "架空市みずき町２丁目"
+    birthDate: "2019-10-15"
+  guardian:
+    kana: "あおば いずみ"
+    name: "青葉 泉"
+    address: "架空市みずき町２丁目"
+  enrollment:
+    before: "架空市みずきこども園 修了"
+    admission: "2025年4月7日 第1学年入学"
+    transferIn: "該当なし"
+    transferOut: "該当なし"
+    graduation: "2031年3月20日"
+  nextSchool:
+    name: "架空市立みずき中学校"
+    address: "架空市みずき町３丁目"
+  school:
+    name: "架空市立ひなた小学校"
+    address: "架空市ひなた町２丁目"
+    branch: "分校なし"
+  activities:
+    class:
+      criterion: "話合いへの参加"
+    council:
+      criterion: "協力して役割を果たす"
+    club:
+      criterion: "計画や活動への参加"
+    event:
+      criterion: "分担した役割への取組"

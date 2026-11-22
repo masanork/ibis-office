@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>小学校児童指導要録　学籍に関する記録</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: #101010; font: 9pt/1.35 "Hiragino Sans", sans-serif; }
+  main { position: relative; width: 210mm; height: 297mm; margin: auto; background: white; }
+  h1 { position:absolute; inset: 11mm 0 auto; text-align:center; font-size:17pt; letter-spacing:.22em; margin:0; }
+  .caption { position:absolute; top:23mm; left:13mm; margin:0; }
+  .demo { position:absolute; top:29mm; left:13mm; margin:0; font-size:8pt; }
+  .cell { position:absolute; left:calc(var(--x)*1mm); top:calc(var(--y)*1mm);
+    width:calc(var(--w)*1mm); height:calc(var(--h)*1mm); border: .23mm solid;
+    margin:0; padding: 1mm 1.4mm; display:flex; align-items:center;
+    overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .label { justify-content:center; text-align:center; }
+  .vertical { writing-mode:vertical-rl; }
+  table { position:absolute; border-collapse:collapse; table-layout:fixed; text-align:center; }
+  th, td { border:.23mm solid; padding:1mm; }
+  .class { top: 35mm; left:92mm; width:104mm; }
+  .class th:first-child { width: 22mm; }
+  .class th, .class td { padding: .65mm; font-size: 8pt; white-space: nowrap; }
+  .staff { left:13mm; width:183mm; top:194mm; }
+  .staff th:first-child { width:25mm; }
+  .staff tr.sign { height:15mm; }
+</style>
+<main>
+<h1>小学校児童指導要録</h1>
+<p class="caption">様式１（学籍に関する記録）</p>
+<p class="demo">デモ用の架空記録</p>
+<table class="class">
+<tr><th>区分・学年</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th></tr>
+<tr><th scope="row">学級</th><td>{{grades.1.class}}</td><td>{{grades.2.class}}</td><td>{{grades.3.class}}</td><td>{{grades.4.class}}</td><td>{{grades.5.class}}</td><td>{{grades.6.class}}</td></tr>
+<tr><th scope="row">整理番号</th><td>{{grades.1.rollNumber}}</td><td>{{grades.2.rollNumber}}</td><td>{{grades.3.rollNumber}}</td><td>{{grades.4.rollNumber}}</td><td>{{grades.5.rollNumber}}</td><td>{{grades.6.rollNumber}}</td></tr>
+</table>
+<p class="cell label" style="--x:13;--y:57;--w:183;--h:6">学　籍　の　記　録</p>
+<p class="cell label vertical" style="--x:13;--y:63;--w:9;--h:49">児童</p>
+<p class="cell label vertical" style="--x:13;--y:112;--w:9;--h:36">保護者</p>
+<p class="cell label" style="--x:22;--y:63;--w:16;--h:7">ふりがな</p>
+<p class="cell " style="--x:38;--y:63;--w:44;--h:7">{{pupil.kana}}</p>
+<p class="cell label" style="--x:22;--y:70;--w:16;--h:15">氏名</p>
+<p class="cell " style="--x:38;--y:70;--w:44;--h:15">{{pupil.name}}</p>
+<p class="cell label" style="--x:22;--y:85;--w:16;--h:12">生年月日</p>
+<p class="cell " style="--x:38;--y:85;--w:68;--h:12">{{pupil.birthDate}}</p>
+<p class="cell label" style="--x:22;--y:97;--w:16;--h:15">現住所</p>
+<p class="cell " style="--x:38;--y:97;--w:68;--h:15">{{pupil.address}}</p>
+<p class="cell label" style="--x:22;--y:112;--w:16;--h:8">ふりがな</p>
+<p class="cell " style="--x:38;--y:112;--w:68;--h:8">{{guardian.kana}}</p>
+<p class="cell label" style="--x:22;--y:120;--w:16;--h:12">氏名</p>
+<p class="cell " style="--x:38;--y:120;--w:68;--h:12">{{guardian.name}}</p>
+<p class="cell label" style="--x:22;--y:132;--w:16;--h:16">現住所</p>
+<p class="cell " style="--x:38;--y:132;--w:68;--h:16">{{guardian.address}}</p>
+<p class="cell label" style="--x:82;--y:63;--w:10;--h:22">性別</p>
+<p class="cell label" style="--x:92;--y:63;--w:14;--h:22">{{pupil.sex}}</p>
+<p class="cell label" style="--x:13;--y:148;--w:25;--h:25">入学前の経歴</p>
+<p class="cell " style="--x:38;--y:148;--w:68;--h:25">{{enrollment.before}}</p>
+<p class="cell label" style="--x:106;--y:63;--w:26;--h:25">入学・編入学等</p>
+<p class="cell " style="--x:132;--y:63;--w:64;--h:25">{{enrollment.admission}}</p>
+<p class="cell label" style="--x:106;--y:88;--w:26;--h:23">転入学</p>
+<p class="cell " style="--x:132;--y:88;--w:64;--h:23">{{enrollment.transferIn}}</p>
+<p class="cell label" style="--x:106;--y:111;--w:26;--h:25">転学・退学等</p>
+<p class="cell " style="--x:132;--y:111;--w:64;--h:25">{{enrollment.transferOut}}</p>
+<p class="cell label" style="--x:106;--y:136;--w:26;--h:14">卒業年月日</p>
+<p class="cell " style="--x:132;--y:136;--w:64;--h:14">{{enrollment.graduation}}</p>
+<p class="cell label" style="--x:106;--y:150;--w:26;--h:23">進学先</p>
+<p class="cell " style="--x:132;--y:150;--w:64;--h:23">{{nextSchool.name}}
+{{nextSchool.address}}</p>
+<p class="cell label" style="--x:13;--y:173;--w:25;--h:21">学校名及び所在地</p>
+<p class="cell " style="--x:38;--y:173;--w:158;--h:21">{{school.name}}
+{{school.address}}
+{{school.branch}}</p>
+<table class="staff">
+<tr><th scope="row">年度</th><td>{{grades.1.year}}</td><td>{{grades.2.year}}</td><td>{{grades.3.year}}</td></tr>
+<tr><th scope="row">学年</th><td>1</td><td>2</td><td>3</td></tr>
+<tr class="sign"><th scope="row">校長氏名</th><td>{{grades.1.principal}}</td><td>{{grades.2.principal}}</td><td>{{grades.3.principal}}</td></tr>
+<tr class="sign"><th scope="row">学級担任者氏名</th><td>{{grades.1.teacher}}</td><td>{{grades.2.teacher}}</td><td>{{grades.3.teacher}}</td></tr>
+<tr><th scope="row">年度</th><td>{{grades.4.year}}</td><td>{{grades.5.year}}</td><td>{{grades.6.year}}</td></tr>
+<tr><th scope="row">学年</th><td>4</td><td>5</td><td>6</td></tr>
+<tr class="sign"><th scope="row">校長氏名</th><td>{{grades.4.principal}}</td><td>{{grades.5.principal}}</td><td>{{grades.6.principal}}</td></tr>
+<tr class="sign"><th scope="row">学級担任者氏名</th><td>{{grades.4.teacher}}</td><td>{{grades.5.teacher}}</td><td>{{grades.6.teacher}}</td></tr>
+</table>
+</main>
+</html>

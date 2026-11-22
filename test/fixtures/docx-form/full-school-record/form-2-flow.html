@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>小学校児童指導要録　所見と出欠</title>
+<style>
+  @page { size: A4; margin: 14mm; }
+  body { margin: 0 auto; max-width: 182mm; color: #101010;
+    font: 10pt/1.55 "Hiragino Sans", sans-serif; }
+  h1 { font-size: 16pt; margin: 0; }
+  h2 { font-size: 11pt; margin: 5mm 0 1mm; break-after: avoid; }
+  .meta { margin-top: 2mm; }
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
+  th, td { border:.23mm solid; padding:1.2mm 2mm; vertical-align:top; }
+  th { font-weight:600; text-align:left; }
+  thead { display:table-header-group; }
+  tr { break-inside:avoid; }
+  th:first-child { width: 13mm; }
+  td { overflow-wrap:anywhere; white-space:pre-wrap; }
+  .count { text-align:right; }
+  @media screen { body { padding:14mm; } }
+</style>
+<main>
+<h1>様式２　指導に関する記録</h1>
+<p class="meta">児童氏名　{{pupil.name}}　　学校名　{{school.name}}<br>デモ用の架空記録</p>
+<h2>総合所見及び指導上参考となる諸事項</h2>
+<table>
+<thead><tr><th>学年</th><th>総合所見</th></tr></thead>
+<tbody>
+<tr><th scope="row">1</th><td>{{grades.1.remarks}}</td></tr>
+<tr><th scope="row">2</th><td>{{grades.2.remarks}}</td></tr>
+<tr><th scope="row">3</th><td>{{grades.3.remarks}}</td></tr>
+<tr><th scope="row">4</th><td>{{grades.4.remarks}}</td></tr>
+<tr><th scope="row">5</th><td>{{grades.5.remarks}}</td></tr>
+<tr><th scope="row">6</th><td>{{grades.6.remarks}}</td></tr>
+</tbody>
+</table>
+<h2>出欠の記録</h2>
+<table>
+<thead><tr><th>学年</th><th>授業日数</th><th>出席停止・忌引等</th><th>出席必要日数</th><th>欠席</th><th>出席</th><th>備考</th></tr></thead>
+<tbody>
+<tr><th scope="row">1</th><td class="count">{{grades.1.attendance.schoolDays}}</td><td class="count">{{grades.1.attendance.excused}}</td><td class="count">{{grades.1.attendance.required}}</td><td class="count">{{grades.1.attendance.absent}}</td><td class="count">{{grades.1.attendance.present}}</td><td>{{grades.1.attendance.note}}</td></tr>
+<tr><th scope="row">2</th><td class="count">{{grades.2.attendance.schoolDays}}</td><td class="count">{{grades.2.attendance.excused}}</td><td class="count">{{grades.2.attendance.required}}</td><td class="count">{{grades.2.attendance.absent}}</td><td class="count">{{grades.2.attendance.present}}</td><td>{{grades.2.attendance.note}}</td></tr>
+<tr><th scope="row">3</th><td class="count">{{grades.3.attendance.schoolDays}}</td><td class="count">{{grades.3.attendance.excused}}</td><td class="count">{{grades.3.attendance.required}}</td><td class="count">{{grades.3.attendance.absent}}</td><td class="count">{{grades.3.attendance.present}}</td><td>{{grades.3.attendance.note}}</td></tr>
+<tr><th scope="row">4</th><td class="count">{{grades.4.attendance.schoolDays}}</td><td class="count">{{grades.4.attendance.excused}}</td><td class="count">{{grades.4.attendance.required}}</td><td class="count">{{grades.4.attendance.absent}}</td><td class="count">{{grades.4.attendance.present}}</td><td>{{grades.4.attendance.note}}</td></tr>
+<tr><th scope="row">5</th><td class="count">{{grades.5.attendance.schoolDays}}</td><td class="count">{{grades.5.attendance.excused}}</td><td class="count">{{grades.5.attendance.required}}</td><td class="count">{{grades.5.attendance.absent}}</td><td class="count">{{grades.5.attendance.present}}</td><td>{{grades.5.attendance.note}}</td></tr>
+<tr><th scope="row">6</th><td class="count">{{grades.6.attendance.schoolDays}}</td><td class="count">{{grades.6.attendance.excused}}</td><td class="count">{{grades.6.attendance.required}}</td><td class="count">{{grades.6.attendance.absent}}</td><td class="count">{{grades.6.attendance.present}}</td><td>{{grades.6.attendance.note}}</td></tr>
+</tbody>
+</table>
+</main>
+</html>

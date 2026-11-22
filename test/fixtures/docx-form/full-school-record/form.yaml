@@ -1,0 +1,1121 @@
+form:
+  id: "elementary-school-record-full"
+  version: 1
+templateSha256: "81e7e6416dc47c0d39ddda0d3abc635d2e19d12fd8aff7dd2099137f423376e1"
+fields:
+  grades.1.class:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.1.rollNumber:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.2.class:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.2.rollNumber:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.3.class:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.3.rollNumber:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.4.class:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.4.rollNumber:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.5.class:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.5.rollNumber:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.6.class:
+    type: "nonnegative-integer"
+    maxChars: 2
+  grades.6.rollNumber:
+    type: "nonnegative-integer"
+    maxChars: 2
+  pupil.kana:
+    type: "text"
+    maxChars: 24
+  pupil.name:
+    type: "text"
+    maxChars: 28
+  pupil.sex:
+    type: "text"
+    maxChars: 16
+  pupil.address:
+    type: "text"
+    maxChars: 36
+  guardian.kana:
+    type: "text"
+    maxChars: 24
+  guardian.name:
+    type: "text"
+    maxChars: 28
+  guardian.address:
+    type: "text"
+    maxChars: 36
+  enrollment.before:
+    type: "text"
+    maxChars: 42
+  enrollment.admission:
+    type: "text"
+    maxChars: 42
+  enrollment.transferIn:
+    type: "text"
+    maxChars: 42
+  enrollment.transferOut:
+    type: "text"
+    maxChars: 42
+  enrollment.graduation:
+    type: "text"
+    maxChars: 42
+  pupil.birthDate:
+    type: "date-ja"
+    maxChars: 16
+  nextSchool.name:
+    type: "text"
+    maxChars: 28
+  nextSchool.address:
+    type: "text"
+    maxChars: 36
+  school.name:
+    type: "text"
+    maxChars: 28
+  school.address:
+    type: "text"
+    maxChars: 36
+  school.branch:
+    type: "text"
+    maxChars: 16
+  grades.1.year:
+    type: "nonnegative-integer"
+    maxChars: 4
+  grades.1.principal:
+    type: "text"
+    maxChars: 18
+  grades.1.teacher:
+    type: "text"
+    maxChars: 18
+  grades.2.year:
+    type: "nonnegative-integer"
+    maxChars: 4
+  grades.2.principal:
+    type: "text"
+    maxChars: 18
+  grades.2.teacher:
+    type: "text"
+    maxChars: 18
+  grades.3.year:
+    type: "nonnegative-integer"
+    maxChars: 4
+  grades.3.principal:
+    type: "text"
+    maxChars: 18
+  grades.3.teacher:
+    type: "text"
+    maxChars: 18
+  grades.4.year:
+    type: "nonnegative-integer"
+    maxChars: 4
+  grades.4.principal:
+    type: "text"
+    maxChars: 18
+  grades.4.teacher:
+    type: "text"
+    maxChars: 18
+  grades.5.year:
+    type: "nonnegative-integer"
+    maxChars: 4
+  grades.5.principal:
+    type: "text"
+    maxChars: 18
+  grades.5.teacher:
+    type: "text"
+    maxChars: 18
+  grades.6.year:
+    type: "nonnegative-integer"
+    maxChars: 4
+  grades.6.principal:
+    type: "text"
+    maxChars: 18
+  grades.6.teacher:
+    type: "text"
+    maxChars: 18
+  grades.1.subjects.japanese.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.japanese.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.japanese.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.japanese.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.japanese.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.japanese.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.japanese.thinking:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.japanese.thinking:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.japanese.thinking:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.japanese.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.japanese.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.japanese.thinking:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.japanese.engagement:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.japanese.engagement:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.japanese.engagement:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.japanese.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.japanese.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.japanese.engagement:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.japanese.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.2.subjects.japanese.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.3.subjects.japanese.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.4.subjects.japanese.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.japanese.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.japanese.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.3.subjects.social.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.social.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.social.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.social.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.social.thinking:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.social.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.social.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.social.thinking:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.social.engagement:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.social.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.social.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.social.engagement:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.social.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.4.subjects.social.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.social.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.social.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.1.subjects.math.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.math.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.math.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.math.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.math.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.math.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.math.thinking:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.math.thinking:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.math.thinking:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.math.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.math.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.math.thinking:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.math.engagement:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.math.engagement:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.math.engagement:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.math.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.math.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.math.engagement:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.math.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.2.subjects.math.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.3.subjects.math.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.4.subjects.math.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.math.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.math.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.3.subjects.science.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.science.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.science.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.science.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.science.thinking:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.science.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.science.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.science.thinking:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.science.engagement:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.science.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.science.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.science.engagement:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.science.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.4.subjects.science.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.science.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.science.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.1.subjects.life.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.life.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.life.thinking:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.life.thinking:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.life.engagement:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.life.engagement:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.life.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.2.subjects.life.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.1.subjects.music.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.music.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.music.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.music.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.music.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.music.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.music.thinking:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.music.thinking:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.music.thinking:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.music.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.music.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.music.thinking:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.music.engagement:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.music.engagement:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.music.engagement:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.music.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.music.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.music.engagement:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.music.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.2.subjects.music.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.3.subjects.music.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.4.subjects.music.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.music.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.music.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.1.subjects.art.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.art.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.art.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.art.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.art.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.art.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.art.thinking:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.art.thinking:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.art.thinking:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.art.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.art.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.art.thinking:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.art.engagement:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.art.engagement:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.art.engagement:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.art.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.art.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.art.engagement:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.art.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.2.subjects.art.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.3.subjects.art.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.4.subjects.art.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.art.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.art.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.home.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.home.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.home.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.home.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.home.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.home.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.home.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.home.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.1.subjects.physical.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.physical.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.physical.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.physical.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.physical.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.physical.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.physical.thinking:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.physical.thinking:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.physical.thinking:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.physical.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.physical.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.physical.thinking:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.physical.engagement:
+    type: "text"
+    maxChars: 16
+  grades.2.subjects.physical.engagement:
+    type: "text"
+    maxChars: 16
+  grades.3.subjects.physical.engagement:
+    type: "text"
+    maxChars: 16
+  grades.4.subjects.physical.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.physical.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.physical.engagement:
+    type: "text"
+    maxChars: 16
+  grades.1.subjects.physical.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.2.subjects.physical.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.3.subjects.physical.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.4.subjects.physical.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.physical.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.physical.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.5.subjects.foreign.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.foreign.knowledge:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.foreign.thinking:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.foreign.thinking:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.foreign.engagement:
+    type: "text"
+    maxChars: 16
+  grades.6.subjects.foreign.engagement:
+    type: "text"
+    maxChars: 16
+  grades.5.subjects.foreign.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.6.subjects.foreign.grade:
+    type: "nonnegative-integer"
+    maxChars: 1
+  grades.1.ethics:
+    type: "text"
+    maxChars: 80
+  grades.1.remarks:
+    type: "text"
+    maxChars: 160
+  grades.1.attendance.schoolDays:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.1.attendance.excused:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.1.attendance.required:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.1.attendance.absent:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.1.attendance.present:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.1.attendance.note:
+    type: "text"
+    maxChars: 18
+  grades.2.ethics:
+    type: "text"
+    maxChars: 80
+  grades.2.remarks:
+    type: "text"
+    maxChars: 160
+  grades.2.attendance.schoolDays:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.2.attendance.excused:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.2.attendance.required:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.2.attendance.absent:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.2.attendance.present:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.2.attendance.note:
+    type: "text"
+    maxChars: 18
+  grades.3.ethics:
+    type: "text"
+    maxChars: 80
+  grades.3.remarks:
+    type: "text"
+    maxChars: 160
+  grades.3.attendance.schoolDays:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.3.attendance.excused:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.3.attendance.required:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.3.attendance.absent:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.3.attendance.present:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.3.attendance.note:
+    type: "text"
+    maxChars: 18
+  grades.4.ethics:
+    type: "text"
+    maxChars: 80
+  grades.4.remarks:
+    type: "text"
+    maxChars: 160
+  grades.4.attendance.schoolDays:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.4.attendance.excused:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.4.attendance.required:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.4.attendance.absent:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.4.attendance.present:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.4.attendance.note:
+    type: "text"
+    maxChars: 18
+  grades.5.ethics:
+    type: "text"
+    maxChars: 80
+  grades.5.remarks:
+    type: "text"
+    maxChars: 160
+  grades.5.attendance.schoolDays:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.5.attendance.excused:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.5.attendance.required:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.5.attendance.absent:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.5.attendance.present:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.5.attendance.note:
+    type: "text"
+    maxChars: 18
+  grades.6.ethics:
+    type: "text"
+    maxChars: 80
+  grades.6.remarks:
+    type: "text"
+    maxChars: 160
+  grades.6.attendance.schoolDays:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.6.attendance.excused:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.6.attendance.required:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.6.attendance.absent:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.6.attendance.present:
+    type: "nonnegative-integer"
+    maxChars: 3
+  grades.6.attendance.note:
+    type: "text"
+    maxChars: 18
+  grades.3.foreignActivity.knowledge:
+    type: "text"
+    maxChars: 80
+  grades.3.foreignActivity.thinking:
+    type: "text"
+    maxChars: 80
+  grades.3.foreignActivity.engagement:
+    type: "text"
+    maxChars: 80
+  grades.4.foreignActivity.knowledge:
+    type: "text"
+    maxChars: 80
+  grades.4.foreignActivity.thinking:
+    type: "text"
+    maxChars: 80
+  grades.4.foreignActivity.engagement:
+    type: "text"
+    maxChars: 80
+  grades.3.integratedStudy.activity:
+    type: "text"
+    maxChars: 70
+  grades.3.integratedStudy.criterion:
+    type: "text"
+    maxChars: 70
+  grades.3.integratedStudy.evaluation:
+    type: "text"
+    maxChars: 70
+  grades.4.integratedStudy.activity:
+    type: "text"
+    maxChars: 70
+  grades.4.integratedStudy.criterion:
+    type: "text"
+    maxChars: 70
+  grades.4.integratedStudy.evaluation:
+    type: "text"
+    maxChars: 70
+  grades.5.integratedStudy.activity:
+    type: "text"
+    maxChars: 70
+  grades.5.integratedStudy.criterion:
+    type: "text"
+    maxChars: 70
+  grades.5.integratedStudy.evaluation:
+    type: "text"
+    maxChars: 70
+  grades.6.integratedStudy.activity:
+    type: "text"
+    maxChars: 70
+  grades.6.integratedStudy.criterion:
+    type: "text"
+    maxChars: 70
+  grades.6.integratedStudy.evaluation:
+    type: "text"
+    maxChars: 70
+  activities.class.criterion:
+    type: "text"
+    maxChars: 16
+  grades.1.activities.class:
+    type: "text"
+    maxChars: 16
+  grades.2.activities.class:
+    type: "text"
+    maxChars: 16
+  grades.3.activities.class:
+    type: "text"
+    maxChars: 16
+  grades.4.activities.class:
+    type: "text"
+    maxChars: 16
+  grades.5.activities.class:
+    type: "text"
+    maxChars: 16
+  grades.6.activities.class:
+    type: "text"
+    maxChars: 16
+  activities.council.criterion:
+    type: "text"
+    maxChars: 16
+  grades.4.activities.council:
+    type: "text"
+    maxChars: 16
+  grades.5.activities.council:
+    type: "text"
+    maxChars: 16
+  grades.6.activities.council:
+    type: "text"
+    maxChars: 16
+  activities.club.criterion:
+    type: "text"
+    maxChars: 16
+  grades.4.activities.club:
+    type: "text"
+    maxChars: 16
+  grades.5.activities.club:
+    type: "text"
+    maxChars: 16
+  grades.6.activities.club:
+    type: "text"
+    maxChars: 16
+  activities.event.criterion:
+    type: "text"
+    maxChars: 16
+  grades.1.activities.event:
+    type: "text"
+    maxChars: 16
+  grades.2.activities.event:
+    type: "text"
+    maxChars: 16
+  grades.3.activities.event:
+    type: "text"
+    maxChars: 16
+  grades.4.activities.event:
+    type: "text"
+    maxChars: 16
+  grades.5.activities.event:
+    type: "text"
+    maxChars: 16
+  grades.6.activities.event:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.habits:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.habits:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.habits:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.habits:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.habits:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.habits:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.health:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.health:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.health:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.health:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.health:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.health:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.independence:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.independence:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.independence:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.independence:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.independence:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.independence:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.responsibility:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.responsibility:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.responsibility:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.responsibility:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.responsibility:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.responsibility:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.ingenuity:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.ingenuity:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.ingenuity:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.ingenuity:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.ingenuity:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.ingenuity:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.cooperation:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.cooperation:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.cooperation:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.cooperation:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.cooperation:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.cooperation:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.careForNature:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.careForNature:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.careForNature:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.careForNature:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.careForNature:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.careForNature:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.service:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.service:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.service:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.service:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.service:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.service:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.fairness:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.fairness:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.fairness:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.fairness:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.fairness:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.fairness:
+    type: "text"
+    maxChars: 16
+  grades.1.behavior.citizenship:
+    type: "text"
+    maxChars: 16
+  grades.2.behavior.citizenship:
+    type: "text"
+    maxChars: 16
+  grades.3.behavior.citizenship:
+    type: "text"
+    maxChars: 16
+  grades.4.behavior.citizenship:
+    type: "text"
+    maxChars: 16
+  grades.5.behavior.citizenship:
+    type: "text"
+    maxChars: 16
+  grades.6.behavior.citizenship:
+    type: "text"
+    maxChars: 16

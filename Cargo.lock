@@ -4971,9 +4971,11 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "pure_jpegls",
  "roxmltree 0.21.1",
+ "serde-saphyr",
  "serde_json",
  "sha2 0.10.9",
  "tiff",
+ "unicode-segmentation",
 ]
 
 [[package]]

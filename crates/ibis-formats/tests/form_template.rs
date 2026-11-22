@@ -94,3 +94,40 @@ fn rejects_a_flat_key_that_duplicates_a_nested_value() {
     data["data"]["pupil"] = json!({"name": "duplicate"});
     assert!(form_template::fill(TEMPLATE, &definition, &data).is_err());
 }
+
+#[test]
+fn yaml_matches_json_and_limits_visible_graphemes_in_both_outputs() {
+    let (mut definition, mut data) = inputs();
+    definition["fields"]["pupil.name"] = json!({"type": "text", "maxChars": 2});
+    data["data"]["pupil.name"] = json!("か\u{3099}嵜\u{e0100}余分");
+    let result = form_template::fill(TEMPLATE, &definition, &data).unwrap();
+    let flow = read_docx(&result).unwrap().flow.unwrap();
+    assert_eq!(
+        student_record::extract(&flow).unwrap().name.text,
+        "か\u{3099}嵜\u{e0100}"
+    );
+    assert_eq!(
+        form_template::fill_html("<p>{{pupil.name}}</p>", &definition, &data).unwrap(),
+        "<p>か\u{3099}嵜\u{e0100}</p>"
+    );
+    assert_eq!(data["data"]["pupil.name"], "か\u{3099}嵜\u{e0100}余分");
+
+    let yaml = include_str!("../../../test/fixtures/docx-form/full-school-record/record-b.yaml");
+    let json = include_str!("../../../test/fixtures/docx-form/full-school-record/record-b.json");
+    assert_eq!(
+        form_template::parse_input(yaml, true).unwrap(),
+        form_template::parse_input(json, false).unwrap()
+    );
+    assert!(form_template::parse_input("name: one\nname: two", true).is_err());
+}
+
+#[test]
+fn html_escapes_inserted_text_and_rejects_unknown_markers() {
+    let (definition, mut data) = inputs();
+    data["data"]["pupil.name"] = json!("海 <川> & 山");
+    assert_eq!(
+        form_template::fill_html("<p>{{pupil.name}}</p>", &definition, &data).unwrap(),
+        "<p>海 &lt;川&gt; &amp; 山</p>"
+    );
+    assert!(form_template::fill_html("<p>{{unknown}}</p>", &definition, &data).is_err());
+}

@@ -27,6 +27,8 @@ jxl-oxide = { version = "0.12", default-features = false }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = "0.10"
 lewton = "0.10"
+serde-saphyr = { version = "1.3", default-features = false, features = ["deserialize"] }
+unicode-segmentation = "1.13.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

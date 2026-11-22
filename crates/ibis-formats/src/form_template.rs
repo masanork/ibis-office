@@ -11,6 +11,7 @@ use ibis_ooxml::zip::{Archive, Writer};
 use roxmltree::{Document, Node};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::Error;
 
@@ -127,6 +128,13 @@ fn display(kind: &str, value: &str) -> Option<String> {
     }
 }
 
+fn escape_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn write_text(value: &str) -> String {
     value
         .split('\n')
@@ -167,13 +175,92 @@ fn collect_values<'a>(
     Ok(())
 }
 
-/// Merge a text form definition and versioned record into DOCX.
-pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, Error> {
+/// Read a JSON or YAML form definition or record.
+pub fn parse_input(text: &str, yaml: bool) -> Result<Value, Error> {
+    if yaml {
+        serde_saphyr::from_str(text).map_err(|e| Error::new(e.to_string()))
+    } else {
+        serde_json::from_str(text).map_err(|e| Error::new(e.to_string()))
+    }
+}
+
+fn rendered_values(definition: &Value, data: &Value) -> Result<BTreeMap<String, String>, Error> {
     if !same_form(definition, data) {
         return Err(Error::new(
             "Record references a different form ID or version",
         ));
     }
+    let declared = definition["fields"]
+        .as_object()
+        .ok_or_else(|| Error::new("Missing field definitions"))?;
+    let object = data["data"]
+        .as_object()
+        .ok_or_else(|| Error::new("Missing record data"))?;
+    let mut values = BTreeMap::new();
+    collect_values(object, "", &mut values)?;
+    if declared.len() != values.len() || !declared.keys().all(|id| values.contains_key(id)) {
+        return Err(Error::new(
+            "Definition and record must have the same field IDs",
+        ));
+    }
+    declared
+        .iter()
+        .map(|(id, field)| {
+            let invalid = || Error::new(format!("Invalid value or field type: {id}"));
+            let kind = field
+                .as_str()
+                .or_else(|| field["type"].as_str())
+                .ok_or_else(invalid)?;
+            let value = if kind == "nonnegative-integer" {
+                values[id].as_u64().map(|value| value.to_string())
+            } else {
+                values[id].as_str().and_then(|value| display(kind, value))
+            }
+            .filter(|s| {
+                s.chars().all(|c| {
+                    matches!(c, '\t' | '\n') || c >= ' ' && !matches!(c, '\u{fffe}' | '\u{ffff}')
+                })
+            })
+            .ok_or_else(invalid)?;
+            let value = match field.get("maxChars") {
+                Some(limit) => {
+                    let limit = limit
+                        .as_u64()
+                        .and_then(|n| usize::try_from(n).ok())
+                        .filter(|n| *n > 0)
+                        .ok_or_else(|| Error::new(format!("Invalid maxChars: {id}")))?;
+                    value.graphemes(true).take(limit).collect()
+                }
+                None => value,
+            };
+            Ok((id.clone(), value))
+        })
+        .collect()
+}
+
+/// Fill text placeholders in a trusted HTML print layout. Markers belong in text nodes.
+pub fn fill_html(layout: &str, definition: &Value, data: &Value) -> Result<String, Error> {
+    let values = rendered_values(definition, data)?;
+    let mut result = String::with_capacity(layout.len());
+    let mut tail = layout;
+    while let Some((before, field)) = tail.split_once("{{") {
+        let (id, after) = field
+            .split_once("}}")
+            .ok_or_else(|| Error::new("Unclosed HTML form field"))?;
+        let value = values
+            .get(id.trim())
+            .ok_or_else(|| Error::new(format!("Unknown HTML form field: {id}")))?;
+        result.push_str(before);
+        result.push_str(&escape_text(value));
+        tail = after;
+    }
+    result.push_str(tail);
+    Ok(result)
+}
+
+/// Merge a text form definition and versioned record into DOCX.
+pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, Error> {
+    let values = rendered_values(definition, data)?;
     let digest = format!("{:x}", Sha256::digest(bytes));
     if definition["templateSha256"].as_str() != Some(digest.as_str()) {
         return Err(Error::new(
@@ -183,20 +270,10 @@ pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, E
     let (archive, mut xml) = package(bytes)?;
     let document = Document::parse(&xml).map_err(|e| Error::new(e.to_string()))?;
     let fields = fields(&document)?;
-    let declared = definition["fields"]
-        .as_object()
-        .ok_or_else(|| Error::new("Missing field definitions"))?;
-    let object = data["data"]
-        .as_object()
-        .ok_or_else(|| Error::new("Missing record data"))?;
-    let mut values = BTreeMap::new();
-    collect_values(object, "", &mut values)?;
     let ids: BTreeSet<&str> = fields.iter().map(|field| field.id).collect();
-    if ids != declared.keys().map(String::as_str).collect()
-        || ids != values.keys().map(String::as_str).collect()
-    {
+    if !ids.into_iter().eq(values.keys().map(String::as_str)) {
         return Err(Error::new(
-            "Template, definition and record must have the same field IDs",
+            "Template and definition must have the same field IDs",
         ));
     }
     let mut replacements = Vec::with_capacity(fields.len());
@@ -207,25 +284,10 @@ pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, E
         text,
     } in fields
     {
-        let replacement = declared[id]
-            .as_str()
-            .and_then(|kind| {
-                if kind == "nonnegative-integer" {
-                    values[id].as_u64().map(|value| value.to_string())
-                } else {
-                    display(kind, values[id].as_str()?)
-                }
-            })
-            .filter(|s| {
-                s.chars().all(|c| {
-                    matches!(c, '\t' | '\n') || c >= ' ' && !matches!(c, '\u{fffe}' | '\u{ffff}')
-                })
-            })
-            .ok_or_else(|| Error::new(format!("Invalid value or field type: {id}")))?;
         let run_range = run.range();
         let text_range = text.range();
         let mut result = xml[run_range.start..text_range.start].to_owned();
-        result.push_str(&write_text(&replacement));
+        result.push_str(&write_text(&values[id]));
         result.push_str(&xml[text_range.end..run_range.end]);
         replacements.push((control.range(), result));
     }
