@@ -253,12 +253,17 @@ fn preview(repo: &Path, path: &Path, id: gix::ObjectId) -> Result<ibis_formats::
     Ok(ibis_odf::open(bytes)?)
 }
 
+enum RevisionPreview {
+    ReadOnly(ibis_formats::Opened),
+    LawComparison(ibis_formats::Opened),
+}
+
 fn compare(
     repo: &Path,
     path: &Path,
     old: gix::ObjectId,
     new: gix::ObjectId,
-) -> Result<ibis_formats::Opened> {
+) -> Result<RevisionPreview> {
     let repo = gix::open(repo)?;
     let old_bytes = blob(&repo, old, path)?;
     let new_bytes = blob(&repo, new, path)?;
@@ -268,9 +273,9 @@ fn compare(
     ) {
         let old_law = ibis_formats::lawtext::parse_law_input(std::str::from_utf8(&old_bytes)?)?;
         let new_law = ibis_formats::lawtext::parse_law_input(std::str::from_utf8(&new_bytes)?)?;
-        return Ok(ibis_formats::lawtext::open_comparison_document(
-            &old_law, &new_law,
-        )?);
+        return Ok(RevisionPreview::LawComparison(
+            ibis_formats::lawtext::open_comparison_document(&old_law, &new_law)?,
+        ));
     }
     if old_bytes.len().max(new_bytes.len()) > MAX_TEXT_DIFF_BYTES {
         return Err("Text diff exceeds 512 KiB per revision".into());
@@ -292,7 +297,9 @@ fn compare(
     } else {
         markdown_block(&patch, "diff")
     };
-    Ok(ibis_formats::markdown::open_markdown(markdown)?)
+    Ok(RevisionPreview::ReadOnly(
+        ibis_formats::markdown::open_markdown(markdown)?,
+    ))
 }
 
 impl SlideEditor {
@@ -499,6 +506,18 @@ impl SlideEditor {
             .map(|id| format!("{} → {}", short(id), short(new)))
             .unwrap_or_else(|| short(new));
         let name = format!("{filename} · {label}");
+        let comparison_name = old.map(|old| {
+            let stem = path
+                .file_stem()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy();
+            format!(
+                "{stem} {} {}-{}.docx",
+                text("compare.law-result"),
+                short(old),
+                short(new)
+            )
+        });
         state.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -507,7 +526,7 @@ impl SlideEditor {
                 .spawn(async move {
                     match old {
                         Some(id) => compare(&repo, &path, id, new),
-                        None => preview(&repo, &path, new),
+                        None => preview(&repo, &path, new).map(RevisionPreview::ReadOnly),
                     }
                     .map_err(|err| err.to_string())
                 })
@@ -517,7 +536,19 @@ impl SlideEditor {
                     return;
                 };
                 state.busy = false;
-                editor.present_git_preview(result, name, window, cx);
+                match result {
+                    Ok(RevisionPreview::LawComparison(opened)) => {
+                        let name = comparison_name.unwrap_or_else(|| format!("{name}.docx"));
+                        crate::app::open_window_with(cx, move |editor, window, cx| {
+                            editor.load(opened.presentation, name.into(), window, cx);
+                            editor.set_loaded_source(std::sync::Arc::new(opened.source));
+                        });
+                    }
+                    Ok(RevisionPreview::ReadOnly(opened)) => {
+                        editor.present_git_preview(Ok(opened), name, window, cx);
+                    }
+                    Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
+                }
                 cx.notify();
             });
         })
