@@ -1638,3 +1638,8 @@ git.branch-create	Create and switch
 git.branch-create-failed	Git branch creation failed
 git.branch-created	Branch created
 git.branch-name-invalid	Enter a valid Git branch name.
+git.publish	Publish
+git.publish-confirm	Publish this local branch and set its upstream?
+git.publish-complete	Published
+git.publish-failed	Git branch publish failed
+git.publish-no-remote	Configure a push remote for this repository before publishing.

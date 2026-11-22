@@ -200,27 +200,47 @@ struct PushTarget {
     remote: String,
     reference: String,
     urls: Vec<u8>,
+    publish: bool,
 }
 
 impl PushTarget {
     fn read(repo: &gix::Repository) -> Result<Self> {
         let missing = || text("git.push-no-upstream").to_string();
         let branch = repo.head_name()?.ok_or_else(missing)?;
-        let direction = gix::remote::Direction::Fetch;
-        let remote = repo
-            .branch_remote_name(branch.shorten(), direction)
-            .ok_or_else(missing)?;
-        if remote.as_bstr() == "." || !repo.remote_names().contains(remote.as_bstr()) {
-            return Err(missing().into());
+        let upstream = repo
+            .branch_remote_ref_name(branch.as_ref(), gix::remote::Direction::Fetch)
+            .transpose()?;
+        let publish = upstream.is_none();
+        let (reference, remote) = if let Some(upstream) = upstream {
+            let remote = repo
+                .branch_remote_name(branch.shorten(), gix::remote::Direction::Fetch)
+                .ok_or_else(missing)?;
+            (
+                std::str::from_utf8(upstream.as_bstr())?.to_owned(),
+                remote.as_bstr().to_owned(),
+            )
+        } else {
+            let direction = gix::remote::Direction::Push;
+            let remote = repo
+                .branch_remote_name(branch.shorten(), direction)
+                .map(|remote| remote.as_bstr().to_owned())
+                .or_else(|| repo.remote_default_name(direction))
+                .ok_or_else(|| text("git.publish-no-remote").to_string())?;
+            (std::str::from_utf8(branch.as_bstr())?.to_owned(), remote)
+        };
+        if remote.as_slice() == b"." || !repo.remote_names().contains(&remote) {
+            return Err(text(if publish {
+                "git.publish-no-remote"
+            } else {
+                "git.push-no-upstream"
+            })
+            .to_string()
+            .into());
         }
-        let reference = repo
-            .branch_remote_ref_name(branch.as_ref(), direction)
-            .ok_or_else(missing)??;
-        let reference = std::str::from_utf8(reference.as_bstr())?;
         if !reference.starts_with("refs/heads/") {
             return Err(missing().into());
         }
-        let remote = std::str::from_utf8(remote.as_bstr())?;
+        let remote = std::str::from_utf8(remote.as_slice())?;
         let args = ["remote", "get-url", "--push", "--all", "--", remote];
         let urls = git(
             repo.workdir().unwrap_or_else(|| repo.path()),
@@ -229,8 +249,9 @@ impl PushTarget {
         Ok(Self {
             branch: std::str::from_utf8(branch.shorten())?.to_owned(),
             remote: remote.to_owned(),
-            reference: reference.to_owned(),
+            reference,
             urls,
+            publish,
         })
     }
 
@@ -240,18 +261,26 @@ impl PushTarget {
             return Err(text("git.push-target-changed").to_string().into());
         }
         let no_mirror = format!("remote.{}.mirror=false", self.remote);
-        let refspec = format!("{head}:{}", self.reference);
-        let args = [
+        let mut args = vec![
             "-c",
             &no_mirror,
             "push",
             "--no-follow-tags",
             "--no-recurse-submodules",
-            "--",
-            &self.remote,
-            &refspec,
         ];
-        git(root, &args.map(OsStr::new))?;
+        let refspec;
+        let require_absent;
+        if self.publish {
+            // An empty expected value permits creating the destination but rejects overwriting it.
+            require_absent = format!("--force-with-lease={}:", self.reference);
+            args.extend(["--set-upstream", &require_absent]);
+            refspec = format!("refs/heads/{}:{}", self.branch, self.reference);
+        } else {
+            refspec = format!("{head}:{}", self.reference);
+        }
+        args.extend(["--", &self.remote, &refspec]);
+        let args: Vec<_> = args.into_iter().map(OsStr::new).collect();
+        git(root, &args)?;
         Ok(())
     }
 }
@@ -365,6 +394,7 @@ impl SyncAction {
         match self {
             Self::Fetch => "git.fetch-failed",
             Self::Pull => "git.pull-failed",
+            Self::Push(target) if target.publish => "git.publish-failed",
             Self::Push(_) => "git.push-failed",
             Self::Switch(_) => "git.switch-failed",
             Self::CreateBranch { .. } => "git.branch-create-failed",
@@ -375,6 +405,7 @@ impl SyncAction {
         match self {
             Self::Fetch => "git.fetch-complete",
             Self::Pull => "git.pull-complete",
+            Self::Push(target) if target.publish => "git.publish-complete",
             Self::Push(_) => "git.push-complete",
             Self::Switch(_) => "git.switch-complete",
             Self::CreateBranch { .. } => "git.branch-created",
@@ -710,13 +741,21 @@ impl SlideEditor {
                 destination
             );
             let buttons = [
-                PromptButton::ok(text("git.push")),
+                PromptButton::ok(text(if target.publish {
+                    "git.publish"
+                } else {
+                    "git.push"
+                })),
                 PromptButton::cancel(text("_shell.cancel")),
             ];
             let Ok(response) = this.update_in(cx, |_, window, cx| {
                 window.prompt(
                     PromptLevel::Info,
-                    &text("git.push-confirm"),
+                    &text(if target.publish {
+                        "git.publish-confirm"
+                    } else {
+                        "git.push-confirm"
+                    }),
                     Some(&detail),
                     &buttons,
                     cx,
@@ -925,7 +964,13 @@ impl SlideEditor {
                 Button::new("git-push")
                     .xsmall()
                     .disabled(state.busy)
-                    .label(text("git.push"))
+                    .label(text(
+                        if matches!(state.graph.upstream, Some(UpstreamStatus::NoUpstream)) {
+                            "git.publish"
+                        } else {
+                            "git.push"
+                        },
+                    ))
                     .on_click(cx.listener(|this, _, window, cx| this.git_confirm_push(window, cx))),
             )
             .when(state.worktree.is_some(), |bar| {

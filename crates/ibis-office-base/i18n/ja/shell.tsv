@@ -1636,3 +1636,8 @@ git.branch-create	作成して切り替え
 git.branch-create-failed	Gitブランチの作成に失敗しました
 git.branch-created	ブランチ作成完了
 git.branch-name-invalid	有効なGitブランチ名を入力してください。
+git.publish	公開
+git.publish-confirm	このローカルブランチを公開し、上流に設定しますか？
+git.publish-complete	公開完了
+git.publish-failed	Gitブランチの公開に失敗しました
+git.publish-no-remote	公開するには、このリポジトリのプッシュ先リモートを設定してください。
