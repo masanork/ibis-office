@@ -1117,6 +1117,8 @@ test('repository source follows Markdown links at the same commit and escapes so
   const payloadSchema = 'd'.repeat(40);
   const postalSchema = 'e'.repeat(40);
   let payloadReads = 0;
+  const feature = 'f'.repeat(40);
+  const badFeature = '0'.repeat(40);
   const original = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(input);
@@ -1139,7 +1141,11 @@ test('repository source follows Markdown links at the same commit and escapes so
           { path: 'api', mode: '040000', sha: api, type: 'tree' },
         ] });
       case '/git/trees/' + docs:
-        return Response.json({ tree: [{ path: 'README.md', mode: '100644', sha: md, type: 'blob' }] });
+        return Response.json({ tree: [
+          { path: 'README.md', mode: '100644', sha: md, type: 'blob' },
+          { path: 'address.feature', mode: '100644', sha: feature, type: 'blob' },
+          { path: 'broken.feature', mode: '100644', sha: badFeature, type: 'blob' },
+        ] });
       case '/git/trees/' + api:
         return Response.json({ tree: [
           { path: '契約.yaml', mode: '100644', sha: yaml, type: 'blob' },
@@ -1154,7 +1160,7 @@ test('repository source follows Markdown links at the same commit and escapes so
         ] });
       case '/git/blobs/' + md:
         return new Response([
-          '# API仕様', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[external](//other.test/external.json)',
+          '# API仕様', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[Acceptance](address.feature#L6)', '[external](//other.test/external.json)',
           '[escape](../../escape.json)', '[slash](../api%2fother.json)', '```md', '[example](sample.json)', '```',
         ].join('\n'));
       case '/git/blobs/' + yaml:
@@ -1241,6 +1247,15 @@ test('repository source follows Markdown links at the same commit and escapes so
             },
           },
         }, null, 2));
+      case '/git/blobs/' + feature:
+        return new Response([
+          '# language: ja', '@REQ-42', '機能: 住所変更', '  ルール: 郵便番号を必須にする',
+          '    @REQ-43', '    シナリオアウトライン: 郵便番号を検証 <番号>',
+          '      前提 住所が登録済み', '      もし <番号> を入力', '      ならば 結果を表示',
+          '      例: 有効な入力', '        | 番号 |', '        | 1000001 |',
+        ].join('\r\n'));
+      case '/git/blobs/' + badFeature:
+        return new Response('Scenario: No feature heading\n');
       default: assert.fail(url.href);
     }
   };
@@ -1332,6 +1347,22 @@ test('repository source follows Markdown links at the same commit and escapes so
       assert.match(html, /指定された参照先を特定できませんでした/);
       assert.doesNotMatch(html, /id="definition"/);
     }
+    const featureLink = base + '?ref=' + commit + '&source=docs%2Faddress.feature#L6';
+    assert.ok(html.includes('href="' + featureLink.replaceAll('&', '&amp;') + '"'));
+    const featureResponse = await worker.fetch(req(featureLink), env);
+    assert.equal(featureResponse.status, 200);
+    const featureHtml = await featureResponse.text();
+    assert.match(featureHtml, /aria-label="Gherkin シナリオ"/);
+    assert.match(featureHtml, /href="#L2">@REQ-42<\/a>/);
+    assert.match(featureHtml, /href="#L4">ルール: 郵便番号を必須にする/);
+    assert.match(featureHtml, /href="#L6">シナリオアウトライン: 郵便番号を検証 &lt;番号&gt;/);
+    assert.match(featureHtml, /href="#L10">例: 有効な入力/);
+    const brokenFeature = await worker.fetch(req(base + '?ref=' + commit + '&source=docs%2Fbroken.feature'), env);
+    assert.equal(brokenFeature.status, 200);
+    const brokenHtml = await brokenFeature.text();
+    assert.match(brokenHtml, /aria-label="Gherkin 構文エラー"/);
+    assert.match(brokenHtml, /href="#L1">1 行目/);
+    assert.match(brokenHtml, /id="L1".*Scenario: No feature heading/);
     const invalid = await worker.fetch(req(base + '?source=..%2FREADME.md'), env);
     assert.equal(invalid.status, 400);
   } finally {

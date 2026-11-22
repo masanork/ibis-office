@@ -2,9 +2,10 @@
 import { escape } from '../vendor/mikaki-oidc';
 import { resolveRelativePath, schemaReference } from './spec-reference';
 import { renderSpecStructure } from './spec-structure';
+import { renderGherkinOutline } from './spec-gherkin';
 
 export function isSpecSource(path: string): boolean {
-  return /\.(md|markdown|yaml|yml|json|mmd)$/i.test(path);
+  return /\.(md|markdown|yaml|yml|json|mmd|feature)$/i.test(path);
 }
 
 export function specSourceUrl(repoUrl: string, commit: string, path: string): string {
@@ -56,12 +57,13 @@ export async function renderSpecSource(source: string, text: string, repoUrl: st
       referenceUrl: value => referenceUrl(repoUrl, commit, source, value),
     })
     : null;
+  const scenarios = /\.feature$/i.test(source) ? renderGherkinOutline(text, lines.length) : '';
   const code = lines.slice(0, maxLines).map((line, i) => {
     const anchor = 'L' + (i + 1);
     const shown = structure?.targetLine === i + 1 ? `<span id="definition">${escape(line)}</span>` : escape(line);
     return `<span id="${anchor}"><a aria-label="${i + 1} 行目" href="#${anchor}" class="source-line-number muted">${i + 1}</a>  ${shown}</span>`;
   }).join('\n');
   return `${links ? `<nav aria-label="参照ファイル"><h2>参照ファイル</h2><ul>${links}</ul></nav>` : ''}
-    ${structure?.html ?? ''}<pre class="code source-code"><code>${code}</code></pre>
+    ${structure?.html ?? ''}${scenarios}<pre class="code source-code"><code>${code}</code></pre>
     ${lines.length > maxLines ? '<p>最初の10,000行を表示しています。全体は Raw で確認できます。</p>' : ''}`;
 }

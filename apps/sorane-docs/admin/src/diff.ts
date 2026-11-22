@@ -38,6 +38,7 @@ const TEXT_EXTENSIONS = new Set([
   'md',
   'markdown',
   'mmd',
+  'feature',
   'txt',
   'json',
   'xml',
