@@ -244,3 +244,5 @@ PDF, XPS (including OXPS), and OFD export extractable text in page order. Readin
 DOCX floating pictures retain their image data and display dimensions in Markdown. The `docx-anchor` image attribute preserves the position reference, offsets, and wrapping when restoring DOCX. Images without this attribute import inline.
 
 For DOCX pictures, `docx-crop` stores the left, top, right, and bottom crop in hundred-thousandths. `docx-transform` stores rotation in 60,000ths of a degree and the horizontal and vertical flip flags.
+
+For DOCX, use `ibisOffice --export md --include-metafile-previews --out-dir ./out input.docx` to append SVG previews and any extracted labels from EMF and WMF in drawing order. The main document retains the original images. Text drawn as outlines or pixels requires OCR. ibisOffice skips the generated appendix when importing the Markdown.

@@ -31,6 +31,7 @@
 //!   - CriticMarkup Tracked Changes & Comments: `{++insert++}`, `{--delete--}`, `{~~old~>new~~}`, `{>>author: comment<<}`
 //!   - Inline Data URI images `![alt](data:image/png;base64,...){width=... height=...}`
 
+mod metafile_preview;
 mod picture_anchor;
 
 use std::collections::{BTreeMap, HashMap};
@@ -1001,6 +1002,14 @@ pub fn export_presentation_to_markdown(presentation: &Presentation) -> Result<St
     Err(Error::new("ワード文書・表計算・プレゼンテーションのいずれでもありません"))
 }
 
+/// Export a word-processing document with optional SVG and text previews of its metafiles.
+pub fn export_document_markdown_with_metafile_previews(presentation: &Presentation) -> Result<String, Error> {
+    let flow = presentation.flow.as_ref().ok_or_else(|| Error::new("Metafile Markdown previews require a word-processing document"))?;
+    let mut markdown = export_markdown(flow, &presentation.media);
+    metafile_preview::append(&mut markdown);
+    Ok(markdown)
+}
+
 /// Export visible worksheets in a workbook [`Presentation`] as GFM Markdown tables.
 pub fn export_workbook_markdown(p: &Presentation) -> Result<String, Error> {
     export_workbook_markdown_with_options(p, WorkbookMarkdownOptions::default())
@@ -1383,6 +1392,7 @@ fn parse_markdown_into(
     baseline_pres: Option<&Presentation>,
     base_dir: Option<&std::path::Path>,
 ) -> Result<(), Error> {
+    let text = metafile_preview::strip(text);
     let mut body_text = text;
     let mut frontmatter_text = None;
 

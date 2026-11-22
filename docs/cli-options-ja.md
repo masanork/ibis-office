@@ -74,6 +74,8 @@ ibisOffice --read-only report.docx
 
 `--ai-receipt` を `ai-apply` に付けると、保存後に出力先と SHA-256 を含む JSON を標準出力に返します。
 
+`ibisOffice --export md --include-metafile-previews --out-dir ./out input.docx` は、本文に元の EMF・WMF を残し、変換できた図の SVG と抽出できた文字を末尾に併記します。文字の順序は SVG の描画順です。輪郭や画像になった文字には OCR が必要です。ibisOffice は Markdown を DOCX に戻すときにプレビューの付録を除きます。
+
 `--include-xlsx-validations` を XLSX の `--export md` に付けると、表示シートの入力規則を Markdown に含めます。`--export xlsx` で規則を復元できます。[Markdown リファレンスの XLSX 往復](markdown-reference-ja.md#対応状況と残るギャップ)
 
 `--include-xlsx-hidden-axes` を XLSX の `--export md` に付けると、表示シートの非表示行・列の値と式を Markdown に含めます。`--export xlsx` でセルと非表示状態を復元できます。

@@ -431,6 +431,7 @@ struct Args {
     require_preview: bool,
     /// Emit a JSON receipt after saving the edit output.
     ai_receipt: bool,
+    include_metafile_previews: bool,
     include_xlsx_validations: bool,
     include_xlsx_hidden_axes: bool,
     include_xlsx_hidden_sheets: bool,
@@ -493,6 +494,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             "--ai-query" => args.ai_query = Some(value()?.into()),
             "--require-preview" => args.require_preview = true,
             "--ai-receipt" => args.ai_receipt = true,
+            "--include-metafile-previews" => args.include_metafile_previews = true,
             "--include-xlsx-validations" => args.include_xlsx_validations = true,
             "--include-xlsx-hidden-axes" => args.include_xlsx_hidden_axes = true,
             "--include-xlsx-hidden-sheets" => args.include_xlsx_hidden_sheets = true,
@@ -560,6 +562,9 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     }
     if args.ai_receipt && args.export.as_deref() != Some("ai-apply") {
         return Err("--ai-receipt requires --export ai-apply".into());
+    }
+    if args.include_metafile_previews && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
+        return Err("--include-metafile-previews requires --export md".into());
     }
     if args.include_xlsx_validations && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
         return Err("--include-xlsx-validations requires --export md".into());
@@ -715,6 +720,9 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             && let Some(markdown) = ibis_office_pdf::markdown::export(&raw_data)
                 .map_err(|e| format!("{}: {e}", path.display()))?
         {
+            if args.include_metafile_previews {
+                return Err("--include-metafile-previews requires a word-processing document".into());
+            }
             if args.include_xlsx_validations || args.include_xlsx_hidden_axes
                 || args.include_xlsx_hidden_sheets || args.include_xlsx_defined_names
             {
@@ -798,7 +806,12 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     include_hidden_sheets: args.include_xlsx_hidden_sheets,
                     include_defined_names: args.include_xlsx_defined_names,
                 };
-                let md = if options.include_validations || options.include_hidden_axes || options.include_hidden_sheets || options.include_defined_names {
+                let workbook_options = options.include_validations || options.include_hidden_axes || options.include_hidden_sheets || options.include_defined_names;
+                let md = if args.include_metafile_previews && workbook_options {
+                    return Err("--include-metafile-previews and XLSX Markdown options apply to different document types".into());
+                } else if args.include_metafile_previews {
+                    ibis_formats::markdown::export_document_markdown_with_metafile_previews(&presentation)
+                } else if workbook_options {
                     ibis_formats::markdown::export_workbook_markdown_with_options(&presentation, options)
                 } else {
                     ibis_formats::markdown::export_presentation_to_markdown(&presentation)
