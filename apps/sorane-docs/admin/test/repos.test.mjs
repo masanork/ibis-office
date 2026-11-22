@@ -1182,7 +1182,34 @@ test('repository source follows Markdown links at the same commit and escapes so
           '  missing-slash: {}', '  /not-an-object: true',
         ].join('\n'));
       case '/git/blobs/' + openapi31:
-        return Response.json({ openapi: '3.1.1', info: { title: 'API', version: '1' }, components: {} });
+        return new Response(JSON.stringify({
+          openapi: '3.1.1',
+          info: { title: 'API', version: '1' },
+          paths: {
+            '/address': {
+              post: {
+                requestBody: { content: { 'application/json': {
+                  schema: {
+                    type: 'object', required: ['postalCode'], properties: { postalCode: { type: 'string' } },
+                  },
+                  examples: {
+                    good: { value: { postalCode: '1000001' } },
+                    invalid: { value: { postalCode: 1000001 } },
+                    missing: { value: { city: 'Tokyo' } },
+                  },
+                } } },
+                responses: {
+                  '200': { content: { 'application/problem+json': {
+                    schema: { type: 'object', properties: { numbers: { type: 'array', items: { type: 'integer' } } } },
+                    example: { numbers: ['wrong'] },
+                  } } },
+                  '400': { content: { 'application/json': { schema: { type: 'string', pattern: '^a' }, example: 'b' } } },
+                  '500': { content: { 'application/json': { schema: { $ref: './schema.json' }, example: {} } } },
+                },
+              },
+            },
+          },
+        }, null, 2));
       default: assert.fail(url.href);
     }
   };
@@ -1241,7 +1268,16 @@ test('repository source follows Markdown links at the same commit and escapes so
     assert.match(html30, /href="#L11">11 行目<\/a> · パス名/);
     assert.match(html30, /href="#L12">12 行目<\/a> · パスの定義/);
     const diagnostics31 = await worker.fetch(req(base + '?ref=' + commit + '&source=api%2Fopenapi31.json'), env);
-    assert.match(await diagnostics31.text(), /確認対象の項目に問題は見つかりませんでした/);
+    const html31 = await diagnostics31.text();
+    assert.match(html31, /確認対象の項目に問題は見つかりませんでした/);
+    const checks = html31.split('aria-label="OpenAPI JSON 例チェック"')[1].split('</aside>')[0];
+    assert.match(checks, /4 件を検証し、3 件に問題/);
+    assert.match(checks, /2 件はインラインスキーマ/);
+    const postedCodeLine = /<span id="L(\d+)">[^\n]*&quot;postalCode&quot;: 1000001/.exec(html31)[1];
+    const responseValueLine = /<span id="L(\d+)">[^\n]*&quot;wrong&quot;/.exec(html31)[1];
+    assert.ok(checks.includes('href="#L' + postedCodeLine + '"'));
+    assert.ok(checks.includes('href="#L' + responseValueLine + '"'));
+    assert.match(checks, /required property &quot;postalCode&quot;/);
     assert.match(apiHtml, /href="#L4"><code>GET \/pets<\/code>/);
     assert.match(apiHtml, /href="#L9"><code>QUERY \/pets<\/code>/);
     assert.match(apiHtml, /href="#L11"><code>COPY \/pets<\/code>/);
