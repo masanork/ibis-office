@@ -4677,6 +4677,23 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                                     look.rotation = rotation;
                                     look.flip_h = flip_h;
                                     look.flip_v = flip_v;
+                                } else if let Some((bright, contrast)) =
+                                    part.strip_prefix("docx-lum=").and_then(|value| value.split_once(','))
+                                        .and_then(|(bright, contrast)| {
+                                            let bright: i32 = bright.parse().ok()?;
+                                            let contrast: i32 = contrast.parse().ok()?;
+                                            (-100_000..=100_000).contains(&bright)
+                                                .then_some(())?;
+                                            (-100_000..=100_000).contains(&contrast)
+                                                .then_some((bright, contrast))
+                                        })
+                                {
+                                    look.luminance = Some((bright, contrast));
+                                } else if let Some((dark, light)) =
+                                    part.strip_prefix("docx-duotone=").and_then(|value| value.split_once(','))
+                                        .and_then(|(dark, light)| Some((parse_hex_rgb(dark)?, parse_hex_rgb(light)?)))
+                                {
+                                    look.duotone = Some((dark, light));
                                 } else if let Some(title) = part.strip_prefix("docx-title=")
                                     .and_then(decode_base64).and_then(|bytes| String::from_utf8(bytes).ok())
                                 {
@@ -4709,6 +4726,8 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                             picture.alt_text = look.alt_text;
                             picture.decorative = look.decorative;
                             picture.crop = look.crop;
+                            picture.luminance = look.luminance;
+                            picture.duotone = look.duotone;
                             let mut shape = Shape::new(
                                 ctx.fresh_shape_id(),
                                 EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
@@ -6976,10 +6995,7 @@ fn decode_picture_label(label: &str) -> String {
 
 fn picture_attributes(
     mut image: String,
-    crop: ibis_doc_model::Crop,
-    rotation: i32,
-    flip_h: bool,
-    flip_v: bool,
+    look: &PictureLook,
     anchor: Option<&ibis_doc_model::FloatingAnchor>,
 ) -> String {
     use std::fmt::Write as _;
@@ -6988,11 +7004,18 @@ fn picture_attributes(
         return image;
     }
     image.pop();
+    let PictureLook { crop, rotation, flip_h, flip_v, luminance, duotone, .. } = *look;
     if crop != ibis_doc_model::Crop::default() {
         let _ = write!(image, " docx-crop={},{},{},{}", crop.left, crop.top, crop.right, crop.bottom);
     }
     if rotation != 0 || flip_h || flip_v {
         let _ = write!(image, " docx-transform={rotation},{flip_h},{flip_v}");
+    }
+    if let Some((bright, contrast)) = luminance {
+        let _ = write!(image, " docx-lum={bright},{contrast}");
+    }
+    if let Some((dark, light)) = duotone {
+        let _ = write!(image, " docx-duotone={:06x},{:06x}", dark.0, light.0);
     }
     if let Some(anchor) = anchor {
         image.push(' ');
@@ -7112,7 +7135,7 @@ fn serialize_runs(
             }
             FlowRunKind::Picture { media: mid, size, look } => picture_attributes(
                 serialize_picture(media, *mid, *size, &look.alt_text, look.decorative),
-                look.crop, look.rotation, look.flip_h, look.flip_v, None,
+                look, None,
             ),
             FlowRunKind::Shape(shape) => match &shape.kind {
                 ShapeKind::Picture(picture) => picture_attributes(
@@ -7121,7 +7144,16 @@ fn serialize_runs(
                         EmuSize::new(shape.frame.width, shape.frame.height),
                         &picture.alt_text, picture.decorative,
                     ),
-                    picture.crop, shape.rotation, shape.flip_h, shape.flip_v, shape.floating.as_ref(),
+                    &PictureLook {
+                        crop: picture.crop,
+                        rotation: shape.rotation,
+                        flip_h: shape.flip_h,
+                        flip_v: shape.flip_v,
+                        luminance: picture.luminance,
+                        duotone: picture.duotone,
+                        ..Default::default()
+                    },
+                    shape.floating.as_ref(),
                 ),
                 ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
                     .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text, false))
@@ -8138,8 +8170,8 @@ mod tests {
     fn docx_markdown_round_trips_inline_and_floating_pictures() {
         let emf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf");
         let wmf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.wmf");
-        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm docx-crop=12500,5000,0,0 docx-transform=1800000,true,false}}", encode_base64(emf));
-        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm docx-crop=0,0,7500,2500 docx-transform=0,false,true}}", encode_base64(wmf));
+        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm docx-crop=12500,5000,0,0 docx-transform=1800000,true,false docx-lum=-20000,35000 docx-duotone=224466,ffeedd}}", encode_base64(emf));
+        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm docx-crop=0,0,7500,2500 docx-transform=0,false,true docx-lum=10000,-5000 docx-duotone=101010,fefefe}}", encode_base64(wmf));
         let source = format!("{floating}\n\n{inline}");
         let original = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         let mut package = ibis_ooxml::Package::open(original).unwrap();
@@ -8168,6 +8200,8 @@ mod tests {
         assert_eq!(markdown.matches(picture_anchor::ATTRIBUTE).count(), 1);
         assert_eq!(markdown.matches("docx-crop=").count(), 2);
         assert_eq!(markdown.matches("docx-transform=").count(), 2);
+        assert_eq!(markdown.matches("docx-lum=").count(), 2);
+        assert_eq!(markdown.matches("docx-duotone=").count(), 2);
         let slide = crate::read(&import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap()).unwrap();
         assert_eq!(
             slide.slides.iter().flat_map(|s| &s.shapes)
@@ -8184,6 +8218,8 @@ mod tests {
                 FlowRunKind::Picture { media, size, look } => {
                     assert_eq!(look.crop, parse_picture_crop("0,0,7500,2500").unwrap());
                     assert_eq!((look.rotation, look.flip_h, look.flip_v), (0, false, true));
+                    assert_eq!(look.luminance, Some((10000, -5000)));
+                    assert_eq!(look.duotone, Some((Rgb(0x101010), Rgb(0xfefefe))));
                     Some((presentation.media(*media).unwrap(), *size))
                 }
                 FlowRunKind::Shape(shape) => {
@@ -8191,6 +8227,8 @@ mod tests {
                     assert_eq!(shape.floating.as_ref(), Some(&anchor));
                     assert_eq!(picture.crop, parse_picture_crop("12500,5000,0,0").unwrap());
                     assert_eq!((shape.rotation, shape.flip_h, shape.flip_v), (1_800_000, true, false));
+                    assert_eq!(picture.luminance, Some((-20000, 35000)));
+                    assert_eq!(picture.duotone, Some((Rgb(0x224466), Rgb(0xffeedd))));
                     floating_count += 1;
                     Some((presentation.media(picture.media).unwrap(),
                         EmuSize::new(shape.frame.width, shape.frame.height)))

@@ -248,3 +248,5 @@ For DOCX pictures, `docx-crop` stores the left, top, right, and bottom crop in h
 For DOCX, use `ibisOffice --export md --include-metafile-previews --out-dir ./out input.docx` to append SVG previews and any extracted labels from EMF and WMF in drawing order. The main document retains the original images. Text drawn as outlines or pixels requires OCR. ibisOffice skips the generated appendix when importing the Markdown.
 
 DOCX images retain alt text with brackets and line breaks, separate title and description fields, and decorative status.
+
+DOCX picture adjustments preserve brightness and contrast as `docx-lum` in hundred-thousandths and sRGB duotone colors as `docx-duotone`.
