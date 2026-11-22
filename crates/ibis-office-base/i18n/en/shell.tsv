@@ -1626,7 +1626,7 @@ git.more-files	More files
 git.first-parent	First parent diff
 git.commit-parent-unavailable	The parent of this commit is outside the available history.
 git.branches	Branches
-git.no-local-branches	No local branches
+git.no-branches	No branches available
 git.branch-current	Current
 git.switch	Switch
 git.switch-failed	Git branch switch failed
@@ -1643,3 +1643,8 @@ git.publish-confirm	Publish this local branch and set its upstream?
 git.publish-complete	Published
 git.publish-failed	Git branch publish failed
 git.publish-no-remote	Configure a push remote for this repository before publishing.
+git.local-branches	Local branches
+git.remote-branches	Remote branches
+git.track	Track and switch
+git.track-failed	Could not track the remote branch
+git.track-complete	Tracking

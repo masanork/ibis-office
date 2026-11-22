@@ -36,7 +36,7 @@ pub(super) struct CommitGraph {
     more: bool,
     completed: Option<&'static str>,
     upstream: Option<UpstreamStatus>,
-    branches: Option<Vec<String>>,
+    branches: Option<Branches>,
     new_branch: Option<Entity<InputState>>,
 }
 
@@ -334,18 +334,45 @@ fn pull_upstream(root: &Path, head: gix::ObjectId, branch: &str) -> Result<()> {
     Ok(())
 }
 
-fn local_branches(root: &Path) -> Result<Vec<String>> {
-    let args = ["for-each-ref", "--format=%(refname)", "refs/heads/"];
+#[derive(Default)]
+struct Branches {
+    local: Vec<String>,
+    remote: Vec<String>,
+}
+
+fn branches(root: &Path) -> Result<Branches> {
+    let args = [
+        "for-each-ref",
+        "--format=%(refname)%00%(symref)",
+        "refs/heads/",
+        "refs/remotes/",
+    ];
     let refs = git(root, &args.map(OsStr::new))?;
-    Ok(refs
-        .split(|byte| *byte == b'\n')
-        .filter_map(|line| {
-            let line = line.strip_suffix(b"\r").unwrap_or(line);
-            std::str::from_utf8(line).ok()?.strip_prefix("refs/heads/")
-        })
-        .filter(|name| *name != "-")
-        .map(str::to_owned)
-        .collect())
+    let mut branches = Branches::default();
+    for line in refs.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Ok(line) = std::str::from_utf8(line) else {
+            continue;
+        };
+        let Some((name, symbolic_target)) = line.split_once('\0') else {
+            continue;
+        };
+        if !symbolic_target.is_empty() {
+            continue;
+        }
+        if let Some(local) = name.strip_prefix("refs/heads/").filter(|name| *name != "-") {
+            branches.local.push(local.to_owned());
+        } else if name.starts_with("refs/remotes/") {
+            branches.remote.push(name.to_owned());
+        }
+    }
+    Ok(branches)
+}
+
+enum BranchStart {
+    Local,
+    Commit(gix::ObjectId),
+    Remote,
 }
 
 fn switch_branch(
@@ -353,7 +380,7 @@ fn switch_branch(
     head: gix::ObjectId,
     branch: &str,
     target: &str,
-    start: Option<gix::ObjectId>,
+    start: BranchStart,
 ) -> Result<()> {
     let repo = gix::discover(root)?;
     let current = repo
@@ -365,16 +392,18 @@ fn switch_branch(
     }
     let mut args = vec!["switch", "--no-guess", "--no-recurse-submodules"];
     let commit;
-    if let Some(start) = start {
-        if target.starts_with('-')
-            || gix::refs::FullName::try_from(format!("refs/heads/{target}")).is_err()
-        {
-            return Err(text("git.branch-name-invalid").to_string().into());
+    match start {
+        BranchStart::Local => args.extend(["--", target]),
+        BranchStart::Remote => args.extend(["--track", "--", target]),
+        BranchStart::Commit(start) => {
+            if target.starts_with('-')
+                || gix::refs::FullName::try_from(format!("refs/heads/{target}")).is_err()
+            {
+                return Err(text("git.branch-name-invalid").to_string().into());
+            }
+            commit = start.to_string();
+            args.extend(["--no-track", "-c", target, "--", &commit]);
         }
-        commit = start.to_string();
-        args.extend(["--no-track", "-c", target, "--", &commit]);
-    } else {
-        args.extend(["--", target]);
     }
     let args: Vec<_> = args.into_iter().map(OsStr::new).collect();
     git(root, &args)?;
@@ -386,6 +415,7 @@ enum SyncAction {
     Pull,
     Push(PushTarget),
     Switch(String),
+    TrackBranch(String),
     CreateBranch { name: String, start: gix::ObjectId },
 }
 
@@ -397,6 +427,7 @@ impl SyncAction {
             Self::Push(target) if target.publish => "git.publish-failed",
             Self::Push(_) => "git.push-failed",
             Self::Switch(_) => "git.switch-failed",
+            Self::TrackBranch(_) => "git.track-failed",
             Self::CreateBranch { .. } => "git.branch-create-failed",
         }
     }
@@ -408,6 +439,7 @@ impl SyncAction {
             Self::Push(target) if target.publish => "git.publish-complete",
             Self::Push(_) => "git.push-complete",
             Self::Switch(_) => "git.switch-complete",
+            Self::TrackBranch(_) => "git.track-complete",
             Self::CreateBranch { .. } => "git.branch-created",
         }
     }
@@ -417,9 +449,12 @@ impl SyncAction {
             Self::Fetch => fetch_remotes(root),
             Self::Pull => pull_upstream(root, head, branch),
             Self::Push(target) => target.push(root, head),
-            Self::Switch(target) => switch_branch(root, head, branch, target, None),
+            Self::Switch(target) => switch_branch(root, head, branch, target, BranchStart::Local),
+            Self::TrackBranch(target) => {
+                switch_branch(root, head, branch, target, BranchStart::Remote)
+            }
             Self::CreateBranch { name, start } => {
-                switch_branch(root, head, branch, name, Some(*start))
+                switch_branch(root, head, branch, name, BranchStart::Commit(*start))
             }
         }
     }
@@ -460,6 +495,7 @@ impl SlideEditor {
                         Some(
                             SyncAction::Pull
                                 | SyncAction::Switch(_)
+                                | SyncAction::TrackBranch(_)
                                 | SyncAction::CreateBranch { .. }
                         )
                     ) && sync_error.is_none()
@@ -514,7 +550,11 @@ impl SlideEditor {
                     state.graph.completed = action.as_ref().map(SyncAction::completion);
                     if matches!(
                         action,
-                        Some(SyncAction::Switch(_) | SyncAction::CreateBranch { .. })
+                        Some(
+                            SyncAction::Switch(_)
+                                | SyncAction::TrackBranch(_)
+                                | SyncAction::CreateBranch { .. }
+                        )
                     ) {
                         state.graph.branches = None;
                         state.graph.new_branch = None;
@@ -555,7 +595,7 @@ impl SlideEditor {
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { local_branches(&root).map_err(|error| error.to_string()) })
+                .spawn(async move { branches(&root).map_err(|error| error.to_string()) })
                 .await;
             let _ = this.update_in(cx, |editor, window, cx| {
                 let Some(state) = editor.git_workspace.as_mut() else {
@@ -634,39 +674,73 @@ impl SlideEditor {
             );
         let border = cx.theme().border;
         let mut list = div()
-            .id("git-local-branches")
+            .id("git-branch-list")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
-        for (index, name) in branches.iter().enumerate() {
-            let name = name.clone();
-            let current = name == state.branch;
+        for (is_remote, names, key) in [
+            (false, &branches.local, "git.local-branches"),
+            (true, &branches.remote, "git.remote-branches"),
+        ] {
+            if names.is_empty() {
+                continue;
+            }
             list = list.child(
-                h_flex()
+                div()
                     .px_2()
                     .py_1()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
-                    .child(
-                        Button::new(("git-switch-branch", index))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(text(key)),
+            );
+            for (index, name) in names.iter().enumerate() {
+                let name = name.clone();
+                let current = !is_remote && name == state.branch;
+                let label = if is_remote {
+                    name.strip_prefix("refs/remotes/")
+                        .unwrap_or(&name)
+                        .to_owned()
+                } else {
+                    name.clone()
+                };
+                list = list.child(
+                    h_flex()
+                        .px_2()
+                        .py_1()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(div().flex_1().min_w_0().truncate().child(label))
+                        .child(
+                            Button::new((
+                                if is_remote {
+                                    "git-track-branch"
+                                } else {
+                                    "git-switch-branch"
+                                },
+                                index,
+                            ))
                             .xsmall()
                             .disabled(current || state.busy)
-                            .label(text(if current {
+                            .label(text(if is_remote {
+                                "git.track"
+                            } else if current {
                                 "git.branch-current"
                             } else {
                                 "git.switch"
                             }))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.git_load_graph(
-                                    Some(SyncAction::Switch(name.clone())),
-                                    window,
-                                    cx,
-                                )
-                            })),
-                    ),
-            );
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    let action = if is_remote {
+                                        SyncAction::TrackBranch(name.clone())
+                                    } else {
+                                        SyncAction::Switch(name.clone())
+                                    };
+                                    this.git_load_graph(Some(action), window, cx)
+                                },
+                            )),
+                        ),
+                );
+            }
         }
         Some(
             div()
@@ -695,9 +769,10 @@ impl SlideEditor {
                         .child(text("git.branches")),
                 )
                 .child(new_branch)
-                .child(list.when(branches.is_empty(), |list| {
-                    list.child(div().px_2().child(text("git.no-local-branches")))
-                }))
+                .child(list.when(
+                    branches.local.is_empty() && branches.remote.is_empty(),
+                    |list| list.child(div().px_2().child(text("git.no-branches"))),
+                ))
                 .into_any_element(),
         )
     }
