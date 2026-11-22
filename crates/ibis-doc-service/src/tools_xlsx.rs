@@ -4,7 +4,7 @@
 //! The `xlsx_*` tools (design 6.3). A sheet is named by its tab; a range is A1 text.
 
 use ibis_calc::CellValue;
-use ibis_doc_model::ShapeKind;
+use ibis_doc_model::Presentation;
 use ibis_doc_model::ai_sheet::parse_cell_input;
 use ibis_doc_model::sheet::{CellRange, Sheet};
 use ibis_formats::Kind;
@@ -15,30 +15,53 @@ use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string
 use crate::error::ToolError;
 use crate::service::{Args, Open, Service};
 
+/// A workbook operation that can target a file-backed document or an editor draft.
+pub struct WorkbookTool {
+    pub descriptor: Tool,
+    plan: fn(&Presentation, &Value, Option<SlideId>, Option<usize>) -> Result<(Value, Option<Command>), ToolError>,
+}
+
+impl WorkbookTool {
+    /// Prepare a result and an optional edit against the current workbook state.
+    /// The caller applies the command using its own undo and review policy.
+    pub fn plan(
+        &self,
+        workbook: &Presentation,
+        args: &Value,
+        active_sheet: Option<SlideId>,
+        read_cell_limit: Option<usize>,
+    ) -> Result<(Value, Option<Command>), ToolError> {
+        if !args.is_object() {
+            return Err(ToolError::invalid("the arguments are not an object"));
+        }
+        (self.plan)(workbook, args, active_sheet, read_cell_limit)
+    }
+}
+
+pub fn workbook_tools() -> &'static [WorkbookTool] {
+    static TOOLS: [WorkbookTool; 2] = [GET_CELLS, SET_CELLS];
+    &TOOLS
+}
+
+fn run_workbook_tool(service: &mut Service, args: &Value, tool: &WorkbookTool) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let open = service.open_document(id)?;
+    if open.kind != Kind::Workbook {
+        return Err(ToolError::new("unsupported_operation", "this tool is for an xlsx workbook"));
+    }
+    let (result, command) = tool.plan(open.document.presentation(), args, None, None)?;
+    if let Some(command) = command {
+        execute(open, vec![command])?;
+        Ok(edited(id, open, result, Vec::new()))
+    } else {
+        Ok(result)
+    }
+}
+
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
         Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook: name, used range and whether it is shown.", access: Access::Read, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: list_sheets },
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
-        Tool {
-            name: "xlsx_get_cells",
-            description: "The cells of a range, row by row: value (calculated), formula, or text (as shown). Formula mode returns the calculated value when sheet protection hides the formula. Paged by rows.",
-            access: Access::Read,
-            returns_content: true,
-            schema: || {
-                object(
-                    &[
-                        document_id(),
-                        ("sheet", string("The sheet's name.")),
-                        ("range", string("A1 range, e.g. B2:D10.")),
-                        ("kind", json!({ "enum": ["value", "formula", "text"], "description": "value (default), formula or text (as shown)." })),
-                        ("offset", integer("The first row of the page (0-based, from the range's first row).")),
-                        ("limit", integer("The most rows.")),
-                    ],
-                    &["document_id", "sheet", "range"],
-                )
-            },
-            run: get_cells,
-        },
         Tool {
             name: "xlsx_find_text",
             description: "The cells whose shown text has a text.",
@@ -55,16 +78,28 @@ pub(crate) fn sheets_of(open: &Open) -> Result<Vec<(usize, String, &Sheet)>, Too
     if open.kind != Kind::Workbook {
         return Err(ToolError::new("unsupported_operation", "this tool is for an xlsx workbook"));
     }
-    Ok(open
-        .document
-        .presentation()
-        .slides
-        .iter()
-        .enumerate()
-        .filter_map(|(i, slide)| {
-            slide.shapes.iter().find_map(|s| if let ShapeKind::Sheet(sheet) = &s.kind { Some((i, slide.name.clone().unwrap_or_else(|| format!("Sheet{}", i + 1)), &**sheet)) } else { None })
-        })
-        .collect())
+    Ok(workbook_sheets(open.document.presentation()))
+}
+
+fn workbook_sheets(workbook: &Presentation) -> Vec<(usize, String, &Sheet)> {
+    workbook.slides.iter().enumerate().filter_map(|(index, slide)| {
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(slide)?;
+        Some((index, slide.name.clone().unwrap_or_else(|| format!("Sheet{}", index + 1)), &**sheet))
+    }).collect()
+}
+
+fn workbook_sheet<'a>(
+    workbook: &'a Presentation,
+    sheets: &'a [(usize, String, &'a Sheet)],
+    args: &Value,
+    active: Option<SlideId>,
+) -> Result<&'a (usize, String, &'a Sheet), ToolError> {
+    if let Some(name) = args.opt_str("sheet")? {
+        return find_sheet(sheets, name);
+    }
+    let active = active.ok_or_else(|| ToolError::invalid("sheet is required"))?;
+    sheets.iter().find(|(index, _, _)| workbook.slides[*index].id == active)
+        .ok_or_else(|| ToolError::new("no_such_sheet", "no active sheet"))
 }
 
 pub(crate) fn find_sheet<'a>(sheets: &'a [(usize, String, &'a Sheet)], name: &str) -> Result<&'a (usize, String, &'a Sheet), ToolError> {
@@ -109,15 +144,19 @@ fn get_used_range(service: &mut Service, args: &Value) -> Result<Value, ToolErro
 }
 
 fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    run_workbook_tool(service, args, &GET_CELLS)
+}
+
+fn plan_get_cells(
+    workbook: &Presentation, args: &Value, active: Option<SlideId>, read_cell_limit: Option<usize>,
+) -> Result<(Value, Option<Command>), ToolError> {
     let range = parse_range(args.str_arg("range")?)?;
     let kind = args.opt_str("kind")?.unwrap_or("value");
     if !matches!(kind, "value" | "formula" | "text" | "format") {
         return Err(ToolError::invalid(format!("kind {kind} is not value, formula, text or format")));
     }
-    let name = args.str_arg("sheet")?;
-    let open = service.open_document(args.str_arg("document_id")?)?;
-    let sheets = sheets_of(open)?;
-    let (_, name, sheet) = find_sheet(&sheets, name)?;
+    let sheets = workbook_sheets(workbook);
+    let (_, name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
     let width = (range.last_column - range.first_column + 1) as usize;
     let height = (range.last_row - range.first_row + 1) as usize;
     let offset = args.opt_usize("offset")?.unwrap_or(0);
@@ -125,17 +164,28 @@ fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
         return Err(ToolError::new("out_of_range", format!("offset {offset} is past the {height} rows")));
     }
     let limit = args.opt_usize("limit")?.unwrap_or((10_000 / width).max(1)).max(1);
-    let end = (offset + limit).min(height);
+    let limit = if let Some(max_cells) = read_cell_limit {
+        if width > max_cells {
+            return Err(ToolError::new("out_of_range", format!("range is wider than {max_cells} cells")));
+        }
+        limit.min(max_cells / width)
+    } else {
+        limit
+    };
+    let end = offset.saturating_add(limit).min(height);
     let mut rows: Vec<Vec<Value>> = vec![vec![Value::Null; width]; end - offset];
-    for cell in sheet.cells.iter() {
+    let first_row = range.first_row + offset as u32;
+    let page = if end == offset {
+        &[][..]
+    } else {
+        sheet.cells_in_rows(first_row, range.first_row + end as u32 - 1)
+    };
+    for cell in page {
         let (r, c) = (cell.row, cell.column);
-        if r < range.first_row || r > range.last_row || c < range.first_column || c > range.last_column {
+        if c < range.first_column || c > range.last_column {
             continue;
         }
         let row = (r - range.first_row) as usize;
-        if row < offset || row >= end {
-            continue;
-        }
         rows[row - offset][(c - range.first_column) as usize] = match kind {
             "formula" => sheet.visible_formula(cell)
                 .map_or_else(|| value_json(&cell.value), |f| Value::String(format!("={f}"))),
@@ -159,7 +209,7 @@ fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     if end < height {
         result["next_offset"] = json!(end);
     }
-    Ok(result)
+    Ok((result, None))
 }
 
 fn find_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -202,19 +252,6 @@ use crate::tools_docx::{color_schema, font_schema};
 
 pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
-        Tool {
-            name: "xlsx_set_cells",
-            description: "Put values in a range: rows of numbers, strings, true/false or null (clears the cell). A string starting with = followed by formula text is a formula. A single value fills the whole range; otherwise the rows must be as large as the range. What depends on them is calculated again.",
-            access: Access::Edit,
-            returns_content: false,
-            schema: || {
-                object(
-                    &[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range; its first cell is where the values start.")), ("values", json!({ "description": "A value, or rows of values.", "oneOf": [{ "type": "array", "items": { "type": "array" } }, { "type": ["string", "number", "boolean", "null"] }] }))],
-                    &["document_id", "sheet", "range", "values"],
-                )
-            },
-            run: set_cells,
-        },
         Tool {
             name: "xlsx_clear_cells",
             description: "Clear what is in a range: contents, formats, or all.",
@@ -278,7 +315,12 @@ fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extr
 }
 
 fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let id = args.str_arg("document_id")?;
+    run_workbook_tool(service, args, &SET_CELLS)
+}
+
+fn plan_set_cells(
+    workbook: &Presentation, args: &Value, active: Option<SlideId>, _: Option<usize>,
+) -> Result<(Value, Option<Command>), ToolError> {
     let range_arg = args.str_arg("range")?;
     let range = parse_range(range_arg)?;
     let rows = (range.last_row - range.first_row + 1) as usize;
@@ -288,8 +330,9 @@ fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
         return Err(ToolError::new("out_of_range", "more than 100000 cells in one call"));
     }
     let values = args.get("values").ok_or_else(|| ToolError::invalid("values is required"))?;
-    let open = service.open_document(id)?;
-    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
+    let sheets = workbook_sheets(workbook);
+    let (index, _, _) = workbook_sheet(workbook, &sheets, args, active)?;
+    let sheet = workbook.slides[*index].id;
     let mut edits = Vec::with_capacity(count);
     match values {
         Value::Array(grid) => {
@@ -316,7 +359,7 @@ fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             }
         }
     }
-    sheet_edit(service, id, vec![SheetCommand::SetCells { sheet, edits }], json!({ "cells": count }))
+    Ok((json!({ "cells": count }), Some(Command::Sheet(SheetCommand::SetCells { sheet, edits }))))
 }
 
 fn clear_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -532,3 +575,44 @@ fn calculate_workbook(service: &mut Service, args: &Value) -> Result<Value, Tool
     sheets_of(open)?;
     sheet_edit(service, id, vec![SheetCommand::CalculateNow], json!({}))
 }
+
+const GET_CELLS: WorkbookTool = WorkbookTool {
+    descriptor: Tool {
+        name: "xlsx_get_cells",
+        description: "The cells of a range, row by row: value (calculated), formula, or text (as shown). Formula mode returns the calculated value when sheet protection hides the formula. Paged by rows.",
+        access: Access::Read,
+        returns_content: true,
+        schema: || {
+            object(
+                &[
+                    document_id(),
+                    ("sheet", string("The sheet's name.")),
+                    ("range", string("A1 range, e.g. B2:D10.")),
+                    ("kind", json!({ "enum": ["value", "formula", "text"], "description": "value (default), formula or text (as shown)." })),
+                    ("offset", integer("The first row of the page (0-based, from the range's first row).")),
+                    ("limit", integer("The most rows.")),
+                ],
+                &["document_id", "sheet", "range"],
+            )
+        },
+        run: get_cells,
+    },
+    plan: plan_get_cells,
+};
+
+const SET_CELLS: WorkbookTool = WorkbookTool {
+    descriptor: Tool {
+        name: "xlsx_set_cells",
+        description: "Put values in a range: rows of numbers, strings, true/false or null (clears the cell). A string starting with = followed by formula text is a formula. A single value fills the whole range; otherwise the rows must be as large as the range. What depends on them is calculated again.",
+        access: Access::Edit,
+        returns_content: false,
+        schema: || {
+            object(
+                &[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range; its first cell is where the values start.")), ("values", json!({ "description": "A value, or rows of values.", "oneOf": [{ "type": "array", "items": { "type": "array" } }, { "type": ["string", "number", "boolean", "null"] }] }))],
+                &["document_id", "sheet", "range", "values"],
+            )
+        },
+        run: set_cells,
+    },
+    plan: plan_set_cells,
+};

@@ -4,9 +4,9 @@
 //! OpenAI Tool definitions and JSON argument parsers for spreadsheet operations.
 
 use ibis_doc_model::ai_sheet::{
-    AiBorderStyle, AiCellEdit, AiCellFormat, build_clear_cells_command,
+    AiBorderStyle, AiCellFormat, build_clear_cells_command,
     build_delete_axis_command, build_insert_axis_command, build_merge_command,
-    build_set_axis_size_command, build_set_cells_command, build_set_comment_command,
+    build_set_axis_size_command, build_set_comment_command,
     build_set_format_command, parse_cell_range, parse_hex_rgb,
 };
 use ibis_doc_model::command::Command;
@@ -26,8 +26,9 @@ pub const MAX_READ_CELLS: usize = 200;
 pub const MAX_CLEAR_CELLS: usize = 500;
 
 /// Tool definitions exposed to the OpenAI-compatible API for spreadsheets.
+#[cfg(not(target_family = "wasm"))]
 pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
+    let mut tools = vec![
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
@@ -72,58 +73,6 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                 parameters: json!({
                     "type": "object",
                     "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "read_range",
-                description: "Read non-empty cell values and formulas in an A1 range (e.g. 'A1:D20'). Maximum 200 cells per call.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "sheet": {
-                            "type": "string",
-                            "description": "Optional sheet name (defaults to the active sheet)."
-                        },
-                        "range": {
-                            "type": "string",
-                            "description": "A1-style cell or range, e.g. 'A1:D20' or 'B2'."
-                        }
-                    },
-                    "required": ["range"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "set_cells",
-                description: "Write values or formulas into one or more cells. Formulas should start with '='.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "sheet": {
-                            "type": "string",
-                            "description": "Optional sheet name (defaults to the active sheet)."
-                        },
-                        "edits": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "cell": { "type": "string", "description": "A1 cell reference, e.g. 'C2'." },
-                                    "value": { "description": "Number, string, boolean, null (to clear), or formula string starting with '='." }
-                                },
-                                "required": ["cell", "value"],
-                                "additionalProperties": false
-                            }
-                        }
-                    },
-                    "required": ["edits"],
                     "additionalProperties": false
                 }),
             },
@@ -491,7 +440,29 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
-    ]
+    ];
+    tools.extend(ibis_doc_service::workbook_tools().iter().map(|tool| {
+        let descriptor = &tool.descriptor;
+        let mut parameters = (descriptor.schema)();
+        if let Some(properties) = parameters["properties"].as_object_mut() {
+            properties.remove("document_id");
+            if let Some(sheet) = properties.get_mut("sheet") {
+                sheet["description"] = json!("The sheet's name. Omit to use the active sheet.");
+            }
+        }
+        if let Some(required) = parameters["required"].as_array_mut() {
+            required.retain(|name| !matches!(name.as_str(), Some("document_id" | "sheet")));
+        }
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: descriptor.name,
+                description: descriptor.description,
+                parameters,
+            },
+        }
+    }));
+    tools
 }
 
 #[derive(Deserialize)]
@@ -533,17 +504,6 @@ struct MergeCellsArgs {
 #[derive(Deserialize)]
 pub struct RangeArg {
     pub range: String,
-}
-
-#[derive(Deserialize)]
-struct SetCellsArgs {
-    edits: Vec<SetCellItem>,
-}
-
-#[derive(Deserialize)]
-struct SetCellItem {
-    cell: String,
-    value: Value,
 }
 
 #[derive(Deserialize)]
@@ -748,15 +708,6 @@ pub fn parse_range_arg(arguments_json: &str) -> Result<CellRange, String> {
     let arg: RangeArg =
         serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
     parse_cell_range(&arg.range).ok_or_else(|| format!("invalid range '{}'", arg.range))
-}
-
-pub fn parse_set_cells_command(slide: SlideId, arguments_json: &str) -> Result<Command, String> {
-    let args: SetCellsArgs =
-        serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
-    let edits = args.edits.into_iter()
-        .map(|item| AiCellEdit { cell: item.cell, value: item.value })
-        .collect();
-    build_set_cells_command(slide, edits)
 }
 
 pub fn parse_sheet_arg(arguments_json: &str) -> Result<Option<String>, String> {
@@ -1865,7 +1816,7 @@ pub fn build_replace_paragraph_command(paragraph: u32, old_len: usize, text: Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ibis_doc_model::sheet_command::{CellInput, SheetCommand};
+    use ibis_doc_model::sheet_command::SheetCommand;
 
     #[test]
     fn source_patch_is_literal_and_requires_a_unique_match() {
@@ -1879,6 +1830,15 @@ A --> C
         assert!(replace_unique_source("本文", "なし", "x").is_err());
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    fn set_chart_cells(document: &mut ibis_doc_model::Document, sheet: SlideId, range: &str, values: Value) {
+        let tool = ibis_doc_service::workbook_tools().iter()
+            .find(|tool| tool.descriptor.name == "xlsx_set_cells").unwrap();
+        let (_, command) = tool.plan(document.presentation(), &json!({ "range": range, "values": values }), Some(sheet), None).unwrap();
+        document.execute(vec![command.unwrap()]).unwrap();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn ai_create_chart_infers_categories_and_values_from_a_table() {
         use ibis_doc_model::{ChartType, Document, ShapeKind, sheet_calc::sheet_of_slide};
@@ -1887,12 +1847,7 @@ A --> C
         let opened = ibis_formats::open(ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
         let mut doc = Document::new(opened.presentation.clone());
         let slide = doc.presentation().slides[0].id;
-        let edit = parse_set_cells_command(slide, r#"{"edits":[
-            {"cell":"A1","value":"年度"},{"cell":"B1","value":"費用"},
-            {"cell":"A2","value":"R8"},{"cell":"B2","value":10},
-            {"cell":"A3","value":"R9"},{"cell":"B3","value":12}
-        ]}"#).unwrap();
-        doc.execute(vec![edit]).unwrap();
+        set_chart_cells(&mut doc, slide, "A1:B3", json!([["年度", "費用"], ["R8", 10], ["R9", 12]]));
         let args: ChartArgs = serde_json::from_value(json!({
             "kind":"line", "anchor":"D2", "range":"A1:B3", "title":"費用の推移"
         })).unwrap();
@@ -1917,6 +1872,7 @@ A --> C
         assert_eq!(chart.groups[0].series[0].categories, ["R8", "R9"]);
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn ai_scatter_chart_round_trips_sparse_series() {
         use ibis_doc_model::{Document, ShapeKind, sheet_calc::sheet_of_slide};
@@ -1924,12 +1880,7 @@ A --> C
         let opened = ibis_formats::open(ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
         let mut doc = Document::new(opened.presentation.clone());
         let slide = doc.presentation().slides[0].id;
-        let edit = parse_set_cells_command(slide, r#"{"edits":[
-            {"cell":"A2","value":195.6},{"cell":"A3","value":23.7},{"cell":"A4","value":5.1},
-            {"cell":"B1","value":"同区分"},{"cell":"B3","value":254.38},{"cell":"B4","value":"=NA()"},
-            {"cell":"C1","value":"選択団体"},{"cell":"C2","value":105.81}
-        ]}"#).unwrap();
-        doc.execute(vec![edit]).unwrap();
+        set_chart_cells(&mut doc, slide, "A1:C4", json!([[null, "同区分", "選択団体"], [195.6, null, 105.81], [23.7, 254.38, null], [5.1, "=NA()", null]]));
         let args_json = json!({
             "kind":"scatter", "anchor":"E2", "domain_range":"A2:A4",
             "series":[{"values_range":"B2:B4","name_cell":"B1"},{"values_range":"C2:C4","name_cell":"C1"}],
@@ -1962,19 +1913,17 @@ A --> C
         assert_eq!(doc.presentation().slides[0].shapes.len(), 1);
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn parses_set_cells_json() {
-        let cmd = parse_set_cells_command(
-            SlideId(1),
-            r#"{"edits":[{"cell":"A1","value":"Total"},{"cell":"B1","value":120},{"cell":"C1","value":"=B1*1.1"}]}"#,
-        )
-        .unwrap();
-        match cmd {
-            Command::Sheet(SheetCommand::SetCells { edits, .. }) => {
-                assert_eq!(edits.len(), 3);
-                assert_eq!(edits[2].input, CellInput::Formula("B1*1.1".to_string()));
-            }
-            other => panic!("unexpected: {other:?}"),
+    fn assistant_cell_tool_schema_uses_shared_catalog_without_document_handle() {
+        let tools = spreadsheet_tool_definitions();
+        for shared in ibis_doc_service::workbook_tools() {
+            let entry = tools.iter().find(|tool| tool.function.name == shared.descriptor.name).unwrap();
+            let canonical = (shared.descriptor.schema)();
+            let schema = &entry.function.parameters;
+            assert!(schema["properties"].get("document_id").is_none());
+            assert!(!schema["required"].as_array().unwrap().contains(&json!("sheet")));
+            assert_eq!(schema["properties"]["range"], canonical["properties"]["range"]);
         }
     }
 

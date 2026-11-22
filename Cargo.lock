@@ -5965,6 +5965,7 @@ dependencies = [
  "gpui-pre-windows",
  "ibis-calc",
  "ibis-doc-model",
+ "ibis-doc-service",
  "ibis-emf",
  "ibis-formats",
  "ibis-odf",

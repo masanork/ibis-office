@@ -26,3 +26,5 @@ pub use tools_wallet::run_cli as compare_presentation;
 pub use catalog::{Access, Tool, catalog};
 pub use error::ToolError;
 pub use service::{Limits, Service};
+
+pub use tools_xlsx::{WorkbookTool, workbook_tools};
