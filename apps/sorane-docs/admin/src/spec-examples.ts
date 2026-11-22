@@ -2,7 +2,7 @@
 import { validate, type Schema } from '@cfworker/json-schema';
 import { isMap, isNode, isScalar, isSeq, type YAMLMap } from 'yaml';
 import { escape } from '../vendor/mikaki-oidc';
-import { openApiOperations, openApiVersion, pointerLine } from './spec-navigation';
+import { openApiOperations, openApiVersion, pointerLine, pointerTarget } from './spec-navigation';
 
 type Json = null | boolean | string | number | Json[] | { [key: string]: Json };
 class UnsupportedExample extends Error {}
@@ -56,6 +56,45 @@ function isSupportedSchema(value: Json): value is boolean | Schema {
   });
 }
 
+// Materialize only supported schema positions. A $ref inside an example, enum
+// value, or extension is data and is never followed.
+function expandSchema(value: Json, root: YAMLMap, budget: { remaining: number }, depth = 0): Json {
+  if (depth > 16 || budget.remaining-- <= 0) throw new UnsupportedExample();
+  if (!isObject(value)) return value;
+  if (Object.hasOwn(value, '$ref')) {
+    if (root.has('$self') || root.has('$id') ||
+      Object.keys(value).some(key => key !== '$ref' && !ANNOTATIONS.has(key) && !key.startsWith('x-'))) {
+      throw new UnsupportedExample();
+    }
+    const ref = value.$ref;
+    if (typeof ref !== 'string' || !ref.startsWith('#/') || ref.length > 2048) throw new UnsupportedExample();
+    const pointer = decodeURIComponent(ref.slice(1));
+    if (!/^\/components\/schemas\/[^/]+$/.test(pointer)) throw new UnsupportedExample();
+    // Such references start at the current file and end directly at a named
+    // component. Skip containers with ambiguous base-URI semantics.
+    const components = root.get('components', true);
+    const schemas = isMap(components) ? components.get('schemas', true) : null;
+    if (!isMap(components) || components.has('$id') || !isMap(schemas) || schemas.has('$id')) {
+      throw new UnsupportedExample();
+    }
+    const target = pointerTarget(root, pointer);
+    if (!target) throw new UnsupportedExample();
+    return expandSchema(asJson(target.node, budget, depth + 1), root, budget, depth + 1);
+  }
+  // Unsupported keywords still reach the schema checker and cause a skip.
+  if (Object.hasOwn(value, '$id') || Object.hasOwn(value, '$schema')) throw new UnsupportedExample();
+  const properties = value.properties;
+  if (isObject(properties)) {
+    for (const [key, property] of Object.entries(properties)) {
+      properties[key] = expandSchema(property, root, budget, depth + 1);
+    }
+  }
+  for (const key of ['items', 'additionalProperties']) {
+    if (Object.hasOwn(value, key)) value[key] = expandSchema(value[key], root, budget, depth + 1);
+  }
+  return value;
+}
+
 function* mediaExamples(contentOwner: unknown) {
   if (!isMap(contentOwner)) return;
   const content = contentOwner.get('content', true);
@@ -102,7 +141,8 @@ export function renderOpenApiExamples(root: unknown, location: (offset: number) 
       examined++;
       try {
         if (!knownDialect) continue;
-        const parsed = asJson(schema);
+        const budget = { remaining: 1024 };
+        const parsed = expandSchema(asJson(schema, budget), root, budget);
         if (!isSupportedSchema(parsed)) continue;
         const instance = asJson(node);
         const result = validate(instance, parsed, '2020-12', Object.create(null));
@@ -123,6 +163,6 @@ export function renderOpenApiExamples(root: unknown, location: (offset: number) 
   return `<aside class="source-structure" aria-label="OpenAPI JSON 例チェック"><h2>OpenAPI JSON 例チェック</h2>
     <p>${validated} 件を検証し、${issues.length} 件に問題が見つかりました。</p>
     ${issues.length ? `<ul>${issues.join('')}</ul>` : ''}
-    ${examined > validated ? `<p class="muted">${examined - validated} 件はインラインスキーマや対応キーワードなどの条件を満たさず、検証対象外です。</p>` : ''}
+    ${examined > validated ? `<p class="muted">${examined - validated} 件は対応するスキーマ参照やキーワードなどの条件を満たさず、検証対象外です。</p>` : ''}
     ${truncated ? '<p class="muted">先頭20件まで確認しました。</p>' : ''}</aside>`;
 }
