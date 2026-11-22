@@ -29,3 +29,8 @@ pub use error::ToolError;
 pub use service::{DraftToolContext, Limits, Service, run_draft_tool};
 
 pub use tools_xlsx::WorkbookToolContext;
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod tools_sqlite;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use tools_sqlite::{run_selected_sqlite_tool, sqlite_tools};

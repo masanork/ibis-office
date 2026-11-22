@@ -133,6 +133,8 @@ pub struct AiAssistantState {
     pub scroll_handle: ScrollHandle,
     pub pending_old_lawtext: Option<(String, String)>,
     pub _prompt_subscription: Subscription,
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    sqlite_source: Option<(u64, std::path::PathBuf)>,
     /// Allowlist from `GET /api/ai/models`. Desktop leaves this empty.
     #[allow(dead_code)]
     pub browser_models: Vec<BrowserModel>,
@@ -612,6 +614,8 @@ impl SlideEditor {
                 scroll_handle: ScrollHandle::new(),
                 pending_old_lawtext: None,
                 _prompt_subscription,
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                sqlite_source: None,
                 browser_models: Vec::new(),
                 browser_status: String::new(),
                 browser_pending: None,
@@ -654,6 +658,33 @@ impl SlideEditor {
             p.show_tool_logs = !p.show_tool_logs;
         }
         cx.notify();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn pick_sqlite_for_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = self.ai_assistant.as_ref() else { return };
+        let panel_id = panel.prompt_input.entity_id();
+        let file_id = self.file_id;
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            extensions: ["sqlite", "sqlite3", "db"].map(String::from).to_vec(),
+            multiple: false,
+            prompt: Some("分析する SQLite データベースを選択".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = this.update(cx, |editor, cx| {
+                if editor.file_id == file_id
+                    && let Some(panel) = editor.ai_assistant.as_mut()
+                    && panel.prompt_input.entity_id() == panel_id && !panel.streaming
+                {
+                    panel.sqlite_source = Some((file_id, path));
+                    cx.notify();
+                }
+            });
+        }).detach();
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -915,6 +946,25 @@ impl SlideEditor {
             }
         };
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let (tools, sqlite_source) = {
+            let source = self.ai_assistant.as_ref()
+                .and_then(|panel| panel.sqlite_source.as_ref())
+                .filter(|(file_id, _)| !formula_only && kind == AiDocKind::Xlsx && *file_id == self.file_id)
+                .map(|(_, path)| path.clone());
+            let mut tools = tools;
+            if let Some(path) = &source {
+                tools.extend(crate::ai_tools::sqlite_tool_definitions());
+                if let Some(last) = messages_to_send.last_mut()
+                    && let Some(content) = &mut last.content
+                {
+                    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                    content.push_str(&format!("\n\nSelected SQLite filename (data): {}", json!(filename)));
+                }
+            }
+            (tools, source)
+        };
+
         cx.spawn(async move |this, cx| {
             let mut turn_commands: Vec<Command> = Vec::new();
             let mut edit_labels = Vec::new();
@@ -987,6 +1037,31 @@ impl SlideEditor {
                         return;
                     }
                     Ok(out) => {
+                        let mut sqlite_results = std::collections::HashMap::new();
+                        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                        if let Some(path) = &sqlite_source {
+                            for (index, call) in out.tool_calls.iter().enumerate() {
+                                if let Some(tool) = ibis_doc_service::sqlite_tools().iter().find(|tool| tool.name == call.function.name) {
+                                    let name = tool.name;
+                                    let active = this.read_with(cx, |editor, _| editor.ai_assistant.as_ref()
+                                        .is_some_and(|panel| panel.streaming && panel.run_id == run_id)).unwrap_or(false);
+                                    if !active {
+                                        return;
+                                    }
+                                    let (path, arguments) = (path.clone(), call.function.arguments.clone());
+                                    let result = cx.background_executor().spawn(async move {
+                                        serde_json::from_str(&arguments)
+                                            .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()))
+                                            .and_then(|args| ibis_doc_service::run_selected_sqlite_tool(&path, name, args))
+                                    }).await;
+                                    let response = match result {
+                                        Ok(value) => (value.to_string(), format!("✓ {name}")),
+                                        Err(error) => (json!({"error": error.message}).to_string(), format!("✗ {name}: {error}")),
+                                    };
+                                    sqlite_results.insert(index, response);
+                                }
+                            }
+                        }
                         let mut should_continue = false;
                         let _ = this.update(cx, |editor, cx| {
                             let Some(p) = editor.ai_assistant.as_mut() else {
@@ -1045,11 +1120,14 @@ impl SlideEditor {
                                 return;
                             }
 
-                            for call in &out.tool_calls {
-                                let turn = draft.as_mut().expect("editing turns have a draft");
-                                let (result_json, commands, log_text) = editor.stage_assistant_tool(
-                                    kind, call, turn, &turn_commands, cx,
-                                );
+                            for (index, call) in out.tool_calls.iter().enumerate() {
+                                let (result_json, commands, log_text) =
+                                    if let Some((result, label)) = sqlite_results.remove(&index) {
+                                        (result, Vec::new(), label)
+                                    } else {
+                                        let turn = draft.as_mut().expect("editing turns have a draft");
+                                        editor.stage_assistant_tool(kind, call, turn, &turn_commands, cx)
+                                    };
                                 if !commands.is_empty() {
                                     edit_labels.push(log_text.clone());
                                     turn_commands.extend(commands);
@@ -3215,6 +3293,33 @@ impl SlideEditor {
             format!("モデル: {label}")
         };
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let sqlite_controls = (kind == AiDocKind::Xlsx).then(|| {
+            use gpui_kit::component::Disableable as _;
+            let selected = panel.sqlite_source.as_ref()
+                .filter(|(file_id, _)| *file_id == self.file_id)
+                .and_then(|(_, path)| path.file_name())
+                .map(|name| format!("SQLite: {}", name.to_string_lossy()));
+            h_flex().gap_2().items_center()
+                .child(Button::new("ai-sqlite-select").outline().xsmall()
+                    .label("SQLite を選択")
+                    .disabled(streaming)
+                    .on_click(cx.listener(|this, _, window, cx| this.pick_sqlite_for_assistant(window, cx))))
+                .when_some(selected, |row, name| row
+                    .child(div().text_xs().truncate().child(name))
+                    .child(Button::new("ai-sqlite-clear").ghost().xsmall().label("解除")
+                        .disabled(streaming)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(panel) = this.ai_assistant.as_mut() {
+                                panel.sqlite_source = None;
+                            }
+                            cx.notify();
+                        }))))
+                .into_any_element()
+        });
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        let sqlite_controls: Option<AnyElement> = None;
+
         let header = h_flex()
             .w_full()
             .justify_between()
@@ -3665,6 +3770,7 @@ impl SlideEditor {
         let content = v_flex()
             .gap_2()
             .child(header)
+            .children(sqlite_controls)
             .children(browser_box)
             .children(settings_box)
             .children(pending_box)

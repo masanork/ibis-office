@@ -62,6 +62,8 @@ pub fn catalog() -> &'static [Tool] {
     ALL.get_or_init(|| {
         let mut all = Vec::new();
         all.extend(tools_app::tools());
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        all.extend(crate::sqlite_tools());
         all.extend(crate::tools_wallet::tools());
         all.extend(document_tools(ibis_formats::Kind::Document).copied());
         all.extend(document_tools(ibis_formats::Kind::Workbook).copied());

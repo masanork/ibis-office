@@ -316,6 +316,17 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
     tools
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn sqlite_tool_definitions() -> impl Iterator<Item = ToolDefinition> {
+    ibis_doc_service::sqlite_tools().iter().map(|descriptor| {
+        let mut definition = editor_tool_definition(descriptor, false);
+        let parameters = &mut definition.function.parameters;
+        parameters["properties"].as_object_mut().unwrap().remove("path");
+        parameters["required"].as_array_mut().unwrap().retain(|name| name != "path");
+        definition
+    })
+}
+
 #[cfg(not(target_family = "wasm"))]
 fn editor_tool_definition(descriptor: &ibis_doc_service::Tool, active_sheet: bool) -> ToolDefinition {
     let mut parameters = (descriptor.schema)();
@@ -1011,6 +1022,20 @@ A --> C
                 assert_eq!(schema["properties"], canonical["properties"], "{}", shared.name);
             }
             assert!(tools.iter().all(|tool| !tool.function.name.starts_with("app_")));
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn assistant_sqlite_schemas_use_the_user_selected_file() {
+        let definitions: Vec<_> = sqlite_tool_definitions().collect();
+        assert_eq!(definitions.len(), ibis_doc_service::sqlite_tools().len());
+        for (definition, shared) in definitions.iter().zip(ibis_doc_service::sqlite_tools()) {
+            assert_eq!(definition.function.name, shared.name);
+            let mut expected = (shared.schema)();
+            expected["properties"].as_object_mut().unwrap().remove("path");
+            expected["required"].as_array_mut().unwrap().retain(|name| name != "path");
+            assert_eq!(definition.function.parameters, expected);
         }
     }
 

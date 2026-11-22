@@ -83,8 +83,7 @@ pub fn sqlite_tables(path: &Path) -> Result<Vec<String>, String> {
         .collect()
 }
 
-pub fn read_sqlite_table(path: &Path, table: &str) -> Result<QTable, String> {
-    let (_database, connection) = open(path)?;
+fn checked_table(connection: &Arc<Connection>, table: &str) -> Result<String, String> {
     let mut lookup = connection
         .prepare(format!(
             "SELECT 1 FROM main.sqlite_schema WHERE {TABLE_FILTER} AND name = ?1 LIMIT 1"
@@ -103,9 +102,119 @@ pub fn read_sqlite_table(path: &Path, table: &str) -> Result<QTable, String> {
     {
         return Err(format!("SQLite table does not exist: {table}"));
     }
-    let identifier = table.replace('"', "\"\"");
+    Ok(sql_identifier(table))
+}
+
+fn sql_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Describe SQLite's declared columns and primary-key order without reading table rows.
+pub fn sqlite_columns(path: &Path, table: &str) -> Result<Vec<serde_json::Value>, String> {
+    let (_database, connection) = open(path)?;
+    let identifier = checked_table(&connection, table)?;
     let mut stmt = connection
-        .prepare(format!("SELECT * FROM main.\"{identifier}\""))
+        .prepare(format!("PRAGMA main.table_info({identifier})"))
+        .map_err(|error| error.to_string())?;
+    let rows = stmt.run_collect_rows().map_err(|error| error.to_string())?;
+    check_sidecars(path)?;
+    rows.into_iter()
+        .map(|row| match row.as_slice() {
+            [
+                _,
+                Value::Text(name),
+                Value::Text(declared_type),
+                Value::Numeric(Numeric::Integer(not_null)),
+                _,
+                Value::Numeric(Numeric::Integer(primary_key)),
+            ] => Ok(serde_json::json!({
+                "name": name.as_str(),
+                "declared_type": declared_type.as_str(),
+                "not_null": *not_null != 0,
+                "primary_key_position": (*primary_key != 0).then_some(*primary_key),
+            })),
+            _ => Err("Invalid SQLite column metadata".into()),
+        })
+        .collect()
+}
+
+/// Count rows by one column using SQLite's grouping and NULL semantics.
+pub fn sqlite_count(
+    path: &Path,
+    table: &str,
+    group_by: Option<&str>,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    use serde_json::{Value as Json, json};
+
+    let (_database, connection) = open(path)?;
+    let table = checked_table(&connection, table)?;
+    let limit = limit.clamp(1, 100);
+    let sql = match group_by {
+        Some(column) => {
+            let columns = connection
+                .prepare(format!("SELECT * FROM main.{table} LIMIT 0"))
+                .map_err(|error| error.to_string())?;
+            let index = (0..columns.num_columns())
+                .find(|&index| columns.get_column_name(index) == column)
+                .ok_or_else(|| format!("SQLite column does not exist: {column}"))?;
+            let column = sql_identifier(&columns.get_column_name(index));
+            format!(
+                "SELECT {column}, COUNT(*) FROM main.{table} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {}",
+                limit + 1
+            )
+        }
+        None => format!("SELECT COUNT(*) FROM main.{table}"),
+    };
+    let mut stmt = connection.prepare(sql).map_err(|error| error.to_string())?;
+    let mut groups = Vec::new();
+    let mut text_budget = 32usize * 1024;
+    while let Some(row) = stmt
+        .run_one_step_blocking(|| Ok(()), || Ok(()))
+        .map_err(|error| error.to_string())?
+    {
+        if group_by.is_none() {
+            let ValueRef::Numeric(Numeric::Integer(count)) = row.get_value(0).as_ref() else {
+                return Err("Invalid SQLite count".into());
+            };
+            check_sidecars(path)?;
+            return Ok(json!({"count": count}));
+        }
+        if groups.len() == limit {
+            check_sidecars(path)?;
+            return Ok(json!({"groups": groups, "truncated": true}));
+        }
+        let value = match row.get_value(0).as_ref() {
+            ValueRef::Null => Json::Null,
+            ValueRef::Numeric(Numeric::Integer(value)) => json!(value),
+            ValueRef::Numeric(Numeric::Float(value)) => {
+                let value: f64 = value.into();
+                json!(serde_json::Number::from_f64(value).ok_or("Non-finite SQLite group value")?)
+            }
+            ValueRef::Text(value) => {
+                text_budget = text_budget
+                    .checked_sub(value.as_str().len())
+                    .ok_or("SQLite group values exceed the preview size limit")?;
+                json!(value.as_str())
+            }
+            ValueRef::Blob(_) => {
+                return Err("SQLite BLOB values cannot be returned as group keys".into());
+            }
+        };
+        let ValueRef::Numeric(Numeric::Integer(count)) = row.get_value(1).as_ref() else {
+            return Err("Invalid SQLite count".into());
+        };
+        groups.push(json!({"value": value, "count": count}));
+    }
+    check_sidecars(path)?;
+    Ok(json!({"groups": groups, "truncated": false}))
+}
+
+pub fn read_sqlite_table(path: &Path, table: &str) -> Result<QTable, String> {
+    let (_database, connection) = open(path)?;
+    let identifier = checked_table(&connection, table)?;
+    let mut stmt = connection
+        .prepare(format!("SELECT * FROM main.{identifier}"))
         .map_err(|error| error.to_string())?;
     let width = stmt.num_columns();
     if width == 0 || width > 16_384 {

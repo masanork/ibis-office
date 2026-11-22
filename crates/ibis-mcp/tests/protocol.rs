@@ -125,3 +125,25 @@ fn mcp_read_only_does_not_list_or_run_what_changes() {
     let call: Value = serde_json::from_str(&server.handle(&request(2, "tools/call", json!({ "name": "docx_insert_text", "arguments": {} }))).unwrap()).unwrap();
     assert_eq!(call["error"]["code"], -32602);
 }
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[test]
+fn mcp_sqlite_count_is_available_in_read_only_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("analysis.sqlite3");
+    std::fs::write(&path, include_bytes!("../../ibis-doc-model/src/query/fixtures/external.sqlite3")).unwrap();
+    let service = Service::new(&[dir.path().to_path_buf()], true, Limits::default());
+    let answers = talk(service, &[
+        request(1, "tools/list", json!({})),
+        request(2, "tools/call", json!({
+            "name": "sqlite_count_rows",
+            "arguments": {"path": path, "table": "sales \"2026\"", "group_by": "remark"},
+        })),
+    ]);
+    let tools = answers[0]["result"]["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|tool| tool["name"] == "sqlite_count_rows" && tool["annotations"]["readOnlyHint"] == true));
+    let result = &answers[1]["result"];
+    assert_eq!(result["isError"], false);
+    assert!(result["_meta"]["io.ibisoffice/untrusted-content"].is_string());
+    assert_eq!(result["structuredContent"]["groups"], json!([{"value":"ok","count":2},{"value":null,"count":1}]));
+}
