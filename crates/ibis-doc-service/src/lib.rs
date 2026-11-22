@@ -27,4 +27,4 @@ pub use catalog::{Access, Tool, catalog};
 pub use error::ToolError;
 pub use service::{Limits, Service};
 
-pub use tools_xlsx::{WorkbookTool, workbook_tools};
+pub use tools_xlsx::{WorkbookTool, WorkbookToolContext, workbook_tools};

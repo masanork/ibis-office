@@ -53,10 +53,10 @@ use crate::ai_tools::{
     ReplaceParagraphArgs, SetParagraphStyleArgs, SetRunFormatArgs, SetShapeStyleArgs,
     SetShapeTextArgs, SetSlideNotesArgs, SlideIndexOptionalArg, SlideIndexRequiredArg,
     build_replace_paragraph_command, build_set_run_format_command,
-    parse_clear_cells_command, parse_create_sheet_arg, parse_delete_axis_command,
+    parse_create_sheet_arg, parse_delete_axis_command,
     parse_insert_axis_command, parse_merge_cells_command, parse_range_arg,
     parse_set_axis_size_command, parse_set_cell_comment_command,
-    parse_set_format_command, parse_set_paragraph_align_command, parse_sheet_arg,
+    parse_set_paragraph_align_command, parse_sheet_arg,
     parse_switch_sheet_arg, parse_vc_template_kind,
 };
 #[cfg(not(target_family = "wasm"))]
@@ -1805,14 +1805,24 @@ impl SlideEditor {
             let result = serde_json::from_str(args)
                 .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()))
                 .and_then(|arguments| tool.plan(
-                    turn.draft.presentation(), &arguments, Some(turn.active), Some(MAX_READ_CELLS),
+                    turn.draft.presentation(), &arguments, ibis_doc_service::WorkbookToolContext {
+                        active_sheet: Some(turn.active),
+                        max_read_cells: Some(MAX_READ_CELLS),
+                        max_clear_contents_cells: Some(500),
+                    },
                 ));
             return match result {
                 Ok((value, command)) => {
-                    let label = if let Some(Command::Sheet(SheetCommand::SetCells { sheet, .. })) = &command {
-                        workbook_edit_label(turn, *sheet, args, "セルを更新")
-                    } else {
-                        format!("✓ {name}")
+                    let label = match (name, &command) {
+                        ("xlsx_set_cells", Some(Command::Sheet(SheetCommand::SetCells { sheet, .. }))) => {
+                            workbook_edit_label(turn, *sheet, args, "セルを更新")
+                        }
+                        ("xlsx_set_format" | "xlsx_clear_cells", Some(_)) => {
+                            let action = if name == "xlsx_set_format" { "書式を変更" } else { "セルをクリア" };
+                            Self::resolve_ai_target_slide(turn, args)
+                                .map_or_else(|_| action.to_string(), |sheet| workbook_edit_label(turn, sheet, args, action))
+                        }
+                        _ => format!("✓ {name}"),
                     };
                     (value.to_string(), command, label)
                 }
@@ -1828,54 +1838,6 @@ impl SlideEditor {
                 Ok(command) => (json!({ "ok": true }).to_string(), Some(command), "✓ create_chart".into()),
                 Err(error) => (json!({ "error": error }).to_string(), None, format!("✗ create_chart: {error}")),
             },
-            "set_format" => {
-                let slide = match Self::resolve_ai_target_slide(turn, args) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        return (
-                            json!({ "error": e }).to_string(),
-                            None,
-                            format!("✗ set_format: {e}"),
-                        );
-                    }
-                };
-                match parse_set_format_command(slide, args) {
-                    Err(e) => (
-                        json!({ "error": e }).to_string(),
-                        None,
-                        format!("✗ set_format: {e}"),
-                    ),
-                    Ok(cmd) => (
-                        json!({ "ok": true }).to_string(),
-                        Some(cmd),
-                        workbook_edit_label(turn, slide, args, "書式を変更"),
-                    ),
-                }
-            }
-            "clear_cells" => {
-                let slide = match Self::resolve_ai_target_slide(turn, args) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        return (
-                            json!({ "error": e }).to_string(),
-                            None,
-                            format!("✗ clear_cells: {e}"),
-                        );
-                    }
-                };
-                match parse_clear_cells_command(slide, args) {
-                    Err(e) => (
-                        json!({ "error": e }).to_string(),
-                        None,
-                        format!("✗ clear_cells: {e}"),
-                    ),
-                    Ok(cmd) => (
-                        json!({ "ok": true }).to_string(),
-                        Some(cmd),
-                        workbook_edit_label(turn, slide, args, "セルをクリア"),
-                    ),
-                }
-            }
             "select_range" => {
                 let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
@@ -4551,6 +4513,21 @@ mod workbook_review_tests {
         assert_eq!(page["rows"].as_array().unwrap().len(), 200);
         assert_eq!(page["next_offset"], 200);
         assert!(workbook_preview(&turn, &[]).contains("B1  （空欄） → =A1*2 [42]"));
+        for (name, arguments) in [
+            ("xlsx_set_format", r#"{"range":"B1","bold":true,"number_format":"0.00","border":"outline"}"#),
+            ("xlsx_clear_cells", r#"{"range":"B1","what":"contents"}"#),
+        ] {
+            let (_, command, _) = SlideEditor::execute_xlsx_tool(&call(name, arguments), &mut turn);
+            let command = command.expect("the common tool emits a draft edit");
+            turn.draft.execute(vec![command.clone()]).unwrap();
+            commands.push(command);
+        }
+        let (result, command, _) = SlideEditor::execute_xlsx_tool(
+            &call("xlsx_clear_cells", r#"{"range":"A1:A501","what":"contents"}"#), &mut turn,
+        );
+        assert!(command.is_none());
+        assert!(result.contains("500"));
+
         assert!(!live.can_undo());
         assert_eq!(live.presentation(), &base);
 

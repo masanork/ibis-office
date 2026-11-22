@@ -11,11 +11,11 @@ use crate::command::Command;
 use crate::drawing::Rgb;
 use crate::model::SlideId;
 use crate::sheet::{
-    Border, BorderLine, CellAlign, CellRange, CellValue, CellVerticalAlign, Sheet, SheetComment,
+    Border, BorderLine, CellRange, CellValue, Sheet, SheetComment,
     Workbook, cell_name,
 };
 use crate::EMU_PER_POINT;
-use crate::sheet_command::{Axis, CellEdit, CellInput, Edge, SheetCommand, StyleChange};
+use crate::sheet_command::{Axis, CellInput, Edge, SheetCommand, StyleChange};
 
 /// Summary of one sheet in a workbook.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,22 +52,6 @@ pub enum AiBorderStyle {
     Outline,
     Bottom,
     None,
-}
-
-/// Formatting options requested by `set_format`.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct AiCellFormat {
-    pub bold: Option<bool>,
-    pub italic: Option<bool>,
-    pub underline: Option<bool>,
-    pub text_color: Option<String>,
-    pub fill_color: Option<Option<String>>,
-    pub number_format: Option<String>,
-    pub align: Option<CellAlign>,
-    pub vertical_align: Option<CellVerticalAlign>,
-    pub wrap_text: Option<bool>,
-    pub font_size_pt: Option<f32>,
-    pub border: Option<AiBorderStyle>,
 }
 
 /// Parse an A1-style cell reference (e.g., `"A1"`, `"$B$12"`) into `(row, column)` (0-based).
@@ -205,213 +189,27 @@ pub fn parse_cell_input(value: &serde_json::Value) -> Result<CellInput, &'static
     }
 }
 
-/// Convert [`AiCellFormat`] options into a [`Command`] (possibly grouped).
-pub fn build_set_format_command(
-    slide: SlideId,
-    ranges: Vec<CellRange>,
-    format: AiCellFormat,
-) -> Result<Command, String> {
-    if ranges.is_empty() {
-        return Err("ranges must not be empty".to_string());
-    }
-    let mut changes = Vec::new();
-    if let Some(bold) = format.bold {
-        changes.push(StyleChange::Bold(bold));
-    }
-    if let Some(italic) = format.italic {
-        changes.push(StyleChange::Italic(italic));
-    }
-    if let Some(underline) = format.underline {
-        changes.push(StyleChange::Underline(underline));
-    }
-    if let Some(color) = format.text_color {
-        changes.push(StyleChange::Color(parse_hex_rgb(&color)?));
-    }
-    if let Some(fill) = format.fill_color {
-        let rgb = match fill {
-            Some(hex) => Some(parse_hex_rgb(&hex)?),
-            None => None,
-        };
-        changes.push(StyleChange::Fill(rgb));
-    }
-    if let Some(fmt) = format.number_format {
-        changes.push(StyleChange::NumberFormat(fmt));
-    }
-    if let Some(align) = format.align {
-        changes.push(StyleChange::HorizontalAlignment(align));
-    }
-    if let Some(vertical) = format.vertical_align {
-        changes.push(StyleChange::VerticalAlignment(vertical));
-    }
-    if let Some(wrap) = format.wrap_text {
-        changes.push(StyleChange::WrapText(wrap));
-    }
-    if let Some(pt) = format.font_size_pt {
-        if !pt.is_finite() || pt <= 0.0 || pt > 409.0 {
-            return Err(format!("invalid font_size '{pt}' (expected 1..=409 pt)"));
-        }
-        changes.push(StyleChange::FontSize((pt * 100.0).round() as u32));
-    }
-    let mut cmds: Vec<Command> = changes
-        .into_iter()
-        .map(|change| {
-            Command::Sheet(SheetCommand::SetFormat {
-                sheet: slide,
-                ranges: ranges.clone(),
-                change,
-            })
-        })
-        .collect();
-    if let Some(border_style) = format.border {
-        let thin = Some(Border {
-            line: BorderLine::Thin,
-            color: Rgb(0),
-        });
-        match border_style {
-            AiBorderStyle::All => {
-                for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-                    cmds.push(Command::Sheet(SheetCommand::SetFormat {
-                        sheet: slide,
-                        ranges: ranges.clone(),
-                        change: StyleChange::Border(edge, thin),
-                    }));
-                }
-            }
-            AiBorderStyle::None => {
-                for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-                    cmds.push(Command::Sheet(SheetCommand::SetFormat {
-                        sheet: slide,
-                        ranges: ranges.clone(),
-                        change: StyleChange::Border(edge, None),
-                    }));
-                }
-            }
-            AiBorderStyle::Bottom => {
-                let bottom_ranges: Vec<CellRange> = ranges
-                    .iter()
-                    .map(|r| CellRange {
-                        first_row: r.last_row,
-                        first_column: r.first_column,
-                        last_row: r.last_row,
-                        last_column: r.last_column,
-                    })
-                    .collect();
-                cmds.push(Command::Sheet(SheetCommand::SetFormat {
-                    sheet: slide,
-                    ranges: bottom_ranges,
-                    change: StyleChange::Border(Edge::Bottom, thin),
-                }));
-            }
-            AiBorderStyle::Outline => {
-                let top_ranges: Vec<CellRange> = ranges
-                    .iter()
-                    .map(|r| CellRange {
-                        first_row: r.first_row,
-                        first_column: r.first_column,
-                        last_row: r.first_row,
-                        last_column: r.last_column,
-                    })
-                    .collect();
-                let bottom_ranges: Vec<CellRange> = ranges
-                    .iter()
-                    .map(|r| CellRange {
-                        first_row: r.last_row,
-                        first_column: r.first_column,
-                        last_row: r.last_row,
-                        last_column: r.last_column,
-                    })
-                    .collect();
-                let left_ranges: Vec<CellRange> = ranges
-                    .iter()
-                    .map(|r| CellRange {
-                        first_row: r.first_row,
-                        first_column: r.first_column,
-                        last_row: r.last_row,
-                        last_column: r.first_column,
-                    })
-                    .collect();
-                let right_ranges: Vec<CellRange> = ranges
-                    .iter()
-                    .map(|r| CellRange {
-                        first_row: r.first_row,
-                        first_column: r.last_column,
-                        last_row: r.last_row,
-                        last_column: r.last_column,
-                    })
-                    .collect();
-                for (edge, edge_ranges) in [
-                    (Edge::Top, top_ranges),
-                    (Edge::Bottom, bottom_ranges),
-                    (Edge::Left, left_ranges),
-                    (Edge::Right, right_ranges),
-                ] {
-                    cmds.push(Command::Sheet(SheetCommand::SetFormat {
-                        sheet: slide,
-                        ranges: edge_ranges,
-                        change: StyleChange::Border(edge, thin),
-                    }));
-                }
-            }
-        }
-    }
-    if cmds.is_empty() {
-        return Err("at least one format property must be specified".to_string());
-    }
-    if cmds.len() == 1 {
-        Ok(cmds.pop().expect("single command"))
-    } else {
-        Ok(Command::Batch(cmds))
-    }
-}
-
-/// Build a [`Command`] to clear cell values and/or formats in `ranges`.
-pub fn build_clear_cells_command(
-    slide: SlideId,
-    ranges: Vec<CellRange>,
-    clear_values: bool,
-    clear_formats: bool,
-    max_cells: usize,
-) -> Result<Command, String> {
-    if ranges.is_empty() {
-        return Err("ranges must not be empty".to_string());
-    }
-    if !clear_values && !clear_formats {
-        return Err("at least one of clear_values or clear_formats must be true".to_string());
-    }
-    let mut cmds = Vec::new();
-    if clear_values {
-        let mut edits = Vec::new();
-        for range in &ranges {
-            let rows = (range.last_row - range.first_row) as usize + 1;
-            let cols = (range.last_column - range.first_column) as usize + 1;
-            let total = rows.saturating_mul(cols);
-            if edits.len().saturating_add(total) > max_cells {
-                return Err(format!(
-                    "clear_cells exceeds maximum of {max_cells} cells"
-                ));
-            }
-            for row in range.first_row..=range.last_row {
-                for column in range.first_column..=range.last_column {
-                    edits.push(CellEdit {
-                        row,
-                        column,
-                        input: CellInput::Clear,
-                    });
-                }
-            }
-        }
-        if !edits.is_empty() {
-            cmds.push(Command::Sheet(SheetCommand::SetCells { sheet: slide, edits }));
-        }
-    }
-    if clear_formats {
-        cmds.push(Command::Sheet(SheetCommand::ClearFormats { sheet: slide, ranges }));
-    }
-    if cmds.len() == 1 {
-        Ok(cmds.pop().expect("single command"))
-    } else {
-        Ok(Command::Batch(cmds))
-    }
+/// Build the worksheet commands for a border preset.
+pub fn build_border_commands(slide: SlideId, range: CellRange, preset: AiBorderStyle) -> Vec<Command> {
+    let thin = Some(Border { line: BorderLine::Thin, color: Rgb(0) });
+    let edges = [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom];
+    let outer = [
+        (Edge::Top, CellRange { last_row: range.first_row, ..range }),
+        (Edge::Bottom, CellRange { first_row: range.last_row, ..range }),
+        (Edge::Left, CellRange { last_column: range.first_column, ..range }),
+        (Edge::Right, CellRange { first_column: range.last_column, ..range }),
+    ];
+    let targets = match preset {
+        AiBorderStyle::All | AiBorderStyle::None => edges.map(|edge| (edge, range)).to_vec(),
+        AiBorderStyle::Bottom => vec![outer[1]],
+        AiBorderStyle::Outline => outer.to_vec(),
+    };
+    let border = if preset == AiBorderStyle::None { None } else { thin };
+    targets.into_iter().map(|(edge, range)| Command::Sheet(SheetCommand::SetFormat {
+        sheet: slide,
+        ranges: vec![range],
+        change: StyleChange::Border(edge, border),
+    })).collect()
 }
 
 /// Resolve an optional sheet name to its [`SlideId`], defaulting to `active_slide`.
@@ -679,18 +477,12 @@ mod tests {
     }
 
     #[test]
-    fn builds_format_commands() {
-        let slide = SlideId(1);
-        let fmt = build_set_format_command(
-            slide,
-            vec![parse_cell_range("A1:B1").unwrap()],
-            AiCellFormat {
-                bold: Some(true),
-                text_color: Some("#FF0000".to_string()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(matches!(fmt, Command::Batch(cmds) if cmds.len() == 2));
+    fn builds_outline_border_commands() {
+        let range = parse_cell_range("A1:B3").unwrap();
+        let commands = build_border_commands(SlideId(1), range, AiBorderStyle::Outline);
+        assert_eq!(commands.len(), 4);
+        assert!(matches!(&commands[0], Command::Sheet(SheetCommand::SetFormat {
+            ranges, change: StyleChange::Border(Edge::Top, Some(_)), ..
+        }) if ranges[0].last_row == range.first_row));
     }
 }

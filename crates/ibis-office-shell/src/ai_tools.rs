@@ -4,10 +4,9 @@
 //! OpenAI Tool definitions and JSON argument parsers for spreadsheet operations.
 
 use ibis_doc_model::ai_sheet::{
-    AiBorderStyle, AiCellFormat, build_clear_cells_command,
     build_delete_axis_command, build_insert_axis_command, build_merge_command,
     build_set_axis_size_command, build_set_comment_command,
-    build_set_format_command, parse_cell_range, parse_hex_rgb,
+    parse_cell_range, parse_hex_rgb,
 };
 use ibis_doc_model::command::Command;
 use ibis_doc_model::flow::FlowAlign;
@@ -15,7 +14,7 @@ use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange, RunChange};
 use ibis_doc_model::model::SlideId;
 use ibis_doc_model::sd_jwt::Es256KeyPair;
 use ibis_doc_model::sd_jwt_binding::{ClaimValue, SdJwtTemplateKind};
-use ibis_doc_model::sheet::{CellAlign, CellRange, CellVerticalAlign};
+use ibis_doc_model::sheet::CellRange;
 use ibis_doc_model::sheet_command::Axis;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,7 +22,6 @@ use serde_json::{Value, json};
 use crate::ai_client::{ToolDefinition, ToolFunctionDef};
 
 pub const MAX_READ_CELLS: usize = 200;
-pub const MAX_CLEAR_CELLS: usize = 500;
 
 /// Tool definitions exposed to the OpenAI-compatible API for spreadsheets.
 #[cfg(not(target_family = "wasm"))]
@@ -73,51 +71,6 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                 parameters: json!({
                     "type": "object",
                     "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "set_format",
-                description: "Apply formatting (bold, italic, underline, colors, font size, alignment, wrap, borders, number format) to an A1 range.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "sheet": { "type": "string", "description": "Optional sheet name (defaults to the active sheet)." },
-                        "range": { "type": "string", "description": "A1-style range, e.g. 'A1:D1'." },
-                        "bold": { "type": "boolean" },
-                        "italic": { "type": "boolean" },
-                        "underline": { "type": "boolean" },
-                        "text_color": { "type": "string", "description": "Hex color '#RRGGBB'." },
-                        "fill_color": { "type": ["string", "null"], "description": "Hex color '#RRGGBB' or null to clear fill." },
-                        "number_format": { "type": "string", "description": "Excel number format string, e.g. '#,##0' or '0.0%'." },
-                        "align": { "type": "string", "enum": ["left", "center", "right"], "description": "Horizontal alignment." },
-                        "vertical_align": { "type": "string", "enum": ["top", "middle", "bottom"], "description": "Vertical alignment." },
-                        "wrap_text": { "type": "boolean", "description": "Enable or disable text wrapping." },
-                        "font_size": { "type": "number", "description": "Font size in points (e.g. 11, 14)." },
-                        "border": { "type": "string", "enum": ["all", "outline", "bottom", "none"], "description": "Border preset to apply." }
-                    },
-                    "required": ["range"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "clear_cells",
-                description: "Clear cell values/formulas and/or formatting in an A1 range.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "sheet": { "type": "string", "description": "Optional sheet name (defaults to the active sheet)." },
-                        "range": { "type": "string", "description": "A1-style range, e.g. 'A1:D10'." },
-                        "clear_values": { "type": "boolean", "default": true },
-                        "clear_formats": { "type": "boolean", "default": false }
-                    },
-                    "required": ["range"],
                     "additionalProperties": false
                 }),
             },
@@ -506,37 +459,11 @@ pub struct RangeArg {
     pub range: String,
 }
 
-#[derive(Deserialize)]
-struct SetFormatArgs {
-    range: String,
-    bold: Option<bool>,
-    italic: Option<bool>,
-    underline: Option<bool>,
-    text_color: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
-    fill_color: Option<Option<String>>,
-    number_format: Option<String>,
-    align: Option<String>,
-    vertical_align: Option<String>,
-    wrap_text: Option<bool>,
-    font_size: Option<f32>,
-    border: Option<String>,
-}
-
 fn deserialize_optional_nullable<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     Ok(Some(Option::<String>::deserialize(deserializer)?))
-}
-
-#[derive(Deserialize)]
-struct ClearCellsArgs {
-    range: String,
-    #[serde(default = "default_true")]
-    clear_values: bool,
-    #[serde(default)]
-    clear_formats: bool,
 }
 
 fn default_true() -> bool {
@@ -782,66 +709,6 @@ pub fn parse_merge_cells_command(slide: SlideId, arguments_json: &str) -> Result
     let range =
         parse_cell_range(&args.range).ok_or_else(|| format!("invalid range '{}'", args.range))?;
     Ok(build_merge_command(slide, range, args.merge, args.center))
-}
-
-pub fn parse_set_format_command(slide: SlideId, arguments_json: &str) -> Result<Command, String> {
-    let args: SetFormatArgs =
-        serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
-    let range =
-        parse_cell_range(&args.range).ok_or_else(|| format!("invalid range '{}'", args.range))?;
-    let align = match args.align.as_deref() {
-        None => None,
-        Some("left") => Some(CellAlign::Left),
-        Some("center") => Some(CellAlign::Center),
-        Some("right") => Some(CellAlign::Right),
-        Some(other) => return Err(format!("invalid align '{other}'")),
-    };
-    let vertical_align = match args.vertical_align.as_deref() {
-        None => None,
-        Some("top") => Some(CellVerticalAlign::Top),
-        Some("middle") => Some(CellVerticalAlign::Center),
-        Some("bottom") => Some(CellVerticalAlign::Bottom),
-        Some(other) => return Err(format!("invalid vertical_align '{other}'")),
-    };
-    let border = match args.border.as_deref() {
-        None => None,
-        Some("all") => Some(AiBorderStyle::All),
-        Some("outline") => Some(AiBorderStyle::Outline),
-        Some("bottom") => Some(AiBorderStyle::Bottom),
-        Some("none") => Some(AiBorderStyle::None),
-        Some(other) => return Err(format!("invalid border '{other}'")),
-    };
-    build_set_format_command(
-        slide,
-        vec![range],
-        AiCellFormat {
-            bold: args.bold,
-            italic: args.italic,
-            underline: args.underline,
-            text_color: args.text_color,
-            fill_color: args.fill_color,
-            number_format: args.number_format,
-            align,
-            vertical_align,
-            wrap_text: args.wrap_text,
-            font_size_pt: args.font_size,
-            border,
-        },
-    )
-}
-
-pub fn parse_clear_cells_command(slide: SlideId, arguments_json: &str) -> Result<Command, String> {
-    let args: ClearCellsArgs =
-        serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
-    let range =
-        parse_cell_range(&args.range).ok_or_else(|| format!("invalid range '{}'", args.range))?;
-    build_clear_cells_command(
-        slide,
-        vec![range],
-        args.clear_values,
-        args.clear_formats,
-        MAX_CLEAR_CELLS,
-    )
 }
 
 /// Tool definitions exposed to the OpenAI-compatible API for presentations (PPTX).
@@ -1834,7 +1701,7 @@ A --> C
     fn set_chart_cells(document: &mut ibis_doc_model::Document, sheet: SlideId, range: &str, values: Value) {
         let tool = ibis_doc_service::workbook_tools().iter()
             .find(|tool| tool.descriptor.name == "xlsx_set_cells").unwrap();
-        let (_, command) = tool.plan(document.presentation(), &json!({ "range": range, "values": values }), Some(sheet), None).unwrap();
+        let (_, command) = tool.plan(document.presentation(), &json!({ "range": range, "values": values }), ibis_doc_service::WorkbookToolContext { active_sheet: Some(sheet), ..Default::default() }).unwrap();
         document.execute(vec![command.unwrap()]).unwrap();
     }
 
@@ -1925,16 +1792,6 @@ A --> C
             assert!(!schema["required"].as_array().unwrap().contains(&json!("sheet")));
             assert_eq!(schema["properties"]["range"], canonical["properties"]["range"]);
         }
-    }
-
-    #[test]
-    fn parses_set_format_json() {
-        let cmd = parse_set_format_command(
-            SlideId(1),
-            r##"{"range":"A1:C1","bold":true,"fill_color":"#E8F0FE","number_format":"#,##0"}"##,
-        )
-        .unwrap();
-        assert!(matches!(cmd, Command::Batch(v) if v.len() == 3));
     }
 
     #[test]
