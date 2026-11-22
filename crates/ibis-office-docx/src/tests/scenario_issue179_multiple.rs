@@ -25,7 +25,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     ]
 }
 
-const TSV: &str = include_str!("../../../../tasks/doc/requests/2026-11-14-179-rest-many-patterns-result.tsv");
+const TSV: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tasks/doc/requests/2026-11-14-179-rest-many-patterns-result.tsv");
 
 /// One row of Word's table: (id, `w:line`, baselines of lines 1 to 3, of the "ｚ", the conditions as written).
 struct Row {
@@ -37,7 +37,7 @@ struct Row {
 }
 
 fn rows(group: &str) -> Vec<Row> {
-    TSV.lines()
+    std::fs::read_to_string(TSV).unwrap_or_else(|error| panic!("Word comparison data {TSV}: {error}")).lines()
         .skip(1)
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();

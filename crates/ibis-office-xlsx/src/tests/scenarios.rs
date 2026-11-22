@@ -20831,12 +20831,12 @@ fn csv_in_place_structural_and_presave_undo() {
 
     // Insert row at 1, edit A2, insert column at 1, and save in place.
     s.update(|e, _, cx| {
-        e.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Rows, at: 1, count: 1 })], cx);
+        e.execute(vec![Command::Sheet(SheetCommand::Insert { sheet: slide, axis: Axis::Rows, at: 1, count: 1 })], cx);
     });
     s.click_cell("A2");
     s.enter("中間", "enter");
     s.update(|e, _, cx| {
-        e.execute(vec![Command::Sheet(SheetCommand::Insert { slide, axis: Axis::Columns, at: 1, count: 1 })], cx);
+        e.execute(vec![Command::Sheet(SheetCommand::Insert { sheet: slide, axis: Axis::Columns, at: 1, count: 1 })], cx);
     });
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after structural edits"));
     let saved1 = std::fs::read(&path).unwrap();
@@ -20851,7 +20851,7 @@ fn csv_in_place_structural_and_presave_undo() {
     // Redo column insert, delete row 1 ("中間"), and save in place.
     s.key("cmd-shift-z");
     s.update(|e, _, cx| {
-        e.execute(vec![Command::Sheet(SheetCommand::Delete { slide, axis: Axis::Rows, at: 1, count: 1 })], cx);
+        e.execute(vec![Command::Sheet(SheetCommand::Delete { sheet: slide, axis: Axis::Rows, at: 1, count: 1 })], cx);
     });
     s.update(|e, w, _| e.save_to(path.clone(), w).expect("save after delete row"));
     let saved3 = std::fs::read(&path).unwrap();
