@@ -131,3 +131,56 @@ fn html_escapes_inserted_text_and_rejects_unknown_markers() {
     );
     assert!(form_template::fill_html("<p>{{unknown}}</p>", &definition, &data).is_err());
 }
+
+#[test]
+fn preflight_reports_limits_for_used_fields_without_exposing_values() {
+    let (mut definition, mut data) = inputs();
+    definition["fields"]["pupil.name"] = json!({"type": "text", "maxChars": 2});
+    definition["fields"]["nextSchool"] = json!({"type": "text", "maxChars": 2});
+    data["data"]["pupil.name"] = json!("嵜\u{e0100}か\u{3099}余分");
+    data["data"]["nextSchool"] = json!("山中学校");
+    let (html, diagnostics) = form_template::fill_html_with_diagnostics(
+        "<p>{{pupil.name}}</p><p>{{pupil.name}}</p>",
+        &definition,
+        &data,
+    )
+    .unwrap();
+    assert_eq!(
+        html,
+        "<p>嵜\u{e0100}か\u{3099}</p><p>嵜\u{e0100}か\u{3099}</p>"
+    );
+    assert_eq!(
+        diagnostics,
+        [form_template::Truncation {
+            field_id: "pupil.name".into(),
+            actual_chars: 4,
+            max_chars: 2,
+        }]
+    );
+    let (_, diagnostics) =
+        form_template::fill_with_diagnostics(TEMPLATE, &definition, &data).unwrap();
+    assert_eq!(diagnostics.len(), 2);
+}
+
+#[test]
+fn municipal_notice_fixture_reports_only_the_overlong_note() {
+    const LAYOUT: &str =
+        include_str!("../../../test/fixtures/docx-form/enrollment-notice/layout.html");
+    let definition = form_template::parse_input(
+        include_str!("../../../test/fixtures/docx-form/enrollment-notice/form.yaml"),
+        true,
+    )
+    .unwrap();
+    let data = form_template::parse_input(
+        include_str!("../../../test/fixtures/docx-form/enrollment-notice/record.yaml"),
+        true,
+    )
+    .unwrap();
+    let (html, diagnostics) =
+        form_template::fill_html_with_diagnostics(LAYOUT, &definition, &data).unwrap();
+    assert!(html.contains("架空市立みずき中学校"));
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].field_id, "notice.note");
+    assert_eq!(diagnostics[0].max_chars, 40);
+    assert!(!html.contains("後日学校からお知らせします。"));
+}

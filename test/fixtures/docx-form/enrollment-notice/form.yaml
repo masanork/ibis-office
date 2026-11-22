@@ -1,0 +1,11 @@
+form:
+  id: demo-enrollment-notice
+  version: 1
+fields:
+  notice.date: {type: date-ja, maxChars: 16}
+  pupil.name: {type: text, maxChars: 28}
+  pupil.birthDate: {type: date-ja, maxChars: 16}
+  guardian.name: {type: text, maxChars: 28}
+  guardian.address: {type: text, maxChars: 48}
+  school.name: {type: text, maxChars: 38}
+  notice.note: {type: text, maxChars: 40}

@@ -85,3 +85,15 @@ cargo run --locked -p ibis-formats --bin docx_form -- \
 ```
 
 生成した HTML をブラウザーで開き、指定用紙・倍率100%で印刷または PDF 保存します。正式な出力条件を揃える場合はブラウザーとフォントを決め、通常値、字数上限に達する値、改行の多い値で、全ページを確認してください。
+
+## 出力前に字数を確認する
+
+`check` は DOCX、`check-html` は HTML のひな型に対して、出力時と同じ入力・ひな型の検証を行います。生成物のファイルは作成せず、切り詰めるフィールドの ID、表示形式適用後の字数、上限を JSON で標準出力に返します。同じフィールドが複数箇所にあっても結果は1件です。HTML では対象のページで使う欄について報告します。`fill` と `fill-html` も、切り詰めたフィールドを標準エラーに表示します。
+
+```sh
+src=test/fixtures/docx-form/enrollment-notice
+cargo run --locked -p ibis-formats --bin docx_form -- \
+  check-html "$src/layout.html" "$src/form.yaml" "$src/record.yaml"
+```
+
+この架空の入学予定通知書は、就学事務システムの標準レイアウトにある宛先、児童、保護者、予定校、特記事項を参考にしています。試験用に特記事項へ長い値を入れてあります。検査結果には氏名や住所などの値を含めません。物理的な欄の幅・高さ、フォント、印字項目の標準への適合は別に確認してください。 [文科省の標準レイアウト及び標準印字項目 第2.1版](https://www.mext.go.jp/content/20230405-mxt_syoto02-000024394_9.pdf)

@@ -184,7 +184,34 @@ pub fn parse_input(text: &str, yaml: bool) -> Result<Value, Error> {
     }
 }
 
-fn rendered_values(definition: &Value, data: &Value) -> Result<BTreeMap<String, String>, Error> {
+/// One field whose formatted value was cut to its configured limit.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Truncation {
+    pub field_id: String,
+    pub actual_chars: usize,
+    pub max_chars: usize,
+}
+
+struct RenderedValue {
+    text: String,
+    lengths: Option<(usize, usize)>,
+}
+
+impl RenderedValue {
+    fn truncation(&self, field_id: &str) -> Option<Truncation> {
+        let (actual_chars, max_chars) = self.lengths?;
+        Some(Truncation {
+            field_id: field_id.to_owned(),
+            actual_chars,
+            max_chars,
+        })
+    }
+}
+
+fn rendered_values(
+    definition: &Value,
+    data: &Value,
+) -> Result<BTreeMap<String, RenderedValue>, Error> {
     if !same_form(definition, data) {
         return Err(Error::new(
             "Record references a different form ID or version",
@@ -222,25 +249,40 @@ fn rendered_values(definition: &Value, data: &Value) -> Result<BTreeMap<String, 
                 })
             })
             .ok_or_else(invalid)?;
-            let value = match field.get("maxChars") {
-                Some(limit) => {
-                    let limit = limit
-                        .as_u64()
-                        .and_then(|n| usize::try_from(n).ok())
-                        .filter(|n| *n > 0)
-                        .ok_or_else(|| Error::new(format!("Invalid maxChars: {id}")))?;
-                    value.graphemes(true).take(limit).collect()
-                }
-                None => value,
+            let mut rendered = RenderedValue {
+                text: value,
+                lengths: None,
             };
-            Ok((id.clone(), value))
+            if let Some(limit) = field.get("maxChars") {
+                let limit = limit
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| Error::new(format!("Invalid maxChars: {id}")))?;
+                let mut graphemes = rendered.text.grapheme_indices(true);
+                if let Some((cut, _)) = graphemes.nth(limit) {
+                    rendered.lengths = Some((limit + 1 + graphemes.count(), limit));
+                    rendered.text.truncate(cut);
+                }
+            }
+            Ok((id.clone(), rendered))
         })
         .collect()
 }
 
 /// Fill text placeholders in a trusted HTML print layout. Markers belong in text nodes.
 pub fn fill_html(layout: &str, definition: &Value, data: &Value) -> Result<String, Error> {
+    fill_html_with_diagnostics(layout, definition, data).map(|(document, _)| document)
+}
+
+/// Assembles an HTML layout and reports truncations for the fields it uses.
+pub fn fill_html_with_diagnostics(
+    layout: &str,
+    definition: &Value,
+    data: &Value,
+) -> Result<(String, Vec<Truncation>), Error> {
     let values = rendered_values(definition, data)?;
+    let mut used = BTreeSet::new();
     let mut result = String::with_capacity(layout.len());
     let mut tail = layout;
     while let Some((before, field)) = tail.split_once("{{") {
@@ -251,15 +293,29 @@ pub fn fill_html(layout: &str, definition: &Value, data: &Value) -> Result<Strin
             .get(id.trim())
             .ok_or_else(|| Error::new(format!("Unknown HTML form field: {id}")))?;
         result.push_str(before);
-        result.push_str(&escape_text(value));
+        used.insert(id.trim());
+        result.push_str(&escape_text(&value.text));
         tail = after;
     }
     result.push_str(tail);
-    Ok(result)
+    let diagnostics = used
+        .into_iter()
+        .filter_map(|id| values[id].truncation(id))
+        .collect();
+    Ok((result, diagnostics))
 }
 
 /// Merge a text form definition and versioned record into DOCX.
 pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, Error> {
+    fill_with_diagnostics(bytes, definition, data).map(|(document, _)| document)
+}
+
+/// Assembles a DOCX and reports one truncation per affected field.
+pub fn fill_with_diagnostics(
+    bytes: &[u8],
+    definition: &Value,
+    data: &Value,
+) -> Result<(Vec<u8>, Vec<Truncation>), Error> {
     let values = rendered_values(definition, data)?;
     let digest = format!("{:x}", Sha256::digest(bytes));
     if definition["templateSha256"].as_str() != Some(digest.as_str()) {
@@ -287,7 +343,7 @@ pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, E
         let run_range = run.range();
         let text_range = text.range();
         let mut result = xml[run_range.start..text_range.start].to_owned();
-        result.push_str(&write_text(&values[id]));
+        result.push_str(&write_text(&values[id].text));
         result.push_str(&xml[text_range.end..run_range.end]);
         replacements.push((control.range(), result));
     }
@@ -309,5 +365,10 @@ pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, E
         };
         result.map_err(|e| Error::new(e.to_string()))?;
     }
-    output.finish().map_err(|e| Error::new(e.to_string()))
+    let document = output.finish().map_err(|e| Error::new(e.to_string()))?;
+    let diagnostics = values
+        .iter()
+        .filter_map(|(id, value)| value.truncation(id))
+        .collect();
+    Ok((document, diagnostics))
 }

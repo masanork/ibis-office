@@ -1,0 +1,15 @@
+form:
+  id: demo-enrollment-notice
+  version: 1
+data:
+  notice:
+    date: "2030-10-01"
+    note: 入学説明会の日程、受付場所、当日の持ち物、および当日参加できない場合の連絡方法は、後日学校からお知らせします。
+  pupil:
+    name: 青葉 凪
+    birthDate: "2019-10-15"
+  guardian:
+    name: 青葉 泉
+    address: 架空市みずき町２丁目
+  school:
+    name: 架空市立みずき中学校
