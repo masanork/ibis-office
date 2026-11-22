@@ -1654,3 +1654,8 @@ git.stashes	Stashes
 git.stash-apply	Apply
 git.stash-apply-tooltip	Apply and keep the stash
 git.stash-failed	Git stash operation failed
+git.conflicts	Conflicts
+git.conflict-open	Open
+git.conflict-resolve	Mark resolved
+git.conflict-resolve-tooltip	Stage the working file as the conflict resolution
+git.commit-merge	Commit merge

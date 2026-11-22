@@ -1652,3 +1652,8 @@ git.stashes	退避した変更
 git.stash-apply	適用
 git.stash-apply-tooltip	退避した変更を残したまま作業ツリーに適用する
 git.stash-failed	Gitの退避操作に失敗しました
+git.conflicts	競合
+git.conflict-open	開く
+git.conflict-resolve	解決済みにする
+git.conflict-resolve-tooltip	編集済みファイルを競合の解決結果としてステージする
+git.commit-merge	マージをコミット

@@ -21,12 +21,19 @@ struct Change {
 }
 
 impl Change {
+    fn conflicted(&self) -> bool {
+        matches!(
+            (self.index, self.worktree),
+            (b'U', _) | (_, b'U') | (b'A', b'A') | (b'D', b'D')
+        )
+    }
+
     fn staged(&self) -> bool {
-        self.index != b' ' && self.index != b'?'
+        !self.conflicted() && self.index != b' ' && self.index != b'?'
     }
 
     fn unstaged(&self) -> bool {
-        self.worktree != b' '
+        !self.conflicted() && self.worktree != b' '
     }
 }
 
@@ -35,6 +42,7 @@ pub(super) struct WorkingTree {
     open: bool,
     changes: Vec<Change>,
     stashes: Vec<Stash>,
+    merging: bool,
     message: Option<Entity<InputState>>,
 }
 
@@ -89,6 +97,7 @@ pub(super) fn git(root: &Path, args: &[&OsStr]) -> Result<Vec<u8>> {
 
 #[derive(Clone, Copy)]
 enum ChangeDiff {
+    Conflict,
     Staged,
     Unstaged,
     Untracked,
@@ -97,6 +106,7 @@ enum ChangeDiff {
 impl ChangeDiff {
     fn label(self) -> &'static str {
         match self {
+            Self::Conflict => "git.conflicts",
             Self::Staged => "git.staged",
             Self::Unstaged | Self::Untracked => "git.unstaged",
         }
@@ -117,6 +127,7 @@ fn change_diff(root: &Path, path: &Path, kind: ChangeDiff) -> Result<ibis_format
         "--submodule=short",
     ];
     match kind {
+        ChangeDiff::Conflict => args.extend(["--cc", "--"]),
         ChangeDiff::Staged => args.extend(["--cached", "--"]),
         ChangeDiff::Unstaged => args.push("--"),
         ChangeDiff::Untracked => {
@@ -236,6 +247,7 @@ struct Outcome {
     stashes: std::result::Result<Vec<Stash>, String>,
     stash_error: Option<String>,
     committed: bool,
+    merging: bool,
 }
 
 fn perform(
@@ -296,6 +308,7 @@ fn perform(
                 .map(|error| error.to_string());
         }
     }
+    let merging = current.repo.join("MERGE_HEAD").is_file();
     let workspace = if committed {
         GitWorkspace::open(root)
             .map(Some)
@@ -309,6 +322,7 @@ fn perform(
         stashes: list_stashes(root).map_err(|error| error.to_string()),
         stash_error,
         committed,
+        merging,
     })
 }
 
@@ -352,6 +366,7 @@ impl SlideEditor {
                 state.busy = false;
                 match result {
                     Ok(outcome) => {
+                        state.working.merging = outcome.merging;
                         if outcome.committed
                             && let Some(message) = &state.working.message
                         {
@@ -464,6 +479,83 @@ impl SlideEditor {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
+        let has_conflict = state.working.changes.iter().any(Change::conflicted);
+        if has_conflict {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(text("git.conflicts")),
+            );
+        }
+        for (index, change) in state
+            .working
+            .changes
+            .iter()
+            .enumerate()
+            .filter(|(_, change)| change.conflicted())
+        {
+            let path = change.path.clone();
+            let diff_path = path.clone();
+            let open_path = path.clone();
+            let flags = format!(
+                "{}{}",
+                char::from(change.index),
+                char::from(change.worktree)
+            );
+            list = list.child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(div().text_color(theme.muted_foreground).child(flags))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(path.to_string_lossy().into_owned()),
+                    )
+                    .when((change.index, change.worktree) != (b'D', b'D'), |row| {
+                        row.child(
+                            Button::new(("git-conflict-open", index))
+                                .xsmall()
+                                .disabled(state.busy)
+                                .label(text("git.conflict-open"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.git_open_worktree_path(&open_path, cx)
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new(("git-conflict-diff", index))
+                            .xsmall()
+                            .disabled(state.busy)
+                            .label(text("git.diff"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.git_show_change_diff(
+                                    diff_path.clone(),
+                                    ChangeDiff::Conflict,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new(("git-conflict-resolve", index))
+                            .xsmall()
+                            .disabled(state.busy)
+                            .label(text("git.conflict-resolve"))
+                            .tooltip(text("git.conflict-resolve-tooltip"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.git_operate(Operation::Stage(path.clone()), window, cx);
+                            })),
+                    ),
+            );
+        }
         for (staged_group, title) in [(true, "git.staged"), (false, "git.unstaged")] {
             list = list.child(
                 div()
@@ -591,7 +683,7 @@ impl SlideEditor {
                     .child(
                         Button::new(("git-apply-stash", index))
                             .xsmall()
-                            .disabled(state.busy)
+                            .disabled(state.busy || has_conflict || state.working.merging)
                             .label(text("git.stash-apply"))
                             .tooltip(text("git.stash-apply-tooltip"))
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -603,8 +695,12 @@ impl SlideEditor {
         let input = message.clone();
         let commit = Button::new("git-commit")
             .small()
-            .label(text("git.commit-staged"))
-            .disabled(staged == 0 || state.busy)
+            .label(text(if state.working.merging {
+                "git.commit-merge"
+            } else {
+                "git.commit-staged"
+            }))
+            .disabled(has_conflict || (staged == 0 && !state.working.merging) || state.busy)
             .on_click(cx.listener(move |this, _, window, cx| {
                 let message = input.read(cx).value().trim().to_string();
                 if message.is_empty() {
@@ -643,7 +739,12 @@ impl SlideEditor {
                                 .child(
                                     Button::new("git-stash-changes")
                                         .small()
-                                        .disabled(state.busy || state.working.changes.is_empty())
+                                        .disabled(
+                                            state.busy
+                                                || has_conflict
+                                                || state.working.merging
+                                                || state.working.changes.is_empty(),
+                                        )
                                         .label(text("git.stash"))
                                         .tooltip(text("git.stash-tooltip"))
                                         .on_click(cx.listener(|this, _, window, cx| {
