@@ -667,3 +667,66 @@ fn xlsx_sheet_rules_filter_and_page_in_file_and_draft() {
     assert_eq!(empty["rules"], json!([]));
     assert_eq!(t.err(tool, json!({"document_id":id,"sheet":sheet,"kind":"unknown"})), "invalid_argument");
 }
+
+#[test]
+fn xlsx_validation_edits_rebase_partial_rules_and_survive_saving() {
+    use ibis_doc_model::sheet::{CellRange, Validation};
+    use ibis_doc_model::{Command, Document, SheetCommand};
+    use ibis_formats::{Kind, SaveOptions};
+
+    let opened = ibis_formats::open(ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
+    let active = opened.presentation.slides[0].id;
+    let sheet = opened.presentation.slides[0].name.clone().unwrap();
+    let mut draft = Document::new(opened.presentation);
+    let ranges = vec![
+        CellRange { first_row: 0, last_row: 3, first_column: 0, last_column: 0 },
+        CellRange { first_row: 2, last_row: 3, first_column: 2, last_column: 2 },
+    ];
+    draft.execute(vec![Command::Sheet(SheetCommand::SetValidation {
+        sheet: active,
+        ranges,
+        rule: Some(Validation {
+            kind: "custom".into(),
+            formula1: Some("B1>$D$1".into()),
+            ..Default::default()
+        }),
+    })]).unwrap();
+
+    let context = || ibis_doc_service::DraftToolContext {
+        workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(active), ..Default::default() },
+        ..Default::default()
+    };
+    let run = ibis_doc_service::run_draft_tool;
+    let (_, edits) = run(Kind::Workbook, &mut draft, context(), "xlsx_set_validation",
+        json!({"range":"A1","type":"list","formula1":"\"Open,Closed\""})).unwrap();
+    assert_eq!(edits.len(), 1);
+    let list = "xlsx_list_sheet_rules";
+    let (changed, _) = run(Kind::Workbook, &mut draft, context(), list, json!({"range":"A2"})).unwrap();
+    assert_eq!(changed["rules"][0]["ranges"], json!(["A2:A4", "C3:C4"]));
+    assert_eq!(changed["rules"][0]["formula1"], "B2>$D$1");
+
+    let mut t = T::new("validation_edits", &[]);
+    let bytes = opened.source.save(draft.presentation(), SaveOptions::default()).unwrap();
+    std::fs::write(t.dir.join("rules.xlsx"), bytes).unwrap();
+    let id = t.open("rules.xlsx");
+    let set = "xlsx_set_validation";
+    assert_eq!(t.err(set, json!({"document_id":id,"sheet":sheet,"range":"A2","type":"whole","formula1":"1"})), "invalid_argument");
+    assert_eq!(t.err(set, json!({"document_id":id,"sheet":sheet,"range":"A2","type":"custom","formula1":"="})), "invalid_argument");
+    assert_eq!(t.err(set, json!({"document_id":id,"sheet":sheet,"range":"ZZZZZZZZZZ1","type":"custom","formula1":"=TRUE"})), "invalid_argument");
+    t.call("xlsx_clear_validation", json!({"document_id":id,"sheet":sheet,"range":"A2"}));
+    let after_clear = t.call(list, json!({"document_id":id,"sheet":sheet}));
+    assert_eq!(after_clear["rules"][0]["ranges"], json!(["A3:A4", "C3:C4"]));
+    assert_eq!(after_clear["rules"][0]["formula1"], "B3>$D$1");
+    assert_eq!(after_clear["rules"][1]["dropdown"], true);
+    t.call("app_undo_document", json!({"document_id":id}));
+    assert_eq!(t.call(list, json!({"document_id":id,"sheet":sheet,"range":"A2"}))["rules"][0]["formula1"], "B2>$D$1");
+
+    t.call(set, json!({"document_id":id,"sheet":sheet,"range":"A2","type":"decimal","formula1":"=0","formula2":"2.5","allow_blank":false}));
+    let saved = t.reopen(&id, "rules.xlsx");
+    let decimal = t.call(list, json!({"document_id":saved,"sheet":sheet,"range":"A2"}));
+    assert_eq!(decimal["rules"][0]["type"], "decimal");
+    assert_eq!(decimal["rules"][0]["formula1"], "0");
+    assert_eq!(decimal["rules"][0]["formula2"], "2.5");
+    assert_eq!(decimal["rules"][0]["allow_blank"], false);
+    assert_eq!(decimal["rules"][0]["error"][0], "stop");
+}

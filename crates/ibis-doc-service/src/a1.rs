@@ -24,7 +24,7 @@ fn parse_cell(text: &str) -> Option<(u32, u32)> {
     let text = text.trim().replace('$', "");
     let split = text.find(|c: char| c.is_ascii_digit())?;
     let (letters, digits) = text.split_at(split);
-    if letters.is_empty() || !letters.chars().all(|c| c.is_ascii_alphabetic()) {
+    if letters.is_empty() || letters.len() > 3 || !letters.chars().all(|c| c.is_ascii_alphabetic()) {
         return None;
     }
     let column = letters.to_ascii_uppercase().bytes().fold(0u32, |n, b| n * 26 + (b - b'A') as u32 + 1) - 1;

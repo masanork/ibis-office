@@ -455,7 +455,7 @@ fn find_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 
 // ---- edits ----
 
-use ibis_doc_model::sheet::{CellAlign, CellVerticalAlign, ThemeColor};
+use ibis_doc_model::sheet::{CellAlign, CellVerticalAlign, ThemeColor, Validation};
 use ibis_doc_model::sheet_command::{CellEdit, CellInput, SheetCommand, StyleChange};
 use ibis_doc_model::{Command, SlideId};
 
@@ -465,6 +465,32 @@ use crate::tools_docx::{color_schema, font_schema};
 pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
         SET_CELLS, CLEAR_CELLS, SET_FORMAT, crate::tools_chart::tool(),
+        Tool {
+            name: "xlsx_set_validation",
+            description: "Set an input validation rule for an A1 range, replacing existing validation only in that range.",
+            access: Access::Edit,
+            returns_content: false,
+            schema: || object(&[
+                document_id(), ("sheet", string("The worksheet to edit.")),
+                ("range", string("The A1 range to validate.")),
+                ("type", json!({"enum": ["list", "whole", "decimal", "custom"]})),
+                ("formula1", string("List source (quoted comma-separated choices, a same-sheet range, or a defined name), lower numeric bound, or custom formula. Relative references are based on the range's top-left cell.")),
+                ("formula2", string("Upper bound, required for whole and decimal rules.")),
+                ("allow_blank", boolean("Allow blank cells (default true).")),
+            ], &["document_id", "sheet", "range", "type", "formula1"]),
+            run: set_validation,
+        },
+        Tool {
+            name: "xlsx_clear_validation",
+            description: "Remove input validation from an A1 range, preserving cells and rules outside that range.",
+            access: Access::Edit,
+            returns_content: false,
+            schema: || object(&[
+                document_id(), ("sheet", string("The worksheet to edit.")),
+                ("range", string("The A1 range to remove validation from.")),
+            ], &["document_id", "sheet", "range"]),
+            run: clear_validation,
+        },
         Tool {
             name: "xlsx_add_sheet",
             description: "Add a sheet (at the end, or at index, 0-based).",
@@ -483,6 +509,68 @@ fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extr
     let open = service.tool_document(id)?;
     execute(open, commands.into_iter().map(Command::Sheet).collect())?;
     Ok(edited(id, open, extra, Vec::new()))
+}
+
+fn set_validation(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    use ibis_calc::formula::{Expr, parse};
+
+    let kind = args.str_arg("type")?;
+    let numeric = matches!(kind, "whole" | "decimal");
+    if !numeric && !matches!(kind, "list" | "custom") {
+        return Err(ToolError::invalid("type is list, whole, decimal or custom"));
+    }
+    let formula = |name| -> Result<_, ToolError> {
+        let text = args.str_arg(name)?.trim();
+        let text = text.strip_prefix('=').unwrap_or(text).trim();
+        let parsed = parse(text).map_err(|_| ToolError::invalid(format!("{name} is not a valid formula")))?;
+        Ok((text.to_owned(), parsed))
+    };
+    let (formula1, first) = formula("formula1")?;
+    if kind == "list" {
+        match first {
+            Expr::Text(items) if !items.trim().is_empty() && items.encode_utf16().count() <= 255 => {}
+            Expr::Ref(reference) if reference.sheet.is_none() => {}
+            Expr::Name { sheet: None, .. } => {}
+            _ => return Err(ToolError::invalid("a list source must be quoted choices (1–255 characters), a same-sheet range or a defined name")),
+        }
+    }
+    let formula2 = if numeric {
+        Some(formula("formula2")?.0)
+    } else {
+        if args.opt_str("formula2")?.is_some() {
+            return Err(ToolError::invalid("formula2 is only used for whole and decimal rules"));
+        }
+        None
+    };
+    let rule = Validation {
+        kind: kind.into(),
+        operator: "between".into(),
+        formula1: Some(formula1),
+        formula2,
+        allow_blank: args.opt_bool("allow_blank")?.unwrap_or(true),
+        dropdown: kind == "list",
+        error: Some(("stop".into(), String::new(), String::new())),
+        ..Default::default()
+    };
+    edit_validation(service, args, Some(rule))
+}
+
+fn clear_validation(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    edit_validation(service, args, None)
+}
+
+fn edit_validation(service: &mut Service, args: &Value, rule: Option<Validation>) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let range = parse_range(args.str_arg("range")?)?;
+    let active = service.workbook_tool_context().active_sheet;
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (index, name, _) = workbook_sheet(workbook, &sheets, args, active)?;
+    let sheet = workbook.slides[*index].id;
+    let result = json!({"sheet": name, "range": range_text(&range)});
+    let command = SheetCommand::SetValidation { sheet, ranges: vec![range], rule };
+    sheet_edit(service, id, vec![command], result)
 }
 
 fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
