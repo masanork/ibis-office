@@ -1613,7 +1613,7 @@ git.pull-ff-only	Pull with fast-forward only
 git.pull-complete	Pull complete
 git.pull-failed	Git pull failed
 git.pull-no-upstream	A local branch with a configured remote upstream branch is required.
-git.pull-head-changed	The checked-out branch or commit changed. Reopen the repository and try again.
+git.workspace-head-changed	The checked-out branch or commit changed. Reopen the repository and try again.
 git.status.no-upstream	No upstream configured
 git.status.detached	Detached HEAD
 git.status.upstream-missing	Upstream unavailable locally
@@ -1625,3 +1625,9 @@ git.back-to-graph	Back to history
 git.more-files	More files
 git.first-parent	First parent diff
 git.commit-parent-unavailable	The parent of this commit is outside the available history.
+git.branches	Branches
+git.no-local-branches	No local branches
+git.branch-current	Current
+git.switch	Switch
+git.switch-failed	Git branch switch failed
+git.switch-complete	Branch switched

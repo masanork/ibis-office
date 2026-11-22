@@ -35,6 +35,7 @@ pub(super) struct CommitGraph {
     more: bool,
     completed: Option<&'static str>,
     upstream: Option<UpstreamStatus>,
+    branches: Option<Vec<String>>,
 }
 
 impl CommitGraph {
@@ -259,7 +260,7 @@ fn pull_upstream(root: &Path, head: gix::ObjectId, branch: &str) -> Result<()> {
         .head_name()?
         .ok_or_else(|| text("git.pull-no-upstream").to_string())?;
     if repo.head_id()?.detach() != head || name.shorten() != branch {
-        return Err(text("git.pull-head-changed").to_string().into());
+        return Err(text("git.workspace-head-changed").to_string().into());
     }
     let direction = gix::remote::Direction::Fetch;
     let remote = repo.branch_remote_name(name.shorten(), direction);
@@ -302,10 +303,45 @@ fn pull_upstream(root: &Path, head: gix::ObjectId, branch: &str) -> Result<()> {
     Ok(())
 }
 
+fn local_branches(root: &Path) -> Result<Vec<String>> {
+    let args = ["for-each-ref", "--format=%(refname)", "refs/heads/"];
+    let refs = git(root, &args.map(OsStr::new))?;
+    Ok(refs
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            std::str::from_utf8(line).ok()?.strip_prefix("refs/heads/")
+        })
+        .filter(|name| *name != "-")
+        .map(str::to_owned)
+        .collect())
+}
+
+fn switch_branch(root: &Path, head: gix::ObjectId, branch: &str, target: &str) -> Result<()> {
+    let repo = gix::discover(root)?;
+    let current = repo
+        .head_name()?
+        .map(|name| name.shorten().to_string())
+        .unwrap_or_else(|| short(head));
+    if repo.head_id()?.detach() != head || current != branch {
+        return Err(text("git.workspace-head-changed").to_string().into());
+    }
+    let args = [
+        "switch",
+        "--no-guess",
+        "--no-recurse-submodules",
+        "--",
+        target,
+    ];
+    git(root, &args.map(OsStr::new))?;
+    Ok(())
+}
+
 enum SyncAction {
     Fetch,
     Pull,
     Push(PushTarget),
+    Switch(String),
 }
 
 impl SyncAction {
@@ -314,6 +350,7 @@ impl SyncAction {
             Self::Fetch => "git.fetch-failed",
             Self::Pull => "git.pull-failed",
             Self::Push(_) => "git.push-failed",
+            Self::Switch(_) => "git.switch-failed",
         }
     }
 
@@ -322,6 +359,7 @@ impl SyncAction {
             Self::Fetch => "git.fetch-complete",
             Self::Pull => "git.pull-complete",
             Self::Push(_) => "git.push-complete",
+            Self::Switch(_) => "git.switch-complete",
         }
     }
 
@@ -330,6 +368,7 @@ impl SyncAction {
             Self::Fetch => fetch_remotes(root),
             Self::Pull => pull_upstream(root, head, branch),
             Self::Push(target) => target.push(root, head),
+            Self::Switch(target) => switch_branch(root, head, branch, target),
         }
     }
 }
@@ -365,9 +404,14 @@ impl SlideEditor {
                         .and_then(|action| action.run(&root, head, &branch).err())
                         .map(|error| error.to_string());
                     let updated_workspace =
-                        if matches!(action, Some(SyncAction::Pull)) && sync_error.is_none() {
+                        if matches!(action, Some(SyncAction::Pull | SyncAction::Switch(_)))
+                            && sync_error.is_none()
+                        {
                             GitWorkspace::open(&root)
-                                .map(|workspace| (workspace.head != head).then_some(workspace))
+                                .map(|workspace| {
+                                    (workspace.head != head || workspace.branch != branch)
+                                        .then_some(workspace)
+                                })
                                 .map_err(|error| error.to_string())
                         } else {
                             Ok(None)
@@ -380,7 +424,12 @@ impl SlideEditor {
                     let result =
                         read_graph(&root, graph_head, limit).map_err(|error| error.to_string());
                     let upstream = check_upstream.then(|| {
-                        upstream_status(&root, graph_head, &branch)
+                        let graph_branch = updated_workspace
+                            .as_ref()
+                            .ok()
+                            .and_then(Option::as_ref)
+                            .map_or(branch.as_str(), |workspace| workspace.branch.as_str());
+                        upstream_status(&root, graph_head, graph_branch)
                             .unwrap_or(UpstreamStatus::Unavailable)
                     });
                     (result, sync_error, action, updated_workspace, upstream)
@@ -406,6 +455,9 @@ impl SlideEditor {
                 }
                 if action.is_some() && sync_error.is_none() {
                     state.graph.completed = action.as_ref().map(SyncAction::completion);
+                    if matches!(action, Some(SyncAction::Switch(_))) {
+                        state.graph.branches = None;
+                    }
                 }
                 let graph_error = match result {
                     Ok((rows, more)) => {
@@ -428,6 +480,109 @@ impl SlideEditor {
             });
         })
         .detach();
+    }
+
+    fn git_show_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.git_workspace.as_mut().filter(|state| !state.busy) else {
+            return;
+        };
+        let Some(root) = state.worktree.clone() else {
+            return;
+        };
+        state.busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { local_branches(&root).map_err(|error| error.to_string()) })
+                .await;
+            let _ = this.update(cx, |editor, cx| {
+                let Some(state) = editor.git_workspace.as_mut() else {
+                    return;
+                };
+                state.busy = false;
+                match result {
+                    Ok(branches) => state.graph.branches = Some(branches),
+                    Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_git_branches(
+        &self,
+        state: &GitWorkspace,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let branches = state.graph.branches.as_ref()?;
+        let border = cx.theme().border;
+        let mut list = div()
+            .id("git-local-branches")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll();
+        for (index, name) in branches.iter().enumerate() {
+            let name = name.clone();
+            let current = name == state.branch;
+            list = list.child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+                    .child(
+                        Button::new(("git-switch-branch", index))
+                            .xsmall()
+                            .disabled(current || state.busy)
+                            .label(text(if current {
+                                "git.branch-current"
+                            } else {
+                                "git.switch"
+                            }))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.git_load_graph(
+                                    Some(SyncAction::Switch(name.clone())),
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    ),
+            );
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    h_flex()
+                        .px_2()
+                        .pb_1()
+                        .gap_2()
+                        .child(
+                            Button::new("git-back-from-branches")
+                                .xsmall()
+                                .disabled(state.busy)
+                                .label(text("git.back-to-graph"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(state) = this.git_workspace.as_mut() {
+                                        state.graph.branches = None;
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(text("git.branches")),
+                )
+                .child(list.when(branches.is_empty(), |list| {
+                    list.child(div().px_2().child(text("git.no-local-branches")))
+                }))
+                .into_any_element(),
+        )
     }
 
     fn git_confirm_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -594,6 +749,9 @@ impl SlideEditor {
         if !state.graph.open {
             return None;
         }
+        if let Some(branches) = self.render_git_branches(state, cx) {
+            return Some(branches);
+        }
         if let Some(detail) = self.render_commit_changes(state, cx) {
             return Some(detail);
         }
@@ -684,8 +842,25 @@ impl SlideEditor {
                     .label(text("git.push"))
                     .on_click(cx.listener(|this, _, window, cx| this.git_confirm_push(window, cx))),
             )
+            .when(state.worktree.is_some(), |bar| {
+                bar.child(
+                    Button::new("git-branches")
+                        .xsmall()
+                        .disabled(state.busy)
+                        .label(text("git.branches"))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.git_show_branches(window, cx)),
+                        ),
+                )
+            })
             .when_some(state.graph.completed, |bar, completed| {
-                bar.child(div().text_color(muted).child(text(completed)))
+                bar.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(muted)
+                        .child(text(completed)),
+                )
             });
         let body = body.when(state.graph.more, |body| {
             body.child(
