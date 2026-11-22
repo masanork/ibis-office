@@ -45,13 +45,6 @@ pub struct CellSnapshot {
     pub formula: Option<String>,
 }
 
-/// Single cell edit requested by an AI tool.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AiCellEdit {
-    pub cell: String,
-    pub value: serde_json::Value,
-}
-
 /// Border preset requested by `set_format`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AiBorderStyle {
@@ -194,43 +187,6 @@ pub fn workbook_overview<'a>(
     }
 }
 
-/// Read non-empty cells in `range`, capped at `max_cells` total grid cells.
-pub fn read_sheet_range(
-    sheet: &Sheet,
-    range: CellRange,
-    max_cells: usize,
-) -> Result<Vec<CellSnapshot>, String> {
-    let rows = (range.last_row - range.first_row) as usize + 1;
-    let cols = (range.last_column - range.first_column) as usize + 1;
-    let total = rows.saturating_mul(cols);
-    if total > max_cells {
-        return Err(format!(
-            "range {} spans {total} cells, exceeding limit of {max_cells}; request a smaller range",
-            format_range(&range)
-        ));
-    }
-    let mut out = Vec::new();
-    for cell in sheet.cells_in_rows(range.first_row, range.last_row) {
-        if cell.column < range.first_column || cell.column > range.last_column {
-            continue;
-        }
-        if matches!(cell.value, CellValue::Empty) && cell.formula.is_none() && cell.text.is_empty() {
-            continue;
-        }
-        let formula = sheet
-            .visible_formula(cell)
-            .map(|f| format!("={}", sheet.formula_shown(cell.row, cell.column, f)));
-        out.push(CellSnapshot {
-            cell: cell_name(cell.column, cell.row),
-            row: cell.row,
-            column: cell.column,
-            text: cell.text.clone(),
-            formula,
-        });
-    }
-    Ok(out)
-}
-
 /// Convert an Assistant or MCP JSON value into a worksheet cell input.
 pub fn parse_cell_input(value: &serde_json::Value) -> Result<CellInput, &'static str> {
     use serde_json::Value;
@@ -247,25 +203,6 @@ pub fn parse_cell_input(value: &serde_json::Value) -> Result<CellInput, &'static
         },
         _ => Err("expected a number, a string, a boolean or null"),
     }
-}
-
-/// Convert a batch of [`AiCellEdit`]s into a [`Command`].
-pub fn build_set_cells_command(slide: SlideId, edits: Vec<AiCellEdit>) -> Result<Command, String> {
-    if edits.is_empty() {
-        return Err("edits must not be empty".to_string());
-    }
-    let mut cell_edits = Vec::with_capacity(edits.len());
-    for edit in edits {
-        let (row, column) = parse_cell_ref(&edit.cell)
-            .ok_or_else(|| format!("invalid cell reference '{}'", edit.cell))?;
-        let input = parse_cell_input(&edit.value)
-            .map_err(|error| format!("{}: {error}", edit.cell))?;
-        cell_edits.push(CellEdit { row, column, input });
-    }
-    Ok(Command::Sheet(SheetCommand::SetCells {
-        sheet: slide,
-        edits: cell_edits,
-    }))
 }
 
 /// Convert [`AiCellFormat`] options into a [`Command`] (possibly grouped).
@@ -687,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_range_and_respects_cell_limit() {
+    fn find_and_audit_respect_formula_visibility() {
         let mut sheet = Sheet::default();
         sheet.cells.push(SheetCell {
             row: 0,
@@ -712,30 +649,15 @@ mod tests {
             runs: None,
         });
 
-        let range = parse_cell_range("A1:B2").unwrap();
-        let snap = read_sheet_range(&sheet, range, 100).unwrap();
-        assert_eq!(snap.len(), 2);
-        assert_eq!(snap[0].cell, "A1");
-        assert_eq!(snap[0].text, "10");
-        assert_eq!(snap[0].formula, None);
-        assert_eq!(snap[1].cell, "B1");
-        assert_eq!(snap[1].formula.as_deref(), Some("=A1*2"));
-
         sheet.styles.push(crate::sheet::CellStyle { formula_hidden: true, ..Default::default() });
-        assert_eq!(read_sheet_range(&sheet, range, 100).unwrap()[1].formula.as_deref(), Some("=A1*2"));
+        assert_eq!(find_sheet_cells(&sheet, "A1*2", true, 10)[0].formula.as_deref(), Some("A1*2"));
         sheet.protection = Some(crate::sheet::SheetProtection::default());
-        let hidden = read_sheet_range(&sheet, range, 100).unwrap();
-        assert_eq!(hidden[1].text, "20");
-        assert_eq!(hidden[1].formula, None);
         assert!(find_sheet_cells(&sheet, "A1*2", true, 10).is_empty());
         assert_eq!(find_sheet_cells(&sheet, "20", false, 10)[0].formula, None);
         sheet.cells[1].text = "#REF!".into();
         assert_eq!(audit_sheet_errors(&sheet, 10)[0].formula, None);
         sheet.protection = None;
         assert_eq!(find_sheet_cells(&sheet, "A1*2", true, 10)[0].formula.as_deref(), Some("A1*2"));
-
-        let err = read_sheet_range(&sheet, parse_cell_range("A1:Z100").unwrap(), 200).unwrap_err();
-        assert!(err.contains("exceeding limit"));
     }
 
     #[test]
@@ -757,30 +679,8 @@ mod tests {
     }
 
     #[test]
-    fn builds_set_cells_and_format_commands() {
+    fn builds_format_commands() {
         let slide = SlideId(1);
-        let cmd = build_set_cells_command(
-            slide,
-            vec![
-                AiCellEdit {
-                    cell: "A1".to_string(),
-                    value: serde_json::json!(42.0),
-                },
-                AiCellEdit {
-                    cell: "B1".to_string(),
-                    value: serde_json::json!("=A1*2"),
-                },
-            ],
-        )
-        .unwrap();
-        match cmd {
-            Command::Sheet(SheetCommand::SetCells { edits, .. }) => {
-                assert_eq!(edits.len(), 2);
-                assert_eq!(edits[1].input, CellInput::Formula("A1*2".to_string()));
-            }
-            other => panic!("unexpected command: {other:?}"),
-        }
-
         let fmt = build_set_format_command(
             slide,
             vec![parse_cell_range("A1:B1").unwrap()],

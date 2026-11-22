@@ -20,6 +20,7 @@ pub enum Access {
     File,
 }
 
+#[derive(Clone, Copy)]
 pub struct Tool {
     pub name: &'static str,
     pub description: &'static str,
@@ -65,6 +66,7 @@ pub fn catalog() -> &'static [Tool] {
         all.extend(tools_docx::tools());
         all.extend(tools_docx::edit_tools());
         all.extend(tools_xlsx::tools());
+        all.extend(tools_xlsx::workbook_tools().iter().map(|tool| tool.descriptor));
         all.push(crate::tools_prefill::tool());
         all.push(crate::tools_prefill::apply_tool());
         all.extend(tools_xlsx::edit_tools());
