@@ -510,3 +510,32 @@ fn draft_chart_defaults_to_active_sheet_and_keeps_sparse_series() {
     assert!(draft.undo());
     assert_eq!(draft.presentation().slides[0].shapes.len(), 1);
 }
+
+#[test]
+fn mcp_machine_readability_pages_candidates_on_a_read_only_workbook() {
+    let mut t = T::new("shared_readability", &[]);
+    let bytes = ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap();
+    std::fs::write(t.dir.join("blank.xlsx"), bytes).unwrap();
+    let id = t.open("blank.xlsx");
+    let sheet = t.call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].as_str().unwrap().to_owned();
+    t.call("xlsx_set_cells", json!({"document_id":id,"sheet":sheet,"range":"A1:A2","values":[["①"],["=1+1"]]}));
+    t.call("xlsx_add_sheet", json!({"document_id":id,"name":"Other"}));
+    t.call("xlsx_set_cells", json!({"document_id":id,"sheet":"Other","range":"B1","values":"\u{e000}"}));
+    let path = t.dir.join("candidates.xlsx");
+    t.call("app_save_document", json!({"document_id":id,"path":path}));
+    t.s = Service::new(&[t.dir.clone()], true, Limits::default());
+    let id = t.open("candidates.xlsx");
+    let name = "xlsx_check_machine_readability";
+    let page = t.call(name, json!({"document_id":id,"limit":1}));
+    assert_eq!(page["count"], 3);
+    assert_eq!(page["next_offset"], 1);
+    assert_eq!(page["findings"], json!([{"sheet":sheet,"kind":"platform_dependent_characters","location":"A1"}]));
+    let next = t.call(name, json!({"document_id":id,"offset":page["next_offset"]}));
+    assert!(next.get("next_offset").is_none());
+    assert_eq!(next["findings"], json!([
+        {"sheet":sheet,"kind":"formula","location":"A2"},
+        {"sheet":"Other","kind":"private_use_characters","location":"B1"}
+    ]));
+    assert_eq!(t.call(name, json!({"document_id":id,"sheet":"other"}))["count"], 1);
+    assert_eq!(t.err(name, json!({"document_id":id,"sheet":"Missing"})), "no_such_sheet");
+}

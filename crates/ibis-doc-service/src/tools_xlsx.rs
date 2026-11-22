@@ -37,6 +37,19 @@ pub(crate) fn tools() -> Vec<Tool> {
         Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook: name, used range and whether it is shown.", access: Access::Read, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: list_sheets },
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
         Tool {
+            name: "xlsx_check_machine_readability",
+            description: "Find structural review candidates such as merged cells, hidden rows or columns, formulas, and platform-dependent or private-use characters.",
+            access: Access::Read,
+            returns_content: true,
+            schema: || object(&[
+                document_id(),
+                ("sheet", string("Optional worksheet name. Omit to scan all visible worksheets.")),
+                ("offset", integer("First finding to return (0-based).")),
+                ("limit", integer("Maximum findings per page (default 100, maximum 200).")),
+            ], &["document_id"]),
+            run: check_machine_readability,
+        },
+        Tool {
             name: "xlsx_find_text",
             description: "Find cells by their displayed text and optionally their visible formulas.",
             access: Access::Read,
@@ -182,6 +195,48 @@ fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let mut result = json!({ "sheet": name, "range": range_text(&range), "kind": kind, "first_row": range.first_row + 1 + offset as u32, "first_column": column_name(range.first_column), "rows": rows });
     if end < height {
         result["next_offset"] = json!(end);
+    }
+    Ok(result)
+}
+
+fn check_machine_readability(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    use ibis_doc_model::machine_readability::{CandidateKind, candidates};
+
+    let name = args.opt_str("sheet")?;
+    let offset = args.opt_usize("offset")?.unwrap_or(0);
+    let limit = args.opt_usize("limit")?.unwrap_or(100).clamp(1, 200);
+    let open = workbook_document(service, args.str_arg("document_id")?)?;
+    let sheets = sheets_of(open)?;
+    let selected = match name {
+        Some(name) => std::slice::from_ref(find_sheet(&sheets, name)?),
+        None => sheets.as_slice(),
+    };
+    let mut findings = Vec::new();
+    let mut count = 0;
+    for (_, name, sheet) in selected {
+        for candidate in candidates(sheet) {
+            if count >= offset && findings.len() < limit {
+                let kind = match candidate.kind {
+                    CandidateKind::MergedCells => "merged_cells",
+                    CandidateKind::HiddenRow => "hidden_row",
+                    CandidateKind::HiddenColumn => "hidden_column",
+                    CandidateKind::Formula => "formula",
+                    CandidateKind::PlatformDependentCharacters => "platform_dependent_characters",
+                    CandidateKind::PrivateUseCharacters => "private_use_characters",
+                };
+                findings.push(json!({
+                    "sheet": name,
+                    "kind": kind,
+                    "location": ibis_doc_model::ai_sheet::format_range(&candidate.range),
+                }));
+            }
+            count += 1;
+        }
+    }
+    let next = offset.saturating_add(findings.len());
+    let mut result = json!({ "count": count, "findings": findings });
+    if next < count {
+        result["next_offset"] = json!(next);
     }
     Ok(result)
 }

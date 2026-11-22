@@ -125,20 +125,6 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
-                name: "check_machine_readability",
-                description: "Scan the workbook (or a specific sheet) for machine-readability candidates such as merged cells, hidden rows/columns, formulas, and platform-dependent or private-use characters.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "sheet": { "type": "string", "description": "Optional sheet name (omit to scan all sheets)." }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
                 name: "audit_formulas",
                 description: "Scan all sheets (or a specific sheet) for formula or value errors (#REF!, #DIV/0!, #VALUE!, #NAME?, #N/A, etc.).",
                 parameters: json!({
@@ -326,7 +312,7 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
         },
     ];
     tools.extend(ibis_doc_service::document_tools(ibis_formats::Kind::Workbook)
-        .map(|tool| editor_tool_definition(tool, tool.name != "xlsx_find_text")));
+        .map(|tool| editor_tool_definition(tool, !matches!(tool.name, "xlsx_find_text" | "xlsx_check_machine_readability"))));
     tools
 }
 
@@ -1012,7 +998,7 @@ A --> C
                 let schema = &entries[0].function.parameters;
                 assert!(schema["properties"].get("document_id").is_none());
                 canonical["properties"].as_object_mut().unwrap().remove("document_id");
-                if kind == Kind::Workbook && shared.name != "xlsx_find_text"
+                if kind == Kind::Workbook && !matches!(shared.name, "xlsx_find_text" | "xlsx_check_machine_readability")
                     && let Some(sheet) = canonical["properties"].as_object_mut().unwrap().get_mut("sheet")
                 {
                     *sheet = schema["properties"]["sheet"].clone();
