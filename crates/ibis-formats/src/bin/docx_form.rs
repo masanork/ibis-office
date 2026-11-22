@@ -39,6 +39,10 @@ fn generate(
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(result) = pdf_command(&args) {
+        return result;
+    }
     match args.as_slice() {
         [command, template] if command == "inspect" => {
             let fields = form_template::inspect(&fs::read(template)?)?;
@@ -46,12 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         [command, template, definition, record] if command == "check" || command == "check-html" => {
             let (_, diagnostics) = generate(command == "check-html", Path::new(template), Path::new(definition), Path::new(record))?;
-            let warnings: Vec<_> = diagnostics.iter().map(|item| serde_json::json!({
-                "fieldId": item.field_id,
-                "actualChars": item.actual_chars,
-                "maxChars": item.max_chars
-            })).collect();
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"truncations": warnings}))?);
+            print_diagnostics(&diagnostics)?;
         }
         [command, template, definition, record, output] if command == "fill" || command == "fill-html" => {
             let (document, diagnostics) = generate(command == "fill-html", Path::new(template), Path::new(definition), Path::new(record))?;
@@ -60,7 +59,66 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             fs::OpenOptions::new().write(true).create_new(true).open(output)?.write_all(&document)?;
         }
-        _ => return Err("usage: docx_form inspect TEMPLATE | docx_form check|check-html TEMPLATE FORM RECORD | docx_form fill|fill-html TEMPLATE FORM RECORD OUTPUT".into()),
+        _ => return Err("usage: docx_form inspect TEMPLATE | docx_form check|check-html TEMPLATE FORM RECORD | docx_form fill|fill-html TEMPLATE FORM RECORD OUTPUT | docx_form inspect-pdf|check-pdf|fill-pdf …".into()),
     }
     Ok(())
+}
+
+fn print_diagnostics(diagnostics: &[form_template::Truncation]) -> Result<(), Box<dyn Error>> {
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "fieldId": item.field_id,
+                "actualChars": item.actual_chars,
+                "maxChars": item.max_chars
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({"truncations": warnings}))?
+    );
+    Ok(())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn pdf_command(args: &[std::ffi::OsString]) -> Option<Result<(), Box<dyn Error>>> {
+    let command = args.first()?.to_str()?;
+    if !matches!(command, "inspect-pdf" | "check-pdf" | "fill-pdf") {
+        return None;
+    }
+    Some((|| {
+        match (command, &args[1..]) {
+            ("inspect-pdf", [template]) => {
+                let fields = form_template::pdf::inspect(fs::read(template)?)?;
+                println!("{}", serde_json::to_string_pretty(&fields)?);
+            }
+            ("check-pdf", [template, definition, record, font, validator]) |
+            ("fill-pdf", [template, definition, record, font, validator, _]) => {
+                let (document, diagnostics) = form_template::pdf::fill_validated(
+                    Path::new(template),
+                    &read_value(Path::new(definition))?,
+                    &read_value(Path::new(record))?,
+                    fs::read(font)?,
+                    Path::new(validator),
+                )?;
+                if let Some(output) = args.get(6) {
+                    let mut file = tempfile::NamedTempFile::new_in(
+                        Path::new(output).parent().filter(|path| !path.as_os_str().is_empty())
+                            .unwrap_or_else(|| Path::new(".")),
+                    )?;
+                    file.write_all(&document)?;
+                    file.persist_noclobber(output)?;
+                    for item in diagnostics {
+                        eprintln!("Truncated {} from {} to {} characters", item.field_id, item.actual_chars, item.max_chars);
+                    }
+                } else {
+                    print_diagnostics(&diagnostics)?;
+                }
+            }
+            _ => return Err("usage: docx_form inspect-pdf TEMPLATE | docx_form check-pdf TEMPLATE FORM RECORD FONT VERAPDF | docx_form fill-pdf TEMPLATE FORM RECORD FONT VERAPDF OUTPUT".into()),
+        }
+        Ok(())
+    })())
 }

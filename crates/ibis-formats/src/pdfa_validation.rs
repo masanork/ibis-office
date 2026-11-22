@@ -10,7 +10,15 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use wait_timeout::ChildExt;
 
-pub(crate) fn run(input: &Path, profile: &str, validator: &Path) -> Result<bool, String> {
+/// Validate and print the existing CLI JSON report.
+pub fn run(input: &Path, profile: &str, validator: &Path) -> Result<bool, String> {
+    let (compliant, report) = validate(input, profile, validator)?;
+    writeln!(std::io::stdout().lock(), "{report:#}").map_err(|error| error.to_string())?;
+    Ok(compliant)
+}
+
+/// Run veraPDF against the requested profile and return a parsed result.
+pub fn validate(input: &Path, profile: &str, validator: &Path) -> Result<(bool, Value), String> {
     let input = std::path::absolute(input).map_err(|error| error.to_string())?;
     if !input.is_file() {
         return Err(format!("{}: expected a PDF file", input.display()));
@@ -73,8 +81,7 @@ pub(crate) fn run(input: &Path, profile: &str, validator: &Path) -> Result<bool,
             "veraPDF exited with {status} despite reporting compliance"
         ));
     }
-    writeln!(std::io::stdout().lock(), "{report:#}").map_err(|error| error.to_string())?;
-    Ok(compliant)
+    Ok((compliant, report))
 }
 
 fn parse_report(xml: &str, profile: &str) -> Result<(bool, Value), String> {

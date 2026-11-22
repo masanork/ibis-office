@@ -215,6 +215,9 @@ pub struct Truncation {
     pub max_chars: usize,
 }
 
+#[cfg(not(target_family = "wasm"))]
+pub mod pdf;
+
 struct RenderedValue {
     text: String,
     lengths: Option<(usize, usize)>,

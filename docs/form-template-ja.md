@@ -1,26 +1,26 @@
 # フォームテンプレートの書式と作り方
 
-フォームを使うと、帳票のレイアウトを一度作り、個別データを差し替えて DOCX や PDF を生成できます。このガイドは試作の `docx_form` CLI を対象にしています。架空の指導要録では、氏名を1項目にまとめて様式1・2の4箇所へ反映し、学年別の所見や出欠も同じデータから出力します。[サンプルと実行手順](../test/fixtures/docx-form/full-school-record/README.md)
+フォームを使うと、帳票のレイアウトを一度作り、個別データを差し替えて DOCX、HTML、PDF を生成できます。このガイドは試作の `docx_form` CLI を対象にしています。架空の指導要録では、氏名を1項目にまとめて様式1・2の4箇所へ反映し、学年別の所見や出欠も同じデータから出力します。[サンプルと実行手順](../test/fixtures/docx-form/full-school-record/README.md)
 
 ## 用意するファイル
 
 | ファイル | 内容 |
 | --- | --- |
-| ひな型 | レイアウトと差し込み位置を持つ DOCX または HTML |
-| フォーム定義 | フォーム ID、版、フィールド ID、値の型、必要に応じた字数上限、DOCX ひな型の SHA-256 |
+| ひな型 | レイアウトと差し込み位置を持つ DOCX、HTML、または AcroForm 付き PDF/A-2b |
+| フォーム定義 | フォーム ID、版、フィールド ID、値の型、必要に応じた字数上限、DOCX または PDF のひな型の SHA-256 |
 | 個別データ | 参照先のフォーム ID と版、フィールドごとの値 |
 
 フォーム定義と個別データにはそれぞれ `.json`、`.yaml`、`.yml` を使えます。たとえばフォーム定義を YAML で管理し、業務システムが JSON の個別データを出力できます。
 
 ## フォーム定義と個別データ
 
-以下は進学先の2項目を持つフォーム定義の例です。DOCX を使う場合は `templateSha256` に実際のファイルの SHA-256 を入れます。HTML の合成ではこの項目は省略できます。
+以下は進学先の2項目を持つフォーム定義の例です。DOCX または PDF を使う場合は `templateSha256` に実際のファイルの SHA-256 を入れます。HTML の合成ではこの項目は省略できます。
 
 ```yaml
 form:
   id: school-transfer
   version: 1
-templateSha256: "<ひな型 DOCX の SHA-256>"
+templateSha256: "<ひな型ファイルの SHA-256>"
 fields:
   nextSchool.name:
     type: text
@@ -99,3 +99,20 @@ cargo run --locked -p ibis-formats --bin docx_form -- \
 この架空の入学予定通知書は、就学事務システムの標準レイアウトにある宛先、児童、保護者、予定校、特記事項を参考にしています。試験用に特記事項へ長い値を入れてあります。検査結果には氏名や住所などの値を含めません。物理的な欄の幅・高さ、フォント、印字項目の標準への適合は別に確認してください。 [文科省の標準レイアウト及び標準印字項目 第2.1版](https://www.mext.go.jp/content/20230405-mxt_syoto02-000024394_9.pdf)
 
 デスクトップ版では、タグ付きの DOCX ひな型を開き、**校閲 → 指導要録の記載候補を確認…** からも検査できます。フォーム定義と個別データを選んで **字数を確認** を押し、結果を選ぶとひな型の該当欄に移動します。同じ欄が複数ある場合は本文の最初の箇所に移動します。
+
+## PDF/A-2b の既存フォームに差し込む
+
+未署名の PDF/A-2b にある AcroForm のテキスト欄を使用できます。`inspect-pdf` は完全修飾フィールド名と表示箇所数を返します。フォーム定義の `fields` に対応する名前（例 `student.name`）を指定し、`templateSha256` に PDF ひな型の SHA-256 を記録します。定義には対象の編集可能な標準テキスト欄をすべて記載します。値の型・表示変換と `maxChars` の扱いは DOCX・HTML と共通です。
+
+```sh
+cargo run --locked -p ibis-formats --bin docx_form -- inspect-pdf template.pdf
+shasum -a 256 template.pdf
+cargo run --locked -p ibis-formats --bin docx_form -- \
+  check-pdf template.pdf form.yaml record.yaml /path/to/font.ttf /path/to/verapdf
+cargo run --locked -p ibis-formats --bin docx_form -- \
+  fill-pdf template.pdf form.yaml record.yaml /path/to/font.ttf /path/to/verapdf filled.pdf
+```
+
+両コマンドは veraPDF で入力と生成結果を PDF/A-2b として検証します。`check-pdf` はファイルを出力せず、`fill-pdf` は検証が通った場合に新規ファイルへ保存します。増分保存なので、ひな型の元の内容は出力内にも残ります。配布用のひな型には空欄か合成データを使用してください。
+
+各ウィジェットの外観を、指定した埋め込み可能なフォントの先頭フェイスで再生成します。文字は黒の 11 pt で、フォームの左・中央・右揃え、グレー・RGB の背景と単純な実線枠を反映します。複数行欄では値に含まれる明示的な改行を使います。文字がフォントにない場合、PDF 側の `MaxLen` を超える場合、欄に収まらない場合はエラーになります。署名済み PDF、XFA、回転したウィジェット、リッチテキスト欄、チェックボックスや選択欄への入力は対象外です。

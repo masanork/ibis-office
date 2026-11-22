@@ -380,3 +380,6 @@ pub fn read_docx(data: &[u8]) -> Result<Presentation, Error> {
 pub fn read_xlsx(data: &[u8]) -> Result<Presentation, Error> {
     reader::read_xlsx(data)
 }
+
+#[cfg(not(target_family = "wasm"))]
+pub mod pdfa_validation;

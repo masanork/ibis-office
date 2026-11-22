@@ -22,7 +22,7 @@ mod open_with;
 #[cfg(not(target_family = "wasm"))]
 mod single_instance;
 #[cfg(not(target_family = "wasm"))]
-mod pdfa_validation;
+use ibis_formats::pdfa_validation;
 // The presentation screen is its own crate (tasks/doc/crate-split-plan.md, 14); the app and its tests name it `crate::pptx`.
 pub(crate) use ibis_office_pptx as pptx;
 mod render;

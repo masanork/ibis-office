@@ -83,7 +83,6 @@ ibis-office-updater = { path = "../ibis-office-updater" }
 serde_json = "1"
 roxmltree = "0.21"
 tempfile = "3"
-wait-timeout = "0.2"
 same-file = "1"
 getrandom = "0.2"
 # `ibisOffice --mcp`: the MCP server on standard input and output (GitHub issue #159; ibisOffice-mcp is the same for Windows, whose GUI exe has none).

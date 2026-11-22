@@ -6,6 +6,7 @@
 //!
 //! No UI or platform dependencies: shared by desktop and browser (wasm) builds.
 
+pub mod acroform;
 pub mod container;
 pub mod cos;
 #[cfg(feature = "interpret")]
