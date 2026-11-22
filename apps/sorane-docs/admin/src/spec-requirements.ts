@@ -2,6 +2,7 @@
 import { LineCounter, isMap, isScalar, isSeq, parseAllDocuments } from 'yaml';
 import { escape } from '../vendor/mikaki-oidc';
 import { parseGherkinFeature } from './spec-gherkin';
+import { parseTestLedger } from './spec-ledger';
 import { openApiOperations, openApiVersion } from './spec-navigation';
 
 export interface Requirement {
@@ -74,22 +75,24 @@ function* acceptanceTests(source: string): Generator<TaggedEntry> {
 }
 
 export async function renderRequirementTrace(
-  requirements: Requirement[], featurePaths: ReadonlySet<string>, apiPaths: ReadonlySet<string>,
+  requirements: Requirement[], featurePaths: ReadonlySet<string>, apiPaths: ReadonlySet<string>, ledgerPaths: ReadonlySet<string>,
   loadSource: (path: string) => Promise<string | null>, sourceUrl: (path: string) => string,
 ): Promise<string> {
-  if (!requirements.length || (!featurePaths.size && !apiPaths.size)) return '';
+  if (!requirements.length || (!featurePaths.size && !apiPaths.size && !ledgerPaths.size)) return '';
   const shown = requirements.slice(0, 100);
   const matches = new Map(shown.map(({ id }) => [id, [] as string[]]));
   const tests = [...featurePaths].slice(0, 4);
   const specs = [...apiPaths].slice(0, 4);
+  const ledgers = [...ledgerPaths].slice(0, 4);
   let unreadable = 0;
-  let truncated = shown.length < requirements.length || tests.length < featurePaths.size || specs.length < apiPaths.size;
-  for (const path of [...tests, ...specs]) {
+  let truncated = shown.length < requirements.length || tests.length < featurePaths.size || specs.length < apiPaths.size || ledgers.length < ledgerPaths.size;
+  for (const path of [...tests, ...specs, ...ledgers]) {
     try {
       const source = await loadSource(path);
       if (source === null || source.length > 128 * 1024) { unreadable++; continue; }
       const api = apiPaths.has(path);
-      const entries = api ? taggedOperations(source, path) : acceptanceTests(source);
+      const ledger = ledgerPaths.has(path);
+      const entries = api ? taggedOperations(source, path) : ledger ? parseTestLedger(source, path) : acceptanceTests(source);
       let count = 0;
       const url = sourceUrl(path);
       for (const entry of entries) {
@@ -98,7 +101,7 @@ export async function renderRequirementTrace(
           const links = matches.get(id);
           if (!links) continue;
           if (links.length >= 20) { truncated = true; continue; }
-          links.push(`<li><a href="${escape(url)}#L${entry.line}">${escape(entry.label.slice(0, 160) || path)}</a> <span class="muted">${api ? 'API · ' : ''}${escape(path)}</span></li>`);
+          links.push(`<li><a href="${escape(url)}#L${entry.line}">${escape(entry.label.slice(0, 160) || path)}</a> <span class="muted">${api ? 'API · ' : ledger ? '試験台帳 · ' : ''}${escape(path)}</span></li>`);
         }
       }
     } catch {
@@ -111,7 +114,7 @@ export async function renderRequirementTrace(
       ${links.length ? `<ul>${links.join('')}</ul>` : ' <span class="muted">確認できたリンク先に一致なし</span>'}</li>`;
   }).join('');
   return `<nav class="source-structure" aria-label="要求の対応表"><h2>要求の対応表</h2>
-    <p class="muted">このMarkdownが直接リンクするOpenAPI操作とGherkinシナリオのタグを照合しています。</p><ul>${items}</ul>
+    <p class="muted">このMarkdownが直接リンクするOpenAPI操作・Gherkinシナリオ・CSV／TSV試験台帳を照合しています。</p><ul>${items}</ul>
     ${unreadable ? `<p class="muted">${unreadable} 件の参照ファイルを確認できませんでした。</p>` : ''}
     ${truncated ? '<p class="muted">表示上限に達したため、一部を省略しています。</p>' : ''}</nav>`;
 }

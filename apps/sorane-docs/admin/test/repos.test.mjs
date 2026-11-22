@@ -1119,6 +1119,8 @@ test('repository source follows Markdown links at the same commit and escapes so
   let payloadReads = 0;
   const feature = 'f'.repeat(40);
   const badFeature = '0'.repeat(40);
+  const csv = 'ab'.repeat(20);
+  const tsv = 'cd'.repeat(20);
   const original = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(input);
@@ -1145,6 +1147,8 @@ test('repository source follows Markdown links at the same commit and escapes so
           { path: 'README.md', mode: '100644', sha: md, type: 'blob' },
           { path: 'address.feature', mode: '100644', sha: feature, type: 'blob' },
           { path: 'broken.feature', mode: '100644', sha: badFeature, type: 'blob' },
+          { path: 'checks.csv', mode: '100644', sha: csv, type: 'blob' },
+          { path: 'checks.tsv', mode: '100644', sha: tsv, type: 'blob' },
         ] });
       case '/git/trees/' + api:
         return Response.json({ tree: [
@@ -1161,7 +1165,7 @@ test('repository source follows Markdown links at the same commit and escapes so
       case '/git/blobs/' + md:
         return new Response([
           '# API仕様', '## REQ-42 住所変更', '## REQ-43 郵便番号', '## REQ-99 未対応',
-          '## REQ-example 例テーブル', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[OpenAPI](../api/openapi31.json)', '[Acceptance](address.feature#L6)', '[Broken](broken.feature)', '[external](//other.test/external.json)',
+          '## REQ-example 例テーブル', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[OpenAPI](../api/openapi31.json)', '[Acceptance](address.feature#L6)', '[Broken](broken.feature)', '[Ledger](checks.csv)', '[Other ledger](checks.tsv)', '[external](//other.test/external.json)',
           '[escape](../../escape.json)', '[slash](../api%2fother.json)', '```md', '## REQ-fake', '[example](sample.json)', '```',
         ].join('\n'));
       case '/git/blobs/' + yaml:
@@ -1259,6 +1263,11 @@ test('repository source follows Markdown links at the same commit and escapes so
         ].join('\r\n'));
       case '/git/blobs/' + badFeature:
         return new Response('Scenario: No feature heading\n');
+      case '/git/blobs/' + csv:
+        return new Response('﻿requirement_id,test_id,title\r\n\r\n' +
+          '"REQ-42;REQ-43",T-001,"Quoted, title\r\ncontinues"\r\nREQ-42,T-002,Next row');
+      case '/git/blobs/' + tsv:
+        return new Response('要求ID\t試験ID\t試験名\nREQ-example\tT-003\t日本語の試験');
       default: assert.fail(url.href);
     }
   };
@@ -1366,6 +1375,15 @@ test('repository source follows Markdown links at the same commit and escapes so
     assert.equal(trace.split('href="' + operationLink + '"').length - 1, 1);
     assert.match(trace, /POST \/address · changeAddress/);
     assert.doesNotMatch(trace, /schema\.json/);
+    const csvLink = base + '?ref=' + commit + '&source=docs%2Fchecks.csv';
+    const tsvLink = base + '?ref=' + commit + '&source=docs%2Fchecks.tsv';
+    assert.equal(trace.split('href="' + csvLink.replaceAll('&', '&amp;') + '#L3"').length - 1, 2);
+    assert.match(trace, /T-001 · Quoted, title continues/);
+    assert.ok(trace.includes('href="' + csvLink.replaceAll('&', '&amp;') + '#L5"'));
+    assert.ok(trace.includes('href="' + tsvLink.replaceAll('&', '&amp;') + '#L2"'));
+    assert.match(trace, /T-003 · 日本語の試験/);
+    const ledgerHtml = await (await worker.fetch(req(csvLink + '#L5'), env)).text();
+    assert.match(ledgerHtml, /id="L5".*REQ-42,T-002,Next row/);
     const featureResponse = await worker.fetch(req(featureLink), env);
     assert.equal(featureResponse.status, 200);
     const featureHtml = await featureResponse.text();

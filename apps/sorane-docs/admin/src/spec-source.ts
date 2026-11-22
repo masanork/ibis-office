@@ -6,7 +6,7 @@ import { renderGherkinOutline } from './spec-gherkin';
 import { requirementHeading, renderRequirementTrace, type Requirement } from './spec-requirements';
 
 export function isSpecSource(path: string): boolean {
-  return /\.(md|markdown|yaml|yml|json|mmd|feature)$/i.test(path);
+  return /\.(md|markdown|yaml|yml|json|mmd|feature|csv|tsv)$/i.test(path);
 }
 
 export function specSourceUrl(repoUrl: string, commit: string, path: string): string {
@@ -27,6 +27,7 @@ export async function renderSpecSource(source: string, text: string, repoUrl: st
   const requirements: Requirement[] = [];
   const featurePaths = new Set<string>();
   const apiPaths = new Set<string>();
+  const ledgerPaths = new Set<string>();
   if (/\.(md|markdown)$/i.test(source)) {
     let fence: string | undefined;
     const frontMatterEnd = lines[0]?.replace(/^\uFEFF/, '').trim() === '---'
@@ -52,6 +53,7 @@ export async function renderSpecSource(source: string, text: string, repoUrl: st
         if (!path || !isSpecSource(path)) continue;
         if (/\.feature$/i.test(path)) featurePaths.add(path);
         if (/\.(yaml|yml|json)$/i.test(path)) apiPaths.add(path);
+        if (/\.(csv|tsv)$/i.test(path)) ledgerPaths.add(path);
         const fragment = /^L[1-9]\d*$/.test(hash) ? '#' + hash : '';
         const href = specSourceUrl(repoUrl, commit, path) + fragment;
         targets.set(href, path + fragment);
@@ -68,7 +70,7 @@ export async function renderSpecSource(source: string, text: string, repoUrl: st
       referenceUrl: value => referenceUrl(repoUrl, commit, source, value),
     })
     : null;
-  const trace = await renderRequirementTrace(requirements, featurePaths, apiPaths, loadSource, path => specSourceUrl(repoUrl, commit, path));
+  const trace = await renderRequirementTrace(requirements, featurePaths, apiPaths, ledgerPaths, loadSource, path => specSourceUrl(repoUrl, commit, path));
   const scenarios = /\.feature$/i.test(source) ? renderGherkinOutline(text, lines.length) : '';
   const code = lines.slice(0, maxLines).map((line, i) => {
     const anchor = 'L' + (i + 1);
