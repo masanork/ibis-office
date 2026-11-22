@@ -52,6 +52,7 @@ pub mod csv;
 pub mod dicom;
 pub mod production_image;
 pub mod structured_preview;
+pub mod student_record;
 pub mod dpc;
 pub mod fhir;
 pub mod pii_preflight;

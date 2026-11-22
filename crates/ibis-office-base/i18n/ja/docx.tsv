@@ -2373,3 +2373,11 @@ docx.picture.mermaid-source	Mermaid ソースを編集…
 docx.picture.mermaid-source.invalid	このソースを Mermaid 図として描画できません。
 docx.picture.mermaid-source.stale	編集中の図が変更されました。ソース編集を開き直してください。
 docx.picture.mermaid-source.rejected	現在の文書では図を更新できません。
+docx.student-record.review	指導要録の記載候補を確認…
+docx.student-record.name	児童の氏名
+docx.student-record.birth-date	生年月日
+docx.student-record.next-school	進学先
+docx.student-record.blank	（空欄）
+docx.student-record.unsupported	対応する学籍の記録の表を1つに特定できませんでした。
+docx.student-record.title	指導要録の記載候補
+docx.student-record.instructions	項目を選ぶと、文書内の入力欄に移動します。

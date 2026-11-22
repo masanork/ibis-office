@@ -132,6 +132,7 @@ pub use super::source_manager::SourceManager as _;
 pub(crate) use super::source_manager::SourceManagerCrate as _;
 pub use super::spelling_panel::SpellingPanel as _;
 pub(crate) use super::spelling_panel::SpellingPanelCrate as _;
+pub(crate) use super::student_record::StudentRecordExtCrate as _;
 pub use super::style_new::StyleNew as _;
 pub(crate) use super::style_new::StyleNewCrate as _;
 pub(crate) use super::style_new::StyleNew2Crate as _;

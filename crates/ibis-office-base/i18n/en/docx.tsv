@@ -2382,3 +2382,11 @@ docx.picture.mermaid-source	Edit Mermaid Source…
 docx.picture.mermaid-source.invalid	This source could not be rendered as a Mermaid diagram.
 docx.picture.mermaid-source.stale	The selected diagram changed. Reopen the source editor to continue.
 docx.picture.mermaid-source.rejected	This diagram could not be updated in the current document.
+docx.student-record.review	Review school record values…
+docx.student-record.name	Pupil name
+docx.student-record.birth-date	Date of birth
+docx.student-record.next-school	Next school
+docx.student-record.blank	(Blank)
+docx.student-record.unsupported	Could not identify a single supported school record table.
+docx.student-record.title	School record values
+docx.student-record.instructions	Choose an item to go to its cell in the document.

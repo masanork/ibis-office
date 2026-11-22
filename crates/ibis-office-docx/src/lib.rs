@@ -194,6 +194,7 @@ pub(crate) mod toolbar;
 mod view_menu;
 pub(crate) mod ruler_panel;
 pub(crate) mod accessibility;
+mod student_record;
 pub(crate) mod goto;
 pub(crate) mod compress_panel;
 pub(crate) mod shape_picture_tools;
@@ -357,6 +358,7 @@ pub struct State {
     pub(crate) selection_reorder: crate::shell::chrome::data_table::ListState,
     /// Accessibility Checker (アクセシビリティ チェック).
     pub(crate) accessibility_panel: bool,
+    pub(crate) student_record_open: bool,
     /// Word's Navigation Pane active tab (見出し / ページ / 結果).
     pub(crate) navigation_tab: NavigationTab,
     /// Word's Navigation Pane search query.
@@ -494,6 +496,7 @@ impl crate::shell::format::GestureView for State {
             selection_pane: _,
             selection_reorder: _,
             accessibility_panel: _,
+            student_record_open: _,
             navigation_tab: _,
             nav_query: _,
             read_only_dismissed: _,
@@ -1648,6 +1651,14 @@ impl FormatEditor for Document {
         out
     }
 
+    fn sidebar_sync(editor: &mut SlideEditor, _: &mut Window, _: &mut Context<SlideEditor>) {
+        if !editor.sidebar_open {
+            if let Some(state) = editor.doc_state_mut() {
+                state.student_record_open = false;
+            }
+        }
+    }
+
     /// The sidebar: 検索と置換's panel when it is open.
     fn sidebar(editor: &mut SlideEditor, _: &mut Window, cx: &mut Context<SlideEditor>) -> Option<crate::shell::chrome::SidebarPanel> {
         if let Some(panel) = editor.mermaid_dialog(cx) {
@@ -1655,7 +1666,8 @@ impl FormatEditor for Document {
         }
         // The merge panel comes last: it is shown only when no other panel is open, and any other panel that opens takes it away (issue #204).
         let others = editor.font_panel(cx).map(|panel| panel.modal_named("font_panel")).or_else(|| editor.color_panel(cx).map(|panel| panel.modal_named("color_panel"))).or_else(|| editor.table_size_panel(cx).map(|panel| panel.modal_named("table_size_panel"))).or_else(|| editor.table_formula_panel(cx).map(|panel| panel.modal_named("table_formula_panel"))).or_else(|| editor.picture_panel(cx)).or_else(|| editor.docx_compress_panel(cx).map(|panel| panel.modal_named("docx_compress_panel"))).or_else(|| editor.paragraph_panel(cx).map(|panel| panel.modal_named("paragraph_panel"))).or_else(|| editor.tab_panel(cx)).or_else(|| editor.comments_panel(cx)).or_else(|| editor.style_panel(cx).map(|panel| panel.modal_named("style_panel"))).or_else(|| editor.link_panel(cx).map(|panel| panel.modal_named("link_panel"))).or_else(|| editor.find_panel(cx)).or_else(|| editor.tate_chu_yoko_panel(cx).map(|panel| panel.modal_named("tate_chu_yoko_panel"))).or_else(|| editor.ruby_panel(cx).map(|panel| panel.modal_named("ruby_panel")).or_else(||editor.fit_text_panel(cx).map(|p|p.modal_named("fit_text_panel")))).or_else(|| editor.text_box_panel(cx)).or_else(|| editor.doc_page_setup_panel(cx).map(|panel| panel.modal_named("doc_page_setup_panel"))).or_else(|| editor.notes_panel(cx).map(|panel| panel.modal_named("notes_panel"))).or_else(|| editor.bookmark_panel(cx).map(|panel| panel.modal_named("bookmark_panel"))).or_else(|| editor.watermark_panel(cx).map(|panel| panel.modal_named("watermark_panel"))).or_else(|| editor.new_style_panel(cx).map(|panel| panel.modal_named("new_style_panel"))).or_else(|| editor.symbol_panel(cx).map(|panel| panel.modal_named("symbol_panel"))).or_else(|| editor.word_count_panel(cx)).or_else(|| editor.field_panel(cx).map(|panel| panel.modal_named("field_panel"))).or_else(|| editor.caption_panel(cx).map(|panel| panel.modal_named("caption_panel"))).or_else(|| editor.doc_properties_panel(cx).map(|panel| panel.modal_named("doc_properties_panel"))).or_else(|| editor.cross_reference_panel(cx).map(|panel| panel.modal_named("cross_reference_panel"))).or_else(|| editor.selection_pane_panel(cx)).or_else(|| editor.accessibility_panel(cx)).or_else(|| editor.update_toc_panel(cx).map(|panel| panel.modal_named("update_toc_panel"))).or_else(|| editor.user_info_panel(cx).map(|panel| panel.modal_named("user_info_panel"))).or_else(|| editor.kinsoku_panel(cx).map(|panel| panel.modal_named("kinsoku_panel"))).or_else(|| editor.go_to_panel(cx).map(|panel| panel.modeless_named("go_to_panel"))).or_else(|| editor.doc_spelling_panel(cx)).or_else(|| editor.doc_chart_panel(cx)).or_else(|| editor.control_panel(cx).map(|panel| panel.modal_named("control_panel"))).or_else(|| editor.doc_autocorrect_panel(cx).map(|panel| panel.modal_named("doc_autocorrect_panel"))).or_else(|| editor.autorecover_settings_panel(cx).map(|panel| panel.modal_named("autorecover_settings_panel"))).or_else(|| editor.recover_unsaved_panel(cx).map(|panel| panel.modal_named("recover_unsaved_panel"))).or_else(|| editor.docx_math_panel(cx).map(|panel| panel.modal_named("docx_math_panel"))).or_else(|| editor.quick_parts_panel(cx)).or_else(|| editor.doc_inspect_panel(cx).map(|panel| panel.modal_named("doc_inspect_panel"))).or_else(|| editor.doc_compatibility_panel(cx).map(|panel| panel.modal_named("doc_compatibility_panel"))).or_else(|| editor.doc_print_panel(cx).map(|panel| panel.modal_named("doc_print_panel"))).or_else(|| editor.doc_source_manager_panel(cx).map(|panel| panel.modal_named("doc_source_manager_panel"))).or_else(|| editor.doc_thesaurus_panel(cx)).or_else(|| editor.doc_repair_panel(cx).map(|panel| panel.modal_named("doc_repair_panel"))).or_else(|| editor.doc_template_panel(cx).map(|panel| panel.modal_named("doc_template_panel"))).or_else(|| editor.list_style_panel(cx).map(|panel| panel.modal_named("list_style_panel"))).or_else(|| editor.docx_theme_panel(cx).map(|panel| panel.modal_named("docx_theme_panel"))).or_else(|| editor.master_doc_panel(cx)).or_else(|| editor.docx_ink_panel(cx)).or_else(|| editor.docx_screen_reader_panel(cx)).or_else(|| editor.docx_read_aloud_panel(cx)).or_else(|| editor.docx_customize_toolbar_panel(cx)).or_else(|| editor.ai_assistant_panel(cx));
-        if others.is_none() { return editor.merge_panel(cx); }
+        if others.is_none() { return editor.student_record_panel(cx).or_else(|| editor.merge_panel(cx)); }
+        if let Some(state) = editor.doc_state_mut() { state.student_record_open = false; }
         if let Some(merge) = editor.doc_state_mut().and_then(|s| s.merge.as_mut()) { merge.visible = false; }
         others
     }

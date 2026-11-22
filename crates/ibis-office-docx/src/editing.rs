@@ -1362,8 +1362,9 @@ impl SlideEditor {
     }
 
     /// The docx panels shown by the editor's own state go (a shared panel is about to be shown).
-    fn close_doc_panels(&mut self) {
+    pub(crate) fn close_doc_panels(&mut self) {
         if let Some(state) = self.doc_state_mut() {
+            state.student_record_open = false;
             state.find = None;
             state.link = None;
             state.ruby = None;

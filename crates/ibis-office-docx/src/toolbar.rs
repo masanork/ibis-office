@@ -1188,6 +1188,12 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
             .into(),
         Submenu::tr("docx.options.paste-default", "settings", paste_default_submenu).into(),
     ];
+    menus.items_mut(MenuId::Tools).push(
+        MenuItem::tr("docx.student-record.review")
+            .icon("fact_check")
+            .on(|editor, _, cx| editor.open_student_record(cx))
+            .into(),
+    );
     menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.autocorrect-options").icon("spellcheck").on(|this, window, cx| this.open_doc_autocorrect_panel(window, cx)).into());
     menus.items_mut(MenuId::Tools).push(MenuItem::tr("docx.autorecover-settings").icon("history").on(|this, window, cx| this.open_doc_autorecover_settings(window, cx)).into());
     menus.items_mut(MenuId::File).push(MenuItem::tr("docx.recover-unsaved").icon("restore_page").on(|this, _, cx| this.open_doc_recover_unsaved(cx)).into());
