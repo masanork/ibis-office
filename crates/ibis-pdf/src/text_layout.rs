@@ -136,6 +136,8 @@ fn vertical_runs(glyphs: &[Glyph], flagged: &[bool]) -> Vec<bool> {
     }
     let mut out: Vec<bool> = flagged.to_vec();
     out.resize(n, false);
+    // The runs as `start..=end` (the characters), with their number of steps.
+    let mut runs = Vec::new();
     let mut i = 0;
     while i < steps.len() {
         if !steps[i] {
@@ -146,10 +148,25 @@ fn vertical_runs(glyphs: &[Glyph], flagged: &[bool]) -> Vec<bool> {
         while i < steps.len() && steps[i] {
             i += 1;
         }
-        // `start..=i` are the characters of the run; it has `i - start` steps.
-        if i - start >= 2 {
-            for v in &mut out[start..=i] {
+        runs.push((start, i));
+    }
+    for &(start, end) in &runs {
+        if end - start >= 2 {
+            for v in &mut out[start..=end] {
                 *v = true;
+            }
+        }
+    }
+    // On a page set mostly in columns, two characters one below the other on one column are a column too: a
+    // heading of two characters set apart (附　則), the end of a word carried to the next column.
+    if out.iter().filter(|v| **v).count() * 2 > n {
+        for &(start, end) in &runs {
+            if end - start == 1 {
+                let (a, b) = (&glyphs[start], &glyphs[end]);
+                if (a.center_x() - b.center_x()).abs() <= 0.1 * a.height().max(b.height()) {
+                    out[start] = true;
+                    out[end] = true;
+                }
             }
         }
     }
@@ -219,28 +236,52 @@ fn vertical_text(segments: &[Segment], layout: TextLayout) -> String {
     if segments.is_empty() {
         return String::new();
     }
-    // Tiers: stretches whose vertical extents overlap.
+    // Tiers: the stretches whose vertical extents overlap, one with another in a chain. Only a band no stretch
+    // crosses (the gutter between the tiers of a gazette page) divides two tiers; a column running the length of the
+    // page keeps the page one tier.
     let mut order: Vec<usize> = (0..segments.len()).collect();
     order.sort_by(|&a, &b| segments[a].top.total_cmp(&segments[b].top));
     let mut tiers: Vec<(f32, f32, Vec<usize>)> = Vec::new();
     for i in order {
         let s = &segments[i];
-        match tiers.iter_mut().find(|(top, bottom, _)| s.top < *bottom && s.bottom > *top) {
-            Some((top, bottom, members)) => {
-                *top = top.min(s.top);
+        match tiers.last_mut() {
+            Some((_, bottom, members)) if s.top < *bottom => {
                 *bottom = bottom.max(s.bottom);
                 members.push(i);
             }
-            None => tiers.push((s.top, s.bottom, vec![i])),
+            _ => tiers.push((s.top, s.bottom, vec![i])),
         }
     }
-    tiers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Tiers stand one above the other across the page. Two bands of columns that do not share any width are side
+    // by side (the columns of a signature set low at the right, the next article high at the left): one tier.
+    let span = |members: &[usize]| {
+        members.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(l, r), &i| {
+            let s = &segments[i];
+            (l.min(s.center_x - s.width / 2.0), r.max(s.center_x + s.width / 2.0))
+        })
+    };
+    let mut merged: Vec<(f32, f32, Vec<usize>)> = Vec::new();
+    for tier in tiers {
+        if let Some(last) = merged.last_mut() {
+            let ((l0, r0), (l1, r1)) = (span(&last.2), span(&tier.2));
+            if r0 <= l1 || r1 <= l0 {
+                last.1 = last.1.max(tier.1);
+                last.2.extend(tier.2);
+                continue;
+            }
+        }
+        merged.push(tier);
+    }
+    let mut tiers = merged;
     let mut out = String::new();
     for (t, (_, _, members)) in tiers.iter_mut().enumerate() {
         if t > 0 {
             out.push('\n');
         }
-        members.sort_by(|&a, &b| segments[b].center_x.total_cmp(&segments[a].center_x));
+        // Right to left; the stretches of one column top to bottom.
+        members.sort_by(|&a, &b| {
+            segments[b].center_x.total_cmp(&segments[a].center_x).then(segments[a].top.total_cmp(&segments[b].top))
+        });
         for &i in members.iter() {
             let s = &segments[i];
             let mut prev: Option<&Glyph> = None;
@@ -465,6 +506,44 @@ mod tests {
         row(&mut chars, "丙", 4.0, 60.0, 10.0);
         let text = page_text(&PageTextIndex { chars }, TextLayout::Reading);
         assert_eq!(text, "甲\n\n乙\n\n丙\n");
+    }
+
+    #[test]
+    fn a_column_the_length_of_the_page_keeps_the_page_one_tier() {
+        // Right to left: a full column; a short column at the top; a short column at the foot (a gap down the
+        // middle). The short columns' stretches do not overlap each other, but both overlap the full column.
+        let mut chars = Vec::new();
+        column(&mut chars, "一二三四五六七八九十", 200.0, 0.0, 10.0);
+        column(&mut chars, "上の列", 185.0, 0.0, 10.0);
+        column(&mut chars, "下の列", 170.0, 70.0, 10.0);
+        let text = page_text(&PageTextIndex { chars }, TextLayout::Reading);
+        assert_eq!(text, "一二三四五六七八九十\n上の列\n下の列\n");
+    }
+
+    #[test]
+    fn a_band_no_column_crosses_divides_the_tiers() {
+        // Two tiers of two columns each, a gutter between them: the upper tier is read first, right to left.
+        let mut chars = Vec::new();
+        column(&mut chars, "甲の一", 200.0, 0.0, 10.0);
+        column(&mut chars, "甲の二", 185.0, 0.0, 10.0);
+        column(&mut chars, "乙の一", 200.0, 80.0, 10.0);
+        column(&mut chars, "乙の二", 185.0, 80.0, 10.0);
+        let text = page_text(&PageTextIndex { chars }, TextLayout::Reading);
+        assert_eq!(text, "甲の一\n甲の二\n\n乙の一\n乙の二\n");
+    }
+
+    #[test]
+    fn columns_set_low_at_the_right_and_high_at_the_left_are_read_right_to_left() {
+        // A page of a notice: the signatures low at the right, then the heading 附　則 and the article high at the
+        // left. Their extents do not overlap, but they share no width either: one tier.
+        let mut chars = Vec::new();
+        column(&mut chars, "内閣総理大臣", 300.0, 200.0, 10.0);
+        column(&mut chars, "総務大臣", 285.0, 220.0, 10.0);
+        put(&mut chars, '附', 250.0, 20.0, 10.0, 10.0);
+        put(&mut chars, '則', 250.0, 40.0, 10.0, 10.0);
+        column(&mut chars, "この告示は", 235.0, 10.0, 10.0);
+        let text = page_text(&PageTextIndex { chars }, TextLayout::Reading);
+        assert_eq!(text, "内閣総理大臣\n総務大臣\n附 則\nこの告示は\n");
     }
 
     #[test]
