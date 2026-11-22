@@ -54,6 +54,7 @@ pub(crate) struct GitWorkspace {
     base_input: Option<Entity<InputState>>,
     base_path_input: Option<Entity<InputState>>,
     base_path: Option<PathBuf>,
+    pinned_base: Option<(gix::ObjectId, PathBuf)>,
     revised: Option<gix::ObjectId>,
     busy: bool,
     working: WorkingTree,
@@ -93,6 +94,7 @@ impl GitWorkspace {
             base_input: None,
             base_path_input: None,
             base_path: None,
+            pinned_base: None,
             revised: None,
             busy: false,
             working: WorkingTree::default(),
@@ -440,6 +442,31 @@ impl SlideEditor {
         .detach();
     }
 
+    fn git_pin_current_file(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = self.git_workspace.as_mut().filter(|state| !state.busy)
+            && let Some(path) = state.file.clone()
+        {
+            state.pinned_base = Some((state.snapshot, path));
+            cx.notify();
+        }
+    }
+
+    fn git_use_pinned_base(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.git_workspace.as_mut().filter(|state| !state.busy) else {
+            return;
+        };
+        let (Some(file), Some((base, base_path))) = (&state.file, &state.pinned_base) else {
+            return;
+        };
+        let revised = state.revised.unwrap_or(state.snapshot);
+        if *base != revised {
+            state.base = Some(*base);
+            state.base_path = (base_path != file).then(|| base_path.clone());
+            state.revised = Some(revised);
+            cx.notify();
+        }
+    }
+
     fn git_set_base_by_id(
         &mut self,
         prefix: String,
@@ -643,6 +670,54 @@ impl SlideEditor {
             Ok(path) => crate::app::open_path_in_app(path, cx),
             Err(error) => self.show_alert(text("git.failed"), error.to_string().into(), cx),
         }
+    }
+
+    fn render_pinned_git_base(
+        &self,
+        state: &GitWorkspace,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        state.file.as_ref()?;
+        let revised = state.revised.unwrap_or(state.snapshot);
+        let pinned = state.pinned_base.as_ref();
+        Some(
+            div()
+                .px_2()
+                .pb_1()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("git-pin-base")
+                                .xsmall()
+                                .disabled(state.busy)
+                                .label(text("git.pin-base"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.git_pin_current_file(cx)),
+                                ),
+                        )
+                        .when_some(pinned, |row, (id, _)| {
+                            row.child(
+                                Button::new("git-use-pinned-base")
+                                    .xsmall()
+                                    .disabled(state.busy || *id == revised)
+                                    .label(text("git.use-pinned-base"))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.git_use_pinned_base(cx)),
+                                    ),
+                            )
+                        }),
+                )
+                .when_some(pinned, |pane, (id, path)| {
+                    pane.child(div().truncate().child(format!(
+                        "{} {} · {}",
+                        text("git.pinned-base"),
+                        short(*id),
+                        path.display()
+                    )))
+                })
+                .into_any_element(),
+        )
     }
 
     pub(crate) fn render_git_workspace(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -911,6 +986,7 @@ impl SlideEditor {
                         )
                     },
                 )
+                .children(self.render_pinned_git_base(state, cx))
                 .when_some(state.base_path.as_ref(), |pane, path| {
                     pane.child(div().px_2().truncate().child(format!(
                         "{} {}",

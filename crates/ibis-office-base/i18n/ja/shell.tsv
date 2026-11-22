@@ -1679,3 +1679,6 @@ git.base-same-as-revised	新版と異なるコミットを旧版に指定して�
 git.base-file-missing	指定されたコミットには、このパスにファイルがありません。
 git.base-path	旧版のパス（任意）
 git.base-path-invalid	親ディレクトリへの移動を含まない、リポジトリのルートからの相対パスを入力してください。
+git.pin-base	旧版候補に登録
+git.use-pinned-base	候補を旧版に指定
+git.pinned-base	旧版候補
