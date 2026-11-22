@@ -280,3 +280,5 @@ DOCX の画像は、代替テキストに含まれる括弧や改行も復元で
 DOCX の画像補正では、明るさとコントラストを `docx-lum` に10万分率で、二色化の暗色と明色を `docx-duotone` に sRGB の16進値で保持します。
 
 DOCX の画像では、透明にする sRGB 色を `docx-clear` に、画像全体の不透明度を `docx-opacity` に10万分率で保持します。
+
+彩度と白黒二値化のしきい値は、10万分率でそれぞれ `docx-saturation`（0〜400000）と `docx-bilevel`（0〜100000）に保持します。グレースケールは `docx-grayscale=true` で指定します。

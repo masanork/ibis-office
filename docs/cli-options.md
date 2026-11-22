@@ -266,3 +266,5 @@ DOCX images retain alt text with brackets and line breaks, separate title and de
 DOCX picture adjustments preserve brightness and contrast as `docx-lum` in hundred-thousandths and sRGB duotone colors as `docx-duotone`.
 
 DOCX picture transparency is stored as an sRGB color key in `docx-clear` and an overall opacity in hundred-thousandths in `docx-opacity`.
+
+Saturation and the black-and-white threshold use hundred-thousandths in `docx-saturation` (0–400000) and `docx-bilevel` (0–100000). Grayscale is stored as `docx-grayscale=true`.

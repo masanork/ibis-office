@@ -4721,6 +4721,16 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                                     .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
                                 {
                                     look.effects.opacity = Some(opacity);
+                                } else if let Some(saturation) = part.strip_prefix("docx-saturation=")
+                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=400_000).contains(value))
+                                {
+                                    look.effects.saturation = Some(saturation);
+                                } else if let Some(threshold) = part.strip_prefix("docx-bilevel=")
+                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
+                                {
+                                    look.effects.bilevel = Some(threshold);
+                                } else if part == "docx-grayscale=true" {
+                                    look.effects.grayscale = true;
                                 } else if let Some(title) = part.strip_prefix("docx-title=")
                                     .and_then(decode_base64).and_then(|bytes| String::from_utf8(bytes).ok())
                                 {
@@ -4756,7 +4766,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                             picture.luminance = look.luminance;
                             picture.duotone = look.duotone;
                             picture.clear = look.clear;
-                            picture.effects.opacity = look.effects.opacity;
+                            picture.effects = look.effects;
                             let mut shape = Shape::new(
                                 ctx.fresh_shape_id(),
                                 EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
@@ -7052,6 +7062,15 @@ fn picture_attributes(
     if let Some(opacity) = look.effects.opacity {
         let _ = write!(image, " docx-opacity={opacity}");
     }
+    if let Some(saturation) = look.effects.saturation {
+        let _ = write!(image, " docx-saturation={saturation}");
+    }
+    if let Some(threshold) = look.effects.bilevel {
+        let _ = write!(image, " docx-bilevel={threshold}");
+    }
+    if look.effects.grayscale {
+        image.push_str(" docx-grayscale=true");
+    }
     if let Some(anchor) = anchor {
         image.push(' ');
         image.push_str(picture_anchor::ATTRIBUTE);
@@ -8207,8 +8226,8 @@ mod tests {
     fn docx_markdown_round_trips_inline_and_floating_pictures() {
         let emf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf");
         let wmf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.wmf");
-        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm docx-crop=12500,5000,0,0 docx-transform=1800000,true,false docx-lum=-20000,35000 docx-duotone=224466,ffeedd docx-clear=ffffff docx-opacity=70000}}", encode_base64(emf));
-        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm docx-crop=0,0,7500,2500 docx-transform=0,false,true docx-lum=10000,-5000 docx-duotone=101010,fefefe docx-clear=112233 docx-opacity=45000}}", encode_base64(wmf));
+        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm docx-crop=12500,5000,0,0 docx-transform=1800000,true,false docx-lum=-20000,35000 docx-duotone=224466,ffeedd docx-clear=ffffff docx-opacity=70000 docx-saturation=180000 docx-grayscale=true}}", encode_base64(emf));
+        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm docx-crop=0,0,7500,2500 docx-transform=0,false,true docx-lum=10000,-5000 docx-duotone=101010,fefefe docx-clear=112233 docx-opacity=45000 docx-saturation=60000 docx-bilevel=35000}}", encode_base64(wmf));
         let source = format!("{floating}\n\n{inline}");
         let original = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         let mut package = ibis_ooxml::Package::open(original).unwrap();
@@ -8241,6 +8260,9 @@ mod tests {
         assert_eq!(markdown.matches("docx-duotone=").count(), 2);
         assert_eq!(markdown.matches("docx-clear=").count(), 2);
         assert_eq!(markdown.matches("docx-opacity=").count(), 2);
+        assert_eq!(markdown.matches("docx-saturation=").count(), 2);
+        assert!(markdown.contains("docx-bilevel=35000"));
+        assert!(markdown.contains("docx-grayscale=true"));
         let slide = crate::read(&import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap()).unwrap();
         assert_eq!(
             slide.slides.iter().flat_map(|s| &s.shapes)
@@ -8261,6 +8283,9 @@ mod tests {
                     assert_eq!(look.duotone, Some((Rgb(0x101010), Rgb(0xfefefe))));
                     assert_eq!(look.clear, Some(Rgb(0x112233)));
                     assert_eq!(look.effects.opacity, Some(45_000));
+                    assert_eq!(look.effects.saturation, Some(60_000));
+                    assert_eq!(look.effects.bilevel, Some(35_000));
+                    assert!(!look.effects.grayscale);
                     Some((presentation.media(*media).unwrap(), *size))
                 }
                 FlowRunKind::Shape(shape) => {
@@ -8272,6 +8297,9 @@ mod tests {
                     assert_eq!(picture.duotone, Some((Rgb(0x224466), Rgb(0xffeedd))));
                     assert_eq!(picture.clear, Some(Rgb(0xffffff)));
                     assert_eq!(picture.effects.opacity, Some(70_000));
+                    assert_eq!(picture.effects.saturation, Some(180_000));
+                    assert_eq!(picture.effects.bilevel, None);
+                    assert!(picture.effects.grayscale);
                     floating_count += 1;
                     Some((presentation.media(picture.media).unwrap(),
                         EmuSize::new(shape.frame.width, shape.frame.height)))
