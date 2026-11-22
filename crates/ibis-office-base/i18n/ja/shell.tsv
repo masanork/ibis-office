@@ -1611,7 +1611,7 @@ git.pull-ff-only	早送りできる場合のみ上流の変更を取り込む
 git.pull-complete	プル完了
 git.pull-failed	Gitのプルに失敗しました
 git.pull-no-upstream	リモートのアップストリームが設定されたローカルブランチが必要です。
-git.pull-head-changed	チェックアウト中のブランチまたはコミットが変わりました。リポジトリを開き直して再試行してください。
+git.workspace-head-changed	チェックアウト中のブランチまたはコミットが変わりました。リポジトリを開き直して再試行してください。
 git.status.no-upstream	上流ブランチ未設定
 git.status.detached	ブランチ未選択（detached HEAD）
 git.status.upstream-missing	上流ブランチのローカル参照なし
@@ -1623,3 +1623,9 @@ git.back-to-graph	履歴に戻る
 git.more-files	さらに表示
 git.first-parent	第一親との差分
 git.commit-parent-unavailable	このコミットの親は取得済みの履歴に含まれていません。
+git.branches	ブランチ
+git.no-local-branches	ローカルブランチはありません
+git.branch-current	現在のブランチ
+git.switch	切り替え
+git.switch-failed	Gitブランチの切り替えに失敗しました
+git.switch-complete	切り替え完了
