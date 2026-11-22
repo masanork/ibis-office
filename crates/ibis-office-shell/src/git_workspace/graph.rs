@@ -1012,6 +1012,7 @@ impl SlideEditor {
                         state.revisions.clear();
                         state.older = None;
                         state.base = None;
+                        state.base_path = None;
                         state.revised = None;
                         state.graph.open = false;
                     }

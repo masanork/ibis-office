@@ -1679,3 +1679,5 @@ git.base-by-id	Base commit ID
 git.set-base-id	Set base
 git.base-same-as-revised	Choose a base commit different from the revised version.
 git.base-file-missing	The selected file does not exist at this path in the base commit.
+git.base-path	Base file path (optional)
+git.base-path-invalid	Enter a path relative to the repository root, without parent directory components.

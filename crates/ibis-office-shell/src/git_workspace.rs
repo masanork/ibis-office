@@ -52,6 +52,8 @@ pub(crate) struct GitWorkspace {
     older: Option<gix::ObjectId>,
     base: Option<gix::ObjectId>,
     base_input: Option<Entity<InputState>>,
+    base_path_input: Option<Entity<InputState>>,
+    base_path: Option<PathBuf>,
     revised: Option<gix::ObjectId>,
     busy: bool,
     working: WorkingTree,
@@ -89,6 +91,8 @@ impl GitWorkspace {
             older: None,
             base: None,
             base_input: None,
+            base_path_input: None,
+            base_path: None,
             revised: None,
             busy: false,
             working: WorkingTree::default(),
@@ -260,16 +264,17 @@ enum RevisionPreview {
 
 fn compare(
     repo: &Path,
-    path: &Path,
+    old_path: &Path,
+    new_path: &Path,
     old: gix::ObjectId,
     new: gix::ObjectId,
 ) -> Result<RevisionPreview> {
     let repo = gix::open(repo)?;
-    let old_bytes = blob(&repo, old, path)?;
-    let new_bytes = blob(&repo, new, path)?;
+    let old_bytes = blob(&repo, old, old_path)?;
+    let new_bytes = blob(&repo, new, new_path)?;
     if let (Some(_), Some(_)) = (
-        ibis_formats::lawtext::path_input_to_markdown(path, &old_bytes)?,
-        ibis_formats::lawtext::path_input_to_markdown(path, &new_bytes)?,
+        ibis_formats::lawtext::path_input_to_markdown(old_path, &old_bytes)?,
+        ibis_formats::lawtext::path_input_to_markdown(new_path, &new_bytes)?,
     ) {
         let old_law = ibis_formats::lawtext::parse_law_input(std::str::from_utf8(&old_bytes)?)?;
         let new_law = ibis_formats::lawtext::parse_law_input(std::str::from_utf8(&new_bytes)?)?;
@@ -383,8 +388,11 @@ impl SlideEditor {
         state.base_input.get_or_insert_with(|| {
             cx.new(|cx| InputState::new(window, cx).placeholder(text("git.base-by-id")))
         });
+        state.base_path_input =
+            Some(cx.new(|cx| InputState::new(window, cx).placeholder(text("git.base-path"))));
         state.revisions.clear();
         state.base = None;
+        state.base_path = None;
         state.revised = None;
         state.older = Some(state.snapshot);
         self.git_more_history(window, cx);
@@ -432,13 +440,27 @@ impl SlideEditor {
         .detach();
     }
 
-    fn git_set_base_by_id(&mut self, prefix: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn git_set_base_by_id(
+        &mut self,
+        prefix: String,
+        old_path: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(state) = self.git_workspace.as_mut().filter(|state| !state.busy) else {
             return;
         };
         let Some(path) = state.file.clone() else {
             return;
         };
+        if old_path.as_ref().is_some_and(|path| {
+            path.components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        }) {
+            self.show_alert(text("git.failed"), text("git.base-path-invalid"), cx);
+            return;
+        }
+        let old_path = old_path.filter(|old| old != &path);
         let repo = state.repo.clone();
         let root = state.worktree.clone().unwrap_or_else(|| repo.clone());
         let revised = state.revised.unwrap_or(state.snapshot);
@@ -456,12 +478,12 @@ impl SlideEditor {
                         }
                         let tree = repo.find_commit(id)?.tree()?;
                         if !tree
-                            .lookup_entry_by_path(&path)?
+                            .lookup_entry_by_path(old_path.as_deref().unwrap_or(&path))?
                             .is_some_and(|entry| entry.mode().is_blob())
                         {
                             return Err(text("git.base-file-missing").to_string().into());
                         }
-                        Ok(id)
+                        Ok((id, old_path))
                     };
                     read().map_err(|error| error.to_string())
                 })
@@ -472,8 +494,9 @@ impl SlideEditor {
                 };
                 state.busy = false;
                 match result {
-                    Ok(id) => {
+                    Ok((id, old_path)) => {
                         state.base = Some(id);
+                        state.base_path = old_path;
                         state.revised = Some(revised);
                     }
                     Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
@@ -498,6 +521,7 @@ impl SlideEditor {
             return;
         };
         let repo = state.repo.clone();
+        let old_path = state.base_path.clone();
         let filename = path
             .file_name()
             .unwrap_or(path.as_os_str())
@@ -525,7 +549,9 @@ impl SlideEditor {
                 .background_executor()
                 .spawn(async move {
                     match old {
-                        Some(id) => compare(&repo, &path, id, new),
+                        Some(id) => {
+                            compare(&repo, old_path.as_deref().unwrap_or(&path), &path, id, new)
+                        }
                         None => preview(&repo, &path, new).map(RevisionPreview::ReadOnly),
                     }
                     .map_err(|err| err.to_string())
@@ -704,14 +730,17 @@ impl SlideEditor {
                         .child(
                             Button::new(("git-set-base", index))
                                 .xsmall()
-                                .label(text(if state.base == Some(id) {
-                                    "git.base-selected"
-                                } else {
-                                    "git.base"
-                                }))
+                                .label(text(
+                                    if state.base == Some(id) && state.base_path.is_none() {
+                                        "git.base-selected"
+                                    } else {
+                                        "git.base"
+                                    },
+                                ))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(state) = this.git_workspace.as_mut() {
                                         state.base = Some(id);
+                                        state.base_path = None;
                                     }
                                     cx.notify();
                                 })),
@@ -838,6 +867,7 @@ impl SlideEditor {
                     state.base_input.as_ref().filter(|_| state.file.is_some()),
                     |pane, input| {
                         let draft = input.clone();
+                        let path_draft = state.base_path_input.clone();
                         pane.child(
                             h_flex()
                                 .px_2()
@@ -856,12 +886,38 @@ impl SlideEditor {
                                         .label(text("git.set-base-id"))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             let prefix = draft.read(cx).value().trim().to_owned();
-                                            this.git_set_base_by_id(prefix, window, cx);
+                                            let old_path = path_draft.as_ref().and_then(|input| {
+                                                let value = input.read(cx).value();
+                                                (!value.trim().is_empty())
+                                                    .then(|| PathBuf::from(value.to_string()))
+                                            });
+                                            this.git_set_base_by_id(prefix, old_path, window, cx);
                                         })),
                                 ),
                         )
                     },
                 )
+                .when_some(
+                    state
+                        .base_path_input
+                        .as_ref()
+                        .filter(|_| state.file.is_some()),
+                    |pane, input| {
+                        pane.child(
+                            div()
+                                .px_2()
+                                .pb_1()
+                                .child(Input::new(input).small().disabled(state.busy)),
+                        )
+                    },
+                )
+                .when_some(state.base_path.as_ref(), |pane, path| {
+                    pane.child(div().px_2().truncate().child(format!(
+                        "{} {}",
+                        text("git.base"),
+                        path.display()
+                    )))
+                })
                 .when_some(pair, |pane, (base, revised)| {
                     pane.child(div().px_2().truncate().child(format!(
                         "{} {} → {} {}",

@@ -1677,3 +1677,5 @@ git.base-by-id	比較元のコミットID
 git.set-base-id	旧版に指定
 git.base-same-as-revised	新版と異なるコミットを旧版に指定してください。
 git.base-file-missing	指定されたコミットには、このパスにファイルがありません。
+git.base-path	旧版のパス（任意）
+git.base-path-invalid	親ディレクトリへの移動を含まない、リポジトリのルートからの相対パスを入力してください。
