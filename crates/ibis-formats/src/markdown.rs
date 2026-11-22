@@ -32,6 +32,7 @@
 //!   - Inline Data URI images `![alt](data:image/png;base64,...){width=... height=...}`
 
 mod metafile_preview;
+mod shape_text;
 mod picture_anchor;
 
 use std::collections::{BTreeMap, HashMap};
@@ -1004,9 +1005,29 @@ pub fn export_presentation_to_markdown(presentation: &Presentation) -> Result<St
 
 /// Export a word-processing document with optional SVG and text previews of its metafiles.
 pub fn export_document_markdown_with_metafile_previews(presentation: &Presentation) -> Result<String, Error> {
-    let flow = presentation.flow.as_ref().ok_or_else(|| Error::new("Metafile Markdown previews require a word-processing document"))?;
+    export_document_markdown_with(presentation, DocumentMarkdownOptions { metafile_previews: true, ..Default::default() })
+}
+
+/// Appendices a word-processing document's Markdown may carry after the body; the import skips them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DocumentMarkdownOptions {
+    /// SVG and text previews of the EMF and WMF pictures.
+    pub metafile_previews: bool,
+    /// The text of the text boxes and other shapes, which the body keeps out.
+    pub shape_text: bool,
+}
+
+/// Export a word-processing document with the appendices `options` ask for.
+pub fn export_document_markdown_with(presentation: &Presentation, options: DocumentMarkdownOptions) -> Result<String, Error> {
+    let flow = presentation.flow.as_ref().ok_or_else(|| Error::new("These Markdown options require a word-processing document"))?;
     let mut markdown = export_markdown(flow, &presentation.media);
-    metafile_preview::append(&mut markdown);
+    // The shape text before the previews: each import strip takes the appendix at the end, the previews first.
+    if options.shape_text {
+        shape_text::append(&mut markdown, flow);
+    }
+    if options.metafile_previews {
+        metafile_preview::append(&mut markdown);
+    }
     Ok(markdown)
 }
 
@@ -1392,7 +1413,7 @@ fn parse_markdown_into(
     baseline_pres: Option<&Presentation>,
     base_dir: Option<&std::path::Path>,
 ) -> Result<(), Error> {
-    let text = metafile_preview::strip(text);
+    let text = shape_text::strip(metafile_preview::strip(text));
     let mut body_text = text;
     let mut frontmatter_text = None;
 

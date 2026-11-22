@@ -432,6 +432,8 @@ struct Args {
     /// Emit a JSON receipt after saving the edit output.
     ai_receipt: bool,
     include_metafile_previews: bool,
+    /// `--include-shape-text`: a DOCX's text boxes and labelled shapes after the body (the import skips it).
+    include_shape_text: bool,
     include_xlsx_validations: bool,
     include_xlsx_hidden_axes: bool,
     include_xlsx_hidden_sheets: bool,
@@ -498,6 +500,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             "--require-preview" => args.require_preview = true,
             "--ai-receipt" => args.ai_receipt = true,
             "--include-metafile-previews" => args.include_metafile_previews = true,
+            "--include-shape-text" => args.include_shape_text = true,
             "--include-xlsx-validations" => args.include_xlsx_validations = true,
             "--include-xlsx-hidden-axes" => args.include_xlsx_hidden_axes = true,
             "--include-xlsx-hidden-sheets" => args.include_xlsx_hidden_sheets = true,
@@ -575,6 +578,9 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     }
     if args.include_metafile_previews && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
         return Err("--include-metafile-previews requires --export md".into());
+    }
+    if args.include_shape_text && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
+        return Err("--include-shape-text requires --export md".into());
     }
     if args.text_layout_physical.is_some() && !matches!(args.export.as_deref(), Some("md" | "markdown" | "txt" | "text")) {
         return Err("--text-layout requires --export md or --export txt".into());
@@ -761,8 +767,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             )
                 .map_err(|e| format!("{}: {e}", path.display()))?
         {
-            if args.include_metafile_previews {
-                return Err("--include-metafile-previews requires a word-processing document".into());
+            if args.include_metafile_previews || args.include_shape_text {
+                return Err("--include-metafile-previews and --include-shape-text require a word-processing document".into());
             }
             if args.include_xlsx_validations || args.include_xlsx_hidden_axes
                 || args.include_xlsx_hidden_sheets || args.include_xlsx_defined_names
@@ -851,10 +857,14 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     include_defined_names: args.include_xlsx_defined_names,
                 };
                 let workbook_options = options.include_validations || options.include_hidden_axes || options.include_hidden_sheets || options.include_defined_names;
-                let md = if args.include_metafile_previews && workbook_options {
-                    return Err("--include-metafile-previews and XLSX Markdown options apply to different document types".into());
-                } else if args.include_metafile_previews {
-                    ibis_formats::markdown::export_document_markdown_with_metafile_previews(&presentation)
+                let document_options = ibis_formats::markdown::DocumentMarkdownOptions {
+                    metafile_previews: args.include_metafile_previews,
+                    shape_text: args.include_shape_text,
+                };
+                let md = if document_options != Default::default() && workbook_options {
+                    return Err("--include-metafile-previews, --include-shape-text and XLSX Markdown options apply to different document types".into());
+                } else if document_options != Default::default() {
+                    ibis_formats::markdown::export_document_markdown_with(&presentation, document_options)
                 } else if workbook_options {
                     ibis_formats::markdown::export_workbook_markdown_with_options(&presentation, options)
                 } else {

@@ -259,6 +259,8 @@ For DOCX pictures, `docx-crop` stores the left, top, right, and bottom crop in h
 
 For DOCX, use `ibisOffice --export md --include-metafile-previews --out-dir ./out input.docx` to append SVG previews and any extracted labels from EMF and WMF in drawing order. The main document retains the original images. Text drawn as outlines or pixels requires OCR. ibisOffice skips the generated appendix when importing the Markdown.
 
+The body keeps text boxes and other shapes out (their text would import as body paragraphs). To read their text too, such as a caption set in a text box beside a figure, add `--include-shape-text`: an appendix after the body lists each shape's paragraphs in document order (body, then headers and footers). ibisOffice skips this appendix too when importing the Markdown, and it can be combined with `--include-metafile-previews`.
+
 DOCX images retain alt text with brackets and line breaks, separate title and description fields, and decorative status.
 
 DOCX picture adjustments preserve brightness and contrast as `docx-lum` in hundred-thousandths and sRGB duotone colors as `docx-duotone`.

@@ -76,6 +76,8 @@ ibisOffice --read-only report.docx
 
 `ibisOffice --export md --include-metafile-previews --out-dir ./out input.docx` は、本文に元の EMF・WMF を残し、変換できた図の SVG と抽出できた文字を末尾に併記します。文字の順序は SVG の描画順です。輪郭や画像になった文字には OCR が必要です。ibisOffice は Markdown を DOCX に戻すときにプレビューの付録を除きます。
 
+本文にはテキストボックスなどの図形を含めません（含めると DOCX に戻すときに本文の段落になるため）。図の横のテキストボックスに置いた出典などの文字も読むには `--include-shape-text` を付けます。各図形の段落を文書の順（本文、続いてヘッダー・フッター）に末尾の付録に並べます。この付録も DOCX に戻すときに除きます。`--include-metafile-previews` と併用できます。
+
 `--include-xlsx-validations` を XLSX の `--export md` に付けると、表示シートの入力規則を Markdown に含めます。`--export xlsx` で規則を復元できます。[Markdown リファレンスの XLSX 往復](markdown-reference-ja.md#対応状況と残るギャップ)
 
 `--include-xlsx-hidden-axes` を XLSX の `--export md` に付けると、表示シートの非表示行・列の値と式を Markdown に含めます。`--export xlsx` でセルと非表示状態を復元できます。
