@@ -34,3 +34,5 @@ ibisOffice v0.8.9 uses `Option::map_or_default`, which requires Rust 1.98 or new
 The definition in `package.nix` uses the upstream release's pinned Git submodules and Cargo lockfile. Nix verifies the source and dependency hashes before the sandboxed build. The package installs the desktop entry, application icons, notices, and ECMA art border assets.
 
 The v0.8.9 source tag omits the fixture `2026-11-14-179-rest-many-patterns-result.tsv` referenced by the DOCX scenario tests, so the package disables the application Cargo test hook. The application can be smoke-tested by opening a synthetic CSV or DOCX fixture after installation.
+
+The pinned revision built and installed successfully with sandboxing enabled on the x86_64 NixOS 26.05 guest. The installed executable opened a synthetic CSV and DOCX under X11.
