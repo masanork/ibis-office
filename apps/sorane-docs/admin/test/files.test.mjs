@@ -11,7 +11,7 @@ import { generateKeyPair, exportJWK } from 'jose';
 
 globalThis.crypto ??= webcrypto;
 const dir = await mkdtemp(join(tmpdir(), 'sorane-files-test-'));
-await build({entryPoints:['src/index.ts'],bundle:true,platform:'node',target:'node22',format:'esm',outfile:join(dir,'worker.mjs')});
+await build({entryPoints:['src/index.ts'],bundle:true,platform:'browser',target:'node22',format:'esm',outfile:join(dir,'worker.mjs')});
 const {default: worker} = await import(pathToFileURL(join(dir,'worker.mjs')));
 const {privateKey} = await generateKeyPair('ES256',{extractable:true});
 const jwk = await exportJWK(privateKey); jwk.kid='test-only';

@@ -142,6 +142,9 @@ function reposPage(
     pre.code{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:.75rem;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem;margin:0}
     .source-line-number{display:inline-block;min-width:5ch;text-align:right;user-select:none}
     .source-code span:target{background:#fff8c5}
+    .source-structure{max-height:20rem;overflow:auto;margin-bottom:1rem;overflow-wrap:anywhere}
+    .source-structure ul{padding-inline-start:1.5rem}
+    .source-structure summary{cursor:pointer}
     .muted{color:var(--muted);font-size:.85rem}
     #status[data-kind=error]{color:var(--danger)}
     #status[data-kind=ok]{color:var(--ok)}

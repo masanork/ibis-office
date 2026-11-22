@@ -14,7 +14,7 @@ const dir = await mkdtemp(join(tmpdir(), 'sorane-repos-test-'));
 await build({
   entryPoints: ['src/index.ts'],
   bundle: true,
-  platform: 'node',
+  platform: 'browser',
   target: 'node22',
   format: 'esm',
   outfile: join(dir, 'worker.mjs'),
@@ -1109,6 +1109,8 @@ test('repository source follows Markdown links at the same commit and escapes so
   const md = '5'.repeat(40);
   const yaml = '6'.repeat(40);
   const json = '7'.repeat(40);
+  const badYaml = '8'.repeat(40);
+  const badJson = '9'.repeat(40);
   const original = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(input);
@@ -1136,6 +1138,8 @@ test('repository source follows Markdown links at the same commit and escapes so
         return Response.json({ tree: [
           { path: '契約.yaml', mode: '100644', sha: yaml, type: 'blob' },
           { path: 'schema.json', mode: '100644', sha: json, type: 'blob' },
+          { path: 'broken.yaml', mode: '100644', sha: badYaml, type: 'blob' },
+          { path: 'broken.json', mode: '100644', sha: badJson, type: 'blob' },
         ] });
       case '/git/blobs/' + md:
         return new Response([
@@ -1143,9 +1147,16 @@ test('repository source follows Markdown links at the same commit and escapes so
           '[escape](../../escape.json)', '[slash](../api%2fother.json)', '```md', '[example](sample.json)', '```',
         ].join('\n'));
       case '/git/blobs/' + yaml:
-        return new Response('openapi: 3.1.0\ninfo: "<script>alert(1)</script>"\n');
+        return new Response([
+          'openapi: 3.1.0', 'info: "<script>alert(1)</script>"',
+          'paths: &items', '  - first', '  - *items', '---', 'another: true',
+        ].join('\r\n'));
       case '/git/blobs/' + json:
-        return new Response('{"type":"object"}');
+        return new Response('{\n  "type":"object",\n  "limit": 9007199254740993\n}');
+      case '/git/blobs/' + badYaml:
+        return new Response('paths:\n  - [unfinished');
+      case '/git/blobs/' + badJson:
+        return new Response('{type: object}');
       default: assert.fail(url.href);
     }
   };
@@ -1163,13 +1174,32 @@ test('repository source follows Markdown links at the same commit and escapes so
     const source = await linked.text();
     assert.match(source, /openapi: 3\.1\.0/);
     assert.match(source, /id="L2"/);
+    assert.match(source, /aria-label="構造ツリー"/);
+    assert.match(source, /href="#L2" aria-label="info（2 行目）"/);
+    assert.match(source, /href="#L5" aria-label="\[1\]（5 行目）"/);
+    assert.match(source, /\*items<\/code>/);
+    assert.match(source, /ドキュメント 2/);
+    assert.match(source, /href="#L7" aria-label="another（7 行目）"/);
     assert.match(source, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(source, new RegExp('ref=' + commit + '&amp;plain=1'));
     const schemaLink = base + '?ref=' + commit + '&source=api%2Fschema.json';
     assert.ok(html.includes('href="' + schemaLink.replace('&', '&amp;') + '"'));
     const schema = await worker.fetch(req(schemaLink), env);
     assert.equal(schema.status, 200);
-    assert.match(await schema.text(), /&quot;type&quot;:&quot;object&quot;/);
+    const schemaSource = await schema.text();
+    assert.match(schemaSource, /&quot;type&quot;:&quot;object&quot;/);
+    assert.match(schemaSource, /href="#L3" aria-label="limit（3 行目）"/);
+    assert.match(schemaSource, /9007199254740993<\/code>/);
+    const malformed = await worker.fetch(req(base + '?ref=' + commit + '&source=api%2Fbroken.yaml'), env);
+    assert.equal(malformed.status, 200);
+    const malformedSource = await malformed.text();
+    assert.match(malformedSource, /構文エラー/);
+    assert.match(malformedSource, /href="#L2">2 行目/);
+    assert.match(malformedSource, /\[unfinished/);
+    const nonJson = await worker.fetch(req(base + '?ref=' + commit + '&source=api%2Fbroken.json'), env);
+    const nonJsonSource = await nonJson.text();
+    assert.match(nonJsonSource, /JSONの構文を確認してください/);
+    assert.doesNotMatch(nonJsonSource, /aria-label="構造ツリー"/);
     const invalid = await worker.fetch(req(base + '?source=..%2FREADME.md'), env);
     assert.equal(invalid.status, 400);
   } finally {

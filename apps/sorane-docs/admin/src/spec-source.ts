@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { escape } from '../vendor/mikaki-oidc';
 import { normalizeRepoPath } from './git-pack';
+import { renderSpecStructure } from './spec-structure';
 
 export function isSpecSource(path: string): boolean {
   return /\.(md|markdown|yaml|yml|json|mmd)$/i.test(path);
@@ -66,7 +67,10 @@ export function renderSpecSource(source: string, text: string, repoUrl: string, 
     const anchor = 'L' + (i + 1);
     return `<span id="${anchor}"><a aria-label="${i + 1} 行目" href="#${anchor}" class="source-line-number muted">${i + 1}</a>  ${escape(line)}</span>`;
   }).join('\n');
+  const structure = /\.(yaml|yml|json)$/i.test(source)
+    ? renderSpecStructure(text, /\.json$/i.test(source), lines.length)
+    : '';
   return `${links ? `<nav aria-label="参照ファイル"><h2>参照ファイル</h2><ul>${links}</ul></nav>` : ''}
-    <pre class="code source-code"><code>${code}</code></pre>
+    ${structure}<pre class="code source-code"><code>${code}</code></pre>
     ${lines.length > maxLines ? '<p>最初の10,000行を表示しています。全体は Raw で確認できます。</p>' : ''}`;
 }
