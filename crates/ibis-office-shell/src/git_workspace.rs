@@ -10,7 +10,9 @@ use gpui_kit::*;
 
 use crate::{editor::SlideEditor, i18n::text};
 
+mod graph;
 mod working_tree;
+use graph::CommitGraph;
 use working_tree::WorkingTree;
 
 const HISTORY_SCAN: usize = 1500;
@@ -39,6 +41,8 @@ pub(crate) struct GitWorkspace {
     title: String,
     branch: String,
     head: gix::ObjectId,
+    snapshot: gix::ObjectId,
+    graph: CommitGraph,
     tree: BTreeMap<PathBuf, Vec<Entry>>,
     file: Option<PathBuf>,
     revisions: Vec<Revision>,
@@ -72,6 +76,8 @@ impl GitWorkspace {
             title,
             branch,
             head,
+            snapshot: head,
+            graph: CommitGraph::default(),
             tree,
             file: None,
             revisions: Vec::new(),
@@ -323,7 +329,7 @@ impl SlideEditor {
             return;
         }
         let repo = state.repo.clone();
-        let head = state.head;
+        let head = state.snapshot;
         state.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -364,7 +370,7 @@ impl SlideEditor {
         state.revisions.clear();
         state.base = None;
         state.revised = None;
-        state.older = Some(state.head);
+        state.older = Some(state.snapshot);
         self.git_more_history(window, cx);
     }
 
@@ -503,7 +509,8 @@ impl SlideEditor {
 
     pub(crate) fn render_git_workspace(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.git_workspace.as_ref()?;
-        let theme = cx.theme();
+        let border = cx.theme().border;
+        let accent = cx.theme().accent;
         let mut tree = div().id("git-files").flex_1().min_h_0().overflow_y_scroll();
         let root = Path::new("");
         let mut stack: Vec<_> = state
@@ -540,9 +547,7 @@ impl SlideEditor {
                     .py_1()
                     .cursor_pointer()
                     .truncate()
-                    .when(state.file.as_ref() == Some(&path), |row| {
-                        row.bg(theme.accent)
-                    })
+                    .when(state.file.as_ref() == Some(&path), |row| row.bg(accent))
                     .child(label)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if directory {
@@ -564,17 +569,14 @@ impl SlideEditor {
             .overflow_y_scroll();
         for (index, revision) in state.revisions.iter().enumerate() {
             let id = revision.id;
-            let row = div()
-                .px_2()
-                .py_1()
-                .border_b_1()
-                .border_color(theme.border)
-                .child(div().truncate().child(format!(
+            let row = div().px_2().py_1().border_b_1().border_color(border).child(
+                div().truncate().child(format!(
                     "{}  {}  {}",
                     short(id),
                     revision.date,
                     revision.title
-                )));
+                )),
+            );
             revisions = revisions.child(row.when(revision.exists, |row| {
                 row.child(
                     h_flex()
@@ -635,7 +637,10 @@ impl SlideEditor {
                     .truncate()
                     .child(format!("{} · {}", state.title, state.branch)),
             )
-            .when(state.worktree.is_some(), |bar| {
+            .when(!state.working.is_open(), |bar| {
+                bar.child(self.git_graph_toggle(state, cx))
+            })
+            .when(state.worktree.is_some() && !state.graph.is_open(), |bar| {
                 bar.child(
                     Button::new("git-working-mode")
                         .xsmall()
@@ -654,6 +659,7 @@ impl SlideEditor {
                 Button::new("git-close")
                     .xsmall()
                     .label(text("_shell.close"))
+                    .disabled(state.busy)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.git_workspace = None;
                         cx.notify();
@@ -666,7 +672,7 @@ impl SlideEditor {
                 .flex_1()
                 .min_h_0()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(border)
                 .child(
                     div().px_2().py_1().truncate().child(
                         state
@@ -691,7 +697,9 @@ impl SlideEditor {
                             )
                         })
                         .when(
-                            state.file.is_some() && state.worktree.is_some(),
+                            state.file.is_some()
+                                && state.worktree.is_some()
+                                && state.snapshot == state.head,
                             |actions| {
                                 actions.child(
                                     Button::new("git-open-working")
@@ -723,7 +731,7 @@ impl SlideEditor {
                 .flex_shrink_0()
                 .min_h_0()
                 .border_r_1()
-                .border_color(theme.border)
+                .border_color(border)
                 .text_sm()
                 .child(header)
                 .when(state.busy, |pane| {
@@ -732,8 +740,15 @@ impl SlideEditor {
                 .when_some(self.render_git_changes(state, cx), |pane, changes| {
                     pane.child(changes)
                 })
-                .when(!state.working.is_open(), |pane| {
-                    pane.child(tree).child(bottom)
+                .when_some(self.render_git_graph(state, cx), |pane, graph| {
+                    pane.child(graph)
+                })
+                .when(!state.working.is_open() && !state.graph.is_open(), |pane| {
+                    pane.when(state.snapshot != state.head, |pane| {
+                        pane.child(self.git_snapshot_banner(state, cx))
+                    })
+                    .child(tree)
+                    .child(bottom)
                 })
                 .into_any_element(),
         )

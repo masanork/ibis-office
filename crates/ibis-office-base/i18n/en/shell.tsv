@@ -1591,3 +1591,6 @@ git.commit-message-required	Enter a commit message.
 git.commit-staged	Commit Staged
 git.refresh	Refresh
 git.commit-refresh-failed	Committed. The view could not be refreshed.
+git.graph	History
+git.snapshot	Commit
+git.back-to-head	Back to HEAD

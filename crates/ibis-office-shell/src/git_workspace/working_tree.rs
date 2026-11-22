@@ -49,7 +49,7 @@ enum Operation {
     Commit(String),
 }
 
-fn git(root: &Path, args: &[&OsStr]) -> Result<Vec<u8>> {
+pub(super) fn git(root: &Path, args: &[&OsStr]) -> Result<Vec<u8>> {
     let mut command = Command::new("git");
     command
         .arg("-C")
