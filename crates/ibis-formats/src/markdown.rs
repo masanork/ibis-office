@@ -4657,6 +4657,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     let mut explicit_h: Option<Emu> = None;
                     let mut anchor = None;
                     let mut look = PictureLook::default();
+                    let mut title_only = false;
                     let after_paren = &after_open_paren[url_end + 1..];
                     if let Some(attr_open) = after_paren.strip_prefix('{') {
                         if let Some(attr_close) = attr_open.find('}') {
@@ -4676,6 +4677,14 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                                     look.rotation = rotation;
                                     look.flip_h = flip_h;
                                     look.flip_v = flip_v;
+                                } else if let Some(title) = part.strip_prefix("docx-title=")
+                                    .and_then(decode_base64).and_then(|bytes| String::from_utf8(bytes).ok())
+                                {
+                                    look.alt_text.title = title;
+                                } else if part == "docx-alt=title" {
+                                    title_only = true;
+                                } else if part == "docx-decorative=true" {
+                                    look.decorative = true;
                                 }
                             }
                             total_consumed += 1 + attr_close + 1;
@@ -4690,12 +4699,15 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                             format,
                             data: data.into(),
                         });
-                        if !alt.is_empty() {
-                            look.alt_text.description = alt.to_string();
+                        if title_only {
+                            look.alt_text.title = decode_picture_label(alt);
+                        } else {
+                            look.alt_text.description = decode_picture_label(alt);
                         }
                         let kind = if let Some(anchor) = anchor {
                             let mut picture = ibis_doc_model::Picture::new(media_id);
                             picture.alt_text = look.alt_text;
+                            picture.decorative = look.decorative;
                             picture.crop = look.crop;
                             let mut shape = Shape::new(
                                 ctx.fresh_shape_id(),
@@ -6927,6 +6939,41 @@ fn parse_picture_transform(value: &str) -> Option<(i32, bool, bool)> {
     parts.next().is_none().then_some((rotation, flip_h, flip_v))
 }
 
+// Numeric entities keep image labels on one Markdown line, including in tables.
+fn encode_picture_label(label: &str) -> String {
+    use std::fmt::Write as _;
+    let mut output = String::new();
+    for c in label.chars() {
+        if matches!(c, '&' | '[' | ']' | '<' | '>' | '|' | '\\' | '\r' | '\n' | '\t') {
+            let _ = write!(output, "&#{};", u32::from(c));
+        } else {
+            output.push(c);
+        }
+    }
+    output
+}
+
+fn decode_picture_label(label: &str) -> String {
+    let mut output = String::new();
+    let mut tail = label;
+    while let Some((before, after)) = tail.split_once("&#") {
+        output.push_str(before);
+        let semicolon = after.as_bytes().iter().take(4).position(|&byte| byte == b';');
+        if let Some(end) = semicolon
+            && let Some(c) = after[..end].parse().ok().and_then(char::from_u32)
+            && matches!(c, '&' | '[' | ']' | '<' | '>' | '|' | '\\' | '\r' | '\n' | '\t')
+        {
+            output.push(c);
+            tail = &after[end + 1..];
+        } else {
+            output.push_str("&#");
+            tail = after;
+        }
+    }
+    output.push_str(tail);
+    output
+}
+
 fn picture_attributes(
     mut image: String,
     crop: ibis_doc_model::Crop,
@@ -6961,6 +7008,7 @@ fn serialize_picture(
     id: MediaId,
     size: EmuSize,
     alt_text: &ibis_doc_model::AltText,
+    decorative: bool,
 ) -> String {
     let Some(media) = media.iter().find(|media| media.id == id) else {
         return String::new();
@@ -6977,7 +7025,7 @@ fn serialize_picture(
         MediaFormat::Wmf => "x-wmf",
         _ => return String::new(),
     };
-    let alt = if alt_text.description.is_empty() { &alt_text.title } else { &alt_text.description };
+    let alt = encode_picture_label(if alt_text.description.is_empty() { &alt_text.title } else { &alt_text.description });
     let b64 = encode_base64(&media.data);
     let mm = |length: Emu| {
         let value = format!("{:.5}", length as f64 / EMU_PER_MM);
@@ -6985,7 +7033,18 @@ fn serialize_picture(
     };
     let width = mm(size.width);
     let height = mm(size.height);
-    format!("![{alt}](data:image/{mime};base64,{b64}){{width={width}mm height={height}mm}}")
+    use std::fmt::Write as _;
+    let mut attributes = format!("width={width}mm height={height}mm");
+    if decorative {
+        attributes.push_str(" docx-decorative=true");
+    } else if !alt_text.title.is_empty() {
+        if alt_text.description.is_empty() {
+            attributes.push_str(" docx-alt=title");
+        } else {
+            let _ = write!(attributes, " docx-title={}", encode_base64(alt_text.title.as_bytes()));
+        }
+    }
+    format!("![{alt}](data:image/{mime};base64,{b64}){{{attributes}}}")
 }
 
 fn serialize_runs(
@@ -7052,7 +7111,7 @@ fn serialize_runs(
                 }
             }
             FlowRunKind::Picture { media: mid, size, look } => picture_attributes(
-                serialize_picture(media, *mid, *size, &look.alt_text),
+                serialize_picture(media, *mid, *size, &look.alt_text, look.decorative),
                 look.crop, look.rotation, look.flip_h, look.flip_v, None,
             ),
             FlowRunKind::Shape(shape) => match &shape.kind {
@@ -7060,12 +7119,12 @@ fn serialize_runs(
                     serialize_picture(
                         media, picture.media,
                         EmuSize::new(shape.frame.width, shape.frame.height),
-                        &picture.alt_text,
+                        &picture.alt_text, picture.decorative,
                     ),
                     picture.crop, shape.rotation, shape.flip_h, shape.flip_v, shape.floating.as_ref(),
                 ),
                 ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
-                    .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text))
+                    .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text, false))
                     .filter(|image| !image.is_empty())
                     .collect::<Vec<_>>()
                     .join(" "),
@@ -7663,7 +7722,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                             _ => "application/octet-stream",
                         };
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&media.data);
-                        out.push_str(&format!("![{}](data:{mime};base64,{b64})\n\n", alt.description));
+                        out.push_str(&format!("![{}](data:{mime};base64,{b64})\n\n", encode_picture_label(&alt.description)));
                     } else {
                         out.truncate(position);
                     }
@@ -8151,12 +8210,42 @@ mod tests {
     }
 
     #[test]
+    fn docx_markdown_retains_picture_alt_text_and_decorative_status() {
+        let data = encode_base64(include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf"));
+        let description = "内訳 ](参考) [第1期] | &#93; & 確定\n次の行";
+        let title = "集計表";
+        let md = format!(
+            "![{}](data:image/x-emf;base64,{data}){{docx-title={}}}\n\n\
+             ![タイトルのみ](data:image/x-emf;base64,{data}){{docx-alt=title}}\n\n\
+             ![](data:image/x-emf;base64,{data}){{docx-decorative=true}}",
+            encode_picture_label(description), encode_base64(title.as_bytes()),
+        );
+        let docx = import_markdown_to_docx_bytes(md.as_bytes()).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        assert!(markdown.contains(&format!("![{}](", encode_picture_label(description))));
+        let rebuilt = crate::read(&import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let flow = rebuilt.flow.as_ref().unwrap();
+        let looks = ibis_doc_model::flow_command::all_paragraphs(flow).into_iter()
+            .flat_map(|p| &p.runs)
+            .filter_map(|run| match &run.kind {
+                FlowRunKind::Picture { look, .. } => Some(look),
+                _ => None,
+            }).collect::<Vec<_>>();
+        assert_eq!(looks.len(), 3);
+        assert_eq!(looks[0].alt_text.title, title);
+        assert_eq!(looks[0].alt_text.description, description);
+        assert_eq!(looks[1].alt_text.title, "タイトルのみ");
+        assert!(looks[1].alt_text.description.is_empty());
+        assert!(looks[2].decorative);
+    }
+
+    #[test]
     fn markdown_picture_mime_matches_tiff_and_webp() {
         for (format, mime) in [(MediaFormat::Tiff, "tiff"), (MediaFormat::Webp, "webp")] {
             let data = b"unchanged bytes";
             let mut presentation = Presentation::default();
             let id = presentation.add_media(format, data.to_vec());
-            let markdown = serialize_picture(&presentation.media, id, EmuSize::new(36000, 36000), &Default::default());
+            let markdown = serialize_picture(&presentation.media, id, EmuSize::new(36000, 36000), &Default::default(), false);
             let uri = markdown.strip_prefix("![](").unwrap().split_once(')').unwrap().0;
             assert!(uri.starts_with(&format!("data:image/{mime};base64,")));
             assert_eq!(decode_data_uri_image(uri), Some((format, data.to_vec())));
