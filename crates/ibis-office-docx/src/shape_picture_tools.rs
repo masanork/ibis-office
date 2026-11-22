@@ -374,6 +374,7 @@ impl SlideEditor {
                     fill: Fill::Solid(Color::opaque(Rgb(0xffffff))),
                     stroke: Some(Stroke::solid(Color::opaque(Rgb(0x4472c4)), 12_700)),
                     text: Some(text),
+                    text_box_pictures: Vec::new(),
                     tilt: None,
                     shadow: None,
                     glow: None,

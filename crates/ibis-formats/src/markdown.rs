@@ -6980,6 +6980,11 @@ fn serialize_runs(
                     EmuSize::new(shape.frame.width, shape.frame.height),
                     &picture.alt_text,
                 ),
+                ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
+                    .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text))
+                    .filter(|image| !image.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" "),
                 _ => String::new(),
             },
             _ => String::new(),
@@ -7926,6 +7931,57 @@ mod tests {
         let flow = opened.presentation.flow.unwrap();
         let text = ibis_doc_model::flow_command::all_paragraphs(&flow).iter().map(|p| p.text()).collect::<Vec<_>>();
         assert_eq!(text, ["Shared document"]);
+    }
+
+    #[test]
+    fn docx_markdown_exports_text_box_pictures_in_source_order() {
+        let emf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf");
+        let wmf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.wmf");
+        let markdown = format!(
+            "Before.\n\n![first](data:image/x-emf;base64,{}){{width=20mm height=10mm}}\n\n![second](data:image/x-wmf;base64,{}){{width=30mm height=15mm}}",
+            encode_base64(emf), encode_base64(wmf)
+        );
+        let mut package = ibis_ooxml::Package::open(import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        let part = "word/document.xml";
+        let mut xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+        let drawings = xml.match_indices("<w:drawing").map(|(start, _)| {
+            let end = start + xml[start..].find("</w:drawing>").unwrap() + "</w:drawing>".len();
+            (start, end)
+        }).collect::<Vec<_>>();
+        let [(first_start, first_end), (second_start, second_end)] = drawings.as_slice() else {
+            panic!("expected two source images");
+        };
+        let first = &xml[*first_start..*first_end];
+        let second = &xml[*second_start..*second_end];
+        let fallback = first.split_once("r:embed=\"").unwrap().1.split_once('"').unwrap().0;
+        let box_drawing = format!(r#"<w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><wp:inline><wp:extent cx="3600000" cy="1800000"/><wp:docPr id="99" name="Text box"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:cNvSpPr txBox="1"/><wps:spPr/><wps:txbx><w:txbxContent><w:p><w:r><w:t>Text box text</w:t><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="wps">{first}</mc:Choice><mc:Fallback><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:imagedata r:id="{fallback}"/></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p><w:p><w:r>{second}</w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing>"#);
+        xml.replace_range(*second_start..*second_end, "");
+        xml.replace_range(*first_start..*first_end, &box_drawing);
+        package.set_bytes(part, xml.into_bytes());
+        let docx = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
+
+        let mut opened = crate::open(docx).unwrap();
+        let flow = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+        let Block::Paragraph(before) = &mut flow.body[0] else { panic!("expected the first paragraph") };
+        let FlowRunKind::Text(text) = &mut before.runs[0].kind else { panic!("expected text") };
+        *text = "Edited.".to_string();
+        let shape = ibis_doc_model::flow_command::all_paragraphs(flow).into_iter()
+            .flat_map(|paragraph| &paragraph.runs)
+            .find_map(|run| match &run.kind {
+                FlowRunKind::Shape(shape) => Some(shape),
+                _ => None,
+            }).expect("expected the enclosing shape");
+        assert!(shape.text_body().unwrap().paragraphs[0].runs.iter().any(|run| run.text == "Text box text"));
+
+        let saved = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+        let exported = export_docx_to_markdown(&saved).unwrap();
+        let first = format!("![first](data:image/x-emf;base64,{}){{width=20mm height=10mm}}", encode_base64(emf));
+        let second = format!("![second](data:image/x-wmf;base64,{}){{width=30mm height=15mm}}", encode_base64(wmf));
+        assert_eq!(exported.trim(), format!("Edited.\n\n{first} {second}"));
+        let package = ibis_ooxml::Package::open(saved).unwrap();
+        let saved_xml = String::from_utf8(package.read(part).unwrap()).unwrap();
+        assert!(saved_xml.contains("Text box text"));
+        assert!(saved_xml.contains("imagedata"));
     }
 
     #[test]

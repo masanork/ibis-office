@@ -1816,7 +1816,7 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         let tilt = sp_pr.and_then(|p| tilt(p, &ctx.colors));
         let sp_prs: Vec<Node> = chain().collect();
         let (crate::drawing_props::Effects { shadow, inner_shadow, glow, soft_edge, reflection }, bevel) = crate::drawing_props::shape_effects(&ctx.colors, ctx.theme, &sp_prs, style);
-        Some(shape(ShapeKind::Auto(AutoShape { geometry, fill, stroke, text, tilt, shadow, glow, inner_shadow, soft_edge, reflection, bevel })))
+        Some(shape(ShapeKind::Auto(AutoShape { geometry, fill, stroke, text, text_box_pictures: Vec::new(), tilt, shadow, glow, inner_shadow, soft_edge, reflection, bevel })))
     }
 
 fn parse_artistic_effect(blip: Node) -> Option<ibis_doc_model::ArtisticEffect> {
