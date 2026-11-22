@@ -50,6 +50,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         return result;
     }
     match args.as_slice() {
+        [command, layout, definition, record, mapping] if command == "preview-html-claims" => {
+            let preview = form_template::preview_html_claims(
+                &fs::read_to_string(layout)?,
+                &read_value(Path::new(definition))?,
+                &read_value(Path::new(record))?,
+                &read_value(Path::new(mapping))?,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&preview)?);
+        }
         [command, input, output] if command == "export-md" || command == "compile-md" => {
             let source = fs::read(input)?;
             let result = if command == "export-md" {
@@ -79,7 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             fs::OpenOptions::new().write(true).create_new(true).open(output)?.write_all(&document)?;
         }
-        _ => return Err("usage: docx_form export-md|compile-md INPUT OUTPUT | docx_form inspect|inspect-md TEMPLATE | docx_form check|check-html|check-md TEMPLATE FORM RECORD | docx_form fill|fill-html|fill-md TEMPLATE FORM RECORD OUTPUT | docx_form inspect-pdf|check-pdf|fill-pdf …".into()),
+        _ => return Err("usage: docx_form export-md|compile-md INPUT OUTPUT | docx_form inspect|inspect-md TEMPLATE | docx_form check|check-html|check-md TEMPLATE FORM RECORD | docx_form fill|fill-html|fill-md TEMPLATE FORM RECORD OUTPUT | docx_form preview-html-claims LAYOUT FORM RECORD MAPPING | docx_form inspect-pdf|check-pdf|fill-pdf …".into()),
     }
     Ok(())
 }

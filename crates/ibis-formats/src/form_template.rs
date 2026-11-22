@@ -308,6 +308,74 @@ pub fn fill_html_with_diagnostics(
     definition: &Value,
     data: &Value,
 ) -> Result<(String, Vec<Truncation>), Error> {
+    let (document, diagnostics, _) = render_html(layout, definition, data)?;
+    Ok((document, diagnostics))
+}
+
+/// Preview an HTML print form together with unsigned, typed claim candidates.
+pub fn preview_html_claims(
+    layout: &str,
+    definition: &Value,
+    record: &Value,
+    mapping: &Value,
+) -> Result<Value, Error> {
+    if !same_form(definition, mapping) {
+        return Err(Error::new(
+            "Claim mapping references a different form ID or version",
+        ));
+    }
+    let bindings = mapping["claims"]
+        .as_object()
+        .filter(|claims| !claims.is_empty())
+        .ok_or_else(|| Error::new("Missing claim mappings"))?;
+    let (html, truncations, printed) = render_html(layout, definition, record)?;
+    let mut values = BTreeMap::new();
+    let data = record["data"]
+        .as_object()
+        .ok_or_else(|| Error::new("Missing record data"))?;
+    collect_values(data, "", &mut values)?;
+    let mut claims = serde_json::Map::new();
+    for (claim, field) in bindings {
+        let field = field
+            .as_str()
+            .filter(|_| !claim.trim().is_empty())
+            .ok_or_else(|| Error::new(format!("Invalid mapping for claim: {claim}")))?;
+        if !printed.contains(field) {
+            return Err(Error::new(format!(
+                "Claim field is absent from the print layout: {field}"
+            )));
+        }
+        if truncations.iter().any(|item| item.field_id == field) {
+            return Err(Error::new(format!(
+                "Claim field is truncated in the print layout: {field}"
+            )));
+        }
+        let value = values[field];
+        if value.as_str().is_some_and(|text| text.trim().is_empty()) {
+            return Err(Error::new(format!(
+                "Required claim field is blank: {field}"
+            )));
+        }
+        claims.insert(claim.clone(), value.clone());
+    }
+    let truncations: Vec<_> = truncations
+        .into_iter()
+        .map(|item| {
+            serde_json::json!({
+                "fieldId": item.field_id,
+                "actualChars": item.actual_chars,
+                "maxChars": item.max_chars,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "html": html, "claims": claims, "truncations": truncations }))
+}
+
+fn render_html<'a>(
+    layout: &'a str,
+    definition: &Value,
+    data: &Value,
+) -> Result<(String, Vec<Truncation>, BTreeSet<&'a str>), Error> {
     let values = rendered_values(definition, data)?;
     let mut used = BTreeSet::new();
     let mut result = String::with_capacity(layout.len());
@@ -326,10 +394,11 @@ pub fn fill_html_with_diagnostics(
     }
     result.push_str(tail);
     let diagnostics = used
-        .into_iter()
+        .iter()
+        .copied()
         .filter_map(|id| values[id].truncation(id))
         .collect();
-    Ok((result, diagnostics))
+    Ok((result, diagnostics, used))
 }
 
 /// Merge a text form definition and versioned record into DOCX.
