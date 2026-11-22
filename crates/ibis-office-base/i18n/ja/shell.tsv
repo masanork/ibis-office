@@ -1668,3 +1668,8 @@ git.merge-abort-confirm	現在のマージを中止しますか？
 git.merge-abort-detail	競合の解決中に加えた編集が失われる場合があります。
 git.merge-abort-changed	中止する前にマージの内容が変わったか、マージが終了しました。
 git.merge-abort-failed	Gitのマージを中止できませんでした
+git.jump-placeholder	コミットID
+git.jump	コミットへ移動
+git.jump-invalid	4桁以上の16進数でコミットIDを入力してください。
+git.jump-not-found	このIDに一致するローカルのコミットはありません。
+git.jump-ambiguous	このIDに一致するコミットが複数あります。より長いIDを入力してください。

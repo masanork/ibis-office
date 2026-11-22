@@ -1670,3 +1670,8 @@ git.merge-abort-confirm	Abort the current merge?
 git.merge-abort-detail	Edits made while resolving conflicts may be lost.
 git.merge-abort-changed	The merge changed or ended before it could be aborted.
 git.merge-abort-failed	Could not abort the Git merge
+git.jump-placeholder	Commit ID
+git.jump	Go to commit
+git.jump-invalid	Enter a commit ID with at least four hexadecimal characters.
+git.jump-not-found	No local commit matches this ID.
+git.jump-ambiguous	Multiple local commits match this ID. Enter a longer commit ID.

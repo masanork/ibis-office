@@ -38,12 +38,37 @@ pub(super) struct CommitGraph {
     upstream: Option<UpstreamStatus>,
     branches: Option<Branches>,
     new_branch: Option<Entity<InputState>>,
+    commit_search: Option<Entity<InputState>>,
 }
 
 impl CommitGraph {
     pub(super) fn is_open(&self) -> bool {
         self.open
     }
+}
+
+enum SnapshotTarget {
+    Commit(gix::ObjectId),
+    Prefix(String),
+}
+
+fn find_commit_prefix(repo: &gix::Repository, root: &Path, prefix: &str) -> Result<gix::ObjectId> {
+    if !(4..=repo.object_hash().len_in_hex()).contains(&prefix.len())
+        || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(text("git.jump-invalid").to_string().into());
+    }
+    let argument = format!("--disambiguate={}", prefix.to_ascii_lowercase());
+    let args = ["rev-parse", &argument];
+    let matches = git(root, &args.map(OsStr::new))?;
+    let mut commit = None;
+    for line in std::str::from_utf8(&matches)?.lines() {
+        let id = gix::ObjectId::from_hex(line.as_bytes())?;
+        if repo.find_header(id)?.kind() == gix::objs::Kind::Commit && commit.replace(id).is_some() {
+            return Err(text("git.jump-ambiguous").to_string().into());
+        }
+    }
+    commit.ok_or_else(|| text("git.jump-not-found").to_string().into())
 }
 
 fn read_graph(root: &Path, head: gix::ObjectId, limit: usize) -> Result<(Vec<Row>, bool)> {
@@ -941,7 +966,7 @@ impl SlideEditor {
 
     fn git_browse_snapshot(
         &mut self,
-        id: gix::ObjectId,
+        target: SnapshotTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -949,13 +974,23 @@ impl SlideEditor {
             return;
         };
         let repo = state.repo.clone();
+        let root = state.worktree.clone().unwrap_or_else(|| repo.clone());
         state.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let read = || -> Result<_> { entries(&gix::open(repo)?, id, Path::new("")) };
+                    let read = || -> Result<_> {
+                        let repo = gix::open(repo)?;
+                        let id = match target {
+                            SnapshotTarget::Commit(id) => id,
+                            SnapshotTarget::Prefix(prefix) => {
+                                find_commit_prefix(&repo, &root, &prefix)?
+                            }
+                        };
+                        Ok((id, entries(&repo, id, Path::new(""))?))
+                    };
                     read().map_err(|error| error.to_string())
                 })
                 .await;
@@ -965,7 +1000,7 @@ impl SlideEditor {
                 };
                 state.busy = false;
                 match result {
-                    Ok(rows) => {
+                    Ok((id, rows)) => {
                         state.snapshot = id;
                         state.tree.clear();
                         state.tree.insert(Default::default(), rows);
@@ -996,8 +1031,16 @@ impl SlideEditor {
             .on_click(cx.listener(|this, _, window, cx| {
                 if let Some(state) = this.git_workspace.as_mut().filter(|s| !s.busy) {
                     state.graph.open = !state.graph.open;
-                    if state.graph.open && state.graph.limit == 0 {
-                        this.git_load_graph(None, window, cx);
+                    if state.graph.open {
+                        state.graph.commit_search.get_or_insert_with(|| {
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(text("git.jump-placeholder"))
+                            })
+                        });
+                        if state.graph.limit == 0 {
+                            this.git_load_graph(None, window, cx);
+                        }
                     }
                     cx.notify();
                 }
@@ -1024,7 +1067,7 @@ impl SlideEditor {
                     .disabled(state.busy)
                     .label(text("git.back-to-head"))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.git_browse_snapshot(head, window, cx)
+                        this.git_browse_snapshot(SnapshotTarget::Commit(head), window, cx)
                     })),
             )
     }
@@ -1079,7 +1122,7 @@ impl SlideEditor {
                             Tooltip::new(full_label.clone()).build(window, cx)
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.git_browse_snapshot(id, window, cx)
+                            this.git_browse_snapshot(SnapshotTarget::Commit(id), window, cx)
                         }));
                     line.when(id == state.snapshot, |line| line.bg(accent))
                         .gap_1()
@@ -1188,6 +1231,35 @@ impl SlideEditor {
                             .tooltip(move |window, cx| {
                                 Tooltip::new(label.clone()).build(window, cx)
                             }),
+                    )
+                })
+                .when_some(state.graph.commit_search.as_ref(), |pane, input| {
+                    let draft = input.clone();
+                    pane.child(
+                        h_flex()
+                            .px_2()
+                            .pb_1()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(Input::new(input).small().disabled(state.busy)),
+                            )
+                            .child(
+                                Button::new("git-jump-commit")
+                                    .small()
+                                    .disabled(state.busy)
+                                    .label(text("git.jump"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let prefix = draft.read(cx).value().trim().to_owned();
+                                        this.git_browse_snapshot(
+                                            SnapshotTarget::Prefix(prefix),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            ),
                     )
                 })
                 .child(body)
