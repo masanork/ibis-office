@@ -34,6 +34,8 @@ pub(crate) fn workbook_document<'a>(service: &'a mut Service, id: &str) -> Resul
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
         GET_CELLS,
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        crate::tools_sqlite::LIST_QUERY_REPORTS,
         crate::tools_pivot::LIST_PIVOTS,
         Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook: name, used range and whether it is shown.", access: Access::Read, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: list_sheets },
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },

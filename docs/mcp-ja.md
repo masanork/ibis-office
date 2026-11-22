@@ -44,8 +44,8 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 |---|---|
 | アプリ（全形式） | `app_get_version`、`app_list_documents`、`app_open_document`、`app_get_document_info`、`app_save_document`、`app_close_document`、`app_export_document`（PDF またはページごとの PNG）、`app_undo_document`、`app_redo_document` |
 | Word（.docx） | 読む：`docx_get_outline`、`docx_get_text`（Markdown またはプレーンテキスト）、`docx_list_paragraphs`、`docx_get_paragraph`、`docx_list_tables`、`docx_find_text`。編集：`docx_insert_text`、`docx_delete_text`、`docx_replace_text`、`docx_set_paragraph_text`、`docx_set_paragraph_format`、`docx_set_run_format`、`docx_insert_table` |
-| Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`、`xlsx_check_machine_readability`、`xlsx_trace_formula`、`xlsx_list_sheet_rules`、`xlsx_list_pivots`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart`、`xlsx_set_validation`、`xlsx_clear_validation`、`xlsx_create_pivot`、`xlsx_refresh_pivot` |
-| SQLite（.sqlite、.sqlite3、.db） | 読む：`sqlite_list_tables`、`sqlite_describe_table`、`sqlite_count_rows`、`sqlite_query`。ブック編集：`sqlite_query_to_table` |
+| Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`、`xlsx_check_machine_readability`、`xlsx_trace_formula`、`xlsx_list_sheet_rules`、`xlsx_list_pivots`、`xlsx_list_query_reports`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart`、`xlsx_set_validation`、`xlsx_clear_validation`、`xlsx_create_pivot`、`xlsx_refresh_pivot` |
+| SQLite（.sqlite、.sqlite3、.db） | 読む：`sqlite_list_tables`、`sqlite_describe_table`、`sqlite_count_rows`、`sqlite_query`。ブック編集：`sqlite_query_to_table`、`sqlite_refresh_query_table` |
 | PowerPoint（.pptx） | 読む：`pptx_list_slides`、`pptx_get_slide`、`pptx_get_shape_text`、`pptx_get_notes`、`pptx_list_layouts`。編集：`pptx_set_shape_text`、`pptx_replace_text`、`pptx_set_run_format`、`pptx_set_notes`、`pptx_add_slide`、`pptx_delete_slide`、`pptx_move_slide`、`pptx_set_frame`、`pptx_delete_shape` |
 
 `xlsx_create_chart` は、元データの `sheet` と、配置先の `destination_sheet`・`anchor`（例 `F2`）を指定します。見出しを含む `range` または明示的な `series` を渡せます。作成したグラフは元のセルを参照します。
@@ -72,7 +72,11 @@ CSVはカンマ区切り、先頭行が見出しで、値を文字列として�
 
 `xlsx_create_pivot` では元の `sheet` と返された `table` 名、または見出し付きの `range` を指定できます。配置先は `destination_sheet` と `anchor`、行・列フィールドは `rows` と `columns` で指定します。`values` には `{"field":"業務ID","aggregate":"count"}` のようにフィールド名と集計方法を渡します。レコード件数を数えるには空欄のないID列を使います。内蔵アシスタントでは表出力とピボット作成を確認用の下書きに積みます。出力した表には実行時点の結果が入ります。
 
-`xlsx_list_pivots` は `sheet` 上のピボットの配置範囲、参照元、フィールド構成を返します。続きは `next_offset` を使います。`xlsx_refresh_pivot` に `sheet` と `pivot` 名を指定すると、ブック内の元データから再集計し、連動するピボットグラフも更新します。更新後の範囲が既存のデータに重なる場合は処理を中止します。SQLiteから出力した表はスナップショットのため、再集計にはブック内の表が使われます。
+`xlsx_list_pivots` は `sheet` 上のピボットの配置範囲、参照元、フィールド構成を返します。続きは `next_offset` を使います。`xlsx_refresh_pivot` に `sheet` と `pivot` 名を指定すると、ブック内の元データから再集計し、連動するピボットグラフも更新します。更新後の範囲が既存のデータに重なる場合は処理を中止します。
+
+`sqlite_query_to_table` で作成した表には、SQL・パラメータ・元ファイルの名前と形式をブック内に記録します。`xlsx_list_query_reports` で更新できる表と元ファイルの順序を調べられます。`table` を指定すると保存済みの定義を確認できます。`sqlite_refresh_query_table` には `document_id`、`table`、保存時の順序に合わせた `sources` を渡します。MCPでは許可フォルダ内のファイル、内蔵アシスタントでは選択したファイルの番号を指定します。更新には毎回、元ファイルの明示的な指定が必要です。
+
+更新は表のデータをその場で入れ替え、テーブル名を参照するピボットと連動グラフを更新します。すべてまとめて取り消せます。結果が空、見出しが変わった、または更新範囲に別のデータがある場合は中止します。内蔵アシスタントでは下書きで確認できます。
 
 ツールはメニューのコマンドと 1 対 1 で対応してはいません。読み取りと、よく使う編集をそろえたもので、形式が違っても同じツール名です。`--read-only` のときは、読み取りツールだけが利用できます。
 

@@ -3172,6 +3172,19 @@ pub(crate) fn read_xlsx_with_records(data: &[u8], records: Option<&[Vec<String>]
             Some(ibis_doc_model::query::decode_queries(doc.root_element().text().unwrap_or("")))
         })
         .unwrap_or_default();
+    let query_reports = main_rels.values()
+        .filter(|rel| !rel.external && rel.kind.ends_with("/customXml"))
+        .filter_map(|rel| package.read(&rel.target).ok())
+        .filter(|bytes| bytes.len() <= 4 * 1024 * 1024)
+        .find_map(|bytes| {
+            let text = std::str::from_utf8(&bytes).ok()?;
+            let doc = roxmltree::Document::parse(text).ok()?;
+            let root = doc.root_element();
+            (root.tag_name().name() == "queryReports"
+                && root.tag_name().namespace() == Some("https://ibis.ne.jp/ibisoffice/query-reports")
+                && root.attribute("version") == Some("1")).then_some(())?;
+            serde_json::from_str(root.text()?).ok()
+        }).unwrap_or_default();
     let book_names: Vec<String> = external_books.iter().map(|b| b.name.clone()).collect();
     // Each link's part (`xl/externalLinks/externalLink1.xml`), in the same order, for saving.
     let external_parts: Vec<Option<String>> = child(root, "externalReferences")
@@ -3984,6 +3997,7 @@ pub(crate) fn read_xlsx_with_records(data: &[u8], records: Option<&[Vec<String>]
         external_books,
         queries,
         query_parameters,
+        query_reports,
         ..Default::default()
     };
     for (name, state, part) in &all_sheets {

@@ -976,7 +976,7 @@ impl SlideEditor {
             if let Some(paths) = &source {
                 let has_sqlite = paths.iter().any(|path| ibis_doc_service::is_sqlite(path));
                 tools.extend(crate::ai_tools::sqlite_tool_definitions().filter(|tool| {
-                    has_sqlite || matches!(tool.function.name, "sqlite_query" | "sqlite_query_to_table")
+                    has_sqlite || matches!(tool.function.name, "sqlite_query" | "sqlite_query_to_table" | "sqlite_refresh_query_table")
                 }));
                 if let Some(last) = messages_to_send.last_mut()
                     && let Some(content) = &mut last.content
@@ -1077,10 +1077,20 @@ impl SlideEditor {
                                     }
                                     let (paths, arguments) = (paths.clone(), call.function.arguments.clone());
                                     let access = tool.access;
+                                    let args = serde_json::from_str(&arguments)
+                                        .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()));
+                                    let definition = if name == "sqlite_refresh_query_table" {
+                                        let turn = draft.as_ref().expect("SQLite tools have a workbook draft");
+                                        args.as_ref().map_err(Clone::clone).and_then(|args|
+                                            ibis_doc_service::query_report_definition(turn.draft.presentation(), args)
+                                        ).map(Some)
+                                    } else { Ok(None) };
                                     let result = cx.background_executor().spawn(async move {
-                                        let args = serde_json::from_str(&arguments)
-                                            .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()))?;
-                                        if access == ibis_doc_service::Access::Edit {
+                                        let args = args?;
+                                        if let Some(definition) = definition? {
+                                            ibis_doc_service::prepare_selected_query_refresh(&paths, args, definition)
+                                                .map(SqliteToolResult::Export)
+                                        } else if access == ibis_doc_service::Access::Edit {
                                             ibis_doc_service::prepare_selected_datasets_export(&paths, args)
                                                 .map(SqliteToolResult::Export)
                                         } else {
@@ -1169,7 +1179,11 @@ impl SlideEditor {
                                             } else {
                                                 let sheet = value["sheet"].as_str().unwrap_or("");
                                                 let range = value["range"].as_str().unwrap_or("");
-                                                format!("SQLの結果を表に出力（{sheet}!{range}）")
+                                                if name == "sqlite_refresh_query_table" {
+                                                    format!("クエリ表を更新（{sheet}!{range}）")
+                                                } else {
+                                                    format!("SQLの結果を表に出力（{sheet}!{range}）")
+                                                }
                                             };
                                             (value.to_string(), commands, label)
                                         }

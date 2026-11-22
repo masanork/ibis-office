@@ -484,6 +484,8 @@ pub struct Workbook {
     /// The queries of the クエリ エディター (`xl/ibisQueries.txt`) and the parameters they use.
     pub queries: Vec<crate::query::Query>,
     pub query_parameters: Vec<crate::query::Parameter>,
+    /// SQL report definitions keyed by Excel table name. Source locations are bound at refresh time.
+    pub query_reports: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// An external workbook (`externalLink/externalBook`): its file's name as
@@ -545,6 +547,7 @@ impl Default for Workbook {
             external_books: Vec::new(),
             queries: Vec::new(),
             query_parameters: Vec::new(),
+            query_reports: Default::default(),
         }
     }
 }

@@ -339,7 +339,7 @@ fn sqlite_query_exports_complete_results_and_builds_a_pivot() {
     )
     .unwrap();
     let (_, edits) = export.stage(&mut draft, context()).unwrap();
-    assert_eq!(edits.len(), 1);
+    assert_eq!(edits.len(), 2);
     let (built, edits) = run_draft_tool(
         Kind::Workbook,
         &mut draft,
@@ -481,6 +481,121 @@ fn sqlite_queries_join_registered_csv_and_sqlite_datasets() {
         "table":table["table"], "rows":["label"],"values":[{"field":"code","aggregate":"count"}],
     })).unwrap();
     assert_eq!(pivot["pivot"], "PivotTable1");
+    let saved = dir.join("report.xlsx");
+    writer
+        .call("app_save_document", &json!({"document_id":id,"path":saved}))
+        .unwrap();
+    let saved_bytes = std::fs::read(&saved).unwrap();
+    let reopened = writer
+        .call("app_open_document", &json!({"path":saved}))
+        .unwrap()["document_id"]
+        .clone();
+    let reports = writer
+        .call("xlsx_list_query_reports", &json!({"document_id":reopened}))
+        .unwrap();
+    assert_eq!(reports["reports"][0]["sources"][1]["file"], "labels.csv");
+    assert_eq!(reports["reports"][0]["sources"][1]["alias"], "labels");
+    assert!(!reports.to_string().contains(dir.to_str().unwrap()));
+
+    std::fs::write(&csv, "code,label\n001,変更後\n").unwrap();
+    let args = json!({"document_id":reopened,"table":table["table"],"sources":[database,csv]});
+    assert!(
+        writer
+            .call(
+                "sqlite_refresh_query_table",
+                &json!({
+                    "document_id":reopened,"table":table["table"],"sources":[csv,database],
+                })
+            )
+            .is_err()
+    );
+    let refreshed = writer.call("sqlite_refresh_query_table", &args).unwrap();
+    assert_eq!(refreshed["range"], "A1:C2");
+    assert_eq!(refreshed["updated_pivots"], 1);
+    let read = |writer: &mut Service| {
+        writer
+            .call(
+                "xlsx_get_cells",
+                &json!({
+                    "document_id":reopened,"sheet":sheet,"range":"A2:C3",
+                }),
+            )
+            .unwrap()
+    };
+    assert_eq!(read(&mut writer)["rows"][0][1], "変更後");
+    assert!(read(&mut writer)["rows"][1][0].is_null());
+    let current = writer
+        .call(
+            "xlsx_list_pivots",
+            &json!({"document_id":reopened,"sheet":sheet}),
+        )
+        .unwrap();
+    assert_eq!(current["pivots"][0]["source"]["range"], "A1:C2");
+    assert_eq!(
+        writer
+            .call("app_undo_document", &json!({"document_id":reopened}))
+            .unwrap()["undone"],
+        1
+    );
+    assert_eq!(read(&mut writer)["rows"][1][0], "002");
+    let previous = writer
+        .call(
+            "xlsx_list_pivots",
+            &json!({"document_id":reopened,"sheet":sheet}),
+        )
+        .unwrap();
+    assert_eq!(previous["pivots"][0]["source"]["range"], "A1:C3");
+
+    let mut draft = ibis_doc_model::Document::new(ibis_formats::read(&saved_bytes).unwrap());
+    let slide = draft.presentation().slides[0].id;
+    let source = draft.presentation().slide(slide).unwrap();
+    let shape_index = source.shapes.len();
+    let pivot = &ibis_doc_model::sheet_calc::sheet_of_slide(source)
+        .unwrap()
+        .pivots[0];
+    let data = ibis_formats::pivot_data(draft.presentation(), slide, 0).unwrap();
+    let chart = ibis_doc_model::chart_from_pivot(pivot, &pivot.build(&data));
+    let shape = ibis_doc_model::Shape {
+        id: draft.ids().new_shape_id(),
+        frame: ibis_doc_model::EmuRect::new(0, 0, 4_500_000, 3_000_000),
+        rotation: 0,
+        flip_h: false,
+        flip_v: false,
+        kind: ibis_doc_model::ShapeKind::Chart(Box::new(chart)),
+        floating: None,
+    };
+    draft
+        .execute(vec![ibis_doc_model::Command::InsertShape {
+            slide,
+            shapes: vec![(shape_index, shape)],
+        }])
+        .unwrap();
+    let draft_args = json!({"table":table["table"],"sources":["1","2"]});
+    let definition =
+        ibis_doc_service::query_report_definition(draft.presentation(), &draft_args).unwrap();
+    let prepared =
+        ibis_doc_service::prepare_selected_query_refresh(&selected, draft_args, definition)
+            .unwrap();
+    let (draft_result, commands) = prepared.stage(&mut draft, Default::default()).unwrap();
+    assert_eq!(draft_result["updated_pivots"], 1);
+    assert_eq!(draft_result["updated_charts"], 1);
+    assert_eq!(commands.len(), 3);
+    std::fs::write(&csv, "code,label\n001,A\n002,B\n003,C\n").unwrap();
+    writer
+        .call(
+            "xlsx_set_cells",
+            &json!({"document_id":reopened,"sheet":sheet,"range":"A4","values":"Keep"}),
+        )
+        .unwrap();
+    assert_eq!(
+        writer
+            .call("sqlite_refresh_query_table", &args)
+            .unwrap_err()
+            .code,
+        "destination_occupied"
+    );
+    assert_eq!(read(&mut writer)["rows"][1][0], "002");
+
     assert_eq!(std::fs::read(&database).unwrap(), original);
     std::fs::remove_dir_all(dir).unwrap();
 }

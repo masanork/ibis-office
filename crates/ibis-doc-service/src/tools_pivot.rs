@@ -205,9 +205,9 @@ pub(crate) fn write_table(
     service: &mut Service,
     args: &Value,
     result: ibis_doc_model::query::SqliteRows,
+    definition: Value,
 ) -> Result<Value, ToolError> {
-    use ibis_doc_model::sheet::{CellValue, SheetTable};
-    use ibis_doc_model::sheet_command::{CellInput, PutCell};
+    use ibis_doc_model::sheet::SheetTable;
 
     if result.truncated || result.rows.is_empty() {
         return Err(ToolError::invalid(
@@ -240,6 +240,18 @@ pub(crate) fn write_table(
         ));
     }
     blank_destination(sheet, &range)?;
+    if workbook.workbook.as_ref().is_some_and(|book| {
+        book.query_reports
+            .values()
+            .map(|definition| definition.to_string().len())
+            .sum::<usize>()
+            .saturating_add(definition.to_string().len())
+            > 512 * 1024
+    }) {
+        return Err(ToolError::invalid(
+            "The workbook's saved query definitions exceed 512 KiB.",
+        ));
+    }
     let name = (1..)
         .map(|n| format!("QueryResult{n}"))
         .find(|name| {
@@ -249,12 +261,47 @@ pub(crate) fn write_table(
                     .iter()
                     .any(|table| table.name.eq_ignore_ascii_case(name))
             }) && !workbook.workbook.as_ref().is_some_and(|book| {
-                book.names
-                    .iter()
-                    .any(|defined| defined.name.eq_ignore_ascii_case(name))
+                book.query_reports.contains_key(name)
+                    || book
+                        .names
+                        .iter()
+                        .any(|defined| defined.name.eq_ignore_ascii_case(name))
             })
         })
         .unwrap();
+    let cells = query_cells(&result, at, false)?;
+    let table = SheetTable {
+        name: name.clone(),
+        range,
+        header_rows: 1,
+        totals_rows: 0,
+        columns: result.columns,
+        style: None,
+        filter: None,
+        totals: Vec::new(),
+    };
+    let command = SheetCommand::SetTable {
+        sheet: slide,
+        index: sheet.tables.len(),
+        table: Some(table),
+        cells,
+    };
+    let summary = json!({"sheet":sheet_name,"range":range_text(&range),"table":name,"rows":range.last_row-at.first_row});
+    let save_definition = SheetCommand::SetQueryReport {
+        table: name,
+        definition,
+    };
+    sheet_edit(service, id, vec![command, save_definition], summary)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn query_cells(
+    result: &ibis_doc_model::query::SqliteRows,
+    at: CellRange,
+    clear_null: bool,
+) -> Result<Vec<ibis_doc_model::sheet_command::PutCell>, ToolError> {
+    use ibis_doc_model::sheet::CellValue;
+    use ibis_doc_model::sheet_command::{CellInput, PutCell};
     let mut cells = Vec::with_capacity(result.columns.len() * (result.rows.len() + 1));
     for (column, text) in result.columns.iter().enumerate() {
         cells.push(PutCell {
@@ -264,12 +311,21 @@ pub(crate) fn write_table(
             style: None,
         });
     }
-    for (row, values) in result.rows.into_iter().enumerate() {
-        for (column, value) in values.into_iter().enumerate() {
+    for (row, values) in result.rows.iter().enumerate() {
+        for (column, value) in values.iter().enumerate() {
             let value = match value {
+                Value::Null if clear_null => {
+                    cells.push(PutCell {
+                        row: at.first_row + 1 + row as u32,
+                        column: at.first_column + column as u32,
+                        input: CellInput::Clear,
+                        style: None,
+                    });
+                    continue;
+                }
                 Value::Null => continue,
                 Value::String(value) if value.encode_utf16().count() <= 32_767 => {
-                    CellValue::Text(value)
+                    CellValue::Text(value.clone())
                 }
                 Value::Number(value)
                     if value.as_i64().is_some_and(|n| n.unsigned_abs() >= 1 << 53) =>
@@ -293,24 +349,7 @@ pub(crate) fn write_table(
             });
         }
     }
-    let table = SheetTable {
-        name: name.clone(),
-        range,
-        header_rows: 1,
-        totals_rows: 0,
-        columns: result.columns,
-        style: None,
-        filter: None,
-        totals: Vec::new(),
-    };
-    let command = SheetCommand::SetTable {
-        sheet: slide,
-        index: sheet.tables.len(),
-        table: Some(table),
-        cells,
-    };
-    let summary = json!({"sheet":sheet_name,"range":range_text(&range),"table":name,"rows":range.last_row-at.first_row});
-    sheet_edit(service, id, vec![command], summary)
+    Ok(cells)
 }
 
 fn field_index(data: &PivotData, field: &str) -> Result<usize, ToolError> {
@@ -558,12 +597,34 @@ fn refresh_pivot(service: &mut Service, args: &Value) -> Result<Value, ToolError
     let sheets = workbook_sheets(workbook);
     let (slide_index, sheet_name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
     let slide = workbook.slides[*slide_index].id;
-    let (index, pivot) = sheet
+    let (index, _) = sheet
         .pivots
         .iter()
         .enumerate()
         .find(|(_, pivot)| pivot.name.eq_ignore_ascii_case(name))
         .ok_or_else(|| ToolError::new("no_such_pivot", format!("No pivot named {name}")))?;
+    let (replacement, chart_commands) = rebuild_pivot(workbook, slide, sheet, index)?;
+    let refreshed = &replacement.pivots[index];
+    let summary = json!({
+        "sheet": sheet_name, "pivot": refreshed.name, "range": range_text(&refreshed.location),
+        "updated_charts": chart_commands.len(),
+    });
+    let mut commands = vec![ibis_doc_model::Command::Sheet(SheetCommand::ReplaceSheet {
+        sheet: slide,
+        replacement: Box::new(replacement),
+    })];
+    commands.extend(chart_commands);
+    crate::edit::execute(open, commands)?;
+    Ok(crate::edit::edited(id, open, summary, Vec::new()))
+}
+
+fn rebuild_pivot(
+    workbook: &ibis_doc_model::Presentation,
+    slide: ibis_doc_model::SlideId,
+    sheet: &Sheet,
+    index: usize,
+) -> Result<(Sheet, Vec<ibis_doc_model::Command>), ToolError> {
+    let pivot = &sheet.pivots[index];
     let (source_slide, source_range) = ibis_formats::pivot_source_location(workbook, pivot)
         .ok_or_else(|| ToolError::invalid("The pivot source is unavailable."))?;
     let height = (source_range.last_row - source_range.first_row + 1) as usize;
@@ -610,17 +671,142 @@ fn refresh_pivot(service: &mut Service, args: &Value) -> Result<Value, ToolError
         }
         available_destination(sheet, &area, Some(index))?;
     }
-    let chart_commands =
-        ibis_formats::pivot_chart_commands(workbook, slide, &replacement, refreshed);
-    let summary = json!({
-        "sheet": sheet_name, "pivot": refreshed.name, "range": range_text(&refreshed.location),
-        "updated_charts": chart_commands.len(),
-    });
-    let mut commands = vec![ibis_doc_model::Command::Sheet(SheetCommand::ReplaceSheet {
+    let charts = ibis_formats::pivot_chart_commands(workbook, slide, &replacement, refreshed);
+    Ok((replacement, charts))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn refresh_query_table(
+    service: &mut Service,
+    args: &Value,
+    result: ibis_doc_model::query::SqliteRows,
+    definition: &Value,
+) -> Result<Value, ToolError> {
+    use ibis_doc_model::sheet_command::{CellInput, PutCell};
+    use ibis_doc_model::{Command, Document};
+
+    let id = args.str_arg("document_id")?;
+    let name = args.str_arg("table")?;
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (slide_index, sheet_name, sheet, index, table) = sheets
+        .iter()
+        .find_map(|(slide_index, name_on_tab, sheet)| {
+            let (index, table) = sheet
+                .tables
+                .iter()
+                .enumerate()
+                .find(|(_, table)| table.name.eq_ignore_ascii_case(name))?;
+            Some((*slide_index, name_on_tab, *sheet, index, table))
+        })
+        .ok_or_else(|| ToolError::invalid("The report table is missing."))?;
+    let current = crate::tools_sqlite::query_report_definition(workbook, args)?;
+    if current != *definition {
+        return Err(ToolError::new(
+            "report_changed",
+            "The report definition changed. Retry the refresh.",
+        ));
+    }
+    if result.truncated || result.rows.is_empty() {
+        return Err(ToolError::invalid(
+            "Refresh needs a complete result with at least one data row.",
+        ));
+    }
+    if table.header_rows != 1 || table.totals_rows != 0 || table.columns != result.columns {
+        return Err(ToolError::new(
+            "schema_changed",
+            "Report refresh requires the same column headings and a table without a totals row.",
+        ));
+    }
+    if sheet.protection.is_some() {
+        return Err(ToolError::new(
+            "edit_rejected",
+            "The destination worksheet is protected.",
+        ));
+    }
+    let old = table.range;
+    let range = CellRange {
+        last_row: old.first_row + result.rows.len() as u32,
+        ..old
+    };
+    if range.last_row >= 1_048_576 {
+        return Err(ToolError::new(
+            "out_of_range",
+            "The result does not fit in the worksheet.",
+        ));
+    }
+    if range.last_row > old.last_row {
+        blank_destination(
+            sheet,
+            &CellRange {
+                first_row: old.last_row + 1,
+                ..range
+            },
+        )?;
+    }
+    let mut cells = query_cells(&result, range, true)?;
+    for row in range.last_row + 1..=old.last_row {
+        for column in old.first_column..=old.last_column {
+            cells.push(PutCell {
+                row,
+                column,
+                input: CellInput::Clear,
+                style: None,
+            });
+        }
+    }
+    let slide = workbook.slides[slide_index].id;
+    let mut replacement = table.clone();
+    replacement.range = range;
+    let command = Command::Sheet(SheetCommand::SetTable {
         sheet: slide,
-        replacement: Box::new(replacement),
-    })];
-    commands.extend(chart_commands);
+        index,
+        table: Some(replacement),
+        cells,
+    });
+    let mut commands = vec![command.clone()];
+    let mut scratch = Document::new(workbook.clone());
+    let apply = |scratch: &mut Document, commands| {
+        scratch
+            .execute(commands)
+            .map_err(|error| ToolError::new("edit_rejected", format!("{error:?}")))
+    };
+    apply(&mut scratch, vec![command])?;
+
+    let mut updated_pivots = 0;
+    let mut updated_charts = 0;
+    // Follow named-table sources, which also follow a change in the number of records.
+    for (pivot_slide_index, _, candidate) in &sheets {
+        let pivot_slide = workbook.slides[*pivot_slide_index].id;
+        for (pivot_index, pivot) in candidate.pivots.iter().enumerate() {
+            if !pivot
+                .source
+                .name
+                .as_ref()
+                .is_some_and(|source| source.eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
+            let view = scratch.presentation();
+            let sheet = view
+                .slide(pivot_slide)
+                .and_then(ibis_doc_model::sheet_calc::sheet_of_slide)
+                .ok_or_else(|| ToolError::invalid("The pivot worksheet is missing."))?;
+            let (updated, charts) = rebuild_pivot(view, pivot_slide, sheet, pivot_index)?;
+            updated_pivots += 1;
+            updated_charts += charts.len();
+            let mut update = vec![Command::Sheet(SheetCommand::ReplaceSheet {
+                sheet: pivot_slide,
+                replacement: Box::new(updated),
+            })];
+            update.extend(charts);
+            apply(&mut scratch, update.clone())?;
+            commands.extend(update);
+        }
+    }
+    let summary = json!({"sheet":sheet_name,"table":table.name,"range":range_text(&range),
+        "rows":result.rows.len(),"updated_pivots":updated_pivots,"updated_charts":updated_charts});
     crate::edit::execute(open, commands)?;
     Ok(crate::edit::edited(id, open, summary, Vec::new()))
 }

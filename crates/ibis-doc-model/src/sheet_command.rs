@@ -353,6 +353,7 @@ pub enum SheetCommand {
     /// sheet of `slide`, or rewritten if the query has loaded one) and the query kept in the workbook.
     LoadQuery { sheet: SlideId, query: crate::query::Query, table: crate::query::QTable },
     /// The workbook's queries and their parameters replaced (a query edited or deleted).
+    SetQueryReport { table: String, definition: serde_json::Value },
     SetQueries { queries: Vec<crate::query::Query>, parameters: Vec<crate::query::Parameter> },
     /// The Solver's model kept in the sheet's hidden names (`solver_*`): the
     /// listed ones replace those the sheet has.
@@ -997,6 +998,12 @@ fn apply_command(presentation: &mut Presentation, command: SheetCommand) -> Resu
         SheetCommand::CreateScenarioSummary { sheet: slide, result_cells } => apply_create_scenario_summary(presentation, slide, result_cells),
         SheetCommand::CreateReportSheet { sheet: slide, name, cells, widths } => apply_create_report_sheet(presentation, slide, name, cells, widths),
         SheetCommand::LoadQuery { sheet: slide, query, table } => apply_load_query(presentation, slide, query, table),
+        SheetCommand::SetQueryReport { table, definition } => {
+            let inverse = snapshot(presentation);
+            let workbook = Arc::make_mut(presentation.workbook.as_mut().ok_or(EditError::IndexOutOfRange)?);
+            workbook.query_reports.insert(table, definition);
+            Ok(inverse)
+        }
         SheetCommand::SetQueries { queries, parameters } => {
             let inverse = snapshot(presentation);
             let wb = Arc::make_mut(presentation.workbook.as_mut().ok_or(EditError::IndexOutOfRange)?);
@@ -2103,7 +2110,16 @@ fn delete_sheet(presentation: &mut Presentation, slide: SlideId) -> Result<Comma
     if shown <= 1 {
         return Err(EditError::LastSlide);
     }
-    structural(presentation, StructureEdit::DeleteSheet { sheet: index })
+    let reports: Vec<_> = presentation.slide(slide).and_then(crate::sheet_calc::sheet_of_slide)
+        .into_iter().flat_map(|sheet| sheet.tables.iter().map(|table| table.name.clone())).collect();
+    let inverse = structural(presentation, StructureEdit::DeleteSheet { sheet: index })?;
+    if !reports.is_empty() && let Some(workbook) = &mut presentation.workbook {
+        let workbook = Arc::make_mut(workbook);
+        for table in reports {
+            workbook.query_reports.remove(&table);
+        }
+    }
+    Ok(inverse)
 }
 
 fn move_chart(
@@ -2422,6 +2438,9 @@ fn set_table(presentation: &mut Presentation, slide: SlideId, index: usize, tabl
         let book_index = workbook_index(presentation, slide)?;
         let t = sheet_mut(presentation, slide)?.tables.get(index).cloned().ok_or(EditError::IndexOutOfRange)?;
         convert_structured(presentation, book_index, &t);
+        if let Some(book) = &mut presentation.workbook {
+            Arc::make_mut(book).query_reports.remove(&t.name);
+        }
     }
     // A new name: the formulas and names that name the table follow.
     let renamed = match (&table, sheet_mut(presentation, slide)?.tables.get(index)) {
@@ -2450,6 +2469,9 @@ fn set_table(presentation: &mut Presentation, slide: SlideId, index: usize, tabl
         }
         if let Some(w) = presentation.workbook.as_mut() {
             let w = Arc::make_mut(w);
+            if let Some(definition) = w.query_reports.remove(&old) {
+                w.query_reports.insert(new.clone(), definition);
+            }
             for n in w.names.iter_mut() {
                 n.formula = rename(&n.formula);
             }

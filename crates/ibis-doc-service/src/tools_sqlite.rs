@@ -72,6 +72,26 @@ const TOOLS: &[Tool] = &[
         run: query_to_table,
     },
     Tool {
+        name: "sqlite_refresh_query_table",
+        description: "Re-run the saved query after binding its source files in order, replace the table, and refresh its linked pivots and charts in one edit.",
+        access: Access::Edit,
+        returns_content: false,
+        schema: || {
+            object(
+                &[
+                    document_id(),
+                    ("table", string("Table name from xlsx_list_query_reports.")),
+                    (
+                        "sources",
+                        json!({"type":"array","minItems":1,"maxItems":8,"items":string("File path in an allowed folder. Use the order in the saved report.")}),
+                    ),
+                ],
+                &["document_id", "table", "sources"],
+            )
+        },
+        run: refresh_query_table,
+    },
+    Tool {
         name: "sqlite_count_rows",
         description: "Count SQLite table rows with optional filters and grouping by one column. NULL forms its own group. Grouped results are sorted by descending count.",
         access: Access::Read,
@@ -393,13 +413,16 @@ fn complete_query(service: &Service, args: &Value) -> Result<SqliteRows, ToolErr
 
 fn query_to_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let rows = complete_query(service, args)?;
-    crate::tools_pivot::write_table(service, args, rows)
+    let definition = saved_definition(args)?;
+    crate::tools_pivot::write_table(service, args, rows, definition)
 }
 
 /// The complete database result stays in-process between the worker and the draft.
 pub struct SqliteTableExport {
     arguments: Value,
     rows: SqliteRows,
+    definition: Value,
+    refresh: bool,
 }
 
 impl SqliteTableExport {
@@ -413,7 +436,18 @@ impl SqliteTableExport {
             document,
             context,
             self.arguments,
-            |service, args| crate::tools_pivot::write_table(service, args, self.rows),
+            |service, args| {
+                if self.refresh {
+                    crate::tools_pivot::refresh_query_table(
+                        service,
+                        args,
+                        self.rows,
+                        &self.definition,
+                    )
+                } else {
+                    crate::tools_pivot::write_table(service, args, self.rows, self.definition)
+                }
+            },
         )
     }
 }
@@ -431,9 +465,12 @@ pub fn prepare_selected_datasets_export(
 ) -> Result<SqliteTableExport, ToolError> {
     let service = selected_sources(paths, &mut args)?;
     let rows = complete_query(&service, &args)?;
+    let definition = saved_definition(&args)?;
     Ok(SqliteTableExport {
         arguments: args,
         rows,
+        definition,
+        refresh: false,
     })
 }
 
@@ -525,4 +562,209 @@ fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize) -> Result<QT
         })
         .collect();
     Ok(QTable { columns, rows })
+}
+
+pub(crate) const LIST_QUERY_REPORTS: Tool = Tool {
+    name: "xlsx_list_query_reports",
+    description: "List saved query tables and the source slots needed to refresh them.",
+    access: Access::Read,
+    returns_content: true,
+    schema: || {
+        object(
+            &[
+                document_id(),
+                (
+                    "table",
+                    string(
+                        "Optional table name to inspect its saved SQL, parameters and source slots.",
+                    ),
+                ),
+                ("offset", integer("First report to return (0-based).")),
+                (
+                    "limit",
+                    integer("Maximum reports to return (default 20, maximum 25)."),
+                ),
+            ],
+            &["document_id"],
+        )
+    },
+    run: list_query_reports,
+};
+
+fn list_query_reports(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let offset = args.opt_usize("offset")?.unwrap_or(0);
+    let limit = args.opt_usize("limit")?.unwrap_or(20).clamp(1, 25);
+    let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
+    let workbook = open.document.presentation();
+    if args.opt_str("table")?.is_some() {
+        let definition = query_report_definition(workbook, args)?;
+        return Ok(json!({"table":args["table"],"definition":definition}));
+    }
+    let book = workbook
+        .workbook
+        .as_ref()
+        .ok_or_else(|| ToolError::invalid("Workbook is missing"))?;
+    let mut reports = crate::tools_xlsx::workbook_sheets(workbook)
+        .into_iter()
+        .flat_map(|(_, sheet, model)| {
+            model.tables.iter().filter_map(move |table| {
+                let definition = book.query_reports.get(&table.name)?;
+                Some(json!({"table":table.name,"sheet":sheet,"sources":definition["sources"]}))
+            })
+        })
+        .skip(offset);
+    let results: Vec<_> = reports.by_ref().take(limit).collect();
+    let mut result = json!({"reports":results});
+    if reports.next().is_some() {
+        result["next_offset"] = json!(offset + results.len());
+    }
+    Ok(result)
+}
+
+fn source_kind(path: &Path) -> &'static str {
+    if is_sqlite(path) {
+        "sqlite"
+    } else if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("parquet"))
+    {
+        "parquet"
+    } else if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+    {
+        "csv"
+    } else {
+        ""
+    }
+}
+
+fn saved_definition(args: &Value) -> Result<Value, ToolError> {
+    let source = |path: &str, spec: &Value| {
+        let path = Path::new(path);
+        json!({
+            "file": path.file_name().unwrap_or_default().to_string_lossy(),
+            "kind": source_kind(path),
+            "alias": spec["alias"], "table": spec["table"],
+        })
+    };
+    let sources = if let Some(specs) = args["datasets"].as_array() {
+        specs
+            .iter()
+            .map(|spec| Ok(source(spec.str_arg("source")?, spec)))
+            .collect::<Result<Vec<_>, ToolError>>()?
+    } else {
+        vec![source(args.str_arg(PATH)?, &Value::Null)]
+    };
+    let definition = json!({
+        "sql":args["sql"], "params":args.get("params").cloned().unwrap_or_else(|| json!([])),
+        "sources":sources,
+    });
+    if definition.to_string().len() > 32 * 1024 {
+        return Err(ToolError::invalid(
+            "The saved report definition exceeds 32 KiB",
+        ));
+    }
+    Ok(definition)
+}
+
+pub fn query_report_definition(
+    workbook: &ibis_doc_model::Presentation,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let table = args.str_arg("table")?;
+    workbook
+        .workbook
+        .as_ref()
+        .and_then(|book| {
+            book.query_reports
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(table))
+                .map(|(_, definition)| definition.clone())
+        })
+        .ok_or_else(|| {
+            ToolError::new(
+                "no_such_query_report",
+                format!("No query report named {table}"),
+            )
+        })
+}
+
+fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
+    let expected = definition["sources"]
+        .as_array()
+        .filter(|sources| (1..=8).contains(&sources.len()))
+        .ok_or_else(|| ToolError::invalid("Invalid saved report sources"))?;
+    let sources = args["sources"]
+        .as_array()
+        .filter(|sources| sources.len() == expected.len())
+        .ok_or_else(|| {
+            ToolError::invalid(format!(
+                "Supply {} source files in saved order",
+                expected.len()
+            ))
+        })?;
+    let mut query = json!({"sql":definition["sql"],"params":definition["params"]});
+    let datasets = sources
+        .iter()
+        .zip(expected)
+        .map(|(value, source)| {
+            let path = value
+                .as_str()
+                .ok_or_else(|| ToolError::invalid("A source binding must be a file path"))?;
+            if source_kind(Path::new(path)) != source.str_arg("kind")?
+                || source_kind(Path::new(path)).is_empty()
+            {
+                return Err(ToolError::invalid("A source binding has the wrong format"));
+            }
+            Ok(json!({"source":path,"alias":source["alias"],"table":source["table"]}))
+        })
+        .collect::<Result<Vec<_>, ToolError>>()?;
+    if expected.len() == 1 && expected[0]["alias"].is_null() && expected[0]["kind"] == "sqlite" {
+        query[PATH] = sources[0].clone();
+    } else {
+        query["datasets"] = json!(datasets);
+    }
+    Ok(query)
+}
+
+fn refresh_query_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
+    let definition = query_report_definition(open.document.presentation(), args)?;
+    let rows = complete_query(service, &bound_query(&definition, args)?)?;
+    crate::tools_pivot::refresh_query_table(service, args, rows, &definition)
+}
+
+pub fn prepare_selected_query_refresh(
+    paths: &[PathBuf],
+    mut args: Value,
+    definition: Value,
+) -> Result<SqliteTableExport, ToolError> {
+    let bindings = args["sources"]
+        .as_array_mut()
+        .ok_or_else(|| ToolError::invalid("sources must be a list of selected file numbers"))?;
+    for entry in bindings {
+        let path = entry
+            .as_str()
+            .and_then(|value| value.parse::<usize>().ok())
+            .and_then(|number| number.checked_sub(1))
+            .and_then(|index| paths.get(index))
+            .and_then(|path| path.to_str())
+            .ok_or_else(|| {
+                ToolError::invalid("Use only file numbers selected in the assistant panel")
+            })?;
+        *entry = json!(path);
+    }
+    let folders = paths
+        .iter()
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect::<Vec<_>>();
+    let service = Service::new(&folders, true, Limits::default());
+    let rows = complete_query(&service, &bound_query(&definition, &args)?)?;
+    Ok(SqliteTableExport {
+        arguments: args,
+        rows,
+        definition,
+        refresh: true,
+    })
 }

@@ -258,7 +258,12 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
     if queries(baseline) != queries(current) {
         write_queries(package, &map.workbook, &queries(current))?;
     }
-    let without_names = |p: &Presentation| p.workbook.as_deref().map(|w| ibis_doc_model::Workbook { names: Vec::new(), compatibility_version: None, custom_cell_styles: Vec::new(), calc_mode: ibis_doc_model::CalcMode::Auto, calc_on_save: true, full_precision: true, iterate: false, max_iterations: 100, max_change: ibis_doc_model::SheetFloat(0.001), protection: None, properties: Default::default(), theme_colors: Vec::new(), theme_fonts: None, custom_views: Vec::new(), window_hidden: false, active_tab: 0, selected_tabs: Vec::new(), external_books: Vec::new(), queries: Vec::new(), query_parameters: Vec::new(), ..w.clone() });
+    let reports = |p: &Presentation| p.workbook.as_deref().map(|w| w.query_reports.clone()).unwrap_or_default();
+    if reports(baseline) != reports(current) {
+        let definitions = reports(current);
+        write_custom_data(package, &map.workbook, "queryReports", REPORTS_NS, &serde_json::to_string(&definitions).map_err(|error| unsupported(error.to_string()))?, definitions.is_empty())?;
+    }
+    let without_names = |p: &Presentation| p.workbook.as_deref().map(|w| ibis_doc_model::Workbook { names: Vec::new(), compatibility_version: None, custom_cell_styles: Vec::new(), calc_mode: ibis_doc_model::CalcMode::Auto, calc_on_save: true, full_precision: true, iterate: false, max_iterations: 100, max_change: ibis_doc_model::SheetFloat(0.001), protection: None, properties: Default::default(), theme_colors: Vec::new(), theme_fonts: None, custom_views: Vec::new(), window_hidden: false, active_tab: 0, selected_tabs: Vec::new(), external_books: Vec::new(), queries: Vec::new(), query_parameters: Vec::new(), query_reports: Default::default(), ..w.clone() });
     if without_names(baseline) != without_names(current) {
         return Err(unsupported("ブック（シート名・名前の定義など）の変更"));
     }
@@ -767,18 +772,20 @@ fn resolve_target(dir: &str, target: &str) -> String {
     parts.join("/")
 }
 
+const REPORTS_NS: &str = "https://ibis.ne.jp/ibisoffice/query-reports";
 const QUERIES_NS: &str = "https://ibis.ne.jp/ibisoffice/queries";
 const REL_CUSTOM_XML: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml";
 const REL_CUSTOM_XML_PROPS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps";
 
-/// The part (`customXml/itemN.xml`) of the クエリ エディター's queries, if the workbook has one: a Custom XML
-/// Data part (ECMA-376 Part 1 §15.2.5) whose root is `queries` in our namespace.
-fn queries_part(package: &Package, workbook: &str) -> Option<String> {
+/// Find the Custom XML Data part (ECMA-376 Part 1 §15.2.5) by its root and namespace.
+fn custom_data_part(package: &Package, workbook: &str, root: &str, namespace: &str) -> Option<String> {
     let dir = workbook.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
     package.relationships(workbook).ok()?.into_iter().filter(|r| !r.external && r.kind == REL_CUSTOM_XML).find_map(|r| {
         let part = resolve_target(&dir, &r.target);
         let text = String::from_utf8(package.read(&part).ok()?).ok()?;
-        text.contains(QUERIES_NS).then_some(part)
+        let doc = roxmltree::Document::parse(&text).ok()?;
+        let tag = doc.root_element().tag_name();
+        (tag.name() == root && tag.namespace() == Some(namespace)).then_some(part)
     })
 }
 
@@ -786,13 +793,17 @@ fn queries_part(package: &Package, workbook: &str) -> Option<String> {
 /// `itemPropsN.xml`), which Excel keeps as it keeps any other custom XML; made when there is none.
 fn write_queries(package: &mut Package, workbook: &str, (queries, parameters): &(Vec<ibis_doc_model::query::Query>, Vec<ibis_doc_model::query::Parameter>)) -> Result<(), Error> {
     let text = ibis_doc_model::query::encode_queries(queries, parameters);
+    write_custom_data(package, workbook, "queries", QUERIES_NS, &text, queries.is_empty() && parameters.is_empty())
+}
+
+fn write_custom_data(package: &mut Package, workbook: &str, root: &str, namespace: &str, text: &str, empty: bool) -> Result<(), Error> {
     let escaped = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<queries xmlns=\"{QUERIES_NS}\" version=\"1\">{escaped}</queries>");
-    if let Some(part) = queries_part(package, workbook) {
+    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<{root} xmlns=\"{namespace}\" version=\"1\">{escaped}</{root}>");
+    if let Some(part) = custom_data_part(package, workbook, root, namespace) {
         package.set_bytes(&part, xml.into_bytes());
         return Ok(());
     }
-    if queries.is_empty() && parameters.is_empty() {
+    if empty {
         return Ok(());
     }
     let n = (1..).find(|n| !package.contains(&format!("customXml/item{n}.xml"))).unwrap_or(1);
@@ -800,7 +811,7 @@ fn write_queries(package: &mut Package, workbook: &str, (queries, parameters): &
     package.set_bytes(&part, xml.into_bytes());
     let id = format!("{{{:08X}-{:04X}-4{:03X}-8{:03X}-{:012X}}}", 0x1B15_0000u32 + n as u32, 0x0A5E, 0x123, 0xABC, 0x1B15_0000_0000u64 + n as u64);
     let item_props = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<ds:datastoreItem ds:itemID=\"{id}\" xmlns:ds=\"http://schemas.openxmlformats.org/officeDocument/2006/customXml\"><ds:schemaRefs><ds:schemaRef ds:uri=\"{QUERIES_NS}\"/></ds:schemaRefs></ds:datastoreItem>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<ds:datastoreItem ds:itemID=\"{id}\" xmlns:ds=\"http://schemas.openxmlformats.org/officeDocument/2006/customXml\"><ds:schemaRefs><ds:schemaRef ds:uri=\"{namespace}\"/></ds:schemaRefs></ds:datastoreItem>"
     );
     package.set_bytes(&props, item_props.into_bytes());
     package.set_override(&props, "application/vnd.openxmlformats-officedocument.customXmlProperties+xml")?;
