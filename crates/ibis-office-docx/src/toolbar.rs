@@ -3272,13 +3272,12 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
     menus.connect("docx.view.markdown-source", |this, window, cx| this.toggle_markdown_source_mode(window, cx));
     menus.connect("docx.view.focus", |this, window, cx| this.toggle_focus_mode(window, cx));
     {
-        const VIEW_MODE_IDS: [&str; 7] = [
+        const VIEW_MODE_IDS: [&str; 6] = [
             "docx.view.read-mode",
             "docx.print-layout",
             "docx.view.web-layout",
             "docx.view.outline",
             "docx.view.draft",
-            "docx.view.markdown-source",
             "docx.view.focus",
         ];
         let view_items = menus.items_mut(MenuId::View);

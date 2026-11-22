@@ -23,6 +23,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::menu_layout_no_unreplaced_placeholders", no_unreplaced_placeholders),
         ("shell::menu_layout_paste_special_submenu_is_the_dialog", paste_special_submenu_is_the_dialog),
         ("shell::menu_layout_sheet_menus", sheet_menus),
+        ("shell::menu_layout_markdown_source", markdown_source),
         ("shell::menu_layout_sheet_machine_readability", sheet_machine_readability),
         ("shell::menu_layout_order", order),
         ("shell::menu_layout_items_match_old_menus", items_match_old_menus),
@@ -273,6 +274,32 @@ fn paste_special_submenu_is_the_dialog() {
         for id in ["xlsx.select-formulas", "xlsx.pivot-select-values"] {
             assert!(!ids.contains(&id), "{id} is not a paste: {ids:?}");
         }
+    });
+}
+
+fn markdown_source() {
+    with_planned(false, || {
+        const COMMAND: &str = "docx.view.markdown-source";
+        let mut s = Scenario::new_document(ibis_formats::Kind::Document);
+        let item = |scenario: &mut Scenario| {
+            scenario.with(|editor, _| {
+                let Some(MenuEntry::Item(item)) =
+                    bar_entry(&editor.menu_bar_menus(), MenuId::View, &[COMMAND])
+                else {
+                    panic!("Markdown Source must be directly under View");
+                };
+                assert!(item.enabled());
+                assert_eq!(item.shortcut, Some("⌘⇧M"));
+                item
+            })
+        };
+        for checked in [false, true] {
+            let command = item(&mut s);
+            assert_eq!(command.checked, checked);
+            let handler = command.handler.expect("Markdown Source handler");
+            s.update(|editor, window, cx| handler(editor, window, cx));
+        }
+        assert!(!item(&mut s).checked);
     });
 }
 

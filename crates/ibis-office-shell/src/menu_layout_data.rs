@@ -390,6 +390,7 @@ pub(super) const DOC: &[MenuSpec] = &[
         LayoutItem::Cmd("docx.view.web-layout"),
         LayoutItem::Cmd("docx.view.outline"),
         LayoutItem::Cmd("docx.view.draft"),
+        LayoutItem::Cmd("docx.view.markdown-source"),
         LayoutItem::Sep,
         LayoutItem::Cmd("docx.view.focus"),
         LayoutItem::Sep,
