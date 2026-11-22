@@ -4,7 +4,7 @@
 //! Bounded preview of oversized TIFF images.
 
 use image::{DynamicImage, GrayImage, RgbImage};
-use std::io::Cursor;
+use std::io::{Read, Seek};
 use tiff::{
     ColorType,
     decoder::{ChunkType, Decoder, DecodingResult, Limits},
@@ -20,8 +20,10 @@ const UNSUPPORTED: &str =
 const CHUNK_LIMIT: &str = "TIFF strip or tile exceeds the large-preview limit";
 const BAD_CHUNKS: &str = "Invalid or truncated TIFF strips or tiles";
 
-pub(super) fn preview(bytes: &[u8]) -> Result<DynamicImage, String> {
-    let mut decoder = Decoder::new(Cursor::new(bytes)).map_err(|error| error.to_string())?;
+pub(super) fn preview(
+    bytes: &[u8],
+    mut decoder: Decoder<impl Read + Seek>,
+) -> Result<DynamicImage, String> {
     let (width, height) = decoder.dimensions().map_err(|error| error.to_string())?;
     let longest = width.max(height);
     if width == 0 || height == 0 || longest > MAX_SOURCE_EDGE {
@@ -220,6 +222,11 @@ pub(super) fn preview(bytes: &[u8]) -> Result<DynamicImage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    fn preview_test(bytes: &[u8]) -> Result<DynamicImage, String> {
+        preview(bytes, Decoder::new(Cursor::new(bytes)).unwrap())
+    }
     use tiff::encoder::{Compression, DeflateLevel, Predictor, TiffEncoder, colortype};
 
     #[test]
@@ -248,7 +255,6 @@ mod tests {
             .flat_map(|y| (0..8_200).flat_map(move |x| [(x % 251) as u8, y as u8, 113]))
             .collect();
         first.write_data(&pixels).unwrap();
-        encoder.write_image::<colortype::Gray8>(1, 1, &[0]).unwrap();
         let tiff = tiff.into_inner();
         let opened = super::super::open(Some("tiff"), &tiff).unwrap().unwrap();
         let preview = image::load_from_memory(&opened.presentation.media.last().unwrap().data)
@@ -357,7 +363,7 @@ mod tests {
         image
             .write_data(&vec![0; (width * height) as usize])
             .unwrap();
-        assert_eq!(preview(&file.into_inner()).unwrap_err(), CHUNK_LIMIT);
+        assert_eq!(preview_test(&file.into_inner()).unwrap_err(), CHUNK_LIMIT);
     }
 
     #[test]
@@ -378,6 +384,6 @@ mod tests {
             .find(|entry| entry[..2] == 273u16.to_le_bytes())
             .unwrap();
         entry[8..12].copy_from_slice(&(offset + 1_000_000).to_le_bytes());
-        assert_eq!(preview(&bytes).unwrap_err(), BAD_CHUNKS);
+        assert_eq!(preview_test(&bytes).unwrap_err(), BAD_CHUNKS);
     }
 }

@@ -6,12 +6,13 @@
 mod cineon;
 mod dpx;
 mod large_tiff;
+mod tiff_pages;
 #[cfg(target_os = "macos")]
 mod heic;
 
 use base64::Engine as _;
 use image::{DynamicImage, ImageFormat, ImageReader};
-use std::io::Cursor;
+use std::io::{BufRead, Cursor, Seek};
 
 const MAX_PIXELS: u64 = 32 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 128 * 1024 * 1024;
@@ -110,14 +111,7 @@ pub fn open_with_dpx_color(
             let exposure = ExrExposure(decode_openexr(bytes)?);
             (exposure.preview_png(0)?, Some(exposure))
         }
-        Format::Tiff => {
-            let image = match decode_raster_with_limits(bytes, ImageFormat::Tiff, 4) {
-                Ok(image) => image,
-                Err(image::ImageError::Limits(_)) => large_tiff::preview(bytes)?,
-                Err(error) => return Err(error.to_string()),
-            };
-            (encode_png(image)?, None)
-        }
+        Format::Tiff => return tiff_pages::open(bytes).map(|opened| Some((opened, None))),
         Format::Raster(format) => (encode_png(decode_raster(bytes, format, 4)?)?, None),
         Format::Jpeg2000 => (encode_png(decode_jpeg2000(bytes)?)?, None),
         Format::Photoshop => (encode_png(decode_psd(bytes)?)?, None),
@@ -261,7 +255,15 @@ fn decode_raster_with_limits(
     format: ImageFormat,
     bytes_per_pixel: u64,
 ) -> Result<DynamicImage, image::ImageError> {
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    decode_raster_reader(Cursor::new(bytes), format, bytes_per_pixel)
+}
+
+fn decode_raster_reader(
+    reader: impl BufRead + Seek,
+    format: ImageFormat,
+    bytes_per_pixel: u64,
+) -> Result<DynamicImage, image::ImageError> {
+    let mut reader = ImageReader::with_format(reader, format);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
