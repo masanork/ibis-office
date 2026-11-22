@@ -126,7 +126,15 @@ fn change_diff(root: &Path, path: &Path, kind: ChangeDiff) -> Result<ibis_format
     }
     let mut args: Vec<_> = args.into_iter().map(OsStr::new).collect();
     args.push(path.as_os_str());
-    let mut child = git_command(root, &args)
+    git_diff_document(root, &args, matches!(kind, ChangeDiff::Untracked))
+}
+
+pub(super) fn git_diff_document(
+    root: &Path,
+    args: &[&OsStr],
+    no_index: bool,
+) -> Result<ibis_formats::Opened> {
+    let mut child = git_command(root, args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
@@ -146,9 +154,7 @@ fn change_diff(root: &Path, path: &Path, kind: ChangeDiff) -> Result<ibis_format
         return Err(text("git.diff-too-large").to_string().into());
     }
     // Git's no-index diff uses exit code 1 to report differing inputs.
-    if !(status.success()
-        || matches!(kind, ChangeDiff::Untracked) && status.code() == Some(1) && !bytes.is_empty())
-    {
+    if !(status.success() || no_index && status.code() == Some(1) && !bytes.is_empty()) {
         return Err(text("git.diff-failed").to_string().into());
     }
     let markdown = if bytes.is_empty() {

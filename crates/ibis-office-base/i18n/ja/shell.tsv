@@ -1619,3 +1619,7 @@ git.status.upstream-unavailable	上流ブランチと比較できません
 git.status.outgoing	送信待ち
 git.status.incoming	取り込み待ち
 git.status.shallow	部分履歴
+git.back-to-graph	履歴に戻る
+git.more-files	さらに表示
+git.first-parent	第一親との差分
+git.commit-parent-unavailable	このコミットの親は取得済みの履歴に含まれていません。

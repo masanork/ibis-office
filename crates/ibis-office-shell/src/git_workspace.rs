@@ -10,6 +10,7 @@ use gpui_kit::*;
 
 use crate::{editor::SlideEditor, i18n::text};
 
+mod commit_changes;
 mod graph;
 mod working_tree;
 use graph::CommitGraph;
@@ -43,6 +44,7 @@ pub(crate) struct GitWorkspace {
     head: gix::ObjectId,
     snapshot: gix::ObjectId,
     graph: CommitGraph,
+    commit_changes: Option<commit_changes::CommitChanges>,
     tree: BTreeMap<PathBuf, Vec<Entry>>,
     file: Option<PathBuf>,
     revisions: Vec<Revision>,
@@ -78,6 +80,7 @@ impl GitWorkspace {
             head,
             snapshot: head,
             graph: CommitGraph::default(),
+            commit_changes: None,
             tree,
             file: None,
             revisions: Vec::new(),

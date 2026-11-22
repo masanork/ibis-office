@@ -594,6 +594,9 @@ impl SlideEditor {
         if !state.graph.open {
             return None;
         }
+        if let Some(detail) = self.render_commit_changes(state, cx) {
+            return Some(detail);
+        }
         let theme = cx.theme();
         let font = Theme::global(cx).mono_font_family.clone();
         let primary = theme.primary;
@@ -620,16 +623,30 @@ impl SlideEditor {
                         format!("{} {}{} · {}", short(id), commit.subject, refs, commit.date);
                     let full_label: SharedString =
                         format!("{} {}{} · {}", id, commit.subject, refs, commit.date).into();
-                    line.id(("git-graph-commit", index))
+                    let commit_link = div()
+                        .flex_1()
+                        .min_w_0()
+                        .id(("git-graph-commit", index))
                         .cursor_pointer()
-                        .when(id == state.snapshot, |line| line.bg(accent))
                         .child(div().min_w_0().truncate().child(label))
                         .tooltip(move |window, cx| {
                             Tooltip::new(full_label.clone()).build(window, cx)
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.git_browse_snapshot(id, window, cx)
-                        }))
+                        }));
+                    line.when(id == state.snapshot, |line| line.bg(accent))
+                        .gap_1()
+                        .child(commit_link)
+                        .child(
+                            Button::new(("git-commit-changes", index))
+                                .xsmall()
+                                .disabled(state.busy)
+                                .label(text("git.changes"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.git_show_commit_changes(id, window, cx)
+                                })),
+                        )
                         .into_any_element()
                 }
                 None => line.into_any_element(),

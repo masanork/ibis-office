@@ -1621,3 +1621,7 @@ git.status.upstream-unavailable	Could not compare with upstream
 git.status.outgoing	Outgoing
 git.status.incoming	Incoming
 git.status.shallow	Partial history
+git.back-to-graph	Back to history
+git.more-files	More files
+git.first-parent	First parent diff
+git.commit-parent-unavailable	The parent of this commit is outside the available history.
