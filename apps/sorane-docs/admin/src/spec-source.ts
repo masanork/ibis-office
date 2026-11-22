@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { escape } from '../vendor/mikaki-oidc';
-import { normalizeRepoPath } from './git-pack';
+import { resolveRelativePath, schemaReference } from './spec-reference';
 import { renderSpecStructure } from './spec-structure';
 
 export function isSpecSource(path: string): boolean {
@@ -11,43 +11,14 @@ export function specSourceUrl(repoUrl: string, commit: string, path: string): st
   return repoUrl + '?' + new URLSearchParams({ ref: commit, source: path }).toString();
 }
 
-function resolveRelativePath(source: string, pathname: string): string | null {
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(pathname) || pathname.includes('?')) return null;
-  const segments = source.split('/').slice(0, -1);
-  try {
-    for (const raw of pathname.split('/')) {
-      const segment = decodeURIComponent(raw);
-      if (!segment || /[\/\\\u0000-\u001f\u007f]/u.test(segment)) return null;
-      if (segment === '.') continue;
-      if (segment === '..') {
-        if (segments.pop() === undefined) return null;
-      } else {
-        segments.push(segment);
-      }
-    }
-  } catch {
-    return null;
-  }
-  return normalizeRepoPath(segments.join('/'));
-}
-
 function referenceUrl(repoUrl: string, commit: string, source: string, value: string): string | null {
-  const hash = value.indexOf('#');
-  const pathname = hash < 0 ? value : value.slice(0, hash);
-  const path = pathname ? resolveRelativePath(source, pathname) : source;
-  if (!path || !/\.(yaml|yml|json)$/i.test(path) || !value) return null;
-  if (hash < 0 || hash === value.length - 1) return specSourceUrl(repoUrl, commit, path);
-  try {
-    const pointer = decodeURIComponent(value.slice(hash + 1));
-    if (pointer.length > 2048 || !pointer.startsWith('/') || /~(?![01])/.test(pointer)) return null;
-    const query = new URLSearchParams({ pointer });
-    return specSourceUrl(repoUrl, commit, path) + '&' + query.toString() + '#definition';
-  } catch {
-    return null;
-  }
+  const target = schemaReference(source, value);
+  if (!target) return null;
+  const url = specSourceUrl(repoUrl, commit, target.path);
+  return target.pointer ? url + '&' + new URLSearchParams({ pointer: target.pointer }) + '#definition' : url;
 }
 
-export function renderSpecSource(source: string, text: string, repoUrl: string, commit: string, pointer: string | null): string {
+export async function renderSpecSource(source: string, text: string, repoUrl: string, commit: string, pointer: string | null, loadSchema: (path: string) => Promise<string | null>): Promise<string> {
   const maxLines = 10_000;
   const lines = text.split(/\r\n|\r|\n/, maxLines + 1);
   const targets = new Map<string, string>();
@@ -78,8 +49,10 @@ export function renderSpecSource(source: string, text: string, repoUrl: string, 
   }
   const links = [...targets].map(([href, path]) => `<li><a href="${escape(href)}">${escape(path)}</a></li>`).join('');
   const structure = /\.(yaml|yml|json)$/i.test(source)
-    ? renderSpecStructure(text, /\.json$/i.test(source), lines.length, {
+    ? await renderSpecStructure(text, /\.json$/i.test(source), lines.length, {
       pointer,
+      source,
+      loadSchema,
       referenceUrl: value => referenceUrl(repoUrl, commit, source, value),
     })
     : null;

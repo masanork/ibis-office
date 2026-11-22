@@ -15,10 +15,12 @@ function abbreviated(text: string): string {
 
 interface StructureOptions {
   pointer: string | null;
+  source: string;
+  loadSchema(path: string): Promise<string | null>;
   referenceUrl(value: string): string | null;
 }
 
-export function renderSpecStructure(text: string, json: boolean, maxLine: number, options: StructureOptions) {
+export async function renderSpecStructure(text: string, json: boolean, maxLine: number, options: StructureOptions) {
   const notice = (message: string) => '<p class="muted">' + message + '</p>';
   const message = (html: string) => ({ html, targetLine: null });
 
@@ -56,7 +58,7 @@ export function renderSpecStructure(text: string, json: boolean, maxLine: number
   const targetLine = options.pointer === null || !root ? null : pointerLine(root, options.pointer, location);
   const operations = renderOpenApiOperations(root, location);
   const diagnostics = renderOpenApiDiagnostics(root, location);
-  const examples = renderOpenApiExamples(root, location);
+  const examples = await renderOpenApiExamples(root, location, options.source, options.loadSchema);
   const missing = options.pointer !== null && targetLine === null ? notice('指定された参照先を特定できませんでした。') : '';
   let remaining = MAX_ENTRIES;
   let truncated = false;

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { validate, type Schema } from '@cfworker/json-schema';
-import { isMap, isNode, isScalar, isSeq, type YAMLMap } from 'yaml';
+import { isMap, isNode, isScalar, isSeq, parseAllDocuments, type YAMLMap } from 'yaml';
 import { escape } from '../vendor/mikaki-oidc';
 import { openApiOperations, openApiVersion, pointerLine, pointerTarget } from './spec-navigation';
+import { schemaReference } from './spec-reference';
 
 type Json = null | boolean | string | number | Json[] | { [key: string]: Json };
 class UnsupportedExample extends Error {}
@@ -58,39 +59,43 @@ function isSupportedSchema(value: Json): value is boolean | Schema {
 
 // Materialize only supported schema positions. A $ref inside an example, enum
 // value, or extension is data and is never followed.
-function expandSchema(value: Json, root: YAMLMap, budget: { remaining: number }, depth = 0): Json {
+interface SchemaDocument {
+  path: string;
+  root: unknown;
+  entry: boolean;
+}
+
+const DRAFT_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
+
+async function expandSchema(value: Json, doc: SchemaDocument, load: (path: string) => Promise<SchemaDocument>, budget: { remaining: number }, depth = 0): Promise<Json> {
   if (depth > 16 || budget.remaining-- <= 0) throw new UnsupportedExample();
   if (!isObject(value)) return value;
   if (Object.hasOwn(value, '$ref')) {
-    if (root.has('$self') || root.has('$id') ||
-      Object.keys(value).some(key => key !== '$ref' && !ANNOTATIONS.has(key) && !key.startsWith('x-'))) {
+    if (isMap(doc.root) && (doc.root.has('$id') || doc.root.has('$self'))) throw new UnsupportedExample();
+    if (Object.keys(value).some(key => key !== '$ref' && !ANNOTATIONS.has(key) && !key.startsWith('x-'))) {
       throw new UnsupportedExample();
     }
-    const ref = value.$ref;
-    if (typeof ref !== 'string' || !ref.startsWith('#/') || ref.length > 2048) throw new UnsupportedExample();
-    const pointer = decodeURIComponent(ref.slice(1));
-    if (!/^\/components\/schemas\/[^/]+$/.test(pointer)) throw new UnsupportedExample();
-    // Such references start at the current file and end directly at a named
-    // component. Skip containers with ambiguous base-URI semantics.
-    const components = root.get('components', true);
-    const schemas = isMap(components) ? components.get('schemas', true) : null;
-    if (!isMap(components) || components.has('$id') || !isMap(schemas) || schemas.has('$id')) {
-      throw new UnsupportedExample();
-    }
-    const target = pointerTarget(root, pointer);
+    const ref = typeof value.$ref === 'string' ? schemaReference(doc.path, value.$ref) : null;
+    if (!ref) throw new UnsupportedExample();
+    const targetDoc = ref.path === doc.path ? doc : await load(ref.path);
+    if (targetDoc.entry && !/^\/components\/schemas\/[^/]+$/.test(ref.pointer)) throw new UnsupportedExample();
+    if (isMap(targetDoc.root) && (targetDoc.root.has('$id') || targetDoc.root.has('$self'))) throw new UnsupportedExample();
+    const target = pointerTarget(targetDoc.root, ref.pointer, true);
     if (!target) throw new UnsupportedExample();
-    return expandSchema(asJson(target.node, budget, depth + 1), root, budget, depth + 1);
+    const schema = asJson(target.node, budget, depth + 1);
+    if (!targetDoc.entry && !ref.pointer && isObject(schema) && schema.$schema === DRAFT_2020_12) delete schema.$schema;
+    return expandSchema(schema, targetDoc, load, budget, depth + 1);
   }
   // Unsupported keywords still reach the schema checker and cause a skip.
   if (Object.hasOwn(value, '$id') || Object.hasOwn(value, '$schema')) throw new UnsupportedExample();
   const properties = value.properties;
   if (isObject(properties)) {
     for (const [key, property] of Object.entries(properties)) {
-      properties[key] = expandSchema(property, root, budget, depth + 1);
+      properties[key] = await expandSchema(property, doc, load, budget, depth + 1);
     }
   }
   for (const key of ['items', 'additionalProperties']) {
-    if (Object.hasOwn(value, key)) value[key] = expandSchema(value[key], root, budget, depth + 1);
+    if (Object.hasOwn(value, key)) value[key] = await expandSchema(value[key], doc, load, budget, depth + 1);
   }
   return value;
 }
@@ -120,15 +125,42 @@ function* operationExamples(operation: YAMLMap) {
   for (const { value } of responses.items) yield* mediaExamples(value);
 }
 
-export function renderOpenApiExamples(root: unknown, location: (offset: number) => number): string {
+export async function renderOpenApiExamples(root: unknown, location: (offset: number) => number, source: string, loadSchema: (path: string) => Promise<string | null>): Promise<string> {
   if (!isMap(root)) return '';
   const version = openApiVersion(root.get('openapi'));
   const paths = root.get('paths', true);
   if (!version || version.startsWith('3.0.') || !isMap(paths)) return '';
   const dialect = root.get('jsonSchemaDialect');
   const knownDialect = !root.has('jsonSchemaDialect') ||
-    dialect === 'https://json-schema.org/draft/2020-12/schema' ||
+    dialect === DRAFT_2020_12 ||
     dialect === `https://spec.openapis.org/oas/${version.slice(0, 3)}/dialect/base`;
+
+  const entry: SchemaDocument = { path: source, root, entry: true };
+  const files = new Map<string, Promise<SchemaDocument>>();
+  async function load(path: string): Promise<SchemaDocument> {
+    if (path === source) return entry;
+    const cached = files.get(path);
+    if (cached) return cached;
+    if (files.size >= 4) throw new UnsupportedExample();
+    const pending = readSchema(path);
+    files.set(path, pending);
+    return pending;
+  }
+
+  async function readSchema(path: string): Promise<SchemaDocument> {
+    const raw = await loadSchema(path);
+    if (raw === null || raw.length > 128 * 1024) throw new UnsupportedExample();
+    if (/\.json$/i.test(path)) JSON.parse(raw);
+    const documents = parseAllDocuments(raw, { prettyErrors: false, uniqueKeys: false });
+    if (documents.length !== 1 || documents[0].errors.length || !documents[0].contents) throw new UnsupportedExample();
+    const root = documents[0].contents;
+    const dialect: unknown = isMap(root) ? root.get('$schema', true) : undefined;
+    if (isMap(root) && (root.has('openapi') ||
+      (root.has('$schema') && (!isScalar(dialect) || dialect.value !== DRAFT_2020_12)))) {
+      throw new UnsupportedExample();
+    }
+    return { path, root, entry: false };
+  }
 
   let examined = 0;
   let validated = 0;
@@ -142,7 +174,7 @@ export function renderOpenApiExamples(root: unknown, location: (offset: number) 
       try {
         if (!knownDialect) continue;
         const budget = { remaining: 1024 };
-        const parsed = expandSchema(asJson(schema, budget), root, budget);
+        const parsed = await expandSchema(asJson(schema, budget), entry, load, budget);
         if (!isSupportedSchema(parsed)) continue;
         const instance = asJson(node);
         const result = validate(instance, parsed, '2020-12', Object.create(null));

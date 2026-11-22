@@ -2,7 +2,7 @@
 import { isMap, isNode, isScalar, isSeq, type YAMLMap } from 'yaml';
 import { escape } from '../vendor/mikaki-oidc';
 
-export function pointerTarget(root: unknown, pointer: string): { node: unknown; position: unknown } | null {
+export function pointerTarget(root: unknown, pointer: string, fileRelative = false): { node: unknown; position: unknown } | null {
   if (pointer !== '' && (!pointer.startsWith('/') || /~(?![01])/.test(pointer))) return null;
   const tokens = pointer.split('/').slice(1);
   if (tokens.length > 64) return null;
@@ -11,6 +11,7 @@ export function pointerTarget(root: unknown, pointer: string): { node: unknown; 
   for (const token of tokens) {
     const key = token.replace(/~1/g, '/').replace(/~0/g, '~');
     if (isMap(node)) {
+      if (fileRelative && (node.has('$id') || node.has('$self') || (node !== root && node.has('$schema')))) return null;
       const pairs = node.items.filter(pair => isScalar(pair.key) && pair.key.value === key);
       if (pairs.length !== 1) return null;
       node = pairs[0].value;

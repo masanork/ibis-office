@@ -1114,6 +1114,9 @@ test('repository source follows Markdown links at the same commit and escapes so
   const openapi = 'a'.repeat(40);
   const openapi30 = 'b'.repeat(40);
   const openapi31 = 'c'.repeat(40);
+  const payloadSchema = 'd'.repeat(40);
+  const postalSchema = 'e'.repeat(40);
+  let payloadReads = 0;
   const original = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(input);
@@ -1146,6 +1149,8 @@ test('repository source follows Markdown links at the same commit and escapes so
           { path: 'openapi.yaml', mode: '100644', sha: openapi, type: 'blob' },
           { path: 'openapi30.yaml', mode: '100644', sha: openapi30, type: 'blob' },
           { path: 'openapi31.json', mode: '100644', sha: openapi31, type: 'blob' },
+          { path: 'payload.yaml', mode: '100644', sha: payloadSchema, type: 'blob' },
+          { path: 'postal.json', mode: '100644', sha: postalSchema, type: 'blob' },
         ] });
       case '/git/blobs/' + md:
         return new Response([
@@ -1181,6 +1186,14 @@ test('repository source follows Markdown links at the same commit and escapes so
           '  /second:', '    post:', '      operationId: same', '      responses: {}',
           '  missing-slash: {}', '  /not-an-object: true',
         ].join('\n'));
+      case '/git/blobs/' + payloadSchema:
+        payloadReads++;
+        return new Response([
+          '$defs:', '  Payload:', '    type: object', '    properties:',
+          '      postalCode:', '        $ref: ./postal.json',
+        ].join('\n'));
+      case '/git/blobs/' + postalSchema:
+        return Response.json({ $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'string' });
       case '/git/blobs/' + openapi31:
         return new Response(JSON.stringify({
           openapi: '3.1.1',
@@ -1208,6 +1221,13 @@ test('repository source follows Markdown links at the same commit and escapes so
                   '200': { content: { 'application/problem+json': {
                     schema: { type: 'object', properties: { numbers: { type: 'array', items: { type: 'integer' } } } },
                     example: { numbers: ['wrong'] },
+                  } } },
+                  '201': { content: { 'application/json': {
+                    schema: { $ref: 'payload.yaml#/$defs/Payload' },
+                    examples: {
+                      good: { value: { postalCode: '1000001' } },
+                      invalid: { value: { postalCode: 9876543 } },
+                    },
                   } } },
                   '400': { content: { 'application/json': { schema: { type: 'string', pattern: '^a' }, example: 'b' } } },
                   '500': { content: { 'application/json': { schema: { $ref: './schema.json' }, example: {} } } },
@@ -1282,12 +1302,15 @@ test('repository source follows Markdown links at the same commit and escapes so
     const html31 = await diagnostics31.text();
     assert.match(html31, /確認対象の項目に問題は見つかりませんでした/);
     const checks = html31.split('aria-label="OpenAPI JSON 例チェック"')[1].split('</aside>')[0];
-    assert.match(checks, /4 件を検証し、3 件に問題/);
+    assert.match(checks, /6 件を検証し、4 件に問題/);
     assert.match(checks, /5 件は対応するスキーマ参照やキーワード/);
     const postedCodeLine = /<span id="L(\d+)">[^\n]*&quot;postalCode&quot;: 1000001/.exec(html31)[1];
     const responseValueLine = /<span id="L(\d+)">[^\n]*&quot;wrong&quot;/.exec(html31)[1];
     assert.ok(checks.includes('href="#L' + postedCodeLine + '"'));
     assert.ok(checks.includes('href="#L' + responseValueLine + '"'));
+    const splitCodeLine = /<span id="L(\d+)">[^\n]*&quot;postalCode&quot;: 9876543/.exec(html31)[1];
+    assert.ok(checks.includes('href="#L' + splitCodeLine + '"'));
+    assert.equal(payloadReads, 1);
     assert.match(checks, /required property &quot;postalCode&quot;/);
     assert.match(apiHtml, /href="#L4"><code>GET \/pets<\/code>/);
     assert.match(apiHtml, /href="#L9"><code>QUERY \/pets<\/code>/);

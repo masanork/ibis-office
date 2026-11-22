@@ -1162,7 +1162,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
   using repo = await artifacts.get(row.repo_name);
   const info = await repo.info();
   const branches = new URL(request.url).searchParams.has('source') ? [] : await resolveBranches(repo, row.default_branch);
-  return renderRepoDetail(request, env, repo, {
+  return await renderRepoDetail(request, env, repo, {
     id: row.id, slug: row.slug, title: row.title, description: row.description,
     defaultBranch: row.default_branch, info, branches, csrf, browser: fresh ? browser : undefined,
     repoUrl: '/repos/' + row.id, apiUrl: '/api/repos/' + row.id,
@@ -1204,13 +1204,37 @@ async function renderRepoDetail(request: Request, env: RepoEnv, repo: ReadRepo, 
     const commit = headCommit.hash;
     const rawUrl = apiUrl + '/blob/' + path.split('/').map(encodeURIComponent).join('/') + '?ref=' + commit + '&plain=1';
     const directoryUrl = repoUrl + '?' + new URLSearchParams({ ref: commit, ...(parent ? { path: parent } : {}) });
+    const schemaTrees = new Map<string, ArtifactsTreeEntry[]>();
+    const loadSchema = async (schemaPath: string) => {
+      const parts = schemaPath.split('/');
+      const filename = parts.pop();
+      let treeHash = headCommit.treeHash;
+      for (const directory of [...parts, null]) {
+        let children = schemaTrees.get(treeHash);
+        if (!children) {
+          if (schemaTrees.size >= 12) return null;
+          children = (await repo.readTree(treeHash)) ?? [];
+          schemaTrees.set(treeHash, children);
+        }
+        if (directory === null) {
+          const entry = children.find(entry => entry.name === filename && (entry.type === 'blob' || entry.type === 'exec'));
+          const blob = entry ? await repo.readBlob(entry.hash) : null;
+          if (!blob || blob.size > 128 * 1024) return null;
+          return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(await blob.arrayBuffer());
+        }
+        const child = children.find(entry => entry.type === 'tree' && entry.name === directory);
+        if (!child) return null;
+        treeHash = child.hash;
+      }
+      return null;
+    };
     let content = '<p>このファイルはソース表示の上限（512 KiB）を超えています。Raw で確認できます。</p>';
     if (blob.size <= MAX_DIFF_FILE_BYTES) {
       try {
         const bytes = new Uint8Array(await blob.arrayBuffer());
         if (looksLikeBinary(bytes)) fail(415, 'not_utf8_text');
         const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-        content = renderSpecSource(path, text, repoUrl, commit, pointer);
+        content = await renderSpecSource(path, text, repoUrl, commit, pointer, loadSchema);
       } catch (error) {
         if (error instanceof TypeError) fail(415, 'not_utf8_text');
         throw error;
