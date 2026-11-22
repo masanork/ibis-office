@@ -139,9 +139,13 @@ mod issue232_signature;
 #[path = "tests/shell/scenario_menu_search.rs"]
 mod scenario_menu_search;
 
+#[path = "tests/docx/git_law_export.rs"]
+mod git_law_export;
+
 /// Every scenario, as (name, function).
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
     let mut all = crate::shell::scenario_examples::all();
+    all.push(("docx::git_law_export_from_renamed_path", git_law_export::run));
     all.extend(crate::native_quit_scenarios::all());
     all.extend(native_jtd_scenarios::all());
     all.extend(standard_encryption_scenarios::all());

@@ -1054,3 +1054,71 @@ impl SlideEditor {
         )
     }
 }
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub fn save_git_law_comparison(
+    repo: &Path,
+    base: &str,
+    old_path: PathBuf,
+    new_path: PathBuf,
+    output: PathBuf,
+) {
+    use crate::scenario::Scenario;
+    use gpui_kit::component::Root;
+
+    fn wait(scenario: &mut Scenario, mut ready: impl FnMut(&mut Scenario) -> bool) {
+        let start = std::time::Instant::now();
+        while !ready(scenario) {
+            assert!(
+                start.elapsed().as_secs() < 10,
+                "Git comparison operation timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            scenario.wait(10);
+        }
+    }
+
+    let mut scenario = Scenario::start_view();
+    scenario.update(|editor, window, cx| {
+        editor.git_workspace = Some(GitWorkspace::open(repo).unwrap());
+        editor.git_select_file(new_path, window, cx);
+    });
+    let idle = |s: &mut Scenario| s.with(|editor, _| !editor.git_workspace.as_ref().unwrap().busy);
+    wait(&mut scenario, idle);
+    scenario.update(|editor, window, cx| {
+        editor.git_set_base_by_id(base.to_owned(), Some(old_path.clone()), window, cx);
+    });
+    wait(&mut scenario, idle);
+
+    let original = scenario.with_app(|app| app.windows());
+    scenario.update(|editor, window, cx| {
+        let state = editor.git_workspace.as_ref().unwrap();
+        assert_eq!(state.base_path.as_ref(), Some(&old_path));
+        let old = state.base.expect("selected base");
+        assert!(old.to_string().starts_with(base));
+        let new = state.revised.expect("selected revision");
+        assert_eq!(new, state.head);
+        editor.git_show_revision(Some(old), new, window, cx);
+    });
+    wait(&mut scenario, |s| s.window_count() > original.len());
+    let (window, view) = scenario.with_app(|app| {
+        let window = app
+            .windows()
+            .into_iter()
+            .find(|handle| !original.contains(handle))
+            .unwrap();
+        let view = window
+            .downcast::<Root>()
+            .unwrap()
+            .update(app, |root, _, _| {
+                root.view().clone().downcast::<SlideEditor>().unwrap()
+            })
+            .unwrap();
+        (window, view)
+    });
+    scenario.update_in(window, &view, |editor, window, _| {
+        assert!(!editor.standard_read_only);
+        editor.save_to(output, window).unwrap();
+    });
+    scenario.close_window(window);
+}

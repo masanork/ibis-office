@@ -1138,3 +1138,6 @@ mod drawn_text {
             .unwrap_or_default()
     }
 }
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use crate::git_workspace::save_git_law_comparison;
