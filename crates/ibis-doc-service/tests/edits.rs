@@ -140,7 +140,7 @@ fn mcp_xlsx_formula_reads_respect_sheet_protection() {
     let sheet_id = document.presentation().slides[0].id;
     document.execute(vec![
         Command::Sheet(SheetCommand::SetCells { sheet: sheet_id, edits: vec![
-            CellEdit { row: 0, column: 0, input: CellInput::Formula("1+2".into()) },
+            CellEdit { row: 0, column: 0, input: CellInput::Formula("B1-2".into()) },
             CellEdit { row: 0, column: 1, input: CellInput::Formula("2+3".into()) },
         ] }),
         Command::Sheet(SheetCommand::SetFormat { sheet: sheet_id, ranges: vec![
@@ -156,8 +156,12 @@ fn mcp_xlsx_formula_reads_respect_sheet_protection() {
     let sheet = t.call("xlsx_list_sheets", json!({ "document_id": x }))["sheets"][0]["name"].as_str().unwrap().to_string();
     let formulas = t.call("xlsx_get_cells", json!({ "document_id": x, "sheet": sheet, "range": "A1:B1", "kind": "formula" }));
     assert_eq!(formulas["rows"], json!([[3.0, "=2+3"]]));
-    let hidden = t.call("xlsx_find_text", json!({"document_id":x,"sheet":sheet,"query":"1+2","search_formulas":true}));
+    let hidden = t.call("xlsx_find_text", json!({"document_id":x,"sheet":sheet,"query":"B1-2","search_formulas":true}));
     assert_eq!(hidden["matches"], json!([]));
+    let trace = t.call("xlsx_trace_formula", json!({"document_id":x,"sheet":sheet,"cell":"A1","direction":"precedents"}));
+    assert_eq!(trace["references"], json!([]));
+    let dependents = t.call("xlsx_trace_formula", json!({"document_id":x,"sheet":sheet,"cell":"B1","direction":"dependents"}));
+    assert_eq!(dependents["references"], json!([]));
     let visible = t.call("xlsx_find_text", json!({"document_id":x,"sheet":sheet,"query":"2+3","search_formulas":true}));
     assert_eq!(visible["matches"][0]["formula"], "=2+3");
 }
@@ -538,4 +542,59 @@ fn mcp_machine_readability_pages_candidates_on_a_read_only_workbook() {
     ]));
     assert_eq!(t.call(name, json!({"document_id":id,"sheet":"other"}))["count"], 1);
     assert_eq!(t.err(name, json!({"document_id":id,"sheet":"Missing"})), "no_such_sheet");
+}
+
+#[test]
+fn xlsx_formula_trace_follows_cross_sheet_ranges_and_pages_dependents() {
+    let mut t = T::new("shared_formula_trace", &[]);
+    let bytes = ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap();
+    std::fs::write(t.dir.join("blank.xlsx"), bytes).unwrap();
+    let id = t.open("blank.xlsx");
+    let data = t.call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].as_str().unwrap().to_owned();
+    t.call("xlsx_add_sheet", json!({"document_id":id,"name":"Report"}));
+    t.call("xlsx_set_cells", json!({"document_id":id,"sheet":data,"range":"A1:A3","values":[[1],[2],[3]]}));
+    t.call("xlsx_set_cells", json!({"document_id":id,"sheet":data,"range":"B1","values":"=A2*2"}));
+    t.call("xlsx_set_cells", json!({"document_id":id,"sheet":"Report","range":"A1:B1","values":[[format!("=SUM({}!$A$1:$A$3)+B1", ibis_formats::quote_sheet(&data)), 8]]}));
+    let tool = "xlsx_trace_formula";
+    let read = t.call(tool, json!({"document_id":id,"sheet":"Report","cell":"$A$1","direction":"precedents"}));
+    assert_eq!(read["cell"], "A1");
+    assert_eq!(read["references"], json!([{"sheet":data,"range":"A1:A3"},{"sheet":"Report","range":"B1"}]));
+    let page = t.call(tool, json!({"document_id":id,"sheet":data,"cell":"A2","direction":"dependents","limit":1}));
+    assert_eq!(page["count"], 2);
+    assert_eq!(page["references"], json!([{"sheet":data,"range":"B1"}]));
+    let next = t.call(tool, json!({"document_id":id,"sheet":data,"cell":"A2","direction":"dependents","offset":page["next_offset"]}));
+    assert_eq!(next["references"], json!([{"sheet":"Report","range":"A1"}]));
+    assert!(next.get("next_offset").is_none());
+    assert_eq!(t.err(tool, json!({"document_id":id,"sheet":data,"cell":"A1:A2","direction":"precedents"})), "invalid_argument");
+}
+
+#[test]
+fn xlsx_formula_trace_in_a_draft_resolves_names_and_marks_volatile_formulas() {
+    use ibis_doc_model::{Command, Document, SheetCommand};
+    use ibis_formats::Kind;
+
+    let base = ibis_formats::read(&ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
+    let active = base.slides[0].id;
+    let sheet = base.slides[0].name.clone().unwrap();
+    let mut draft = Document::new(base);
+    draft.execute(vec![Command::Sheet(SheetCommand::SetName {
+        name: "Totals".into(),
+        sheet: None,
+        formula: Some(format!("{}!$B$2:$B$3", ibis_formats::quote_sheet(&sheet))),
+    })]).unwrap();
+    let context = || ibis_doc_service::DraftToolContext {
+        workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(active), ..Default::default() },
+        ..Default::default()
+    };
+    let run = ibis_doc_service::run_draft_tool;
+    run(Kind::Workbook, &mut draft, context(), "xlsx_set_cells",
+        json!({"range":"A1:A2","values":[["=SUM(Totals)"],["=INDIRECT(\"B2\")"]]})).unwrap();
+    let (named, edits) = run(Kind::Workbook, &mut draft, context(), "xlsx_trace_formula",
+        json!({"cell":"A1","direction":"precedents"})).unwrap();
+    assert!(edits.is_empty());
+    assert_eq!(named["references"], json!([{"sheet":sheet,"range":"B2:B3"}]));
+    let (dynamic, _) = run(Kind::Workbook, &mut draft, context(), "xlsx_trace_formula",
+        json!({"cell":"A2","direction":"precedents"})).unwrap();
+    assert_eq!(dynamic["volatile"], true);
+    assert_eq!(dynamic["references"], json!([]));
 }

@@ -47,6 +47,14 @@ pub struct Dependencies {
     pub volatile: bool,
 }
 
+/// Resolve the in-workbook areas used by the recalculation engine for one formula.
+pub fn formula_dependencies(book: &dyn Book, cell: CellId, formula: &str) -> Option<Dependencies> {
+    let expr = parse(formula.trim_start_matches('=')).ok()?;
+    let mut result = Dependencies::default();
+    dependencies(book, cell.0, (cell.1, cell.2), &expr, &mut result, 0);
+    Some(result)
+}
+
 fn dependencies(book: &dyn Book, sheet: usize, at: (u32, u32), expr: &Expr, out: &mut Dependencies, depth: u32) {
     let resolve = |s: &Option<crate::formula::SheetRef>| -> Option<(usize, usize)> {
         match s {
