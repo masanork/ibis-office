@@ -3,6 +3,7 @@ import { escape } from '../vendor/mikaki-oidc';
 import { resolveRelativePath, schemaReference } from './spec-reference';
 import { renderSpecStructure } from './spec-structure';
 import { renderGherkinOutline } from './spec-gherkin';
+import { requirementHeading, renderRequirementTrace, type Requirement } from './spec-requirements';
 
 export function isSpecSource(path: string): boolean {
   return /\.(md|markdown|yaml|yml|json|mmd|feature)$/i.test(path);
@@ -19,13 +20,18 @@ function referenceUrl(repoUrl: string, commit: string, source: string, value: st
   return target.pointer ? url + '&' + new URLSearchParams({ pointer: target.pointer }) + '#definition' : url;
 }
 
-export async function renderSpecSource(source: string, text: string, repoUrl: string, commit: string, pointer: string | null, loadSchema: (path: string) => Promise<string | null>): Promise<string> {
+export async function renderSpecSource(source: string, text: string, repoUrl: string, commit: string, pointer: string | null, loadSource: (path: string) => Promise<string | null>): Promise<string> {
   const maxLines = 10_000;
   const lines = text.split(/\r\n|\r|\n/, maxLines + 1);
   const targets = new Map<string, string>();
+  const requirements: Requirement[] = [];
+  const featurePaths = new Set<string>();
   if (/\.(md|markdown)$/i.test(source)) {
     let fence: string | undefined;
-    for (const line of lines.slice(0, maxLines)) {
+    const frontMatterEnd = lines[0]?.replace(/^\uFEFF/, '').trim() === '---'
+      ? lines.findIndex((line, i) => i > 0 && /^(?:---|\.\.\.)\s*$/.test(line)) : -1;
+    for (const [index, line] of lines.slice(0, maxLines).entries()) {
+      if (index <= frontMatterEnd) continue;
       const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
       if (fence) {
         if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
@@ -35,17 +41,20 @@ export async function renderSpecSource(source: string, text: string, repoUrl: st
         fence = marker[1];
         continue;
       }
+      const requirement = requirementHeading(line, index + 1);
+      if (requirement) requirements.push(requirement);
+      if (targets.size >= 100) continue;
       const candidates = line.matchAll(/(?<![\\!])\[[^\[\]\n]+\]\(\s*(?:<([^<>]+)>|([^\s()]+))(?:\s+["'][^"']*["'])?\s*\)/g);
       for (const [, enclosed, bare] of candidates) {
         const [pathname, hash = ''] = (enclosed ?? bare).split('#', 2);
         const path = resolveRelativePath(source, pathname);
         if (!path || !isSpecSource(path)) continue;
+        if (/\.feature$/i.test(path)) featurePaths.add(path);
         const fragment = /^L[1-9]\d*$/.test(hash) ? '#' + hash : '';
         const href = specSourceUrl(repoUrl, commit, path) + fragment;
         targets.set(href, path + fragment);
         if (targets.size >= 100) break;
       }
-      if (targets.size >= 100) break;
     }
   }
   const links = [...targets].map(([href, path]) => `<li><a href="${escape(href)}">${escape(path)}</a></li>`).join('');
@@ -53,10 +62,11 @@ export async function renderSpecSource(source: string, text: string, repoUrl: st
     ? await renderSpecStructure(text, /\.json$/i.test(source), lines.length, {
       pointer,
       source,
-      loadSchema,
+      loadSchema: loadSource,
       referenceUrl: value => referenceUrl(repoUrl, commit, source, value),
     })
     : null;
+  const trace = await renderRequirementTrace(requirements, featurePaths, loadSource, path => specSourceUrl(repoUrl, commit, path));
   const scenarios = /\.feature$/i.test(source) ? renderGherkinOutline(text, lines.length) : '';
   const code = lines.slice(0, maxLines).map((line, i) => {
     const anchor = 'L' + (i + 1);
@@ -64,6 +74,6 @@ export async function renderSpecSource(source: string, text: string, repoUrl: st
     return `<span id="${anchor}"><a aria-label="${i + 1} 行目" href="#${anchor}" class="source-line-number muted">${i + 1}</a>  ${shown}</span>`;
   }).join('\n');
   return `${links ? `<nav aria-label="参照ファイル"><h2>参照ファイル</h2><ul>${links}</ul></nav>` : ''}
-    ${structure?.html ?? ''}${scenarios}<pre class="code source-code"><code>${code}</code></pre>
+    ${trace}${structure?.html ?? ''}${scenarios}<pre class="code source-code"><code>${code}</code></pre>
     ${lines.length > maxLines ? '<p>最初の10,000行を表示しています。全体は Raw で確認できます。</p>' : ''}`;
 }

@@ -1204,17 +1204,17 @@ async function renderRepoDetail(request: Request, env: RepoEnv, repo: ReadRepo, 
     const commit = headCommit.hash;
     const rawUrl = apiUrl + '/blob/' + path.split('/').map(encodeURIComponent).join('/') + '?ref=' + commit + '&plain=1';
     const directoryUrl = repoUrl + '?' + new URLSearchParams({ ref: commit, ...(parent ? { path: parent } : {}) });
-    const schemaTrees = new Map<string, ArtifactsTreeEntry[]>();
-    const loadSchema = async (schemaPath: string) => {
-      const parts = schemaPath.split('/');
+    const sourceTrees = new Map<string, ArtifactsTreeEntry[]>();
+    const loadSource = async (sourcePath: string) => {
+      const parts = sourcePath.split('/');
       const filename = parts.pop();
       let treeHash = headCommit.treeHash;
       for (const directory of [...parts, null]) {
-        let children = schemaTrees.get(treeHash);
+        let children = sourceTrees.get(treeHash);
         if (!children) {
-          if (schemaTrees.size >= 12) return null;
+          if (sourceTrees.size >= 12) return null;
           children = (await repo.readTree(treeHash)) ?? [];
-          schemaTrees.set(treeHash, children);
+          sourceTrees.set(treeHash, children);
         }
         if (directory === null) {
           const entry = children.find(entry => entry.name === filename && (entry.type === 'blob' || entry.type === 'exec'));
@@ -1234,7 +1234,7 @@ async function renderRepoDetail(request: Request, env: RepoEnv, repo: ReadRepo, 
         const bytes = new Uint8Array(await blob.arrayBuffer());
         if (looksLikeBinary(bytes)) fail(415, 'not_utf8_text');
         const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-        content = await renderSpecSource(path, text, repoUrl, commit, pointer, loadSchema);
+        content = await renderSpecSource(path, text, repoUrl, commit, pointer, loadSource);
       } catch (error) {
         if (error instanceof TypeError) fail(415, 'not_utf8_text');
         throw error;

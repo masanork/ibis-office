@@ -1160,8 +1160,9 @@ test('repository source follows Markdown links at the same commit and escapes so
         ] });
       case '/git/blobs/' + md:
         return new Response([
-          '# API仕様', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[Acceptance](address.feature#L6)', '[external](//other.test/external.json)',
-          '[escape](../../escape.json)', '[slash](../api%2fother.json)', '```md', '[example](sample.json)', '```',
+          '# API仕様', '## REQ-42 住所変更', '## REQ-43 郵便番号', '## REQ-99 未対応',
+          '## REQ-example 例テーブル', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[Acceptance](address.feature#L6)', '[Broken](broken.feature)', '[external](//other.test/external.json)',
+          '[escape](../../escape.json)', '[slash](../api%2fother.json)', '```md', '## REQ-fake', '[example](sample.json)', '```',
         ].join('\n'));
       case '/git/blobs/' + yaml:
         return new Response([
@@ -1253,6 +1254,7 @@ test('repository source follows Markdown links at the same commit and escapes so
           '    @REQ-43', '    シナリオアウトライン: 郵便番号を検証 <番号>',
           '      前提 住所が登録済み', '      もし <番号> を入力', '      ならば 結果を表示',
           '      例: 有効な入力', '        | 番号 |', '        | 1000001 |',
+          '      @REQ-example', '      例: タグ付き', '        | 番号 |', '        | 1000002 |',
         ].join('\r\n'));
       case '/git/blobs/' + badFeature:
         return new Response('Scenario: No feature heading\n');
@@ -1349,6 +1351,15 @@ test('repository source follows Markdown links at the same commit and escapes so
     }
     const featureLink = base + '?ref=' + commit + '&source=docs%2Faddress.feature#L6';
     assert.ok(html.includes('href="' + featureLink.replaceAll('&', '&amp;') + '"'));
+    const trace = html.split('aria-label="要求と受け入れテスト"')[1].split('</nav>')[0];
+    assert.match(trace, /href="#L2">REQ-42<\/a>/);
+    assert.match(trace, /href="#L3">REQ-43<\/a>/);
+    assert.equal(trace.split('href="' + featureLink.replaceAll('&', '&amp;') + '"').length - 1, 2);
+    assert.match(trace, /href="#L4">REQ-99<\/a>\s*<span class="muted">確認できたリンク先に一致なし/);
+    assert.match(trace, /href="#L5">REQ-example<\/a>/);
+    assert.ok(trace.includes('href="' + featureLink.replaceAll('&', '&amp;').replace('#L6', '#L14') + '"'));
+    assert.doesNotMatch(trace, /REQ-fake/);
+    assert.match(trace, /1 件の \.feature を確認できませんでした/);
     const featureResponse = await worker.fetch(req(featureLink), env);
     assert.equal(featureResponse.status, 200);
     const featureHtml = await featureResponse.text();

@@ -2,6 +2,14 @@
 import { AstBuilder, Errors, GherkinClassicTokenMatcher, Parser } from '@cucumber/gherkin';
 import { escape } from '../vendor/mikaki-oidc';
 
+export function parseGherkinFeature(text: string) {
+  let id = 0;
+  const parser = new Parser(new AstBuilder(() => String(++id)), new GherkinClassicTokenMatcher());
+  return parser.parse(text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')).feature;
+}
+
+type Feature = NonNullable<ReturnType<typeof parseGherkinFeature>>;
+
 export function renderGherkinOutline(text: string, maxLine: number): string {
   if (text.length > 128 * 1024 || maxLine > 10_000) {
     return '<p class="muted">ファイルがシナリオ一覧の上限を超えています。原文は引き続き参照できます。</p>';
@@ -10,11 +18,9 @@ export function renderGherkinOutline(text: string, maxLine: number): string {
     line >= 1 && line <= maxLine ? `<a href="#L${line}">${escape(label)}</a>` : escape(label);
   const tags = (values: readonly { name: string; location: { line: number } }[]) =>
     values.slice(0, 20).map(tag => ` <span class="badge">${link(tag.location.line, tag.name.slice(0, 120))}</span>`).join('');
-  let id = 0;
-  const parser = new Parser(new AstBuilder(() => String(++id)), new GherkinClassicTokenMatcher());
-  let feature: ReturnType<typeof parser.parse>['feature'];
+  let feature: Feature | undefined;
   try {
-    feature = parser.parse(text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')).feature;
+    feature = parseGherkinFeature(text);
   } catch (error) {
     if (!(error instanceof Errors.GherkinException)) throw error;
     const first = error.errors[0] ?? error;
@@ -26,7 +32,7 @@ export function renderGherkinOutline(text: string, maxLine: number): string {
   const limit = 200;
   let count = 0;
   let truncated = false;
-  function scenarios(children: NonNullable<ReturnType<typeof parser.parse>['feature']>['children']): string {
+  function scenarios(children: Feature['children']): string {
     const items: string[] = [];
     for (const child of children) {
       if (!child.scenario && !child.rule) continue;
