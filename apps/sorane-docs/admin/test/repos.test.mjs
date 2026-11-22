@@ -304,6 +304,21 @@ function createMockEnv() {
       if (!state) throw new Error('NOT_FOUND');
       return makeHandle(state);
     },
+    async import({ source, target }) {
+      if (artifactsRepos.has(target.name)) throw new Error('ALREADY_EXISTS');
+      const state = makeRepoState(target.name, {
+        description: target.opts?.description ?? null,
+        setDefaultBranch: source.branch ?? 'main',
+        source: source.url,
+      });
+      artifactsRepos.set(target.name, state);
+      const repoInfo = await makeHandle(state).info();
+      return {
+        ...repoInfo,
+        remote: state.remote,
+        token: 'imp-secret',
+      };
+    },
     async delete(name) {
       return artifactsRepos.delete(name);
     },
@@ -324,11 +339,47 @@ function createMockEnv() {
   return { env, artifactsRepos, docRepos };
 }
 
-// Intercept fetch to simulate Artifacts git-receive-pack & info/refs remote
-function installGitFetchMock(artifactsRepos) {
+// Intercept fetch to simulate Artifacts and external Git Smart HTTP remotes
+function installGitFetchMock(artifactsRepos, externalRemotes = new Map()) {
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const urlStr = typeof input === 'string' ? input : input.url;
+    const extRefsMatch = /^(https:\/\/github\.com\/[^/]+\/[^/]+?)(?:\.git)?\/info\/refs\?service=git-upload-pack$/.exec(urlStr);
+    if (extRefsMatch) {
+      const ext = externalRemotes.get(extRefsMatch[1]) ?? externalRemotes.get(`${extRefsMatch[1]}.git`);
+      if (!ext) return new Response('Not found', { status: 404 });
+      const parts = [gitPack.encodePktLine('# service=git-upload-pack\n'), new TextEncoder().encode('0000')];
+      let first = true;
+      for (const [branch, sha] of ext.refs) {
+        const line = first ? `${sha} refs/heads/${branch}\0multi_ack\n` : `${sha} refs/heads/${branch}\n`;
+        parts.push(gitPack.encodePktLine(line));
+        first = false;
+      }
+      parts.push(new TextEncoder().encode('0000'));
+      return new Response(gitPack.concatBytes(parts), { status: 200 });
+    }
+    const extReceiveMatch = /^(https:\/\/github\.com\/[^/]+\/[^/]+?)(?:\.git)?\/git-receive-pack$/.exec(urlStr);
+    if (extReceiveMatch) {
+      const ext = externalRemotes.get(extReceiveMatch[1]) ?? externalRemotes.get(`${extReceiveMatch[1]}.git`);
+      if (!ext) return new Response('Not found', { status: 404 });
+      const body = new Uint8Array(await new Response(init.body).arrayBuffer());
+      const headerText = new TextDecoder().decode(body.subarray(0, Math.min(body.length, 512)));
+      const refLineMatch = /([0-9a-f]{40}) ([0-9a-f]{40}) refs\/heads\/([^\0\n]+)/.exec(headerText);
+      const packOffset = new TextDecoder().decode(body).indexOf('PACK');
+      assert.ok(packOffset >= 0, 'external git-receive-pack must contain PACK');
+      const pack = body.subarray(packOffset);
+      const view = new DataView(pack.buffer, pack.byteOffset, pack.byteLength);
+      ext.lastPush = {
+        auth: init.headers?.Authorization ?? '',
+        oldSha: refLineMatch?.[1],
+        newSha: refLineMatch?.[2],
+        branch: refLineMatch?.[3],
+        objectCount: view.getUint32(8, false),
+      };
+      if (refLineMatch) ext.refs.set(refLineMatch[3], refLineMatch[2]);
+      return new Response('000eunpack ok\n0000', { status: 200 });
+    }
+
     const refsMatch = /^https:\/\/artifacts\.example\/docs\/([^/]+)\.git\/info\/refs\?service=git-upload-pack$/.exec(urlStr);
     if (refsMatch) {
       const state = artifactsRepos.get(refsMatch[1]);
@@ -785,6 +836,145 @@ test('repos branches and diff API support branch creation, cross-branch commits,
       env,
     );
     assert.equal(otherDiff.status, 404);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('external Git import, URL validation, and push to GitHub remote work cleanly', async () => {
+  assert.equal(
+    gitPack.validateExternalGitUrl('https://github.com/masanork/ibis-office.git/'),
+    'https://github.com/masanork/ibis-office.git',
+  );
+  assert.equal(gitPack.validateExternalGitUrl('http://github.com/a/b.git'), null);
+  assert.equal(gitPack.validateExternalGitUrl('https://user:pass@github.com/a/b.git'), null);
+  assert.equal(gitPack.validateExternalGitUrl('https://127.0.0.1/a/b.git'), null);
+  assert.equal(gitPack.validateExternalGitUrl('https://localhost/a/b.git'), null);
+
+  const { env, artifactsRepos } = createMockEnv();
+  const externalRemotes = new Map([
+    ['https://github.com/owner/docs-repo.git', { refs: new Map(), lastPush: null }],
+  ]);
+  const restoreFetch = installGitFetchMock(artifactsRepos, externalRemotes);
+  try {
+    // 1. Import repository from external URL
+    const impRes = await worker.fetch(
+      req('/api/repos/import', {
+        method: 'POST',
+        token: 'owner-token',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({
+          sourceUrl: 'https://github.com/owner/docs-repo.git',
+          slug: 'imported-docs',
+          branch: 'main',
+          depth: 5,
+        }),
+      }),
+      env,
+    );
+    assert.equal(impRes.status, 201);
+    const imported = await impRes.json();
+    assert.equal(imported.slug, 'imported-docs');
+
+    // Reject SSRF URLs on import
+    const badImp = await worker.fetch(
+      req('/api/repos/import', {
+        method: 'POST',
+        token: 'owner-token',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({ sourceUrl: 'https://127.0.0.1/internal.git' }),
+      }),
+      env,
+    );
+    assert.equal(badImp.status, 400);
+
+    // 2. Commit a Markdown file in Docs and push to external remote
+    const putRes = await worker.fetch(
+      req(`/api/repos/${imported.id}/blob/docs/guide.md`, {
+        method: 'PUT',
+        token: 'owner-token',
+        headers: {
+          'x-csrf-token': csrf,
+          'x-commit-message': encodeURIComponent('Add guide.md'),
+        },
+        body: '# Guide\n\nHello GitHub.\n',
+      }),
+      env,
+    );
+    assert.equal(putRes.status, 200);
+    const putData = await putRes.json();
+
+    const pushRes = await worker.fetch(
+      req(`/api/repos/${imported.id}/push`, {
+        method: 'POST',
+        token: 'owner-token',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({
+          remoteUrl: 'https://github.com/owner/docs-repo.git',
+          branch: 'main',
+          remoteBranch: 'docs/update-guide',
+          token: 'ghp_test_token',
+        }),
+      }),
+      env,
+    );
+    assert.equal(pushRes.status, 200);
+    const pushData = await pushRes.json();
+    assert.equal(pushData.status, 'pushed');
+    assert.equal(pushData.commit, putData.commit);
+    assert.equal(
+      pushData.compareUrl,
+      'https://github.com/owner/docs-repo/compare/docs%2Fupdate-guide?expand=1',
+    );
+
+    const extState = externalRemotes.get('https://github.com/owner/docs-repo.git');
+    assert.equal(extState.lastPush.branch, 'docs/update-guide');
+    assert.equal(extState.lastPush.newSha, putData.commit);
+    assert.ok(extState.lastPush.objectCount >= 3);
+
+    // 3. Pushing again reports up_to_date
+    const pushAgain = await worker.fetch(
+      req(`/api/repos/${imported.id}/push`, {
+        method: 'POST',
+        token: 'owner-token',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({
+          remoteUrl: 'https://github.com/owner/docs-repo.git',
+          branch: 'main',
+          remoteBranch: 'docs/update-guide',
+          token: 'ghp_test_token',
+        }),
+      }),
+      env,
+    );
+    assert.equal(pushAgain.status, 200);
+    assert.equal((await pushAgain.json()).status, 'up_to_date');
+
+    // 4. Diverged remote branch returns 409 non_fast_forward
+    extState.refs.set('docs/update-guide', 'f'.repeat(40));
+    const divergedPush = await worker.fetch(
+      req(`/api/repos/${imported.id}/push`, {
+        method: 'POST',
+        token: 'owner-token',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({
+          remoteUrl: 'https://github.com/owner/docs-repo.git',
+          branch: 'main',
+          remoteBranch: 'docs/update-guide',
+          token: 'ghp_test_token',
+        }),
+      }),
+      env,
+    );
+    assert.equal(divergedPush.status, 409);
+
+    // 5. UI pages render import & push forms
+    const homeHtml = await (await worker.fetch(req('/repos', { token: 'owner-token' }), env)).text();
+    assert.ok(homeHtml.includes('id="import-repo"'));
+    const detailHtml = await (
+      await worker.fetch(req(`/repos/${imported.id}`, { token: 'owner-token' }), env)
+    ).text();
+    assert.ok(detailHtml.includes('id="push-external"'));
   } finally {
     restoreFetch();
   }

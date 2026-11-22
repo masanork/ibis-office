@@ -20,6 +20,8 @@ import {
   isValidBranchName,
   listBranchesFromRemote,
   normalizeRepoPath,
+  pushBranchToExternalRemote,
+  validateExternalGitUrl,
 } from './git-pack';
 import {
   computeLineDiff,
@@ -61,6 +63,7 @@ const REPO_API_ITEM = /^\/api\/repos\/([0-9a-f-]{36})$/i;
 const REPO_API_BLOB = /^\/api\/repos\/([0-9a-f-]{36})\/blob\/(.+)$/i;
 const REPO_API_BRANCHES = /^\/api\/repos\/([0-9a-f-]{36})\/branches$/i;
 const REPO_API_DIFF = /^\/api\/repos\/([0-9a-f-]{36})\/diff$/i;
+const REPO_API_PUSH = /^\/api\/repos\/([0-9a-f-]{36})\/push$/i;
 const REPO_API_TOKENS = /^\/api\/repos\/([0-9a-f-]{36})\/tokens$/i;
 const REPO_API_TOKEN_ITEM = /^\/api\/repos\/([0-9a-f-]{36})\/tokens\/([^/]+)$/i;
 const REPO_API_FORK = /^\/api\/repos\/([0-9a-f-]{36})\/fork$/i;
@@ -322,6 +325,157 @@ export async function createRepo(request: Request, env: RepoEnv): Promise<Respon
     },
     201,
   );
+}
+
+function defaultSlugFromGitUrl(rawUrl: string): string {
+  const cleaned = rawUrl.replace(/\/+$/, '').replace(/\.git$/i, '');
+  const seg = cleaned.split('/').pop() || 'imported-repo';
+  return sanitizeSlug(seg) ?? 'imported-repo';
+}
+
+function githubCompareUrl(remoteUrl: string, branch: string): string | null {
+  try {
+    const u = new URL(remoteUrl);
+    if (u.hostname.toLowerCase() !== 'github.com') return null;
+    const path = u.pathname.replace(/\/+$/, '').replace(/\.git$/i, '');
+    if (!/^\/[^/]+\/[^/]+$/.test(path)) return null;
+    return `https://github.com${path}/compare/${encodeURIComponent(branch)}?expand=1`;
+  } catch {
+    return null;
+  }
+}
+
+export async function importRepo(request: Request, env: RepoEnv): Promise<Response> {
+  await csrfOk(request, env);
+  const session = await requireUser(request, env);
+  const artifacts = requireArtifacts(env);
+
+  const body = (await request.json().catch(() => ({}))) as {
+    sourceUrl?: string;
+    slug?: string;
+    title?: string;
+    description?: string;
+    branch?: string;
+    depth?: number;
+  };
+  const sourceUrl = typeof body.sourceUrl === 'string' ? validateExternalGitUrl(body.sourceUrl) : null;
+  if (!sourceUrl) fail(400, 'invalid_url');
+
+  const slug =
+    typeof body.slug === 'string' && body.slug.trim()
+      ? sanitizeSlug(body.slug)
+      : defaultSlugFromGitUrl(sourceUrl);
+  if (!slug) fail(400, 'invalid_slug');
+
+  const branch = typeof body.branch === 'string' && body.branch.trim() ? body.branch.trim() : undefined;
+  if (branch && !isValidBranchName(branch)) fail(400, 'invalid_branch');
+  const depth =
+    typeof body.depth === 'number' && Number.isFinite(body.depth) && body.depth >= 1
+      ? Math.min(100, Math.floor(body.depth))
+      : undefined;
+
+  const title = (typeof body.title === 'string' ? body.title.trim() : '') || slug;
+  if (title.length > 100) fail(400, 'title_too_long');
+  const description = (typeof body.description === 'string' ? body.description.trim() : '').slice(0, 200);
+
+  const id = crypto.randomUUID();
+  const repoName = `${slug}-${id.slice(0, 8)}`;
+
+  let imported: ArtifactsCreateRepoResult;
+  try {
+    imported = await artifacts.import({
+      source: { url: sourceUrl, branch, depth },
+      target: { name: repoName, opts: { description: description || undefined } },
+    });
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code === 'REMOTE_AUTH_REQUIRED' || code === 'INVALID_URL' || code === 'INVALID_INPUT') {
+      fail(400, code.toLowerCase());
+    }
+    if (code === 'NOT_FOUND') fail(404, 'remote_not_found');
+    if (code === 'MEMORY_LIMIT') fail(413, 'repo_too_large');
+    if (code === 'UPSTREAM_UNAVAILABLE') fail(502, 'upstream_unavailable');
+    throw err;
+  }
+
+  const defaultBranch = imported.defaultBranch || branch || 'main';
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    'INSERT INTO doc_repos(id,issuer,sub,repo_name,slug,title,description,default_branch,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+  )
+    .bind(id, env.ISSUER, session.sub, repoName, slug, title, description, defaultBranch, now, now)
+    .run();
+
+  return json(
+    env,
+    {
+      id,
+      slug,
+      repo_name: repoName,
+      title,
+      description,
+      default_branch: defaultBranch,
+      remote: imported.remote,
+      source: sourceUrl,
+    },
+    201,
+  );
+}
+
+export async function pushRepoToExternal(
+  request: Request,
+  env: RepoEnv,
+  id: string,
+): Promise<Response> {
+  await csrfOk(request, env);
+  const session = await requireUser(request, env);
+  const artifacts = requireArtifacts(env);
+  const row = await ownedRepo(env, session, id);
+
+  const body = (await request.json().catch(() => ({}))) as {
+    remoteUrl?: string;
+    branch?: string;
+    remoteBranch?: string;
+    token?: string;
+    force?: boolean;
+  };
+  const remoteUrl = typeof body.remoteUrl === 'string' ? validateExternalGitUrl(body.remoteUrl) : null;
+  if (!remoteUrl) fail(400, 'invalid_url');
+
+  const localBranch =
+    typeof body.branch === 'string' && body.branch.trim() ? body.branch.trim() : row.default_branch;
+  if (!isValidBranchName(localBranch)) fail(400, 'invalid_branch');
+  const remoteBranch =
+    typeof body.remoteBranch === 'string' && body.remoteBranch.trim()
+      ? body.remoteBranch.trim()
+      : localBranch;
+  if (!isValidBranchName(remoteBranch)) fail(400, 'invalid_branch');
+  const token = typeof body.token === 'string' ? body.token.trim() : '';
+  const force = body.force === true;
+
+  using repo = await artifacts.get(row.repo_name);
+  try {
+    const result = await pushBranchToExternalRemote({
+      repo,
+      localBranch,
+      remoteUrl,
+      remoteBranch,
+      token,
+      force,
+    });
+    return json(env, {
+      ...result,
+      compareUrl: githubCompareUrl(remoteUrl, remoteBranch),
+    });
+  } catch (err) {
+    if (err instanceof ConflictError) fail(409, 'non_fast_forward');
+    if (err instanceof Error && err.message.startsWith('Local branch not found')) {
+      fail(404, 'branch_not_found');
+    }
+    if (err instanceof Error && err.message.includes('(401)')) fail(401, 'remote_auth_failed');
+    if (err instanceof Error && err.message.includes('(403)')) fail(403, 'remote_forbidden');
+    throw err;
+  }
 }
 
 export async function getRepoDetail(request: Request, env: RepoEnv, id: string): Promise<Response> {
@@ -788,22 +942,39 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
         <div class="card-hd"><strong>文書リポジトリ一覧</strong><span class="badge">${(rows.results ?? []).length} 件</span></div>
         ${items || '<div class="card-bd"><p class="muted">まだリポジトリがありません。右のフォームから作成してください。</p></div>'}
       </div>
-      <div class="card">
-        <div class="card-hd"><strong>新しいリポジトリを作成</strong></div>
-        <div class="card-bd">
-          <form id="create-repo">
-            <label>スラッグ（半角英数・ハイフン）<input name="slug" placeholder="tech-strategy-2026" pattern="[A-Za-z0-9._-]{1,48}" required></label>
-            <label>タイトル<input name="title" placeholder="2026年度 技術戦略レポート" maxlength="100" required></label>
-            <label>説明（任意）<input name="description" placeholder="GitOps と ibisOffice で共同編集する文書群" maxlength="200"></label>
-            <button class="primary" type="submit">リポジトリを作成 (README.md 付き)</button>
-          </form>
-          <p id="status" role="status"></p>
+      <div>
+        <div class="card">
+          <div class="card-hd"><strong>新しいリポジトリを作成</strong></div>
+          <div class="card-bd">
+            <form id="create-repo">
+              <label>スラッグ（半角英数・ハイフン）<input name="slug" placeholder="tech-strategy-2026" pattern="[A-Za-z0-9._-]{1,48}" required></label>
+              <label>タイトル<input name="title" placeholder="2026年度 技術戦略レポート" maxlength="100" required></label>
+              <label>説明（任意）<input name="description" placeholder="GitOps と ibisOffice で共同編集する文書群" maxlength="200"></label>
+              <button class="primary" type="submit">リポジトリを作成 (README.md 付き)</button>
+            </form>
+            <p id="status" role="status"></p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-hd"><strong>外部 Git リポジトリからインポート</strong></div>
+          <div class="card-bd">
+            <form id="import-repo">
+              <label>GitHub / HTTPS リポジトリ URL<input name="sourceUrl" type="url" placeholder="https://github.com/owner/repo.git" required></label>
+              <div class="grid2">
+                <label>スラッグ（任意）<input name="slug" placeholder="my-docs" pattern="[A-Za-z0-9._-]{1,48}"></label>
+                <label>ブランチ（任意）<input name="branch" placeholder="main"></label>
+              </div>
+              <button type="submit">Import</button>
+            </form>
+            <p id="import-status" role="status"></p>
+          </div>
         </div>
       </div>
     </div>
     <script>
       const csrf = ${JSON.stringify(csrf)};
       const status = document.querySelector('#status');
+      const importStatus = document.querySelector('#import-status');
       document.querySelector('#create-repo').addEventListener('submit', async (e) => {
         e.preventDefault();
         const f = e.currentTarget;
@@ -830,6 +1001,34 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
         } catch {
           status.textContent = '通信エラーが発生しました。';
           status.dataset.kind = 'error';
+        }
+      });
+      document.querySelector('#import-repo').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const f = e.currentTarget;
+        importStatus.textContent = 'インポート中…'; importStatus.dataset.kind = '';
+        try {
+          const r = await fetch('/api/repos/import', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+            body: JSON.stringify({
+              sourceUrl: f.sourceUrl.value.trim(),
+              slug: f.slug.value.trim(),
+              branch: f.branch.value.trim(),
+              depth: 10,
+            }),
+          });
+          const data = await r.json().catch(() => ({}));
+          if (r.ok && data.id) {
+            location.href = '/repos/' + data.id;
+            return;
+          }
+          importStatus.textContent = 'インポートできませんでした (' + (data.error || r.status) + ')';
+          importStatus.dataset.kind = 'error';
+        } catch {
+          importStatus.textContent = '通信エラーが発生しました。';
+          importStatus.dataset.kind = 'error';
         }
       });
     </script>`;
@@ -937,7 +1136,23 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       </div>
       <div class="card-bd">
         <pre class="code">git clone ${escape(info.remote)}</pre>
+        ${info.source ? `<div class="muted" style="margin-top:.4rem">Import / Fork 元: <code>${escape(info.source)}</code></div>` : ''}
         <div id="token-box" style="margin-top:.6rem"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd"><strong>外部 Git リモートへ Push (GitHub 等)</strong></div>
+      <div class="card-bd">
+        <form id="push-external">
+          <div class="grid2">
+            <label>リモート URL<input name="remoteUrl" type="url" value="${escape(info.source && info.source.startsWith('https://') ? info.source : info.source && info.source.startsWith('github:') ? `https://github.com/${info.source.slice(7)}.git` : '')}" placeholder="https://github.com/owner/repo.git" required></label>
+            <label>Push 先ブランチ<input name="remoteBranch" value="${escape(activeRef)}" required></label>
+          </div>
+          <label>Personal Access Token (PAT) <small>※サーバーには保存せず、この Push 通信のみに使用します</small><input name="token" type="password" placeholder="github_pat_..."></label>
+          <button class="primary" type="submit">外部リモートへ Push</button>
+        </form>
+        <div id="push-status" style="margin-top:.6rem"></div>
       </div>
     </div>
 
@@ -1246,6 +1461,52 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
           status.dataset.kind = 'error';
         }
       });
+
+      const pushStatus = document.querySelector('#push-status');
+      document.querySelector('#push-external').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const f = e.currentTarget;
+        pushStatus.textContent = '外部リモートへ Push 中…';
+        try {
+          const r = await fetch('/api/repos/' + repoId + '/push', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+            body: JSON.stringify({
+              remoteUrl: f.remoteUrl.value.trim(),
+              branch: activeRef,
+              remoteBranch: f.remoteBranch.value.trim(),
+              token: f.token.value.trim(),
+            }),
+          });
+          const d = await r.json().catch(() => ({}));
+          pushStatus.innerHTML = '';
+          if (r.ok) {
+            const msg = document.createElement('span');
+            msg.style.color = 'var(--ok)';
+            msg.textContent = d.status === 'up_to_date'
+              ? 'すでに最新です (' + String(d.commit || '').slice(0, 7) + ')'
+              : 'Push 完了: ' + d.remoteBranch + ' (' + String(d.commit || '').slice(0, 7) + ') ';
+            pushStatus.append(msg);
+            if (d.compareUrl) {
+              const a = document.createElement('a');
+              a.className = 'btn btn-primary';
+              a.href = d.compareUrl;
+              a.target = '_blank';
+              a.rel = 'noopener noreferrer';
+              a.textContent = 'GitHub で Pull Request を作成';
+              pushStatus.append(a);
+            }
+          } else {
+            const err = document.createElement('span');
+            err.style.color = 'var(--danger)';
+            err.textContent = 'Push に失敗しました: ' + (d.error || r.status);
+            pushStatus.append(err);
+          }
+        } catch {
+          pushStatus.textContent = '通信エラーが発生しました。';
+        }
+      });
     </script>`;
 
   return reposPage(env, row.slug, html, `/repos/${row.id}`, 200, fresh ? browser : undefined);
@@ -1258,6 +1519,7 @@ export async function handleReposRequest(request: Request, env: RepoEnv, path: s
 
   if (request.method === 'GET' && path === '/api/repos') return await listRepos(request, env);
   if (request.method === 'POST' && path === '/api/repos') return await createRepo(request, env);
+  if (request.method === 'POST' && path === '/api/repos/import') return await importRepo(request, env);
 
   const itemMatch = REPO_API_ITEM.exec(path);
   if (itemMatch) {
@@ -1287,6 +1549,11 @@ export async function handleReposRequest(request: Request, env: RepoEnv, path: s
   const diffMatch = REPO_API_DIFF.exec(path);
   if (diffMatch && request.method === 'GET') {
     return await diffRepo(request, env, diffMatch[1]);
+  }
+
+  const pushMatch = REPO_API_PUSH.exec(path);
+  if (pushMatch && request.method === 'POST') {
+    return await pushRepoToExternal(request, env, pushMatch[1]);
   }
 
   const tokensMatch = REPO_API_TOKENS.exec(path);

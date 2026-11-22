@@ -236,6 +236,158 @@ export async function listBranchesFromRemote(
   return parseUploadPackRefs(bytes);
 }
 
+export function validateExternalGitUrl(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:') return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  const host = url.hostname.toLowerCase();
+  if (!host || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
+    return null;
+  }
+  // Reject IPv4 and IPv6 literals to prevent SSRF to internal networks.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.startsWith('[')) {
+    return null;
+  }
+  if (!url.pathname || url.pathname === '/') return null;
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+async function collectTreeDiffObjects(args: {
+  repo: ArtifactsRepo;
+  treeHash: string;
+  baseTreeHash: string | null;
+  out: Map<string, PackObject>;
+}): Promise<void> {
+  if (args.treeHash === args.baseTreeHash || args.out.has(args.treeHash)) return;
+  const entries = (await args.repo.readTree(args.treeHash)) ?? [];
+  const baseEntries = args.baseTreeHash ? ((await args.repo.readTree(args.baseTreeHash)) ?? []) : [];
+  const baseMap = new Map(baseEntries.map((e) => [e.name, e]));
+
+  const treeBytes = encodeTree(
+    entries.map((e) => ({
+      mode: e.mode,
+      name: e.name,
+      hashHex: e.hash,
+      type: e.type,
+    })),
+  );
+  args.out.set(args.treeHash, { type: 'tree', data: treeBytes });
+
+  for (const entry of entries) {
+    const prev = baseMap.get(entry.name);
+    if (prev && prev.hash === entry.hash && prev.type === entry.type) continue;
+    if (entry.type === 'tree') {
+      await collectTreeDiffObjects({
+        repo: args.repo,
+        treeHash: entry.hash,
+        baseTreeHash: prev?.type === 'tree' ? prev.hash : null,
+        out: args.out,
+      });
+    } else if (entry.type === 'blob' && !args.out.has(entry.hash)) {
+      const blob = await args.repo.readBlob(entry.hash);
+      if (!blob) throw new Error(`Missing blob ${entry.hash}`);
+      args.out.set(entry.hash, { type: 'blob', data: new Uint8Array(await blob.arrayBuffer()) });
+    }
+  }
+}
+
+export async function pushBranchToExternalRemote(args: {
+  repo: ArtifactsRepo;
+  localBranch: string;
+  remoteUrl: string;
+  remoteBranch: string;
+  token: string;
+  force?: boolean;
+}): Promise<{
+  status: 'pushed' | 'up_to_date';
+  commit: string;
+  remoteBranch: string;
+  objectCount: number;
+}> {
+  if (!isValidBranchName(args.remoteBranch)) {
+    throw new Error(`Invalid remote branch name: ${args.remoteBranch}`);
+  }
+  const localCommits = await args.repo.log({ ref: args.localBranch, limit: 100 });
+  const localHead = localCommits[0];
+  if (!localHead) {
+    throw new Error(`Local branch not found: ${args.localBranch}`);
+  }
+
+  const remoteRefs = await listBranchesFromRemote(args.remoteUrl, args.token);
+  const targetRef = remoteRefs.find((r) => r.name === args.remoteBranch);
+  const oldSha = targetRef ? targetRef.sha : ZERO_SHA;
+  if (oldSha === localHead.hash) {
+    return {
+      status: 'up_to_date',
+      commit: localHead.hash,
+      remoteBranch: args.remoteBranch,
+      objectCount: 0,
+    };
+  }
+
+  const remoteShaSet = new Set(remoteRefs.map((r) => r.sha));
+  if (targetRef && !args.force) {
+    const isAncestor = localCommits.some((c) => c.hash === targetRef.sha);
+    if (!isAncestor) {
+      throw new ConflictError(`Remote branch ${args.remoteBranch} has diverged (non-fast-forward)`);
+    }
+  }
+
+  const commitsToSend: ArtifactsCommitMetadata[] = [];
+  for (const commit of localCommits) {
+    if (remoteShaSet.has(commit.hash)) break;
+    commitsToSend.push(commit);
+    if (commitsToSend.length >= 50) break;
+  }
+
+  const objects = new Map<string, PackObject>();
+  // Oldest first so parents are resolved cleanly.
+  for (let i = commitsToSend.length - 1; i >= 0; i--) {
+    const commit = commitsToSend[i];
+    const parentCommit = commit.parents[0] ? await args.repo.readCommit(commit.parents[0]) : null;
+    await collectTreeDiffObjects({
+      repo: args.repo,
+      treeHash: commit.treeHash,
+      baseTreeHash: parentCommit ? parentCommit.treeHash : null,
+      out: objects,
+    });
+    const commitBytes = encodeCommit({
+      treeHash: commit.treeHash,
+      parents: commit.parents,
+      authorName: commit.author.name,
+      authorEmail: commit.author.email,
+      message: commit.message,
+      timestampSec: commit.committedAt,
+    });
+    const { hashHex } = await hashGitObject('commit', commitBytes);
+    if (hashHex !== commit.hash) {
+      throw new Error(`Commit ${commit.hash} cannot be re-encoded verbatim; push only local commits`);
+    }
+    objects.set(commit.hash, { type: 'commit', data: commitBytes });
+  }
+
+  await pushCommitToRemote({
+    remoteUrl: args.remoteUrl,
+    token: args.token,
+    branch: args.remoteBranch,
+    oldSha,
+    newSha: localHead.hash,
+    objects: [...objects.values()],
+  });
+
+  return {
+    status: 'pushed',
+    commit: localHead.hash,
+    remoteBranch: args.remoteBranch,
+    objectCount: objects.size,
+  };
+}
+
 export async function createBranchInArtifactsRepo(args: {
   repo: ArtifactsRepo;
   branch: string;
