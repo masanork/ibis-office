@@ -7,3 +7,5 @@ SHA-256: `c1085ee027eccaa6ac956c5877ad3a169288775d82a3f473e67b2503f8a920f6`.
 CI uses this snapshot without contacting the API. Lawtext is generated from the XML by ibisOffice and parsed back in the test. This verifies conversion with a real source document. It does not independently validate compatibility with other Lawtext implementations.
 
 `administrative-procedure-act.lawtext` is the Administrative Procedure Act excerpt from the [upstream Lawtext README](https://github.com/yamachig/Lawtext/blob/60567c6ca7de6b14c8c1d895338c4614b49969d1/README.md#lawtextの例--example-of-lawtext), with its original whitespace and a final newline. The text is a public Japanese statute.
+
+`supplementary-amendment.xml` is a synthetic statute. Its corpus test builds a second revision with an inserted supplementary block, checks the XML–Lawtext round trip, and runs the five-piece CLI with and without an explicit amendment law number. It exercises the same supplementary-article numbers, extract ranges, and verification paths as the public vaccination-law example.
