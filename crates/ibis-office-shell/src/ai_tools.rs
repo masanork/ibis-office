@@ -28,42 +28,6 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
-                name: "create_chart",
-                description: "Create an editable chart linked to worksheet cells. Use range for a table with headers, or explicit series for nonadjacent cells. Pick an empty area or a separate sheet for placement.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "sheet": { "type": "string", "description": "Data sheet (defaults to the active sheet)." },
-                        "destination_sheet": { "type": "string", "description": "Chart sheet (defaults to the active sheet)." },
-                        "anchor": { "type": "string", "description": "Top-left chart cell on the destination sheet, e.g. F2." },
-                        "kind": { "type": "string", "enum": ["column", "stacked_column", "bar", "stacked_bar", "line", "area", "pie", "doughnut", "scatter"] },
-                        "range": { "type": "string", "description": "Contiguous source table in A1 notation, including headers. Supply range or series, never both." },
-                        "domain_range": { "type": "string", "description": "Optional shared categories, or numeric X values for scatter. Only for explicit series." },
-                        "series": {
-                            "type": "array", "minItems": 1, "maxItems": 8,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "values_range": { "type": "string", "description": "One row or column of numeric values, without headers." },
-                                    "domain_range": { "type": "string", "description": "Categories or scatter X values for this series. Overrides the shared domain; must match the number of values." },
-                                    "name_cell": { "type": "string", "description": "Optional series label cell on the data sheet, e.g. B1." }
-                                },
-                                "required": ["values_range"],
-                                "additionalProperties": false
-                            }
-                        },
-                        "title": { "type": "string", "description": "Chart title." },
-                        "x_title": { "type": "string", "description": "Optional horizontal axis title with unit." },
-                        "y_title": { "type": "string", "description": "Optional vertical axis title with unit." }
-                    },
-                    "required": ["kind", "anchor", "title"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
                 name: "get_workbook_context",
                 description: "Get the active worksheet and current selection. Use xlsx_list_sheets for workbook contents.",
                 parameters: json!({
@@ -371,12 +335,17 @@ fn editor_tool_definition(descriptor: &ibis_doc_service::Tool, active_sheet: boo
     let mut parameters = (descriptor.schema)();
     if let Some(properties) = parameters["properties"].as_object_mut() {
         properties.remove("document_id");
-        if active_sheet && let Some(sheet) = properties.get_mut("sheet") {
-            sheet["description"] = json!("The sheet's name. Omit to use the active sheet.");
+        if active_sheet {
+            for key in ["sheet", "destination_sheet"] {
+                if let Some(sheet) = properties.get_mut(key) {
+                    let description = sheet["description"].as_str().unwrap_or("Worksheet name.");
+                    sheet["description"] = json!(format!("{description} Omit to use the active sheet."));
+                }
+            }
         }
     }
     if let Some(required) = parameters["required"].as_array_mut() {
-        required.retain(|name| name != "document_id" && (!active_sheet || name != "sheet"));
+        required.retain(|name| name != "document_id" && (!active_sheet || !matches!(name.as_str(), Some("sheet" | "destination_sheet"))));
     }
     ToolDefinition {
         kind: "function",
@@ -426,167 +395,6 @@ pub struct RangeArg {
 
 fn default_true() -> bool {
     true
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ChartArgs {
-    pub(crate) sheet: Option<String>,
-    pub(crate) destination_sheet: Option<String>,
-    anchor: String,
-    kind: ChartKindArg,
-    range: Option<String>,
-    domain_range: Option<String>,
-    series: Option<Vec<ChartSeriesArgs>>,
-    title: String,
-    x_title: Option<String>,
-    y_title: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ChartSeriesArgs {
-    values_range: String,
-    domain_range: Option<String>,
-    name_cell: Option<String>,
-}
-
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ChartKindArg {
-    Column,
-    StackedColumn,
-    Bar,
-    StackedBar,
-    Line,
-    Area,
-    Pie,
-    Doughnut,
-    Scatter,
-}
-
-impl ChartArgs {
-    pub(crate) fn frame(&self, sheet: &ibis_doc_model::Sheet, origin: ibis_doc_model::EmuRect) -> Result<ibis_doc_model::EmuRect, String> {
-        let (row, column) = ibis_doc_model::ai_sheet::parse_cell_ref(&self.anchor)
-            .filter(|&(row, column)| row < 1_048_576 && column < 16_384)
-            .ok_or("anchor must be a single A1 cell")?;
-        let cell = sheet.cell_bounds_emu(column, row);
-        Ok(ibis_doc_model::EmuRect::new(origin.x + cell.x, origin.y + cell.y, 5_486_400, 3_429_000))
-    }
-
-    pub(crate) fn kind(&self) -> ibis_formats::NewChartKind {
-        use ibis_formats::NewChartKind as Kind;
-        match self.kind {
-            ChartKindArg::Column => Kind::ClusteredColumn,
-            ChartKindArg::StackedColumn => Kind::StackedColumn,
-            ChartKindArg::Bar => Kind::ClusteredBar,
-            ChartKindArg::StackedBar => Kind::StackedBar,
-            ChartKindArg::Line => Kind::Line,
-            ChartKindArg::Area => Kind::Area,
-            ChartKindArg::Pie => Kind::Pie,
-            ChartKindArg::Doughnut => Kind::Doughnut,
-            ChartKindArg::Scatter => Kind::Scatter,
-        }
-    }
-
-    pub(crate) fn refs(&self, workbook: &ibis_doc_model::Presentation, name: &str, sheet: &ibis_doc_model::Sheet) -> Result<Vec<ibis_formats::SeriesRefs>, String> {
-        let bounded = |address: &str| {
-            parse_cell_range(address).filter(|r| {
-                let (rows, cols) = (r.last_row - r.first_row + 1, r.last_column - r.first_column + 1);
-                r.last_column < 16_384 && r.last_row < 1_048_576
-                    && rows <= 10_000 && cols <= 10_000 && u64::from(rows) * u64::from(cols) <= 90_000
-            }).ok_or_else(|| format!("invalid or oversized A1 range: {address}"))
-        };
-        let vector = |address: &str| {
-            let range = bounded(address)?;
-            if range.first_row != range.last_row && range.first_column != range.last_column {
-                return Err(format!("expected one row or column: {address}"));
-            }
-            Ok(range)
-        };
-        let length = |r: CellRange| (r.last_row - r.first_row).max(r.last_column - r.first_column) + 1;
-        if self.title.trim().is_empty() || [self.title.as_str(), self.x_title.as_deref().unwrap_or(""), self.y_title.as_deref().unwrap_or("")]
-            .iter().any(|title| title.chars().count() > 200)
-        {
-            return Err("title is required and each title must be at most 200 characters".into());
-        }
-        let kind = self.kind();
-        let scatter = matches!(kind, ibis_formats::NewChartKind::Scatter);
-        let pie = matches!(kind, ibis_formats::NewChartKind::Pie);
-        let quoted = ibis_formats::quote_sheet(name);
-        let reference = |range| ibis_formats::format_ref(&quoted, range);
-        let refs = match (&self.range, &self.series) {
-            (Some(range), None) if self.domain_range.is_none() => {
-                let mut refs = ibis_formats::refs_for_new_chart(workbook, &quoted, bounded(range)?, kind);
-                if pie {
-                    refs.truncate(1);
-                }
-                refs
-            }
-            (None, Some(series)) if (1..=8).contains(&series.len()) && (!pie || series.len() == 1) => {
-                series.iter().map(|series| {
-                    let values = vector(&series.values_range)?;
-                    let domain = series.domain_range.as_deref().or(self.domain_range.as_deref())
-                        .map(vector).transpose()?;
-                    if domain.is_some_and(|range| length(range) != length(values)) {
-                        return Err("each domain range must have as many cells as its values range".into());
-                    }
-                    let name = series.name_cell.as_deref().map(|cell| {
-                        ibis_doc_model::ai_sheet::parse_cell_ref(cell)
-                            .and_then(|_| bounded(cell).ok())
-                            .map(reference)
-                            .ok_or("name_cell must be a single A1 cell")
-                    }).transpose()?;
-                    Ok(ibis_formats::SeriesRefs { name, categories: domain.map(reference), values: Some(reference(values)), sizes: None })
-                }).collect::<Result<Vec<_>, String>>()?
-            }
-            _ => return Err("provide a source range or one to eight explicit series (one for pie)".into()),
-        };
-        if refs.is_empty() || refs.len() > 8 {
-            return Err("the source must yield one to eight series".into());
-        }
-        let numeric = |range: CellRange, index: u32| {
-            let row = range.first_row + if range.first_row == range.last_row { 0 } else { index };
-            let col = range.first_column + if range.first_column == range.last_column { 0 } else { index };
-            sheet.cell(row, col).is_some_and(|cell| {
-                matches!(cell.value, ibis_doc_model::CellValue::Number(n) if n.is_finite())
-            })
-        };
-        let parse = |value: &Option<String>| value.as_deref()
-            .and_then(ibis_formats::parse_ref).map(|(_, range)| range);
-        if scatter && refs.iter().any(|series| parse(&series.categories).is_none()) {
-            return Err("scatter charts need numeric X values; supply domain_range if the range cannot be inferred".into());
-        }
-        let has_point = refs.iter().any(|series| {
-            let Some(values) = parse(&series.values) else { return false };
-            let domain = parse(&series.categories);
-            (0..length(values)).any(|index| numeric(values, index)
-                && (!scatter || domain.is_some_and(|x| numeric(x, index))))
-        });
-        if !has_point {
-            return Err("the chart source contains no plottable values".into());
-        }
-        Ok(refs)
-    }
-
-    pub(crate) fn label(&self, chart: &mut ibis_doc_model::Chart) {
-        use ibis_doc_model::chart::{ChartText, ChartTitle, Side};
-        let title = |text: &str, size| ChartTitle {
-            text: text.to_owned(),
-            style: ChartText { size, ..Default::default() },
-            at: None,
-        };
-        chart.title = Some(title(&self.title, 1400));
-        for axis in &mut chart.axes {
-            let label = match axis.side {
-                Side::Bottom | Side::Top => self.x_title.as_deref(),
-                Side::Left | Side::Right => self.y_title.as_deref(),
-            };
-            if let Some(label) = label {
-                axis.title = Some(title(label, 1100));
-            }
-        }
-    }
 }
 
 pub fn parse_range_arg(arguments_json: &str) -> Result<CellRange, String> {
@@ -1189,93 +997,6 @@ A --> C
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn set_chart_cells(document: &mut ibis_doc_model::Document, sheet: SlideId, range: &str, values: Value) {
-        let context = ibis_doc_service::DraftToolContext {
-            workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(sheet), ..Default::default() },
-            ..Default::default()
-        };
-        ibis_doc_service::run_draft_tool(
-            ibis_formats::Kind::Workbook, document, context, "xlsx_set_cells",
-            json!({ "range": range, "values": values }),
-        ).unwrap();
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn ai_create_chart_infers_categories_and_values_from_a_table() {
-        use ibis_doc_model::{ChartType, Document, ShapeKind, sheet_calc::sheet_of_slide};
-        use ibis_formats::{Kind, SaveOptions};
-
-        let opened = ibis_formats::open(ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
-        let mut doc = Document::new(opened.presentation.clone());
-        let slide = doc.presentation().slides[0].id;
-        set_chart_cells(&mut doc, slide, "A1:B3", json!([["年度", "費用"], ["R8", 10], ["R9", 12]]));
-        let args: ChartArgs = serde_json::from_value(json!({
-            "kind":"line", "anchor":"D2", "range":"A1:B3", "title":"費用の推移"
-        })).unwrap();
-        let model = &doc.presentation().slides[0];
-        let sheet = sheet_of_slide(model).unwrap();
-        let name = model.name.as_deref().unwrap();
-        let refs = args.refs(doc.presentation(), name, sheet).unwrap();
-        assert_eq!(refs.len(), 1);
-        assert!(refs[0].categories.as_deref().unwrap().ends_with("!$A$2:$A$3"));
-        assert!(refs[0].values.as_deref().unwrap().ends_with("!$B$2:$B$3"));
-
-        let frame = args.frame(sheet, model.shapes[0].frame).unwrap();
-        let id = doc.ids().new_shape_id();
-        let mut shape = opened.source.new_sheet_chart(doc.presentation(), slide, id, frame, args.kind(), refs).unwrap();
-        let ShapeKind::Chart(chart) = &mut shape.kind else { panic!("expected chart") };
-        args.label(chart);
-        doc.execute(vec![Command::InsertShape { slide, shapes: vec![(1, shape)] }]).unwrap();
-        let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
-        let reopened = ibis_formats::read(&saved).unwrap();
-        let ShapeKind::Chart(chart) = &reopened.slides[0].shapes[1].kind else { panic!("expected chart") };
-        assert!(matches!(chart.groups[0].kind, ChartType::Line));
-        assert_eq!(chart.groups[0].series[0].categories, ["R8", "R9"]);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn ai_scatter_chart_round_trips_sparse_series() {
-        use ibis_doc_model::{Document, ShapeKind, sheet_calc::sheet_of_slide};
-        use ibis_formats::{Kind, NewChartKind, SaveOptions};
-        let opened = ibis_formats::open(ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
-        let mut doc = Document::new(opened.presentation.clone());
-        let slide = doc.presentation().slides[0].id;
-        set_chart_cells(&mut doc, slide, "A1:C4", json!([[null, "同区分", "選択団体"], [195.6, null, 105.81], [23.7, 254.38, null], [5.1, "=NA()", null]]));
-        let args_json = json!({
-            "kind":"scatter", "anchor":"E2", "domain_range":"A2:A4",
-            "series":[{"values_range":"B2:B4","name_cell":"B1"},{"values_range":"C2:C4","name_cell":"C1"}],
-            "title":"人口と運用経費の増減率", "x_title":"人口（万人）", "y_title":"増減率（%）"
-        });
-        let args: ChartArgs = serde_json::from_value(args_json.clone()).unwrap();
-        let model = &doc.presentation().slides[0];
-        let sheet = sheet_of_slide(model).unwrap();
-        let refs = args.refs(doc.presentation(), model.name.as_deref().unwrap(), sheet).unwrap();
-        let frame = args.frame(sheet, model.shapes[0].frame).unwrap();
-        let mut invalid = args_json;
-        invalid["series"][0]["values_range"] = json!("B2:B3");
-        let invalid: ChartArgs = serde_json::from_value(invalid).unwrap();
-        assert!(invalid.refs(doc.presentation(), model.name.as_deref().unwrap(), sheet).is_err());
-
-        let id = doc.ids().new_shape_id();
-        let mut shape = opened.source.new_sheet_chart(doc.presentation(), slide, id, frame, NewChartKind::Scatter, refs.clone()).unwrap();
-        let ShapeKind::Chart(chart) = &mut shape.kind else { panic!("expected chart") };
-        args.label(chart);
-        doc.execute(vec![Command::InsertShape { slide, shapes: vec![(1, shape)] }]).unwrap();
-        let saved = opened.source.save(doc.presentation(), SaveOptions::default()).unwrap();
-        let reopened = ibis_formats::read(&saved).unwrap();
-        let ShapeKind::Chart(chart) = &reopened.slides[0].shapes[1].kind else { panic!("expected chart") };
-        assert_eq!(chart.title.as_ref().unwrap().text, "人口と運用経費の増減率");
-        assert!(chart.axes.iter().any(|axis| axis.title.as_ref().is_some_and(|title| title.text == "増減率（%）")));
-        assert_eq!(chart.groups[0].series[0].name, "同区分");
-        assert_eq!(chart.groups[0].series[0].values.iter().map(|n| n.map(|n| n.0)).collect::<Vec<_>>(), [None, Some(254.38), None]);
-        assert_eq!(chart.cell_refs[1].values, refs[1].values);
-        assert!(doc.undo());
-        assert_eq!(doc.presentation().slides[0].shapes.len(), 1);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn assistant_document_tool_schemas_come_from_the_shared_catalog() {
         use ibis_formats::Kind;
@@ -1296,6 +1017,10 @@ A --> C
                 {
                     *sheet = schema["properties"]["sheet"].clone();
                     assert!(!schema["required"].as_array().unwrap().contains(&json!("sheet")));
+                }
+                if let Some(sheet) = canonical["properties"].as_object_mut().unwrap().get_mut("destination_sheet") {
+                    *sheet = schema["properties"]["destination_sheet"].clone();
+                    assert!(!schema["required"].as_array().unwrap().contains(&json!("destination_sheet")));
                 }
                 assert_eq!(schema["properties"], canonical["properties"], "{}", shared.name);
             }

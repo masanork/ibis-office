@@ -47,7 +47,7 @@ use crate::ai_tools::{
     ApplyVcTemplateArgs, BindVcClaimArgs,
     InferVcSchemaArgs, InsertTextBoxArgs, IssueVcPreviewArgs,
     FetchEgovLawArgs, GetVcPublicKeysArgs, GenerateLawtext5SetArgs, LintLawtextArgs, MAX_READ_CELLS,
-    OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs, ChartArgs,
+    OpenMarkdownDocumentArgs, ParseVcTokenArgs, PrepareOid4vpArgs,
     VerifyLawtextAratameArgs, claim_value_to_json, resolve_vc_holder_key,
     resolve_vc_issuer_key, vc_public_keys_json,
     SetShapeFillArgs,
@@ -159,6 +159,7 @@ struct AssistantTurn {
     active: SlideId,
     selection: Option<CellRange>,
     navigate: bool,
+    private_chart_source: bool,
     source_edit: Option<SourceEdit>,
 }
 
@@ -843,6 +844,7 @@ impl SlideEditor {
                 active: self.current_slide,
                 selection: with_format!(self, ai_sheet_selection(self, self.current_slide)),
                 navigate: false,
+                private_chart_source: false,
                 source_edit: None,
             }
         });
@@ -867,7 +869,7 @@ impl SlideEditor {
                          Use the provided tools to inspect the workbook and apply edits or formatting. \
                          Workbook edits are staged for user review. Describe them as proposed changes. \
                          Always inspect relevant cells with xlsx_get_cells before modifying existing data. \
-                         For charts, inspect the headers and a small sample, then use create_chart with a chart kind and full cell ranges to keep the chart linked to the workbook. \
+                         For charts, inspect the headers and a small sample, then use xlsx_create_chart with a chart kind and full cell ranges to keep the chart linked to the workbook. \
                          For SD-JWT Verifiable Credentials (VC) tasks, use inspect_vc_bindings, apply_vc_template, infer_vc_schema, bind_vc_claim, issue_vc_preview, parse_vc_token, and prepare_oid4vp_presentation, and clearly explain mandatory claims (claim.*, e.g. vct, iss) vs selective-disclosure claims (sd.* with disclose.* toggles) and OID4VP Key Binding (aud/nonce). \
                          Respond concisely in the user's language."
                     }
@@ -1128,7 +1130,7 @@ impl SlideEditor {
         } else {
             self.document.reserve_ids_from(&turn.draft);
             if with_format!(self, apply_ai_commands(self, commands, cx)) {
-                if self.source.is_none() {
+                if self.source.is_none() || turn.private_chart_source {
                     self.source = turn.source.clone();
                 }
                 self.finish_assistant_navigation(&turn, cx);
@@ -1748,6 +1750,17 @@ impl SlideEditor {
         let result = (|| {
             let arguments = serde_json::from_str(args)
                 .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()))?;
+            if name == "xlsx_create_chart" && !turn.private_chart_source {
+                let source = match &turn.source {
+                    Some(source) => source.with_private_chart_cache(),
+                    None => {
+                        let bytes = ibis_formats::blank_file(format).map_err(|e| ibis_doc_service::ToolError::invalid(e.to_string()))?;
+                        ibis_formats::open(bytes).map_err(|e| ibis_doc_service::ToolError::invalid(e.to_string()))?.source
+                    }
+                };
+                turn.source = Some(std::sync::Arc::new(source));
+                turn.private_chart_source = true;
+            }
             let context = ibis_doc_service::DraftToolContext {
                 source: turn.source.clone(),
                 workbook: ibis_doc_service::WorkbookToolContext {
@@ -1779,9 +1792,15 @@ impl SlideEditor {
                     turn.selection = None;
                     turn.navigate = true;
                 }
-                let label = match serde_json::from_str::<serde_json::Value>(args) {
-                    Ok(args) => format!("{name} {}", tool_target_label(&args)),
-                    Err(_) => name.to_string(),
+                let label = if name == "xlsx_create_chart" {
+                    let sheet = value["destination_sheet"].as_str().unwrap_or("");
+                    let anchor = value["anchor"].as_str().unwrap_or("");
+                    format!("グラフを追加（{sheet}!{anchor}）")
+                } else {
+                    match serde_json::from_str::<serde_json::Value>(args) {
+                        Ok(args) => format!("{name} {}", tool_target_label(&args)),
+                        Err(_) => name.to_string(),
+                    }
                 };
                 (value.to_string(), commands, label)
             }
@@ -1840,40 +1859,6 @@ impl SlideEditor {
         Ok(json!({ "ok": true, "changed": changed, "staged": turn.source_edit.is_some() }))
     }
 
-    fn stage_ai_chart(turn: &mut AssistantTurn, arguments: &str) -> Result<Command, String> {
-        let args: ChartArgs = serde_json::from_str(arguments)
-            .map_err(|error| format!("invalid arguments: {error}"))?;
-        let id = turn.draft.ids().new_shape_id();
-        let work = turn.draft.presentation();
-        let workbook = work.workbook.as_ref().ok_or("no active workbook")?;
-        let data_id = resolve_sheet_slide(workbook, args.sheet.as_deref(), turn.active)?;
-        let destination = resolve_sheet_slide(workbook, args.destination_sheet.as_deref(), turn.active)?;
-        let data_slide = work.slide(data_id).ok_or("data sheet not found")?;
-        let name = data_slide.name.as_deref().ok_or("data sheet has no name")?;
-        let data = sheet_of_slide(data_slide).ok_or("data sheet not found")?;
-        let refs = args.refs(work, name, data)?;
-        let destination_slide = work.slide(destination).ok_or("destination sheet not found")?;
-        let (sheet, origin) = destination_slide.shapes.iter().find_map(|shape| {
-            if let ShapeKind::Sheet(sheet) = &shape.kind { Some((sheet, shape.frame)) } else { None }
-        }).ok_or("destination sheet not found")?;
-        let frame = args.frame(sheet, origin)?;
-        let index = destination_slide.shapes.len();
-        let source = match &turn.source {
-            Some(source) => source.clone(),
-            None => {
-                let bytes = ibis_formats::blank_file(ibis_formats::Kind::Workbook).map_err(|error| error.to_string())?;
-                std::sync::Arc::new(ibis_formats::open(bytes).map_err(|error| error.to_string())?.source)
-            }
-        };
-        let mut shape = source.new_sheet_chart(work, destination, id, frame, args.kind(), refs)
-            .map_err(|error| error.to_string())?;
-        if let ShapeKind::Chart(chart) = &mut shape.kind {
-            args.label(chart);
-        }
-        turn.source.get_or_insert(source);
-        Ok(Command::InsertShape { slide: destination, shapes: vec![(index, shape)] })
-    }
-
     fn execute_xlsx_tool(
         call: &ToolCall,
         turn: &mut AssistantTurn,
@@ -1886,10 +1871,6 @@ impl SlideEditor {
                 let selection = turn.selection.as_ref().map(format_range);
                 (json!({ "active_sheet": sheet, "selection": selection }).to_string(), None, "✓ get_workbook_context".into())
             }
-            "create_chart" => match Self::stage_ai_chart(turn, args) {
-                Ok(command) => (json!({ "ok": true }).to_string(), Some(command), "✓ create_chart".into()),
-                Err(error) => (json!({ "error": error }).to_string(), None, format!("✗ create_chart: {error}")),
-            },
             "select_range" => {
                 let slide = match Self::resolve_ai_target_slide(turn, args) {
                     Ok(s) => s,
@@ -3833,7 +3814,7 @@ mod assistant_review_tests {
         let mut live = Document::new(base.clone());
         let mut turn = AssistantTurn {
             base: base.clone(), draft: Document::new(base.clone()), path: None, file_id: 0, source: None,
-            active: slide, selection: None, navigate: false, source_edit: None,
+            active: slide, selection: None, navigate: false, private_chart_source: false, source_edit: None,
         };
 
         let mut commands = Vec::new();

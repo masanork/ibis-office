@@ -44,8 +44,10 @@ Open a file with `app_open_document`. It returns a `document_id` that goes into 
 |---|---|
 | App (all formats) | `app_get_version`, `app_list_documents`, `app_open_document`, `app_get_document_info`, `app_save_document`, `app_close_document`, `app_export_document` (PDF or PNG pages), `app_undo_document`, `app_redo_document` |
 | Word (.docx) | Read: `docx_get_outline`, `docx_get_text` (Markdown or plain text), `docx_list_paragraphs`, `docx_get_paragraph`, `docx_list_tables`, `docx_find_text`. Edit: `docx_insert_text`, `docx_delete_text`, `docx_replace_text`, `docx_set_paragraph_text`, `docx_set_paragraph_format`, `docx_set_run_format`, `docx_insert_table` |
-| Excel (.xlsx) | Read: `xlsx_list_sheets`, `xlsx_get_used_range`, `xlsx_get_cells`, `xlsx_find_text`. Edit: `xlsx_set_cells` (`=` followed by formula text enters a formula), `xlsx_clear_cells`, `xlsx_set_format`, `xlsx_add_sheet`, `xlsx_delete_sheet`, `xlsx_rename_sheet`, `xlsx_calculate_workbook` |
+| Excel (.xlsx) | Read: `xlsx_list_sheets`, `xlsx_get_used_range`, `xlsx_get_cells`, `xlsx_find_text`. Edit: `xlsx_set_cells` (`=` followed by formula text enters a formula), `xlsx_clear_cells`, `xlsx_set_format`, `xlsx_add_sheet`, `xlsx_delete_sheet`, `xlsx_rename_sheet`, `xlsx_calculate_workbook`, `xlsx_create_chart` |
 | PowerPoint (.pptx) | Read: `pptx_list_slides`, `pptx_get_slide`, `pptx_get_shape_text`, `pptx_get_notes`, `pptx_list_layouts`. Edit: `pptx_set_shape_text`, `pptx_replace_text`, `pptx_set_run_format`, `pptx_set_notes`, `pptx_add_slide`, `pptx_delete_slide`, `pptx_move_slide`, `pptx_set_frame`, `pptx_delete_shape` |
+
+For `xlsx_create_chart`, give the source `sheet` and the placement `destination_sheet` and `anchor` (for example, `F2`). Supply either a `range` with headers or explicit `series`. The chart stays linked to the source cells.
 
 The tools do not correspond one to one to the menu commands: they cover reading and the common edits, with the same tool names whatever the format. With `--read-only`, only the read tools are available.
 

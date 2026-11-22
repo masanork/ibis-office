@@ -16,6 +16,7 @@ mod tools_app;
 mod tools_docx;
 mod tools_pptx;
 mod tools_xlsx;
+mod tools_chart;
 mod tools_wallet;
 mod tools_prefill;
 mod wallet_dcql;
