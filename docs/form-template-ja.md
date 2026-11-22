@@ -78,13 +78,22 @@ DOCX にも既存のフォーム定義・個票データを使えます。
 
 ```sh
 cargo run --locked -p ibis-formats --bin docx_form -- export-md template.docx template.md
-cargo run --locked -p ibis-formats --bin docx_form -- compile-md template.md rebuilt.docx
-cargo run --locked -p ibis-formats --bin docx_form -- inspect rebuilt.docx
-shasum -a 256 rebuilt.docx
+cargo run --locked -p ibis-formats --bin docx_form -- inspect-md template.md
+shasum -a 256 template.md
 ```
 
-生成した DOCX を使うフォーム定義のコピーに、その SHA-256 を
-`templateSha256` として記録してから `fill` を実行します。
+Markdown の SHA-256 をフォーム定義の `markdownTemplateSha256` に記録します。
+DOCX 用の `templateSha256` と同じ定義に併記できます。Markdown のひな型を
+更新したときはハッシュを更新します。
+
+```sh
+cargo run --locked -p ibis-formats --bin docx_form -- check-md template.md form.yaml record.yaml
+cargo run --locked -p ibis-formats --bin docx_form -- fill-md template.md form.yaml record.yaml filled.docx
+```
+
+`check-md` はビルドと差し込みを検査し、字数の診断を返します。`fill-md` は
+差し込み済み DOCX を保存します。Word で編集できる空欄付きの DOCX ひな型が
+必要なら、`compile-md template.md rebuilt.docx` を使います。
 
 Markdown の表を編集するときは、結合セルのマーカーと配置用の HTML コメントも
 一緒に移動してください。`docx-table` は列幅（twip）、表の揃え、

@@ -344,12 +344,40 @@ pub fn fill_with_diagnostics(
     data: &Value,
 ) -> Result<(Vec<u8>, Vec<Truncation>), Error> {
     let values = rendered_values(definition, data)?;
+    verify_template_hash(bytes, &definition["templateSha256"], "DOCX")?;
+    fill_docx_values(bytes, values)
+}
+
+/// List the fields as they will appear in the compiled DOCX.
+pub fn inspect_markdown(bytes: &[u8]) -> Result<BTreeMap<String, usize>, Error> {
+    inspect(&crate::markdown::import_markdown_to_docx_bytes(bytes)?)
+}
+
+/// Fill a versioned Markdown template and return a DOCX and its truncation diagnostics.
+pub fn fill_markdown_with_diagnostics(
+    bytes: &[u8],
+    definition: &Value,
+    data: &Value,
+) -> Result<(Vec<u8>, Vec<Truncation>), Error> {
+    let values = rendered_values(definition, data)?;
+    verify_template_hash(bytes, &definition["markdownTemplateSha256"], "Markdown")?;
+    let docx = crate::markdown::import_markdown_to_docx_bytes(bytes)?;
+    fill_docx_values(&docx, values)
+}
+
+fn verify_template_hash(bytes: &[u8], expected: &Value, format: &str) -> Result<(), Error> {
     let digest = format!("{:x}", Sha256::digest(bytes));
-    if definition["templateSha256"].as_str() != Some(digest.as_str()) {
-        return Err(Error::new(
-            "DOCX template does not match the form definition",
-        ));
+    if expected.as_str() == Some(digest.as_str()) {
+        Ok(())
+    } else {
+        Err(Error::new(format!("{format} template does not match the form definition")))
     }
+}
+
+fn fill_docx_values(
+    bytes: &[u8],
+    values: BTreeMap<String, RenderedValue>,
+) -> Result<(Vec<u8>, Vec<Truncation>), Error> {
     let (archive, mut xml) = package(bytes)?;
     let document = Document::parse(&xml).map_err(|e| Error::new(e.to_string()))?;
     let fields = fields(&document)?;

@@ -266,6 +266,10 @@ fn detailed_school_record_round_trips_through_markdown() {
     let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
     let counts = form_template::inspect(original).unwrap();
     assert_eq!(form_template::inspect(&rebuilt).unwrap(), counts);
+    assert_eq!(
+        form_template::inspect_markdown(markdown.as_bytes()).unwrap(),
+        counts
+    );
     assert_eq!(counts.len(), 372);
     assert_eq!(counts.values().sum::<usize>(), 388);
     let source_flow = read_docx(original).unwrap().flow.unwrap();
@@ -296,8 +300,14 @@ fn detailed_school_record_round_trips_through_markdown() {
         include_str!("../../../test/fixtures/docx-form/full-school-record/record-b.yaml"), true,
     ).unwrap();
     let (expected, expected_warnings) = form_template::fill_with_diagnostics(original, &definition, &record).unwrap();
-    definition["templateSha256"] = json!(format!("{:x}", Sha256::digest(&rebuilt)));
-    let (actual, actual_warnings) = form_template::fill_with_diagnostics(&rebuilt, &definition, &record).unwrap();
+    let fill = |template: &str, definition: &Value| {
+        form_template::fill_markdown_with_diagnostics(template.as_bytes(), definition, &record)
+    };
+    assert!(fill(&markdown, &definition).is_err());
+    definition["markdownTemplateSha256"] =
+        json!(format!("{:x}", Sha256::digest(markdown.as_bytes())));
+    assert!(fill(&format!("{markdown}\n"), &definition).is_err());
+    let (actual, actual_warnings) = fill(&markdown, &definition).unwrap();
     assert_eq!(actual_warnings, expected_warnings);
     let expected = read_docx(&expected).unwrap().flow.unwrap();
     let actual = read_docx(&actual).unwrap().flow.unwrap();

@@ -25,6 +25,6 @@ done
 
 
 DOCX ひな型はリッチ Markdown に変換して編集できます。`export-md` で書き出し、
-`compile-md` で再生成し、フォーム定義のコピーに再生成後の
-`templateSha256` を記録します。回帰テストは、12表の列幅・行高・結合・
+フォーム定義に Markdown の `markdownTemplateSha256` を追加すると、
+`check-md` と `fill-md` で直接使えます。回帰テストは、12表の列幅・行高・結合・
 縦揃えと、372種類・計388箇所のフィールドを確認します。

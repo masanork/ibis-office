@@ -14,20 +14,26 @@ fn read_value(path: &Path) -> Result<serde_json::Value, Box<dyn Error>> {
 }
 
 fn generate(
-    html: bool,
+    command: &std::ffi::OsStr,
     template: &Path,
     definition: &Path,
     record: &Path,
 ) -> Result<(Vec<u8>, Vec<form_template::Truncation>), Box<dyn Error>> {
     let definition = read_value(definition)?;
     let record = read_value(record)?;
-    if html {
+    if command == "check-html" || command == "fill-html" {
         let (document, diagnostics) = form_template::fill_html_with_diagnostics(
             &fs::read_to_string(template)?,
             &definition,
             &record,
         )?;
         Ok((document.into_bytes(), diagnostics))
+    } else if command == "check-md" || command == "fill-md" {
+        Ok(form_template::fill_markdown_with_diagnostics(
+            &fs::read(template)?,
+            &definition,
+            &record,
+        )?)
     } else {
         Ok(form_template::fill_with_diagnostics(
             &fs::read(template)?,
@@ -53,22 +59,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             fs::OpenOptions::new().write(true).create_new(true).open(output)?.write_all(&result)?;
         }
-        [command, template] if command == "inspect" => {
-            let fields = form_template::inspect(&fs::read(template)?)?;
+        [command, template] if command == "inspect" || command == "inspect-md" => {
+            let bytes = fs::read(template)?;
+            let fields = if command == "inspect-md" {
+                form_template::inspect_markdown(&bytes)?
+            } else {
+                form_template::inspect(&bytes)?
+            };
             println!("{}", serde_json::to_string_pretty(&fields)?);
         }
-        [command, template, definition, record] if command == "check" || command == "check-html" => {
-            let (_, diagnostics) = generate(command == "check-html", Path::new(template), Path::new(definition), Path::new(record))?;
+        [command, template, definition, record] if command == "check" || command == "check-html" || command == "check-md" => {
+            let (_, diagnostics) = generate(command, Path::new(template), Path::new(definition), Path::new(record))?;
             print_diagnostics(&diagnostics)?;
         }
-        [command, template, definition, record, output] if command == "fill" || command == "fill-html" => {
-            let (document, diagnostics) = generate(command == "fill-html", Path::new(template), Path::new(definition), Path::new(record))?;
+        [command, template, definition, record, output] if command == "fill" || command == "fill-html" || command == "fill-md" => {
+            let (document, diagnostics) = generate(command, Path::new(template), Path::new(definition), Path::new(record))?;
             for item in diagnostics {
                 eprintln!("Truncated {} from {} to {} characters", item.field_id, item.actual_chars, item.max_chars);
             }
             fs::OpenOptions::new().write(true).create_new(true).open(output)?.write_all(&document)?;
         }
-        _ => return Err("usage: docx_form export-md|compile-md INPUT OUTPUT | docx_form inspect TEMPLATE | docx_form check|check-html TEMPLATE FORM RECORD | docx_form fill|fill-html TEMPLATE FORM RECORD OUTPUT | docx_form inspect-pdf|check-pdf|fill-pdf …".into()),
+        _ => return Err("usage: docx_form export-md|compile-md INPUT OUTPUT | docx_form inspect|inspect-md TEMPLATE | docx_form check|check-html|check-md TEMPLATE FORM RECORD | docx_form fill|fill-html|fill-md TEMPLATE FORM RECORD OUTPUT | docx_form inspect-pdf|check-pdf|fill-pdf …".into()),
     }
     Ok(())
 }
