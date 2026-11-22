@@ -981,6 +981,10 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
               <button type="submit">Import</button>
             </form>
             <p id="import-status" role="status"></p>
+            <div id="houritsu-browse" hidden>
+              <a href="https://law.sorane.dev/">法令ビューアで二版を比較</a>
+              · <a href="https://github.com/Kohei-Wada/houritsu/commits/main/">GitHubで改正履歴を見る</a>
+            </div>
           </div>
         </div>
       </div>
@@ -989,6 +993,7 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
       const csrf = ${JSON.stringify(csrf)};
       const status = document.querySelector('#status');
       const importStatus = document.querySelector('#import-status');
+      const houritsuBrowse = document.querySelector('#houritsu-browse');
       document.querySelector('#create-repo').addEventListener('submit', async (e) => {
         e.preventDefault();
         const f = e.currentTarget;
@@ -1021,13 +1026,15 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
         e.preventDefault();
         const f = e.currentTarget;
         importStatus.textContent = 'インポート中…'; importStatus.dataset.kind = '';
+        houritsuBrowse.hidden = true;
         try {
+          const sourceUrl = f.sourceUrl.value.trim();
           const r = await fetch('/api/repos/import', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
             body: JSON.stringify({
-              sourceUrl: f.sourceUrl.value.trim(),
+              sourceUrl,
               slug: f.slug.value.trim(),
               branch: f.branch.value.trim(),
               depth: 10,
@@ -1038,7 +1045,16 @@ export async function reposHome(request: Request, env: RepoEnv): Promise<Respons
             location.href = '/repos/' + data.id;
             return;
           }
-          importStatus.textContent = 'インポートできませんでした (' + (data.error || r.status) + ')';
+          if (r.status === 413 && data.error === 'repo_too_large') {
+            importStatus.textContent = 'Gitサービスが一度に取り込めるデータ量を超えました。';
+            const source = new URL(sourceUrl);
+            const path = source.pathname.toLowerCase();
+            const repoPath = path.endsWith('/') ? path.slice(0, -1) : path;
+            houritsuBrowse.hidden = source.hostname !== 'github.com' ||
+              !['/kohei-wada/houritsu', '/kohei-wada/houritsu.git'].includes(repoPath);
+          } else {
+            importStatus.textContent = 'インポートできませんでした (' + (data.error || r.status) + ')';
+          }
           importStatus.dataset.kind = 'error';
         } catch {
           importStatus.textContent = '通信エラーが発生しました。';
