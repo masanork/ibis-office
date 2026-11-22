@@ -104,6 +104,37 @@ fn mcp_docx_edits_are_one_undo_step_each_and_survive_saving() {
 }
 
 #[test]
+fn mcp_xlsx_formula_reads_respect_sheet_protection() {
+    use ibis_doc_model::sheet::{CellRange, SheetProtection};
+    use ibis_doc_model::sheet_command::{CellEdit, CellInput, SheetCommand, StyleChange};
+    use ibis_doc_model::{Command, Document};
+    use ibis_formats::{Kind, SaveOptions};
+
+    let bytes = ibis_formats::blank_file(Kind::Workbook).unwrap();
+    let opened = ibis_formats::open(bytes).unwrap();
+    let mut document = Document::new(opened.presentation);
+    let sheet_id = document.presentation().slides[0].id;
+    document.execute(vec![
+        Command::Sheet(SheetCommand::SetCells { sheet: sheet_id, edits: vec![
+            CellEdit { row: 0, column: 0, input: CellInput::Formula("1+2".into()) },
+            CellEdit { row: 0, column: 1, input: CellInput::Formula("2+3".into()) },
+        ] }),
+        Command::Sheet(SheetCommand::SetFormat { sheet: sheet_id, ranges: vec![
+            CellRange { first_row: 0, last_row: 0, first_column: 0, last_column: 0 },
+        ], change: StyleChange::FormulaHidden(true) }),
+        Command::Sheet(SheetCommand::SetProtection { sheet: sheet_id, protection: Some(SheetProtection::default()) }),
+    ]).unwrap();
+
+    let mut t = T::new("xlsx_hidden_formulas", &[]);
+    let bytes = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+    std::fs::write(t.dir.join("protected.xlsx"), bytes).unwrap();
+    let x = t.open("protected.xlsx");
+    let sheet = t.call("xlsx_list_sheets", json!({ "document_id": x }))["sheets"][0]["name"].as_str().unwrap().to_string();
+    let formulas = t.call("xlsx_get_cells", json!({ "document_id": x, "sheet": sheet, "range": "A1:B1", "kind": "formula" }));
+    assert_eq!(formulas["rows"], json!([[3.0, "=2+3"]]));
+}
+
+#[test]
 fn mcp_xlsx_cell_inputs_use_shared_rules() {
     let mut t = T::new("xlsx_cell_inputs", &[]);
     let bytes = ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap();
