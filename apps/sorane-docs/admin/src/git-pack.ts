@@ -171,6 +171,112 @@ export function encodePktLine(payload: string): Uint8Array {
   return concatBytes([encoder.encode(lenHex), body]);
 }
 
+export type BranchRef = {
+  name: string;
+  sha: string;
+};
+
+export function isValidBranchName(raw: string): boolean {
+  const name = raw.trim();
+  if (!name || name.length > 80) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(name)) return false;
+  if (name.startsWith('/') || name.endsWith('/') || name.startsWith('.') || name.endsWith('.')) {
+    return false;
+  }
+  if (name.includes('..') || name.includes('//') || name.includes('@{') || name.endsWith('.lock')) {
+    return false;
+  }
+  return true;
+}
+
+export function parseUploadPackRefs(bytes: Uint8Array): BranchRef[] {
+  const refs: BranchRef[] = [];
+  let offset = 0;
+  while (offset + 4 <= bytes.length) {
+    const lenHex = decoder.decode(bytes.subarray(offset, offset + 4));
+    if (lenHex === '0000') {
+      offset += 4;
+      continue;
+    }
+    const len = Number.parseInt(lenHex, 16);
+    if (!Number.isFinite(len) || len < 4 || offset + len > bytes.length) {
+      break;
+    }
+    const line = decoder.decode(bytes.subarray(offset + 4, offset + len));
+    offset += len;
+    if (line.startsWith('#')) continue;
+    const nulIdx = line.indexOf('\0');
+    const clean = (nulIdx >= 0 ? line.slice(0, nulIdx) : line).replace(/\r?\n$/, '');
+    const spaceIdx = clean.indexOf(' ');
+    if (spaceIdx !== 40) continue;
+    const sha = clean.slice(0, 40);
+    const refName = clean.slice(41);
+    if (/^[0-9a-f]{40}$/i.test(sha) && refName.startsWith('refs/heads/')) {
+      refs.push({ name: refName.slice('refs/heads/'.length), sha: sha.toLowerCase() });
+    }
+  }
+  return refs;
+}
+
+export async function listBranchesFromRemote(
+  remoteUrl: string,
+  token: string,
+): Promise<BranchRef[]> {
+  const auth = `Basic ${btoa(`x-access-token:${token}`)}`;
+  const url = `${remoteUrl.replace(/\/+$/, '')}/info/refs?service=git-upload-pack`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: auth },
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`info/refs failed (${response.status}): ${text.slice(0, 200)}`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return parseUploadPackRefs(bytes);
+}
+
+export async function createBranchInArtifactsRepo(args: {
+  repo: ArtifactsRepo;
+  branch: string;
+  fromRef: string;
+}): Promise<{ branch: string; sha: string }> {
+  if (!isValidBranchName(args.branch)) {
+    throw new Error(`Invalid branch name: ${args.branch}`);
+  }
+  const existing = await args.repo.log({ ref: args.branch, limit: 1 });
+  if (existing.length > 0) {
+    throw new ConflictError(`Branch already exists: ${args.branch}`);
+  }
+  let targetSha: string | null = null;
+  if (/^[0-9a-f]{40}$/i.test(args.fromRef)) {
+    const commit = await args.repo.readCommit(args.fromRef.toLowerCase());
+    if (commit) targetSha = commit.hash;
+  } else {
+    const commits = await args.repo.log({ ref: args.fromRef, limit: 1 });
+    targetSha = commits[0]?.hash ?? null;
+  }
+  if (!targetSha) {
+    throw new Error(`Source ref not found: ${args.fromRef}`);
+  }
+
+  const info = await args.repo.info();
+  const tokenResult = await args.repo.createToken('write', 120);
+  try {
+    await pushCommitToRemote({
+      remoteUrl: info.remote,
+      token: tokenResult.plaintext,
+      branch: args.branch,
+      oldSha: ZERO_SHA,
+      newSha: targetSha,
+      objects: [],
+    });
+  } finally {
+    await args.repo.revokeToken(tokenResult.id).catch(() => {});
+  }
+  return { branch: args.branch, sha: targetSha };
+}
+
 export async function pushCommitToRemote(args: {
   remoteUrl: string;
   token: string;
@@ -306,6 +412,7 @@ export class ConflictError extends Error {
 export async function commitFilesToArtifactsRepo(args: {
   repo: ArtifactsRepo;
   branch: string;
+  baseRef?: string;
   message: string;
   authorName: string;
   authorEmail: string;
@@ -314,12 +421,18 @@ export async function commitFilesToArtifactsRepo(args: {
 }): Promise<{ commitHash: string; treeHash: string; parents: string[] }> {
   const info = await args.repo.info();
   const commits = await args.repo.log({ ref: args.branch, limit: 1 });
-  const head = commits[0] ?? null;
-  const oldSha = head ? head.hash : ZERO_SHA;
+  const branchHead = commits[0] ?? null;
+  const oldSha = branchHead ? branchHead.hash : ZERO_SHA;
+  const baseHead =
+    branchHead ??
+    (args.baseRef && args.baseRef !== args.branch
+      ? ((await args.repo.log({ ref: args.baseRef, limit: 1 }))[0] ?? null)
+      : null);
 
   if (args.expectedParentSha !== undefined && args.expectedParentSha !== null) {
-    if (args.expectedParentSha !== oldSha) {
-      throw new ConflictError(`Expected parent ${args.expectedParentSha}, got ${oldSha}`);
+    const expectedAgainst = baseHead ? baseHead.hash : ZERO_SHA;
+    if (args.expectedParentSha !== expectedAgainst) {
+      throw new ConflictError(`Expected parent ${args.expectedParentSha}, got ${expectedAgainst}`);
     }
   }
 
@@ -333,12 +446,12 @@ export async function commitFilesToArtifactsRepo(args: {
   const createdObjects = new Map<string, PackObject>();
   const treeHash = await applyTreeChanges({
     repo: args.repo,
-    treeHash: head ? head.treeHash : null,
+    treeHash: baseHead ? baseHead.treeHash : null,
     changes: changeMap,
     createdObjects,
   });
 
-  const parents = head ? [head.hash] : [];
+  const parents = baseHead ? [baseHead.hash] : [];
   const timestampSec = Math.floor(Date.now() / 1000);
   const commitBytes = encodeCommit({
     treeHash,

@@ -26,8 +26,16 @@ await build({
   format: 'esm',
   outfile: join(dir, 'git-pack.mjs'),
 });
+await build({
+  entryPoints: ['src/diff.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  outfile: join(dir, 'diff.mjs'),
+});
 const { default: worker } = await import(pathToFileURL(join(dir, 'worker.mjs')));
 const gitPack = await import(pathToFileURL(join(dir, 'git-pack.mjs')));
+const diffMod = await import(pathToFileURL(join(dir, 'diff.mjs')));
 
 const { privateKey } = await generateKeyPair('ES256', { extractable: true });
 const jwk = await exportJWK(privateKey);
@@ -149,11 +157,40 @@ function createMockEnv() {
       source: opts.source ?? null,
       readOnly: false,
       commits: [],
+      commitMap: new Map(), // commitHash -> commit
+      refs: new Map(), // branch -> commitHash
       trees: new Map(), // treeHash -> Map(name -> entry)
       blobs: new Map(), // blobHash -> Uint8Array
       files: new Map(), // path -> Uint8Array
       tokens: new Map(),
     };
+  }
+
+  function resolveCommitFromState(state, ref) {
+    if (!ref) {
+      const sha = state.refs.get(state.defaultBranch);
+      return sha ? state.commitMap.get(sha) ?? null : state.commits[state.commits.length - 1] ?? null;
+    }
+    if (state.commitMap.has(ref)) return state.commitMap.get(ref);
+    const sha = state.refs.get(ref);
+    return sha ? state.commitMap.get(sha) ?? null : null;
+  }
+
+  function readFileFromTree(state, treeHash, path) {
+    const parts = path.split('/').filter(Boolean);
+    let cur = treeHash;
+    for (let i = 0; i < parts.length; i++) {
+      const entries = state.trees.get(cur);
+      if (!entries) return null;
+      const entry = entries.get(parts[i]);
+      if (!entry) return null;
+      if (i === parts.length - 1) {
+        return entry.type === 'blob' ? state.blobs.get(entry.hash) ?? null : null;
+      }
+      if (entry.type !== 'tree') return null;
+      cur = entry.hash;
+    }
+    return null;
   }
 
   function makeHandle(state) {
@@ -175,7 +212,15 @@ function createMockEnv() {
       },
       async log(opts = {}) {
         const limit = opts.limit ?? 50;
-        return [...state.commits].reverse().slice(0, limit);
+        const head = resolveCommitFromState(state, opts.ref);
+        if (!head) return [];
+        const out = [];
+        let cur = head;
+        while (cur && out.length < limit) {
+          out.push(cur);
+          cur = cur.parents[0] ? state.commitMap.get(cur.parents[0]) ?? null : null;
+        }
+        return out;
       },
       async readTree(treeHash) {
         const entries = state.trees.get(treeHash);
@@ -186,9 +231,14 @@ function createMockEnv() {
         return b ? new Blob([b]) : null;
       },
       async readCommit(hash) {
-        return state.commits.find((c) => c.hash === hash) ?? null;
+        return state.commitMap.get(hash) ?? null;
       },
-      async readFile({ path }) {
+      async readFile({ ref, path }) {
+        const commit = resolveCommitFromState(state, ref);
+        if (commit) {
+          const b = readFileFromTree(state, commit.treeHash, path);
+          return b ? new Blob([b]) : null;
+        }
         const b = state.files.get(path);
         return b ? new Blob([b]) : null;
       },
@@ -274,11 +324,28 @@ function createMockEnv() {
   return { env, artifactsRepos, docRepos };
 }
 
-// Intercept fetch to simulate Artifacts git-receive-pack remote
+// Intercept fetch to simulate Artifacts git-receive-pack & info/refs remote
 function installGitFetchMock(artifactsRepos) {
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const urlStr = typeof input === 'string' ? input : input.url;
+    const refsMatch = /^https:\/\/artifacts\.example\/docs\/([^/]+)\.git\/info\/refs\?service=git-upload-pack$/.exec(urlStr);
+    if (refsMatch) {
+      const state = artifactsRepos.get(refsMatch[1]);
+      if (!state) return new Response('Not found', { status: 404 });
+      const parts = [gitPack.encodePktLine('# service=git-upload-pack\n'), new TextEncoder().encode('0000')];
+      let first = true;
+      for (const [branch, sha] of state.refs) {
+        const line = first
+          ? `${sha} refs/heads/${branch}\0multi_ack\n`
+          : `${sha} refs/heads/${branch}\n`;
+        parts.push(gitPack.encodePktLine(line));
+        first = false;
+      }
+      parts.push(new TextEncoder().encode('0000'));
+      return new Response(gitPack.concatBytes(parts), { status: 200 });
+    }
+
     const match = /^https:\/\/artifacts\.example\/docs\/([^/]+)\.git\/git-receive-pack$/.exec(urlStr);
     if (!match) return origFetch(input, init);
 
@@ -286,13 +353,14 @@ function installGitFetchMock(artifactsRepos) {
     if (!state) return new Response('Not found', { status: 404 });
 
     const body = new Uint8Array(await new Response(init.body).arrayBuffer());
+    const headerText = new TextDecoder().decode(body.subarray(0, Math.min(body.length, 512)));
+    const refLineMatch = /([0-9a-f]{40}) ([0-9a-f]{40}) refs\/heads\/([^\0\n]+)/.exec(headerText);
     const packOffset = new TextDecoder().decode(body).indexOf('PACK');
     assert.ok(packOffset >= 0, 'git-receive-pack payload must contain PACK');
     const pack = body.subarray(packOffset);
     const view = new DataView(pack.buffer, pack.byteOffset, pack.byteLength);
     assert.equal(view.getUint32(4, false), 2, 'PACK version 2');
     const objCount = view.getUint32(8, false);
-    assert.ok(objCount >= 2, 'PACK must contain at least tree and commit');
 
     // Parse objects from PACK (decompress each zlib stream)
     let pos = 12;
@@ -353,7 +421,7 @@ function installGitFetchMock(artifactsRepos) {
           .split('\n')
           .filter((l) => l.startsWith('parent '))
           .map((l) => l.slice(7).trim());
-        state.commits.push({
+        const commitObj = {
           hash: hashHex,
           treeHash,
           message: msgParts.join('\n\n').trim(),
@@ -362,7 +430,9 @@ function installGitFetchMock(artifactsRepos) {
           parents,
           authoredAt: now(),
           committedAt: now(),
-        });
+        };
+        state.commits.push(commitObj);
+        state.commitMap.set(hashHex, commitObj);
         // Materialize flat file map from root tree
         const files = new Map();
         const walk = (th, prefix) => {
@@ -377,6 +447,9 @@ function installGitFetchMock(artifactsRepos) {
         walk(treeHash, '');
         state.files = files;
       }
+    }
+    if (refLineMatch) {
+      state.refs.set(refLineMatch[3], refLineMatch[2]);
     }
     state.lastPushAt = new Date().toISOString();
     return new Response('000eunpack ok\n0000', { status: 200 });
@@ -562,6 +635,156 @@ test('repos API lifecycle: create, read/write with If-Match, nested paths, token
       env,
     );
     assert.equal(delRes.status, 204);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('diff module and git-pack branch ref helpers work accurately', () => {
+  const diff = diffMod.computeLineDiff(
+    '# Title\n\nFirst line\nSecond line\nThird line\n',
+    '# Title\n\nFirst line\nUpdated second line\nExtra line\nThird line\n',
+  );
+  assert.equal(diff.additions, 2);
+  assert.equal(diff.deletions, 1);
+  assert.equal(diff.truncated, false);
+  assert.equal(diff.hunks.length, 1);
+  assert.ok(diff.hunks[0].lines.some((l) => l.type === 'del' && l.text === 'Second line'));
+  assert.ok(diff.hunks[0].lines.some((l) => l.type === 'add' && l.text === 'Updated second line'));
+
+  const sha1 = 'a'.repeat(40);
+  const sha2 = 'b'.repeat(40);
+  const pkt = gitPack.concatBytes([
+    gitPack.encodePktLine('# service=git-upload-pack\n'),
+    new TextEncoder().encode('0000'),
+    gitPack.encodePktLine(`${sha1} refs/heads/main\0multi_ack\n`),
+    gitPack.encodePktLine(`${sha2} refs/heads/feat/md-diff\n`),
+    new TextEncoder().encode('0000'),
+  ]);
+  const refs = gitPack.parseUploadPackRefs(pkt);
+  assert.deepEqual(refs, [
+    { name: 'main', sha: sha1 },
+    { name: 'feat/md-diff', sha: sha2 },
+  ]);
+  assert.equal(gitPack.isValidBranchName('feat/review-1'), true);
+  assert.equal(gitPack.isValidBranchName('../bad'), false);
+  assert.equal(gitPack.isValidBranchName('bad.lock'), false);
+});
+
+test('repos branches and diff API support branch creation, cross-branch commits, and Markdown diffs', async () => {
+  const { env, artifactsRepos } = createMockEnv();
+  const restoreFetch = installGitFetchMock(artifactsRepos);
+  try {
+    const createRes = await worker.fetch(
+      req('/api/repos', {
+        method: 'POST',
+        token: 'owner-token',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({ slug: 'md-diff-repo', title: 'Diff Test' }),
+      }),
+      env,
+    );
+    assert.equal(createRes.status, 201);
+    const created = await createRes.json();
+
+    // List branches
+    const branchesRes1 = await worker.fetch(
+      req(`/api/repos/${created.id}/branches`, { token: 'owner-token' }),
+      env,
+    );
+    assert.equal(branchesRes1.status, 200);
+    const b1 = await branchesRes1.json();
+    assert.equal(b1.defaultBranch, 'main');
+    assert.equal(b1.branches.length, 1);
+    assert.equal(b1.branches[0].name, 'main');
+
+    // Create feature branch
+    const createBranchRes = await worker.fetch(
+      req(`/api/repos/${created.id}/branches`, {
+        method: 'POST',
+        token: 'owner-token',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({ name: 'draft/review-1', fromRef: 'main' }),
+      }),
+      env,
+    );
+    assert.equal(createBranchRes.status, 201);
+
+    // Duplicate branch fails with 409
+    const dupBranchRes = await worker.fetch(
+      req(`/api/repos/${created.id}/branches`, {
+        method: 'POST',
+        token: 'owner-token',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({ name: 'draft/review-1', fromRef: 'main' }),
+      }),
+      env,
+    );
+    assert.equal(dupBranchRes.status, 409);
+
+    // Commit Markdown edit to draft/review-1 without touching main
+    const putBranchRes = await worker.fetch(
+      req(`/api/repos/${created.id}/blob/README.md`, {
+        method: 'PUT',
+        token: 'owner-token',
+        headers: {
+          'x-csrf-token': csrf,
+          'x-target-branch': 'draft/review-1',
+          'x-commit-message': encodeURIComponent('Update README on draft branch'),
+        },
+        body: '# Diff Test\n\nEdited on draft branch.\n',
+      }),
+      env,
+    );
+    assert.equal(putBranchRes.status, 200);
+    const putBranch = await putBranchRes.json();
+    assert.equal(putBranch.branch, 'draft/review-1');
+
+    // Diff main vs draft/review-1
+    const diffRes = await worker.fetch(
+      req(`/api/repos/${created.id}/diff?base=main&head=draft/review-1`, { token: 'owner-token' }),
+      env,
+    );
+    assert.equal(diffRes.status, 200);
+    const diff = await diffRes.json();
+    assert.equal(diff.files.length, 1);
+    assert.equal(diff.files[0].path, 'README.md');
+    assert.equal(diff.files[0].status, 'modified');
+    assert.equal(diff.files[0].isText, true);
+    assert.ok(diff.files[0].additions >= 1);
+    assert.ok(diff.files[0].deletions >= 1);
+    assert.ok(
+      diff.files[0].hunks[0].lines.some(
+        (l) => l.type === 'add' && l.text === 'Edited on draft branch.',
+      ),
+    );
+
+    // Parent auto-resolution (head only) works
+    const autoDiffRes = await worker.fetch(
+      req(`/api/repos/${created.id}/diff?head=${putBranch.commit}`, { token: 'owner-token' }),
+      env,
+    );
+    assert.equal(autoDiffRes.status, 200);
+    const autoDiff = await autoDiffRes.json();
+    assert.equal(autoDiff.files.length, 1);
+
+    // Repo detail HTML renders branch selector & diff viewer
+    const pageRes = await worker.fetch(
+      req(`/repos/${created.id}?ref=draft/review-1`, { token: 'owner-token' }),
+      env,
+    );
+    assert.equal(pageRes.status, 200);
+    const html = await pageRes.text();
+    assert.ok(html.includes('id="branch-select"'));
+    assert.ok(html.includes('id="diff-card"'));
+    assert.ok(html.includes('draft/review-1'));
+
+    // Other user cannot access diff or branches
+    const otherDiff = await worker.fetch(
+      req(`/api/repos/${created.id}/diff?base=main&head=draft/review-1`, { token: 'other-token' }),
+      env,
+    );
+    assert.equal(otherDiff.status, 404);
   } finally {
     restoreFetch();
   }

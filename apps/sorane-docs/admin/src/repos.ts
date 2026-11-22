@@ -14,9 +14,19 @@ import {
 } from '../vendor/mikaki-oidc';
 import {
   ConflictError,
+  type BranchRef,
   commitFilesToArtifactsRepo,
+  createBranchInArtifactsRepo,
+  isValidBranchName,
+  listBranchesFromRemote,
   normalizeRepoPath,
 } from './git-pack';
+import {
+  computeLineDiff,
+  diffCommitTrees,
+  isTextDiffablePath,
+  looksLikeBinary,
+} from './diff';
 import {
   USER_MAX_FILE,
   bareEtag,
@@ -44,9 +54,13 @@ type RepoRow = {
 };
 
 const MAX_TEXT_FILE = 4 * 1024 * 1024;
+const MAX_DIFF_FILE_BYTES = 512 * 1024;
+const MAX_DIFF_FILES = 30;
 const REPO_PAGE_PATH = /^\/repos\/([0-9a-f-]{36})$/i;
 const REPO_API_ITEM = /^\/api\/repos\/([0-9a-f-]{36})$/i;
 const REPO_API_BLOB = /^\/api\/repos\/([0-9a-f-]{36})\/blob\/(.+)$/i;
+const REPO_API_BRANCHES = /^\/api\/repos\/([0-9a-f-]{36})\/branches$/i;
+const REPO_API_DIFF = /^\/api\/repos\/([0-9a-f-]{36})\/diff$/i;
 const REPO_API_TOKENS = /^\/api\/repos\/([0-9a-f-]{36})\/tokens$/i;
 const REPO_API_TOKEN_ITEM = /^\/api\/repos\/([0-9a-f-]{36})\/tokens\/([^/]+)$/i;
 const REPO_API_FORK = /^\/api\/repos\/([0-9a-f-]{36})\/fork$/i;
@@ -386,6 +400,15 @@ export async function writeRepoBlob(
   const bytes = await boundedBody(request, isOffice ? USER_MAX_FILE : MAX_TEXT_FILE);
   if (isOffice && !looksLikeOffice(bytes, lower)) fail(400, 'invalid_file');
 
+  const url = new URL(request.url);
+  const rawBranch =
+    url.searchParams.get('ref')?.trim() ||
+    request.headers.get('x-target-branch')?.trim() ||
+    row.default_branch;
+  if (!isValidBranchName(rawBranch)) fail(400, 'invalid_branch');
+  const rawBaseRef = request.headers.get('x-base-ref')?.trim() || row.default_branch;
+  if (!isValidBranchName(rawBaseRef)) fail(400, 'invalid_branch');
+
   const ifMatch = request.headers.get('if-match');
   const expectedParentSha =
     ifMatch && ifMatch.trim() !== '*' ? bareEtag(ifMatch.trim()) : undefined;
@@ -404,7 +427,8 @@ export async function writeRepoBlob(
   try {
     const result = await commitFilesToArtifactsRepo({
       repo,
-      branch: row.default_branch,
+      branch: rawBranch,
+      baseRef: rawBaseRef,
       message: commitMessage,
       authorName: session.sub.slice(0, 16),
       authorEmail: 'docs@sorane.dev',
@@ -417,6 +441,7 @@ export async function writeRepoBlob(
       .run();
     return json(env, {
       path,
+      branch: rawBranch,
       size: bytes.length,
       commit: result.commitHash,
       etag: quoteEtag(result.commitHash),
@@ -425,6 +450,195 @@ export async function writeRepoBlob(
     if (err instanceof ConflictError) fail(412, 'precondition_failed');
     throw err;
   }
+}
+
+async function resolveCommit(
+  repo: ArtifactsRepo,
+  refOrSha: string,
+): Promise<ArtifactsCommitMetadata | null> {
+  const trimmed = refOrSha.trim();
+  if (!trimmed) return null;
+  if (/^[0-9a-f]{40}$/i.test(trimmed)) {
+    return await repo.readCommit(trimmed.toLowerCase());
+  }
+  const logs = await repo.log({ ref: trimmed, limit: 1 });
+  return logs[0] ?? null;
+}
+
+async function resolveBranches(repo: ArtifactsRepo, defaultBranch: string): Promise<BranchRef[]> {
+  try {
+    const info = await repo.info();
+    const token = await repo.createToken('read', 60);
+    try {
+      const refs = await listBranchesFromRemote(info.remote, token.plaintext);
+      if (refs.length > 0) return refs;
+    } finally {
+      await repo.revokeToken(token.id).catch(() => {});
+    }
+  } catch {
+    // Fall back to default_branch log if remote ref discovery is unavailable.
+  }
+  const head = (await repo.log({ ref: defaultBranch, limit: 1 }))[0];
+  return head ? [{ name: defaultBranch, sha: head.hash }] : [];
+}
+
+export async function listRepoBranches(
+  request: Request,
+  env: RepoEnv,
+  id: string,
+): Promise<Response> {
+  const session = await requireUser(request, env);
+  const artifacts = requireArtifacts(env);
+  const row = await ownedRepo(env, session, id);
+  using repo = await artifacts.get(row.repo_name);
+  const refs = await resolveBranches(repo, row.default_branch);
+  return json(env, {
+    defaultBranch: row.default_branch,
+    branches: refs.map((b) => ({
+      ...b,
+      isDefault: b.name === row.default_branch,
+    })),
+  });
+}
+
+export async function createRepoBranch(
+  request: Request,
+  env: RepoEnv,
+  id: string,
+): Promise<Response> {
+  await csrfOk(request, env);
+  const session = await requireUser(request, env);
+  const artifacts = requireArtifacts(env);
+  const row = await ownedRepo(env, session, id);
+  const body = (await request.json().catch(() => ({}))) as { name?: string; fromRef?: string };
+  const branch = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!isValidBranchName(branch)) fail(400, 'invalid_branch');
+  const fromRef =
+    typeof body.fromRef === 'string' && body.fromRef.trim() ? body.fromRef.trim() : row.default_branch;
+
+  using repo = await artifacts.get(row.repo_name);
+  try {
+    const created = await createBranchInArtifactsRepo({ repo, branch, fromRef });
+    return json(env, created, 201);
+  } catch (err) {
+    if (err instanceof ConflictError) fail(409, 'branch_exists');
+    if (err instanceof Error && err.message.startsWith('Source ref not found')) {
+      fail(404, 'ref_not_found');
+    }
+    throw err;
+  }
+}
+
+export async function diffRepo(request: Request, env: RepoEnv, id: string): Promise<Response> {
+  const session = await requireUser(request, env);
+  const artifacts = requireArtifacts(env);
+  const row = await ownedRepo(env, session, id);
+  const url = new URL(request.url);
+  const headRef = url.searchParams.get('head')?.trim() || row.default_branch;
+  const baseParam = url.searchParams.get('base')?.trim() || '';
+  const rawPathFilter = url.searchParams.get('path')?.trim() || '';
+  const pathFilter = rawPathFilter ? normalizeRepoPath(rawPathFilter) : null;
+  if (rawPathFilter && !pathFilter) fail(400, 'invalid_path');
+
+  using repo = await artifacts.get(row.repo_name);
+  const headCommit = await resolveCommit(repo, headRef);
+  if (!headCommit) fail(404, 'head_not_found');
+
+  let baseCommit: ArtifactsCommitMetadata | null = null;
+  if (baseParam) {
+    baseCommit = await resolveCommit(repo, baseParam);
+    if (!baseCommit) fail(404, 'base_not_found');
+  } else if (headCommit.parents.length > 0) {
+    baseCommit = await resolveCommit(repo, headCommit.parents[0]);
+  }
+
+  let changes = await diffCommitTrees(
+    repo,
+    baseCommit ? baseCommit.treeHash : null,
+    headCommit.treeHash,
+  );
+  if (pathFilter) {
+    changes = changes.filter((c) => c.path === pathFilter);
+  }
+
+  const totalChanged = changes.length;
+  const truncatedList = totalChanged > MAX_DIFF_FILES;
+  const sliced = changes.slice(0, MAX_DIFF_FILES);
+  const textDecoder = new TextDecoder();
+
+  const files = await Promise.all(
+    sliced.map(async (entry) => {
+      const oldBlob = entry.oldHash ? await repo.readBlob(entry.oldHash) : null;
+      const newBlob = entry.newHash ? await repo.readBlob(entry.newHash) : null;
+      const oldSize = oldBlob ? oldBlob.size : 0;
+      const newSize = newBlob ? newBlob.size : 0;
+      const withinSize = oldSize <= MAX_DIFF_FILE_BYTES && newSize <= MAX_DIFF_FILE_BYTES;
+      let isText = isTextDiffablePath(entry.path) && withinSize;
+      let oldText = '';
+      let newText = '';
+
+      if (isText) {
+        const oldBytes = oldBlob ? new Uint8Array(await oldBlob.arrayBuffer()) : new Uint8Array(0);
+        const newBytes = newBlob ? new Uint8Array(await newBlob.arrayBuffer()) : new Uint8Array(0);
+        if (looksLikeBinary(oldBytes) || looksLikeBinary(newBytes)) {
+          isText = false;
+        } else {
+          oldText = textDecoder.decode(oldBytes);
+          newText = textDecoder.decode(newBytes);
+        }
+      }
+
+      if (!isText) {
+        return {
+          path: entry.path,
+          status: entry.status,
+          isText: false,
+          oldSize,
+          newSize,
+          additions: 0,
+          deletions: 0,
+          hunks: [],
+          truncated: !withinSize,
+        };
+      }
+
+      const diff = computeLineDiff(oldText, newText);
+      return {
+        path: entry.path,
+        status: entry.status,
+        isText: true,
+        oldSize,
+        newSize,
+        additions: diff.additions,
+        deletions: diff.deletions,
+        hunks: diff.hunks,
+        truncated: diff.truncated,
+      };
+    }),
+  );
+
+  return json(env, {
+    baseRef: baseParam || (baseCommit ? baseCommit.hash : null),
+    headRef,
+    baseCommit: baseCommit
+      ? {
+          hash: baseCommit.hash,
+          message: baseCommit.message,
+          author: baseCommit.author,
+          committedAt: baseCommit.committedAt,
+        }
+      : null,
+    headCommit: {
+      hash: headCommit.hash,
+      message: headCommit.message,
+      author: headCommit.author,
+      committedAt: headCommit.committedAt,
+      parents: headCommit.parents,
+    },
+    totalChanged,
+    truncated: truncatedList,
+    files,
+  });
 }
 
 export async function deleteRepoBlob(
@@ -640,47 +854,74 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
 
   const artifacts = requireArtifacts(env);
   const row = await ownedRepo(env, session, id);
-  const dirPath = normalizeRepoPath(new URL(request.url).searchParams.get('path') ?? '') ?? '';
+  const url = new URL(request.url);
+  const dirPath = normalizeRepoPath(url.searchParams.get('path') ?? '') ?? '';
+  const activeRef = url.searchParams.get('ref')?.trim() || row.default_branch;
 
   using repo = await artifacts.get(row.repo_name);
   const info = await repo.info();
-  const { entries } = await readTreeAtPath(repo, row.default_branch, dirPath);
-  const commits = await repo.log({ ref: row.default_branch, limit: 15 });
+  const branches = await resolveBranches(repo, row.default_branch);
+  if (!branches.some((b) => b.name === activeRef)) {
+    branches.unshift({ name: activeRef, sha: '' });
+  }
+  const { entries } = await readTreeAtPath(repo, activeRef, dirPath);
+  const commits = await repo.log({ ref: activeRef, limit: 20 });
+
+  const refQuery = activeRef !== row.default_branch ? `?ref=${encodeURIComponent(activeRef)}` : '';
 
   const fileRows = entries
     .map((entry) => {
       const fullPath = dirPath ? `${dirPath}/${entry.name}` : entry.name;
       if (entry.type === 'tree') {
-        const nextUrl = `/repos/${encodeURIComponent(row.id)}?path=${encodeURIComponent(fullPath)}`;
+        const nextUrl = `/repos/${encodeURIComponent(row.id)}?path=${encodeURIComponent(fullPath)}${activeRef !== row.default_branch ? `&ref=${encodeURIComponent(activeRef)}` : ''}`;
         return `<div class="row"><div>📁 <a href="${escape(nextUrl)}"><strong>${escape(entry.name)}/</strong></a></div><div class="muted">${escape(entry.hash.slice(0, 7))}</div></div>`;
       }
-      const blobUrl = `/api/repos/${row.id}/blob/${fullPath.split('/').map(encodeURIComponent).join('/')}`;
+      const blobBase = `/api/repos/${row.id}/blob/${fullPath.split('/').map(encodeURIComponent).join('/')}`;
+      const blobUrl = `${blobBase}${refQuery}`;
       const editorUrl = `/editor.html?open=${encodeURIComponent(blobUrl)}&download=1`;
       const openBtn = isEditableInIbis(entry.name)
         ? `<a class="btn btn-primary" href="${escape(editorUrl)}">Docs で開く</a>`
         : '';
-      return `<div class="row"><div>📄 <strong>${escape(entry.name)}</strong> <span class="muted">${escape(entry.hash.slice(0, 7))}</span></div><div style="display:flex;gap:.5rem">${openBtn}<a class="btn" href="${escape(blobUrl)}" target="_blank">Raw</a></div></div>`;
+      const diffBtn = `<button type="button" class="diff-file-btn" data-path="${escape(fullPath)}">履歴比較</button>`;
+      return `<div class="row"><div>📄 <strong>${escape(entry.name)}</strong> <span class="muted">${escape(entry.hash.slice(0, 7))}</span></div><div style="display:flex;gap:.5rem;flex-wrap:wrap">${openBtn}${diffBtn}<a class="btn" href="${escape(blobUrl)}" target="_blank">Raw</a></div></div>`;
     })
     .join('');
 
   const commitRows = commits
     .map((c) => {
       const when = new Date(c.committedAt * 1000).toLocaleString('ja-JP');
-      return `<div class="row"><div><strong>${escape(c.message)}</strong><div class="muted">${escape(c.author.name)} · ${escape(when)}</div></div><div><code class="badge">${escape(c.hash.slice(0, 7))}</code></div></div>`;
+      return `<div class="row"><div><strong>${escape(c.message)}</strong><div class="muted">${escape(c.author.name)} · ${escape(when)}</div></div><div style="display:flex;gap:.5rem;align-items:center"><button type="button" class="diff-commit-btn" data-commit="${escape(c.hash)}">比較 (Diff)</button><code class="badge">${escape(c.hash.slice(0, 7))}</code></div></div>`;
     })
     .join('');
 
+  const branchOptions = branches
+    .map(
+      (b) =>
+        `<option value="${escape(b.name)}"${b.name === activeRef ? ' selected' : ''}>${escape(b.name)}${b.name === row.default_branch ? ' (default)' : ''}</option>`,
+    )
+    .join('');
+
+  const compareOptions = [
+    ...branches.map((b) => `<option value="${escape(b.name)}">${escape(b.name)}</option>`),
+    ...commits.map(
+      (c) =>
+        `<option value="${escape(c.hash)}">${escape(c.hash.slice(0, 7))} · ${escape(c.message.slice(0, 32))}</option>`,
+    ),
+  ].join('');
+
   const parentLink = dirPath
-    ? `<a class="btn" href="/repos/${escape(row.id)}${dirPath.includes('/') ? `?path=${encodeURIComponent(dirPath.slice(0, dirPath.lastIndexOf('/')))}` : ''}">.. (上へ)</a>`
+    ? `<a class="btn" href="/repos/${escape(row.id)}?${[dirPath.includes('/') ? `path=${encodeURIComponent(dirPath.slice(0, dirPath.lastIndexOf('/')))}` : '', activeRef !== row.default_branch ? `ref=${encodeURIComponent(activeRef)}` : ''].filter(Boolean).join('&')}">.. (上へ)</a>`
     : '';
 
   const html = `
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">
       <div>
-        <h1 style="margin:0;font-size:1.35rem">${escape(row.slug)} <span class="badge">${escape(row.default_branch)}</span></h1>
+        <h1 style="margin:0;font-size:1.35rem">${escape(row.slug)} <span class="badge">${escape(activeRef)}</span></h1>
         <div class="muted">${escape(row.title)}${row.description ? ` — ${escape(row.description)}` : ''}</div>
       </div>
-      <div style="display:flex;gap:.5rem">
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+        <select id="branch-select" aria-label="ブランチ切り替え" style="width:auto">${branchOptions}</select>
+        <button id="new-branch-btn" type="button">+ ブランチ作成</button>
         <button id="fork-btn" type="button">Fork</button>
         <button id="delete-btn" class="danger" type="button">削除</button>
       </div>
@@ -724,16 +965,201 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
       </div>
     </div>
 
+    <div class="card" id="diff-card">
+      <div class="card-hd">
+        <strong>新旧比較 (Diff)</strong>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <label style="margin:0;font-weight:400;display:inline-flex;align-items:center;gap:.3rem">旧 <select id="diff-base" style="width:auto"><option value="">(直前の親)</option>${compareOptions}</select></label>
+          <label style="margin:0;font-weight:400;display:inline-flex;align-items:center;gap:.3rem">新 <select id="diff-head" style="width:auto">${compareOptions}</select></label>
+          <button id="run-diff-btn" type="button">比較する</button>
+        </div>
+      </div>
+      <div class="card-bd" id="diff-body">
+        <p class="muted">コミット履歴の「比較 (Diff)」または上の版セレクタから差分を表示できます。</p>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-hd"><strong>コミット履歴</strong><span class="badge">${commits.length} 件</span></div>
       ${commitRows || '<div class="card-bd"><p class="muted">まだコミットがありません。</p></div>'}
     </div>
 
+    <style>
+      .diff-file{border:1px solid var(--border);border-radius:6px;margin-bottom:.75rem;overflow:hidden}
+      .diff-file-hd{background:#f6f8fa;padding:.45rem .75rem;display:flex;justify-content:space-between;align-items:center;gap:.5rem;border-bottom:1px solid var(--border);flex-wrap:wrap}
+      .diff-table{width:100%;border-collapse:collapse;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8rem}
+      .diff-table td{padding:1px 8px;white-space:pre-wrap;word-break:break-word;vertical-align:top}
+      .diff-ln{width:3.2rem;text-align:right;color:var(--muted);user-select:none;border-right:1px solid var(--border)}
+      .diff-row-add{background:#e6ffec}
+      .diff-row-del{background:#ffebe9}
+      .diff-row-hunk{background:#ddf4ff;color:#0969da}
+    </style>
+
     <script>
       const csrf = ${JSON.stringify(csrf)};
       const repoId = ${JSON.stringify(row.id)};
+      const activeRef = ${JSON.stringify(activeRef)};
+      const defaultBranch = ${JSON.stringify(row.default_branch)};
       const status = document.querySelector('#status');
       const tokenBox = document.querySelector('#token-box');
+      const diffBody = document.querySelector('#diff-body');
+      const diffBase = document.querySelector('#diff-base');
+      const diffHead = document.querySelector('#diff-head');
+
+      document.querySelector('#branch-select').addEventListener('change', (e) => {
+        const branch = e.currentTarget.value;
+        const u = new URL(location.href);
+        if (branch === defaultBranch) u.searchParams.delete('ref');
+        else u.searchParams.set('ref', branch);
+        location.href = u.toString();
+      });
+
+      document.querySelector('#new-branch-btn').addEventListener('click', async () => {
+        const name = prompt('新しいブランチ名を入力してください（例: draft/review-1）:');
+        if (!name) return;
+        const r = await fetch('/api/repos/' + repoId + '/branches', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+          body: JSON.stringify({ name: name.trim(), fromRef: activeRef }),
+        });
+        if (r.ok) {
+          const u = new URL(location.href);
+          u.searchParams.set('ref', name.trim());
+          location.href = u.toString();
+        } else {
+          const d = await r.json().catch(() => ({}));
+          alert('ブランチ作成に失敗しました: ' + (d.error || r.status));
+        }
+      });
+
+      function renderDiffResponse(data) {
+        diffBody.innerHTML = '';
+        const summary = document.createElement('p');
+        summary.className = 'muted';
+        const baseLabel = data.baseCommit ? data.baseCommit.hash.slice(0, 7) : '(初期)';
+        const headLabel = data.headCommit ? data.headCommit.hash.slice(0, 7) : data.headRef;
+        summary.textContent = baseLabel + ' → ' + headLabel + ' · ' + data.files.length + ' ファイル変更';
+        diffBody.append(summary);
+
+        if (!data.files.length) {
+          const empty = document.createElement('p');
+          empty.className = 'muted';
+          empty.textContent = '変更されたファイルはありません。';
+          diffBody.append(empty);
+          return;
+        }
+
+        const statusLabel = { added: '追加', modified: '変更', deleted: '削除' };
+        for (const f of data.files) {
+          const box = document.createElement('div');
+          box.className = 'diff-file';
+          const hd = document.createElement('div');
+          hd.className = 'diff-file-hd';
+          const left = document.createElement('div');
+          const strong = document.createElement('strong');
+          strong.textContent = f.path + ' ';
+          const badge = document.createElement('span');
+          badge.className = 'badge';
+          badge.textContent = (statusLabel[f.status] || f.status) + (f.isText ? (' +' + f.additions + ' -' + f.deletions) : (' ' + f.oldSize + 'B → ' + f.newSize + 'B'));
+          left.append(strong, badge);
+
+          const right = document.createElement('div');
+          if (f.status !== 'deleted' && /\\.(md|markdown|docx|xlsx|pptx)$/i.test(f.path) && data.headCommit) {
+            const blobRefUrl = '/api/repos/' + repoId + '/blob/' + f.path.split('/').map(encodeURIComponent).join('/') + '?ref=' + encodeURIComponent(data.headCommit.hash);
+            const a = document.createElement('a');
+            a.className = 'btn';
+            a.href = '/editor.html?open=' + encodeURIComponent(blobRefUrl) + '&view=1';
+            a.textContent = 'この版を Docs でプレビュー';
+            right.append(a);
+          }
+          hd.append(left, right);
+          box.append(hd);
+
+          if (!f.isText) {
+            const p = document.createElement('p');
+            p.className = 'muted';
+            p.style.padding = '.5rem .75rem';
+            p.textContent = f.truncated ? 'ファイルサイズが大きいため差分表示を省略しました。' : 'バイナリファイル（サイズ: ' + f.oldSize + ' → ' + f.newSize + ' bytes）';
+            box.append(p);
+          } else if (!f.hunks.length) {
+            const p = document.createElement('p');
+            p.className = 'muted';
+            p.style.padding = '.5rem .75rem';
+            p.textContent = 'テキスト差分なし';
+            box.append(p);
+          } else {
+            const table = document.createElement('table');
+            table.className = 'diff-table';
+            for (const h of f.hunks) {
+              const hr = document.createElement('tr');
+              hr.className = 'diff-row-hunk';
+              const htd = document.createElement('td');
+              htd.colSpan = 3;
+              htd.textContent = '@@ -' + h.oldStart + ',' + h.oldCount + ' +' + h.newStart + ',' + h.newCount + ' @@';
+              hr.append(htd);
+              table.append(hr);
+              for (const line of h.lines) {
+                const tr = document.createElement('tr');
+                if (line.type === 'add') tr.className = 'diff-row-add';
+                else if (line.type === 'del') tr.className = 'diff-row-del';
+                const td1 = document.createElement('td');
+                td1.className = 'diff-ln';
+                td1.textContent = line.oldLine ?? '';
+                const td2 = document.createElement('td');
+                td2.className = 'diff-ln';
+                td2.textContent = line.newLine ?? '';
+                const td3 = document.createElement('td');
+                const prefix = line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ';
+                td3.textContent = prefix + line.text;
+                tr.append(td1, td2, td3);
+                table.append(tr);
+              }
+            }
+            box.append(table);
+          }
+          diffBody.append(box);
+        }
+      }
+
+      async function loadDiff(head, base, pathFilter) {
+        diffBody.innerHTML = '<p class="muted">差分を読み込み中…</p>';
+        const params = new URLSearchParams();
+        if (head) params.set('head', head);
+        if (base) params.set('base', base);
+        if (pathFilter) params.set('path', pathFilter);
+        const r = await fetch('/api/repos/' + repoId + '/diff?' + params.toString(), { credentials: 'same-origin' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          diffBody.innerHTML = '<p style="color:var(--danger)">差分を取得できませんでした: ' + (d.error || r.status) + '</p>';
+          return;
+        }
+        renderDiffResponse(d);
+      }
+
+      document.querySelector('#run-diff-btn').addEventListener('click', () => {
+        loadDiff(diffHead.value || activeRef, diffBase.value || '', '');
+      });
+      document.querySelectorAll('.diff-commit-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const sha = btn.getAttribute('data-commit');
+          if (sha) {
+            diffHead.value = sha;
+            diffBase.value = '';
+            loadDiff(sha, '', '');
+            document.querySelector('#diff-card').scrollIntoView({ behavior: 'smooth' });
+          }
+        });
+      });
+      document.querySelectorAll('.diff-file-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const filePath = btn.getAttribute('data-path');
+          if (filePath) {
+            loadDiff(activeRef, '', filePath);
+            document.querySelector('#diff-card').scrollIntoView({ behavior: 'smooth' });
+          }
+        });
+      });
 
       async function mint(scope) {
         tokenBox.textContent = 'トークンを発行中…';
@@ -802,6 +1228,7 @@ export async function repoDetailPage(request: Request, env: RepoEnv, id: string)
             headers: {
               'x-csrf-token': csrf,
               'x-commit-message': encodeURIComponent(msg),
+              'x-target-branch': activeRef,
             },
             body,
           });
@@ -849,6 +1276,17 @@ export async function handleReposRequest(request: Request, env: RepoEnv, path: s
     if (request.method === 'DELETE') {
       return await deleteRepoBlob(request, env, blobMatch[1], blobMatch[2]);
     }
+  }
+
+  const branchesMatch = REPO_API_BRANCHES.exec(path);
+  if (branchesMatch) {
+    if (request.method === 'GET') return await listRepoBranches(request, env, branchesMatch[1]);
+    if (request.method === 'POST') return await createRepoBranch(request, env, branchesMatch[1]);
+  }
+
+  const diffMatch = REPO_API_DIFF.exec(path);
+  if (diffMatch && request.method === 'GET') {
+    return await diffRepo(request, env, diffMatch[1]);
   }
 
   const tokensMatch = REPO_API_TOKENS.exec(path);
