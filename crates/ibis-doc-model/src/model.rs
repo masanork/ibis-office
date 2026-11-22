@@ -2532,6 +2532,10 @@ impl Presentation {
         self.layouts.iter().find(|l| l.id == id)
     }
 
+    pub(crate) fn reserve_ids_from(&mut self, draft: &Self) {
+        self.next_id = self.next_id.max(draft.next_id);
+    }
+
     fn next_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;

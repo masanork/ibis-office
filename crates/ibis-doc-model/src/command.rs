@@ -1279,6 +1279,11 @@ impl Document {
         &mut self.presentation
     }
 
+    /// Keep object identifiers allocated in an applied editing draft from being reused.
+    pub fn reserve_ids_from(&mut self, draft: &Self) {
+        self.presentation.reserve_ids_from(&draft.presentation);
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

@@ -6,11 +6,9 @@
 use ibis_doc_model::ai_sheet::{
     build_delete_axis_command, build_insert_axis_command, build_merge_command,
     build_set_axis_size_command, build_set_comment_command,
-    parse_cell_range, parse_hex_rgb,
+    parse_cell_range,
 };
 use ibis_doc_model::command::Command;
-use ibis_doc_model::flow::FlowAlign;
-use ibis_doc_model::flow_command::{FlowCommand, FlowPos, ParaChange, RunChange};
 use ibis_doc_model::model::SlideId;
 use ibis_doc_model::sd_jwt::Es256KeyPair;
 use ibis_doc_model::sd_jwt_binding::{ClaimValue, SdJwtTemplateKind};
@@ -66,8 +64,8 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
-                name: "get_workbook_overview",
-                description: "Get sheet names, active sheet, used ranges, and current selection in the workbook.",
+                name: "get_workbook_context",
+                description: "Get the active worksheet and current selection. Use xlsx_list_sheets for workbook contents.",
                 parameters: json!({
                     "type": "object",
                     "properties": {},
@@ -102,20 +100,6 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                         "sheet": { "type": "string", "description": "Exact name of the sheet to activate." }
                     },
                     "required": ["sheet"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "create_sheet",
-                description: "Create a new sheet in the workbook and make it active.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "name": { "type": "string", "description": "Optional name for the new sheet." }
-                    },
                     "additionalProperties": false
                 }),
             },
@@ -184,23 +168,6 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
                     "properties": {
                         "sheet": { "type": "string", "description": "Optional sheet name (omit to scan all sheets)." }
                     },
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "find_cells",
-                description: "Search cells on a sheet (or active sheet) by display text or formula substring.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "sheet": { "type": "string" },
-                        "query": { "type": "string", "description": "Case-insensitive search text." },
-                        "search_formulas": { "type": "boolean", "default": true }
-                    },
-                    "required": ["query"],
                     "additionalProperties": false
                 }),
             },
@@ -394,28 +361,31 @@ pub fn spreadsheet_tool_definitions() -> Vec<ToolDefinition> {
             },
         },
     ];
-    tools.extend(ibis_doc_service::workbook_tools().iter().map(|tool| {
-        let descriptor = &tool.descriptor;
-        let mut parameters = (descriptor.schema)();
-        if let Some(properties) = parameters["properties"].as_object_mut() {
-            properties.remove("document_id");
-            if let Some(sheet) = properties.get_mut("sheet") {
-                sheet["description"] = json!("The sheet's name. Omit to use the active sheet.");
-            }
-        }
-        if let Some(required) = parameters["required"].as_array_mut() {
-            required.retain(|name| !matches!(name.as_str(), Some("document_id" | "sheet")));
-        }
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: descriptor.name,
-                description: descriptor.description,
-                parameters,
-            },
-        }
-    }));
+    tools.extend(ibis_doc_service::document_tools(ibis_formats::Kind::Workbook)
+        .map(|tool| editor_tool_definition(tool, tool.name != "xlsx_find_text")));
     tools
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn editor_tool_definition(descriptor: &ibis_doc_service::Tool, active_sheet: bool) -> ToolDefinition {
+    let mut parameters = (descriptor.schema)();
+    if let Some(properties) = parameters["properties"].as_object_mut() {
+        properties.remove("document_id");
+        if active_sheet && let Some(sheet) = properties.get_mut("sheet") {
+            sheet["description"] = json!("The sheet's name. Omit to use the active sheet.");
+        }
+    }
+    if let Some(required) = parameters["required"].as_array_mut() {
+        required.retain(|name| name != "document_id" && (!active_sheet || name != "sheet"));
+    }
+    ToolDefinition {
+        kind: "function",
+        function: ToolFunctionDef {
+            name: descriptor.name,
+            description: descriptor.description,
+            parameters,
+        },
+    }
 }
 
 #[derive(Deserialize)]
@@ -426,11 +396,6 @@ struct OptionalSheetArg {
 #[derive(Deserialize)]
 struct SwitchSheetArg {
     sheet: String,
-}
-
-#[derive(Deserialize)]
-struct CreateSheetArg {
-    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -457,13 +422,6 @@ struct MergeCellsArgs {
 #[derive(Deserialize)]
 pub struct RangeArg {
     pub range: String,
-}
-
-fn deserialize_optional_nullable<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
 fn default_true() -> bool {
@@ -663,22 +621,6 @@ pub fn parse_switch_sheet_arg(arguments_json: &str) -> Result<String, String> {
     Ok(name)
 }
 
-pub fn parse_create_sheet_arg(arguments_json: &str) -> Result<Option<String>, String> {
-    if arguments_json.trim().is_empty() {
-        return Ok(None);
-    }
-    let arg: CreateSheetArg =
-        serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
-    Ok(arg.name.and_then(|s| {
-        let t = s.trim();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t.to_string())
-        }
-    }))
-}
-
 fn parse_axis_args(arguments_json: &str) -> Result<(Axis, u32, u32), String> {
     let args: AxisOpArgs =
         serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
@@ -713,7 +655,7 @@ pub fn parse_merge_cells_command(slide: SlideId, arguments_json: &str) -> Result
 
 /// Tool definitions exposed to the OpenAI-compatible API for presentations (PPTX).
 /// Source representations the document or presentation editor can edit.
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EditableSourceKind {
     Markdown,
@@ -798,84 +740,6 @@ pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
-                name: "get_presentation_overview",
-                description: "Get slide count, active slide index, and summary (1-based index, title, shape count, notes presence) of each slide.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "read_slide",
-                description: "Read all text shapes (shape_id, kind, text) and speaker notes on a slide.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "slide_index": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "description": "1-based slide number (defaults to the active slide)."
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "set_shape_text",
-                description: "Replace the text of a shape on a slide.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number (defaults to active slide)." },
-                        "shape_id": { "type": "integer", "minimum": 1, "description": "Shape ID returned by read_slide." },
-                        "text": { "type": "string", "description": "New text content (use \\n for paragraphs)." }
-                    },
-                    "required": ["shape_id", "text"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "set_slide_notes",
-                description: "Set the speaker notes text for a slide.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number (defaults to active slide)." },
-                        "notes": { "type": "string", "description": "Speaker notes text." }
-                    },
-                    "required": ["notes"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "add_slide",
-                description: "Insert a new slide after the active slide (with optional title and body text) and switch to it.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "title": { "type": "string", "description": "Optional slide title text." },
-                        "body": { "type": "string", "description": "Optional slide body text." }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
                 name: "select_slide",
                 description: "Switch the active slide in the presentation UI.",
                 parameters: json!({
@@ -905,37 +769,6 @@ pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
-                name: "remove_slide",
-                description: "Remove a slide from the presentation (cannot remove the last remaining slide).",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based slide number to remove." }
-                    },
-                    "required": ["slide_index"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "move_slide",
-                description: "Move a slide to a new 1-based position.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "slide_index": { "type": "integer", "minimum": 1, "description": "1-based source slide number." },
-                        "to_index": { "type": "integer", "minimum": 1, "description": "1-based destination position." }
-                    },
-                    "required": ["slide_index", "to_index"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
                 name: "insert_text_box",
                 description: "Insert a new text box shape on a slide using percentage coordinates (0-100).",
                 parameters: json!({
@@ -958,25 +791,24 @@ pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
-                name: "set_shape_style",
-                description: "Update text style (font_size, bold, italic, text_color) and/or fill color of a shape.",
+                name: "set_shape_fill",
+                description: "Set the fill color of a shape, or clear the fill with null.",
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "slide_index": { "type": "integer", "minimum": 1 },
-                        "shape_id": { "type": "integer", "minimum": 1 },
-                        "font_size": { "type": "number", "description": "Font size in points." },
-                        "bold": { "type": "boolean" },
-                        "italic": { "type": "boolean" },
-                        "text_color": { "type": "string", "description": "Hex color '#RRGGBB'." },
-                        "fill_color": { "type": ["string", "null"], "description": "Hex color '#RRGGBB' or null for transparent." }
+                        "shape_id": { "type": "integer" },
+                        "fill_color": { "type": ["string", "null"] }
                     },
-                    "required": ["shape_id"],
+                    "required": ["shape_id", "fill_color"],
                     "additionalProperties": false
                 }),
             },
         },
     ];
+    #[cfg(not(target_family = "wasm"))]
+    tools.extend(ibis_doc_service::document_tools(ibis_formats::Kind::Presentation)
+        .map(|tool| editor_tool_definition(tool, false)));
     tools.extend(source_tool_definitions(false));
     tools
 }
@@ -984,153 +816,6 @@ pub fn pptx_tool_definitions() -> Vec<ToolDefinition> {
 /// Tool definitions exposed to the OpenAI-compatible API for word-processing documents (DOCX).
 pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
     let mut tools = vec![
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "get_document_overview",
-                description: "Get total block/paragraph count and previews of the first 100 paragraphs in the document.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "read_paragraphs",
-                description: "Read full text of a range of 0-based paragraphs (up to 50 paragraphs per call).",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "start": { "type": "integer", "minimum": 0, "description": "0-based starting paragraph index." },
-                        "count": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 }
-                    },
-                    "required": ["start"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "insert_text",
-                description: "Insert text at a character offset within a 0-based paragraph (defaults to end of paragraph). Use '\\n' to create new paragraphs.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "paragraph": { "type": "integer", "minimum": 0, "description": "0-based paragraph index." },
-                        "offset": { "type": "integer", "minimum": 0, "description": "Optional 0-based character offset (defaults to paragraph length)." },
-                        "text": { "type": "string", "description": "Text to insert." }
-                    },
-                    "required": ["paragraph", "text"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "replace_paragraph_text",
-                description: "Replace the entire text of a 0-based paragraph.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "paragraph": { "type": "integer", "minimum": 0, "description": "0-based paragraph index." },
-                        "text": { "type": "string", "description": "Replacement text." }
-                    },
-                    "required": ["paragraph", "text"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "set_paragraph_align",
-                description: "Set horizontal alignment for a 0-based paragraph.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "paragraph": { "type": "integer", "minimum": 0, "description": "0-based paragraph index." },
-                        "align": { "type": "string", "enum": ["left", "center", "right", "justify"] }
-                    },
-                    "required": ["paragraph", "align"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "set_run_format",
-                description: "Apply character formatting (bold, italic, underline, font_size, color) to a paragraph or character span.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "paragraph": { "type": "integer", "minimum": 0, "description": "0-based paragraph index." },
-                        "start": { "type": "integer", "minimum": 0, "description": "Optional 0-based start char offset (defaults to 0)." },
-                        "end": { "type": "integer", "minimum": 0, "description": "Optional 0-based end char offset (defaults to paragraph length)." },
-                        "bold": { "type": "boolean" },
-                        "italic": { "type": "boolean" },
-                        "underline": { "type": "boolean" },
-                        "font_size": { "type": "number", "description": "Font size in points (e.g. 12)." },
-                        "color": { "type": "string", "description": "Hex color '#RRGGBB'." }
-                    },
-                    "required": ["paragraph"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "set_paragraph_style",
-                description: "Apply a named paragraph style (e.g. 'Heading1', 'Heading2', 'Normal', or null to reset).",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "paragraph": { "type": "integer", "minimum": 0 },
-                        "style": { "type": ["string", "null"] }
-                    },
-                    "required": ["paragraph", "style"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "insert_table",
-                description: "Insert an empty table at the start of a 0-based paragraph.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "paragraph": { "type": "integer", "minimum": 0 },
-                        "rows": { "type": "integer", "minimum": 1, "maximum": 20 },
-                        "columns": { "type": "integer", "minimum": 1, "maximum": 12 }
-                    },
-                    "required": ["paragraph", "rows", "columns"],
-                    "additionalProperties": false
-                }),
-            },
-        },
-        ToolDefinition {
-            kind: "function",
-            function: ToolFunctionDef {
-                name: "find_text_in_document",
-                description: "Search all paragraphs in the document for a substring and return matching 0-based paragraph indices and previews.",
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Case-insensitive search query." }
-                    },
-                    "required": ["query"],
-                    "additionalProperties": false
-                }),
-            },
-        },
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
@@ -1227,6 +912,9 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
             },
         },
     ];
+    #[cfg(not(target_family = "wasm"))]
+    tools.extend(ibis_doc_service::document_tools(ibis_formats::Kind::Document)
+        .map(|tool| editor_tool_definition(tool, false)));
     tools.extend(source_tool_definitions(true));
     tools
 }
@@ -1277,59 +965,8 @@ pub struct SlideIndexRequiredArg {
     pub slide_index: usize,
 }
 
-#[derive(Deserialize)]
-pub struct SetShapeTextArgs {
-    pub slide_index: Option<usize>,
-    pub shape_id: u64,
-    pub text: String,
-}
-
-#[derive(Deserialize)]
-pub struct SetSlideNotesArgs {
-    pub slide_index: Option<usize>,
-    pub notes: String,
-}
-
-#[derive(Deserialize)]
-pub struct AddSlideArgs {
-    pub title: Option<String>,
-    pub body: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct ReadParagraphsArgs {
-    pub start: usize,
-    #[serde(default = "default_twenty")]
-    pub count: usize,
-}
-
 fn default_twenty() -> usize {
     20
-}
-
-#[derive(Deserialize)]
-pub struct InsertTextArgs {
-    pub paragraph: u32,
-    pub offset: Option<usize>,
-    pub text: String,
-}
-
-#[derive(Deserialize)]
-pub struct ReplaceParagraphArgs {
-    pub paragraph: u32,
-    pub text: String,
-}
-
-#[derive(Deserialize)]
-pub struct SetParagraphAlignArgs {
-    pub paragraph: u32,
-    pub align: String,
-}
-
-#[derive(Deserialize)]
-pub struct MoveSlideArgs {
-    pub slide_index: usize,
-    pub to_index: usize,
 }
 
 #[derive(Deserialize)]
@@ -1359,113 +996,11 @@ fn default_eighty() -> f32 {
 }
 
 #[derive(Deserialize)]
-pub struct SetShapeStyleArgs {
+pub struct SetShapeFillArgs {
     pub slide_index: Option<usize>,
     pub shape_id: u64,
-    pub font_size: Option<f32>,
-    pub bold: Option<bool>,
-    pub italic: Option<bool>,
-    pub text_color: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
-    pub fill_color: Option<Option<String>>,
-}
-
-#[derive(Deserialize)]
-pub struct SetRunFormatArgs {
-    pub paragraph: u32,
-    pub start: Option<usize>,
-    pub end: Option<usize>,
-    pub bold: Option<bool>,
-    pub italic: Option<bool>,
-    pub underline: Option<bool>,
-    pub font_size: Option<f32>,
-    pub color: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct SetParagraphStyleArgs {
-    pub paragraph: u32,
-    pub style: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct InsertTableArgs {
-    pub paragraph: u32,
-    pub rows: usize,
-    pub columns: usize,
-}
-
-#[derive(Deserialize)]
-pub struct FindTextArgs {
-    pub query: String,
-}
-
-pub fn build_set_run_format_command(
-    args: SetRunFormatArgs,
-    para_len: usize,
-) -> Result<Command, String> {
-    let start = args.start.unwrap_or(0).min(para_len);
-    let end = args.end.unwrap_or(para_len).min(para_len);
-    if start >= end {
-        return Err("empty character span (start >= end)".to_string());
-    }
-    let from = FlowPos::new(args.paragraph, start);
-    let to = FlowPos::new(args.paragraph, end);
-    let mut cmds = Vec::new();
-    if let Some(b) = args.bold {
-        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
-            from,
-            to,
-            change: RunChange::Bold(b),
-        }));
-    }
-    if let Some(i) = args.italic {
-        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
-            from,
-            to,
-            change: RunChange::Italic(i),
-        }));
-    }
-    if let Some(u) = args.underline {
-        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
-            from,
-            to,
-            change: RunChange::Underline(u),
-        }));
-    }
-    if let Some(pt) = args.font_size {
-        if !pt.is_finite() || pt <= 0.0 || pt > 409.0 {
-            return Err(format!("invalid font_size '{pt}'"));
-        }
-        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
-            from,
-            to,
-            change: RunChange::Size((pt * 100.0).round() as u32),
-        }));
-    }
-    if let Some(hex) = args.color {
-        let rgb = parse_hex_rgb(&hex)?;
-        cmds.push(Command::Flow(FlowCommand::SetRunFormat {
-            from,
-            to,
-            change: RunChange::Color(rgb),
-        }));
-    }
-    if cmds.is_empty() {
-        return Err("at least one formatting property must be specified".to_string());
-    }
-    if cmds.len() == 1 {
-        Ok(cmds.pop().expect("single"))
-    } else {
-        Ok(Command::Batch(cmds))
-    }
-}
-
-#[derive(Deserialize)]
-pub struct FindCellsArgs {
-    pub query: String,
-    #[serde(default = "default_true")]
-    pub search_formulas: bool,
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    pub fill_color: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1636,50 +1171,6 @@ pub fn vc_public_keys_json(which: &str) -> Result<Value, String> {
     Ok(Value::Object(out))
 }
 
-pub fn parse_set_paragraph_align_command(arguments_json: &str) -> Result<Command, String> {
-    let args: SetParagraphAlignArgs =
-        serde_json::from_str(arguments_json).map_err(|e| format!("invalid arguments: {e}"))?;
-    let align = match args.align.as_str() {
-        "left" => FlowAlign::Left,
-        "center" => FlowAlign::Center,
-        "right" => FlowAlign::Right,
-        "justify" => FlowAlign::Justify,
-        other => return Err(format!("invalid align '{other}'")),
-    };
-    Ok(Command::Flow(FlowCommand::SetParagraphFormat {
-        first: args.paragraph,
-        last: args.paragraph,
-        change: ParaChange::Alignment(align),
-    }))
-}
-
-pub fn build_replace_paragraph_command(paragraph: u32, old_len: usize, text: String) -> Command {
-    if old_len == 0 {
-        Command::Flow(FlowCommand::InsertText {
-            at: FlowPos::new(paragraph, 0),
-            text,
-            format: None,
-        })
-    } else if text.is_empty() {
-        Command::Flow(FlowCommand::Delete {
-            from: FlowPos::new(paragraph, 0),
-            to: FlowPos::new(paragraph, old_len),
-        })
-    } else {
-        Command::Batch(vec![
-            Command::Flow(FlowCommand::Delete {
-                from: FlowPos::new(paragraph, 0),
-                to: FlowPos::new(paragraph, old_len),
-            }),
-            Command::Flow(FlowCommand::InsertText {
-                at: FlowPos::new(paragraph, 0),
-                text,
-                format: None,
-            }),
-        ])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1699,10 +1190,14 @@ A --> C
 
     #[cfg(not(target_family = "wasm"))]
     fn set_chart_cells(document: &mut ibis_doc_model::Document, sheet: SlideId, range: &str, values: Value) {
-        let tool = ibis_doc_service::workbook_tools().iter()
-            .find(|tool| tool.descriptor.name == "xlsx_set_cells").unwrap();
-        let (_, command) = tool.plan(document.presentation(), &json!({ "range": range, "values": values }), ibis_doc_service::WorkbookToolContext { active_sheet: Some(sheet), ..Default::default() }).unwrap();
-        document.execute(vec![command.unwrap()]).unwrap();
+        let context = ibis_doc_service::DraftToolContext {
+            workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(sheet), ..Default::default() },
+            ..Default::default()
+        };
+        ibis_doc_service::run_draft_tool(
+            ibis_formats::Kind::Workbook, document, context, "xlsx_set_cells",
+            json!({ "range": range, "values": values }),
+        ).unwrap();
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -1782,15 +1277,29 @@ A --> C
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn assistant_cell_tool_schema_uses_shared_catalog_without_document_handle() {
-        let tools = spreadsheet_tool_definitions();
-        for shared in ibis_doc_service::workbook_tools() {
-            let entry = tools.iter().find(|tool| tool.function.name == shared.descriptor.name).unwrap();
-            let canonical = (shared.descriptor.schema)();
-            let schema = &entry.function.parameters;
-            assert!(schema["properties"].get("document_id").is_none());
-            assert!(!schema["required"].as_array().unwrap().contains(&json!("sheet")));
-            assert_eq!(schema["properties"]["range"], canonical["properties"]["range"]);
+    fn assistant_document_tool_schemas_come_from_the_shared_catalog() {
+        use ibis_formats::Kind;
+        for (kind, tools) in [
+            (Kind::Workbook, spreadsheet_tool_definitions()),
+            (Kind::Document, docx_tool_definitions()),
+            (Kind::Presentation, pptx_tool_definitions()),
+        ] {
+            for shared in ibis_doc_service::document_tools(kind) {
+                let entries: Vec<_> = tools.iter().filter(|tool| tool.function.name == shared.name).collect();
+                assert_eq!(entries.len(), 1, "{}", shared.name);
+                let mut canonical = (shared.schema)();
+                let schema = &entries[0].function.parameters;
+                assert!(schema["properties"].get("document_id").is_none());
+                canonical["properties"].as_object_mut().unwrap().remove("document_id");
+                if kind == Kind::Workbook && shared.name != "xlsx_find_text"
+                    && let Some(sheet) = canonical["properties"].as_object_mut().unwrap().get_mut("sheet")
+                {
+                    *sheet = schema["properties"]["sheet"].clone();
+                    assert!(!schema["required"].as_array().unwrap().contains(&json!("sheet")));
+                }
+                assert_eq!(schema["properties"], canonical["properties"], "{}", shared.name);
+            }
+            assert!(tools.iter().all(|tool| !tool.function.name.starts_with("app_")));
         }
     }
 
@@ -1829,32 +1338,6 @@ A --> C
     }
 
     #[test]
-    fn builds_set_run_format_commands() {
-        let args = SetRunFormatArgs {
-            paragraph: 0,
-            start: Some(0),
-            end: Some(5),
-            bold: Some(true),
-            italic: Some(false),
-            underline: None,
-            font_size: Some(14.0),
-            color: Some("#1A73E8".to_string()),
-        };
-        let cmd = build_set_run_format_command(args, 10).unwrap();
-        assert!(matches!(cmd, Command::Batch(v) if v.len() == 4));
-    }
-
-    #[test]
-    fn parses_set_paragraph_align_json() {
-        let cmd = parse_set_paragraph_align_command(r#"{"paragraph":2,"align":"center"}"#).unwrap();
-        assert!(matches!(
-            cmd,
-            Command::Flow(FlowCommand::SetParagraphFormat { .. })
-        ));
-        assert!(parse_set_paragraph_align_command(r#"{"paragraph":2,"align":"diagonal"}"#).is_err());
-    }
-
-    #[test]
     fn parses_pptx_and_xlsx_tool_arg_structs() {
         let box_args: InsertTextBoxArgs = serde_json::from_str(
             r#"{"text":"Hello","x_pct":10.0,"y_pct":20.0,"w_pct":80.0,"h_pct":15.0,"font_size":20.0,"bold":true}"#,
@@ -1863,17 +1346,9 @@ A --> C
         assert_eq!(box_args.text, "Hello");
         assert_eq!(box_args.bold, Some(true));
 
-        let style_args: SetShapeStyleArgs = serde_json::from_str(
-            r##"{"shape_id":42,"fill_color":"#FFFFFF","text_color":"#000000","font_size":16.0}"##,
-        )
-        .unwrap();
-        assert_eq!(style_args.shape_id, 42);
-        assert_eq!(style_args.fill_color.as_ref().map(Option::as_deref), Some(Some("#FFFFFF")));
-
-        let find_args: FindCellsArgs =
-            serde_json::from_str(r#"{"query":"SUM","search_formulas":true}"#).unwrap();
-        assert_eq!(find_args.query, "SUM");
-        assert!(find_args.search_formulas);
+        let fill: SetShapeFillArgs = serde_json::from_str(r##"{"shape_id":42,"fill_color":"#FFFFFF"}"##).unwrap();
+        assert_eq!(fill.shape_id, 42);
+        assert_eq!(fill.fill_color.as_deref(), Some("#FFFFFF"));
     }
 
     #[test]

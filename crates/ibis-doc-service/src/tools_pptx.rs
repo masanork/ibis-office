@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::catalog::{Access, Tool, document_id, integer, object};
 use crate::error::ToolError;
-use crate::service::{Args, Open, Service};
+use crate::service::{Args, ToolDocument, Service};
 
 const EMU_PER_POINT: f64 = 12700.0;
 
@@ -37,7 +37,7 @@ pub(crate) fn tools() -> Vec<Tool> {
     ]
 }
 
-pub(crate) fn presentation_of(open: &Open) -> Result<&Presentation, ToolError> {
+pub(crate) fn presentation_of(open: &ToolDocument) -> Result<&Presentation, ToolError> {
     if open.kind != Kind::Presentation {
         return Err(ToolError::new("unsupported_operation", "this tool is for a pptx presentation"));
     }
@@ -74,7 +74,7 @@ fn points(emu: i64) -> f64 {
 }
 
 fn list_slides(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let presentation = presentation_of(open)?;
     let slides: Vec<Value> = presentation
         .slides
@@ -90,7 +90,7 @@ fn list_slides(service: &mut Service, args: &Value) -> Result<Value, ToolError> 
 
 fn get_slide(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let number = args.usize_arg("slide")?;
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let slide = slide_at(presentation_of(open)?, number)?;
     let shapes: Vec<Value> = slide
         .shapes
@@ -102,7 +102,7 @@ fn get_slide(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 
 fn get_shape_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let (number, id) = (args.usize_arg("slide")?, args.usize_arg("shape")? as u64);
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let slide = slide_at(presentation_of(open)?, number)?;
     let shape = slide.shapes.iter().find(|s| s.id.0 == id).ok_or_else(|| ToolError::new("no_such_shape", format!("no shape {id} on slide {number}")))?;
     let body = shape.text_body().ok_or_else(|| ToolError::new("unsupported_operation", format!("shape {id} has no text")))?;
@@ -119,7 +119,7 @@ fn get_shape_text(service: &mut Service, args: &Value) -> Result<Value, ToolErro
 
 fn get_notes(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let number = args.usize_arg("slide")?;
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let slide = slide_at(presentation_of(open)?, number)?;
     Ok(json!({ "slide": number, "notes": slide.notes }))
 }
@@ -212,17 +212,17 @@ fn slide_arg() -> (&'static str, Value) {
     ("slide", integer("The slide's number, from 1."))
 }
 
-fn slide_id(open: &Open, number: usize) -> Result<SlideId, ToolError> {
+fn slide_id(open: &ToolDocument, number: usize) -> Result<SlideId, ToolError> {
     Ok(slide_at(presentation_of(open)?, number)?.id)
 }
 
 fn pptx_edit(service: &mut Service, id: &str, commands: Vec<Command>, extra: Value) -> Result<Value, ToolError> {
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     execute(open, commands)?;
     Ok(edited(id, open, extra, Vec::new()))
 }
 
-fn shape_id(open: &Open, slide: usize, shape: u64) -> Result<(SlideId, ShapeId), ToolError> {
+fn shape_id(open: &ToolDocument, slide: usize, shape: u64) -> Result<(SlideId, ShapeId), ToolError> {
     let s = slide_at(presentation_of(open)?, slide)?;
     let found = s.shapes.iter().find(|x| x.id.0 == shape).ok_or_else(|| ToolError::new("no_such_shape", format!("no shape {shape} on slide {slide}")))?;
     Ok((s.id, found.id))
@@ -231,7 +231,7 @@ fn shape_id(open: &Open, slide: usize, shape: u64) -> Result<(SlideId, ShapeId),
 fn set_shape_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
     let (slide, shape) = {
-        let open = service.open_document(id)?;
+        let open = service.tool_document(id)?;
         shape_id(open, args.usize_arg("slide")?, args.usize_arg("shape")? as u64)?
     };
     pptx_edit(service, id, vec![Command::SetText { slide, shape, text: args.str_arg("text")?.to_string() }], json!({}))
@@ -245,7 +245,7 @@ fn replace_text(service: &mut Service, args: &Value) -> Result<Value, ToolError>
     }
     let match_case = args.opt_bool("match_case")?.unwrap_or(false);
     let only = args.opt_usize("slide")?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let presentation = presentation_of(open)?;
     if let Some(n) = only {
         slide_at(presentation, n)?;
@@ -290,7 +290,7 @@ fn replace_text(service: &mut Service, args: &Value) -> Result<Value, ToolError>
 fn set_run_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     only_known(args, &["document_id", "slide", "shape", "range", "bold", "italic", "underline", "size", "color", "font"])?;
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let (number, shape_n) = (args.usize_arg("slide")?, args.usize_arg("shape")? as u64);
     let (slide, shape) = shape_id(open, number, shape_n)?;
     let body = slide_at(presentation_of(open)?, number)?.shapes.iter().find(|s| s.id == shape).and_then(|s| s.text_body()).ok_or_else(|| ToolError::new("unsupported_operation", format!("shape {shape_n} has no text")))?;
@@ -392,19 +392,20 @@ fn shade_of(base: ibis_doc_model::Rgb, brightness: f64) -> ibis_doc_model::Rgb {
 
 fn set_notes(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let slide = slide_id(service.open_document(id)?, args.usize_arg("slide")?)?;
+    let slide = slide_id(service.tool_document(id)?, args.usize_arg("slide")?)?;
     pptx_edit(service, id, vec![Command::SetNotes { slide, notes: args.str_arg("text")?.to_string() }], json!({}))
 }
 
 fn list_layouts(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let layouts: Vec<Value> = presentation_of(open)?.layouts.iter().enumerate().map(|(i, l)| json!({ "layout": i + 1, "name": l.name })).collect();
     Ok(json!({ "layouts": layouts }))
 }
 
 fn add_slide(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let source = service.tool_source(id)?;
+    let open = service.tool_document(id)?;
     let current = presentation_of(open)?.clone();
     if current.layouts.is_empty() {
         return Err(ToolError::new("unsupported_operation", "the presentation has no layout to make a slide from"));
@@ -425,13 +426,13 @@ fn add_slide(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
         let ids = open.document.ids();
         (ids.new_slide_id(), (0..64).map(|_| ids.new_shape_id()).collect::<Vec<_>>().into_iter())
     };
-    let slide = open.source.new_slide(&current, index, slide_new, layout_id, || spare.next().unwrap_or(ShapeId(u64::MAX))).map_err(|e| ToolError::new("edit_rejected", e.to_string()))?;
+    let slide = source.new_slide(&current, index, slide_new, layout_id, || spare.next().unwrap_or(ShapeId(u64::MAX))).map_err(|e| ToolError::new("edit_rejected", e.to_string()))?;
     pptx_edit(service, id, vec![Command::InsertSlide { index, slide }], json!({ "slide": index + 1 }))
 }
 
 fn delete_slide(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let presentation = presentation_of(open)?;
     if presentation.slides.len() <= 1 {
         return Err(ToolError::new("unsupported_operation", "the last slide cannot be deleted"));
@@ -442,7 +443,7 @@ fn delete_slide(service: &mut Service, args: &Value) -> Result<Value, ToolError>
 
 fn move_slide(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let presentation = presentation_of(open)?;
     let slide = slide_at(presentation, args.usize_arg("slide")?)?.id;
     let index = args.usize_arg("index")?;
@@ -456,7 +457,7 @@ fn set_frame(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
     let number = args.usize_arg("slide")?;
     let list = args.get("frames").and_then(Value::as_array).filter(|l| !l.is_empty()).ok_or_else(|| ToolError::invalid("frames is a list of { shape, x, y, width, height }"))?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let slide = slide_id(open, number)?;
     let mut frames = Vec::new();
     for item in list {
@@ -477,7 +478,7 @@ fn delete_shape(service: &mut Service, args: &Value) -> Result<Value, ToolError>
     let id = args.str_arg("document_id")?;
     let number = args.usize_arg("slide")?;
     let list = args.get("shapes").and_then(Value::as_array).filter(|l| !l.is_empty()).ok_or_else(|| ToolError::invalid("shapes is a list of shape_id"))?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let slide = slide_id(open, number)?;
     let mut shapes = Vec::new();
     for item in list {

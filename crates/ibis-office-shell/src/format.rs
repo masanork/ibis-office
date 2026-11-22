@@ -357,6 +357,13 @@ pub trait FormatEditor {
         Err("editable source is unavailable in this format".into())
     }
 
+    /// Apply a reviewed assistant edit through the format's normal editing path.
+    fn apply_ai_commands(editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool {
+        let before = editor.document.undo_len();
+        editor.run(commands, cx);
+        editor.document.undo_len() > before
+    }
+
     /// Capture an editable text selection for a proposed assistant replacement.
     fn ai_replacement_target(_editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget> {
         None
@@ -1373,6 +1380,7 @@ pub trait FormatDriver: Sync {
     fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String>;
     fn ai_editable_source(&self, editor: &SlideEditor, kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String>;
     fn apply_ai_source(&self, editor: &mut SlideEditor, kind: crate::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String>;
+    fn apply_ai_commands(&self, editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool;
     fn ai_replacement_target(&self, editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget>;
     fn apply_ai_replacement(&self, editor: &mut SlideEditor, target: &crate::ai_assistant::AiReplacementTarget, text: &str, cx: &mut Context<SlideEditor>) -> bool;
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
@@ -1643,6 +1651,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn apply_ai_source(&self, editor: &mut SlideEditor, kind: crate::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String> {
         F::apply_ai_source(editor, kind, source, cx)
+    }
+    fn apply_ai_commands(&self, editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool {
+        F::apply_ai_commands(editor, commands, cx)
     }
     fn ai_replacement_target(&self, editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget> {
         F::ai_replacement_target(editor)

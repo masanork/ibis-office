@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::a1::{column_name, parse_range, range_text};
 use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string};
 use crate::error::ToolError;
-use crate::service::{Args, Open, Service};
+use crate::service::{Args, ToolDocument, Service};
 
 /// Defaults and per-call limits supplied by the workbook tool's caller.
 #[derive(Clone, Copy, Default)]
@@ -52,11 +52,12 @@ pub fn workbook_tools() -> &'static [WorkbookTool] {
 
 fn run_workbook_tool(service: &mut Service, args: &Value, tool: &WorkbookTool) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let context = service.workbook_tool_context();
+    let open = service.tool_document(id)?;
     if open.kind != Kind::Workbook {
         return Err(ToolError::new("unsupported_operation", "this tool is for an xlsx workbook"));
     }
-    let (result, command) = tool.plan(open.document.presentation(), args, WorkbookToolContext::default())?;
+    let (result, command) = tool.plan(open.document.presentation(), args, context)?;
     if let Some(command) = command {
         let commands = match command {
             Command::Batch(commands) => commands,
@@ -80,17 +81,17 @@ pub(crate) fn tools() -> Vec<Tool> {
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
         Tool {
             name: "xlsx_find_text",
-            description: "The cells whose shown text has a text.",
+            description: "Find cells by their displayed text and optionally their visible formulas.",
             access: Access::Read,
             returns_content: true,
-            schema: || object(&[document_id(), ("query", string("The text to find.")), ("sheet", string("Only this sheet.")), ("match_case", boolean("Match upper and lower case (default false).")), ("limit", integer("The most cells."))], &["document_id", "query"]),
+            schema: || object(&[document_id(), ("query", string("The text to find.")), ("sheet", string("Only this sheet.")), ("match_case", boolean("Match upper and lower case (default false).")), ("search_formulas", boolean("Also search visible formulas (default false).")), ("limit", integer("The most cells."))], &["document_id", "query"]),
             run: find_text,
         },
     ]
 }
 
 /// The sheets of the open workbook: `(slide index, name, sheet)`.
-pub(crate) fn sheets_of(open: &Open) -> Result<Vec<(usize, String, &Sheet)>, ToolError> {
+pub(crate) fn sheets_of(open: &ToolDocument) -> Result<Vec<(usize, String, &Sheet)>, ToolError> {
     if open.kind != Kind::Workbook {
         return Err(ToolError::new("unsupported_operation", "this tool is for an xlsx workbook"));
     }
@@ -146,14 +147,14 @@ pub(crate) fn value_json(value: &CellValue) -> Value {
 }
 
 fn list_sheets(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let sheets: Vec<Value> = sheets_of(open)?.iter().map(|(_, name, sheet)| json!({ "name": name, "used_range": used_range(sheet).map(|r| range_text(&r)), "cells": sheet.cells.len() })).collect();
     Ok(json!({ "sheets": sheets }))
 }
 
 fn get_used_range(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let name = args.str_arg("sheet")?;
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let sheets = sheets_of(open)?;
     let (_, name, sheet) = find_sheet(&sheets, name)?;
     Ok(json!({ "sheet": name, "used_range": used_range(sheet).map(|r| range_text(&r)) }))
@@ -235,8 +236,10 @@ fn find_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     }
     let only = args.opt_str("sheet")?;
     let match_case = args.opt_bool("match_case")?.unwrap_or(false);
+    let search_formulas = args.opt_bool("search_formulas")?.unwrap_or(false);
     let limit = args.opt_usize("limit")?.unwrap_or(100).max(1);
-    let open = service.open_document(args.str_arg("document_id")?)?;
+    let limit = limit.min(service.workbook_tool_context().max_read_cells.unwrap_or(usize::MAX));
+    let open = service.tool_document(args.str_arg("document_id")?)?;
     let sheets = sheets_of(open)?;
     let fold = |s: &str| if match_case { s.to_string() } else { s.to_lowercase() };
     let needle = fold(query);
@@ -246,8 +249,13 @@ fn find_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             continue;
         }
         for cell in sheet.cells.iter() {
-            if fold(&cell.text).contains(&needle) {
-                found.push(json!({ "sheet": name, "cell": format!("{}{}", column_name(cell.column), cell.row + 1), "text": cell.text }));
+            let formula = search_formulas.then(|| sheet.visible_formula(cell)).flatten();
+            if fold(&cell.text).contains(&needle) || formula.is_some_and(|formula| fold(formula).contains(&needle)) {
+                let mut result = json!({ "sheet": name, "cell": format!("{}{}", column_name(cell.column), cell.row + 1), "text": cell.text });
+                if search_formulas {
+                    result["formula"] = formula.map(|text| format!("={text}")).into();
+                }
+                found.push(result);
                 if found.len() >= limit {
                     break 'outer;
                 }
@@ -282,14 +290,14 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
     ]
 }
 
-fn sheet_id(open: &Open, name: &str) -> Result<(SlideId, String), ToolError> {
+fn sheet_id(open: &ToolDocument, name: &str) -> Result<(SlideId, String), ToolError> {
     let sheets = sheets_of(open)?;
     let (index, name, _) = find_sheet(&sheets, name)?;
     Ok((open.document.presentation().slides[*index].id, name.clone()))
 }
 
 fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extra: Value) -> Result<Value, ToolError> {
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     execute(open, commands.into_iter().map(Command::Sheet).collect())?;
     Ok(edited(id, open, extra, Vec::new()))
 }
@@ -542,7 +550,7 @@ fn add_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     if name.is_empty() || name.chars().count() > 31 || name.contains(['\\', '/', '?', '*', '[', ']', ':']) {
         return Err(ToolError::invalid("a sheet's name is 1 to 31 characters, without \\ / ? * [ ] :"));
     }
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let count = sheets_of(open)?.len();
     if sheets_of(open)?.iter().any(|(_, n, _)| n.eq_ignore_ascii_case(&name)) {
         return Err(ToolError::invalid(format!("a sheet named {name} is there already")));
@@ -560,7 +568,7 @@ fn add_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 
 fn delete_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let (sheet, name) = sheet_id(open, args.str_arg("sheet")?)?;
     if sheets_of(open)?.len() <= 1 {
         return Err(ToolError::new("unsupported_operation", "the last sheet cannot be deleted"));
@@ -574,7 +582,7 @@ fn rename_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError>
     if new_name.is_empty() || new_name.chars().count() > 31 || new_name.contains(['\\', '/', '?', '*', '[', ']', ':']) {
         return Err(ToolError::invalid("a sheet's name is 1 to 31 characters, without \\ / ? * [ ] :"));
     }
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     let (sheet, old) = sheet_id(open, args.str_arg("sheet")?)?;
     if !old.eq_ignore_ascii_case(&new_name) && sheets_of(open)?.iter().any(|(_, n, _)| n.eq_ignore_ascii_case(&new_name)) {
         return Err(ToolError::invalid(format!("a sheet named {new_name} is there already")));
@@ -584,7 +592,7 @@ fn rename_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError>
 
 fn calculate_workbook(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let open = service.open_document(id)?;
+    let open = service.tool_document(id)?;
     sheets_of(open)?;
     sheet_edit(service, id, vec![SheetCommand::CalculateNow], json!({}))
 }

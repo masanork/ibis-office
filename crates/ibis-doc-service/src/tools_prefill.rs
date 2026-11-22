@@ -85,9 +85,9 @@ fn preview(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 fn plan(service: &mut Service, args: &Value) -> Result<(Value, SlideId), ToolError> {
     let source = args.str_arg("source")?;
     let open = service.open_document(args.str_arg("document_id")?)?;
-    let sheets = sheets_of(open)?;
+    let sheets = sheets_of(&open.model)?;
     let (index, _, _) = find_sheet(&sheets, args.str_arg("sheet")?)?;
-    let presentation = open.document.presentation();
+    let presentation = open.model.document.presentation();
     let slide = presentation.slides[*index].id;
     let mut report = review_prefill(
         presentation,
@@ -271,10 +271,10 @@ fn apply(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     if !open.fingerprint.still(&open.path) {
         return Err(stale());
     }
-    execute(open, vec![command])?;
+    execute(&mut open.model, vec![command])?;
     Ok(edited(
         id,
-        open,
+        &open.model,
         json!({"applied_targets":targets}),
         Vec::new(),
     ))

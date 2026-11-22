@@ -633,6 +633,15 @@ impl FormatEditor for Document {
         }
     }
 
+    fn apply_ai_commands(editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool {
+        let Some(commands) = commands.into_iter().map(|command| match command {
+            ibis_doc_model::Command::Flow(command) => Some(command),
+            _ => None,
+        }).collect::<Option<Vec<_>>>() else { return false };
+        let before = editor.document.undo_len();
+        editor.run_flow(commands, cx) && editor.document.undo_len() > before
+    }
+
     fn ai_docx_cursor_paragraph(editor: &crate::shell::editor::SlideEditor) -> Option<u32> {
         editor.doc_state().and_then(|s| s.caret).map(|p| p.para)
     }
