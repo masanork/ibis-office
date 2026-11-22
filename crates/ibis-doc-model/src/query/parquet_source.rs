@@ -309,10 +309,11 @@ fn read_columns(
 
 pub fn read_parquet_bounded(
     path: &Path,
+    selected: &[String],
     max_cells: usize,
     max_text: usize,
 ) -> Result<QTable, String> {
-    read_columns_bounded(path, &[], 0, None, max_cells, max_text)
+    read_columns_bounded(path, selected, 0, None, max_cells, max_text)
 }
 
 fn read_columns_bounded(
@@ -415,10 +416,24 @@ mod tests {
     }
 
     #[test]
+    fn bounded_projection_counts_only_selected_scalar_columns() {
+        let fixture = write_table(parquet::basic::Compression::SNAPPY, "bounded-projection", true);
+        let selected = ["amount".into(), "code".into()];
+        let table = read_parquet_bounded(&fixture, &selected, 4, 10).unwrap();
+        assert_eq!(table.names(), ["amount", "code"]);
+        assert_eq!(table.rows[1], [CellValue::Empty, CellValue::Text("00001".into())]);
+        assert!(read_parquet_bounded(&fixture, &selected, 3, 10).is_err());
+        assert!(read_parquet_bounded(&fixture, &selected, 4, 9).is_err());
+        let error = read_parquet_bounded(&fixture, &["extra".into()], 4, 10).unwrap_err();
+        assert_eq!(error, "Unsupported Parquet column: extra");
+        std::fs::remove_file(fixture).unwrap();
+    }
+
+    #[test]
     fn queries_a_parquet_snapshot_with_nulls_and_scalar_types() {
         let fixture = write_table(parquet::basic::Compression::SNAPPY, "sql-dataset", false);
-        let table = read_parquet_bounded(&fixture, 100, 1024).unwrap();
-        assert!(read_parquet_bounded(&fixture, 1, 1024).is_err());
+        let table = read_parquet_bounded(&fixture, &[], 100, 1024).unwrap();
+        assert!(read_parquet_bounded(&fixture, &[], 1, 1024).is_err());
         let result = crate::query::sqlite_query_datasets(
             &[("source".into(), table)],
             "SELECT typeof(code), typeof(amount), count(*) FROM source GROUP BY 1,2 ORDER BY 2",

@@ -378,6 +378,11 @@ fn query_properties() -> Vec<(&'static str, Value)> {
                     ("source", string("Path to a CSV, Parquet or SQLite file in an allowed folder.")),
                     ("alias", string("SQL table name to register for this dataset.")),
                     ("table", string("Source table name, required for SQLite files.")),
+                    ("columns", json!({
+                        "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
+                        "items":{"type":"string","minLength":1},
+                        "description":"Parquet only: exact column names to load, in order. Omit to load all columns."
+                    })),
                 ], &["source","alias"]),
             }),
         ),
@@ -515,7 +520,7 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
     let mut cells = 100_000usize;
     let mut text = 8 * 1024 * 1024usize;
     specs.iter().map(|spec| {
-        crate::edit::only_known(spec, &["source", "alias", "table"])?;
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns"])?;
         let alias = spec.str_arg("alias")?;
         if alias.is_empty() || alias.len() > 128 || !alias.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
             || alias.as_bytes()[0].is_ascii_digit() || !aliases.insert(alias.to_ascii_lowercase()) {
@@ -527,6 +532,19 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
             return Err(ToolError::invalid("dataset must be a regular file within the input size limit"));
         }
         let table_name = spec.opt_str("table")?;
+        let kind = source_kind(&path);
+        let columns = match spec.get("columns") {
+            None => Vec::new(),
+            Some(_) if kind != "parquet" => {
+                return Err(ToolError::invalid("columns is only used for Parquet datasets"));
+            }
+            Some(value) => value.as_array()
+                .filter(|items| (1..=256).contains(&items.len()))
+                .and_then(|items| items.iter().map(|item| {
+                    item.as_str().filter(|name| !name.is_empty()).map(str::to_owned)
+                }).collect::<Option<Vec<_>>>())
+                .ok_or_else(|| ToolError::invalid("columns must contain 1 to 256 non-empty Parquet column names"))?,
+        };
         let table = if is_sqlite(&path) {
             let name = table_name.ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?;
             read_sqlite_table_bounded(&path, name, cells, text).map_err(sqlite_error)?
@@ -534,8 +552,8 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
             if table_name.is_some() {
                 return Err(ToolError::invalid("table is only used for SQLite datasets"));
             }
-            if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("parquet")) {
-                read_parquet_bounded(&path, cells, text).map_err(sqlite_error)?
+            if kind == "parquet" {
+                read_parquet_bounded(&path, &columns, cells, text).map_err(sqlite_error)?
             } else {
                 read_csv_dataset(&path, cells, text)?
             }
@@ -673,11 +691,15 @@ fn source_kind(path: &Path) -> &'static str {
 fn saved_definition(args: &Value) -> Result<Value, ToolError> {
     let source = |path: &str, spec: &Value| {
         let path = Path::new(path);
-        json!({
+        let mut source = json!({
             "file": path.file_name().unwrap_or_default().to_string_lossy(),
             "kind": source_kind(path),
             "alias": spec["alias"], "table": spec["table"],
-        })
+        });
+        if let Some(columns) = spec.get("columns") {
+            source["columns"] = columns.clone();
+        }
+        source
     };
     let sources = if let Some(specs) = args["datasets"].as_array() {
         specs
@@ -748,7 +770,11 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
             {
                 return Err(ToolError::invalid("A source binding has the wrong format"));
             }
-            Ok(json!({"source":path,"alias":source["alias"],"table":source["table"]}))
+            let mut dataset = json!({"source":path,"alias":source["alias"],"table":source["table"]});
+            if let Some(columns) = source.get("columns") {
+                dataset["columns"] = columns.clone();
+            }
+            Ok(dataset)
         })
         .collect::<Result<Vec<_>, ToolError>>()?;
     if expected.len() == 1 && expected[0]["alias"].is_null() && expected[0]["kind"] == "sqlite" {

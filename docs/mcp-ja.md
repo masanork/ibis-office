@@ -66,6 +66,8 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 
 CSV・Parquet・SQLiteのテーブルを一緒に調べるには、`sqlite_query` または `sqlite_query_to_table` に `datasets` を渡します。各要素にファイルの `source` とSQLで使うテーブル名 `alias` を指定し、SQLiteの場合は元の `table` 名も渡します。この形式では `path` を省略します。例えばSQLiteの表を `facts`、CSVを `labels` として登録し、`SELECT * FROM facts JOIN labels USING (code)` と書けます。列名は `SELECT * FROM labels LIMIT 0` でも確認できます。内蔵アシスタントでは複数ファイルをまとめて選び、`source` に選択順のファイル番号を使います。
 
+Parquet では `columns` に読み込む列の正確な名前を順番に指定できます（例 `["code", "amount"]`）。選ばなかった列は、入れ子列も含め、入力セル数の上限を適用する前に読み飛ばします。省略すると全列を読み込みます。列の選択はクエリ帳票に保存し、更新時にも使います。
+
 CSVはカンマ区切り、先頭行が見出しで、値を文字列として扱うため先頭ゼロと空文字が残ります。ParquetとSQLiteのNULLは保持します。既存リーダーの精度を超える整数はエラーになります。最大8件、合計10万セルまでを、呼び出しごとにメモリ上のデータベースに取り込みます。
 
 同じSQLとパラメータを `sqlite_query_to_table` に渡し、出力先の `document_id`、`destination_sheet`、左上セル `anchor` を指定すると、空いている場所に名前付きのExcelテーブルができます。出力上限は10,000行、100,000セル、4 MiBです。結果全体が収まる場合に表を作ります。空欄や重複する列名にはSQLで別名を付け、大きな整数は必要に応じて文字列に変換してください。

@@ -777,3 +777,48 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
     assert_eq!(edits.len(), 3);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn parquet_query_report_preserves_selected_columns_after_reopen() {
+    let dir = std::env::temp_dir().join(format!("ibis-parquet-query-columns-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let source = dir.join("source.parquet");
+    // Synthetic rows ("00", 0, [0]) and ("01", 1, [1]).
+    std::fs::write(&source, include_bytes!("fixtures/query-projection.parquet")).unwrap();
+    let workbook = dir.join("blank.xlsx");
+    std::fs::write(&workbook, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+
+    let mut service = Service::new(&[dir.clone()], false, Limits::default());
+    let mut call = |tool, args| service.call(tool, &args).unwrap();
+    let id = call("app_open_document", json!({"path":workbook}))["document_id"].clone();
+    let sheet = call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].clone();
+    let columns = json!(["amount", "code"]);
+    let args = json!({
+        "sql": "SELECT * FROM facts ORDER BY code",
+        "datasets": [{"source":source,"alias":"facts","columns":columns}],
+    });
+    let query = call("sqlite_query", args.clone());
+    assert_eq!(query["columns"], columns);
+    assert_eq!(query["rows"], json!([[0,"00"],[1,"01"]]));
+    let mut report = args;
+    report["document_id"] = id.clone();
+    report["destination_sheet"] = sheet;
+    report["anchor"] = json!("A1");
+    let name = call("sqlite_query_to_table", report)["table"].clone();
+    let saved = dir.join("saved.xlsx");
+    call("app_save_document", json!({"document_id":id,"path":saved}));
+    call("app_close_document", json!({"document_id":id}));
+    let id = call("app_open_document", json!({"path":saved}))["document_id"].clone();
+    let reports = call("xlsx_list_query_reports", json!({"document_id":id}));
+    assert_eq!(reports["reports"][0]["sources"][0]["columns"], columns);
+    let preview = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"bindings":{"source.parquet":source},"preview":true,
+    }));
+    assert_eq!(preview["reports"][0]["rows"], 2);
+    assert_eq!(preview["dirty"], false);
+    let refreshed = call("sqlite_refresh_query_table", json!({
+        "document_id":id,"table":name,"sources":[source],
+    }));
+    assert_eq!(refreshed["rows"], 2);
+    std::fs::remove_dir_all(dir).unwrap();
+}
