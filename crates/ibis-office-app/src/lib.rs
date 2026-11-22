@@ -391,6 +391,7 @@ pub fn init(cx: &mut App) {
 ///
 /// ```text
 /// ibisOffice [--slide <number>] [<file.pptx|file.xlsx|file.docx>]
+/// ibisOffice --export pdfa-info <file.pdf>
 /// ibisOffice --export png|pdf|pdfa-2b|pdf-image [--out-dir <dir>] [--width <px>] [--range 1,3-5] [--include-layout] <file.pptx|file.xlsx|file.docx>
 /// ibisOffice --export ui [--out-dir <dir>] [--steps start,pagedown,end] [<file.pptx|file.xlsx|file.docx>]
 /// ibisOffice [--timing] [--quit-after-first-frame] [<file>]
@@ -598,6 +599,23 @@ fn export_options(args: &Args, format: export::Format, out_dir: std::path::PathB
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
+    if format == "pdfa-info" {
+        let path = args.path.as_deref().ok_or("--export pdfa-info requires a PDF file")?;
+        let data = std::fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;
+        let mut pdf = ibis_pdf::PdfContainer::from_bytes(data)
+            .map_err(|err| format!("{}: {err}", path.display()))?;
+        let identification = ibis_pdf::pdfa::inspect(&mut pdf)
+            .map_err(|err| format!("{}: {err}", path.display()))?;
+        let report = serde_json::json!({
+            "declared_profile": identification.declared_profile(),
+            "part": identification.part,
+            "conformance": identification.conformance,
+            "revision": identification.revision,
+            "validation": "not_run",
+        });
+        println!("{report:#}");
+        return Ok(());
+    }
     if matches!(format, "ai-preview" | "ai-apply") {
         let path = args.path.as_deref().ok_or("name the original DOCX file")?;
         if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
@@ -788,7 +806,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             "pdf" => export::Format::Pdf,
             "pdfa-2b" => export::Format::PdfA2b,
             "pdf-image" => export::Format::PdfImage,
-            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdf-image, md, row-heights or ui: {other}")),
+            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdfa-info, pdf-image, md, row-heights or ui: {other}")),
         };
         let path = args.path.as_deref().ok_or("name the .pptx, .xlsx or .docx file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());

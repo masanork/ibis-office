@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check PDF/A-2b export on existing synthetic Office documents."""
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -40,6 +41,17 @@ def verify_metadata(pdf, archival):
         assert not values, values
 
 
+def verify_identification(binary, pdf, archival):
+    report = json.loads(run([binary, "--export", "pdfa-info", pdf]))
+    assert report == {
+        "declared_profile": "PDF/A-2b" if archival else None,
+        "part": "2" if archival else None,
+        "conformance": "B" if archival else None,
+        "revision": None,
+        "validation": "not_run",
+    }, report
+
+
 def verify_conformance(validator, pdf):
     xml = run([validator, "--format", "xml", "--flavour", "2b", pdf])
     reports = ElementTree.fromstring(xml).findall(".//{*}validationReport")
@@ -61,6 +73,7 @@ def main():
             run([binary, "--export", "pdfa-2b", "--out-dir", directory, source])
             pdf = directory / (source.stem + ".pdf")
             verify_metadata(pdf, archival=True)
+            verify_identification(binary, pdf, archival=True)
             assert run(["pdftotext", pdf, "-"]).strip(), fixture
             if args.verapdf:
                 verify_conformance(args.verapdf, pdf)
@@ -68,7 +81,9 @@ def main():
                   + ("; veraPDF compliant" if args.verapdf else ""))
         source = root / FIXTURES[-1]
         run([binary, "--export", "pdf", "--out-dir", directory, source])
-        verify_metadata(directory / (source.stem + ".pdf"), archival=False)
+        pdf = directory / (source.stem + ".pdf")
+        verify_metadata(pdf, archival=False)
+        verify_identification(binary, pdf, archival=False)
 
 
 if __name__ == "__main__":

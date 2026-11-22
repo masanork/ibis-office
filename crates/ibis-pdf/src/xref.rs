@@ -298,6 +298,15 @@ pub(crate) fn decode_stream_bytes(
     data: &StreamData,
     raw: &[u8],
 ) -> Result<Vec<u8>> {
+    decode_stream_bytes_with_limit(dict, data, raw, usize::MAX)
+}
+
+pub(crate) fn decode_stream_bytes_with_limit(
+    dict: &CosDict,
+    data: &StreamData,
+    raw: &[u8],
+    limit: usize,
+) -> Result<Vec<u8>> {
     let encoded_flag = match data {
         StreamData::RawSlice { encoded, .. } | StreamData::Owned { encoded, .. } => *encoded,
     };
@@ -307,6 +316,9 @@ pub(crate) fn decode_stream_bytes(
             .ok_or_else(|| Error::new("stream range out of bounds"))?,
         StreamData::Owned { bytes, .. } => bytes.as_slice(),
     };
+    if slice.len() > limit {
+        return Err(Error::new("encoded stream exceeds size limit"));
+    }
     if !encoded_flag {
         return Ok(slice.to_vec());
     }
@@ -328,8 +340,8 @@ pub(crate) fn decode_stream_bytes(
     for filter in filters {
         match filter {
             b"FlateDecode" | b"Fl" => {
-                current = miniz_oxide::inflate::decompress_to_vec_zlib(&current)
-                    .or_else(|_| miniz_oxide::inflate::decompress_to_vec(&current))
+                current = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&current, limit)
+                    .or_else(|_| miniz_oxide::inflate::decompress_to_vec_with_limit(&current, limit))
                     .map_err(|_| Error::new("FlateDecode decompression failed"))?;
             }
             other => {
@@ -348,8 +360,14 @@ pub(crate) fn decode_stream_bytes(
         let columns = parms.get_int(b"Columns").unwrap_or(1).max(1) as usize;
         let colors = parms.get_int(b"Colors").unwrap_or(1).max(1) as usize;
         let bpc = parms.get_int(b"BitsPerComponent").unwrap_or(8).max(1) as usize;
-        let bpp = (colors * bpc).div_ceil(8).max(1);
-        let row_bytes = (columns * colors * bpc).div_ceil(8);
+        let bits_per_pixel = colors
+            .checked_mul(bpc)
+            .ok_or_else(|| Error::new("PNG predictor pixel size overflows"))?;
+        let bpp = bits_per_pixel.div_ceil(8).max(1);
+        let row_bytes = columns
+            .checked_mul(bits_per_pixel)
+            .ok_or_else(|| Error::new("PNG predictor row size overflows"))?
+            .div_ceil(8);
         current = apply_png_predictor(&current, row_bytes, bpp)?;
     }
 
@@ -362,6 +380,9 @@ fn apply_png_predictor(data: &[u8], row_bytes: usize, bpp: usize) -> Result<Vec<
         return Ok(Vec::new());
     }
     let rows = data.len() / stride;
+    if rows == 0 {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::with_capacity(rows * row_bytes);
     let mut prev = vec![0u8; row_bytes];
     let mut curr = vec![0u8; row_bytes];

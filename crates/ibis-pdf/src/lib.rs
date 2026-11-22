@@ -10,6 +10,7 @@ pub mod container;
 pub mod cos;
 #[cfg(feature = "interpret")]
 pub mod interpret;
+pub mod pdfa;
 pub mod scene;
 pub mod signature;
 pub mod xref;

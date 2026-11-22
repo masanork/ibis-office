@@ -5322,6 +5322,7 @@ dependencies = [
  "hayro-interpret",
  "kurbo 0.13.1",
  "miniz_oxide 0.8.9",
+ "roxmltree 0.21.1",
  "sha2 0.10.9",
 ]
 
