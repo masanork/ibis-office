@@ -1602,3 +1602,9 @@ git.fetch	Fetch
 git.fetch-complete	Fetch complete
 git.fetch-failed	Git fetch failed
 git.no-remotes	This repository has no configured remotes.
+git.push	Push
+git.push-confirm	Push this commit to the configured upstream?
+git.push-complete	Push complete
+git.push-failed	Git push failed
+git.push-no-upstream	A local branch with a configured remote upstream branch is required.
+git.push-target-changed	The checked-out commit or upstream changed. Reopen the repository and try again.

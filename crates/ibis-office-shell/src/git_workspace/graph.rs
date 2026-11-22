@@ -33,7 +33,7 @@ pub(super) struct CommitGraph {
     rows: Vec<Row>,
     limit: usize,
     more: bool,
-    fetched: bool,
+    completed: Option<&'static str>,
 }
 
 impl CommitGraph {
@@ -103,13 +103,108 @@ fn fetch_remotes(root: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(PartialEq, Eq)]
+struct PushTarget {
+    branch: String,
+    remote: String,
+    reference: String,
+    urls: Vec<u8>,
+}
+
+impl PushTarget {
+    fn read(repo: &gix::Repository) -> Result<Self> {
+        let missing = || text("git.push-no-upstream").to_string();
+        let branch = repo.head_name()?.ok_or_else(missing)?;
+        let direction = gix::remote::Direction::Fetch;
+        let remote = repo
+            .branch_remote_name(branch.shorten(), direction)
+            .ok_or_else(missing)?;
+        if remote.as_bstr() == "." || !repo.remote_names().contains(remote.as_bstr()) {
+            return Err(missing().into());
+        }
+        let reference = repo
+            .branch_remote_ref_name(branch.as_ref(), direction)
+            .ok_or_else(missing)??;
+        let reference = std::str::from_utf8(reference.as_bstr())?;
+        if !reference.starts_with("refs/heads/") {
+            return Err(missing().into());
+        }
+        let remote = std::str::from_utf8(remote.as_bstr())?;
+        let args = ["remote", "get-url", "--push", "--all", "--", remote];
+        let urls = git(
+            repo.workdir().unwrap_or_else(|| repo.path()),
+            &args.map(OsStr::new),
+        )?;
+        Ok(Self {
+            branch: std::str::from_utf8(branch.shorten())?.to_owned(),
+            remote: remote.to_owned(),
+            reference: reference.to_owned(),
+            urls,
+        })
+    }
+
+    fn push(&self, root: &Path, head: gix::ObjectId) -> Result<()> {
+        let repo = gix::discover(root)?;
+        if repo.head_id()?.detach() != head || Self::read(&repo)? != *self {
+            return Err(text("git.push-target-changed").to_string().into());
+        }
+        let no_mirror = format!("remote.{}.mirror=false", self.remote);
+        let refspec = format!("{head}:{}", self.reference);
+        let args = [
+            "-c",
+            &no_mirror,
+            "push",
+            "--no-follow-tags",
+            "--no-recurse-submodules",
+            "--",
+            &self.remote,
+            &refspec,
+        ];
+        git(root, &args.map(OsStr::new))?;
+        Ok(())
+    }
+}
+
+enum SyncAction {
+    Fetch,
+    Push(PushTarget),
+}
+
+impl SyncAction {
+    fn failure(&self) -> &'static str {
+        match self {
+            Self::Fetch => "git.fetch-failed",
+            Self::Push(_) => "git.push-failed",
+        }
+    }
+
+    fn completion(&self) -> &'static str {
+        match self {
+            Self::Fetch => "git.fetch-complete",
+            Self::Push(_) => "git.push-complete",
+        }
+    }
+
+    fn run(&self, root: &Path, head: gix::ObjectId) -> Result<()> {
+        match self {
+            Self::Fetch => fetch_remotes(root),
+            Self::Push(target) => target.push(root, head),
+        }
+    }
+}
+
 impl SlideEditor {
-    fn git_load_graph(&mut self, fetch: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn git_load_graph(
+        &mut self,
+        action: Option<SyncAction>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(state) = self.git_workspace.as_mut().filter(|s| !s.busy) else {
             return;
         };
-        let limit = if fetch {
-            state.graph.fetched = false;
+        let limit = if action.is_some() {
+            state.graph.completed = None;
             state.graph.limit.max(PAGE)
         } else {
             state.graph.limit + PAGE
@@ -119,16 +214,15 @@ impl SlideEditor {
         state.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let (result, fetch_error) = cx
+            let (result, sync_error, action) = cx
                 .background_executor()
                 .spawn(async move {
-                    let fetch_error = if fetch {
-                        fetch_remotes(&root).err().map(|error| error.to_string())
-                    } else {
-                        None
-                    };
+                    let sync_error = action
+                        .as_ref()
+                        .and_then(|action| action.run(&root, head).err())
+                        .map(|error| error.to_string());
                     let result = read_graph(&root, head, limit).map_err(|error| error.to_string());
-                    (result, fetch_error)
+                    (result, sync_error, action)
                 })
                 .await;
             let _ = this.update(cx, |editor, cx| {
@@ -136,12 +230,14 @@ impl SlideEditor {
                     return;
                 };
                 state.busy = false;
+                if action.is_some() && sync_error.is_none() {
+                    state.graph.completed = action.as_ref().map(SyncAction::completion);
+                }
                 let graph_error = match result {
                     Ok((rows, more)) => {
                         state.graph.rows = rows;
                         state.graph.more = more;
                         state.graph.limit = limit;
-                        state.graph.fetched |= fetch && fetch_error.is_none();
                         None
                     }
                     Err(error) => {
@@ -149,13 +245,79 @@ impl SlideEditor {
                         Some(error)
                     }
                 };
-                if let Some(error) = fetch_error {
-                    editor.show_alert(text("git.fetch-failed"), error.into(), cx);
+                if let (Some(error), Some(action)) = (sync_error, action) {
+                    editor.show_alert(text(action.failure()), error.into(), cx);
                 } else if let Some(error) = graph_error {
                     editor.show_alert(text("git.failed"), error.into(), cx);
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    fn git_confirm_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.git_workspace.as_ref().filter(|state| !state.busy) else {
+            return;
+        };
+        let path = state.repo.clone();
+        let head = state.head;
+        cx.spawn_in(window, async move |this, cx| {
+            let repo_path = path.clone();
+            let target = cx
+                .background_executor()
+                .spawn(async move {
+                    let read = || -> Result<_> {
+                        let repo = gix::open(repo_path)?;
+                        if repo.head_id()?.detach() != head {
+                            return Err(text("git.push-target-changed").to_string().into());
+                        }
+                        PushTarget::read(&repo)
+                    };
+                    read().map_err(|error| error.to_string())
+                })
+                .await;
+            let target = match target {
+                Ok(target) => target,
+                Err(error) => {
+                    let _ = this.update(cx, |editor, cx| {
+                        editor.show_alert(text("git.push-failed"), error.into(), cx);
+                    });
+                    return;
+                }
+            };
+            let destination = target.reference.trim_start_matches("refs/heads/");
+            let detail = format!(
+                "{} ({}) → {}/{}",
+                target.branch,
+                short(head),
+                target.remote,
+                destination
+            );
+            let buttons = [
+                PromptButton::ok(text("git.push")),
+                PromptButton::cancel(text("_shell.cancel")),
+            ];
+            let Ok(response) = this.update_in(cx, |_, window, cx| {
+                window.prompt(
+                    PromptLevel::Info,
+                    &text("git.push-confirm"),
+                    Some(&detail),
+                    &buttons,
+                    cx,
+                )
+            }) else {
+                return;
+            };
+            if matches!(response.await, Ok(0)) {
+                let _ = this.update_in(cx, |editor, window, cx| {
+                    if editor.git_workspace.as_ref().is_some_and(|state| {
+                        state.repo == path && state.head == head && state.graph.open
+                    }) {
+                        editor.git_load_graph(Some(SyncAction::Push(target)), window, cx);
+                    }
+                });
+            }
         })
         .detach();
     }
@@ -218,7 +380,7 @@ impl SlideEditor {
                 if let Some(state) = this.git_workspace.as_mut().filter(|s| !s.busy) {
                     state.graph.open = !state.graph.open;
                     if state.graph.open && state.graph.limit == 0 {
-                        this.git_load_graph(false, window, cx);
+                        this.git_load_graph(None, window, cx);
                     }
                     cx.notify();
                 }
@@ -308,12 +470,19 @@ impl SlideEditor {
                     .xsmall()
                     .disabled(state.busy)
                     .label(text("git.fetch"))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.git_load_graph(true, window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.git_load_graph(Some(SyncAction::Fetch), window, cx)
+                    })),
             )
-            .when(state.graph.fetched, |bar| {
-                bar.child(div().text_color(muted).child(text("git.fetch-complete")))
+            .child(
+                Button::new("git-push")
+                    .xsmall()
+                    .disabled(state.busy)
+                    .label(text("git.push"))
+                    .on_click(cx.listener(|this, _, window, cx| this.git_confirm_push(window, cx))),
+            )
+            .when_some(state.graph.completed, |bar, completed| {
+                bar.child(div().text_color(muted).child(text(completed)))
             });
         let body = body.when(state.graph.more, |body| {
             body.child(
@@ -322,7 +491,7 @@ impl SlideEditor {
                     .disabled(state.busy)
                     .label(text("git.older"))
                     .on_click(
-                        cx.listener(|this, _, window, cx| this.git_load_graph(false, window, cx)),
+                        cx.listener(|this, _, window, cx| this.git_load_graph(None, window, cx)),
                     ),
             )
         });
