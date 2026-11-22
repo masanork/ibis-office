@@ -3,7 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Bounded preview of oversized TIFF images.
 
-use image::{DynamicImage, GrayImage, RgbImage};
+use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
 use std::io::{Read, Seek};
 use tiff::{
     ColorType,
@@ -16,7 +16,7 @@ const MAX_PREVIEW_EDGE: u32 = 2_048;
 const MAX_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 const UNSUPPORTED: &str =
-    "Large TIFF preview requires supported bilevel, grayscale, or RGB strips or tiles";
+    "Large TIFF preview requires supported bilevel, grayscale, RGB, or RGBA strips or tiles";
 const CHUNK_LIMIT: &str = "TIFF strip or tile exceeds the large-preview limit";
 const BAD_CHUNKS: &str = "Invalid or truncated TIFF strips or tiles";
 
@@ -38,7 +38,6 @@ pub(super) fn preview(
     };
     let compression = CompressionMethod::from_u16_exhaustive(tag(Tag::Compression, 1)?);
     let uncompressed = compression == CompressionMethod::None;
-    let borrow_strips = uncompressed && !tiled;
     let planar = tag(Tag::PlanarConfiguration, 1)?;
     let predictor = tag(Tag::Predictor, 1)?;
     let sample_format = decoder
@@ -70,8 +69,24 @@ pub(super) fn preview(
         (ColorType::Gray(16), 0 | 1) => (1, 16),
         (ColorType::RGB(8), 2) => (3, 8),
         (ColorType::RGB(16), 2) => (3, 16),
+        (ColorType::RGBA(8), 2) => (4, 8),
+        (ColorType::RGBA(16), 2) => (4, 16),
         _ => return Err(UNSUPPORTED.into()),
     };
+    let associated_alpha = if channels == 4 {
+        match decoder
+            .find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)
+            .map_err(|error| error.to_string())?
+            .as_deref()
+        {
+            Some([1]) => true,
+            Some([2]) => false,
+            _ => return Err("Large RGBA TIFF preview requires a declared alpha channel".into()),
+        }
+    } else {
+        false
+    };
+    let borrow_strips = uncompressed && !tiled;
     let bilevel = sample_bits == 1;
     if bilevel
         && decoder
@@ -223,8 +238,29 @@ pub(super) fn preview(
                 .read_chunk(index as u32)
                 .map_err(|error| error.to_string())?
             {
-                DecodingResult::U8(data) => data,
-                DecodingResult::U16(data) => data.into_iter().map(to_u8).collect(),
+                DecodingResult::U8(mut data) => {
+                    if associated_alpha {
+                        for pixel in data.chunks_exact_mut(4) {
+                            let alpha = u32::from(pixel[3]);
+                            for channel in &mut pixel[..3] {
+                                *channel = straight_color(u32::from(*channel), alpha, 255) as u8;
+                            }
+                        }
+                    }
+                    data
+                }
+                DecodingResult::U16(mut data) => {
+                    if associated_alpha {
+                        for pixel in data.chunks_exact_mut(4) {
+                            let alpha = u32::from(pixel[3]);
+                            for channel in &mut pixel[..3] {
+                                *channel =
+                                    straight_color(u32::from(*channel), alpha, 65_535) as u16;
+                            }
+                        }
+                    }
+                    data.into_iter().map(to_u8).collect()
+                }
                 _ => return Err(UNSUPPORTED.into()),
             };
             &decoded
@@ -250,12 +286,30 @@ pub(super) fn preview(
                     destination[0] = ((row[x / 8] >> (7 - x % 8)) & 1) * u8::MAX;
                 } else if raw_sample_bytes == 1 {
                     destination.copy_from_slice(&row[source_x..source_x + channels]);
+                    if borrow_strips && associated_alpha {
+                        let alpha = u32::from(destination[3]);
+                        for channel in &mut destination[..3] {
+                            *channel = straight_color(u32::from(*channel), alpha, 255) as u8;
+                        }
+                    }
                 } else {
-                    for (output, sample) in destination
+                    let raw_color = &row[source_x..source_x + channels * 2];
+                    let alpha = if associated_alpha {
+                        u32::from(read_sample([raw_color[6], raw_color[7]]))
+                    } else {
+                        65_535
+                    };
+                    for (index, (output, sample)) in destination
                         .iter_mut()
-                        .zip(row[source_x..source_x + channels * 2].chunks_exact(2))
+                        .zip(raw_color.chunks_exact(2))
+                        .enumerate()
                     {
-                        *output = to_u8(read_sample([sample[0], sample[1]]));
+                        let sample = read_sample([sample[0], sample[1]]);
+                        *output = to_u8(if associated_alpha && index < 3 {
+                            straight_color(u32::from(sample), alpha, 65_535) as u16
+                        } else {
+                            sample
+                        });
                     }
                 }
             }
@@ -265,12 +319,25 @@ pub(super) fn preview(
     if borrow_strips && photometric == 0 {
         pixels.iter_mut().for_each(|value| *value = 255 - *value);
     }
-    if channels == 1 {
-        GrayImage::from_raw(preview_width, preview_height, pixels).map(DynamicImage::ImageLuma8)
-    } else {
-        RgbImage::from_raw(preview_width, preview_height, pixels).map(DynamicImage::ImageRgb8)
+    match channels {
+        1 => {
+            GrayImage::from_raw(preview_width, preview_height, pixels).map(DynamicImage::ImageLuma8)
+        }
+        3 => RgbImage::from_raw(preview_width, preview_height, pixels).map(DynamicImage::ImageRgb8),
+        4 => {
+            RgbaImage::from_raw(preview_width, preview_height, pixels).map(DynamicImage::ImageRgba8)
+        }
+        _ => None,
     }
     .ok_or_else(|| BAD_CHUNKS.into())
+}
+
+fn straight_color(sample: u32, alpha: u32, max: u32) -> u32 {
+    if alpha == 0 {
+        0
+    } else {
+        ((sample * max + alpha / 2) / alpha).min(max)
+    }
 }
 
 #[cfg(test)]
@@ -495,6 +562,65 @@ mod tests {
                 image::load_from_memory(&media.data).unwrap().into_luma8(),
                 preview
             );
+        }
+    }
+
+    #[test]
+    fn preserves_oversized_rgba_alpha_in_previews_and_docx() {
+        for (tag, input, expected) in [
+            (2_u16, [201, 87, 32, 64], [201, 87, 32, 64]),
+            (1_u16, [32, 16, 64, 64], [128, 64, 255, 64]),
+        ] {
+            for compression in [Compression::Uncompressed, Compression::Lzw] {
+                let mut file = Cursor::new(Vec::new());
+                let mut encoder = TiffEncoder::new(&mut file)
+                    .unwrap()
+                    .with_compression(compression);
+                let mut page = encoder.new_image::<colortype::RGBA8>(8_200, 1).unwrap();
+                page.encoder().write_tag(Tag::ExtraSamples, tag).unwrap();
+                page.write_data(&input.repeat(8_200)).unwrap();
+                let opened = super::super::open(Some("tiff"), &file.into_inner())
+                    .unwrap()
+                    .unwrap();
+                let pixels = |opened: &crate::Opened| {
+                    image::load_from_memory(&opened.presentation.media.last().unwrap().data)
+                        .unwrap()
+                        .into_rgba8()
+                };
+                let preview = pixels(&opened);
+                assert_eq!(preview.dimensions(), (2_048, 1));
+                assert!(preview.pixels().all(|pixel| pixel.0 == expected));
+                let docx = opened
+                    .source
+                    .save(&opened.presentation, Default::default())
+                    .unwrap();
+                assert_eq!(pixels(&crate::open(docx).unwrap()), preview);
+            }
+        }
+    }
+
+    #[test]
+    fn unassociates_16_bit_alpha_before_quantization() {
+        for compression in [Compression::Uncompressed, Compression::Lzw] {
+            let mut file = Cursor::new(Vec::new());
+            let mut encoder = TiffEncoder::new(&mut file)
+                .unwrap()
+                .with_compression(compression);
+            let mut page = encoder.new_image::<colortype::RGBA16>(8_200, 1).unwrap();
+            page.encoder().write_tag(Tag::ExtraSamples, 1_u16).unwrap();
+            let colors: Vec<_> = (0..8_200)
+                .flat_map(|x| {
+                    if x < 4_100 {
+                        [129_u16, 129, 0, 258]
+                    } else {
+                        [0; 4]
+                    }
+                })
+                .collect();
+            page.write_data(&colors).unwrap();
+            let preview = preview_test(&file.into_inner()).unwrap().into_rgba8();
+            assert_eq!(preview.get_pixel(0, 0).0, [128, 128, 0, 1]);
+            assert_eq!(preview.get_pixel(2_047, 0).0, [0; 4]);
         }
     }
 
