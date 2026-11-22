@@ -68,6 +68,36 @@ cargo run --locked -p ibis-office-app --bin ibisOffice -- \
 
 生成 DOCX では差し込んだコントロールが通常の本文になります。署名付き DOCX はひな型として扱えません。
 
+## Markdown で DOCX ひな型を編集する
+
+DOCX のプレーンテキスト欄 `ibis.form.pupil.name` は、リッチ Markdown で
+`{{form:pupil.name}}` になります。Markdown に同じマーカーを複数回書くと、
+同じ値を各欄に差し込めます。マーカーを文字どおり表示するには先頭の
+`{` をバックスラッシュでエスケープします。Markdown から生成した
+DOCX にも既存のフォーム定義・個票データを使えます。
+
+```sh
+cargo run --locked -p ibis-formats --bin docx_form -- export-md template.docx template.md
+cargo run --locked -p ibis-formats --bin docx_form -- compile-md template.md rebuilt.docx
+cargo run --locked -p ibis-formats --bin docx_form -- inspect rebuilt.docx
+shasum -a 256 rebuilt.docx
+```
+
+生成した DOCX を使うフォーム定義のコピーに、その SHA-256 を
+`templateSha256` として記録してから `fill` を実行します。
+
+Markdown の表を編集するときは、結合セルのマーカーと配置用の HTML コメントも
+一緒に移動してください。`docx-table` は列幅（twip）、表の揃え、
+セルの既定の縦揃え、先頭行の見出し指定を持ちます。`docx-row` は
+行高（twip、`min` または `exact`）、`docx-anchor` はセルの縦揃えの
+上書きです。`docx-p` はセル内段落の配置・間隔、`docx-size` は文字サイズ
+（pt の100分の1）を保持します。本文の段落間隔は `docx-spacing` 属性で保持します。
+HTML コメントは Markdown の通常の表示では隠れます。
+
+Markdown は、Word で編集できる表をテキストで管理するのに向いています。
+用紙上の座標で欄を指定したり、既存の紙様式に印字位置を合わせたりする場合は、
+印刷用 CSS を使った HTML の固定配置が適しています。
+
 ## 印刷向け HTML ひな型を作る
 
 HTML 本文のテキストに `{{nextSchool.name}}` のようなマーカーを置きます。信頼できるひな型を使い、マーカーは本文のテキストに置いてください。マーカーの参照先はフォーム定義の一部でも構いません。たとえば様式1と様式2の HTML を分け、両方で同じ個別データを使えます。

@@ -44,6 +44,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         return result;
     }
     match args.as_slice() {
+        [command, input, output] if command == "export-md" || command == "compile-md" => {
+            let source = fs::read(input)?;
+            let result = if command == "export-md" {
+                ibis_formats::markdown::export_docx_to_markdown(&source)?.into_bytes()
+            } else {
+                ibis_formats::markdown::import_markdown_to_docx_bytes(&source)?
+            };
+            fs::OpenOptions::new().write(true).create_new(true).open(output)?.write_all(&result)?;
+        }
         [command, template] if command == "inspect" => {
             let fields = form_template::inspect(&fs::read(template)?)?;
             println!("{}", serde_json::to_string_pretty(&fields)?);
@@ -59,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             fs::OpenOptions::new().write(true).create_new(true).open(output)?.write_all(&document)?;
         }
-        _ => return Err("usage: docx_form inspect TEMPLATE | docx_form check|check-html TEMPLATE FORM RECORD | docx_form fill|fill-html TEMPLATE FORM RECORD OUTPUT | docx_form inspect-pdf|check-pdf|fill-pdf …".into()),
+        _ => return Err("usage: docx_form export-md|compile-md INPUT OUTPUT | docx_form inspect TEMPLATE | docx_form check|check-html TEMPLATE FORM RECORD | docx_form fill|fill-html TEMPLATE FORM RECORD OUTPUT | docx_form inspect-pdf|check-pdf|fill-pdf …".into()),
     }
     Ok(())
 }

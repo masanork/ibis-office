@@ -16,7 +16,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::Error;
 
 const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-const PREFIX: &str = "ibis.form.";
+pub(crate) const PREFIX: &str = "ibis.form.";
+
+pub(crate) fn valid_field_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
 
 fn child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
     node.children().find(|n| n.has_tag_name((W, name)))
@@ -43,10 +47,7 @@ fn fields<'a, 'input>(xml: &'a Document<'input>) -> Result<Vec<Field<'a, 'input>
         let content = child(node, "sdtContent").ok_or_else(unsupported)?;
         let run = child(content, "r").ok_or_else(unsupported)?;
         let text = child(run, "t").ok_or_else(unsupported)?;
-        if id.is_empty()
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        if !valid_field_id(id)
             || !node
                 .parent()
                 .is_some_and(|parent| parent.has_tag_name((W, "p")))

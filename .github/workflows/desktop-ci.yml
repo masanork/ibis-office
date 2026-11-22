@@ -232,13 +232,13 @@ jobs:
           EOF
           java -Djava.awt.headless=true -jar "$jar" "$config"
           "$RUNNER_TEMP/verapdf/verapdf" --version
-      - name: Verify PDF/A form merge
+      - name: Verify form round trips and PDF/A merge
         run: |
           export IBIS_TEST_VERAPDF="$RUNNER_TEMP/verapdf/verapdf"
           export IBIS_TEST_JAPANESE_FONT="$(fc-match -f '%{file}' 'Noto Sans CJK JP')"
           test -f "$IBIS_TEST_JAPANESE_FONT"
           export IBIS_TEST_PDFTOTEXT=pdftotext
-          cargo test --locked -p ibis-formats --test pdf_form_template
+          cargo test --locked -p ibis-formats --test form_template --test pdf_form_template
       - name: Build and verify AppImage
         shell: bash
         run: |

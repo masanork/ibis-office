@@ -1833,6 +1833,19 @@ fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_
         }
     }
 
+    if let Some(grid) = map.get("page_grid").and_then(|value| match value.as_str() {
+        "default" => Some(ibis_doc_model::DocGridType::Default),
+        "lines" => Some(ibis_doc_model::DocGridType::Lines),
+        "linesAndChars" => Some(ibis_doc_model::DocGridType::LinesAndChars),
+        "snapToChars" => Some(ibis_doc_model::DocGridType::SnapToChars),
+        _ => None,
+    }) {
+        doc.page.doc_grid_type = grid;
+        doc.page.line_pitch = map.get("page_line_pitch").and_then(|value| parse_length_emu(value));
+        doc.page.char_space = map.get("page_char_space_4096pt")
+            .and_then(|value| value.parse::<i32>().ok()).map(|units| i64::from(units) * 12700 / 4096);
+    }
+
     // Columns
     if let Some(cols) = map
         .get("columns")
@@ -2509,10 +2522,7 @@ fn parse_blocks(
             let mut p = FlowParagraph {
                 id: ctx.fresh_id(),
                 style: Some(style_id),
-                direct: ParaFormat {
-                    align: attrs.align,
-                    ..ParaFormat::default()
-                },
+                direct: attrs.paragraph_format(),
                 bookmarks: attrs.id.into_iter().collect(),
                 runs: parse_inlines(clean_text, ctx, &RunFormat::default()),
                 ..FlowParagraph::default()
@@ -2675,10 +2685,7 @@ fn parse_blocks(
             let mut p = FlowParagraph {
                 id: ctx.fresh_id(),
                 style: ctx.styles.default_paragraph.clone(),
-                direct: ParaFormat {
-                    align: para_attrs.align,
-                    ..ParaFormat::default()
-                },
+                direct: para_attrs.paragraph_format(),
                 bookmarks: para_attrs.id.into_iter().collect(),
                 runs,
                 ..FlowParagraph::default()
@@ -2696,6 +2703,19 @@ fn parse_blocks(
 struct BlockAttrs {
     id: Option<String>,
     align: Option<FlowAlign>,
+    spacing: Option<(Emu, Emu, LineHeight)>,
+}
+
+impl BlockAttrs {
+    fn paragraph_format(&self) -> ParaFormat {
+        let mut format = ParaFormat { align: self.align, ..Default::default() };
+        if let Some((before, after, line)) = self.spacing {
+            format.before = Some(before);
+            format.after = Some(after);
+            format.line = Some(line);
+        }
+        format
+    }
 }
 
 fn strip_trailing_block_attrs(text: &str) -> (&str, BlockAttrs) {
@@ -2730,6 +2750,12 @@ fn strip_trailing_block_attrs(text: &str) -> (&str, BlockAttrs) {
                         };
                         if attrs.align.is_some() {
                             recognized = true;
+                        }
+                    } else if let Some(value) = token.strip_prefix("docx-spacing=") {
+                        let parts: Vec<_> = value.split(';').collect();
+                        if let [before, after, line] = parts.as_slice() {
+                            attrs.spacing = form_spacing(before, after, line);
+                            recognized |= attrs.spacing.is_some();
                         }
                     } else if matches!(token, ".center" | ".right" | ".justify" | ".distribute") {
                         attrs.align = match token {
@@ -3160,6 +3186,120 @@ fn parse_nested_table(payload: &str, ctx: &mut ParseContext<'_>, depth: usize) -
 
 const PPTX_NO_TABLE_HEADER: &str = "<!-- pptx-no-header -->";
 
+/// Optional table geometry attached to the first cell of a form table.
+struct FormTableLayout {
+    columns: Vec<Emu>,
+    align: FlowAlign,
+    anchor: ibis_doc_model::CellAnchor,
+    first_row_header: bool,
+}
+
+fn take_table_comment(cell: &mut String, prefix: &str) -> Option<String> {
+    let (value, rest) = cell.strip_prefix(prefix)?.split_once(" -->")?;
+    let value = value.to_owned();
+    *cell = rest.trim_start().to_owned();
+    Some(value)
+}
+
+fn form_table_layout(cell: &mut String, column_count: usize) -> Option<FormTableLayout> {
+    let comment = take_table_comment(cell, "<!-- docx-table:")?;
+    let [widths, align, anchor, header] = comment.split(';').collect::<Vec<_>>().try_into().ok()?;
+    let columns = widths.split(',').map(|value: &str| {
+        value.parse::<i64>().ok().filter(|twips| (1..=31680).contains(twips)).map(|twips| twips * 635)
+    }).collect::<Option<Vec<_>>>()?;
+    if columns.len() != column_count {
+        return None;
+    }
+    Some(FormTableLayout {
+        columns,
+        align: match align { "left" => FlowAlign::Left, "center" => FlowAlign::Center, "right" => FlowAlign::Right, _ => return None },
+        anchor: match anchor {
+            "top" => ibis_doc_model::CellAnchor::Top,
+            "center" => ibis_doc_model::CellAnchor::Center,
+            "bottom" => ibis_doc_model::CellAnchor::Bottom,
+            _ => return None,
+        },
+        first_row_header: header.parse().ok()?,
+    })
+}
+
+fn form_row_height(cell: &mut String) -> RowHeight {
+    let Some(comment) = take_table_comment(cell, "<!-- docx-row:") else { return RowHeight::Auto };
+    let Some((rule, height)) = comment.split_once('=') else { return RowHeight::Auto };
+    let Ok(height) = height.parse::<i64>() else { return RowHeight::Auto };
+    if !(1..=31680).contains(&height) {
+        return RowHeight::Auto;
+    }
+    match rule {
+        "min" => RowHeight::AtLeast(height * 635),
+        "exact" => RowHeight::Exact(height * 635),
+        _ => RowHeight::Auto,
+    }
+}
+
+const FORM_PARAGRAPH: &str = "<!-- docx-p:";
+const FORM_RUN_SIZE: &str = "<!-- docx-size:";
+const FORM_RUN_END: &str = "<!-- /docx-size -->";
+
+fn form_paragraph_format(body: &str, fallback: Option<FlowAlign>) -> (&str, ParaFormat, RunFormat) {
+    let mut paragraph = ParaFormat { align: fallback, ..Default::default() };
+    let mut mark = RunFormat::default();
+    let Some((properties, text)) = body.strip_prefix(FORM_PARAGRAPH).and_then(|s| s.split_once(" -->")) else {
+        return (body, paragraph, mark);
+    };
+    let parts: Vec<_> = properties.split(';').collect();
+    if let [align, before, after, line_spacing, size] = parts.as_slice() {
+        paragraph.align = match *align {
+            "left" => Some(FlowAlign::Left), "center" => Some(FlowAlign::Center), "right" => Some(FlowAlign::Right),
+            "justify" => Some(FlowAlign::Justify), "distribute" => Some(FlowAlign::Distribute), _ => fallback,
+        };
+        if let Some((before, after, line)) = form_spacing(before, after, line_spacing) {
+            paragraph.before = Some(before);
+            paragraph.after = Some(after);
+            paragraph.line = Some(line);
+        }
+        mark.size = size.parse().ok().filter(|n| (1..=14400).contains(n));
+    }
+    (text, paragraph, mark)
+}
+
+fn form_spacing(before: &str, after: &str, line_spacing: &str) -> Option<(Emu, Emu, LineHeight)> {
+    let twips = |value: &str| value.parse::<i64>().ok().filter(|n| (0..=31680).contains(n)).map(|n| n * 635);
+    let (rule, value) = line_spacing.split_once('=')?;
+    let line = match rule {
+        "auto" => value.parse().ok().filter(|n| (1..=31680).contains(n)).map(LineHeight::Auto),
+        "min" => twips(value).map(LineHeight::AtLeast),
+        "exact" => twips(value).map(LineHeight::Exact),
+        _ => None,
+    }?;
+    Some((twips(before)?, twips(after)?, line))
+}
+
+fn form_spacing_value(paragraph: &FlowParagraph) -> String {
+    let line = match paragraph.line {
+        LineHeight::Auto(value) => format!("auto={value}"),
+        LineHeight::AtLeast(value) => format!("min={}", value / 635),
+        LineHeight::Exact(value) => format!("exact={}", value / 635),
+    };
+    format!("{};{};{line}", paragraph.space_before / 635, paragraph.space_after / 635)
+}
+
+fn form_paragraph_comment(paragraph: &FlowParagraph) -> String {
+    let align = match paragraph.align {
+        FlowAlign::Left => "left", FlowAlign::Center => "center", FlowAlign::Right => "right",
+        FlowAlign::Justify => "justify", FlowAlign::Distribute => "distribute",
+    };
+    format!("{FORM_PARAGRAPH}{align};{};{} -->", form_spacing_value(paragraph), paragraph.mark_format.size.unwrap_or(0))
+}
+
+fn form_field_id(run: &FlowRun) -> Option<&str> {
+    if !matches!(run.kind, FlowRunKind::PlainText { .. }) {
+        return None;
+    }
+    let id = run.control.as_ref()?.tag.strip_prefix(crate::form_template::PREFIX)?;
+    crate::form_template::valid_field_id(id).then_some(id)
+}
+
 fn build_table_block(
     mut header_cells: Vec<String>,
     alignments: Vec<Option<FlowAlign>>,
@@ -3173,26 +3313,29 @@ fn build_table_block(
         .max(body_rows.iter().map(Vec::len).max().unwrap_or(0))
         .max(1);
 
-    let first_row_header = !header_cells.first_mut().is_some_and(|cell| {
+    let layout = header_cells.first_mut().and_then(|cell| form_table_layout(cell, col_count));
+    let first_row_header = layout.as_ref().map(|layout| layout.first_row_header).unwrap_or_else(|| !header_cells.first_mut().is_some_and(|cell| {
         let Some(text) = cell.strip_prefix(PPTX_NO_TABLE_HEADER) else { return false };
         *cell = text.trim_start().to_owned();
         true
-    });
+    }));
 
     let total_width: Emu = 6 * EMU_PER_INCH;
     let col_w = (total_width / col_count as Emu) / 635 * 635;
-    let columns = vec![col_w; col_count];
+    let columns = layout.as_ref().map_or_else(|| vec![col_w; col_count], |layout| layout.columns.clone());
 
     let line = FlowBorder {
         width: 12_700 / 2,
-        color: Rgb(0xBFBFBF),
+        color: if layout.is_some() { Rgb::BLACK } else { Rgb(0xBFBFBF) },
         style: BorderStyle::Single,
         space: 0,
         art: None,
     };
 
     let mut previous_merges = HashMap::new();
-    let mut build_row = |cells_text: Vec<String>, is_header: bool, ctx: &mut ParseContext<'_>| -> FlowRow {
+    let mut build_row = |mut cells_text: Vec<String>, is_header: bool, ctx: &mut ParseContext<'_>| -> FlowRow {
+        let height = cells_text.first_mut().map_or(RowHeight::Auto, form_row_height);
+        let styled_header = is_header && layout.is_none();
         let mut cells = Vec::with_capacity(col_count);
         let mut active_merges = HashMap::new();
         let mut c_idx = 0;
@@ -3206,16 +3349,25 @@ fn build_table_block(
                 (raw_cell, VerticalMerge::None)
             };
             let (raw_cell, span) = table_colspan(raw_cell, &cells_text, c_idx);
+            let (raw_cell, anchor) = raw_cell.strip_prefix("<!-- docx-anchor:")
+                .and_then(|rest| rest.split_once(" -->"))
+                .and_then(|(anchor, body)| Some((body.trim_start(), match anchor {
+                    "top" => ibis_doc_model::CellAnchor::Top,
+                    "center" => ibis_doc_model::CellAnchor::Center,
+                    "bottom" => ibis_doc_model::CellAnchor::Bottom,
+                    _ => return None,
+                })))
+                .unwrap_or_else(|| (raw_cell, layout.as_ref().map_or(ibis_doc_model::CellAnchor::Top, |layout| layout.anchor)));
             let merge = match requested_merge {
                 VerticalMerge::Continue
-                    if !raw_cell.is_empty() || previous_merges.get(&c_idx) != Some(&span) => VerticalMerge::None,
+                    if !form_paragraph_format(raw_cell, None).0.trim().is_empty() || previous_merges.get(&c_idx) != Some(&span) => VerticalMerge::None,
                 merge => merge,
             };
             if merge != VerticalMerge::None {
                 active_merges.insert(c_idx, span);
             }
             let align = alignments.get(c_idx).copied().flatten();
-            let base_fmt = if is_header {
+            let base_fmt = if styled_header {
                 RunFormat {
                     bold: Some(true),
                     ..RunFormat::default()
@@ -3224,6 +3376,7 @@ fn build_table_block(
                 RunFormat::default()
             };
             let paragraph = |text: &str, ctx: &mut ParseContext<'_>| {
+                let (text, direct, mark_format) = form_paragraph_format(text, align);
                 let parts: Vec<&str> = text.split("<br>").collect();
                 let mut runs = Vec::new();
                 for (pi, part) in parts.iter().enumerate() {
@@ -3239,16 +3392,23 @@ fn build_table_block(
                     id: ctx.fresh_id(),
                     style: ctx.styles.default_paragraph.clone(),
                     table_style: Some("TableGrid".to_string()),
-                    direct: ParaFormat {
-                        align,
-                        ..ParaFormat::default()
-                    },
+                    direct,
+                    mark_format,
                     runs,
                     ..FlowParagraph::default()
                 };
                 p.resolve(&ctx.styles);
                 p.normalize();
                 Block::Paragraph(p)
+            };
+            let append_paragraphs = |text: &str, ctx: &mut ParseContext<'_>, blocks: &mut Vec<Block>| {
+                let separator = format!("<br>{FORM_PARAGRAPH}");
+                let mut tail = text;
+                while let Some(position) = tail.find(&separator) {
+                    blocks.push(paragraph(&tail[..position], ctx));
+                    tail = &tail[position + "<br>".len()..];
+                }
+                blocks.push(paragraph(tail, ctx));
             };
             let mut blocks = Vec::new();
             let mut remaining = raw_cell;
@@ -3258,23 +3418,23 @@ fn build_table_block(
                 let Some(table) = parse_nested_table(payload, ctx, depth + 1) else { break };
                 let before = before.strip_suffix("<br>").unwrap_or(before);
                 if !before.is_empty() {
-                    blocks.push(paragraph(before, ctx));
+                    append_paragraphs(before, ctx, &mut blocks);
                 }
                 blocks.push(table);
                 remaining = after.strip_prefix("<br>").unwrap_or(after);
             }
             // Word requires a paragraph at the end of a table cell.
-            blocks.push(paragraph(remaining, ctx));
+            append_paragraphs(remaining, ctx, &mut blocks);
             cells.push(FlowCell {
                 id: ctx.fresh_id(),
                 blocks,
                 span: span as u32,
                 merge,
-                shading: is_header.then_some(Rgb(0xF2F4F8)),
+                shading: styled_header.then_some(Rgb(0xF2F4F8)),
                 borders: [Some(line), Some(line), Some(line), Some(line)],
                 own_borders: [None; 4],
                 diagonals: [None; 2],
-                anchor: ibis_doc_model::CellAnchor::Top,
+                anchor,
                 direction: ibis_doc_model::CellDirection::LrTb,
                 margins: [0, 108 * 635, 0, 108 * 635],
                 no_wrap: false,
@@ -3285,7 +3445,7 @@ fn build_table_block(
         previous_merges = active_merges;
         FlowRow {
             id: ctx.fresh_id(),
-            height: RowHeight::Auto,
+            height,
             header: is_header,
             cant_split: false,
             cells,
@@ -3304,7 +3464,7 @@ fn build_table_block(
         columns,
         rows,
         indent: 0,
-        align: FlowAlign::Left,
+        align: layout.as_ref().map_or(FlowAlign::Left, |layout| layout.align),
         cell_spacing: None,
         borders: [Some(Some(line)); 6],
         style: Some(TableStyleRef {
@@ -4191,6 +4351,37 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
+        if let Some((size, body)) = rest.strip_prefix(FORM_RUN_SIZE).and_then(|s| s.split_once(" -->"))
+            && let Ok(size) = size.parse::<u32>()
+            && (1..=14400).contains(&size)
+            && let Some((quoted, _)) = body.split_once(FORM_RUN_END)
+            && !quoted.contains(FORM_RUN_SIZE)
+        {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let format = RunFormat { size: Some(size), ..base_fmt.clone() };
+            out.extend(parse_inlines(quoted, ctx, &format));
+            i += rest.len() - body.len() + quoted.len() + FORM_RUN_END.len();
+            continue;
+        }
+
+        if let Some((id, _)) = rest.strip_prefix("{{form:").and_then(|body| body.split_once("}}"))
+            && crate::form_template::valid_field_id(id)
+        {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let mut run = FlowRun::new(
+                FlowRunKind::PlainText { text: "…".into(), placeholder: false },
+                FlowRunStyle::default(),
+            );
+            run.format = base_fmt.clone();
+            run.control = Some(Box::new(ibis_doc_model::ControlInfo {
+                tag: format!("{}{id}", crate::form_template::PREFIX),
+                ..Default::default()
+            }));
+            out.push(run);
+            i += "{{form:".len() + id.len() + "}}".len();
+            continue;
+        }
+
         if let Some((consumed, instruction)) = markdown_inline_field(rest) {
             flush_plain(&mut plain, &mut out, base_fmt);
             let kind = if instruction == "PAGE" {
@@ -5028,6 +5219,7 @@ fn export_markdown_with_positions<'a>(
     // 2. Body blocks
     let mut prev_was_list = false;
     let mut has_sections = false;
+    let form_layout = document_has_form_fields(doc);
     let mut i = 0;
     while i < doc.body.len() {
         let block = &doc.body[i];
@@ -5084,7 +5276,7 @@ fn export_markdown_with_positions<'a>(
             Block::Table(table) => serialize_table(table, media, &comments_by_id, &mut out, &mut |row, column, cell, start, end| {
                 record(MarkdownSource::TableCell { index: i, table, row, column, cell }, start, end);
             }),
-            Block::Paragraph(_) => serialize_block(block, doc, media, &comments_by_id, &mut out),
+            Block::Paragraph(p) => serialize_paragraph(p, doc, media, &comments_by_id, &mut out, form_layout),
         }
         record(MarkdownSource::Body(i, block), start, out.len());
         prev_was_list = is_list;
@@ -5585,7 +5777,7 @@ fn prepare_ai_edit(
                 return serialize_table_paragraph(paragraph, media, &comments);
             }
             let mut out = String::new();
-            serialize_paragraph(paragraph, doc, media, &comments, &mut out);
+            serialize_paragraph(paragraph, doc, media, &comments, &mut out, false);
             out
         };
         let original = render(paragraph);
@@ -5906,6 +6098,11 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
     }))
 }
 
+fn document_has_form_fields(doc: &FlowDocument) -> bool {
+    ibis_doc_model::flow_command::all_paragraphs(doc).iter()
+        .any(|paragraph| paragraph.runs.iter().any(|run| form_field_id(run).is_some()))
+}
+
 fn serialize_frontmatter(doc: &FlowDocument) -> String {
     let mut lines = Vec::new();
     if doc.even_and_odd {
@@ -5932,6 +6129,33 @@ fn serialize_frontmatter(doc: &FlowDocument) -> String {
     }
     if let Some(company) = props.company.as_deref().filter(|s| !s.is_empty()) {
         lines.push(format!("company: {}", quote_yaml_if_needed(company)));
+    }
+
+    if document_has_form_fields(doc) {
+        lines.push(format!("page_grid: {}", doc.page.doc_grid_type.ooxml()));
+        if let Some(pitch) = doc.page.line_pitch {
+            lines.push(format!("page_line_pitch: {:.2}pt", pitch as f64 / 12700.0));
+        }
+        if let Some(space) = doc.page.char_space {
+            lines.push(format!("page_char_space_4096pt: {}", (space as f64 * 4096.0 / 12700.0).round() as i64));
+        }
+        for (side, length) in [
+            ("top", doc.page.top), ("right", doc.page.right),
+            ("bottom", doc.page.bottom), ("left", doc.page.left),
+        ] {
+            lines.push(format!("margin_{side}: {:.2}pt", length as f64 / 12700.0));
+        }
+        if let Some(normal) = doc.styles.default_paragraph.as_ref().and_then(|id| doc.styles.styles.get(id)) {
+            if let Some(font) = &normal.run.font {
+                lines.push(format!("font: {}", quote_yaml_if_needed(font)));
+            }
+            if let Some(font) = &normal.run.east_asian_font {
+                lines.push(format!("east_asian_font: {}", quote_yaml_if_needed(font)));
+            }
+            if let Some(size) = normal.run.size {
+                lines.push(format!("font_size: {:.2}pt", f64::from(size) / 100.0));
+            }
+        }
     }
 
     let default_page = PageSetup::default();
@@ -6092,7 +6316,7 @@ fn serialize_block(
     out: &mut String,
 ) {
     match block {
-        Block::Paragraph(p) => serialize_paragraph(p, doc, media, comments, out),
+        Block::Paragraph(p) => serialize_paragraph(p, doc, media, comments, out, false),
         Block::Table(t) => serialize_table(t, media, comments, out, &mut |_, _, _, _, _| {}),
     }
 }
@@ -6103,6 +6327,7 @@ fn serialize_paragraph(
     media: &[Media],
     comments: &HashMap<u32, &Comment>,
     out: &mut String,
+    form_layout: bool,
 ) {
     // 1. Standalone PageBreak / ColumnBreak
     if p.runs.len() == 1 {
@@ -6211,7 +6436,14 @@ fn serialize_paragraph(
         return;
     }
 
-    let attr_suffix = format_block_attrs(p);
+    let attr_suffix = format_block_attrs(p, form_layout && !p.runs.is_empty() && p.list.is_none());
+    let serialize_text = || {
+        if form_layout {
+            serialize_form_runs(p, media, comments, true)
+        } else {
+            serialize_runs(&p.runs, media, comments)
+        }
+    };
 
     // 5. Heading
     let heading_level = p
@@ -6232,7 +6464,7 @@ fn serialize_paragraph(
 
     if let Some(lvl) = heading_level.filter(|&l| (1..=6).contains(&l)) {
         let hashes = "#".repeat(lvl as usize);
-        let text = serialize_runs(&p.runs, media, comments);
+        let text = serialize_text();
         out.push_str(&format!("{hashes} {text}{attr_suffix}\n\n"));
         return;
     }
@@ -6260,19 +6492,19 @@ fn serialize_paragraph(
             .level(num_id, level)
             .is_some_and(|lvl| lvl.format != "bullet");
         let marker = if is_ordered { "1." } else { "-" };
-        let text = serialize_runs(&p.runs, media, comments);
+        let text = serialize_text();
         out.push_str(&format!("{indent}{marker} {text}{attr_suffix}\n"));
         return;
     }
 
     // 8. Normal paragraph
-    let text = serialize_runs(&p.runs, media, comments);
+    let text = serialize_text();
     if !text.is_empty() || !attr_suffix.is_empty() {
         out.push_str(&format!("{text}{attr_suffix}\n\n"));
     }
 }
 
-fn format_block_attrs(p: &FlowParagraph) -> String {
+fn format_block_attrs(p: &FlowParagraph, form_layout: bool) -> String {
     let mut parts = Vec::new();
     if let Some(bm) = p.bookmarks.first().filter(|b| !b.starts_with("_Toc")) {
         parts.push(format!("#{bm}"));
@@ -6286,6 +6518,9 @@ fn format_block_attrs(p: &FlowParagraph) -> String {
             FlowAlign::Left => {}
         }
     }
+    if form_layout {
+        parts.push(format!("docx-spacing={}", form_spacing_value(p)));
+    }
     if parts.is_empty() {
         String::new()
     } else {
@@ -6295,6 +6530,28 @@ fn format_block_attrs(p: &FlowParagraph) -> String {
 
 fn escape_table_paragraph(text: String) -> String {
     text.replace('\n', "<br>").replace('|', "\\|")
+}
+
+fn serialize_form_runs(
+    paragraph: &FlowParagraph, media: &[Media], comments: &HashMap<u32, &Comment>, resolved: bool,
+) -> String {
+    let mut text = String::new();
+    for run in &paragraph.runs {
+        let mut run = run.clone();
+        if resolved {
+            run.format.size = Some(run.style.size);
+            run.format.bold = Some(run.style.bold);
+            run.format.italic = Some(run.style.italic);
+        }
+        let piece = serialize_runs(std::slice::from_ref(&run), media, comments);
+        if let Some(size) = run.format.size.filter(|_| !piece.is_empty() && !piece.contains('\n')) {
+            use std::fmt::Write;
+            let _ = write!(text, "{FORM_RUN_SIZE}{size} -->{piece}{FORM_RUN_END}");
+        } else {
+            text.push_str(&piece);
+        }
+    }
+    text
 }
 
 fn serialize_table_paragraph(p: &FlowParagraph, media: &[Media], comments: &HashMap<u32, &Comment>) -> String {
@@ -6320,14 +6577,53 @@ fn serialize_table<'a>(
         return;
     }
 
+    let form_layout = t.columns.len() == col_count && t.columns.iter().all(|width| (635..=31680 * 635).contains(width))
+        && t.rows.iter().flat_map(|row| &row.cells).flat_map(|cell| &cell.blocks).any(|block| {
+            matches!(block, Block::Paragraph(paragraph) if paragraph.runs.iter().any(|run| form_field_id(run).is_some()))
+        });
+    let anchor = t.rows.iter().flat_map(|row| &row.cells).next()
+        .map_or(ibis_doc_model::CellAnchor::Top, |cell| cell.anchor);
+
     let mut write_row = |row_index: usize, row: &'a FlowRow, out: &mut String| {
         out.push_str("| ");
+        if form_layout {
+            use std::fmt::Write;
+            if row_index == 1 {
+                let widths = t.columns.iter().map(|width| (width / 635).to_string()).collect::<Vec<_>>().join(",");
+                let align = match t.align { FlowAlign::Center => "center", FlowAlign::Right => "right", _ => "left" };
+                let anchor = match anchor {
+                    ibis_doc_model::CellAnchor::Top => "top",
+                    ibis_doc_model::CellAnchor::Center => "center",
+                    ibis_doc_model::CellAnchor::Bottom => "bottom",
+                };
+                let _ = write!(out, "<!-- docx-table:{widths};{align};{anchor};{} --> ", row.header);
+            }
+            match row.height {
+                RowHeight::Auto => {}
+                RowHeight::AtLeast(height) => { let _ = write!(out, "<!-- docx-row:min={} --> ", height / 635); }
+                RowHeight::Exact(height) => { let _ = write!(out, "<!-- docx-row:exact={} --> ", height / 635); }
+            }
+        }
+
         let mut column = 0;
         for (index, cell) in row.cells.iter().enumerate() {
             let span = (cell.span.max(1) as usize).min(col_count - column - (row.cells.len() - index - 1));
+            if form_layout && cell.anchor != anchor {
+                let name = match cell.anchor {
+                    ibis_doc_model::CellAnchor::Top => "top",
+                    ibis_doc_model::CellAnchor::Center => "center",
+                    ibis_doc_model::CellAnchor::Bottom => "bottom",
+                };
+                out.push_str(&format!("<!-- docx-anchor:{name} --> "));
+            }
             let mut cell_parts = Vec::new();
             for block in &cell.blocks {
                 match block {
+                    Block::Paragraph(paragraph) if form_layout => {
+                        let mut text = form_paragraph_comment(paragraph);
+                        text.push_str(&serialize_form_runs(paragraph, media, comments, false));
+                        cell_parts.push(escape_table_paragraph(text));
+                    }
                     Block::Paragraph(paragraph) => cell_parts.push(serialize_table_paragraph(paragraph, media, comments)),
                     Block::Table(table) => {
                         let mut source = String::new();
@@ -6564,7 +6860,17 @@ fn serialize_runs(
     let mut out = String::new();
     for run in runs {
         let mut piece = match &run.kind {
+            FlowRunKind::Text(t) if t.contains("{{form:")
+                && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some())) =>
+            {
+                format_text_run(&t.replace("{{form:", r"\{{form:"), &run.format, run.link.is_some())
+            }
             FlowRunKind::Text(t) => format_text_run(t, &run.format, run.link.is_some()),
+            FlowRunKind::PlainText { .. }
+                if let Some(id) = form_field_id(run) =>
+            {
+                format_text_run(&format!("{{{{form:{id}}}}}"), &run.format, run.link.is_some())
+            }
             FlowRunKind::Field { instruction, shown } => {
                 if run.field_locked {
                     shown.clone()

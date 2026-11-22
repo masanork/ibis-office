@@ -3707,6 +3707,11 @@ impl Writer<'_> {
                         self.doc.set_attr(e, "w:type", "dxa");
                     }
                 }
+                if cell.anchor != ibis_doc_model::CellAnchor::Top {
+                    let anchor = self.doc.append_element(tc_pr, &w("vAlign"));
+                    let value = if cell.anchor == ibis_doc_model::CellAnchor::Center { "center" } else { "bottom" };
+                    self.doc.set_attr(anchor, "w:val", value);
+                }
                 for block in &cell.blocks {
                     match block {
                         Block::Paragraph(p) => match &copied {
@@ -6293,16 +6298,25 @@ impl Writer<'_> {
                             let sdt = self.doc.append_element(first_run, &self.w("sdt"));
                             self.doc.detach(sdt);
                             let pr = self.doc.append_element(sdt, &self.w("sdtPr"));
-                            let id = self.doc.append_element(pr, &self.w("id"));
-                            let next_id = (new_atoms.len() as u64) * 1000 + (j as u64) + 100000;
-                            self.doc.set_attr(id, "w:val", &next_id.to_string());
-                            let placeholder = self.doc.append_element(pr, &self.w("placeholder"));
-                            let doc_part = self.doc.append_element(placeholder, &self.w("docPart"));
-                            self.doc.set_attr(doc_part, "w:val", "DefaultPlaceholder");
-                            if *showing {
-                                self.doc.append_element(pr, &self.w("showingPlcHdr"));
+                            let form_field = control.as_ref().is_some_and(|info| {
+                                info.tag.strip_prefix(crate::form_template::PREFIX)
+                                    .is_some_and(crate::form_template::valid_field_id)
+                            });
+                            if !form_field {
+                                let id = self.doc.append_element(pr, &self.w("id"));
+                                let next_id = (new_atoms.len() as u64) * 1000 + (j as u64) + 100000;
+                                self.doc.set_attr(id, "w:val", &next_id.to_string());
+                                let placeholder = self.doc.append_element(pr, &self.w("placeholder"));
+                                let doc_part = self.doc.append_element(placeholder, &self.w("docPart"));
+                                self.doc.set_attr(doc_part, "w:val", "DefaultPlaceholder");
+                                if *showing {
+                                    self.doc.append_element(pr, &self.w("showingPlcHdr"));
+                                }
                             }
-                            self.doc.append_element(pr, &self.w("text"));
+                            let kind = self.doc.append_element(pr, &self.w("text"));
+                            if form_field {
+                                self.doc.set_attr(kind, "w:multiLine", "1");
+                            }
 
                             let content = self.doc.append_element(sdt, &self.w("sdtContent"));
                             let r = self.doc.append_element(content, &self.w("r"));

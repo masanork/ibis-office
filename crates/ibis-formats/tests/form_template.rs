@@ -255,3 +255,81 @@ fn saved_template_snapshot_reports_the_warning_at_the_sixth_grade_remarks() {
             .is_some_and(|c| c.tag == "ibis.form.grades.6.remarks")
     }));
 }
+
+#[test]
+fn detailed_school_record_round_trips_through_markdown() {
+    use ibis_formats::markdown::{export_docx_to_markdown, import_markdown_to_docx_bytes};
+    use sha2::{Digest, Sha256};
+
+    let original = include_bytes!("../../../test/fixtures/docx-form/full-school-record/template.docx");
+    let markdown = export_docx_to_markdown(original).unwrap();
+    let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+    let counts = form_template::inspect(original).unwrap();
+    assert_eq!(form_template::inspect(&rebuilt).unwrap(), counts);
+    assert_eq!(counts.len(), 372);
+    assert_eq!(counts.values().sum::<usize>(), 388);
+    let source_flow = read_docx(original).unwrap().flow.unwrap();
+    let rebuilt_flow = read_docx(&rebuilt).unwrap().flow.unwrap();
+    let page_geometry = |page: &ibis_doc_model::PageSetup| {
+        (page.size, page.top, page.right, page.bottom, page.left, page.doc_grid_type)
+    };
+    assert_eq!(page_geometry(&source_flow.page), page_geometry(&rebuilt_flow.page));
+    let table_geometry = |flow: &ibis_doc_model::FlowDocument| {
+        flow.body.iter().filter_map(|block| {
+            let ibis_doc_model::Block::Table(table) = block else { return None };
+            let rows = table.rows.iter().map(|row| {
+                let cells = row.cells.iter().map(|cell| (cell.span, cell.merge, cell.anchor))
+                    .collect::<Vec<_>>();
+                (row.height, row.header, cells)
+            }).collect::<Vec<_>>();
+            Some((table.columns.clone(), table.align, rows))
+        }).collect::<Vec<_>>()
+    };
+    let original_tables = table_geometry(&source_flow);
+    assert_eq!(original_tables.len(), 12);
+    assert_eq!(table_geometry(&rebuilt_flow), original_tables);
+
+    let mut definition = form_template::parse_input(
+        include_str!("../../../test/fixtures/docx-form/full-school-record/form.yaml"), true,
+    ).unwrap();
+    let record = form_template::parse_input(
+        include_str!("../../../test/fixtures/docx-form/full-school-record/record-b.yaml"), true,
+    ).unwrap();
+    let (expected, expected_warnings) = form_template::fill_with_diagnostics(original, &definition, &record).unwrap();
+    definition["templateSha256"] = json!(format!("{:x}", Sha256::digest(&rebuilt)));
+    let (actual, actual_warnings) = form_template::fill_with_diagnostics(&rebuilt, &definition, &record).unwrap();
+    assert_eq!(actual_warnings, expected_warnings);
+    let expected = read_docx(&expected).unwrap().flow.unwrap();
+    let actual = read_docx(&actual).unwrap().flow.unwrap();
+    let table_text = |flow: &ibis_doc_model::FlowDocument| {
+        flow.body.iter().filter_map(|block| {
+            let ibis_doc_model::Block::Table(table) = block else { return None };
+            Some(table.rows.iter().flat_map(|row| &row.cells).map(|cell| {
+                cell.blocks.iter().filter_map(|block| match block {
+                    ibis_doc_model::Block::Paragraph(p) => Some(p.text()),
+                    _ => None,
+                }).collect::<Vec<_>>().join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
+            }).collect::<Vec<_>>())
+        }).collect::<Vec<_>>()
+    };
+    assert_eq!(table_text(&actual), table_text(&expected));
+    let expected = student_record::extract(&expected).unwrap();
+    let actual = student_record::extract(&actual).unwrap();
+    assert_eq!(actual.name.text, expected.name.text);
+    assert_eq!(actual.next_school.text, expected.next_school.text);
+}
+
+
+#[test]
+fn markdown_form_marker_preserves_repetitions_and_escaped_literals() {
+    use ibis_formats::markdown::{export_docx_to_markdown, import_markdown_to_docx_bytes};
+
+    let source = br"Name: **{{form:pupil.name}}** / {{form:pupil.name}} / \{{form:literal}} / `{{form:code}}`.";
+    let docx = import_markdown_to_docx_bytes(source).unwrap();
+    let counts = form_template::inspect(&docx).unwrap();
+    assert_eq!(counts.len(), 1);
+    assert_eq!(counts["pupil.name"], 2);
+    let markdown = export_docx_to_markdown(&docx).unwrap();
+    let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+    assert_eq!(form_template::inspect(&rebuilt).unwrap(), counts);
+}
