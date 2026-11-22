@@ -4648,10 +4648,10 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                         if let Some(attr_close) = attr_open.find('}') {
                             let attr_str = &attr_open[..attr_close];
                             for part in attr_str.split_whitespace() {
-                                if let Some(w) = part.strip_prefix("width=").and_then(parse_length_emu) {
-                                    explicit_w = Some(w.max(EMU_PER_PT * 10));
-                                } else if let Some(h) = part.strip_prefix("height=").and_then(parse_length_emu) {
-                                    explicit_h = Some(h.max(EMU_PER_PT * 10));
+                                if let Some(w) = part.strip_prefix("width=").and_then(parse_length_emu).filter(|w| *w > 0) {
+                                    explicit_w = Some(w);
+                                } else if let Some(h) = part.strip_prefix("height=").and_then(parse_length_emu).filter(|h| *h > 0) {
+                                    explicit_h = Some(h);
                                 }
                             }
                             total_consumed += 1 + attr_close + 1;
@@ -6894,8 +6894,12 @@ fn serialize_picture(
     };
     let alt = if alt_text.description.is_empty() { &alt_text.title } else { &alt_text.description };
     let b64 = encode_base64(&media.data);
-    let width = (size.width as f64 / EMU_PER_MM).round() as i64;
-    let height = (size.height as f64 / EMU_PER_MM).round() as i64;
+    let mm = |length: Emu| {
+        let value = format!("{:.5}", length as f64 / EMU_PER_MM);
+        value.trim_end_matches('0').trim_end_matches('.').to_owned()
+    };
+    let width = mm(size.width);
+    let height = mm(size.height);
     format!("![{alt}](data:image/{mime};base64,{b64}){{width={width}mm height={height}mm}}")
 }
 
@@ -7925,22 +7929,48 @@ mod tests {
     }
 
     #[test]
-    fn docx_markdown_exports_an_anchored_picture() {
+    fn docx_markdown_round_trips_inline_and_floating_pictures() {
         let emf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf");
-        let image = format!("![floating](data:image/x-emf;base64,{}){{width=40mm height=30mm}}", encode_base64(emf));
-        let original = import_markdown_to_docx_bytes(image.as_bytes()).unwrap();
+        let wmf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.wmf");
+        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm}}", encode_base64(emf));
+        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm}}", encode_base64(wmf));
+        let source = format!("{floating}\n\n{inline}");
+        let original = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         let mut package = ibis_ooxml::Package::open(original).unwrap();
         let part = "word/document.xml";
         let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
         let anchored = xml
-            .replace("<wp:inline", "<wp:anchor")
-            .replace("</wp:inline>", "</wp:anchor>")
-            .replace("<wp:docPr", "<wp:wrapTopAndBottom/><wp:docPr");
-        assert!(anchored.contains("<wp:anchor"));
-        assert!(anchored.contains("<wp:wrapTopAndBottom/>"));
+            .replacen("<wp:inline", "<wp:anchor", 1)
+            .replacen("</wp:inline>", "</wp:anchor>", 1)
+            .replacen("<wp:docPr", "<wp:wrapTopAndBottom/><wp:docPr", 1);
+        assert_ne!(xml, anchored);
         package.set_bytes(part, anchored.into_bytes());
         let docx = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
-        assert_eq!(export_docx_to_markdown(&docx).unwrap().trim(), image);
+        let presentation = crate::read(&docx).unwrap();
+        let source_flow = presentation.flow.as_ref().unwrap();
+        assert!(ibis_doc_model::flow_command::all_paragraphs(source_flow).iter().any(|p| {
+            p.runs.iter().any(|r| matches!(&r.kind, FlowRunKind::Shape(shape) if shape.floating.as_ref().is_some_and(|anchor| anchor.wrap == "topAndBottom")))
+        }));
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        assert_eq!(markdown.trim(), source);
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        let flow = presentation.flow.as_ref().unwrap();
+        let pictures = ibis_doc_model::flow_command::all_paragraphs(flow).into_iter()
+            .flat_map(|p| &p.runs)
+            .filter_map(|run| match &run.kind {
+                FlowRunKind::Picture { media, size, .. } => Some((presentation.media(*media).unwrap(), *size)),
+                _ => None,
+            }).collect::<Vec<_>>();
+        assert_eq!(pictures.len(), 2);
+        for ((media, size), (format, original, width, height)) in pictures.into_iter().zip([
+            (MediaFormat::Emf, emf.as_slice(), 1_444_500, 1_089_000),
+            (MediaFormat::Wmf, wmf.as_slice(), 90_000, 72_000),
+        ]) {
+            assert_eq!(media.format, format);
+            assert_eq!(media.data.as_ref(), original);
+            assert_eq!(size, EmuSize::new(width, height));
+        }
     }
 
     #[test]
