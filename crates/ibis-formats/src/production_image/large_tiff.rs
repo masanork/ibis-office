@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! Bounded preview of oversized, uncompressed strip-based TIFF images.
+//! Bounded preview of oversized strip-based TIFF images.
 
 use image::{DynamicImage, GrayImage, RgbImage};
 use std::io::Cursor;
 use tiff::{
     ColorType,
-    decoder::{ChunkType, Decoder},
-    tags::Tag,
+    decoder::{ChunkType, Decoder, DecodingResult, Limits},
+    tags::{CompressionMethod, Tag},
 };
 
 const MAX_SOURCE_EDGE: u32 = 32_768;
 const MAX_PREVIEW_EDGE: u32 = 2_048;
-const UNSUPPORTED: &str = "Large TIFF preview requires uncompressed 8-bit grayscale or RGB strips";
+const MAX_STRIP_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RASTER_BYTES: u64 = 256 * 1024 * 1024;
+const UNSUPPORTED: &str = "Large TIFF preview requires supported 8-bit grayscale or RGB strips";
+const STRIP_LIMIT: &str = "Compressed TIFF strip exceeds the large-preview limit";
 const BAD_STRIPS: &str = "Invalid or truncated TIFF strips";
 
 pub(super) fn preview(bytes: &[u8]) -> Result<DynamicImage, String> {
@@ -29,15 +32,22 @@ pub(super) fn preview(bytes: &[u8]) -> Result<DynamicImage, String> {
             .map(|value| value.unwrap_or(default))
             .map_err(|error| error.to_string())
     };
-    let compression = tag(Tag::Compression, 1)?;
+    let compression = CompressionMethod::from_u16_exhaustive(tag(Tag::Compression, 1)?);
+    let uncompressed = compression == CompressionMethod::None;
     let planar = tag(Tag::PlanarConfiguration, 1)?;
     let predictor = tag(Tag::Predictor, 1)?;
     let sample_format = decoder
         .find_tag_unsigned_vec::<u16>(Tag::SampleFormat)
         .map_err(|error| error.to_string())?;
-    if compression != 1
-        || planar != 1
-        || predictor != 1
+    if !matches!(
+        compression,
+        CompressionMethod::None
+            | CompressionMethod::LZW
+            | CompressionMethod::Deflate
+            | CompressionMethod::OldDeflate
+            | CompressionMethod::PackBits
+    ) || planar != 1
+        || !(predictor == 1 || !uncompressed && predictor == 2)
         || sample_format.is_some_and(|formats| formats.iter().any(|&format| format != 1))
         || decoder.get_chunk_type() != ChunkType::Strip
     {
@@ -74,19 +84,44 @@ pub(super) fn preview(bytes: &[u8]) -> Result<DynamicImage, String> {
         return Err(BAD_STRIPS.into());
     }
     let row_bytes = width as usize * channels;
+    if !uncompressed && u64::from(height) * row_bytes as u64 > MAX_RASTER_BYTES {
+        return Err("Compressed TIFF image exceeds the large-preview raster limit".into());
+    }
+    if !uncompressed
+        && lengths
+            .iter()
+            .try_fold(0_u64, |total, &len| total.checked_add(len))
+            .is_none_or(|total| total > super::MAX_INPUT_BYTES as u64)
+    {
+        return Err("Compressed TIFF strips exceed the large-preview input limit".into());
+    }
     let mut strips = Vec::with_capacity(strip_count);
     for (index, (offset, length)) in offsets.into_iter().zip(lengths).enumerate() {
         let expected_rows = rows.min(height - index as u32 * rows);
         let required = expected_rows as usize * row_bytes;
         let offset = usize::try_from(offset).map_err(|_| BAD_STRIPS)?;
         let length = usize::try_from(length).map_err(|_| BAD_STRIPS)?;
+        if !uncompressed && (length > MAX_STRIP_BYTES || required > MAX_STRIP_BYTES) {
+            return Err(STRIP_LIMIT.into());
+        }
         let end = offset.checked_add(length).ok_or(BAD_STRIPS)?;
         let strip = bytes
             .get(offset..end)
-            .filter(|strip| strip.len() >= required)
+            .filter(|strip| {
+                if uncompressed {
+                    strip.len() >= required
+                } else {
+                    !strip.is_empty()
+                }
+            })
             .ok_or(BAD_STRIPS)?;
         strips.push(strip);
     }
+
+    let mut limits = Limits::default();
+    limits.decoding_buffer_size = MAX_STRIP_BYTES;
+    limits.intermediate_buffer_size = MAX_STRIP_BYTES;
+    let mut decoder = decoder.with_limits(limits);
 
     let divisor = longest.max(MAX_PREVIEW_EDGE);
     let scaled = |length: u32| {
@@ -101,17 +136,37 @@ pub(super) fn preview(bytes: &[u8]) -> Result<DynamicImage, String> {
     };
     let mut pixels =
         Vec::with_capacity(preview_width as usize * preview_height as usize * channels);
-    for y in 0..preview_height {
-        let y = source_index(y, height, preview_height);
-        let strip = strips[(y / rows) as usize];
-        let row = (y % rows) as usize * row_bytes;
-        for x in 0..preview_width {
-            let x = source_index(x, width, preview_width) as usize;
-            let start = row + x * channels;
-            pixels.extend_from_slice(&strip[start..start + channels]);
+    let mut preview_y = 0;
+    for (index, raw) in strips.into_iter().enumerate() {
+        let decoded;
+        let strip = if uncompressed {
+            raw
+        } else {
+            let DecodingResult::U8(data) = decoder
+                .read_chunk(index as u32)
+                .map_err(|error| error.to_string())?
+            else {
+                return Err(UNSUPPORTED.into());
+            };
+            decoded = data;
+            &decoded
+        };
+        while preview_y < preview_height {
+            let y = source_index(preview_y, height, preview_height);
+            if y / rows != index as u32 {
+                break;
+            }
+            let row = (y % rows) as usize * row_bytes;
+            let row = strip.get(row..row + row_bytes).ok_or(BAD_STRIPS)?;
+            for x in 0..preview_width {
+                let x = source_index(x, width, preview_width) as usize * channels;
+                pixels.extend_from_slice(&row[x..x + channels]);
+            }
+            preview_y += 1;
         }
     }
-    if photometric == 0 {
+    // The TIFF decoder already normalizes WhiteIsZero for compressed strips.
+    if uncompressed && photometric == 0 {
         pixels.iter_mut().for_each(|value| *value = 255 - *value);
     }
     if channels == 1 {
@@ -125,12 +180,28 @@ pub(super) fn preview(bytes: &[u8]) -> Result<DynamicImage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tiff::encoder::{TiffEncoder, colortype};
+    use tiff::encoder::{Compression, DeflateLevel, Predictor, TiffEncoder, colortype};
 
     #[test]
     fn opens_large_stripped_rgb_and_preserves_the_preview_in_docx() {
+        for compression in [
+            Compression::Uncompressed,
+            Compression::Lzw,
+            Compression::Deflate(DeflateLevel::Fast),
+            Compression::Packbits,
+        ] {
+            check_rgb_preview(compression);
+        }
+    }
+
+    fn check_rgb_preview(compression: Compression) {
         let mut tiff = Cursor::new(Vec::new());
-        let mut encoder = TiffEncoder::new(&mut tiff).unwrap();
+        let mut encoder = TiffEncoder::new(&mut tiff)
+            .unwrap()
+            .with_compression(compression);
+        if matches!(compression, Compression::Lzw | Compression::Deflate(_)) {
+            encoder = encoder.with_predictor(Predictor::Horizontal);
+        }
         let mut first = encoder.new_image::<colortype::RGB8>(8_200, 80).unwrap();
         first.rows_per_strip(9).unwrap();
         let pixels: Vec<_> = (0..80)
@@ -159,6 +230,24 @@ mod tests {
             image::load_from_memory(&media.data).unwrap().into_rgb8(),
             preview
         );
+    }
+
+    #[test]
+    fn rejects_a_compressed_strip_over_the_decode_budget() {
+        let width = 8_200;
+        let height = (MAX_STRIP_BYTES as u32 / width) + 1;
+        let mut file = Cursor::new(Vec::new());
+        let mut encoder = TiffEncoder::new(&mut file)
+            .unwrap()
+            .with_compression(Compression::Deflate(DeflateLevel::Fast));
+        let mut image = encoder
+            .new_image::<colortype::Gray8>(width, height)
+            .unwrap();
+        image.rows_per_strip(height).unwrap();
+        image
+            .write_data(&vec![0; (width * height) as usize])
+            .unwrap();
+        assert_eq!(preview(&file.into_inner()).unwrap_err(), STRIP_LIMIT);
     }
 
     #[test]
