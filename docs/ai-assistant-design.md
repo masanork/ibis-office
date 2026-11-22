@@ -42,6 +42,20 @@ UI Automation や画面操作ではなく、既存の `ibis-doc-model` のコマ
 * `ai.model`: モデル名（例: `gpt-6.1-terra`）
 * `ai.api_key`: API キー（ローカル LLM 等で空の場合は Bearer ヘッダーを省略。環境変数 `IBIS_AI_API_KEY` / `OPENAI_API_KEY` をフォールバックとして参照可能）
 
+#### デスクトップ版の環境変数
+
+アプリの実行ファイルを、環境変数を設定したシェルから起動する。環境変数のキーは設定画面に表示せず、設定ファイルにも保存しない。
+
+| 接続先 | `IBIS_AI_PROVIDER` | 認証 | モデルとリージョン |
+| --- | --- | --- | --- |
+| Claude API | `anthropic`（`claude` も可） | `ANTHROPIC_API_KEY` | `IBIS_AI_MODEL` または `ANTHROPIC_MODEL` |
+| Amazon Bedrock の Claude | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | `IBIS_AI_MODEL` または `IBIS_BEDROCK_MODEL_ID` にモデル ID または推論プロファイル ID。リージョンは `AWS_REGION` または `AWS_DEFAULT_REGION` |
+| OpenAI 互換 API | `openai` | GUI のキー、`IBIS_AI_API_KEY`、`OPENAI_API_KEY` の順 | `IBIS_AI_BASE_URL` と `IBIS_AI_MODEL` が GUI の値に優先 |
+
+`IBIS_AI_PROVIDER` を指定すると、既存の GUI 設定より接続先の選択が優先される。省略時は保存済みの GUI 設定または OpenAI 互換用のキーがあれば OpenAI 互換 API を選ぶ。それらが空の場合は、Claude API と Bedrock のキーのうち一方だけが設定されていれば、その接続先を選ぶ。両方設定した場合は `IBIS_AI_PROVIDER` を指定する。
+
+Bedrock は [Bedrock Runtime の Anthropic Messages API](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html) に API キーで接続する。GUI の保存項目は OpenAI 互換 API 用。ブラウザー版の接続は同一オリジンの Worker が担当する。
+
 ### 3. `crates/ibis-office-shell`（LLM クライアント & サイドバー UI）
 
 * OpenAI 互換 HTTP / SSE クライアント

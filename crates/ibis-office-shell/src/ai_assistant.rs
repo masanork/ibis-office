@@ -588,7 +588,7 @@ impl SlideEditor {
     /// Open or focus the Assistant sidebar.
     pub fn open_ai_assistant_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ai_assistant.is_none() {
-            let cfg = AiConfig::load();
+            let cfg = AiConfig::load_saved();
             let prompt_input = cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 8)
@@ -956,7 +956,7 @@ impl SlideEditor {
             }
         }
 
-        let cfg = AiConfig::load();
+        let cfg = AiConfig::load_saved();
         let tools: Vec<ToolDefinition> = if formula_only {
             Vec::new()
         } else {
@@ -3341,6 +3341,7 @@ impl SlideEditor {
     pub fn ai_assistant_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let kind = self.ai_doc_kind();
         let panel = self.ai_assistant.as_ref()?;
+        #[cfg(target_family = "wasm")]
         let cfg = AiConfig::load();
         let show_settings = panel.show_settings;
         let show_tool_logs = panel.show_tool_logs;
@@ -3366,7 +3367,9 @@ impl SlideEditor {
         #[cfg(target_family = "wasm")]
         let browser_pending = panel.browser_pending.clone();
         #[cfg(not(target_family = "wasm"))]
-        let model_caption = format!("Model: {}", cfg.model);
+        let model_caption = AiConfig::active_model()
+            .map(|model| format!("モデル: {model}"))
+            .unwrap_or_else(|| "接続設定を確認してください".to_string());
         #[cfg(target_family = "wasm")]
         let model_caption = {
             let label = browser_models
@@ -3466,6 +3469,9 @@ impl SlideEditor {
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("OpenAI 互換 API 設定"),
+                )
+                .child(
+                    div().text_xs().child("Claude API と Amazon Bedrock は起動時の環境変数で設定できます。"),
                 )
                 .child(Input::new(&base_url_input).small())
                 .child(Input::new(&model_input).small())

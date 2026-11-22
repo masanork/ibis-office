@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! OpenAI-compatible Chat Completions client with SSE streaming and tool calling.
+//! Assistant API client with SSE streaming and tool calling.
 
 use std::collections::BTreeMap;
 
@@ -16,7 +16,7 @@ pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-6.1-terra";
 
 /// Local configuration for the OpenAI-compatible endpoint.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AiConfig {
     pub base_url: String,
     pub model: String,
@@ -24,33 +24,37 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
-    /// Load configuration from `settings.txt` with environment variable fallbacks.
+    #[cfg(target_family = "wasm")]
     pub fn load() -> Self {
-        let base_url = crate::settings::get(SETTING_BASE_URL)
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        let model = crate::settings::get(SETTING_MODEL)
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
-        let stored_key = crate::settings::get(SETTING_API_KEY).unwrap_or_default();
-        let api_key = if stored_key.trim().is_empty() {
-            #[cfg(not(target_family = "wasm"))]
-            {
-                std::env::var("IBIS_AI_API_KEY")
-                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .unwrap_or(stored_key)
-            }
-            #[cfg(target_family = "wasm")]
-            {
-                stored_key
-            }
-        } else {
-            stored_key
+        let mut config = Self::load_saved();
+        if config.base_url.is_empty() {
+            config.base_url = DEFAULT_BASE_URL.to_string();
+        }
+        if config.model.is_empty() {
+            config.model = DEFAULT_MODEL.to_string();
+        }
+        config
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub fn active_model() -> Option<String> {
+        Provider::resolve(&Self::load_saved(), process_env)
+            .ok()
+            .map(|(_, config)| config.model)
+    }
+
+    /// Load only saved values for editing. Environment credentials never enter the form.
+    pub fn load_saved() -> Self {
+        let get = |key| {
+            crate::settings::get(key)
+                .unwrap_or_default()
+                .trim()
+                .to_string()
         };
         Self {
-            base_url: base_url.trim().trim_end_matches('/').to_string(),
-            model: model.trim().to_string(),
-            api_key: api_key.trim().to_string(),
+            base_url: get(SETTING_BASE_URL).trim_end_matches('/').to_string(),
+            model: get(SETTING_MODEL),
+            api_key: get(SETTING_API_KEY),
         }
     }
 
@@ -350,7 +354,251 @@ fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str
     }
 }
 
-/// Send a streaming Chat Completions request and invoke `on_delta` for each text chunk.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    OpenAi,
+    Anthropic,
+    Bedrock,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl Provider {
+    fn resolve(
+        saved: &AiConfig,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Result<(Self, AiConfig), String> {
+        let env = |name| {
+            env(name)
+                .map(|value| value.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        let provider = match env("IBIS_AI_PROVIDER").as_deref() {
+            Some("openai") => Self::OpenAi,
+            Some("anthropic" | "claude") => Self::Anthropic,
+            Some("bedrock") => Self::Bedrock,
+            Some(_) => return Err("IBIS_AI_PROVIDER: openai / anthropic / bedrock".into()),
+            None if !saved.api_key.is_empty()
+                || !saved.base_url.is_empty()
+                || !saved.model.is_empty()
+                || env("IBIS_AI_API_KEY").is_some()
+                || env("OPENAI_API_KEY").is_some() =>
+            {
+                Self::OpenAi
+            }
+            None => match (env("ANTHROPIC_API_KEY"), env("AWS_BEARER_TOKEN_BEDROCK")) {
+                (Some(_), Some(_)) => {
+                    return Err(
+                        "IBIS_AI_PROVIDER で anthropic または bedrock を選んでください。".into(),
+                    );
+                }
+                (Some(_), None) => Self::Anthropic,
+                (None, Some(_)) => Self::Bedrock,
+                (None, None) => Self::OpenAi,
+            },
+        };
+
+        let (base_url, model, api_key) = match provider {
+            Self::OpenAi => {
+                let saved_value = |value: &String| (!value.is_empty()).then(|| value.clone());
+                (
+                    env("IBIS_AI_BASE_URL")
+                        .or_else(|| saved_value(&saved.base_url))
+                        .unwrap_or_else(|| DEFAULT_BASE_URL.into()),
+                    env("IBIS_AI_MODEL")
+                        .or_else(|| saved_value(&saved.model))
+                        .unwrap_or_else(|| DEFAULT_MODEL.into()),
+                    saved_value(&saved.api_key)
+                        .or_else(|| env("IBIS_AI_API_KEY"))
+                        .or_else(|| env("OPENAI_API_KEY"))
+                        .unwrap_or_default(),
+                )
+            }
+            Self::Anthropic | Self::Bedrock => {
+                let (key_name, model_name) = if provider == Self::Anthropic {
+                    ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL")
+                } else {
+                    ("AWS_BEARER_TOKEN_BEDROCK", "IBIS_BEDROCK_MODEL_ID")
+                };
+                let api_key =
+                    env(key_name).ok_or_else(|| format!("{key_name} を設定してください。"))?;
+                let model = env("IBIS_AI_MODEL")
+                    .or_else(|| env(model_name))
+                    .ok_or_else(|| {
+                        format!("IBIS_AI_MODEL または {model_name} を設定してください。")
+                    })?;
+                let base_url = if provider == Self::Anthropic {
+                    "https://api.anthropic.com/v1".into()
+                } else {
+                    let region = env("AWS_REGION")
+                        .or_else(|| env("AWS_DEFAULT_REGION"))
+                        .ok_or_else(|| {
+                            "AWS_REGION または AWS_DEFAULT_REGION を設定してください。".to_string()
+                        })?;
+                    if !region.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    }) || region.starts_with('-')
+                        || region.ends_with('-')
+                    {
+                        return Err("AWS リージョンの形式が無効です。".into());
+                    }
+                    let suffix = if region.starts_with("cn-") {
+                        "amazonaws.com.cn"
+                    } else {
+                        "amazonaws.com"
+                    };
+                    format!("https://bedrock-runtime.{region}.{suffix}/anthropic/v1")
+                };
+                (base_url, model, api_key)
+            }
+        };
+        Ok((
+            provider,
+            AiConfig {
+                base_url,
+                model,
+                api_key,
+            },
+        ))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn messages_request(
+    model: &str,
+    messages: &[ChatMessage],
+    tools: Vec<ToolDefinition>,
+) -> Result<Vec<u8>, String> {
+    use serde_json::json;
+
+    let mut system = Vec::new();
+    let mut turns: Vec<(&str, Vec<Value>)> = Vec::new();
+    for message in messages {
+        if message.role == "system" {
+            system.extend(message.content.as_deref());
+            continue;
+        }
+        let mut blocks = Vec::new();
+        let role = if message.role == "tool" {
+            blocks.push(json!({
+                "type": "tool_result",
+                "tool_use_id": message.tool_call_id,
+                "content": message.content.as_deref().unwrap_or(""),
+            }));
+            "user"
+        } else {
+            if let Some(text) = message.content.as_deref().filter(|text| !text.is_empty()) {
+                blocks.push(json!({"type": "text", "text": text}));
+            }
+            for call in message.tool_calls.iter().flatten() {
+                let input: Value = serde_json::from_str(&call.function.arguments)
+                    .map_err(|_| "ツールの引数を JSON として読み込めませんでした。".to_string())?;
+                blocks.push(json!({
+                    "type": "tool_use", "id": call.id, "name": call.function.name, "input": input,
+                }));
+            }
+            message.role.as_str()
+        };
+        if !blocks.is_empty() {
+            if let Some((_, previous)) =
+                turns.last_mut().filter(|(last_role, _)| *last_role == role)
+            {
+                previous.extend(blocks);
+            } else {
+                turns.push((role, blocks));
+            }
+        }
+    }
+    let mut request = json!({
+        "model": model,
+        "max_tokens": 8192,
+        "stream": true,
+        "messages": turns.into_iter().map(|(role, content)| json!({"role": role, "content": content})).collect::<Vec<_>>(),
+    });
+    if !system.is_empty() {
+        request["system"] = json!(system.join("\n\n"));
+    }
+    if !tools.is_empty() {
+        request["tools"] = json!(
+            tools
+                .into_iter()
+                .map(|tool| json!({
+                    "name": tool.function.name,
+                    "description": tool.function.description,
+                    "input_schema": tool.function.parameters,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    serde_json::to_vec(&request).map_err(|e| format!("failed to serialize request: {e}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl SseStreamParser {
+    fn feed_messages_line(&mut self, line: &str) -> Result<Option<SseEvent>, String> {
+        let Some(data) = line.trim().strip_prefix("data:") else {
+            return Ok(None);
+        };
+        let event: Value =
+            serde_json::from_str(data).map_err(|e| format!("failed to parse SSE chunk: {e}"))?;
+        let kind = event["type"].as_str().unwrap_or_default();
+        let index = event["index"].as_u64().unwrap_or_default() as usize;
+        let block = &event["content_block"];
+        let delta = &event["delta"];
+        let text = match kind {
+            "content_block_start" if block["type"] == "tool_use" => {
+                self.tool_calls.insert(
+                    index,
+                    PartialToolCall {
+                        id: block["id"].as_str().unwrap_or_default().into(),
+                        name: block["name"].as_str().unwrap_or_default().into(),
+                        arguments: String::new(),
+                    },
+                );
+                None
+            }
+            "content_block_start" if block["type"] == "text" => block["text"].as_str(),
+            "content_block_delta" if delta["type"] == "text_delta" => delta["text"].as_str(),
+            "content_block_delta" if delta["type"] == "input_json_delta" => {
+                if let Some(call) = self.tool_calls.get_mut(&index) {
+                    call.arguments
+                        .push_str(delta["partial_json"].as_str().unwrap_or_default());
+                }
+                None
+            }
+            "message_delta" => {
+                self.finish_reason = delta["stop_reason"].as_str().map(|reason| {
+                    match reason {
+                        "end_turn" | "stop_sequence" => "stop",
+                        "tool_use" => "tool_calls",
+                        "max_tokens" | "model_context_window_exceeded" => "length",
+                        "refusal" => "content_filter",
+                        other => other,
+                    }
+                    .to_string()
+                });
+                None
+            }
+            "message_stop" => {
+                self.received_done = true;
+                return Ok(Some(SseEvent::Done));
+            }
+            "error" => return Err("Messages API のストリームでエラーが発生しました。".into()),
+            _ => None,
+        };
+        Ok(text.filter(|text| !text.is_empty()).map(|text| {
+            self.content.push_str(text);
+            SseEvent::TextDelta(text.into())
+        }))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn process_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+/// Send a streaming assistant request and invoke `on_delta` for each text chunk.
 ///
 /// Automatically retries once if the endpoint returns HTTP 400 complaining about
 /// `reasoning_effort` (switching between `Some("none")` and `None`).
@@ -361,17 +609,40 @@ pub async fn stream_chat_completion(
     tools: Vec<ToolDefinition>,
     mut on_delta: impl FnMut(&str),
 ) -> Result<CompletionOutcome, String> {
+    let (provider, config) = Provider::resolve(config, process_env)?;
+    if provider != Provider::OpenAi {
+        let outcome =
+            stream_chat_completion_once(&config, provider, messages, tools, None, &mut on_delta)
+                .await?;
+        if !outcome.received_done {
+            return Err("Messages API の応答が途中で終了しました。".into());
+        }
+        return Ok(outcome);
+    }
+    let config = &config;
     let initial = default_reasoning_effort(&config.model, !tools.is_empty());
-    match stream_chat_completion_once(config, messages, tools.clone(), initial, &mut on_delta)
-        .await
+    match stream_chat_completion_once(
+        config,
+        provider,
+        messages,
+        tools.clone(),
+        initial,
+        &mut on_delta,
+    )
+    .await
     {
         Ok(outcome) => Ok(outcome),
         Err(err)
             if err.starts_with("HTTP 400:")
                 && err.to_ascii_lowercase().contains("reasoning_effort") =>
         {
-            let fallback = if initial.is_some() { None } else { Some("none") };
-            stream_chat_completion_once(config, messages, tools, fallback, &mut on_delta).await
+            let fallback = if initial.is_some() {
+                None
+            } else {
+                Some("none")
+            };
+            stream_chat_completion_once(config, provider, messages, tools, fallback, &mut on_delta)
+                .await
         }
         Err(err) => Err(err),
     }
@@ -380,6 +651,7 @@ pub async fn stream_chat_completion(
 #[cfg(not(target_family = "wasm"))]
 async fn stream_chat_completion_once(
     config: &AiConfig,
+    provider: Provider,
     messages: &[ChatMessage],
     tools: Vec<ToolDefinition>,
     reasoning_effort: Option<&'static str>,
@@ -389,17 +661,40 @@ async fn stream_chat_completion_once(
     use std::io::{BufRead as _, BufReader as StdBufReader, Write as _};
     use std::process::{Command, Stdio};
 
-    let url = config.completions_url();
-    let payload = serde_json::to_vec(&ChatCompletionRequest {
-        model: &config.model,
-        messages,
-        tools,
-        reasoning_effort,
-        stream: true,
-    })
-    .map_err(|e| format!("failed to serialize request: {e}"))?;
-
-    let api_key = config.api_key.clone();
+    let (url, payload) = if provider == Provider::OpenAi {
+        let payload = serde_json::to_vec(&ChatCompletionRequest {
+            model: &config.model,
+            messages,
+            tools,
+            reasoning_effort,
+            stream: true,
+        })
+        .map_err(|e| format!("failed to serialize request: {e}"))?;
+        (config.completions_url(), payload)
+    } else {
+        (
+            format!("{}/messages", config.base_url),
+            messages_request(&config.model, messages, tools)?,
+        )
+    };
+    // Send curl configuration over stdin so credentials stay out of process arguments.
+    let quote = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+    let payload = std::str::from_utf8(&payload).expect("JSON is UTF-8");
+    let mut curl_config = format!("data = \"{}\"\n", quote(payload));
+    if !config.api_key.is_empty() {
+        if config.api_key.bytes().any(|byte| byte.is_ascii_control()) {
+            return Err("API キーに無効な文字が含まれています。".into());
+        }
+        let header = if provider == Provider::OpenAi {
+            "Authorization: Bearer "
+        } else {
+            "x-api-key: "
+        };
+        curl_config.push_str(&format!(
+            "header = \"{header}{}\"\n",
+            quote(&config.api_key)
+        ));
+    }
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Result<Option<String>, String>>();
 
     std::thread::spawn(move || {
@@ -414,12 +709,12 @@ async fn stream_chat_completion_once(
             .args(["-X", "POST"])
             .args(["-H", "Content-Type: application/json"])
             .args(["-H", "Accept: text/event-stream"]);
-        if !api_key.is_empty() {
-            cmd.args(["-H", &format!("Authorization: Bearer {api_key}")]);
+        if provider != Provider::OpenAi {
+            cmd.args(["-H", "anthropic-version: 2023-06-01"]);
         }
-        cmd.args(["--data-binary", "@-"])
+        cmd.args(["--config", "-"])
             .args(["-w", &format!("\n{STATUS_MARKER}%{{http_code}}\n")])
-            .arg(&url)
+            .args(["--globoff", "--url", &url])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -433,7 +728,7 @@ async fn stream_chat_completion_once(
         };
 
         if let Some(mut stdin) = child.stdin.take() {
-            if let Err(e) = stdin.write_all(&payload) {
+            if let Err(e) = stdin.write_all(curl_config.as_bytes()) {
                 let _ = tx.unbounded_send(Err(format!("failed to write request body: {e}")));
                 let _ = child.kill();
                 let _ = child.wait();
@@ -490,7 +785,11 @@ async fn stream_chat_completion_once(
         }
         if let Some(code) = http_status {
             if code >= 400 {
-                let _ = tx.unbounded_send(Err(format!("HTTP {code}: {}", raw_body.trim())));
+                let _ = tx.unbounded_send(Err(if provider == Provider::OpenAi {
+                    format!("HTTP {code}: {}", raw_body.trim())
+                } else {
+                    format!("Messages API のリクエストに失敗しました (HTTP {code})。")
+                }));
                 return;
             }
         }
@@ -501,7 +800,11 @@ async fn stream_chat_completion_once(
     while let Some(item) = rx.next().await {
         match item? {
             None => break,
-            Some(line) => match parser.feed_line(&line)? {
+            Some(line) => match if provider == Provider::OpenAi {
+                parser.feed_line(&line)?
+            } else {
+                parser.feed_messages_line(&line)?
+            } {
                 Some(SseEvent::TextDelta(delta)) => on_delta(&delta),
                 Some(SseEvent::Done) => break,
                 None => {}
@@ -837,6 +1140,78 @@ pub fn fetch_egov_law_xml(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn explicit_bedrock_configuration_does_not_use_saved_openai_values() {
+        let saved = AiConfig {
+            base_url: "https://example.com/v1".into(),
+            model: "saved-model".into(),
+            api_key: "saved-key".into(),
+        };
+        let env = |name: &str| match name {
+            "IBIS_AI_PROVIDER" => Some("bedrock".into()),
+            "AWS_DEFAULT_REGION" => Some("us-east-1".into()),
+            "AWS_BEARER_TOKEN_BEDROCK" => Some("bedrock-key".into()),
+            "IBIS_BEDROCK_MODEL_ID" => Some("global.anthropic.test-model".into()),
+            _ => None,
+        };
+        let (provider, config) = Provider::resolve(&saved, env).unwrap();
+        assert!(provider == Provider::Bedrock);
+        assert_eq!(
+            config.base_url,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic/v1"
+        );
+        assert_eq!(config.model, "global.anthropic.test-model");
+        assert_eq!(config.api_key, "bedrock-key");
+        let (_, config) = Provider::resolve(&saved, |name| {
+            (name == "ANTHROPIC_API_KEY").then(|| "different-key".into())
+        })
+        .unwrap();
+        assert_eq!(config.api_key, "saved-key");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn messages_api_round_trips_streamed_tool_calls_and_groups_results() {
+        let mut parser = SseStreamParser::default();
+        for line in [
+            r#"data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"確認します"}}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_cells","input":{}}}"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"range\":"}}"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"A1\"}"}}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ] {
+            parser.feed_messages_line(line).unwrap();
+        }
+        let outcome = parser.into_outcome();
+        assert!(outcome.received_done);
+        assert_eq!(outcome.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(outcome.content, "確認します");
+        let mut calls = outcome.tool_calls;
+        let mut second = calls[0].clone();
+        second.id = "toolu_2".into();
+        calls.push(second);
+        let request = messages_request(
+            "test-model",
+            &[
+                ChatMessage::system("instructions"),
+                ChatMessage::user("read"),
+                ChatMessage::assistant(Some(outcome.content), calls),
+                ChatMessage::tool_result("toolu_1", "result 1"),
+                ChatMessage::tool_result("toolu_2", "result 2"),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&request).unwrap();
+        assert_eq!(value["system"], "instructions");
+        assert_eq!(value["messages"][1]["content"][1]["input"]["range"], "A1");
+        assert_eq!(value["messages"][2]["role"], "user");
+        assert_eq!(value["messages"][2]["content"].as_array().unwrap().len(), 2);
+        assert_eq!(value["messages"][2]["content"][1]["tool_use_id"], "toolu_2");
+    }
 
     #[test]
     fn parses_streaming_text_and_tool_calls() {
