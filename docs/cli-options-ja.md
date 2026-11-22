@@ -263,6 +263,12 @@ PDF・XPS（OXPS を含む）・OFD の抽出可能な本文をページ順に�
 ibisOffice --export md --text-layout physical --out-dir ./out input.pdf
 ```
 
+本文だけが要るときは `--export txt` を使います。各ページの行をそのまま書き、ページの終わりに改ページ文字（form feed、`pdftotext` と同じ）を置きます。Markdown のエスケープも図形も付けません。描画や画像の展開をしないので `--export md` より速く終わります。`--text-layout physical` も使えます。
+
+```sh
+ibisOffice --export txt --text-layout physical --out-dir ./out input.pdf
+```
+
 DOCX の浮動画像は、画像データと表示寸法に加え、位置の基準・オフセット・回り込みを Markdown の `docx-anchor` 属性に保持します。この属性を残して DOCX に戻すと浮動画像になります。属性なしの画像はインラインとして読み込みます。
 
 DOCX の画像のトリミングは `docx-crop` に左・上・右・下の順で 10 万分率を、回転と反転は `docx-transform` に角度（度の 60,000 分の 1）・左右反転・上下反転の順で保持します。
