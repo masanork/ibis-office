@@ -128,7 +128,7 @@ fn mcp_read_only_does_not_list_or_run_what_changes() {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[test]
-fn mcp_sqlite_count_is_available_in_read_only_mode() {
+fn mcp_sqlite_queries_are_available_in_read_only_mode() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("analysis.sqlite3");
     std::fs::write(&path, include_bytes!("../../ibis-doc-model/src/query/fixtures/external.sqlite3")).unwrap();
@@ -139,11 +139,22 @@ fn mcp_sqlite_count_is_available_in_read_only_mode() {
             "name": "sqlite_count_rows",
             "arguments": {"path": path, "table": "sales \"2026\"", "group_by": "remark", "filters": [{"column":"remark","operator":"is_null"}]},
         })),
+        request(3, "tools/call", json!({
+            "name":"sqlite_query",
+            "arguments":{"path":path,"sql":"SELECT ? AS label","params":["分析"]},
+        })),
     ]);
     let tools = answers[0]["result"]["tools"].as_array().unwrap();
     assert!(tools.iter().any(|tool| tool["name"] == "sqlite_count_rows" && tool["annotations"]["readOnlyHint"] == true));
+    assert!(tools.iter().any(|tool| tool["name"] == "sqlite_query" && tool["annotations"]["readOnlyHint"] == true));
+    assert!(!tools.iter().any(|tool| tool["name"] == "sqlite_query_to_table" || tool["name"] == "xlsx_create_pivot"));
     let result = &answers[1]["result"];
     assert_eq!(result["isError"], false);
     assert!(result["_meta"]["io.ibisoffice/untrusted-content"].is_string());
     assert_eq!(result["structuredContent"]["groups"], json!([{"value":null,"count":1}]));
+    let query = &answers[2]["result"];
+    assert_eq!(query["isError"], false);
+    assert!(query["_meta"]["io.ibisoffice/untrusted-content"].is_string());
+    assert_eq!(query["structuredContent"]["columns"], json!(["label"]));
+    assert_eq!(query["structuredContent"]["rows"], json!([["分析"]]));
 }

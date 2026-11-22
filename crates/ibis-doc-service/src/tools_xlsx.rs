@@ -23,7 +23,7 @@ pub struct WorkbookToolContext {
     pub max_clear_contents_cells: Option<usize>,
 }
 
-fn workbook_document<'a>(service: &'a mut Service, id: &str) -> Result<&'a mut ToolDocument, ToolError> {
+pub(crate) fn workbook_document<'a>(service: &'a mut Service, id: &str) -> Result<&'a mut ToolDocument, ToolError> {
     let open = service.tool_document(id)?;
     if open.kind != Kind::Workbook {
         return Err(ToolError::new("unsupported_operation", "this tool is for an xlsx workbook"));
@@ -96,14 +96,14 @@ pub(crate) fn sheets_of(open: &ToolDocument) -> Result<Vec<(usize, String, &Shee
     Ok(workbook_sheets(open.document.presentation()))
 }
 
-fn workbook_sheets(workbook: &Presentation) -> Vec<(usize, String, &Sheet)> {
+pub(crate) fn workbook_sheets(workbook: &Presentation) -> Vec<(usize, String, &Sheet)> {
     workbook.slides.iter().enumerate().filter_map(|(index, slide)| {
         let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(slide)?;
         Some((index, slide.name.clone().unwrap_or_else(|| format!("Sheet{}", index + 1)), &**sheet))
     }).collect()
 }
 
-fn workbook_sheet<'a>(
+pub(crate) fn workbook_sheet<'a>(
     workbook: &'a Presentation,
     sheets: &'a [(usize, String, &'a Sheet)],
     args: &Value,
@@ -464,7 +464,7 @@ use crate::tools_docx::{color_schema, font_schema};
 
 pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
-        SET_CELLS, CLEAR_CELLS, SET_FORMAT, crate::tools_chart::tool(),
+        SET_CELLS, CLEAR_CELLS, SET_FORMAT, crate::tools_chart::tool(), crate::tools_pivot::CREATE_PIVOT,
         Tool {
             name: "xlsx_set_validation",
             description: "Set an input validation rule for an A1 range, replacing existing validation only in that range.",
@@ -505,7 +505,7 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
     ]
 }
 
-fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extra: Value) -> Result<Value, ToolError> {
+pub(crate) fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extra: Value) -> Result<Value, ToolError> {
     let open = service.tool_document(id)?;
     execute(open, commands.into_iter().map(Command::Sheet).collect())?;
     Ok(edited(id, open, extra, Vec::new()))

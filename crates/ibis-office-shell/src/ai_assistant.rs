@@ -183,6 +183,26 @@ fn formula_explanation_messages(sheet: &str, cell: &str, formula: &str) -> Vec<C
     ]
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+enum SqliteToolResult {
+    Read(serde_json::Value),
+    Export(ibis_doc_service::SqliteTableExport),
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl AssistantTurn {
+    fn tool_context(&self) -> ibis_doc_service::DraftToolContext {
+        ibis_doc_service::DraftToolContext {
+            source: self.source.clone(),
+            workbook: ibis_doc_service::WorkbookToolContext {
+                active_sheet: Some(self.active),
+                max_read_cells: Some(MAX_READ_CELLS),
+                max_clear_contents_cells: Some(500),
+            },
+        }
+    }
+}
+
 struct SourceEdit {
     kind: EditableSourceKind,
     target: String,
@@ -1037,6 +1057,7 @@ impl SlideEditor {
                         return;
                     }
                     Ok(out) => {
+                        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                         let mut sqlite_results = std::collections::HashMap::new();
                         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                         if let Some(path) = &sqlite_source {
@@ -1049,16 +1070,19 @@ impl SlideEditor {
                                         return;
                                     }
                                     let (path, arguments) = (path.clone(), call.function.arguments.clone());
+                                    let access = tool.access;
                                     let result = cx.background_executor().spawn(async move {
-                                        serde_json::from_str(&arguments)
-                                            .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()))
-                                            .and_then(|args| ibis_doc_service::run_selected_sqlite_tool(&path, name, args))
+                                        let args = serde_json::from_str(&arguments)
+                                            .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()))?;
+                                        if access == ibis_doc_service::Access::Edit {
+                                            ibis_doc_service::prepare_selected_sqlite_export(&path, args)
+                                                .map(SqliteToolResult::Export)
+                                        } else {
+                                            ibis_doc_service::run_selected_sqlite_tool(&path, name, args)
+                                                .map(SqliteToolResult::Read)
+                                        }
                                     }).await;
-                                    let response = match result {
-                                        Ok(value) => (value.to_string(), format!("✓ {name}")),
-                                        Err(error) => (json!({"error": error.message}).to_string(), format!("✗ {name}: {error}")),
-                                    };
-                                    sqlite_results.insert(index, response);
+                                    sqlite_results.insert(index, result);
                                 }
                             }
                         }
@@ -1121,13 +1145,36 @@ impl SlideEditor {
                             }
 
                             for (index, call) in out.tool_calls.iter().enumerate() {
-                                let (result_json, commands, log_text) =
-                                    if let Some((result, label)) = sqlite_results.remove(&index) {
-                                        (result, Vec::new(), label)
-                                    } else {
-                                        let turn = draft.as_mut().expect("editing turns have a draft");
-                                        editor.stage_assistant_tool(kind, call, turn, &turn_commands, cx)
-                                    };
+                                let turn = draft.as_mut().expect("editing turns have a draft");
+                                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                                let sqlite_result = sqlite_results.remove(&index).map(|result| {
+                                    let name = &call.function.name;
+                                    let result = result.and_then(|result| match result {
+                                        SqliteToolResult::Read(value) => Ok((value, Vec::new())),
+                                        SqliteToolResult::Export(export) => {
+                                            let context = turn.tool_context();
+                                            export.stage(&mut turn.draft, context)
+                                        }
+                                    });
+                                    match result {
+                                        Ok((value, commands)) => {
+                                            let label = if commands.is_empty() {
+                                                format!("✓ {name}")
+                                            } else {
+                                                let sheet = value["sheet"].as_str().unwrap_or("");
+                                                let range = value["range"].as_str().unwrap_or("");
+                                                format!("SQLの結果を表に出力（{sheet}!{range}）")
+                                            };
+                                            (value.to_string(), commands, label)
+                                        }
+                                        Err(error) => (json!({"error": error.message}).to_string(), Vec::new(), format!("✗ {name}: {error}")),
+                                    }
+                                });
+                                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                                let sqlite_result = { let _ = index; None };
+                                let (result_json, commands, log_text) = sqlite_result.unwrap_or_else(|| {
+                                    editor.stage_assistant_tool(kind, call, turn, &turn_commands, cx)
+                                });
                                 if !commands.is_empty() {
                                     edit_labels.push(log_text.clone());
                                     turn_commands.extend(commands);
@@ -1838,14 +1885,7 @@ impl SlideEditor {
                 turn.source = Some(std::sync::Arc::new(source));
                 turn.private_chart_source = true;
             }
-            let context = ibis_doc_service::DraftToolContext {
-                source: turn.source.clone(),
-                workbook: ibis_doc_service::WorkbookToolContext {
-                    active_sheet: Some(turn.active),
-                    max_read_cells: Some(MAX_READ_CELLS),
-                    max_clear_contents_cells: Some(500),
-                },
-            };
+            let context = turn.tool_context();
             ibis_doc_service::run_draft_tool(format, &mut turn.draft, context, name, arguments)
         })();
         match result {
@@ -1873,6 +1913,10 @@ impl SlideEditor {
                     let sheet = value["destination_sheet"].as_str().unwrap_or("");
                     let anchor = value["anchor"].as_str().unwrap_or("");
                     format!("グラフを追加（{sheet}!{anchor}）")
+                } else if name == "xlsx_create_pivot" {
+                    let sheet = value["sheet"].as_str().unwrap_or("");
+                    let range = value["range"].as_str().unwrap_or("");
+                    format!("ピボットテーブルを追加（{sheet}!{range}）")
                 } else {
                     match serde_json::from_str::<serde_json::Value>(args) {
                         Ok(args) => format!("{name} {}", tool_target_label(&args)),

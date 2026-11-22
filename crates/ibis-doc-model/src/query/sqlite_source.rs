@@ -145,6 +145,16 @@ pub enum SqliteScalar<'a> {
     Text(&'a str),
 }
 
+impl SqliteScalar<'_> {
+    fn to_sql(&self) -> Value {
+        match self {
+            Self::Integer(value) => Value::Numeric(Numeric::Integer(*value)),
+            Self::Real(value) => Value::from_f64(*value),
+            Self::Text(value) => Value::from_text((*value).to_owned()),
+        }
+    }
+}
+
 pub enum SqlitePredicate<'a> {
     Equal(SqliteScalar<'a>),
     NotEqual(SqliteScalar<'a>),
@@ -168,12 +178,7 @@ impl SqlitePredicate<'_> {
             Self::IsNull => return ("IS NULL", None),
             Self::IsNotNull => return ("IS NOT NULL", None),
         };
-        let bound = match value {
-            SqliteScalar::Integer(value) => Value::Numeric(Numeric::Integer(*value)),
-            SqliteScalar::Real(value) => Value::from_f64(*value),
-            SqliteScalar::Text(value) => Value::from_text((*value).to_owned()),
-        };
-        (op, Some(bound))
+        (op, Some(value.to_sql()))
     }
 }
 
@@ -185,7 +190,7 @@ pub fn sqlite_count(
     filters: &[(&str, SqlitePredicate<'_>)],
     limit: usize,
 ) -> Result<serde_json::Value, String> {
-    use serde_json::{Value as Json, json};
+    use serde_json::json;
 
     let (_database, connection) = open(path)?;
     let table = checked_table(&connection, table)?;
@@ -228,52 +233,37 @@ pub fn sqlite_count(
         }
         None => format!("SELECT COUNT(*) FROM main.{table}{where_clause}"),
     };
-    let mut stmt = connection.prepare(sql).map_err(|error| error.to_string())?;
-    for (index, value) in parameters.into_iter().enumerate() {
-        stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value)
-            .map_err(|error| error.to_string())?;
+    let mut result = execute_query(path, &connection, &sql, parameters, limit, 256 * 1024)?;
+    if group_by.is_none() {
+        let count = result
+            .rows
+            .first()
+            .and_then(|row| row[0].as_i64())
+            .ok_or("Invalid SQLite count")?;
+        return Ok(json!({"count": count}));
     }
-    let mut groups = Vec::new();
     let mut text_budget = 32usize * 1024;
-    while let Some(row) = stmt
-        .run_one_step_blocking(|| Ok(()), || Ok(()))
-        .map_err(|error| error.to_string())?
-    {
-        if group_by.is_none() {
-            let ValueRef::Numeric(Numeric::Integer(count)) = row.get_value(0).as_ref() else {
-                return Err("Invalid SQLite count".into());
-            };
-            check_sidecars(path)?;
-            return Ok(json!({"count": count}));
-        }
-        if groups.len() == limit {
-            check_sidecars(path)?;
-            return Ok(json!({"groups": groups, "truncated": true}));
-        }
-        let value = match row.get_value(0).as_ref() {
-            ValueRef::Null => Json::Null,
-            ValueRef::Numeric(Numeric::Integer(value)) => json!(value),
-            ValueRef::Numeric(Numeric::Float(value)) => {
-                let value: f64 = value.into();
-                json!(serde_json::Number::from_f64(value).ok_or("Non-finite SQLite group value")?)
-            }
-            ValueRef::Text(value) => {
+    let groups = result
+        .rows
+        .drain(..)
+        .map(|mut row| {
+            let count = row
+                .pop()
+                .and_then(|value| value.as_i64())
+                .ok_or("Invalid SQLite count")?;
+            let value = row.pop().ok_or("Invalid SQLite group")?;
+            if let Some(text) = value.as_str() {
                 text_budget = text_budget
-                    .checked_sub(value.as_str().len())
+                    .checked_sub(text.len())
                     .ok_or("SQLite group values exceed the preview size limit")?;
-                json!(value.as_str())
             }
-            ValueRef::Blob(_) => {
-                return Err("SQLite BLOB values cannot be returned as group keys".into());
-            }
-        };
-        let ValueRef::Numeric(Numeric::Integer(count)) = row.get_value(1).as_ref() else {
-            return Err("Invalid SQLite count".into());
-        };
-        groups.push(json!({"value": value, "count": count}));
+            Ok::<_, String>(json!({"value": value, "count": count}))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if result.truncated && groups.len() < limit {
+        return Err("SQLite group values exceed the preview size limit".into());
     }
-    check_sidecars(path)?;
-    Ok(json!({"groups": groups, "truncated": false}))
+    Ok(json!({"groups": groups, "truncated": result.truncated}))
 }
 
 pub fn read_sqlite_table(path: &Path, table: &str) -> Result<QTable, String> {
@@ -367,6 +357,145 @@ fn cell(
         }
     };
     Ok((cell, Some(ty)))
+}
+
+/// A bounded SQL result. SQLite integers remain exact until worksheet conversion.
+pub struct SqliteRows {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub truncated: bool,
+}
+
+pub fn sqlite_query(
+    path: &Path,
+    sql: &str,
+    params: &[Option<SqliteScalar<'_>>],
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<SqliteRows, String> {
+    use turso_parser::{
+        ast::{Cmd, Stmt},
+        parser::Parser,
+    };
+
+    if sql.len() > 16 * 1024 {
+        return Err("SQLite query text exceeds 16 KiB".into());
+    }
+    let mut parser = Parser::new(sql.as_bytes());
+    let first = parser.next_cmd().map_err(|error| error.to_string())?;
+    if !matches!(first, Some(Cmd::Stmt(Stmt::Select(_))))
+        || parser
+            .next_cmd()
+            .map_err(|error| error.to_string())?
+            .is_some()
+    {
+        return Err("Supply a single read-only SELECT or WITH … SELECT query".into());
+    }
+    let (_database, connection) = open(path)?;
+    let parameters = params
+        .iter()
+        .map(|value| value.as_ref().map_or(Value::Null, SqliteScalar::to_sql))
+        .collect();
+    execute_query(path, &connection, sql, parameters, max_rows, max_bytes)
+}
+
+fn execute_query(
+    path: &Path,
+    connection: &Arc<Connection>,
+    sql: &str,
+    parameters: Vec<Value>,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<SqliteRows, String> {
+    use serde_json::{Value as Json, json};
+    use std::time::{Duration, Instant};
+
+    connection.set_load_extension_enabled(false);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    connection.set_progress_handler(1_000, Some(Box::new(move || Instant::now() >= deadline)));
+    let mut stmt = connection.prepare(sql).map_err(|error| error.to_string())?;
+    if stmt.parameters_count() != parameters.len() {
+        return Err(format!(
+            "SQLite query requires {} positional parameters",
+            stmt.parameters_count()
+        ));
+    }
+    for (index, value) in parameters.into_iter().enumerate() {
+        stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value)
+            .map_err(|error| error.to_string())?;
+    }
+    let width = stmt.num_columns();
+    if !(1..=256).contains(&width) {
+        return Err("SQLite query must return between 1 and 256 columns".into());
+    }
+    let columns = (0..width)
+        .map(|index| stmt.get_column_name(index).into_owned())
+        .collect::<Vec<_>>();
+    let mut remaining = max_bytes
+        .checked_sub(json!(columns).to_string().len())
+        .ok_or("SQLite column names exceed the result size limit")?;
+    let mut result = SqliteRows {
+        columns,
+        rows: Vec::new(),
+        truncated: false,
+    };
+    loop {
+        if Instant::now() >= deadline {
+            return Err("SQLite query exceeded the execution time limit".into());
+        }
+        let row = stmt
+            .run_one_step_blocking(|| Ok(()), || Ok(()))
+            .map_err(|error| {
+                if Instant::now() >= deadline {
+                    "SQLite query exceeded the execution time limit".into()
+                } else {
+                    error.to_string()
+                }
+            })?;
+        let Some(row) = row else { break };
+        if result.rows.len() >= max_rows || (result.rows.len() + 2) * width > 100_000 {
+            result.truncated = true;
+            break;
+        }
+        let mut values = Vec::with_capacity(width);
+        let mut text_room = remaining;
+        for index in 0..width {
+            values.push(match row.get_value(index).as_ref() {
+                ValueRef::Null => Json::Null,
+                ValueRef::Numeric(Numeric::Integer(value)) => json!(value),
+                ValueRef::Numeric(Numeric::Float(value)) => {
+                    let value: f64 = value.into();
+                    json!(serde_json::Number::from_f64(value).ok_or("Non-finite SQLite number")?)
+                }
+                ValueRef::Text(value) => {
+                    let text = value.as_str();
+                    let Some(room) = text_room.checked_sub(text.len()) else {
+                        break;
+                    };
+                    text_room = room;
+                    json!(text)
+                }
+                ValueRef::Blob(_) => {
+                    return Err(
+                        "SQLite BLOB results must be converted explicitly, for example with hex()"
+                            .into(),
+                    );
+                }
+            });
+        }
+        let size = serde_json::to_string(&values)
+            .map_err(|e| e.to_string())?
+            .len()
+            + 1;
+        if values.len() != width || size > remaining {
+            result.truncated = true;
+            break;
+        }
+        remaining -= size;
+        result.rows.push(values);
+    }
+    check_sidecars(path)?;
+    Ok(result)
 }
 
 #[cfg(test)]

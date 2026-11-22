@@ -17,6 +17,7 @@ mod tools_docx;
 mod tools_pptx;
 mod tools_xlsx;
 mod tools_chart;
+mod tools_pivot;
 mod tools_wallet;
 mod tools_prefill;
 mod wallet_dcql;
@@ -33,4 +34,4 @@ pub use tools_xlsx::WorkbookToolContext;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod tools_sqlite;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use tools_sqlite::{run_selected_sqlite_tool, sqlite_tools};
+pub use tools_sqlite::{SqliteTableExport, prepare_selected_sqlite_export, run_selected_sqlite_tool, sqlite_tools};

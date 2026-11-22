@@ -5599,6 +5599,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "turso_core",
+ "turso_parser",
  "unicode-normalization",
  "unicode-segmentation",
  "zstd",

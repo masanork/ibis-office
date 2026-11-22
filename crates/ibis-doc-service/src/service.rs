@@ -191,10 +191,20 @@ pub fn run_draft_tool(
     document: &mut Document,
     context: DraftToolContext,
     name: &str,
-    mut arguments: Value,
+    arguments: Value,
 ) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
     let tool = catalog::document_tools(kind).find(|tool| tool.name == name)
         .ok_or_else(|| ToolError::new("unsupported_operation", format!("no draft tool {name}")))?;
+    run_draft_operation(kind, document, context, arguments, tool.run)
+}
+
+pub(crate) fn run_draft_operation(
+    kind: Kind,
+    document: &mut Document,
+    context: DraftToolContext,
+    mut arguments: Value,
+    run: impl FnOnce(&mut Service, &Value) -> Result<Value, ToolError>,
+) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
     let args = arguments.as_object_mut().ok_or_else(|| ToolError::invalid("the arguments are not an object"))?;
     args.insert("document_id".into(), Value::String(DRAFT_ID.into()));
 
@@ -205,7 +215,7 @@ pub fn run_draft_tool(
         model: ToolDocument { kind, document: document.clone(), recorded_edits: Some(Vec::new()) },
         context,
     });
-    let mut result = (tool.run)(&mut service, &arguments)?;
+    let mut result = run(&mut service, &arguments)?;
     let draft = service.draft.take().expect("draft tools cannot close the draft").model;
     if let Some(object) = result.as_object_mut() {
         object.remove("document_id");

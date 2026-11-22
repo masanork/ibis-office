@@ -5,11 +5,12 @@
 use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
-    SqlitePredicate, SqliteScalar, sqlite_columns, sqlite_count, sqlite_tables,
+    SqlitePredicate, SqliteRows, SqliteScalar, sqlite_columns, sqlite_count, sqlite_query,
+    sqlite_tables,
 };
 use serde_json::{Value, json};
 
-use crate::catalog::{Access, Tool, integer, object, string};
+use crate::catalog::{Access, Tool, document_id, integer, object, string};
 use crate::service::{Args, Limits, Service};
 use crate::{ToolError, paths};
 
@@ -33,6 +34,40 @@ const TOOLS: &[Tool] = &[
         returns_content: true,
         schema: || object(&[source_path(), table_name()], &[PATH, "table"]),
         run: describe_table,
+    },
+    Tool {
+        name: "sqlite_query",
+        description: "Run one read-only SQLite SELECT (including WITH) and preview its result. Increase limit for a larger preview.",
+        access: Access::Read,
+        returns_content: true,
+        schema: || {
+            let mut props = query_properties();
+            props.push((
+                "limit",
+                integer("Maximum preview rows (default 50, maximum 1000)."),
+            ));
+            object(&props, &[PATH, "sql"])
+        },
+        run: query,
+    },
+    Tool {
+        name: "sqlite_query_to_table",
+        description: "Run one read-only SQLite SELECT and write its complete result to a new Excel table at a blank destination. Refuses results above the export limit.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: || {
+            let mut props = query_properties();
+            props.extend([
+                document_id(),
+                ("destination_sheet", string("Worksheet for the new table.")),
+                ("anchor", string("Top-left cell in A1 form.")),
+            ]);
+            object(
+                &props,
+                &[PATH, "sql", "document_id", "destination_sheet", "anchor"],
+            )
+        },
+        run: query_to_table,
     },
     Tool {
         name: "sqlite_count_rows",
@@ -85,6 +120,17 @@ pub fn run_selected_sqlite_tool(
     name: &str,
     mut args: Value,
 ) -> Result<Value, ToolError> {
+    let mut service = selected_source(path, &mut args)?;
+    let tool = TOOLS
+        .iter()
+        .find(|tool| tool.name == name && tool.access == Access::Read)
+        .ok_or_else(|| {
+            ToolError::new("unsupported_operation", "no SQLite read tool by that name")
+        })?;
+    (tool.run)(&mut service, &args)
+}
+
+fn selected_source(path: &Path, args: &mut Value) -> Result<Service, ToolError> {
     let parent = path
         .parent()
         .ok_or_else(|| ToolError::invalid("SQLite file has no parent directory"))?;
@@ -100,14 +146,11 @@ pub fn run_selected_sqlite_tool(
         ));
     }
     object.insert(PATH.into(), json!(path));
-    let tool = TOOLS.iter().find(|tool| tool.name == name).ok_or_else(|| {
-        ToolError::new(
-            "unsupported_operation",
-            "no SQLite analysis tool by that name",
-        )
-    })?;
-    let mut service = Service::new(&[parent.to_path_buf()], true, Limits::default());
-    (tool.run)(&mut service, &args)
+    Ok(Service::new(
+        &[parent.to_path_buf()],
+        true,
+        Limits::default(),
+    ))
 }
 
 fn source_path() -> (&'static str, Value) {
@@ -151,6 +194,20 @@ fn describe_table(service: &mut Service, args: &Value) -> Result<Value, ToolErro
     Ok(json!({"table": table, "columns": columns}))
 }
 
+fn parse_scalar(value: &Value) -> Result<SqliteScalar<'_>, ToolError> {
+    match value {
+        Value::String(value) => Ok(SqliteScalar::Text(value)),
+        Value::Number(value) if value.is_i64() => {
+            Ok(SqliteScalar::Integer(value.as_i64().unwrap()))
+        }
+        Value::Number(value) if value.is_f64() => Ok(SqliteScalar::Real(value.as_f64().unwrap())),
+        Value::Number(_) => Err(ToolError::invalid(
+            "integer is outside SQLite's signed 64-bit range",
+        )),
+        _ => Err(ToolError::invalid("expected a string or number")),
+    }
+}
+
 fn count_filter(filter: &Value) -> Result<(&str, SqlitePredicate<'_>), ToolError> {
     use SqlitePredicate::*;
 
@@ -165,27 +222,9 @@ fn count_filter(filter: &Value) -> Result<(&str, SqlitePredicate<'_>), ToolError
         "is_null" => IsNull,
         "is_not_null" => IsNotNull,
         _ => {
-            let value = match value {
-                Some(Value::String(value)) => SqliteScalar::Text(value),
-                Some(Value::Number(value)) => {
-                    if let Some(integer) = value.as_i64() {
-                        SqliteScalar::Integer(integer)
-                    } else if value.is_f64()
-                        && let Some(real) = value.as_f64()
-                    {
-                        SqliteScalar::Real(real)
-                    } else {
-                        return Err(ToolError::invalid(
-                            "filter integer is outside SQLite's signed 64-bit range",
-                        ));
-                    }
-                }
-                _ => {
-                    return Err(ToolError::invalid(
-                        "comparison filters require a string or number value",
-                    ));
-                }
-            };
+            let value = parse_scalar(
+                value.ok_or_else(|| ToolError::invalid("comparison filters require a value"))?,
+            )?;
             match operator {
                 "eq" => Equal(value),
                 "ne" => NotEqual(value),
@@ -233,4 +272,105 @@ fn count_rows(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
         result["group_by"] = json!(group_by);
     }
     Ok(result)
+}
+
+fn query_properties() -> Vec<(&'static str, Value)> {
+    vec![
+        source_path(),
+        (
+            "sql",
+            string("One SQLite SELECT or WITH query. Use positional ? parameters."),
+        ),
+        (
+            "params",
+            json!({"type":"array","maxItems":100,"items":{"type":["string","number","null"]}}),
+        ),
+    ]
+}
+
+fn run_query(
+    service: &Service,
+    args: &Value,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<SqliteRows, ToolError> {
+    let sql = args.str_arg("sql")?;
+    let params = match args.get("params") {
+        None => Vec::new(),
+        Some(Value::Array(values)) if values.len() <= 100 => values
+            .iter()
+            .map(|value| {
+                if value.is_null() {
+                    Ok(None)
+                } else {
+                    parse_scalar(value).map(Some)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => {
+            return Err(ToolError::invalid(
+                "params must be an array of at most 100 values",
+            ));
+        }
+    };
+    sqlite_query(&database(service, args)?, sql, &params, max_rows, max_bytes).map_err(sqlite_error)
+}
+
+fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let limit = args.opt_usize("limit")?.unwrap_or(50).clamp(1, 1000);
+    let result = run_query(service, args, limit, service.limits.page_bytes)?;
+    Ok(json!({
+        "sql": args["sql"], "params": args.get("params").cloned().unwrap_or_else(|| json!([])),
+        "columns": result.columns, "rows": result.rows, "truncated": result.truncated,
+    }))
+}
+
+fn complete_query(service: &Service, args: &Value) -> Result<SqliteRows, ToolError> {
+    let rows = run_query(service, args, 10_000, 4 * 1024 * 1024)?;
+    if rows.truncated {
+        return Err(ToolError::new(
+            "result_too_large",
+            "The complete result exceeds the table export limit. Narrow the query.",
+        ));
+    }
+    Ok(rows)
+}
+
+fn query_to_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let rows = complete_query(service, args)?;
+    crate::tools_pivot::write_table(service, args, rows)
+}
+
+/// The complete database result stays in-process between the worker and the draft.
+pub struct SqliteTableExport {
+    arguments: Value,
+    rows: SqliteRows,
+}
+
+impl SqliteTableExport {
+    pub fn stage(
+        self,
+        document: &mut ibis_doc_model::Document,
+        context: crate::DraftToolContext,
+    ) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
+        crate::service::run_draft_operation(
+            ibis_formats::Kind::Workbook,
+            document,
+            context,
+            self.arguments,
+            |service, args| crate::tools_pivot::write_table(service, args, self.rows),
+        )
+    }
+}
+
+pub fn prepare_selected_sqlite_export(
+    path: &Path,
+    mut args: Value,
+) -> Result<SqliteTableExport, ToolError> {
+    let service = selected_source(path, &mut args)?;
+    let rows = complete_query(&service, &args)?;
+    Ok(SqliteTableExport {
+        arguments: args,
+        rows,
+    })
 }

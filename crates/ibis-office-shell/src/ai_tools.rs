@@ -1034,7 +1034,8 @@ A --> C
             assert_eq!(definition.function.name, shared.name);
             let mut expected = (shared.schema)();
             expected["properties"].as_object_mut().unwrap().remove("path");
-            expected["required"].as_array_mut().unwrap().retain(|name| name != "path");
+            expected["properties"].as_object_mut().unwrap().remove("document_id");
+            expected["required"].as_array_mut().unwrap().retain(|name| name != "path" && name != "document_id");
             assert_eq!(definition.function.parameters, expected);
         }
     }
