@@ -5084,6 +5084,7 @@ dependencies = [
  "ibis-office-updater",
  "ibis-office-xlsx",
  "ibis-ooxml",
+ "ibis-pdf",
  "image",
  "js-sys",
  "krilla",

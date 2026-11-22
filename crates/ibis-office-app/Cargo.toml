@@ -28,6 +28,7 @@ ibis-office-docx.workspace = true
 # The workbook screen (XLSX), a crate of its own (tasks/doc/crate-split-plan.md, 16).
 ibis-office-xlsx.workspace = true
 ibis-office-pdf = { path = "../ibis-office-pdf" }
+ibis-pdf = { path = "../ibis-pdf" }
 # `#[editor_ext]`: the methods a format writes for the editor become extension traits (tasks/doc/crate-split-plan.md, 10).
 ibis-office-macros.workspace = true
 ibis-doc-model.workspace = true
