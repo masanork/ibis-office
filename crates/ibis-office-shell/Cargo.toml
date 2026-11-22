@@ -38,6 +38,10 @@ krilla = { version = "=0.8.2", default-features = false, features = ["raster-ima
 usvg = { version = "=0.46.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts"], optional = true }
 
 # Automatic update (update.rs) and another app changing an open file (file_watch.rs): as ibis-office-app's.
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+gix = { version = "0.90", default-features = false, features = ["sha1"] }
+similar = { version = "2.7", default-features = false, features = ["text"] }
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"] }
 # The random bytes of a password-protected save (the OS generator on every OS: /dev/urandom is not on Windows).

@@ -517,6 +517,8 @@ pub struct SlideEditor {
     /// format, never looked into here.
     pub(crate) format_prefs: Vec<Box<dyn std::any::Any>>,
     /// The sidebar is asked for (the title row's toggle, a panel opened). Whether it is on screen is `right_pane`.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) git_workspace: Option<crate::git_workspace::GitWorkspace>,
     pub sidebar_open: bool,
     /// The last text typed into the find panel (kept after the panel closes: ⌘G / Shift+⌘G find with it).
     pub last_find_query: String,
@@ -903,6 +905,8 @@ impl SlideEditor {
             loading: false,
             format,
             format_prefs: crate::format::drivers().iter().map(|(_, driver)| driver.new_prefs()).collect(),
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            git_workspace: None,
             sidebar_open: true,
             last_find_query: String::new(),
             sidebar_layout:Default::default(),
@@ -4394,6 +4398,12 @@ impl SlideEditor {
             }
             // Windows and Linux: the start window's menus below the title row (macOS has them in the system's menu bar).
             let d = d.child(self.render_title_row(window, cx)).when(crate::start_menu::shows_bar(), |d| d.child(self.render_menu_bar(window, cx)));
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            if let Some(pane) = self.render_git_workspace(cx) {
+                return d.child(div().flex().flex_1().min_h_0().child(pane).child(
+                    div().flex_1().min_w_0().min_h_0().child(self.render_start_view(narrow_phone, cx)),
+                ));
+            }
             return d.child(self.render_start_view(narrow_phone, cx));
         }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -4421,6 +4431,10 @@ impl SlideEditor {
         } else {
             self.render_sidebar(window, cx)
         };
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let git_workspace = if focus { None } else { self.render_git_workspace(cx) };
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let git_workspace: Option<AnyElement> = None;
         let body = with_format!(self, render_body(self, window, cx));
         if self.grid_only {
             return d.child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)));
@@ -4435,6 +4449,7 @@ impl SlideEditor {
                     .flex_row()
                     .flex_1()
                     .min_h_0()
+                    .children(git_workspace)
                     // Text input goes to the format (shell/input.rs).
                     .child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)))
                     .children(sidebar),
@@ -4947,6 +4962,8 @@ impl SlideEditor {
                 loading: _,
                 format,
                 format_prefs: _,
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                git_workspace: _,
                 sidebar_open: _,
                 last_find_query: _,
                 sidebar_layout: _,

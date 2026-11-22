@@ -1567,3 +1567,16 @@ structured-preview.issuer	Issuer identifier in the file
 structured-preview.received-only	Only fields included in this file are shown. Other fields may exist in the original credential.
 structured-preview.unverified	Issuer trust, signature and holder or device binding have not been verified.
 structured-preview.matching-digests	Disclosures matching a digest in the file
+file.open-repository	Open Repository…
+git.failed	Git Workspace
+git.select-file	Select a file to view its history
+git.loading	Loading…
+git.working-file	Working File
+git.older	Older History
+git.open-revision	View Revision
+git.base	Base
+git.base-selected	Base ✓
+git.revised	Revised
+git.revised-selected	Revised ✓
+git.compare	Compare Revisions
+git.no-changes	No changes.

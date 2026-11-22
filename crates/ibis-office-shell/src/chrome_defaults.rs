@@ -181,6 +181,8 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
     items.extend(vec![
         sub("file.new", "note_add", new_items),
         item("file.open", "folder_open").shortcut("⌘O").on(|this, window, cx| this.open_file(&crate::actions::Open, window, cx)).into(),
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        item("file.open-repository", "folder_open").on(|this, window, cx| this.pick_git_repository(window, cx)).into(),
         sub("file.recent", "schedule", recent),
         SEP,
         item("file.save", "save").shortcut("⌘S").on(|this, window, cx| this.save(&crate::actions::Save, window, cx)).into(),

@@ -53,6 +53,8 @@ pub mod caret;
 pub mod gesture;
 pub mod document_memory;
 mod document_compare;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod git_workspace;
 pub mod selection_handles;
 pub mod autocorrect;
 pub mod autorecover;

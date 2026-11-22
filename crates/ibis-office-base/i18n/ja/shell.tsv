@@ -1565,3 +1565,16 @@ structured-preview.issuer	ファイルに記載された発行元
 structured-preview.received-only	このファイルに含まれる項目を表示しています。元の資格情報には別の項目がある場合があります。
 structured-preview.unverified	発行元の信頼性、署名、保有者・端末との結び付きは未確認です。
 structured-preview.matching-digests	ファイル内の照合値と一致した開示項目数
+file.open-repository	リポジトリを開く…
+git.failed	Gitワークスペース
+git.select-file	ファイルを選ぶと履歴を表示
+git.loading	読み込み中…
+git.working-file	作業ファイル
+git.older	以前の履歴
+git.open-revision	この版を表示
+git.base	旧版
+git.base-selected	旧版 ✓
+git.revised	新版
+git.revised-selected	新版 ✓
+git.compare	二版を比較
+git.no-changes	変更はありません。
