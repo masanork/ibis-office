@@ -598,3 +598,72 @@ fn xlsx_formula_trace_in_a_draft_resolves_names_and_marks_volatile_formulas() {
     assert_eq!(dynamic["volatile"], true);
     assert_eq!(dynamic["references"], json!([]));
 }
+
+#[test]
+fn xlsx_sheet_rules_filter_and_page_in_file_and_draft() {
+    use ibis_doc_model::sheet::{CellRange, CfKind, CfRule, ConditionalFormat, Validation};
+    use ibis_doc_model::{Command, Document, SheetCommand};
+    use ibis_formats::{Kind, SaveOptions};
+
+    let opened = ibis_formats::open(ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
+    let active = opened.presentation.slides[0].id;
+    let sheet = opened.presentation.slides[0].name.clone().unwrap();
+    let mut draft = Document::new(opened.presentation);
+    let column = |c| CellRange { first_row: 0, first_column: c, last_row: 3, last_column: c };
+    let ranges = vec![column(0), column(2)];
+    draft.execute(vec![
+        Command::Sheet(SheetCommand::SetValidation {
+            sheet: active,
+            ranges: ranges.clone(),
+            rule: Some(Validation {
+                ranges,
+                kind: "list".into(),
+                formula1: Some("\"Open,Closed\"".into()),
+                dropdown: true,
+                ..Default::default()
+            }),
+        }),
+        Command::Sheet(SheetCommand::AddConditional {
+            sheet: active,
+            format: ConditionalFormat {
+                ranges: vec![column(2)],
+                rules: vec![CfRule {
+                    kind: CfKind::Expression("C1>0".into()),
+                    priority: 1,
+                    stop: true,
+                    style: None,
+                }],
+                ..Default::default()
+            },
+        }),
+    ]).unwrap();
+
+    let tool = "xlsx_list_sheet_rules";
+    let context = ibis_doc_service::DraftToolContext {
+        workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(active), ..Default::default() },
+        ..Default::default()
+    };
+    let (page, edits) = ibis_doc_service::run_draft_tool(
+        Kind::Workbook, &mut draft, context, tool, json!({"range":"C4:D5","limit":1}),
+    ).unwrap();
+    assert!(edits.is_empty());
+    assert_eq!(page["sheet"], sheet);
+    assert_eq!(page["count"], 2);
+    assert_eq!(page["rules"][0]["ranges"], json!(["A1:A4", "C1:C4"]));
+    assert_eq!(page["rules"][0]["formula1"], "\"Open,Closed\"");
+    assert_eq!(page["next_offset"], 1);
+
+    let mut t = T::new("xlsx_sheet_rules", &[]);
+    let bytes = opened.source.save(draft.presentation(), SaveOptions::default()).unwrap();
+    std::fs::write(t.dir.join("rules.xlsx"), bytes).unwrap();
+    let id = t.open("rules.xlsx");
+    let next = t.call(tool, json!({"document_id":id,"sheet":sheet,"range":"C4:D5","offset":page["next_offset"]}));
+    assert_eq!(next["count"], 2);
+    assert_eq!(next["rules"][0]["condition"], json!({"type":"expression","formula":"C1>0"}));
+    assert_eq!(next["rules"][0]["stop_if_true"], true);
+    assert!(next.get("next_offset").is_none());
+    let empty = t.call(tool, json!({"document_id":id,"sheet":sheet,"range":"A1","kind":"conditional_formatting"}));
+    assert_eq!(empty["count"], 0);
+    assert_eq!(empty["rules"], json!([]));
+    assert_eq!(t.err(tool, json!({"document_id":id,"sheet":sheet,"kind":"unknown"})), "invalid_argument");
+}

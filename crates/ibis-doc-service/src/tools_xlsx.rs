@@ -37,6 +37,20 @@ pub(crate) fn tools() -> Vec<Tool> {
         Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook: name, used range and whether it is shown.", access: Access::Read, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: list_sheets },
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
         Tool {
+            name: "xlsx_list_sheet_rules",
+            description: "List data validation and conditional formatting rules on a worksheet, optionally intersecting an A1 range.",
+            access: Access::Read,
+            returns_content: true,
+            schema: || object(&[
+                document_id(), ("sheet", string("The worksheet to inspect.")),
+                ("range", string("Optional A1 range to intersect with the rules.")),
+                ("kind", json!({"enum": ["validation", "conditional_formatting"]})),
+                ("offset", integer("First matching rule (0-based).")),
+                ("limit", integer("Maximum rules per page (default 100, maximum 200).")),
+            ], &["document_id", "sheet"]),
+            run: list_sheet_rules,
+        },
+        Tool {
             name: "xlsx_trace_formula",
             description: "Trace direct, statically resolvable formula precedents or dependents of one cell across visible worksheets in this workbook.",
             access: Access::Read,
@@ -209,6 +223,72 @@ fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let mut result = json!({ "sheet": name, "range": range_text(&range), "kind": kind, "first_row": range.first_row + 1 + offset as u32, "first_column": column_name(range.first_column), "rows": rows });
     if end < height {
         result["next_offset"] = json!(end);
+    }
+    Ok(result)
+}
+
+fn list_sheet_rules(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    use ibis_doc_model::sheet::CfKind;
+
+    let kind = args.opt_str("kind")?;
+    if !matches!(kind, None | Some("validation" | "conditional_formatting")) {
+        return Err(ToolError::invalid("kind is validation or conditional_formatting"));
+    }
+    let target = args.opt_str("range")?.map(parse_range).transpose()?;
+    let offset = args.opt_usize("offset")?.unwrap_or(0);
+    let limit = args.opt_usize("limit")?.unwrap_or(100).clamp(1, 200);
+    let active = service.workbook_tool_context().active_sheet;
+    let open = workbook_document(service, args.str_arg("document_id")?)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (_, name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
+    let matches_range = |ranges: &[CellRange]| target.is_none_or(|target| ranges.iter().any(|range| {
+        range.first_row <= target.last_row && target.first_row <= range.last_row
+            && range.first_column <= target.last_column && target.first_column <= range.last_column
+    }));
+
+    let validations = sheet.validations.iter().enumerate().filter(|(_, rule)| {
+        kind != Some("conditional_formatting") && matches_range(&rule.ranges)
+    });
+    let formats = sheet.conditional.iter().enumerate().filter(|(_, group)| {
+        kind != Some("validation") && matches_range(&group.ranges)
+    }).flat_map(|(index, group)| group.rules.iter().enumerate()
+        .map(move |(rule_index, rule)| (index, &group.ranges, rule_index, rule)));
+    let validation_count = validations.clone().count();
+    let count = validation_count + formats.clone().count();
+    let rules: Vec<_> = validations.skip(offset).take(limit).map(|(index, rule)| {
+        json!({
+            "kind": "validation", "index": index,
+            "ranges": rule.ranges.iter().map(range_text).collect::<Vec<_>>(),
+            "type": rule.kind, "operator": rule.operator,
+            "formula1": rule.formula1, "formula2": rule.formula2,
+            "allow_blank": rule.allow_blank, "dropdown": rule.dropdown,
+            "prompt": rule.prompt, "error": rule.error,
+        })
+    }).chain(formats.skip(offset.saturating_sub(validation_count)).map(|(index, ranges, rule_index, rule)| {
+        let condition = match &rule.kind {
+            CfKind::CellIs { operator, formulas } => json!({"type":"cell_is","operator":operator,"formulas":formulas}),
+            CfKind::Expression(formula) => json!({"type":"expression","formula":formula}),
+            CfKind::TimePeriod { period, formula } => json!({"type":"time_period","period":period,"formula":formula}),
+            CfKind::Top10 { rank, percent, bottom } => json!({"type":"top_10","rank":rank,"percent":percent,"bottom":bottom}),
+            CfKind::AboveAverage { above, equal, std_dev } => json!({"type":"above_average","above":above,"equal":equal,"std_dev":std_dev}),
+            CfKind::Unique => json!({"type":"unique"}),
+            CfKind::Duplicate => json!({"type":"duplicate"}),
+            CfKind::ColorScale(_) => json!({"type":"color_scale"}),
+            CfKind::DataBar { .. } => json!({"type":"data_bar"}),
+            CfKind::IconSet { set, .. } => json!({"type":"icon_set","set":set}),
+            CfKind::Other => json!({"type":"other"}),
+        };
+        json!({
+            "kind":"conditional_formatting","index":index,"rule_index":rule_index,
+            "ranges":ranges.iter().map(range_text).collect::<Vec<_>>(),
+            "priority":rule.priority,"stop_if_true":rule.stop,"condition":condition,
+        })
+    })).take(limit).collect();
+    let next = offset.saturating_add(rules.len());
+    let mut result = json!({"sheet":name,"count":count,"rules":rules});
+    if next < count {
+        result["next_offset"] = json!(next);
     }
     Ok(result)
 }
