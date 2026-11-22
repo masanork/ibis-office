@@ -580,6 +580,34 @@ fn sqlite_queries_join_registered_csv_and_sqlite_datasets() {
     assert_eq!(draft_result["updated_pivots"], 1);
     assert_eq!(draft_result["updated_charts"], 1);
     assert_eq!(commands.len(), 3);
+    std::fs::write(&csv, "code,label\n").unwrap();
+    let empty_args = json!({"table":table["table"],"sources":["1","2"]});
+    let definition =
+        ibis_doc_service::query_report_definition(draft.presentation(), &empty_args).unwrap();
+    let prepared =
+        ibis_doc_service::prepare_selected_query_refresh(&selected, empty_args, definition)
+            .unwrap();
+    let (empty, _) = prepared.stage(&mut draft, Default::default()).unwrap();
+    assert_eq!(empty["rows"], 0);
+    assert_eq!(empty["updated_charts"], 1);
+    let chart = &draft.presentation().slide(slide).unwrap().shapes[shape_index].kind;
+    let ibis_doc_model::ShapeKind::Chart(chart) = chart else {
+        panic!("expected a pivot chart")
+    };
+    assert!(
+        chart
+            .groups
+            .iter()
+            .flat_map(|group| &group.series)
+            .all(|series| {
+                !series
+                    .categories
+                    .iter()
+                    .any(|category| category == "変更後")
+                    && series.values.iter().flatten().all(|value| value.0 == 0.0)
+            })
+    );
+
     std::fs::write(&csv, "code,label\n001,A\n002,B\n003,C\n").unwrap();
     writer
         .call(
@@ -597,5 +625,155 @@ fn sqlite_queries_join_registered_csv_and_sqlite_datasets() {
     assert_eq!(read(&mut writer)["rows"][1][0], "002");
 
     assert_eq!(std::fs::read(&database).unwrap(), original);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
+    use ibis_doc_model::Document;
+    use ibis_doc_service::{batch_query_report_definitions, prepare_selected_report_batch};
+    use ibis_formats::Kind;
+
+    let dir = std::env::temp_dir().join(format!("ibis-batch-refresh-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("monthly.csv");
+    let next = dir.join("next.csv");
+    std::fs::write(&csv, "code,category\n001,old\n002,old\n").unwrap();
+    let file = dir.join("analysis.xlsx");
+    std::fs::write(&file, ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
+    let mut service = Service::new(&[dir.clone()], false, Limits::default());
+    let call = |service: &mut Service, tool, args| service.call(tool, &args).unwrap();
+    let id = call(&mut service, "app_open_document", json!({"path":file}))["document_id"].clone();
+    let sheet =
+        call(&mut service, "xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"]
+            .clone();
+    for anchor in ["A1", "G1"] {
+        call(
+            &mut service,
+            "sqlite_query_to_table",
+            json!({
+                "sql":"SELECT code, category FROM monthly ORDER BY code",
+                "datasets":[{"source":csv,"alias":"monthly"}],
+                "document_id":id,"destination_sheet":sheet,"anchor":anchor,
+            }),
+        );
+    }
+    call(
+        &mut service,
+        "xlsx_create_pivot",
+        json!({
+            "document_id":id,"sheet":sheet,"destination_sheet":sheet,"anchor":"A8",
+            "table":"QueryResult1","rows":["category"],"values":[{"field":"code","aggregate":"count"}],
+        }),
+    );
+    let original = dir.join("original.xlsx");
+    call(
+        &mut service,
+        "app_save_document",
+        json!({"document_id":id,"path":original}),
+    );
+
+    let mut refresh = json!({"document_id":id, "bindings":{"monthly.csv":next}});
+    std::fs::write(&next, "code,category\n001,new\n002,new\n003,new\n").unwrap();
+    call(
+        &mut service,
+        "xlsx_set_cells",
+        json!({"document_id":id,"sheet":sheet,"range":"G4","values":"Keep"}),
+    );
+    let error = service
+        .call("sqlite_refresh_query_reports", &refresh)
+        .unwrap_err();
+    assert_eq!(error.code, "destination_occupied");
+    assert!(error.message.contains("QueryResult2"));
+    let first = call(
+        &mut service,
+        "xlsx_get_cells",
+        json!({"document_id":id,"sheet":sheet,"range":"B2"}),
+    );
+    assert_eq!(first["rows"], json!([["old"]]));
+    call(
+        &mut service,
+        "xlsx_clear_cells",
+        json!({"document_id":id,"sheet":sheet,"range":"G4","what":"contents"}),
+    );
+
+    std::fs::write(&next, "code,category\n").unwrap();
+    refresh["preview"] = json!(true);
+    let preview = call(
+        &mut service,
+        "sqlite_refresh_query_reports",
+        refresh.clone(),
+    );
+    assert_eq!(preview["preview"], true);
+    assert_eq!(preview["reports"][0]["previous_rows"], 2);
+    assert_eq!(preview["reports"][0]["rows"], 0);
+    assert_eq!(preview["reports"][0]["updated_pivots"], 1);
+    let still_old = call(
+        &mut service,
+        "xlsx_get_cells",
+        json!({"document_id":id,"sheet":sheet,"range":"A2"}),
+    );
+    assert_eq!(still_old["rows"], json!([["001"]]));
+
+    refresh["preview"] = json!(false);
+    let updated = call(
+        &mut service,
+        "sqlite_refresh_query_reports",
+        refresh.clone(),
+    );
+    assert_eq!(updated["reports"][0]["range"], "A1:B1");
+    assert_eq!(updated["reports"][1]["range"], "G1:H1");
+    let cleared = call(
+        &mut service,
+        "xlsx_get_cells",
+        json!({"document_id":id,"sheet":sheet,"range":"A2:H3"}),
+    );
+    assert!(cleared["rows"].as_array().unwrap().iter().all(|row| {
+        row.as_array()
+            .unwrap()
+            .iter()
+            .all(serde_json::Value::is_null)
+    }));
+    let undo = call(&mut service, "app_undo_document", json!({"document_id":id}));
+    assert_eq!(undo["undone"], 1);
+    let restored = call(
+        &mut service,
+        "xlsx_get_cells",
+        json!({"document_id":id,"sheet":sheet,"range":"G2"}),
+    );
+    assert_eq!(restored["rows"], json!([["001"]]));
+
+    call(
+        &mut service,
+        "sqlite_refresh_query_reports",
+        refresh.clone(),
+    );
+    let empty = dir.join("empty.xlsx");
+    call(
+        &mut service,
+        "app_save_document",
+        json!({"document_id":id,"path":empty}),
+    );
+    let mut draft = Document::new(ibis_formats::read(&std::fs::read(&empty).unwrap()).unwrap());
+    let empty_sheet =
+        ibis_doc_model::sheet_calc::sheet_of_slide(&draft.presentation().slides[0]).unwrap();
+    assert_eq!(empty_sheet.tables[0].range.last_row, 0);
+    assert_eq!(
+        ibis_formats::pivot_data(draft.presentation(), draft.presentation().slides[0].id, 0)
+            .unwrap()
+            .records
+            .len(),
+        0
+    );
+
+    std::fs::write(&next, "code,category\n003,new\n").unwrap();
+    let args = json!({"bindings":{"monthly.csv":"1"}});
+    let definitions = batch_query_report_definitions(draft.presentation(), &args).unwrap();
+    let prepared = prepare_selected_report_batch(&[next], args, definitions).unwrap();
+    let (result, edits) = prepared.stage(&mut draft, Default::default()).unwrap();
+    assert_eq!(result["reports"][0]["previous_rows"], 0);
+    assert_eq!(result["reports"][0]["rows"], 1);
+    assert_eq!(result["reports"][1]["rows"], 1);
+    assert_eq!(edits.len(), 3);
     std::fs::remove_dir_all(dir).unwrap();
 }

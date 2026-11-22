@@ -676,19 +676,16 @@ fn rebuild_pivot(
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub(crate) fn refresh_query_table(
-    service: &mut Service,
+pub(crate) fn plan_query_table_refresh(
+    workbook: &ibis_doc_model::Presentation,
     args: &Value,
     result: ibis_doc_model::query::SqliteRows,
     definition: &Value,
-) -> Result<Value, ToolError> {
+) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
     use ibis_doc_model::sheet_command::{CellInput, PutCell};
     use ibis_doc_model::{Command, Document};
 
-    let id = args.str_arg("document_id")?;
     let name = args.str_arg("table")?;
-    let open = workbook_document(service, id)?;
-    let workbook = open.document.presentation();
     let sheets = workbook_sheets(workbook);
     let (slide_index, sheet_name, sheet, index, table) = sheets
         .iter()
@@ -708,10 +705,8 @@ pub(crate) fn refresh_query_table(
             "The report definition changed. Retry the refresh.",
         ));
     }
-    if result.truncated || result.rows.is_empty() {
-        return Err(ToolError::invalid(
-            "Refresh needs a complete result with at least one data row.",
-        ));
+    if result.truncated {
+        return Err(ToolError::invalid("Refresh needs a complete result."));
     }
     if table.header_rows != 1 || table.totals_rows != 0 || table.columns != result.columns {
         return Err(ToolError::new(
@@ -806,7 +801,6 @@ pub(crate) fn refresh_query_table(
         }
     }
     let summary = json!({"sheet":sheet_name,"table":table.name,"range":range_text(&range),
-        "rows":result.rows.len(),"updated_pivots":updated_pivots,"updated_charts":updated_charts});
-    crate::edit::execute(open, commands)?;
-    Ok(crate::edit::edited(id, open, summary, Vec::new()))
+        "previous_rows":old.last_row-old.first_row,"rows":result.rows.len(),"updated_pivots":updated_pivots,"updated_charts":updated_charts});
+    Ok((summary, commands))
 }

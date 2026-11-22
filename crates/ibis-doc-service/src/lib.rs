@@ -34,4 +34,4 @@ pub use tools_xlsx::WorkbookToolContext;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod tools_sqlite;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use tools_sqlite::{DATASET_EXTENSIONS, SqliteTableExport, is_sqlite, prepare_selected_datasets_export, prepare_selected_query_refresh, query_report_definition, prepare_selected_sqlite_export, run_selected_datasets_tool, run_selected_sqlite_tool, sqlite_tools};
+pub use tools_sqlite::{DATASET_EXTENSIONS, SqliteReportBatch, SqliteTableExport, batch_query_report_definitions, is_sqlite, prepare_selected_datasets_export, prepare_selected_query_refresh, prepare_selected_report_batch, query_report_definition, prepare_selected_sqlite_export, run_selected_datasets_tool, run_selected_sqlite_tool, sqlite_tools};

@@ -11,7 +11,7 @@ use ibis_doc_model::query::{
 };
 use serde_json::{Value, json};
 
-use crate::catalog::{Access, Tool, document_id, integer, object, string};
+use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string};
 use crate::service::{Args, Limits, Service};
 use crate::{ToolError, paths};
 
@@ -90,6 +90,38 @@ const TOOLS: &[Tool] = &[
             )
         },
         run: refresh_query_table,
+    },
+    Tool {
+        name: "sqlite_refresh_query_reports",
+        description: "Preview or atomically refresh workbook query reports from shared file bindings. Preview reports row counts and checks for overlap without editing.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: || {
+            object(
+                &[
+                    document_id(),
+                    (
+                        "bindings",
+                        json!({
+                            "type":"object", "minProperties":1, "maxProperties":96,
+                            "description":"Map saved source file names to authorized file paths.",
+                            "additionalProperties":{"type":"string"}
+                        }),
+                    ),
+                    (
+                        "tables",
+                        json!({"type":"array","minItems":1,"maxItems":12,"uniqueItems":true,"items":{"type":"string"},
+                "description":"Optional query table names. Omit to refresh all reports (up to 12 per call)."}),
+                    ),
+                    (
+                        "preview",
+                        boolean("Validate without editing and report row changes (default false)."),
+                    ),
+                ],
+                &["document_id", "bindings"],
+            )
+        },
+        run: refresh_query_reports,
     },
     Tool {
         name: "sqlite_count_rows",
@@ -192,11 +224,15 @@ fn selected_sources(paths: &[PathBuf], args: &mut Value) -> Result<Service, Tool
             ),
         );
     }
-    let directories = paths
+    Ok(selected_file_service(paths))
+}
+
+fn selected_file_service(paths: &[PathBuf]) -> Service {
+    let folders = paths
         .iter()
         .filter_map(|path| path.parent().map(Path::to_path_buf))
         .collect::<Vec<_>>();
-    Ok(Service::new(&directories, true, Limits::default()))
+    Service::new(&folders, true, Limits::default())
 }
 
 pub fn is_sqlite(path: &Path) -> bool {
@@ -438,12 +474,7 @@ impl SqliteTableExport {
             self.arguments,
             |service, args| {
                 if self.refresh {
-                    crate::tools_pivot::refresh_query_table(
-                        service,
-                        args,
-                        self.rows,
-                        &self.definition,
-                    )
+                    apply_single_refresh(service, args, self.rows, &self.definition)
                 } else {
                     crate::tools_pivot::write_table(service, args, self.rows, self.definition)
                 }
@@ -732,7 +763,25 @@ fn refresh_query_table(service: &mut Service, args: &Value) -> Result<Value, Too
     let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
     let definition = query_report_definition(open.document.presentation(), args)?;
     let rows = complete_query(service, &bound_query(&definition, args)?)?;
-    crate::tools_pivot::refresh_query_table(service, args, rows, &definition)
+    apply_single_refresh(service, args, rows, &definition)
+}
+
+fn apply_single_refresh(
+    service: &mut Service,
+    args: &Value,
+    rows: SqliteRows,
+    definition: &Value,
+) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let open = crate::tools_xlsx::workbook_document(service, id)?;
+    let (summary, commands) = crate::tools_pivot::plan_query_table_refresh(
+        open.document.presentation(),
+        args,
+        rows,
+        definition,
+    )?;
+    crate::edit::execute(open, commands)?;
+    Ok(crate::edit::edited(id, open, summary, Vec::new()))
 }
 
 pub fn prepare_selected_query_refresh(
@@ -744,27 +793,229 @@ pub fn prepare_selected_query_refresh(
         .as_array_mut()
         .ok_or_else(|| ToolError::invalid("sources must be a list of selected file numbers"))?;
     for entry in bindings {
-        let path = entry
-            .as_str()
-            .and_then(|value| value.parse::<usize>().ok())
-            .and_then(|number| number.checked_sub(1))
-            .and_then(|index| paths.get(index))
-            .and_then(|path| path.to_str())
-            .ok_or_else(|| {
-                ToolError::invalid("Use only file numbers selected in the assistant panel")
-            })?;
-        *entry = json!(path);
+        *entry = json!(selected_file(paths, entry)?);
     }
-    let folders = paths
-        .iter()
-        .filter_map(|path| path.parent().map(Path::to_path_buf))
-        .collect::<Vec<_>>();
-    let service = Service::new(&folders, true, Limits::default());
+    let service = selected_file_service(paths);
     let rows = complete_query(&service, &bound_query(&definition, &args)?)?;
     Ok(SqliteTableExport {
         arguments: args,
         rows,
         definition,
         refresh: true,
+    })
+}
+
+const MAX_REPORTS_PER_BATCH: usize = 12;
+
+/// Snapshot the report definitions before the assistant dispatches file I/O.
+pub fn batch_query_report_definitions(
+    workbook: &ibis_doc_model::Presentation,
+    args: &Value,
+) -> Result<Vec<(String, Value)>, ToolError> {
+    let book = workbook
+        .workbook
+        .as_ref()
+        .ok_or_else(|| ToolError::invalid("Workbook is missing"))?;
+    let sheets = crate::tools_xlsx::workbook_sheets(workbook);
+    let available = |name: &str| {
+        sheets.iter().any(|(_, _, sheet)| {
+            sheet
+                .tables
+                .iter()
+                .any(|table| table.name.eq_ignore_ascii_case(name))
+        })
+    };
+    let mut reports = Vec::new();
+    if let Some(tables) = args.get("tables") {
+        let tables = tables
+            .as_array()
+            .filter(|names| (1..=MAX_REPORTS_PER_BATCH).contains(&names.len()))
+            .ok_or_else(|| ToolError::invalid("Specify 1 to 12 query tables"))?;
+        let mut seen = std::collections::HashSet::new();
+        for table in tables {
+            let name = table
+                .as_str()
+                .filter(|name| seen.insert(name.to_ascii_lowercase()))
+                .ok_or_else(|| ToolError::invalid("Query table names must be distinct strings"))?;
+            if !available(name) {
+                return Err(ToolError::new(
+                    "no_such_query_report",
+                    format!("No query table named {name}"),
+                ));
+            }
+            reports.push((
+                name.to_owned(),
+                query_report_definition(workbook, &json!({"table":name}))?,
+            ));
+        }
+    } else {
+        for (name, definition) in &book.query_reports {
+            if available(name) {
+                if reports.len() == MAX_REPORTS_PER_BATCH {
+                    return Err(ToolError::invalid(
+                        "Choose up to 12 query tables for this batch",
+                    ));
+                }
+                reports.push((name.clone(), definition.clone()));
+            }
+        }
+    }
+    if reports.is_empty() {
+        return Err(ToolError::new(
+            "no_such_query_report",
+            "Workbook has no saved query reports",
+        ));
+    }
+    Ok(reports)
+}
+
+struct QueryReportResult {
+    name: String,
+    definition: Value,
+    rows: SqliteRows,
+}
+
+fn batch_bindings(args: &Value) -> Result<&serde_json::Map<String, Value>, ToolError> {
+    args["bindings"]
+        .as_object()
+        .filter(|values| (1..=96).contains(&values.len()))
+        .ok_or_else(|| {
+            ToolError::invalid("Provide 1 to 96 source bindings keyed by saved file name")
+        })
+}
+
+fn report_error(name: &str, error: ToolError) -> ToolError {
+    ToolError::new(error.code, format!("{name}: {}", error.message))
+}
+
+fn batch_query_results(
+    service: &Service,
+    args: &Value,
+    reports: Vec<(String, Value)>,
+) -> Result<Vec<QueryReportResult>, ToolError> {
+    let bindings = batch_bindings(args)?;
+    reports
+        .into_iter()
+        .map(|(name, definition)| {
+            let result = (|| {
+                let sources = definition["sources"]
+                    .as_array()
+                    .filter(|sources| (1..=8).contains(&sources.len()))
+                    .ok_or_else(|| ToolError::invalid("Invalid saved report sources"))?;
+                let sources = sources
+                    .iter()
+                    .map(|source| {
+                        let file = source.str_arg("file")?;
+                        bindings
+                            .get(file)
+                            .filter(|path| path.is_string())
+                            .ok_or_else(|| {
+                                ToolError::invalid(format!("Missing file binding for {file}"))
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                complete_query(
+                    service,
+                    &bound_query(&definition, &json!({"sources":sources}))?,
+                )
+            })()
+            .map_err(|error| report_error(&name, error))?;
+            Ok(QueryReportResult {
+                name,
+                definition,
+                rows: result,
+            })
+        })
+        .collect()
+}
+
+fn apply_batch_refresh(
+    service: &mut Service,
+    args: &Value,
+    results: Vec<QueryReportResult>,
+) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let preview = args.opt_bool("preview")?.unwrap_or(false);
+    let open = crate::tools_xlsx::workbook_document(service, id)?;
+    let mut scratch = ibis_doc_model::Document::new(open.document.presentation().clone());
+    let mut reports = Vec::with_capacity(results.len());
+    let mut commands = Vec::new();
+    for result in results {
+        let (summary, update) = crate::tools_pivot::plan_query_table_refresh(
+            scratch.presentation(),
+            &json!({"table":result.name}),
+            result.rows,
+            &result.definition,
+        )
+        .map_err(|error| report_error(&result.name, error))?;
+        scratch.execute(update.clone()).map_err(|error| {
+            ToolError::new("edit_rejected", format!("{}: {error:?}", result.name))
+        })?;
+        reports.push(summary);
+        commands.extend(update);
+    }
+    if !preview {
+        crate::edit::execute(open, commands)?;
+    }
+    Ok(crate::edit::edited(
+        id,
+        open,
+        json!({"preview":preview,"reports":reports}),
+        Vec::new(),
+    ))
+}
+
+fn refresh_query_reports(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
+    let reports = batch_query_report_definitions(open.document.presentation(), args)?;
+    let results = batch_query_results(service, args, reports)?;
+    apply_batch_refresh(service, args, results)
+}
+
+pub struct SqliteReportBatch {
+    arguments: Value,
+    results: Vec<QueryReportResult>,
+}
+
+impl SqliteReportBatch {
+    pub fn stage(
+        self,
+        document: &mut ibis_doc_model::Document,
+        context: crate::DraftToolContext,
+    ) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
+        crate::service::run_draft_operation(
+            ibis_formats::Kind::Workbook,
+            document,
+            context,
+            self.arguments,
+            |service, args| apply_batch_refresh(service, args, self.results),
+        )
+    }
+}
+
+fn selected_file<'a>(paths: &'a [PathBuf], entry: &Value) -> Result<&'a str, ToolError> {
+    entry
+        .as_str()
+        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|number| number.checked_sub(1))
+        .and_then(|index| paths.get(index))
+        .and_then(|path| path.to_str())
+        .ok_or_else(|| ToolError::invalid("Use only file numbers selected in the assistant panel"))
+}
+
+pub fn prepare_selected_report_batch(
+    paths: &[PathBuf],
+    mut args: Value,
+    reports: Vec<(String, Value)>,
+) -> Result<SqliteReportBatch, ToolError> {
+    batch_bindings(&args)?;
+    for binding in args["bindings"].as_object_mut().unwrap().values_mut() {
+        *binding = json!(selected_file(paths, binding)?);
+    }
+    let service = selected_file_service(paths);
+    let results = batch_query_results(&service, &args, reports)?;
+    Ok(SqliteReportBatch {
+        arguments: args,
+        results,
     })
 }

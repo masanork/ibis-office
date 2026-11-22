@@ -323,6 +323,9 @@ pub(crate) fn sqlite_tool_definitions() -> impl Iterator<Item = ToolDefinition> 
         let parameters = &mut definition.function.parameters;
         parameters["properties"].as_object_mut().unwrap().remove("path");
         parameters["required"].as_array_mut().unwrap().retain(|name| name != "path");
+        if let Some(bindings) = parameters.pointer_mut("/properties/bindings") {
+            bindings["description"] = json!("Map saved source file names to selected file numbers as strings.");
+        }
         if let Some(source) = parameters.pointer_mut("/properties/sources/items") {
             source["description"] = json!("Selected file number as a string, in saved source order.");
         }
@@ -1042,6 +1045,9 @@ A --> C
             expected["properties"].as_object_mut().unwrap().remove("path");
             expected["properties"].as_object_mut().unwrap().remove("document_id");
             expected["required"].as_array_mut().unwrap().retain(|name| name != "path" && name != "document_id");
+            if let Some(bindings) = expected.pointer_mut("/properties/bindings") {
+                bindings["description"] = json!("Map saved source file names to selected file numbers as strings.");
+            }
             if let Some(source) = expected.pointer_mut("/properties/sources/items") {
                 source["description"] = json!("Selected file number as a string, in saved source order.");
             }

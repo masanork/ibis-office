@@ -187,6 +187,7 @@ fn formula_explanation_messages(sheet: &str, cell: &str, formula: &str) -> Vec<C
 enum SqliteToolResult {
     Read(serde_json::Value),
     Export(ibis_doc_service::SqliteTableExport),
+    Batch(ibis_doc_service::SqliteReportBatch),
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -976,7 +977,7 @@ impl SlideEditor {
             if let Some(paths) = &source {
                 let has_sqlite = paths.iter().any(|path| ibis_doc_service::is_sqlite(path));
                 tools.extend(crate::ai_tools::sqlite_tool_definitions().filter(|tool| {
-                    has_sqlite || matches!(tool.function.name, "sqlite_query" | "sqlite_query_to_table" | "sqlite_refresh_query_table")
+                    has_sqlite || matches!(tool.function.name, "sqlite_query" | "sqlite_query_to_table" | "sqlite_refresh_query_table" | "sqlite_refresh_query_reports")
                 }));
                 if let Some(last) = messages_to_send.last_mut()
                     && let Some(content) = &mut last.content
@@ -1085,9 +1086,18 @@ impl SlideEditor {
                                             ibis_doc_service::query_report_definition(turn.draft.presentation(), args)
                                         ).map(Some)
                                     } else { Ok(None) };
+                                    let batch = if name == "sqlite_refresh_query_reports" {
+                                        let turn = draft.as_ref().expect("SQLite tools have a workbook draft");
+                                        args.as_ref().map_err(Clone::clone).and_then(|args|
+                                            ibis_doc_service::batch_query_report_definitions(turn.draft.presentation(), args)
+                                        ).map(Some)
+                                    } else { Ok(None) };
                                     let result = cx.background_executor().spawn(async move {
                                         let args = args?;
-                                        if let Some(definition) = definition? {
+                                        if let Some(reports) = batch? {
+                                            ibis_doc_service::prepare_selected_report_batch(&paths, args, reports)
+                                                .map(SqliteToolResult::Batch)
+                                        } else if let Some(definition) = definition? {
                                             ibis_doc_service::prepare_selected_query_refresh(&paths, args, definition)
                                                 .map(SqliteToolResult::Export)
                                         } else if access == ibis_doc_service::Access::Edit {
@@ -1171,11 +1181,18 @@ impl SlideEditor {
                                             let context = turn.tool_context();
                                             export.stage(&mut turn.draft, context)
                                         }
+                                        SqliteToolResult::Batch(batch) => {
+                                            let context = turn.tool_context();
+                                            batch.stage(&mut turn.draft, context)
+                                        }
                                     });
                                     match result {
                                         Ok((value, commands)) => {
                                             let label = if commands.is_empty() {
                                                 format!("✓ {name}")
+                                            } else if name == "sqlite_refresh_query_reports" {
+                                                let count = value["reports"].as_array().map_or(0, Vec::len);
+                                                format!("クエリ表を一括更新（{count}件）")
                                             } else {
                                                 let sheet = value["sheet"].as_str().unwrap_or("");
                                                 let range = value["range"].as_str().unwrap_or("");
