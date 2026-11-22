@@ -5008,6 +5008,8 @@ fn decode_data_uri_image(uri: &str) -> Option<(MediaFormat, Vec<u8>)> {
         "gif" => MediaFormat::Gif,
         "bmp" => MediaFormat::Bmp,
         "svg+xml" | "svg" => MediaFormat::Svg,
+        "x-emf" | "emf" => MediaFormat::Emf,
+        "x-wmf" | "wmf" => MediaFormat::Wmf,
         _ => return None,
     };
     let bytes = decode_base64(b64.trim())?;
@@ -5067,6 +5069,8 @@ fn detect_image_format(bytes: &[u8], path: &std::path::Path) -> Option<MediaForm
         Some("gif") => Some(MediaFormat::Gif),
         Some("bmp") => Some(MediaFormat::Bmp),
         Some("svg") => Some(MediaFormat::Svg),
+        Some("emf") => Some(MediaFormat::Emf),
+        Some("wmf") => Some(MediaFormat::Wmf),
         _ => None,
     }
 }
@@ -6935,6 +6939,8 @@ fn serialize_runs(
                         MediaFormat::Gif => "gif",
                         MediaFormat::Bmp => "bmp",
                         MediaFormat::Svg => "svg+xml",
+                        MediaFormat::Emf => "x-emf",
+                        MediaFormat::Wmf => "x-wmf",
                         _ => "png",
                     };
                     let b64 = encode_base64(&m.data);
@@ -7530,6 +7536,8 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                             MediaFormat::Gif => "image/gif",
                             MediaFormat::Webp => "image/webp",
                             MediaFormat::Svg => "image/svg+xml",
+                            MediaFormat::Emf => "image/x-emf",
+                            MediaFormat::Wmf => "image/x-wmf",
                             _ => "application/octet-stream",
                         };
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&media.data);
@@ -7892,6 +7900,29 @@ mod tests {
         let flow = opened.presentation.flow.unwrap();
         let text = ibis_doc_model::flow_command::all_paragraphs(&flow).iter().map(|p| p.text()).collect::<Vec<_>>();
         assert_eq!(text, ["Shared document"]);
+    }
+
+    #[test]
+    fn office_markdown_round_trip_preserves_metafile_bytes() {
+        for (format, mime, original) in [
+            (MediaFormat::Emf, "x-emf", include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf").as_slice()),
+            (MediaFormat::Wmf, "x-wmf", include_bytes!("../../ibis-emf/tests/fixtures/shapes.wmf").as_slice()),
+        ] {
+            let snippet = format!(
+                "![drawing](data:image/{mime};base64,{}){{width=40mm height=30mm}}\n",
+                encode_base64(original)
+            );
+            for compile in [import_markdown_to_docx_bytes, import_markdown_to_pptx_bytes] {
+                let package = compile(snippet.as_bytes()).unwrap();
+                let opened = crate::open(package).unwrap();
+                let markdown = export_presentation_to_markdown(&opened.presentation).unwrap();
+                assert!(markdown.contains(&format!("data:image/{mime};base64,")));
+                let rebuilt = crate::open(compile(markdown.as_bytes()).unwrap()).unwrap();
+                assert!(rebuilt.presentation.media.iter().any(|media| {
+                    media.format == format && media.data.as_ref() == original
+                }));
+            }
+        }
     }
 
     #[test]
