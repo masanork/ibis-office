@@ -1161,7 +1161,7 @@ test('repository source follows Markdown links at the same commit and escapes so
       case '/git/blobs/' + md:
         return new Response([
           '# API仕様', '## REQ-42 住所変更', '## REQ-43 郵便番号', '## REQ-99 未対応',
-          '## REQ-example 例テーブル', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[Acceptance](address.feature#L6)', '[Broken](broken.feature)', '[external](//other.test/external.json)',
+          '## REQ-example 例テーブル', '[API](../api/%E5%A5%91%E7%B4%84.yaml#L2)', '[Schema](../api/schema.json)', '[OpenAPI](../api/openapi31.json)', '[Acceptance](address.feature#L6)', '[Broken](broken.feature)', '[external](//other.test/external.json)',
           '[escape](../../escape.json)', '[slash](../api%2fother.json)', '```md', '## REQ-fake', '[example](sample.json)', '```',
         ].join('\n'));
       case '/git/blobs/' + yaml:
@@ -1216,6 +1216,7 @@ test('repository source follows Markdown links at the same commit and escapes so
           paths: {
             '/address': {
               post: {
+                operationId: 'changeAddress', tags: ['REQ-42', 'REQ-42', 'other'],
                 requestBody: { content: { 'application/json': {
                   schema: { $ref: '#/components/schemas/Address', description: 'Mailing address' },
                   examples: {
@@ -1351,7 +1352,7 @@ test('repository source follows Markdown links at the same commit and escapes so
     }
     const featureLink = base + '?ref=' + commit + '&source=docs%2Faddress.feature#L6';
     assert.ok(html.includes('href="' + featureLink.replaceAll('&', '&amp;') + '"'));
-    const trace = html.split('aria-label="要求と受け入れテスト"')[1].split('</nav>')[0];
+    const trace = html.split('aria-label="要求の対応表"')[1].split('</nav>')[0];
     assert.match(trace, /href="#L2">REQ-42<\/a>/);
     assert.match(trace, /href="#L3">REQ-43<\/a>/);
     assert.equal(trace.split('href="' + featureLink.replaceAll('&', '&amp;') + '"').length - 1, 2);
@@ -1359,7 +1360,12 @@ test('repository source follows Markdown links at the same commit and escapes so
     assert.match(trace, /href="#L5">REQ-example<\/a>/);
     assert.ok(trace.includes('href="' + featureLink.replaceAll('&', '&amp;').replace('#L6', '#L14') + '"'));
     assert.doesNotMatch(trace, /REQ-fake/);
-    assert.match(trace, /1 件の \.feature を確認できませんでした/);
+    assert.match(trace, /1 件の参照ファイルを確認できませんでした/);
+    const operationLine = /<span id="L(\d+)">[^\n]*&quot;post&quot;:/.exec(html31)[1];
+    const operationLink = base + '?ref=' + commit + '&amp;source=api%2Fopenapi31.json#L' + operationLine;
+    assert.equal(trace.split('href="' + operationLink + '"').length - 1, 1);
+    assert.match(trace, /POST \/address · changeAddress/);
+    assert.doesNotMatch(trace, /schema\.json/);
     const featureResponse = await worker.fetch(req(featureLink), env);
     assert.equal(featureResponse.status, 200);
     const featureHtml = await featureResponse.text();
