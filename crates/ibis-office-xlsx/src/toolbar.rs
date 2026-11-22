@@ -17,6 +17,26 @@ use crate::ext::*;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use crate::prefill_panel::PrefillPanelCrate as _;
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn selected_formula(editor: &SlideEditor) -> Option<(&str, u32, u32, &str)> {
+    if editor.selection.is_some() || editor.cell_edit().is_some() || editor.formula_hidden_here() {
+        return None;
+    }
+    let ranges = editor.selected_ranges();
+    let [range] = ranges.as_slice() else { return None };
+    if range.first_row != range.last_row || range.first_column != range.last_column {
+        return None;
+    }
+    let (_, sheet) = editor.current_sheet()?;
+    let (row, column) = (range.first_row, range.first_column);
+    let formula = sheet.cell(row, column)?.formula.as_deref()?.trim_start_matches('=');
+    if formula.is_empty() {
+        return None;
+    }
+    let sheet_name = editor.presentation().slide(editor.current_slide)?.name.as_deref()?;
+    Some((sheet_name, row, column, formula))
+}
+
 fn sep() -> ToolItem {
     ToolItem::Separator
 }
@@ -2564,6 +2584,22 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.allow-edit-ranges").icon("lock").on(|this, window, cx| this.open_allow_edit_ranges_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("review.accessibility-check").icon("accessibility").on(|this, window, cx| this.open_xlsx_accessibility_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::new("xlsx.ai-assistant", "Assistant...").icon("chat").on(|this, window, cx| this.open_ai_assistant_panel(window, cx)).into());
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    menus.items_mut(crate::shell::chrome::MenuId::Tools).push(
+        MenuItem::tr("xlsx.ai-explain-formula")
+            .icon("chat")
+            .disabled(!editor.assistant_accepts_formula_explanation() || selected_formula(editor).is_none())
+            .on(|this, window, cx| {
+                let Some((sheet, row, column, formula)) = selected_formula(this) else { return };
+                let sheet = sheet.to_owned();
+                let formula = format!("={formula}");
+                let address = ibis_doc_model::ai_sheet::format_range(&CellRange {
+                    first_row: row, last_row: row, first_column: column, last_column: column,
+                });
+                this.explain_spreadsheet_formula(&sheet, &address, &formula, window, cx);
+            })
+            .into(),
+    );
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.date-review.title").icon("rule").on(|this, window, cx| this.open_sheet_date_review(window, cx)).into());
     if ibis_doc_model::variant_clusters::is_embedded() {
         menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.variant-review.title").icon("rule").on(|this, window, cx| this.open_sheet_variant_review(window, cx)).into());
