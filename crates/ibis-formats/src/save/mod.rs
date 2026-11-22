@@ -1040,6 +1040,14 @@ impl Source {
         }
     }
 
+    /// Keep chart creation in a draft isolated from the live source.
+    pub fn with_private_chart_cache(&self) -> Self {
+        let mut source = self.clone();
+        let charts = self.new_charts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        source.new_charts = Arc::new(std::sync::Mutex::new(charts));
+        source
+    }
+
     /// The slide parts of a file's slides, in their order (for pasting its
     /// slides into another file: see [`Source::paste_slide`]).
     pub fn slide_parts(&self, presentation: &Presentation) -> Vec<Option<String>> {

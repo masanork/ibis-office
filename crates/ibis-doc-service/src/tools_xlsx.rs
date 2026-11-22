@@ -233,7 +233,7 @@ use crate::tools_docx::{color_schema, font_schema};
 
 pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
-        SET_CELLS, CLEAR_CELLS, SET_FORMAT,
+        SET_CELLS, CLEAR_CELLS, SET_FORMAT, crate::tools_chart::tool(),
         Tool {
             name: "xlsx_add_sheet",
             description: "Add a sheet (at the end, or at index, 0-based).",

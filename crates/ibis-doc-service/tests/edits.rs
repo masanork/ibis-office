@@ -425,3 +425,88 @@ fn workbook_active_sheet_is_a_draft_default_only() {
         assert_eq!(result["sheet"], "Draft name");
     }
 }
+
+#[test]
+fn mcp_chart_links_to_another_sheet_after_saving() {
+    use ibis_doc_model::ShapeKind;
+    use ibis_formats::Kind;
+
+    let mut t = T::new("shared_chart", &[]);
+    let bytes = ibis_formats::blank_file(Kind::Workbook).unwrap();
+    std::fs::write(t.dir.join("blank.xlsx"), bytes).unwrap();
+    let id = t.open("blank.xlsx");
+    let data = t.call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].as_str().unwrap().to_owned();
+    t.call("xlsx_add_sheet", json!({"document_id":id,"name":"Report"}));
+    t.call("xlsx_set_cells", json!({"document_id":id,"sheet":data,"range":"A1:B3","values":[["Year","Cost"],["2025",10],["2026",12]]}));
+    let args = json!({
+        "document_id":id,"sheet":data,"destination_sheet":"Report","range":"A1:B3",
+        "anchor":"F2","kind":"line","title":"Expenses",
+    });
+    let mut missing = args.clone();
+    missing.as_object_mut().unwrap().remove("destination_sheet");
+    assert_eq!(t.err("xlsx_create_chart", missing), "invalid_argument");
+    let result = t.call("xlsx_create_chart", args);
+    assert_eq!(result["destination_sheet"], "Report");
+    assert!(result["shape_id"].is_number());
+
+    t.call("app_save_document", json!({"document_id":id,"path":t.dir.join("chart.xlsx")}));
+    let reopened = ibis_formats::read(&std::fs::read(t.dir.join("chart.xlsx")).unwrap()).unwrap();
+    let report = reopened.slides.iter().find(|slide| slide.name.as_deref() == Some("Report")).unwrap();
+    let chart = report.shapes.iter().find_map(|shape| match &shape.kind {
+        ShapeKind::Chart(chart) => Some(chart),
+        _ => None,
+    }).unwrap();
+    let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(report).unwrap();
+    let origin = report.shapes.iter().find(|shape| matches!(shape.kind, ShapeKind::Sheet(_))).unwrap().frame;
+    let cell = sheet.cell_bounds_emu(5, 1);
+    let figure = report.shapes.iter().find(|shape| matches!(shape.kind, ShapeKind::Chart(_))).unwrap();
+    assert_eq!((figure.frame.x, figure.frame.y), (origin.x + cell.x, origin.y + cell.y));
+    assert_eq!(chart.title.as_ref().unwrap().text, "Expenses");
+    let values = chart.cell_refs[0].values.as_deref().unwrap();
+    let (sheet_name, range) = ibis_formats::parse_ref(values).unwrap();
+    assert_eq!(sheet_name, data);
+    assert_eq!((range.first_row, range.last_row, range.first_column), (1, 2, 1));
+    assert_eq!(t.call("app_undo_document", json!({"document_id":id}))["undone"], 1);
+}
+
+#[test]
+fn draft_chart_defaults_to_active_sheet_and_keeps_sparse_series() {
+    use ibis_doc_model::{Document, ShapeKind};
+    use ibis_formats::{Kind, SaveOptions};
+    use std::sync::Arc;
+
+    let opened = ibis_formats::open(ibis_formats::blank_file(Kind::Workbook).unwrap()).unwrap();
+    let live_source = opened.source;
+    let chart_source = Arc::new(live_source.with_private_chart_cache());
+    let mut draft = Document::new(opened.presentation);
+    let active = draft.presentation().slides[0].id;
+    let context = || ibis_doc_service::DraftToolContext {
+        source: Some(chart_source.clone()),
+        workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(active), ..Default::default() },
+    };
+    let run = ibis_doc_service::run_draft_tool;
+    run(Kind::Workbook, &mut draft, context(), "xlsx_set_cells", json!({
+        "range":"A1:C4","values":[[null,"Group1","Group2"],[195.6,null,105.81],[23.7,254.38,null],[5.1,"=NA()",null]]
+    })).unwrap();
+    let args = json!({
+        "kind":"scatter","anchor":"E2","domain_range":"A2:A4",
+        "series":[{"values_range":"B2:B4","name_cell":"B1"},{"values_range":"C2:C4","name_cell":"C1"}],
+        "title":"Comparison","x_title":"Population","y_title":"Cost"
+    });
+    let mut invalid = args.clone();
+    invalid["series"][0]["values_range"] = json!("B2:B3");
+    assert_eq!(run(Kind::Workbook, &mut draft, context(), "xlsx_create_chart", invalid).unwrap_err().code, "invalid_argument");
+    let (_, commands) = run(Kind::Workbook, &mut draft, context(), "xlsx_create_chart", args).unwrap();
+    assert_eq!(commands.len(), 1);
+    let shape = draft.presentation().slides[0].shapes.last().unwrap();
+    assert!(chart_source.has_new_chart(shape.id));
+    assert!(!live_source.has_new_chart(shape.id));
+    let saved = chart_source.save(draft.presentation(), SaveOptions::default()).unwrap();
+    let reopened = ibis_formats::read(&saved).unwrap();
+    let ShapeKind::Chart(chart) = &reopened.slides[0].shapes.last().unwrap().kind else { panic!("expected chart") };
+    assert_eq!(chart.title.as_ref().unwrap().text, "Comparison");
+    assert!(chart.axes.iter().any(|axis| axis.title.as_ref().is_some_and(|title| title.text == "Cost")));
+    assert_eq!(chart.groups[0].series[0].values.iter().map(|n| n.map(|n| n.0)).collect::<Vec<_>>(), [None, Some(254.38), None]);
+    assert!(draft.undo());
+    assert_eq!(draft.presentation().slides[0].shapes.len(), 1);
+}
