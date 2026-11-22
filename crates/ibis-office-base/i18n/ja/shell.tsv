@@ -1629,3 +1629,10 @@ git.branch-current	現在のブランチ
 git.switch	切り替え
 git.switch-failed	Gitブランチの切り替えに失敗しました
 git.switch-complete	切り替え完了
+git.branch-name	新しいブランチ名
+git.branch-name-required	ブランチ名を入力してください。
+git.branch-start	作成元
+git.branch-create	作成して切り替え
+git.branch-create-failed	Gitブランチの作成に失敗しました
+git.branch-created	ブランチ作成完了
+git.branch-name-invalid	有効なGitブランチ名を入力してください。

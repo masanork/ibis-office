@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::theme::Theme;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex};
@@ -36,6 +37,7 @@ pub(super) struct CommitGraph {
     completed: Option<&'static str>,
     upstream: Option<UpstreamStatus>,
     branches: Option<Vec<String>>,
+    new_branch: Option<Entity<InputState>>,
 }
 
 impl CommitGraph {
@@ -317,7 +319,13 @@ fn local_branches(root: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-fn switch_branch(root: &Path, head: gix::ObjectId, branch: &str, target: &str) -> Result<()> {
+fn switch_branch(
+    root: &Path,
+    head: gix::ObjectId,
+    branch: &str,
+    target: &str,
+    start: Option<gix::ObjectId>,
+) -> Result<()> {
     let repo = gix::discover(root)?;
     let current = repo
         .head_name()?
@@ -326,14 +334,21 @@ fn switch_branch(root: &Path, head: gix::ObjectId, branch: &str, target: &str) -
     if repo.head_id()?.detach() != head || current != branch {
         return Err(text("git.workspace-head-changed").to_string().into());
     }
-    let args = [
-        "switch",
-        "--no-guess",
-        "--no-recurse-submodules",
-        "--",
-        target,
-    ];
-    git(root, &args.map(OsStr::new))?;
+    let mut args = vec!["switch", "--no-guess", "--no-recurse-submodules"];
+    let commit;
+    if let Some(start) = start {
+        if target.starts_with('-')
+            || gix::refs::FullName::try_from(format!("refs/heads/{target}")).is_err()
+        {
+            return Err(text("git.branch-name-invalid").to_string().into());
+        }
+        commit = start.to_string();
+        args.extend(["--no-track", "-c", target, "--", &commit]);
+    } else {
+        args.extend(["--", target]);
+    }
+    let args: Vec<_> = args.into_iter().map(OsStr::new).collect();
+    git(root, &args)?;
     Ok(())
 }
 
@@ -342,6 +357,7 @@ enum SyncAction {
     Pull,
     Push(PushTarget),
     Switch(String),
+    CreateBranch { name: String, start: gix::ObjectId },
 }
 
 impl SyncAction {
@@ -351,6 +367,7 @@ impl SyncAction {
             Self::Pull => "git.pull-failed",
             Self::Push(_) => "git.push-failed",
             Self::Switch(_) => "git.switch-failed",
+            Self::CreateBranch { .. } => "git.branch-create-failed",
         }
     }
 
@@ -360,6 +377,7 @@ impl SyncAction {
             Self::Pull => "git.pull-complete",
             Self::Push(_) => "git.push-complete",
             Self::Switch(_) => "git.switch-complete",
+            Self::CreateBranch { .. } => "git.branch-created",
         }
     }
 
@@ -368,7 +386,10 @@ impl SyncAction {
             Self::Fetch => fetch_remotes(root),
             Self::Pull => pull_upstream(root, head, branch),
             Self::Push(target) => target.push(root, head),
-            Self::Switch(target) => switch_branch(root, head, branch, target),
+            Self::Switch(target) => switch_branch(root, head, branch, target, None),
+            Self::CreateBranch { name, start } => {
+                switch_branch(root, head, branch, name, Some(*start))
+            }
         }
     }
 }
@@ -403,19 +424,24 @@ impl SlideEditor {
                         .as_ref()
                         .and_then(|action| action.run(&root, head, &branch).err())
                         .map(|error| error.to_string());
-                    let updated_workspace =
-                        if matches!(action, Some(SyncAction::Pull | SyncAction::Switch(_)))
-                            && sync_error.is_none()
-                        {
-                            GitWorkspace::open(&root)
-                                .map(|workspace| {
-                                    (workspace.head != head || workspace.branch != branch)
-                                        .then_some(workspace)
-                                })
-                                .map_err(|error| error.to_string())
-                        } else {
-                            Ok(None)
-                        };
+                    let updated_workspace = if matches!(
+                        action,
+                        Some(
+                            SyncAction::Pull
+                                | SyncAction::Switch(_)
+                                | SyncAction::CreateBranch { .. }
+                        )
+                    ) && sync_error.is_none()
+                    {
+                        GitWorkspace::open(&root)
+                            .map(|workspace| {
+                                (workspace.head != head || workspace.branch != branch)
+                                    .then_some(workspace)
+                            })
+                            .map_err(|error| error.to_string())
+                    } else {
+                        Ok(None)
+                    };
                     let graph_head = updated_workspace
                         .as_ref()
                         .ok()
@@ -455,8 +481,12 @@ impl SlideEditor {
                 }
                 if action.is_some() && sync_error.is_none() {
                     state.graph.completed = action.as_ref().map(SyncAction::completion);
-                    if matches!(action, Some(SyncAction::Switch(_))) {
+                    if matches!(
+                        action,
+                        Some(SyncAction::Switch(_) | SyncAction::CreateBranch { .. })
+                    ) {
                         state.graph.branches = None;
+                        state.graph.new_branch = None;
                     }
                 }
                 let graph_error = match result {
@@ -496,13 +526,20 @@ impl SlideEditor {
                 .background_executor()
                 .spawn(async move { local_branches(&root).map_err(|error| error.to_string()) })
                 .await;
-            let _ = this.update(cx, |editor, cx| {
+            let _ = this.update_in(cx, |editor, window, cx| {
                 let Some(state) = editor.git_workspace.as_mut() else {
                     return;
                 };
                 state.busy = false;
                 match result {
-                    Ok(branches) => state.graph.branches = Some(branches),
+                    Ok(branches) => {
+                        state.graph.branches = Some(branches);
+                        state.graph.new_branch.get_or_insert_with(|| {
+                            cx.new(|cx| {
+                                InputState::new(window, cx).placeholder(text("git.branch-name"))
+                            })
+                        });
+                    }
                     Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
                 }
                 cx.notify();
@@ -517,6 +554,53 @@ impl SlideEditor {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let branches = state.graph.branches.as_ref()?;
+        let input = state.graph.new_branch.as_ref()?;
+        let draft = input.clone();
+        let start = state.snapshot;
+        let start_label = if start == state.head {
+            format!("HEAD ({})", short(start))
+        } else {
+            short(start)
+        };
+        let new_branch = div()
+            .px_2()
+            .pb_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().child(format!("{} {start_label}", text("git.branch-start"))))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(input).small().disabled(state.busy)),
+                    )
+                    .child(
+                        Button::new("git-create-branch")
+                            .small()
+                            .label(text("git.branch-create"))
+                            .disabled(state.busy)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let name = draft.read(cx).value().trim().to_string();
+                                if name.is_empty() {
+                                    this.show_alert(
+                                        text("git.branch-create-failed"),
+                                        text("git.branch-name-required"),
+                                        cx,
+                                    );
+                                } else {
+                                    this.git_load_graph(
+                                        Some(SyncAction::CreateBranch { name, start }),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            })),
+                    ),
+            );
         let border = cx.theme().border;
         let mut list = div()
             .id("git-local-branches")
@@ -572,12 +656,14 @@ impl SlideEditor {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if let Some(state) = this.git_workspace.as_mut() {
                                         state.graph.branches = None;
+                                        state.graph.new_branch = None;
                                         cx.notify();
                                     }
                                 })),
                         )
                         .child(text("git.branches")),
                 )
+                .child(new_branch)
                 .child(list.when(branches.is_empty(), |list| {
                     list.child(div().px_2().child(text("git.no-local-branches")))
                 }))

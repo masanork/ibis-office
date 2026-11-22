@@ -1631,3 +1631,10 @@ git.branch-current	Current
 git.switch	Switch
 git.switch-failed	Git branch switch failed
 git.switch-complete	Branch switched
+git.branch-name	New branch name
+git.branch-name-required	Enter a branch name.
+git.branch-start	Start from
+git.branch-create	Create and switch
+git.branch-create-failed	Git branch creation failed
+git.branch-created	Branch created
+git.branch-name-invalid	Enter a valid Git branch name.
