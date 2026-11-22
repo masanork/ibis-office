@@ -90,6 +90,29 @@ fn package(bytes: &[u8]) -> Result<(Archive, String), Error> {
     Ok((archive, xml))
 }
 
+/// First body position of each tagged field in a loaded DOCX.
+pub fn field_positions(
+    document: &ibis_doc_model::FlowDocument,
+) -> BTreeMap<String, ibis_doc_model::FlowPos> {
+    let mut positions = BTreeMap::new();
+    for paragraph in ibis_doc_model::flow_command::all_paragraphs(document) {
+        let mut offset = 0;
+        for run in &paragraph.runs {
+            if let Some(id) = run
+                .control
+                .as_ref()
+                .and_then(|control| control.tag.strip_prefix(PREFIX))
+            {
+                positions
+                    .entry(id.to_owned())
+                    .or_insert(ibis_doc_model::FlowPos::new(paragraph.id, offset));
+            }
+            offset += run.len();
+        }
+    }
+    positions
+}
+
 /// List the field IDs in the main document, including occurrence counts.
 pub fn inspect(bytes: &[u8]) -> Result<BTreeMap<String, usize>, Error> {
     let (_, xml) = package(bytes)?;

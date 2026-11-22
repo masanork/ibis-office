@@ -2381,3 +2381,12 @@ docx.student-record.blank	（空欄）
 docx.student-record.unsupported	対応する学籍の記録の表を1つに特定できませんでした。
 docx.student-record.title	指導要録の記載候補
 docx.student-record.instructions	項目を選ぶと、文書内の入力欄に移動します。
+docx.student-record.form-preflight	フォームの字数チェック
+docx.student-record.form-definition	フォーム定義を選択…
+docx.student-record.form-data	個別データを選択…
+docx.student-record.form-check	字数を確認
+docx.student-record.form-warning	{field}　{actual}字 → {max}字
+docx.student-record.form-clear	切り詰められる欄はありません。
+docx.student-record.form-stale	文書が変更されました。もう一度検査してください。
+docx.student-record.form-read-error	選択したファイルを読み込めませんでした。
+docx.student-record.form-parse-error	フォーム定義または個別データの形式を確認してください。

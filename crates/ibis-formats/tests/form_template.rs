@@ -184,3 +184,74 @@ fn municipal_notice_fixture_reports_only_the_overlong_note() {
     assert_eq!(diagnostics[0].max_chars, 40);
     assert!(!html.contains("後日学校からお知らせします。"));
 }
+
+#[test]
+fn tagged_fields_map_to_their_first_body_occurrence() {
+    let flow = read_docx(TEMPLATE).unwrap().flow.unwrap();
+    let positions = form_template::field_positions(&flow);
+    let at = positions["pupil.name"];
+    let paragraph = ibis_doc_model::flow_command::paragraph(&flow, at.para).unwrap();
+    let mut offset = 0;
+    let found = paragraph
+        .runs
+        .iter()
+        .find(|run| {
+            if run
+                .control
+                .as_ref()
+                .is_some_and(|c| c.tag == "ibis.form.pupil.name")
+            {
+                return true;
+            }
+            offset += run.len();
+            false
+        })
+        .unwrap();
+    assert_eq!(at.offset, offset);
+    assert!(found.control.is_some());
+    assert_eq!(
+        positions.len(),
+        form_template::inspect(TEMPLATE).unwrap().len()
+    );
+}
+
+#[test]
+fn saved_template_snapshot_reports_the_warning_at_the_sixth_grade_remarks() {
+    const DOCX: &[u8] =
+        include_bytes!("../../../test/fixtures/docx-form/full-school-record/template.docx");
+    let opened = ibis_formats::open(DOCX).unwrap();
+    let template = opened
+        .source
+        .save(&opened.presentation, ibis_formats::SaveOptions::default())
+        .unwrap();
+    assert_eq!(template, DOCX);
+    let definition = form_template::parse_input(
+        include_str!("../../../test/fixtures/docx-form/full-school-record/form.yaml"),
+        true,
+    )
+    .unwrap();
+    let mut data = form_template::parse_input(
+        include_str!("../../../test/fixtures/docx-form/full-school-record/record-b.yaml"),
+        true,
+    )
+    .unwrap();
+    data["data"]["grades"]["6"]["remarks"] = json!("図書委員会の活動を振り返った。".repeat(15));
+    let (_, warnings) =
+        form_template::fill_with_diagnostics(&template, &definition, &data).unwrap();
+    assert_eq!(
+        warnings,
+        [form_template::Truncation {
+            field_id: "grades.6.remarks".into(),
+            actual_chars: 225,
+            max_chars: 160,
+        }]
+    );
+    let flow = opened.presentation.flow.unwrap();
+    let target = form_template::field_positions(&flow)[&warnings[0].field_id];
+    let paragraph = ibis_doc_model::flow_command::paragraph(&flow, target.para).unwrap();
+    assert!(paragraph.runs.iter().any(|run| {
+        run.control
+            .as_ref()
+            .is_some_and(|c| c.tag == "ibis.form.grades.6.remarks")
+    }));
+}

@@ -359,6 +359,8 @@ pub struct State {
     /// Accessibility Checker (アクセシビリティ チェック).
     pub(crate) accessibility_panel: bool,
     pub(crate) student_record_open: bool,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) student_form_check: student_record::FormCheckState,
     /// Word's Navigation Pane active tab (見出し / ページ / 結果).
     pub(crate) navigation_tab: NavigationTab,
     /// Word's Navigation Pane search query.
@@ -497,6 +499,8 @@ impl crate::shell::format::GestureView for State {
             selection_reorder: _,
             accessibility_panel: _,
             student_record_open: _,
+            #[cfg(not(target_family = "wasm"))]
+            student_form_check: _,
             navigation_tab: _,
             nav_query: _,
             read_only_dismissed: _,

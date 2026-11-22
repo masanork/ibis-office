@@ -2390,3 +2390,12 @@ docx.student-record.blank	(Blank)
 docx.student-record.unsupported	Could not identify a single supported school record table.
 docx.student-record.title	School record values
 docx.student-record.instructions	Choose an item to go to its cell in the document.
+docx.student-record.form-preflight	Form character limits
+docx.student-record.form-definition	Choose form definition…
+docx.student-record.form-data	Choose record data…
+docx.student-record.form-check	Check character limits
+docx.student-record.form-warning	{field}  {actual} → {max} characters
+docx.student-record.form-clear	No fields will be truncated.
+docx.student-record.form-stale	The document has changed. Run the check again.
+docx.student-record.form-read-error	Could not read the selected file.
+docx.student-record.form-parse-error	Check the format of the form definition or record data.
