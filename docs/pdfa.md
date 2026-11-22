@@ -11,8 +11,10 @@ ibisOffice --export pdfa-2b --out-dir ./archive document.docx
 出力ライブラリにPDF/A-2bの条件を適用し、対応するXMP識別情報を付加します。
 ライブラリが条件違反を検出した場合は出力に失敗し、通常のPDFには切り替えません。
 
-LinuxのデスクトップCIでは、合成文書3形式に対してPDF/A識別情報とテキスト抽出を
-確認します。独立検証を行う場合は、veraPDFのCLIを指定してください。
+LinuxのデスクトップCIでは、AppImage内のibisOfficeを使い、合成文書3形式の
+PDF/A識別情報とテキスト抽出を確認します。固定したveraPDF 1.30.4で
+PDF/A-2b適合、通常のPDFと別の要求プロファイルでの非適合、検証器の起動失敗も
+確認します。ローカルで再現する場合は、veraPDFのCLIを指定してください。
 
 ```sh
 python3 scripts/test-pdfa-export.py target/debug/ibisOffice --verapdf /path/to/verapdf
