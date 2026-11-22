@@ -789,6 +789,9 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
             out.push_str(amend);
             out.push('）');
         }
+        if suppl.extract {
+            out.push_str("（抄）");
+        }
         out.push_str("\n\n");
         for node in &suppl.nodes {
             write_lawtext_node(&mut out, node);
@@ -829,21 +832,21 @@ fn write_lawtext_node(out: &mut String, node: &LawNode) {
                 out.push('\n');
             }
             for (idx, para) in art.paragraphs.iter().enumerate() {
+                let inline = idx == 0 && para.num == "1" && !para.sentence.is_empty();
                 if idx == 0 {
                     out.push_str(&art.title);
-                    if !para.sentence.is_empty() {
-                        out.push(' ');
-                        out.push_str(&para.sentence);
+                    if !inline {
+                        out.push('\n');
                     }
-                    out.push('\n');
-                } else {
-                    out.push_str(&to_fullwidth_digits(&para.num));
-                    if !para.sentence.is_empty() {
-                        out.push(' ');
-                        out.push_str(&para.sentence);
-                    }
-                    out.push('\n');
                 }
+                if !inline {
+                    out.push_str(&to_fullwidth_digits(&para.num));
+                }
+                if !para.sentence.is_empty() {
+                    out.push(' ');
+                    out.push_str(&para.sentence);
+                }
+                out.push('\n');
                 write_lawtext_items(out, &para.items);
             }
             out.push('\n');
@@ -968,12 +971,15 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
             flush_article(&mut cur_article, &mut div_stack, &mut doc, in_suppl);
             flush_all_divisions(&mut div_stack, &mut doc, in_suppl);
             in_suppl = true;
-            let (label, amend) = split_title_and_parens(&suppl_label)
-                .map(|(l, a)| (l, Some(a)))
-                .unwrap_or((suppl_label, None));
+            let (header, extract) = suppl_label
+                .strip_suffix("（抄）")
+                .map_or((suppl_label.as_str(), false), |header| (header, true));
+            let (label, amend) = split_title_and_parens(header)
+                .map(|(label, amend)| (label, Some(amend)))
+                .unwrap_or_else(|| (header.to_string(), None));
             doc.suppl_provisions.push(SupplProvision {
                 amend_law_num: amend,
-                extract: false,
+                extract,
                 label,
                 nodes: Vec::new(),
             });
@@ -1049,9 +1055,14 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 }
                 if indent >= 2 {
                     if let Some((it_title, it_sent)) = split_leading_token(trimmed) {
-                        let idx = (para.items.len() + 1).to_string();
+                        let num = if in_suppl {
+                            supplementary_item_number(it_title, it_sent)
+                        } else {
+                            None
+                        }
+                        .unwrap_or_else(|| (para.items.len() + 1).to_string());
                         para.items.push(LawItem {
-                            num: idx,
+                            num,
                             title: it_title.to_string(),
                             sentence: it_sent.to_string(),
                             subitems: Vec::new(),
@@ -1441,6 +1452,23 @@ fn parse_suppl_header(s: &str) -> Option<String> {
     (suffix.is_empty() || suffix.starts_with('（')).then(|| s.to_string())
 }
 
+fn supplementary_item_number(title: &str, sentence: &str) -> Option<String> {
+    if sentence == "略" {
+        let range = title
+            .strip_suffix("まで")
+            .and_then(|title| title.split_once("から"))
+            .or_else(|| title.split_once("及び"));
+        if let Some((first, last)) = range {
+            return Some(format!(
+                "{}:{}",
+                kanji_num_to_ascii(first)?,
+                kanji_num_to_ascii(last)?
+            ));
+        }
+    }
+    kanji_num_to_ascii(title)
+}
+
 fn parse_division_header(s: &str) -> Option<(DivisionKind, String)> {
     let rest = s.strip_prefix('第')?;
     let (num_part, suffix) = rest.split_once(|c| matches!(c, '編' | '章' | '節' | '款' | '目'))?;
@@ -1678,6 +1706,26 @@ mod tests {
             assert_eq!(roundtrip.suppl_provisions, original.suppl_provisions);
         }
         assert!(parse_suppl_header("附　則の規定").is_none());
+    }
+
+    #[test]
+    fn roundtrips_supplementary_extract_with_sparse_numbering() {
+        let lawtext = "試験法（令和元年法律第一号）\n\n附　則（令和二年法律第二号）（抄）\n\n第二条\n１\n４ 経過措置を定める。\n  一から二十五まで 略\n  二十六及び二十七 略\n  二十八 その他政令で定めるもの\n";
+        let doc = parse_lawtext(lawtext).unwrap();
+        let suppl = &doc.suppl_provisions[0];
+        assert!(suppl.extract);
+        assert_eq!(suppl.amend_law_num.as_deref(), Some("令和二年法律第二号"));
+        let [LawNode::Article(article)] = suppl.nodes.as_slice() else {
+            panic!("expected one supplementary article");
+        };
+        assert_eq!(article.paragraphs[0].num, "1");
+        assert!(article.paragraphs[0].sentence.is_empty());
+        assert_eq!(article.paragraphs[1].num, "4");
+        let numbers: Vec<_> = article.paragraphs[1].items.iter().map(|item| item.num.as_str()).collect();
+        assert_eq!(numbers, ["1:25", "26:27", "28"]);
+        let from_xml = parse_law_xml(&to_law_xml(&doc)).unwrap();
+        let from_lawtext = parse_lawtext(&to_lawtext(&from_xml)).unwrap();
+        assert_eq!(from_lawtext.suppl_provisions, doc.suppl_provisions);
     }
 
     #[test]

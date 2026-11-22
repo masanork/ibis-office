@@ -569,7 +569,7 @@ ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-formats/tes
 | 条・枝番・見出し | `第一条 本文`、`第一条の二 本文`。`（目的等）` は条に先立つ行に書きます。 |
 | 項 | 条に続く本文は第一項、`２ 本文` や `2 本文` は番号付きの項になります。 |
 | 号・号の下位項目 | 項の下で、行頭に空白を2文字以上置いた `一 本文` を号とし、号の下で4文字以上置いた `イ 本文` を下位項目とします。 |
-| 附則 | `附則`、`附 則`、`附則（改正法令番号）`。附則内の条や項を扱います。 |
+| 附則 | `附則`、`附 則`、`附　則`。改正法令番号は `附則（改正法令番号）`、抄録は `附則（改正法令番号）（抄）` と表記します。附則内の号の省略範囲は `一から三まで 略`、`二及び三 略` と表記します。 |
 | 別表 | `別表` で始まる見出しとパイプ区切りの表。括弧内に関係条を指定できます。 |
 
 法令標準 XML の取り込みでは、`Law` / `LawNum` / `LawBody` / `LawTitle`、`EnactStatement` / `Preamble`、`MainProvision`、編・章・節・款・目、`Article` / `ArticleCaption` / `ArticleTitle`、`Paragraph` / `Item` / `Subitem1` 以降、`SupplProvision`、`AppdxTable` と表の行・列を読み取ります。XML 内のすべての属性や要素が、Lawtext や Markdown への変換を往復して保持されるわけではありません。
