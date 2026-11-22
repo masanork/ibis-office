@@ -1659,3 +1659,8 @@ git.conflict-open	Open
 git.conflict-resolve	Mark resolved
 git.conflict-resolve-tooltip	Stage the working file as the conflict resolution
 git.commit-merge	Commit merge
+git.merge	Merge
+git.merge-confirm	Merge into the current branch?
+git.merge-complete	Merged
+git.merge-failed	Git merge failed
+git.merge-no-branch	Check out a local branch before merging.

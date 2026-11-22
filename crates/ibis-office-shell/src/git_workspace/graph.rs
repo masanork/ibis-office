@@ -410,9 +410,32 @@ fn switch_branch(
     Ok(())
 }
 
+fn merge_branch(root: &Path, head: gix::ObjectId, branch: &str, source: &str) -> Result<()> {
+    let repo = gix::discover(root)?;
+    let current = repo
+        .head_name()?
+        .ok_or_else(|| text("git.merge-no-branch").to_string())?;
+    if repo.head_id()?.detach() != head || current.shorten() != branch {
+        return Err(text("git.workspace-head-changed").to_string().into());
+    }
+    let reference = format!("refs/heads/{source}");
+    let args = [
+        "merge",
+        "--no-edit",
+        "--no-autostash",
+        "--no-squash",
+        "--no-overwrite-ignore",
+        "--",
+        &reference,
+    ];
+    git(root, &args.map(OsStr::new))?;
+    Ok(())
+}
+
 enum SyncAction {
     Fetch,
     Pull,
+    Merge(String),
     Push(PushTarget),
     Switch(String),
     TrackBranch(String),
@@ -424,6 +447,7 @@ impl SyncAction {
         match self {
             Self::Fetch => "git.fetch-failed",
             Self::Pull => "git.pull-failed",
+            Self::Merge(_) => "git.merge-failed",
             Self::Push(target) if target.publish => "git.publish-failed",
             Self::Push(_) => "git.push-failed",
             Self::Switch(_) => "git.switch-failed",
@@ -436,6 +460,7 @@ impl SyncAction {
         match self {
             Self::Fetch => "git.fetch-complete",
             Self::Pull => "git.pull-complete",
+            Self::Merge(_) => "git.merge-complete",
             Self::Push(target) if target.publish => "git.publish-complete",
             Self::Push(_) => "git.push-complete",
             Self::Switch(_) => "git.switch-complete",
@@ -448,6 +473,7 @@ impl SyncAction {
         match self {
             Self::Fetch => fetch_remotes(root),
             Self::Pull => pull_upstream(root, head, branch),
+            Self::Merge(source) => merge_branch(root, head, branch, source),
             Self::Push(target) => target.push(root, head),
             Self::Switch(target) => switch_branch(root, head, branch, target, BranchStart::Local),
             Self::TrackBranch(target) => {
@@ -480,20 +506,24 @@ impl SlideEditor {
         let root = state.worktree.clone().unwrap_or_else(|| state.repo.clone());
         let head = state.head;
         let branch = state.branch.clone();
+        let repo = state.repo.clone();
         state.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let (result, sync_error, action, updated_workspace, upstream) = cx
+            let (result, sync_error, action, updated_workspace, upstream, merge_pending) = cx
                 .background_executor()
                 .spawn(async move {
                     let sync_error = action
                         .as_ref()
                         .and_then(|action| action.run(&root, head, &branch).err())
                         .map(|error| error.to_string());
+                    let merge_pending = matches!(action, Some(SyncAction::Merge(_)))
+                        && repo.join("MERGE_HEAD").is_file();
                     let updated_workspace = if matches!(
                         action,
                         Some(
                             SyncAction::Pull
+                                | SyncAction::Merge(_)
                                 | SyncAction::Switch(_)
                                 | SyncAction::TrackBranch(_)
                                 | SyncAction::CreateBranch { .. }
@@ -525,10 +555,17 @@ impl SlideEditor {
                         upstream_status(&root, graph_head, graph_branch)
                             .unwrap_or(UpstreamStatus::Unavailable)
                     });
-                    (result, sync_error, action, updated_workspace, upstream)
+                    (
+                        result,
+                        sync_error,
+                        action,
+                        updated_workspace,
+                        upstream,
+                        merge_pending,
+                    )
                 })
                 .await;
-            let _ = this.update(cx, |editor, cx| {
+            let _ = this.update_in(cx, |editor, window, cx| {
                 let Some(state) = editor.git_workspace.as_mut() else {
                     return;
                 };
@@ -551,7 +588,8 @@ impl SlideEditor {
                     if matches!(
                         action,
                         Some(
-                            SyncAction::Switch(_)
+                            SyncAction::Merge(_)
+                                | SyncAction::Switch(_)
                                 | SyncAction::TrackBranch(_)
                                 | SyncAction::CreateBranch { .. }
                         )
@@ -572,13 +610,51 @@ impl SlideEditor {
                         Some(error)
                     }
                 };
-                if let (Some(error), Some(action)) = (sync_error, action) {
+                if merge_pending {
+                    state.graph.open = false;
+                    state.graph.branches = None;
+                    state.graph.new_branch = None;
+                    editor.git_show_changes(window, cx);
+                } else if let (Some(error), Some(action)) = (sync_error, action) {
                     editor.show_alert(text(action.failure()), error.into(), cx);
                 } else if let Some(error) = workspace_error.or(graph_error) {
                     editor.show_alert(text("git.failed"), error.into(), cx);
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    fn git_confirm_merge(&mut self, source: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.git_workspace.as_ref().filter(|state| !state.busy) else {
+            return;
+        };
+        let repo = state.repo.clone();
+        let head = state.head;
+        let branch = state.branch.clone();
+        let detail = format!("{source} → {branch} ({})", short(head));
+        let buttons = [
+            PromptButton::ok(text("git.merge")),
+            PromptButton::cancel(text("_shell.cancel")),
+        ];
+        let response = window.prompt(
+            PromptLevel::Info,
+            &text("git.merge-confirm"),
+            Some(&detail),
+            &buttons,
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if matches!(response.await, Ok(0)) {
+                let _ = this.update_in(cx, |editor, window, cx| {
+                    if editor.git_workspace.as_ref().is_some_and(|state| {
+                        state.repo == repo && state.head == head && state.branch == branch
+                    }) {
+                        editor.git_load_graph(Some(SyncAction::Merge(source)), window, cx);
+                    }
+                });
+            }
         })
         .detach();
     }
@@ -702,6 +778,7 @@ impl SlideEditor {
                 } else {
                     name.clone()
                 };
+                let source = name.clone();
                 list = list.child(
                     h_flex()
                         .px_2()
@@ -710,6 +787,17 @@ impl SlideEditor {
                         .border_b_1()
                         .border_color(border)
                         .child(div().flex_1().min_w_0().truncate().child(label))
+                        .when(!current && !is_remote, |row| {
+                            row.child(
+                                Button::new(("git-merge-branch", index))
+                                    .xsmall()
+                                    .disabled(state.busy)
+                                    .label(text("git.merge"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.git_confirm_merge(source.clone(), window, cx)
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new((
                                 if is_remote {
