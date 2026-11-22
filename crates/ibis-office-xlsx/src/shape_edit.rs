@@ -1598,6 +1598,7 @@ impl SlideEditor {
                         fill: Fill::None,
                         stroke: None,
                         shadow: None,
+                        text_box_pictures: Vec::new(),
                         tilt: None,
                         glow: None,
                         inner_shadow: None,

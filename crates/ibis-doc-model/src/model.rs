@@ -331,11 +331,20 @@ pub struct Crop {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextBoxPicture {
+    pub media: MediaId,
+    pub size: EmuSize,
+    pub alt_text: AltText,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutoShape {
     pub geometry: Geometry,
     pub fill: Fill,
     pub stroke: Option<Stroke>,
     pub text: Option<TextBody>,
+    /// Word text-box pictures in source order, retained for document export.
+    pub text_box_pictures: Vec<TextBoxPicture>,
     /// The shape seen tilted in 3D (`a:scene3d`), its text kept flat.
     pub tilt: Option<Tilt>,
     pub shadow: Option<crate::Shadow>,
@@ -356,12 +365,12 @@ impl AutoShape {
     /// A rectangle holding `text`, with `fill` and no outline: a text box
     /// as a presentation stores it.
     pub fn text_box(fill: Fill, text: TextBody) -> Self {
-        Self { geometry: Geometry::Rect, fill, stroke: None, text: Some(text), tilt: None, shadow: None, glow: None, inner_shadow: None, soft_edge: None, reflection: None, bevel: None }
+        Self { geometry: Geometry::Rect, fill, stroke: None, text: Some(text), text_box_pictures: Vec::new(), tilt: None, shadow: None, glow: None, inner_shadow: None, soft_edge: None, reflection: None, bevel: None }
     }
 
     /// A shape of `geometry` with `fill` and `stroke`, and no text.
     pub fn new(geometry: Geometry, fill: Fill, stroke: Option<Stroke>) -> Self {
-        Self { geometry, fill, stroke, text: None, tilt: None, shadow: None, glow: None, inner_shadow: None, soft_edge: None, reflection: None, bevel: None }
+        Self { geometry, fill, stroke, text: None, text_box_pictures: Vec::new(), tilt: None, shadow: None, glow: None, inner_shadow: None, soft_edge: None, reflection: None, bevel: None }
     }
 }
 

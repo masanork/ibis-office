@@ -2103,7 +2103,7 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
 
     fn drawings(&mut self, drawing: Node, rels: &Rels) -> Vec<FlowRunKind> {
         if let Some(holder) = elements(drawing).find(|n| matches!(n.tag_name().name(), "inline" | "anchor"))
-            && let Some(wgp) = holder.descendants().find(|n| n.is_element() && n.tag_name().name() == "wgp")
+            && let Some(wgp) = child(holder, "graphic").and_then(|g| child(g, "graphicData")).and_then(|d| child(d, "wgp"))
         {
             let grouped = self.group_shapes(holder, wgp, rels);
             if !grouped.is_empty() {
@@ -2448,7 +2448,9 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         let cx = extent.attribute("cx").and_then(|v| v.parse().ok()).unwrap_or(0);
         let cy = extent.attribute("cy").and_then(|v| v.parse().ok()).unwrap_or(0);
         let size = EmuSize::new(cx, cy);
-        let blip = holder.descendants().find(|n| n.is_element() && n.tag_name().name() == "blip")?;
+        let graphic_data = child(holder, "graphic").and_then(|g| child(g, "graphicData"))?;
+        let picture = child(graphic_data, "pic")?;
+        let blip = child(picture, "blipFill").and_then(|fill| child(fill, "blip"))?;
         let (media, _) = self.media(rels, blip_embed(blip)?)?;
         let floating = Self::parse_floating_anchor(holder);
         let colors = crate::theme::Colors::new(self.theme, None, &[]);
@@ -2587,6 +2589,44 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         Some(FlowRunKind::Shape(Box::new(shape)))
     }
 
+    fn text_box_pictures(&mut self, wsp: Node, rels: &Rels) -> Vec<ibis_doc_model::model::TextBoxPicture> {
+        let Some(content) = child(wsp, "txbx").and_then(|box_node| child(box_node, "txbxContent")) else {
+            return Vec::new();
+        };
+        let mut nodes = vec![content];
+        let mut pictures = Vec::new();
+        while let Some(node) = nodes.pop() {
+            match node.tag_name().name() {
+                "AlternateContent" => {
+                    nodes.extend(child(node, "Choice").or_else(|| child(node, "Fallback")));
+                }
+                "drawing" => {
+                    if let Some(run) = self.picture(node, rels) {
+                        let picture = match run {
+                            FlowRunKind::Picture { media, size, look } => Some(
+                                ibis_doc_model::model::TextBoxPicture { media, size, alt_text: look.alt_text }
+                            ),
+                            FlowRunKind::Shape(shape) => match shape.kind {
+                                ShapeKind::Picture(picture) => Some(ibis_doc_model::model::TextBoxPicture {
+                                    media: picture.media,
+                                    size: EmuSize::new(shape.frame.width, shape.frame.height),
+                                    alt_text: picture.alt_text,
+                                }),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        pictures.extend(picture);
+                    } else {
+                        nodes.extend(node.children().rev().filter(Node::is_element));
+                    }
+                }
+                _ => nodes.extend(node.children().rev().filter(Node::is_element)),
+            }
+        }
+        pictures
+    }
+
     fn shape_from_wsp(&mut self, wsp: Node, id: ShapeId, frame: EmuRect, mut floating: Option<ibis_doc_model::FloatingAnchor>, rels: &Rels) -> Shape {
         let sp_pr = child(wsp, "spPr");
         let xfrm = sp_pr.and_then(|p| child(p, "xfrm"));
@@ -2604,6 +2644,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         let stroke = self.shape_stroke(sp_pr.and_then(|p| child(p, "ln")), style, &colors);
 
         let text = self.shape_text(wsp, Some(rels), &colors);
+        let text_box_pictures = self.text_box_pictures(wsp, rels);
 
         // The effects (the shape's own `a:effectLst` or its style's), as a slide's shape has them.
         let (effects, bevel) = crate::drawing_props::shape_effects(&colors, self.theme_node, &sp_pr.into_iter().collect::<Vec<_>>(), style);
@@ -2631,6 +2672,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                     fill: fill.unwrap_or(Fill::None),
                     stroke,
                     text,
+                    text_box_pictures,
                     tilt: None,
                     shadow,
                     glow,
@@ -2900,7 +2942,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                 rotation,
                 flip_h,
                 flip_v,
-                kind: ShapeKind::Auto(AutoShape { geometry, fill, stroke, text, tilt: None, shadow, glow: None, inner_shadow: None, soft_edge: None, reflection: None, bevel: None }),
+                kind: ShapeKind::Auto(AutoShape { geometry, fill, stroke, text, text_box_pictures: Vec::new(), tilt: None, shadow, glow: None, inner_shadow: None, soft_edge: None, reflection: None, bevel: None }),
                 floating,
             },
         };

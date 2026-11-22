@@ -188,7 +188,7 @@ mod tests {
     }
 
     fn rect(id: u64, x: Emu, y: Emu) -> Shape {
-        shape(id, EmuRect::new(x, y, 100, 60), ShapeKind::Auto(AutoShape { geometry: crate::Geometry::Rect, fill: crate::drawing::Fill::None, stroke: None, text: None, tilt: None, shadow: None, glow: None, inner_shadow: None, soft_edge: None, reflection: None, bevel: None }))
+        shape(id, EmuRect::new(x, y, 100, 60), ShapeKind::Auto(AutoShape { geometry: crate::Geometry::Rect, fill: crate::drawing::Fill::None, stroke: None, text: None, text_box_pictures: Vec::new(), tilt: None, shadow: None, glow: None, inner_shadow: None, soft_edge: None, reflection: None, bevel: None }))
     }
 
     fn doc_of(shapes: Vec<Shape>) -> FlowDocument {

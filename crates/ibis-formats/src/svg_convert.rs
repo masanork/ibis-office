@@ -84,6 +84,7 @@ pub fn convert_svg_to_shapes(
             fill: item.fill,
             stroke: item.stroke,
             text: None,
+            text_box_pictures: Vec::new(),
             tilt: None,
             shadow: None,
             glow: None,
