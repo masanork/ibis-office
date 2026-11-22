@@ -165,8 +165,58 @@ impl PushTarget {
     }
 }
 
+fn pull_upstream(root: &Path, head: gix::ObjectId, branch: &str) -> Result<()> {
+    let repo = gix::discover(root)?;
+    let name = repo
+        .head_name()?
+        .ok_or_else(|| text("git.pull-no-upstream").to_string())?;
+    if repo.head_id()?.detach() != head || name.shorten() != branch {
+        return Err(text("git.pull-head-changed").to_string().into());
+    }
+    let direction = gix::remote::Direction::Fetch;
+    let remote = repo.branch_remote_name(name.shorten(), direction);
+    let upstream = repo
+        .branch_remote_ref_name(name.as_ref(), direction)
+        .transpose()?;
+    let (Some(remote), Some(upstream)) = (remote, upstream) else {
+        return Err(text("git.pull-no-upstream").to_string().into());
+    };
+    if remote.as_bstr() == "."
+        || !repo.remote_names().contains(remote.as_bstr())
+        || !upstream.as_bstr().starts_with(b"refs/heads/")
+    {
+        return Err(text("git.pull-no-upstream").to_string().into());
+    }
+    let upstream = std::str::from_utf8(upstream.as_bstr())?;
+    // Allow fetch to update a tracking ref, while keeping local branches subject to the fast-forward check.
+    let tracking = repo
+        .branch_remote_tracking_ref_name(name.as_ref(), direction)
+        .transpose()?
+        .filter(|reference| reference.as_bstr().starts_with(b"refs/remotes/"));
+    let refspec = match tracking {
+        Some(reference) => format!("+{upstream}:{}", std::str::from_utf8(reference.as_bstr())?),
+        None => upstream.to_owned(),
+    };
+    let args = [
+        "pull",
+        "--ff-only",
+        "--no-rebase",
+        "--no-squash",
+        "--no-autostash",
+        "--no-recurse-submodules",
+        "--no-prune",
+        "--refmap=",
+        "--",
+        std::str::from_utf8(remote.as_bstr())?,
+        &refspec,
+    ];
+    git(root, &args.map(OsStr::new))?;
+    Ok(())
+}
+
 enum SyncAction {
     Fetch,
+    Pull,
     Push(PushTarget),
 }
 
@@ -174,6 +224,7 @@ impl SyncAction {
     fn failure(&self) -> &'static str {
         match self {
             Self::Fetch => "git.fetch-failed",
+            Self::Pull => "git.pull-failed",
             Self::Push(_) => "git.push-failed",
         }
     }
@@ -181,13 +232,15 @@ impl SyncAction {
     fn completion(&self) -> &'static str {
         match self {
             Self::Fetch => "git.fetch-complete",
+            Self::Pull => "git.pull-complete",
             Self::Push(_) => "git.push-complete",
         }
     }
 
-    fn run(&self, root: &Path, head: gix::ObjectId) -> Result<()> {
+    fn run(&self, root: &Path, head: gix::ObjectId, branch: &str) -> Result<()> {
         match self {
             Self::Fetch => fetch_remotes(root),
+            Self::Pull => pull_upstream(root, head, branch),
             Self::Push(target) => target.push(root, head),
         }
     }
@@ -211,18 +264,33 @@ impl SlideEditor {
         };
         let root = state.worktree.clone().unwrap_or_else(|| state.repo.clone());
         let head = state.head;
+        let branch = state.branch.clone();
         state.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let (result, sync_error, action) = cx
+            let (result, sync_error, action, updated_workspace) = cx
                 .background_executor()
                 .spawn(async move {
                     let sync_error = action
                         .as_ref()
-                        .and_then(|action| action.run(&root, head).err())
+                        .and_then(|action| action.run(&root, head, &branch).err())
                         .map(|error| error.to_string());
-                    let result = read_graph(&root, head, limit).map_err(|error| error.to_string());
-                    (result, sync_error, action)
+                    let updated_workspace =
+                        if matches!(action, Some(SyncAction::Pull)) && sync_error.is_none() {
+                            GitWorkspace::open(&root)
+                                .map(|workspace| (workspace.head != head).then_some(workspace))
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Ok(None)
+                        };
+                    let graph_head = updated_workspace
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .map_or(head, |workspace| workspace.head);
+                    let result =
+                        read_graph(&root, graph_head, limit).map_err(|error| error.to_string());
+                    (result, sync_error, action, updated_workspace)
                 })
                 .await;
             let _ = this.update(cx, |editor, cx| {
@@ -230,6 +298,16 @@ impl SlideEditor {
                     return;
                 };
                 state.busy = false;
+                let workspace_error = match updated_workspace {
+                    Ok(Some(mut updated)) => {
+                        updated.graph = std::mem::take(&mut state.graph);
+                        updated.working = std::mem::take(&mut state.working);
+                        *state = updated;
+                        None
+                    }
+                    Ok(None) => None,
+                    Err(error) => Some(error),
+                };
                 if action.is_some() && sync_error.is_none() {
                     state.graph.completed = action.as_ref().map(SyncAction::completion);
                 }
@@ -247,7 +325,7 @@ impl SlideEditor {
                 };
                 if let (Some(error), Some(action)) = (sync_error, action) {
                     editor.show_alert(text(action.failure()), error.into(), cx);
-                } else if let Some(error) = graph_error {
+                } else if let Some(error) = workspace_error.or(graph_error) {
                     editor.show_alert(text("git.failed"), error.into(), cx);
                 }
                 cx.notify();
@@ -474,6 +552,18 @@ impl SlideEditor {
                         this.git_load_graph(Some(SyncAction::Fetch), window, cx)
                     })),
             )
+            .when(state.worktree.is_some(), |bar| {
+                bar.child(
+                    Button::new("git-pull")
+                        .xsmall()
+                        .disabled(state.busy)
+                        .label(text("git.pull"))
+                        .tooltip(text("git.pull-ff-only"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.git_load_graph(Some(SyncAction::Pull), window, cx)
+                        })),
+                )
+            })
             .child(
                 Button::new("git-push")
                     .xsmall()

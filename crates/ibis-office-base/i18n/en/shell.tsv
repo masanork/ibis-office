@@ -1608,3 +1608,9 @@ git.push-complete	Push complete
 git.push-failed	Git push failed
 git.push-no-upstream	A local branch with a configured remote upstream branch is required.
 git.push-target-changed	The checked-out commit or upstream changed. Reopen the repository and try again.
+git.pull	Pull
+git.pull-ff-only	Pull with fast-forward only
+git.pull-complete	Pull complete
+git.pull-failed	Git pull failed
+git.pull-no-upstream	A local branch with a configured remote upstream branch is required.
+git.pull-head-changed	The checked-out branch or commit changed. Reopen the repository and try again.

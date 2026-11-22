@@ -1606,3 +1606,9 @@ git.push-complete	プッシュ完了
 git.push-failed	Gitのプッシュに失敗しました
 git.push-no-upstream	リモートのアップストリームが設定されたローカルブランチが必要です。
 git.push-target-changed	チェックアウト中のコミットまたはアップストリームが変わりました。リポジトリを開き直して再試行してください。
+git.pull	プル
+git.pull-ff-only	早送りできる場合のみ上流の変更を取り込む
+git.pull-complete	プル完了
+git.pull-failed	Gitのプルに失敗しました
+git.pull-no-upstream	リモートのアップストリームが設定されたローカルブランチが必要です。
+git.pull-head-changed	チェックアウト中のブランチまたはコミットが変わりました。リポジトリを開き直して再試行してください。
