@@ -812,7 +812,7 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
 }
 
 #[test]
-fn parquet_query_report_preserves_selected_columns_after_reopen() {
+fn parquet_query_report_preserves_projection_and_filter_after_reopen() {
     let dir = std::env::temp_dir().join(format!("ibis-parquet-query-columns-{}", std::process::id()));
     std::fs::create_dir(&dir).unwrap();
     let source = dir.join("source.parquet");
@@ -833,7 +833,10 @@ fn parquet_query_report_preserves_selected_columns_after_reopen() {
     let query = call("sqlite_query", args.clone());
     assert_eq!(query["columns"], columns);
     assert_eq!(query["rows"], json!([[0,"00"],[1,"01"]]));
+    let filter = json!({"amount":1, "code":"01"});
     let mut report = args;
+    report["datasets"][0]["where"] = filter.clone();
+    assert_eq!(call("sqlite_query", report.clone())["rows"], json!([[1,"01"]]));
     report["document_id"] = id.clone();
     report["destination_sheet"] = sheet;
     report["anchor"] = json!("A1");
@@ -844,14 +847,15 @@ fn parquet_query_report_preserves_selected_columns_after_reopen() {
     let id = call("app_open_document", json!({"path":saved}))["document_id"].clone();
     let reports = call("xlsx_list_query_reports", json!({"document_id":id}));
     assert_eq!(reports["reports"][0]["sources"][0]["columns"], columns);
+    assert_eq!(reports["reports"][0]["sources"][0]["where"], filter);
     let preview = call("sqlite_refresh_query_reports", json!({
         "document_id":id,"bindings":{"source.parquet":source},"preview":true,
     }));
-    assert_eq!(preview["reports"][0]["rows"], 2);
+    assert_eq!(preview["reports"][0]["rows"], 1);
     assert_eq!(preview["dirty"], false);
     let refreshed = call("sqlite_refresh_query_table", json!({
         "document_id":id,"table":name,"sources":[source],
     }));
-    assert_eq!(refreshed["rows"], 2);
+    assert_eq!(refreshed["rows"], 1);
     std::fs::remove_dir_all(dir).unwrap();
 }

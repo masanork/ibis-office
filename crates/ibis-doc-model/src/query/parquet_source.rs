@@ -304,7 +304,7 @@ fn read_columns(
     rows_loaded: usize,
     expected: Option<&[QColumn]>,
 ) -> Result<QTable, String> {
-    read_columns_bounded(path, selected, rows_loaded, expected, 5_000_000, usize::MAX)
+    read_columns_bounded(path, selected, rows_loaded, expected, &[], 5_000_000, usize::MAX)
 }
 
 pub fn read_parquet_bounded(
@@ -313,7 +313,18 @@ pub fn read_parquet_bounded(
     max_cells: usize,
     max_text: usize,
 ) -> Result<QTable, String> {
-    read_columns_bounded(path, selected, 0, None, max_cells, max_text)
+    read_parquet_filtered(path, selected, &[], max_cells, max_text)
+}
+
+/// Scan a projection and retain rows matching all typed equality conditions.
+pub fn read_parquet_filtered(
+    path: &Path,
+    selected: &[String],
+    filters: &[(&str, CellValue)],
+    max_cells: usize,
+    max_text: usize,
+) -> Result<QTable, String> {
+    read_columns_bounded(path, selected, 0, None, filters, max_cells, max_text)
 }
 
 fn read_columns_bounded(
@@ -321,6 +332,7 @@ fn read_columns_bounded(
     selected: &[String],
     rows_loaded: usize,
     expected: Option<&[QColumn]>,
+    filters: &[(&str, CellValue)],
     max_cells: usize,
     mut max_text: usize,
 ) -> Result<QTable, String> {
@@ -328,25 +340,24 @@ fn read_columns_bounded(
     let meta = reader.metadata().file_metadata();
     let schema = meta.schema();
     let fields = schema.get_fields();
-    let projected = if selected.is_empty() {
+    let mut by_name = std::collections::HashMap::new();
+    for field in fields {
+        by_name.entry(field.name()).and_modify(|slot| *slot = None).or_insert(Some(field));
+    }
+    let mut projected = if selected.is_empty() {
         fields.to_vec()
     } else {
-        let mut by_name = std::collections::HashMap::new();
-        for field in fields {
-            by_name
-                .entry(field.name())
-                .and_modify(|slot| *slot = None)
-                .or_insert(Some(field));
-        }
-        selected
-            .iter()
-            .map(|name| match by_name.remove(name.as_str()) {
-                Some(Some(field)) => Ok(field.clone()),
-                Some(None) => Err(format!("Ambiguous Parquet column: {name}")),
-                None => Err(format!("Missing or duplicate Parquet column: {name}")),
-            })
-            .collect::<Result<Vec<_>, String>>()?
+        selected.iter().map(|name| match by_name.get(name.as_str()) {
+            Some(Some(field)) => Ok((*field).clone()),
+            Some(None) => Err(format!("Ambiguous Parquet column: {name}")),
+            None => Err(format!("Missing Parquet column: {name}")),
+        }).collect::<Result<Vec<_>, String>>()?
     };
+    let width = projected.len();
+    let unique = projected.iter().map(|field| field.name()).collect::<std::collections::HashSet<_>>();
+    if unique.len() != width {
+        return Err("Duplicate Parquet column in projection".into());
+    }
     let columns = projected
         .iter()
         .map(|field| {
@@ -359,9 +370,28 @@ fn read_columns_bounded(
     if expected.is_some_and(|expected| expected != columns) {
         return Err("Selected columns differ from the first Parquet file".into());
     }
-    let width = columns.len();
+    let filter_indices = filters.iter().map(|(name, value)| {
+        let field = match by_name.get(name) {
+            Some(Some(field)) => *field,
+            Some(None) => return Err(format!("Ambiguous Parquet column: {name}")),
+            None => return Err(format!("Missing Parquet column: {name}")),
+        };
+        let ty = column_type(field).ok_or_else(|| format!("Unsupported Parquet column: {name}"))?;
+        if !matches!((value, ty),
+            (CellValue::Empty, _) | (CellValue::Text(_), QType::Text)
+            | (CellValue::Bool(_), QType::Logical)
+            | (CellValue::Number(_), QType::Whole | QType::Decimal))
+        {
+            return Err(format!("Parquet filter has the wrong value type for column: {name}"));
+        }
+        let index = projected.iter().position(|field| field.name() == *name).unwrap_or_else(|| {
+            projected.push(field.clone());
+            projected.len() - 1
+        });
+        Ok((index, value))
+    }).collect::<Result<Vec<_>, String>>()?;
     let rows = (rows_loaded as u64).saturating_add(meta.num_rows() as u64);
-    if width > 16_384 || rows >= 1_048_576 || (width as u64).saturating_mul(rows) > max_cells as u64
+    if width > 16_384 || rows >= 1_048_576 || (filters.is_empty() && (width as u64).saturating_mul(rows) > max_cells as u64)
     {
         return Err("Parquet source exceeds the query editor's size limit".into());
     }
@@ -373,12 +403,23 @@ fn read_columns_bounded(
         .with_fields(projected)
         .build()
         .map_err(|e| e.to_string())?;
-    for row in reader
+    'rows: for row in reader
         .get_row_iter(Some(projection))
         .map_err(|e| e.to_string())?
     {
+        let fields = row.map_err(|e| e.to_string())?.into_columns();
+        for &(index, expected) in &filter_indices {
+            let (name, field) = &fields[index];
+            let (value, _) = cell(field.clone()).map_err(|e| format!("{name}: {e}"))?;
+            if &value != expected {
+                continue 'rows;
+            }
+        }
+        if (rows_loaded + table.rows.len() + 1).saturating_mul(width) > max_cells {
+            return Err("Parquet source exceeds the query editor's size limit".into());
+        }
         let mut values = Vec::with_capacity(width);
-        for (name, field) in row.map_err(|e| e.to_string())?.into_columns() {
+        for (name, field) in fields.into_iter().take(width) {
             let (value, _) = cell(field).map_err(|e| format!("{name}: {e}"))?;
             if let CellValue::Text(text) = &value {
                 max_text = max_text
@@ -426,6 +467,18 @@ mod tests {
         assert!(read_parquet_bounded(&fixture, &selected, 4, 9).is_err());
         let error = read_parquet_bounded(&fixture, &["extra".into()], 4, 10).unwrap_err();
         assert_eq!(error, "Unsupported Parquet column: extra");
+        std::fs::remove_file(fixture).unwrap();
+    }
+
+    #[test]
+    fn parquet_filter_can_use_an_unreturned_column_before_the_cell_limit() {
+        let fixture = write_table(parquet::basic::Compression::SNAPPY, "filtered-projection", true);
+        let selected = ["code".into()];
+        let table = read_parquet_filtered(&fixture, &selected, &[("amount", CellValue::Empty)], 1, 5).unwrap();
+        assert_eq!(table.names(), ["code"]);
+        assert_eq!(table.rows, [vec![CellValue::Text("00001".into())]]);
+        assert!(read_parquet_bounded(&fixture, &selected, 1, 5).is_err());
+        assert!(read_parquet_filtered(&fixture, &selected, &[("amount", CellValue::Text("7".into()))], 1, 5).is_err());
         std::fs::remove_file(fixture).unwrap();
     }
 

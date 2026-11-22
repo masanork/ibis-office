@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
-    QColumn, QTable, QType, SqlitePredicate, SqliteRows, SqliteScalar, read_parquet_bounded,
+    QColumn, QTable, QType, SqlitePredicate, SqliteRows, SqliteScalar, read_parquet_filtered,
     read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_query, sqlite_query_datasets,
     sqlite_tables,
 };
@@ -388,6 +388,11 @@ fn query_properties() -> Vec<(&'static str, Value)> {
                     ("source", string("Path to a CSV, Parquet or SQLite file in an allowed folder.")),
                     ("alias", string("SQL table name to register for this dataset.")),
                     ("table", string("Source table name, required for SQLite files.")),
+                    ("where", json!({
+                        "type":"object","minProperties":1,"maxProperties":MAX_FILTERS,
+                        "additionalProperties":{"type":["string","number","boolean","null"]},
+                        "description":"Parquet only: column-to-value equality filters, combined with AND. Null matches missing values."
+                    })),
                     ("columns", json!({
                         "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
                         "items":{"type":"string","minLength":1},
@@ -530,7 +535,7 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
     let mut cells = 100_000usize;
     let mut text = 8 * 1024 * 1024usize;
     specs.iter().map(|spec| {
-        crate::edit::only_known(spec, &["source", "alias", "table", "columns"])?;
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where"])?;
         let alias = spec.str_arg("alias")?;
         if alias.is_empty() || alias.len() > 128 || !alias.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
             || alias.as_bytes()[0].is_ascii_digit() || !aliases.insert(alias.to_ascii_lowercase()) {
@@ -555,6 +560,27 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
                 }).collect::<Option<Vec<_>>>())
                 .ok_or_else(|| ToolError::invalid("columns must contain 1 to 256 non-empty Parquet column names"))?,
         };
+        let filters = match spec.get("where") {
+            None => Vec::new(),
+            Some(_) if kind != "parquet" => {
+                return Err(ToolError::invalid("where is only used for Parquet datasets"));
+            }
+            Some(value) => value.as_object()
+                .filter(|items| (1..=MAX_FILTERS).contains(&items.len()))
+                .ok_or_else(|| ToolError::invalid(format!("where must have 1 to {MAX_FILTERS} conditions")))?
+                .iter().map(|(name, value)| {
+                    let value = match value {
+                        Value::String(value) => CellValue::Text(value.clone()),
+                        Value::Bool(value) => CellValue::Bool(*value),
+                        Value::Null => CellValue::Empty,
+                        Value::Number(value) => CellValue::Number(value.as_f64()
+                            .filter(|n| n.is_finite() && (value.is_f64() || n.abs() < (1_u64 << 53) as f64))
+                            .ok_or_else(|| ToolError::invalid("Parquet filter number exceeds exact numeric range"))?),
+                        _ => return Err(ToolError::invalid("Parquet filter values must be scalar or null")),
+                    };
+                    Ok((name.as_str(), value))
+                }).collect::<Result<Vec<_>, ToolError>>()?,
+        };
         let table = if is_sqlite(&path) {
             let name = table_name.ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?;
             read_sqlite_table_bounded(&path, name, cells, text).map_err(sqlite_error)?
@@ -563,7 +589,7 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
                 return Err(ToolError::invalid("table is only used for SQLite datasets"));
             }
             if kind == "parquet" {
-                read_parquet_bounded(&path, &columns, cells, text).map_err(sqlite_error)?
+                read_parquet_filtered(&path, &columns, &filters, cells, text).map_err(sqlite_error)?
             } else {
                 read_csv_dataset(&path, cells, text)?
             }
@@ -706,8 +732,10 @@ fn saved_definition(args: &Value) -> Result<Value, ToolError> {
             "kind": source_kind(path),
             "alias": spec["alias"], "table": spec["table"],
         });
-        if let Some(columns) = spec.get("columns") {
-            source["columns"] = columns.clone();
+        for key in ["columns", "where"] {
+            if let Some(value) = spec.get(key) {
+                source[key] = value.clone();
+            }
         }
         source
     };
@@ -781,8 +809,10 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
                 return Err(ToolError::invalid("A source binding has the wrong format"));
             }
             let mut dataset = json!({"source":path,"alias":source["alias"],"table":source["table"]});
-            if let Some(columns) = source.get("columns") {
-                dataset["columns"] = columns.clone();
+            for key in ["columns", "where"] {
+                if let Some(value) = source.get(key) {
+                    dataset[key] = value.clone();
+                }
             }
             Ok(dataset)
         })
