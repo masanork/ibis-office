@@ -100,8 +100,11 @@ impl SceneDevice {
     }
 
     fn finish(mut self) -> PageScene {
-        // The characters get the width they take (ibisOffice: selecting text needs it).
-        self.text_index.fit_widths();
+        // The viewer's selection wants each box to reach the next character (ibisOffice). The export reads the gaps
+        // between characters as spaces and keeps the widths the font gives: a box widened over a word space hides it.
+        if self.include_text_outlines {
+            self.text_index.fit_widths();
+        }
         PageScene {
             info: self.info,
             display_list: self.display_list,
@@ -233,10 +236,17 @@ impl<'a> Device<'a> for SceneDevice {
                 BfString::Char(c) => c.to_string(),
                 BfString::String(s) => s,
             };
+            // The glyph's advance where the font gives it (in thousandths of the size), else what the character
+            // usually takes: a full-width character one em, any other 0.55.
+            let advance = match glyph {
+                Glyph::Outline(outline) => outline.advance_width().filter(|w| *w > 0.0 && *w < 4000.0).map(|w| w / 1000.0),
+                Glyph::Type3(_) => None,
+            }
+            .unwrap_or_else(|| text.chars().map(crate::scene::estimated_advance_em).sum());
             let rect_pt = PdfRect {
                 x0: origin.0,
                 y0: origin.1 - font_size,
-                x1: origin.0 + font_size * 0.6,
+                x1: origin.0 + font_size * advance,
                 y1: origin.1,
             };
             for ch in text.chars() {
