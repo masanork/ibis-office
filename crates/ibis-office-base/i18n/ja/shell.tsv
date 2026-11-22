@@ -1646,3 +1646,9 @@ git.remote-branches	リモートブランチ
 git.track	追跡して切り替え
 git.track-failed	リモートブランチを追跡できませんでした
 git.track-complete	追跡設定完了
+git.stash	退避
+git.stash-tooltip	ステージ済み・未ステージ・未追跡の変更を退避する
+git.stashes	退避した変更
+git.stash-apply	適用
+git.stash-apply-tooltip	退避した変更を残したまま作業ツリーに適用する
+git.stash-failed	Gitの退避操作に失敗しました

@@ -11,7 +11,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_fl
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{GitWorkspace, MAX_TEXT_DIFF_BYTES, Result, filename, markdown_block};
+use super::{GitWorkspace, MAX_TEXT_DIFF_BYTES, Result, filename, markdown_block, short};
 use crate::{editor::SlideEditor, i18n::text};
 
 struct Change {
@@ -34,6 +34,7 @@ impl Change {
 pub(super) struct WorkingTree {
     open: bool,
     changes: Vec<Change>,
+    stashes: Vec<Stash>,
     message: Option<Entity<InputState>>,
 }
 
@@ -48,6 +49,8 @@ enum Operation {
     Stage(PathBuf),
     Unstage(PathBuf),
     Commit(String),
+    Stash,
+    ApplyStash(gix::ObjectId),
 }
 
 fn git_command(root: &Path, args: &[&OsStr]) -> Command {
@@ -195,9 +198,43 @@ fn status(root: &Path) -> Result<Vec<Change>> {
     Ok(changes)
 }
 
+struct Stash {
+    id: gix::ObjectId,
+    title: String,
+}
+
+fn list_stashes(root: &Path) -> Result<Vec<Stash>> {
+    let args = [
+        "stash",
+        "list",
+        "--encoding=UTF-8",
+        "--format=%H%x00%gs",
+        "-z",
+    ];
+    let output = git(root, &args.map(OsStr::new))?;
+    if output.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut fields = output
+        .strip_suffix(b"\0")
+        .ok_or("Invalid Git stash list")?
+        .split(|byte| *byte == 0);
+    let mut stashes = Vec::new();
+    while let Some(id) = fields.next() {
+        let title = fields.next().ok_or("Missing Git stash message")?;
+        stashes.push(Stash {
+            id: gix::ObjectId::from_hex(id)?,
+            title: String::from_utf8_lossy(title).into_owned(),
+        });
+    }
+    Ok(stashes)
+}
+
 struct Outcome {
     changes: std::result::Result<Vec<Change>, String>,
     workspace: std::result::Result<Option<GitWorkspace>, String>,
+    stashes: std::result::Result<Vec<Stash>, String>,
+    stash_error: Option<String>,
     committed: bool,
 }
 
@@ -213,6 +250,7 @@ fn perform(
         return Err("Git HEAD changed. Refresh the changes list and try again.".into());
     }
     let committed = matches!(operation, Operation::Commit(_));
+    let mut stash_error = None;
     match operation {
         Operation::Refresh => {}
         Operation::Stage(path) => {
@@ -238,6 +276,25 @@ fn perform(
                 &[OsStr::new("commit"), OsStr::new("-m"), OsStr::new(&message)],
             )?;
         }
+        Operation::Stash => {
+            // Git stash uses internal pathspecs when removing saved untracked files.
+            let args = [
+                "--no-literal-pathspecs",
+                "stash",
+                "push",
+                "--include-untracked",
+            ];
+            stash_error = git(root, &args.map(OsStr::new))
+                .err()
+                .map(|error| error.to_string());
+        }
+        Operation::ApplyStash(id) => {
+            let id = id.to_string();
+            let args = ["--no-literal-pathspecs", "stash", "apply", "--index", &id];
+            stash_error = git(root, &args.map(OsStr::new))
+                .err()
+                .map(|error| error.to_string());
+        }
     }
     let workspace = if committed {
         GitWorkspace::open(root)
@@ -249,6 +306,8 @@ fn perform(
     Ok(Outcome {
         changes: status(root).map_err(|error| error.to_string()),
         workspace,
+        stashes: list_stashes(root).map_err(|error| error.to_string()),
+        stash_error,
         committed,
     })
 }
@@ -308,6 +367,16 @@ impl SlideEditor {
                                 Some(error)
                             }
                         };
+                        let stash_list_error = match outcome.stashes {
+                            Ok(stashes) => {
+                                state.working.stashes = stashes;
+                                None
+                            }
+                            Err(error) => {
+                                state.working.stashes.clear();
+                                Some(error)
+                            }
+                        };
                         let error = match outcome.workspace {
                             Ok(Some(mut updated)) => {
                                 updated.working = std::mem::take(&mut state.working);
@@ -317,7 +386,9 @@ impl SlideEditor {
                             Ok(None) => error,
                             Err(error) => Some(error),
                         };
-                        if let Some(error) = error {
+                        if let Some(error) = outcome.stash_error {
+                            editor.show_alert(text("git.stash-failed"), error.into(), cx);
+                        } else if let Some(error) = error.or(stash_list_error) {
                             editor.show_alert(
                                 text(if outcome.committed {
                                     "git.commit-refresh-failed"
@@ -494,6 +565,41 @@ impl SlideEditor {
                 list = list.child(row);
             }
         }
+        if !state.working.stashes.is_empty() {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(text("git.stashes")),
+            );
+        }
+        for (index, stash) in state.working.stashes.iter().enumerate() {
+            let id = stash.id;
+            list = list.child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(div().flex_1().min_w_0().truncate().child(format!(
+                        "{} {}",
+                        short(id),
+                        stash.title
+                    )))
+                    .child(
+                        Button::new(("git-apply-stash", index))
+                            .xsmall()
+                            .disabled(state.busy)
+                            .label(text("git.stash-apply"))
+                            .tooltip(text("git.stash-apply-tooltip"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.git_operate(Operation::ApplyStash(id), window, cx);
+                            })),
+                    ),
+            );
+        }
         let input = message.clone();
         let commit = Button::new("git-commit")
             .small()
@@ -522,15 +628,28 @@ impl SlideEditor {
                         .gap_1()
                         .child(Input::new(message).small().disabled(state.busy))
                         .child(
-                            h_flex().gap_1().child(commit).child(
-                                Button::new("git-refresh-status")
-                                    .small()
-                                    .disabled(state.busy)
-                                    .label(text("git.refresh"))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.git_operate(Operation::Refresh, window, cx);
-                                    })),
-                            ),
+                            h_flex()
+                                .gap_1()
+                                .child(commit)
+                                .child(
+                                    Button::new("git-refresh-status")
+                                        .small()
+                                        .disabled(state.busy)
+                                        .label(text("git.refresh"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.git_operate(Operation::Refresh, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("git-stash-changes")
+                                        .small()
+                                        .disabled(state.busy || state.working.changes.is_empty())
+                                        .label(text("git.stash"))
+                                        .tooltip(text("git.stash-tooltip"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.git_operate(Operation::Stash, window, cx);
+                                        })),
+                                ),
                         ),
                 )
                 .when(state.working.changes.is_empty() && !state.busy, |pane| {

@@ -1648,3 +1648,9 @@ git.remote-branches	Remote branches
 git.track	Track and switch
 git.track-failed	Could not track the remote branch
 git.track-complete	Tracking
+git.stash	Stash
+git.stash-tooltip	Stash staged, unstaged, and untracked changes
+git.stashes	Stashes
+git.stash-apply	Apply
+git.stash-apply-tooltip	Apply and keep the stash
+git.stash-failed	Git stash operation failed
