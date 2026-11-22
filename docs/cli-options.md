@@ -262,3 +262,5 @@ For DOCX, use `ibisOffice --export md --include-metafile-previews --out-dir ./ou
 DOCX images retain alt text with brackets and line breaks, separate title and description fields, and decorative status.
 
 DOCX picture adjustments preserve brightness and contrast as `docx-lum` in hundred-thousandths and sRGB duotone colors as `docx-duotone`.
+
+DOCX picture transparency is stored as an sRGB color key in `docx-clear` and an overall opacity in hundred-thousandths in `docx-opacity`.

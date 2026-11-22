@@ -3961,6 +3961,25 @@ impl Writer<'_> {
                     }
                 }
             }
+            // New drawings have no colour change. Leave any pre-existing change intact,
+            // including theme-based changes or changes to another opaque colour.
+            if let Some(color) = look.clear
+                && self.doc.child(blip, "clrChange").is_none()
+            {
+                let at = self.doc.children(blip).iter()
+                    .position(|&node| self.doc.is_element(node) && self.doc.local_name(node) == "extLst")
+                    .unwrap_or_else(|| self.doc.children(blip).len());
+                let change = self.doc.insert_element(blip, at, "a:clrChange");
+                let hex = format!("{:06X}", color.0 & 0xffffff);
+                let from = self.doc.append_element(change, "a:clrFrom");
+                let from_color = self.doc.append_element(from, "a:srgbClr");
+                self.doc.set_attr(from_color, "val", &hex);
+                let to = self.doc.append_element(change, "a:clrTo");
+                let to_color = self.doc.append_element(to, "a:srgbClr");
+                self.doc.set_attr(to_color, "val", &hex);
+                let alpha = self.doc.append_element(to_color, "a:alpha");
+                self.doc.set_attr(alpha, "val", "0");
+            }
             // 透明度 (a:alphaModFix)
             let existing_alpha = self.doc.child(blip, "alphaModFix");
             let old_alpha = existing_alpha.and_then(|e| self.doc.attr(e, "amt")).and_then(|v| v.parse::<i32>().ok());

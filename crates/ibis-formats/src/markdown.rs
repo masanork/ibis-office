@@ -4694,6 +4694,12 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                                         .and_then(|(dark, light)| Some((parse_hex_rgb(dark)?, parse_hex_rgb(light)?)))
                                 {
                                     look.duotone = Some((dark, light));
+                                } else if let Some(clear) = part.strip_prefix("docx-clear=").and_then(parse_hex_rgb) {
+                                    look.clear = Some(clear);
+                                } else if let Some(opacity) = part.strip_prefix("docx-opacity=")
+                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
+                                {
+                                    look.effects.opacity = Some(opacity);
                                 } else if let Some(title) = part.strip_prefix("docx-title=")
                                     .and_then(decode_base64).and_then(|bytes| String::from_utf8(bytes).ok())
                                 {
@@ -4728,6 +4734,8 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                             picture.crop = look.crop;
                             picture.luminance = look.luminance;
                             picture.duotone = look.duotone;
+                            picture.clear = look.clear;
+                            picture.effects.opacity = look.effects.opacity;
                             let mut shape = Shape::new(
                                 ctx.fresh_shape_id(),
                                 EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
@@ -7017,6 +7025,12 @@ fn picture_attributes(
     if let Some((dark, light)) = duotone {
         let _ = write!(image, " docx-duotone={:06x},{:06x}", dark.0, light.0);
     }
+    if let Some(color) = look.clear {
+        let _ = write!(image, " docx-clear={:06x}", color.0);
+    }
+    if let Some(opacity) = look.effects.opacity {
+        let _ = write!(image, " docx-opacity={opacity}");
+    }
     if let Some(anchor) = anchor {
         image.push(' ');
         image.push_str(picture_anchor::ATTRIBUTE);
@@ -7151,6 +7165,8 @@ fn serialize_runs(
                         flip_v: shape.flip_v,
                         luminance: picture.luminance,
                         duotone: picture.duotone,
+                        clear: picture.clear,
+                        effects: picture.effects,
                         ..Default::default()
                     },
                     shape.floating.as_ref(),
@@ -8170,8 +8186,8 @@ mod tests {
     fn docx_markdown_round_trips_inline_and_floating_pictures() {
         let emf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf");
         let wmf = include_bytes!("../../ibis-emf/tests/fixtures/shapes.wmf");
-        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm docx-crop=12500,5000,0,0 docx-transform=1800000,true,false docx-lum=-20000,35000 docx-duotone=224466,ffeedd}}", encode_base64(emf));
-        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm docx-crop=0,0,7500,2500 docx-transform=0,false,true docx-lum=10000,-5000 docx-duotone=101010,fefefe}}", encode_base64(wmf));
+        let floating = format!("![floating](data:image/x-emf;base64,{}){{width=40.125mm height=30.25mm docx-crop=12500,5000,0,0 docx-transform=1800000,true,false docx-lum=-20000,35000 docx-duotone=224466,ffeedd docx-clear=ffffff docx-opacity=70000}}", encode_base64(emf));
+        let inline = format!("![inline](data:image/x-wmf;base64,{}){{width=2.5mm height=2mm docx-crop=0,0,7500,2500 docx-transform=0,false,true docx-lum=10000,-5000 docx-duotone=101010,fefefe docx-clear=112233 docx-opacity=45000}}", encode_base64(wmf));
         let source = format!("{floating}\n\n{inline}");
         let original = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         let mut package = ibis_ooxml::Package::open(original).unwrap();
@@ -8202,6 +8218,8 @@ mod tests {
         assert_eq!(markdown.matches("docx-transform=").count(), 2);
         assert_eq!(markdown.matches("docx-lum=").count(), 2);
         assert_eq!(markdown.matches("docx-duotone=").count(), 2);
+        assert_eq!(markdown.matches("docx-clear=").count(), 2);
+        assert_eq!(markdown.matches("docx-opacity=").count(), 2);
         let slide = crate::read(&import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap()).unwrap();
         assert_eq!(
             slide.slides.iter().flat_map(|s| &s.shapes)
@@ -8220,6 +8238,8 @@ mod tests {
                     assert_eq!((look.rotation, look.flip_h, look.flip_v), (0, false, true));
                     assert_eq!(look.luminance, Some((10000, -5000)));
                     assert_eq!(look.duotone, Some((Rgb(0x101010), Rgb(0xfefefe))));
+                    assert_eq!(look.clear, Some(Rgb(0x112233)));
+                    assert_eq!(look.effects.opacity, Some(45_000));
                     Some((presentation.media(*media).unwrap(), *size))
                 }
                 FlowRunKind::Shape(shape) => {
@@ -8229,6 +8249,8 @@ mod tests {
                     assert_eq!((shape.rotation, shape.flip_h, shape.flip_v), (1_800_000, true, false));
                     assert_eq!(picture.luminance, Some((-20000, 35000)));
                     assert_eq!(picture.duotone, Some((Rgb(0x224466), Rgb(0xffeedd))));
+                    assert_eq!(picture.clear, Some(Rgb(0xffffff)));
+                    assert_eq!(picture.effects.opacity, Some(70_000));
                     floating_count += 1;
                     Some((presentation.media(picture.media).unwrap(),
                         EmuSize::new(shape.frame.width, shape.frame.height)))
