@@ -1435,11 +1435,10 @@ fn split_article_title_and_caption(s: &str) -> Option<(String, Option<String>)> 
 }
 
 fn parse_suppl_header(s: &str) -> Option<String> {
-    if s == "附則" || s.starts_with("附則（") || s == "附 則" {
-        Some(s.to_string())
-    } else {
-        None
-    }
+    let suffix = s.strip_prefix('附')?
+        .trim_start_matches([' ', '　'])
+        .strip_prefix('則')?;
+    (suffix.is_empty() || suffix.starts_with('（')).then(|| s.to_string())
 }
 
 fn parse_division_header(s: &str) -> Option<(DivisionKind, String)> {
@@ -1662,6 +1661,23 @@ mod tests {
         let xml_out = to_law_xml(&reparsed);
         let xml_reparsed = parse_law_xml(&xml_out).expect("reparse generated xml");
         assert_eq!(xml_reparsed.main_provision, parsed.main_provision);
+    }
+
+    #[test]
+    fn roundtrips_spaced_supplementary_provision_headings() {
+        for label in ["附則", "附 則", "附　則"] {
+            let xml = SAMPLE_LAW_XML
+                .replace("<SupplProvision>", "<SupplProvision AmendLawNum=\"令和元年法律第一号\">")
+                .replace("<SupplProvisionLabel>附則</SupplProvisionLabel>", &format!(
+                    "<SupplProvisionLabel>{label}</SupplProvisionLabel>"
+                ));
+            let original = parse_law_xml(&xml).unwrap();
+            let lawtext = to_lawtext(&original);
+            let roundtrip = parse_law_xml(&to_law_xml(&parse_lawtext(&lawtext).unwrap())).unwrap();
+            assert_eq!(roundtrip.main_provision, original.main_provision);
+            assert_eq!(roundtrip.suppl_provisions, original.suppl_provisions);
+        }
+        assert!(parse_suppl_header("附　則の規定").is_none());
     }
 
     #[test]
