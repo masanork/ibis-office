@@ -171,7 +171,7 @@ jobs:
           apt_retry install -y ca-certificates curl git python3 build-essential pkg-config libssl-dev \
             libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
             libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            fonts-noto-cjk poppler-utils unzip
+            fontconfig fonts-noto-cjk poppler-utils unzip
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.EXPECTED_SOURCE_SHA }}
@@ -235,7 +235,8 @@ jobs:
       - name: Verify form round trips and PDF/A merge
         run: |
           export IBIS_TEST_VERAPDF="$RUNNER_TEMP/verapdf/verapdf"
-          export IBIS_TEST_JAPANESE_FONT="$(fc-match -f '%{file}' 'Noto Sans CJK JP')"
+          IBIS_TEST_JAPANESE_FONT="$(fc-match -f '%{file}' 'Noto Sans CJK JP')"
+          export IBIS_TEST_JAPANESE_FONT
           test -f "$IBIS_TEST_JAPANESE_FONT"
           export IBIS_TEST_PDFTOTEXT=pdftotext
           cargo test --locked -p ibis-formats --test form_template --test pdf_form_template
