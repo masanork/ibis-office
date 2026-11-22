@@ -16,7 +16,7 @@ const MAX_PREVIEW_EDGE: u32 = 2_048;
 const MAX_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 const UNSUPPORTED: &str =
-    "Large TIFF preview requires supported 8- or 16-bit grayscale or RGB strips or tiles";
+    "Large TIFF preview requires supported bilevel, grayscale, or RGB strips or tiles";
 const CHUNK_LIMIT: &str = "TIFF strip or tile exceeds the large-preview limit";
 const BAD_CHUNKS: &str = "Invalid or truncated TIFF strips or tiles";
 
@@ -51,6 +51,7 @@ pub(super) fn preview(
             | CompressionMethod::Deflate
             | CompressionMethod::OldDeflate
             | CompressionMethod::PackBits
+            | CompressionMethod::Fax4
     ) || planar != 1
         || !(predictor == 1 || !uncompressed && predictor == 2)
         || sample_format.is_some_and(|formats| formats.iter().any(|&format| format != 1))
@@ -60,16 +61,31 @@ pub(super) fn preview(
     let photometric = decoder
         .get_tag_unsigned::<u16>(Tag::PhotometricInterpretation)
         .map_err(|error| error.to_string())?;
-    let (channels, sample_bytes) = match (
+    let (channels, sample_bits) = match (
         decoder.colortype().map_err(|error| error.to_string())?,
         photometric,
     ) {
-        (ColorType::Gray(8), 0 | 1) => (1, 1),
-        (ColorType::Gray(16), 0 | 1) => (1, 2),
-        (ColorType::RGB(8), 2) => (3, 1),
-        (ColorType::RGB(16), 2) => (3, 2),
+        (ColorType::Gray(1), 0 | 1) if predictor == 1 => (1_usize, 1_usize),
+        (ColorType::Gray(8), 0 | 1) => (1, 8),
+        (ColorType::Gray(16), 0 | 1) => (1, 16),
+        (ColorType::RGB(8), 2) => (3, 8),
+        (ColorType::RGB(16), 2) => (3, 16),
         _ => return Err(UNSUPPORTED.into()),
     };
+    let bilevel = sample_bits == 1;
+    if bilevel
+        && decoder
+            .find_tag_unsigned::<u16>(Tag::FillOrder)
+            .map_err(|error| error.to_string())?
+            .unwrap_or(1)
+            != 1
+    {
+        return Err("Large bilevel TIFF preview requires MSB-first bit order".into());
+    }
+    if compression == CompressionMethod::Fax4 && !bilevel {
+        return Err(UNSUPPORTED.into());
+    }
+    let stored_row_bytes = |width: u32| (width as usize * channels * sample_bits).div_ceil(8);
     let (chunk_width, chunk_height, offsets_tag, lengths_tag) = if tiled {
         (
             decoder
@@ -96,16 +112,23 @@ pub(super) fn preview(
     let columns = width.div_ceil(chunk_width);
     let rows = height.div_ceil(chunk_height);
     let chunk_count = (columns * rows) as usize;
-    let pixel_bytes = channels * sample_bytes;
-    let nominal_bytes = u64::from(chunk_width) * u64::from(chunk_height) * pixel_bytes as u64;
+    let nominal_bytes = stored_row_bytes(chunk_width) as u64 * u64::from(chunk_height);
     if !borrow_strips {
         if nominal_bytes > MAX_CHUNK_BYTES as u64 {
             return Err(CHUNK_LIMIT.into());
         }
+        // The fax decoder visits individual pixels even though its output is packed.
+        let work_row_bytes = |width: u32| {
+            if bilevel {
+                u64::from(width)
+            } else {
+                stored_row_bytes(width) as u64
+            }
+        };
         let raster_bytes = if tiled {
-            nominal_bytes * chunk_count as u64
+            work_row_bytes(chunk_width) * u64::from(chunk_height) * chunk_count as u64
         } else {
-            u64::from(width) * u64::from(height) * pixel_bytes as u64
+            work_row_bytes(width) * u64::from(height)
         };
         if raster_bytes > MAX_RASTER_BYTES {
             return Err("TIFF image exceeds the large-preview raster limit".into());
@@ -134,7 +157,7 @@ pub(super) fn preview(
         let origin_y = (index as u32 / columns) * chunk_height;
         let data_width = chunk_width.min(width - origin_x);
         let data_height = chunk_height.min(height - origin_y);
-        let row_bytes = data_width as usize * pixel_bytes;
+        let row_bytes = stored_row_bytes(data_width);
         let offset = usize::try_from(offset).map_err(|_| BAD_CHUNKS)?;
         let length = usize::try_from(length).map_err(|_| BAD_CHUNKS)?;
         if !borrow_strips && length > MAX_CHUNK_BYTES {
@@ -180,7 +203,11 @@ pub(super) fn preview(
     let xs = sample_centers(width, preview_width);
     let ys = sample_centers(height, preview_height);
     let mut pixels = vec![0; preview_width as usize * preview_height as usize * channels];
-    let raw_sample_bytes = if borrow_strips { sample_bytes } else { 1 };
+    let raw_sample_bytes = if borrow_strips {
+        sample_bits.div_ceil(8)
+    } else {
+        1
+    };
     let read_sample = if bytes.starts_with(b"II") {
         u16::from_le_bytes
     } else {
@@ -206,15 +233,22 @@ pub(super) fn preview(
         let x_end = xs.partition_point(|&x| x < left + data_width);
         let y_start = ys.partition_point(|&y| y < top);
         let y_end = ys.partition_point(|&y| y < top + data_height);
-        let row_bytes = data_width as usize * channels * raw_sample_bytes;
+        let row_bytes = if bilevel {
+            stored_row_bytes(data_width)
+        } else {
+            data_width as usize * channels * raw_sample_bytes
+        };
         for (output_y, &y) in ys.iter().enumerate().take(y_end).skip(y_start) {
             let row = (y - top) as usize * row_bytes;
             let row = data.get(row..row + row_bytes).ok_or(BAD_CHUNKS)?;
             for (output_x, &x) in xs.iter().enumerate().take(x_end).skip(x_start) {
-                let source_x = (x - left) as usize * channels * raw_sample_bytes;
+                let x = (x - left) as usize;
+                let source_x = x * channels * raw_sample_bytes;
                 let output = (output_y * preview_width as usize + output_x) * channels;
                 let destination = &mut pixels[output..output + channels];
-                if raw_sample_bytes == 1 {
+                if bilevel {
+                    destination[0] = ((row[x / 8] >> (7 - x % 8)) & 1) * u8::MAX;
+                } else if raw_sample_bytes == 1 {
                     destination.copy_from_slice(&row[source_x..source_x + channels]);
                 } else {
                     for (output, sample) in destination
@@ -396,6 +430,71 @@ mod tests {
             let preview = preview_test(&file.into_inner()).unwrap().into_luma8();
             assert_eq!(preview.get_pixel(0, 0).0, [1]);
             assert_eq!(preview.get_pixel(2_047, 0).0, [127]);
+        }
+    }
+
+    #[test]
+    fn previews_bilevel_strips_with_padded_rows_and_both_polarities() {
+        let width = 8_201_u32;
+        let height = 5_u32;
+        for photometric in [0_u16, 1] {
+            let mut file = Cursor::new(Vec::new());
+            let mut encoder = TiffEncoder::new(&mut file).unwrap();
+            let mut directory = encoder.image_directory().unwrap();
+            let row_bytes = width.div_ceil(8) as usize;
+            let mut offsets = Vec::new();
+            let mut lengths = Vec::new();
+            for (top, rows) in [(0, 3), (3, 2)] {
+                let mut bytes = vec![0_u8; row_bytes * rows];
+                for y in 0..rows {
+                    for x in 0..width as usize {
+                        let white = (x + (top + y) * 3) % 11 < 5;
+                        if white == (photometric == 1) {
+                            bytes[y * row_bytes + x / 8] |= 1 << (7 - x % 8);
+                        }
+                    }
+                }
+                offsets.push(directory.write_data(bytes.as_slice()).unwrap() as u32);
+                lengths.push(bytes.len() as u32);
+            }
+            directory.write_tag(Tag::ImageWidth, width).unwrap();
+            directory.write_tag(Tag::ImageLength, height).unwrap();
+            directory.write_tag(Tag::BitsPerSample, 1_u16).unwrap();
+            directory
+                .write_tag(Tag::PhotometricInterpretation, photometric)
+                .unwrap();
+            directory.write_tag(Tag::Compression, 1_u16).unwrap();
+            directory.write_tag(Tag::RowsPerStrip, 3_u32).unwrap();
+            directory
+                .write_tag(Tag::StripOffsets, offsets.as_slice())
+                .unwrap();
+            directory
+                .write_tag(Tag::StripByteCounts, lengths.as_slice())
+                .unwrap();
+            directory.finish().unwrap();
+
+            let opened = super::super::open(Some("tiff"), &file.into_inner())
+                .unwrap()
+                .unwrap();
+            let preview = image::load_from_memory(&opened.presentation.media.last().unwrap().data)
+                .unwrap()
+                .into_luma8();
+            assert_eq!(preview.dimensions(), (2_048, 1));
+            for (x, _, pixel) in preview.enumerate_pixels() {
+                let source_x = (2 * x + 1) * width / 4_096;
+                let white = (source_x + 6) % 11 < 5;
+                assert_eq!(pixel.0, [if white { 255 } else { 0 }]);
+            }
+            let docx = opened
+                .source
+                .save(&opened.presentation, Default::default())
+                .unwrap();
+            let reopened = crate::open(docx).unwrap();
+            let media = reopened.presentation.media.last().unwrap();
+            assert_eq!(
+                image::load_from_memory(&media.data).unwrap().into_luma8(),
+                preview
+            );
         }
     }
 
