@@ -4,6 +4,8 @@
 //! Structured legal diff IR (`AmendmentIr`) and 新旧対照表 (side-by-side
 //! amendment comparison) generator for [`super::LawDoc`].
 
+use std::collections::{HashMap, VecDeque};
+
 use serde_json::{Value, json};
 
 use super::{
@@ -244,6 +246,10 @@ impl ArticleChange {
 pub struct SupplChange {
     pub label: String,
     pub amend_law_num: Option<String>,
+    /// Zero-based index of the block in the old document, if present.
+    pub old_index: Option<usize>,
+    /// Zero-based index of the block in the new document, if present.
+    pub new_index: Option<usize>,
     pub article_changes: Vec<ArticleChange>,
     pub paragraph_changes: Vec<ParagraphChange>,
 }
@@ -441,18 +447,12 @@ pub fn generate_shinkyu_markdown_with_options(
             }
             let header = format!("**{}**", sc.label);
             push_table_row(&mut out, &header, &header, opts.new_on_left);
-            let old_suppl_arts: Vec<&LawArticle> = old
-                .suppl_provisions
-                .iter()
-                .filter(|s| s.label == sc.label)
-                .flat_map(|s| collect_articles(&s.nodes))
-                .collect();
-            let new_suppl_arts: Vec<&LawArticle> = new
-                .suppl_provisions
-                .iter()
-                .filter(|s| s.label == sc.label)
-                .flat_map(|s| collect_articles(&s.nodes))
-                .collect();
+            let old_suppl_arts = sc.old_index
+                .map(|index| collect_articles(&old.suppl_provisions[index].nodes))
+                .unwrap_or_default();
+            let new_suppl_arts = sc.new_index
+                .map(|index| collect_articles(&new.suppl_provisions[index].nodes))
+                .unwrap_or_default();
             for ac in &sc.article_changes {
                 let (new_cell, old_cell) =
                     render_article_change(ac, &old_suppl_arts, &new_suppl_arts, opts);
@@ -1188,57 +1188,51 @@ fn diff_suppl_provisions(
     old_suppls: &[SupplProvision],
     new_suppls: &[SupplProvision],
 ) -> Vec<SupplChange> {
-    let mut out = Vec::new();
-    let max_len = old_suppls.len().max(new_suppls.len());
-    for i in 0..max_len {
-        let old_s = old_suppls.get(i);
-        let new_s = new_suppls.get(i);
-        match (old_s, new_s) {
-            (Some(os), Some(ns)) if os != ns => {
-                let old_arts = collect_articles(&os.nodes);
-                let new_arts = collect_articles(&ns.nodes);
-                let old_paras = collect_suppl_paragraphs(&os.nodes);
-                let new_paras = collect_suppl_paragraphs(&ns.nodes);
-                let sc = SupplChange {
-                    label: ns.label.clone(),
-                    amend_law_num: ns.amend_law_num.clone(),
-                    article_changes: diff_article_lists(&old_arts, &new_arts),
-                    paragraph_changes: diff_paragraph_lists(&old_paras, &new_paras),
-                };
-                if !sc.is_empty() {
-                    out.push(sc);
-                }
-            }
-            (None, Some(ns)) => {
-                let new_arts = collect_articles(&ns.nodes);
-                let new_paras = collect_suppl_paragraphs(&ns.nodes);
-                let sc = SupplChange {
-                    label: ns.label.clone(),
-                    amend_law_num: ns.amend_law_num.clone(),
-                    article_changes: new_arts.into_iter().map(make_added_article).collect(),
-                    paragraph_changes: diff_paragraph_lists(&[], &new_paras),
-                };
-                if !sc.is_empty() {
-                    out.push(sc);
-                }
-            }
-            (Some(os), None) => {
-                let old_arts = collect_articles(&os.nodes);
-                let old_paras = collect_suppl_paragraphs(&os.nodes);
-                let sc = SupplChange {
-                    label: os.label.clone(),
-                    amend_law_num: os.amend_law_num.clone(),
-                    article_changes: old_arts.into_iter().map(make_deleted_article).collect(),
-                    paragraph_changes: diff_paragraph_lists(&old_paras, &[]),
-                };
-                if !sc.is_empty() {
-                    out.push(sc);
-                }
-            }
-            _ => {}
-        }
+    let mut old_by_number = HashMap::<Option<&str>, VecDeque<usize>>::new();
+    for (index, suppl) in old_suppls.iter().enumerate() {
+        old_by_number.entry(suppl.amend_law_num.as_deref())
+            .or_default()
+            .push_back(index);
     }
-    out
+
+    // Within the same number (or when absent), retain occurrence order.
+    let mut old_matched = vec![false; old_suppls.len()];
+    let mut pairs = Vec::new();
+    for (index, suppl) in new_suppls.iter().enumerate() {
+        let old_index = old_by_number.get_mut(&suppl.amend_law_num.as_deref())
+            .and_then(VecDeque::pop_front);
+        if let Some(index) = old_index {
+            old_matched[index] = true;
+        }
+        pairs.push((old_index, Some(index)));
+    }
+    pairs.extend(old_matched.iter().enumerate().filter_map(|(index, matched)| {
+        (!matched).then_some((Some(index), None))
+    }));
+
+    pairs.into_iter().filter_map(|(old_index, new_index)| {
+        let old = old_index.map(|index| &old_suppls[index]);
+        let new = new_index.map(|index| &new_suppls[index]);
+        if old == new {
+            return None;
+        }
+        let suppl = new.or(old)?;
+        let old_nodes = old.map_or(&[][..], |suppl| suppl.nodes.as_slice());
+        let new_nodes = new.map_or(&[][..], |suppl| suppl.nodes.as_slice());
+        let change = SupplChange {
+            label: suppl.label.clone(),
+            amend_law_num: suppl.amend_law_num.clone(),
+            old_index,
+            new_index,
+            article_changes: diff_article_lists(
+                &collect_articles(old_nodes), &collect_articles(new_nodes),
+            ),
+            paragraph_changes: diff_paragraph_lists(
+                &collect_suppl_paragraphs(old_nodes), &collect_suppl_paragraphs(new_nodes),
+            ),
+        };
+        (!change.is_empty()).then_some(change)
+    }).collect()
 }
 
 fn render_article_change(
@@ -1847,6 +1841,32 @@ mod tests {
         assert!(md_old_left.contains("（新設）"));
         assert!(md_old_left.contains("++第三条++"));
         assert!(md_old_left.contains("~~第二条~~"));
+    }
+
+    #[test]
+    fn compares_supplementary_articles_in_their_own_amendment_blocks() {
+        let old = parse_lawtext(concat!(
+            "試験法（令和七年法律第一号）\n第一条 本則。\n",
+            "附則（令和七年法律第二号）\n第一条 先行附則の本文。\n",
+            "附則（令和七年法律第四号）\n第一条 後続附則の本文。\n",
+            "附則（令和七年法律第五号）\n第一条 削除附則の本文。\n",
+        )).unwrap();
+        let new = parse_lawtext(concat!(
+            "試験法（令和七年法律第一号）\n第一条 本則。\n",
+            "附則（令和七年法律第二号）\n第一条 先行附則の本文。\n",
+            "附則（令和七年法律第三号）\n第一条 新設附則の本文。\n",
+            "附則（令和七年法律第四号）\n第一条 後続附則の本文を改正する。\n",
+        )).unwrap();
+        let ir = diff_laws(&old, &new);
+        let positions: Vec<_> = ir.suppl_changes.iter()
+            .map(|change| (change.old_index, change.new_index))
+            .collect();
+        assert_eq!(positions, [(None, Some(1)), (Some(1), Some(2)), (Some(2), None)]);
+        let md = generate_shinkyu_markdown(&old, &new);
+        assert!(md.contains("新設附則の本文。"));
+        assert!(!md.contains("先行附則の本文。"));
+        assert!(md.contains("削除附則の本文。"));
+        assert!(md.contains("後続附則の本文"));
     }
 
     #[test]
