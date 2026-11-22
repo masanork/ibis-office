@@ -52,15 +52,15 @@ def verify_identification(binary, pdf, archival):
     }, report
 
 
-def verify_conformance(binary, validator, pdf, compliant):
+def verify_conformance(binary, validator, pdf, compliant, profile="2b"):
     result = subprocess.run(
-        [binary, "--export", "pdfa-validate", "--pdfa-profile", "2b",
+        [binary, "--export", "pdfa-validate", "--pdfa-profile", profile,
          "--verapdf", validator, pdf],
         capture_output=True, timeout=100,
     )
     assert result.returncode == (0 if compliant else 3), result
     report = json.loads(result.stdout)
-    assert report["profile"] == "PDF/A-2b", report
+    assert report["profile"] == f"PDF/A-{profile}", report
     assert report["validator"] == "veraPDF", report
     assert report["validation"] == ("compliant" if compliant else "non_compliant"), report
     assert bool(report["failed_rules"]) != compliant, report
@@ -101,6 +101,8 @@ def main():
             assert run(["pdftotext", pdf, "-"]).strip(), fixture
             if args.verapdf:
                 verify_conformance(binary, args.verapdf, pdf, compliant=True)
+                if fixture == FIXTURES[0]:
+                    verify_conformance(binary, args.verapdf, pdf, compliant=False, profile="1b")
             print(f"{source.suffix[1:]}: PDF/A-2b metadata and text OK"
                   + ("; veraPDF compliant" if args.verapdf else ""))
         source = root / FIXTURES[-1]
