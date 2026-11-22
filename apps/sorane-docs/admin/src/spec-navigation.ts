@@ -2,7 +2,7 @@
 import { isMap, isNode, isScalar, isSeq, type YAMLMap } from 'yaml';
 import { escape } from '../vendor/mikaki-oidc';
 
-export function pointerLine(root: unknown, pointer: string, location: (offset: number) => number): number | null {
+export function pointerTarget(root: unknown, pointer: string): { node: unknown; position: unknown } | null {
   if (pointer !== '' && (!pointer.startsWith('/') || /~(?![01])/.test(pointer))) return null;
   const tokens = pointer.split('/').slice(1);
   if (tokens.length > 64) return null;
@@ -22,6 +22,11 @@ export function pointerLine(root: unknown, pointer: string, location: (offset: n
       return null;
     }
   }
+  return { node, position };
+}
+
+export function pointerLine(root: unknown, pointer: string, location: (offset: number) => number): number | null {
+  const position = pointerTarget(root, pointer)?.position;
   return isNode(position) && position.range ? location(position.range[0]) : null;
 }
 

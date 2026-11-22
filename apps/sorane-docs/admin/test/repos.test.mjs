@@ -1185,13 +1185,19 @@ test('repository source follows Markdown links at the same commit and escapes so
         return new Response(JSON.stringify({
           openapi: '3.1.1',
           info: { title: 'API', version: '1' },
+          components: { schemas: {
+            Address: {
+              type: 'object', required: ['postalCode'],
+              properties: { postalCode: { $ref: '#/components/schemas/PostalCode' } },
+            },
+            PostalCode: { type: 'string' },
+            Recursive: { $ref: '#/components/schemas/Recursive' },
+          } },
           paths: {
             '/address': {
               post: {
                 requestBody: { content: { 'application/json': {
-                  schema: {
-                    type: 'object', required: ['postalCode'], properties: { postalCode: { type: 'string' } },
-                  },
+                  schema: { $ref: '#/components/schemas/Address', description: 'Mailing address' },
                   examples: {
                     good: { value: { postalCode: '1000001' } },
                     invalid: { value: { postalCode: 1000001 } },
@@ -1205,6 +1211,11 @@ test('repository source follows Markdown links at the same commit and escapes so
                   } } },
                   '400': { content: { 'application/json': { schema: { type: 'string', pattern: '^a' }, example: 'b' } } },
                   '500': { content: { 'application/json': { schema: { $ref: './schema.json' }, example: {} } } },
+                  '501': { content: { 'application/json': { schema: { $ref: '#/components/schemas/Recursive' }, example: {} } } },
+                  '502': { content: { 'application/json': { schema: { $ref: '#/components/schemas/Missing' }, example: {} } } },
+                  '503': { content: { 'application/json': {
+                    schema: { $ref: '#/components/schemas/PostalCode', minLength: 5 }, example: 'one',
+                  } } },
                 },
               },
             },
@@ -1272,7 +1283,7 @@ test('repository source follows Markdown links at the same commit and escapes so
     assert.match(html31, /確認対象の項目に問題は見つかりませんでした/);
     const checks = html31.split('aria-label="OpenAPI JSON 例チェック"')[1].split('</aside>')[0];
     assert.match(checks, /4 件を検証し、3 件に問題/);
-    assert.match(checks, /2 件はインラインスキーマ/);
+    assert.match(checks, /5 件は対応するスキーマ参照やキーワード/);
     const postedCodeLine = /<span id="L(\d+)">[^\n]*&quot;postalCode&quot;: 1000001/.exec(html31)[1];
     const responseValueLine = /<span id="L(\d+)">[^\n]*&quot;wrong&quot;/.exec(html31)[1];
     assert.ok(checks.includes('href="#L' + postedCodeLine + '"'));
