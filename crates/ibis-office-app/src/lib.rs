@@ -436,6 +436,9 @@ struct Args {
     include_xlsx_hidden_axes: bool,
     include_xlsx_hidden_sheets: bool,
     include_xlsx_defined_names: bool,
+    /// `--text-layout reading|physical` (`Some(true)` for physical): how a PDF, XPS or OFD page's text is written;
+    /// physical keeps the characters at their columns, in a text block.
+    text_layout_physical: Option<bool>,
     width: Option<u32>,
     slides: Option<String>,
     layout: bool,
@@ -499,6 +502,13 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             "--include-xlsx-hidden-axes" => args.include_xlsx_hidden_axes = true,
             "--include-xlsx-hidden-sheets" => args.include_xlsx_hidden_sheets = true,
             "--include-xlsx-defined-names" => args.include_xlsx_defined_names = true,
+            "--text-layout" => {
+                args.text_layout_physical = match value()?.as_str() {
+                    "reading" => Some(false),
+                    "physical" => Some(true),
+                    other => return Err(format!("--text-layout takes reading or physical: {other}")),
+                }
+            }
             "--out-dir" => args.out_dir = Some(value()?.into()),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
             "--range" => args.slides = Some(value()?),
@@ -565,6 +575,9 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     }
     if args.include_metafile_previews && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
         return Err("--include-metafile-previews requires --export md".into());
+    }
+    if args.text_layout_physical.is_some() && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
+        return Err("--text-layout requires --export md".into());
     }
     if args.include_xlsx_validations && !matches!(args.export.as_deref(), Some("md" | "markdown")) {
         return Err("--include-xlsx-validations requires --export md".into());
@@ -717,7 +730,16 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             return Ok(());
         }
         if matches!(format, "md" | "markdown")
-            && let Some(markdown) = ibis_office_pdf::markdown::export(&raw_data)
+            && let Some(markdown) = ibis_office_pdf::markdown::export_with(
+                &raw_data,
+                ibis_office_pdf::markdown::ExportOptions {
+                    layout: if args.text_layout_physical == Some(true) {
+                        ibis_pdf::text_layout::TextLayout::Physical
+                    } else {
+                        ibis_pdf::text_layout::TextLayout::Reading
+                    },
+                },
+            )
                 .map_err(|e| format!("{}: {e}", path.display()))?
         {
             if args.include_metafile_previews {
@@ -732,6 +754,9 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             std::fs::write(&out_path, markdown)
                 .map_err(|e| format!("{}: {e}", out_path.display()))?;
             return Ok(());
+        }
+        if args.text_layout_physical.is_some() {
+            return Err("--text-layout requires a PDF, XPS or OFD document".into());
         }
         let data = match ibis_formats::lawtext::input_to_markdown(&raw_data)
             .map_err(|e| format!("{}: {e}", path.display()))?
