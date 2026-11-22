@@ -1111,6 +1111,7 @@ test('repository source follows Markdown links at the same commit and escapes so
   const json = '7'.repeat(40);
   const badYaml = '8'.repeat(40);
   const badJson = '9'.repeat(40);
+  const openapi = 'a'.repeat(40);
   const original = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(input);
@@ -1140,6 +1141,7 @@ test('repository source follows Markdown links at the same commit and escapes so
           { path: 'schema.json', mode: '100644', sha: json, type: 'blob' },
           { path: 'broken.yaml', mode: '100644', sha: badYaml, type: 'blob' },
           { path: 'broken.json', mode: '100644', sha: badJson, type: 'blob' },
+          { path: 'openapi.yaml', mode: '100644', sha: openapi, type: 'blob' },
         ] });
       case '/git/blobs/' + md:
         return new Response([
@@ -1152,11 +1154,22 @@ test('repository source follows Markdown links at the same commit and escapes so
           'paths: &items', '  - first', '  - *items', '---', 'another: true',
         ].join('\r\n'));
       case '/git/blobs/' + json:
-        return new Response('{\n  "type":"object",\n  "limit": 9007199254740993\n}');
+        return new Response('{\n  "type":"object",\n  "limit": 9007199254740993,\n  "$defs": {\n    "a/b~c": [\n      {"title":"Linked definition"}\n    ],\n    "duplicate": 1, "duplicate": 2\n  }\n}');
       case '/git/blobs/' + badYaml:
         return new Response('paths:\n  - [unfinished');
       case '/git/blobs/' + badJson:
         return new Response('{type: object}');
+      case '/git/blobs/' + openapi:
+        return new Response([
+          'openapi: 3.2.0', 'paths:', '  /pets:', '    get:', '      summary: List pets',
+          '      responses:', '        "200":', '          $ref: "#/components/responses/OK"',
+          '    query: {}', '    additionalOperations:', '      COPY: {}',
+          'components:', '  responses:', '    OK:', '      description: Success',
+          '  schemas:', '    Pet:', '      $ref: "schema.json#/%24defs/a~1b~0c/0/title"',
+          '    Foreign:', '      $ref: "https://example.test/spec.json#/a"',
+          '    Rebased:', '      $id: "https://example.test/schema.json"',
+          '      $ref: "schema.json#/$defs/duplicate"',
+        ].join('\n'));
       default: assert.fail(url.href);
     }
   };
@@ -1200,6 +1213,30 @@ test('repository source follows Markdown links at the same commit and escapes so
     const nonJsonSource = await nonJson.text();
     assert.match(nonJsonSource, /JSONの構文を確認してください/);
     assert.doesNotMatch(nonJsonSource, /aria-label="構造ツリー"/);
+    const apiPage = await worker.fetch(req(base + '?ref=' + commit + '&source=api%2Fopenapi.yaml'), env);
+    assert.equal(apiPage.status, 200);
+    const apiHtml = await apiPage.text();
+    assert.match(apiHtml, /aria-label="OpenAPI 操作"/);
+    assert.match(apiHtml, /href="#L4"><code>GET \/pets<\/code>/);
+    assert.match(apiHtml, /href="#L9"><code>QUERY \/pets<\/code>/);
+    assert.match(apiHtml, /href="#L11"><code>COPY \/pets<\/code>/);
+    const pointer = '/$defs/a~1b~0c/0/title';
+    const externalRef = schemaLink + '&' + new URLSearchParams({ pointer }) + '#definition';
+    assert.ok(apiHtml.includes('href="' + externalRef.replaceAll('&', '&amp;') + '"'));
+    assert.doesNotMatch(apiHtml, /href="[^"]*(example\.test|duplicate)/);
+    const definition = await worker.fetch(req(externalRef), env);
+    assert.match(await definition.text(), /id="L6".*id="definition".*Linked definition/);
+    const localRef = base + '?ref=' + commit + '&source=api%2Fopenapi.yaml&' +
+      new URLSearchParams({ pointer: '/components/responses/OK' }) + '#definition';
+    assert.ok(apiHtml.includes('href="' + localRef.replaceAll('&', '&amp;') + '"'));
+    const local = await worker.fetch(req(localRef), env);
+    assert.match(await local.text(), /id="L14".*id="definition".*OK:/);
+    for (const pointer of ['/$defs/duplicate', '/$defs/a~1b~0c/00/title', '/missing']) {
+      const response = await worker.fetch(req(schemaLink + '&' + new URLSearchParams({ pointer })), env);
+      const html = await response.text();
+      assert.match(html, /指定された参照先を特定できませんでした/);
+      assert.doesNotMatch(html, /id="definition"/);
+    }
     const invalid = await worker.fetch(req(base + '?source=..%2FREADME.md'), env);
     assert.equal(invalid.status, 400);
   } finally {

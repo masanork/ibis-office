@@ -1189,6 +1189,8 @@ async function renderRepoDetail(request: Request, env: RepoEnv, repo: ReadRepo, 
   const activeRef = url.searchParams.get('ref')?.trim() || row.defaultBranch;
   const sourceParam = url.searchParams.get('source');
   if (sourceParam !== null) {
+    const pointer = url.searchParams.get('pointer');
+    if (pointer !== null && pointer.length > 2048) fail(400, 'invalid_source_pointer');
     const path = normalizeRepoPath(sourceParam);
     if (!path || !isSpecSource(path)) fail(400, 'invalid_source_path');
     const slash = path.lastIndexOf('/');
@@ -1208,7 +1210,7 @@ async function renderRepoDetail(request: Request, env: RepoEnv, repo: ReadRepo, 
         const bytes = new Uint8Array(await blob.arrayBuffer());
         if (looksLikeBinary(bytes)) fail(415, 'not_utf8_text');
         const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-        content = renderSpecSource(path, text, repoUrl, commit);
+        content = renderSpecSource(path, text, repoUrl, commit, pointer);
       } catch (error) {
         if (error instanceof TypeError) fail(415, 'not_utf8_text');
         throw error;
