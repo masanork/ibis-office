@@ -1917,6 +1917,9 @@ impl SlideEditor {
                     let sheet = value["sheet"].as_str().unwrap_or("");
                     let range = value["range"].as_str().unwrap_or("");
                     format!("ピボットテーブルを追加（{sheet}!{range}）")
+                } else if name == "xlsx_refresh_pivot" {
+                    let pivot = value["pivot"].as_str().unwrap_or("");
+                    format!("ピボットテーブルを更新（{pivot}）")
                 } else {
                     match serde_json::from_str::<serde_json::Value>(args) {
                         Ok(args) => format!("{name} {}", tool_target_label(&args)),

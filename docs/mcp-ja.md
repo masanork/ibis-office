@@ -44,7 +44,7 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 |---|---|
 | アプリ（全形式） | `app_get_version`、`app_list_documents`、`app_open_document`、`app_get_document_info`、`app_save_document`、`app_close_document`、`app_export_document`（PDF またはページごとの PNG）、`app_undo_document`、`app_redo_document` |
 | Word（.docx） | 読む：`docx_get_outline`、`docx_get_text`（Markdown またはプレーンテキスト）、`docx_list_paragraphs`、`docx_get_paragraph`、`docx_list_tables`、`docx_find_text`。編集：`docx_insert_text`、`docx_delete_text`、`docx_replace_text`、`docx_set_paragraph_text`、`docx_set_paragraph_format`、`docx_set_run_format`、`docx_insert_table` |
-| Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`、`xlsx_check_machine_readability`、`xlsx_trace_formula`、`xlsx_list_sheet_rules`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart`、`xlsx_set_validation`、`xlsx_clear_validation`、`xlsx_create_pivot` |
+| Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`、`xlsx_check_machine_readability`、`xlsx_trace_formula`、`xlsx_list_sheet_rules`、`xlsx_list_pivots`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart`、`xlsx_set_validation`、`xlsx_clear_validation`、`xlsx_create_pivot`、`xlsx_refresh_pivot` |
 | SQLite（.sqlite、.sqlite3、.db） | 読む：`sqlite_list_tables`、`sqlite_describe_table`、`sqlite_count_rows`、`sqlite_query`。ブック編集：`sqlite_query_to_table` |
 | PowerPoint（.pptx） | 読む：`pptx_list_slides`、`pptx_get_slide`、`pptx_get_shape_text`、`pptx_get_notes`、`pptx_list_layouts`。編集：`pptx_set_shape_text`、`pptx_replace_text`、`pptx_set_run_format`、`pptx_set_notes`、`pptx_add_slide`、`pptx_delete_slide`、`pptx_move_slide`、`pptx_set_frame`、`pptx_delete_shape` |
 
@@ -67,6 +67,8 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 同じSQLとパラメータを `sqlite_query_to_table` に渡し、出力先の `document_id`、`destination_sheet`、左上セル `anchor` を指定すると、空いている場所に名前付きのExcelテーブルができます。出力上限は10,000行、100,000セル、4 MiBです。結果全体が収まる場合に表を作ります。空欄や重複する列名にはSQLで別名を付け、大きな整数は必要に応じて文字列に変換してください。
 
 `xlsx_create_pivot` では元の `sheet` と返された `table` 名、または見出し付きの `range` を指定できます。配置先は `destination_sheet` と `anchor`、行・列フィールドは `rows` と `columns` で指定します。`values` には `{"field":"業務ID","aggregate":"count"}` のようにフィールド名と集計方法を渡します。レコード件数を数えるには空欄のないID列を使います。内蔵アシスタントでは表出力とピボット作成を確認用の下書きに積みます。出力した表には実行時点の結果が入ります。
+
+`xlsx_list_pivots` は `sheet` 上のピボットの配置範囲、参照元、フィールド構成を返します。続きは `next_offset` を使います。`xlsx_refresh_pivot` に `sheet` と `pivot` 名を指定すると、ブック内の元データから再集計し、連動するピボットグラフも更新します。更新後の範囲が既存のデータに重なる場合は処理を中止します。SQLiteから出力した表はスナップショットのため、再集計にはブック内の表が使われます。
 
 ツールはメニューのコマンドと 1 対 1 で対応してはいません。読み取りと、よく使う編集をそろえたもので、形式が違っても同じツール名です。`--read-only` のときは、読み取りツールだけが利用できます。
 

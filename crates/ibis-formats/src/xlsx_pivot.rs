@@ -481,6 +481,41 @@ pub fn rebuilt_pivot(presentation: &ibis_doc_model::Presentation, slide: ibis_do
     Some(out)
 }
 
+/// Update the data of every chart linked to this pivot, ready for the same undo transaction.
+pub fn pivot_chart_commands(presentation: &ibis_doc_model::Presentation, pivot_slide: ibis_doc_model::SlideId, sheet: &ibis_doc_model::Sheet, pivot: &PivotTable) -> Vec<ibis_doc_model::Command> {
+    use ibis_doc_model::{Command, ShapeKind};
+    let pivot_sheet_name = presentation.slide(pivot_slide).and_then(|s| s.name.as_deref());
+    // Most tables have no PivotChart: building the table again only for the charts would be for nothing.
+    let linked = |c: &ibis_doc_model::Chart| ibis_doc_model::pivot::pivot_source_matches(c.pivot_source.as_deref(), pivot_sheet_name, &pivot.name);
+    if !presentation.slides.iter().flat_map(|s| &s.shapes).any(|sh| matches!(&sh.kind, ShapeKind::Chart(c) if linked(c))) {
+        return Vec::new();
+    }
+    let Some(data) = pivot_source(presentation, sheet, pivot) else {
+        return Vec::new();
+    };
+    let built = pivot.build(&data);
+    let mut commands = Vec::new();
+    for s in &presentation.slides {
+        for sh in &s.shapes {
+            if let ShapeKind::Chart(c) = &sh.kind {
+                if linked(c) {
+                    let mut updated_chart = (**c).clone();
+                    ibis_doc_model::pivot::update_chart_from_pivot(&mut updated_chart, pivot, &built);
+                    if &updated_chart != c.as_ref() {
+                        commands.push(Command::SetShapeKind {
+                            slide: s.id,
+                            shape: sh.id,
+                            kind: Box::new(ShapeKind::Chart(Box::new(updated_chart))),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    commands
+}
+
+
 /// The names the user gave fields (`pivotField/@name`) and items (`item/@n`).
 fn aliases_of(table: Node, fields: &[PivotField]) -> ibis_doc_model::PivotAliases {
     let mut out = ibis_doc_model::PivotAliases::default();

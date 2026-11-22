@@ -238,6 +238,63 @@ fn sqlite_query_exports_complete_results_and_builds_a_pivot() {
     let pivot = call(&mut service, "xlsx_create_pivot", args.clone());
     assert_eq!(pivot["pivot"], "PivotTable1");
     assert!(service.call("xlsx_create_pivot", &args).is_err());
+    let list_args = json!({"document_id":id,"sheet":sheet});
+    let listed = call(&mut service, "xlsx_list_pivots", list_args.clone());
+    assert_eq!(
+        listed["pivots"][0]["source"],
+        json!({"sheet":sheet,"name":"QueryResult1","range":"A1:C4"})
+    );
+    assert_eq!(listed["pivots"][0]["rows"], json!(["category"]));
+    assert_eq!(listed["pivots"][0]["columns"], json!(["bucket"]));
+    assert_eq!(listed["pivots"][0]["values"][0]["aggregate"], "count");
+    let bottom = pivot["range"]
+        .as_str()
+        .unwrap()
+        .split(':')
+        .next_back()
+        .unwrap();
+    let first_digit = bottom.find(|c: char| c.is_ascii_digit()).unwrap();
+    let row = bottom[first_digit..].parse::<u32>().unwrap();
+    let blocker = format!("E{}", row + 1);
+    call(
+        &mut service,
+        "xlsx_set_cells",
+        json!({"document_id":id,"sheet":sheet,"range":blocker,"values":"Keep me"}),
+    );
+    call(
+        &mut service,
+        "xlsx_set_cells",
+        json!({"document_id":id,"sheet":sheet,"range":"B3","values":"new category"}),
+    );
+    let refresh_args = json!({"document_id":id,"sheet":sheet,"pivot":"PivotTable1"});
+    let error = service
+        .call("xlsx_refresh_pivot", &refresh_args)
+        .unwrap_err();
+    assert_eq!(error.code, "destination_occupied");
+    assert_eq!(
+        call(&mut service, "xlsx_list_pivots", list_args.clone()),
+        listed
+    );
+    let blocked = call(
+        &mut service,
+        "xlsx_get_cells",
+        json!({"document_id":id,"sheet":sheet,"range":blocker}),
+    );
+    assert_eq!(blocked["rows"], json!([["Keep me"]]));
+    call(
+        &mut service,
+        "xlsx_clear_cells",
+        json!({"document_id":id,"sheet":sheet,"range":blocker,"what":"contents"}),
+    );
+    let refreshed = call(&mut service, "xlsx_refresh_pivot", refresh_args.clone());
+    assert_ne!(refreshed["range"], pivot["range"]);
+    assert_eq!(refreshed["updated_charts"], 0);
+    assert_eq!(
+        call(&mut service, "app_undo_document", json!({"document_id":id}))["undone"],
+        1
+    );
+    assert_eq!(call(&mut service, "xlsx_list_pivots", list_args), listed);
+    call(&mut service, "xlsx_refresh_pivot", refresh_args);
     let saved = dir.join("saved.xlsx");
     call(
         &mut service,
@@ -304,6 +361,57 @@ fn sqlite_query_exports_complete_results_and_builds_a_pivot() {
         )
     );
     assert_eq!(edits.len(), 1);
+    let (listed, edits) = run_draft_tool(
+        Kind::Workbook,
+        &mut draft,
+        context(),
+        "xlsx_list_pivots",
+        json!({}),
+    )
+    .unwrap();
+    assert_eq!(listed["count"], 1);
+    assert!(edits.is_empty());
+    let active_slide = draft.presentation().slide(active).unwrap();
+    let shape_index = active_slide.shapes.len();
+    let pivot = &ibis_doc_model::sheet_calc::sheet_of_slide(active_slide)
+        .unwrap()
+        .pivots[0];
+    let data = ibis_formats::pivot_data(draft.presentation(), active, 0).unwrap();
+    let chart = ibis_doc_model::chart_from_pivot(pivot, &pivot.build(&data));
+    let shape = ibis_doc_model::Shape {
+        id: draft.ids().new_shape_id(),
+        frame: ibis_doc_model::EmuRect::new(0, 0, 4_500_000, 3_000_000),
+        rotation: 0,
+        flip_h: false,
+        flip_v: false,
+        kind: ibis_doc_model::ShapeKind::Chart(Box::new(chart)),
+        floating: None,
+    };
+    draft
+        .execute(vec![ibis_doc_model::Command::InsertShape {
+            slide: active,
+            shapes: vec![(shape_index, shape)],
+        }])
+        .unwrap();
+    run_draft_tool(
+        Kind::Workbook,
+        &mut draft,
+        context(),
+        "xlsx_set_cells",
+        json!({"range":"B3","values":"new category"}),
+    )
+    .unwrap();
+    let (updated, edits) = run_draft_tool(
+        Kind::Workbook,
+        &mut draft,
+        context(),
+        "xlsx_refresh_pivot",
+        json!({"pivot":"PivotTable1"}),
+    )
+    .unwrap();
+    assert_eq!(updated["range"], refreshed["range"]);
+    assert_eq!(updated["updated_charts"], 1);
+    assert_eq!(edits.len(), 2);
     assert_eq!(std::fs::read(&database).unwrap(), bytes);
     std::fs::remove_dir_all(dir).unwrap();
 }

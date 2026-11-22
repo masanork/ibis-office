@@ -262,7 +262,7 @@ impl SlideEditor {
         }).collect();
         for (slide, index) in rebuilt {
             if let Some(sheet) = work.slide(slide).and_then(sheet_of_slide) {
-                commands.extend(Self::pivot_chart_commands(work, slide, sheet, &sheet.pivots[index]));
+                commands.extend(ibis_formats::pivot_chart_commands(work, slide, sheet, &sheet.pivots[index]));
             }
         }
         Ok(commands)
@@ -1440,39 +1440,7 @@ impl SlideEditor {
 
     /// Build `SetKind` commands to update all PivotCharts in the workbook linked to `pivot` on `pivot_slide`.
     fn sync_pivot_charts_commands(&self, pivot_slide: SlideId, sheet: &Sheet, pivot: &PivotTable) -> Vec<Command> {
-        Self::pivot_chart_commands(self.presentation(), pivot_slide, sheet, pivot)
-    }
-
-    fn pivot_chart_commands(presentation: &Presentation, pivot_slide: SlideId, sheet: &Sheet, pivot: &PivotTable) -> Vec<Command> {
-        let pivot_sheet_name = presentation.slide(pivot_slide).and_then(|s| s.name.as_deref());
-        // Most tables have no PivotChart: building the table again only for the charts would be for nothing.
-        let linked = |c: &ibis_doc_model::Chart| ibis_doc_model::pivot::pivot_source_matches(c.pivot_source.as_deref(), pivot_sheet_name, &pivot.name);
-        if !presentation.slides.iter().flat_map(|s| &s.shapes).any(|sh| matches!(&sh.kind, ShapeKind::Chart(c) if linked(c))) {
-            return Vec::new();
-        }
-        let Some(data) = ibis_formats::pivot_source(presentation, sheet, pivot) else {
-            return Vec::new();
-        };
-        let built = pivot.build(&data);
-        let mut commands = Vec::new();
-        for s in &presentation.slides {
-            for sh in &s.shapes {
-                if let ShapeKind::Chart(c) = &sh.kind {
-                    if ibis_doc_model::pivot::pivot_source_matches(c.pivot_source.as_deref(), pivot_sheet_name, &pivot.name) {
-                        let mut updated_chart = (**c).clone();
-                        ibis_doc_model::pivot::update_chart_from_pivot(&mut updated_chart, pivot, &built);
-                        if &updated_chart != c.as_ref() {
-                            commands.push(Command::SetShapeKind {
-                                slide: s.id,
-                                shape: sh.id,
-                                kind: Box::new(ShapeKind::Chart(Box::new(updated_chart))),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        commands
+        ibis_formats::pivot_chart_commands(self.presentation(), pivot_slide, sheet, pivot)
     }
 
     /// Insert a PivotChart linked to the pivot table at `target` (slide, pivot_index).

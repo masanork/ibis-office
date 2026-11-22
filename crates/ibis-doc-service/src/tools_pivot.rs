@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::ToolError;
 use crate::a1::{parse_range, range_text};
-use crate::catalog::{Access, Tool, document_id, object, string};
+use crate::catalog::{Access, Tool, document_id, integer, object, string};
 use crate::service::{Args, Service};
 use crate::tools_xlsx::{sheet_edit, workbook_document, workbook_sheet, workbook_sheets};
 
@@ -68,6 +68,49 @@ pub(crate) const CREATE_PIVOT: Tool = Tool {
     run: create_pivot,
 };
 
+pub(crate) const LIST_PIVOTS: Tool = Tool {
+    name: "xlsx_list_pivots",
+    description: "List PivotTables on a worksheet with their source, current location, axes and measures.",
+    access: Access::Read,
+    returns_content: true,
+    schema: || {
+        object(
+            &[
+                document_id(),
+                ("sheet", string("Worksheet containing the pivots.")),
+                ("offset", integer("First pivot to return (0-based).")),
+                (
+                    "limit",
+                    integer("Maximum pivots per page (default 25, maximum 50)."),
+                ),
+            ],
+            &["document_id", "sheet"],
+        )
+    },
+    run: list_pivots,
+};
+
+pub(crate) const REFRESH_PIVOT: Tool = Tool {
+    name: "xlsx_refresh_pivot",
+    description: "Rebuild an existing PivotTable from its current workbook table or range while preserving its field configuration.",
+    access: Access::Edit,
+    returns_content: false,
+    schema: || {
+        object(
+            &[
+                document_id(),
+                ("sheet", string("Worksheet containing the pivot.")),
+                (
+                    "pivot",
+                    string("Existing pivot name from xlsx_list_pivots."),
+                ),
+            ],
+            &["document_id", "sheet", "pivot"],
+        )
+    },
+    run: refresh_pivot,
+};
+
 fn anchor(args: &Value) -> Result<CellRange, ToolError> {
     let range = parse_range(args.str_arg("anchor")?)?;
     if range.first_row != range.last_row || range.first_column != range.last_column {
@@ -83,13 +126,39 @@ fn overlaps(a: &CellRange, b: &CellRange) -> bool {
         && b.first_column <= a.last_column
 }
 
+fn pivot_areas(pivot: &PivotTable) -> impl Iterator<Item = CellRange> {
+    let location = pivot.location;
+    let pages = pivot.page_fields.len() as u32;
+    std::iter::once(location).chain((pages > 0).then_some(CellRange {
+        first_row: location.first_row.saturating_sub(pages + 1),
+        last_row: location.first_row.saturating_sub(1),
+        last_column: location.first_column.saturating_add(1),
+        ..location
+    }))
+}
+
 fn blank_destination(sheet: &Sheet, range: &CellRange) -> Result<(), ToolError> {
+    available_destination(sheet, range, None)
+}
+
+fn available_destination(
+    sheet: &Sheet,
+    range: &CellRange,
+    own_pivot: Option<usize>,
+) -> Result<(), ToolError> {
     let occupied = sheet
         .cells_in_rows(range.first_row, range.last_row)
         .iter()
         .any(|cell| {
+            let inside_own = own_pivot.is_some_and(|index| {
+                pivot_areas(&sheet.pivots[index]).any(|area| {
+                    (area.first_row..=area.last_row).contains(&cell.row)
+                        && (area.first_column..=area.last_column).contains(&cell.column)
+                })
+            });
             (range.first_column..=range.last_column).contains(&cell.column)
                 && (!cell.value.is_empty() || cell.formula.is_some())
+                && !inside_own
         });
     if occupied
         || sheet.merges.iter().any(|area| overlaps(area, range))
@@ -97,20 +166,8 @@ fn blank_destination(sheet: &Sheet, range: &CellRange) -> Result<(), ToolError> 
             .tables
             .iter()
             .any(|table| overlaps(&table.range, range))
-        || sheet.pivots.iter().any(|pivot| {
-            let loc = pivot.location;
-            let pages = pivot.page_fields.len() as u32;
-            overlaps(&loc, range)
-                || (pages > 0
-                    && overlaps(
-                        &CellRange {
-                            first_row: loc.first_row.saturating_sub(pages + 1),
-                            last_row: loc.first_row.saturating_sub(1),
-                            last_column: loc.first_column + 1,
-                            ..loc
-                        },
-                        range,
-                    ))
+        || sheet.pivots.iter().enumerate().any(|(index, pivot)| {
+            Some(index) != own_pivot && pivot_areas(pivot).any(|area| overlaps(&area, range))
         })
     {
         return Err(ToolError::new(
@@ -374,14 +431,7 @@ fn create_pivot(service: &mut Service, args: &Value) -> Result<Value, ToolError>
         active,
     )?;
     let slide = workbook.slides[*index].id;
-    let rows_bound = axis_size(&data, &rows) + columns.len() + 4;
-    let cols_bound = axis_size(&data, &columns) * entries.len() + rows.len() + 2;
-    if rows_bound.saturating_mul(cols_bound) > MAX_CELLS {
-        return Err(ToolError::new(
-            "out_of_range",
-            "The pivot output would be too large.",
-        ));
-    }
+    check_output_size(&data, &rows, &columns, entries.len(), false)?;
     let name = (1..)
         .map(|n| format!("PivotTable{n}"))
         .find(|name| {
@@ -438,4 +488,139 @@ fn create_pivot(service: &mut Service, args: &Value) -> Result<Value, ToolError>
         }],
         summary,
     )
+}
+
+fn list_pivots(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let offset = args.opt_usize("offset")?.unwrap_or(0);
+    let limit = args.opt_usize("limit")?.unwrap_or(25).clamp(1, 50);
+    let active = service.workbook_tool_context().active_sheet;
+    let open = workbook_document(service, args.str_arg("document_id")?)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (_, name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
+    let pivots: Vec<_> = sheet.pivots.iter().skip(offset).take(limit).map(|pivot| {
+        let heading = |field: i32| {
+            usize::try_from(field).ok().and_then(|i| pivot.fields.get(i)).map(|field| &field.name)
+        };
+        let source = ibis_formats::pivot_source_location(workbook, pivot).map(|(slide, range)| {
+            let source_sheet = slide.and_then(|id| workbook.slide(id)).and_then(|slide| slide.name.as_deref()).unwrap_or(name);
+            json!({"sheet": source_sheet, "range": range_text(&range), "name": pivot.source.name})
+        });
+        let values: Vec<_> = pivot.data_fields.iter().map(|value| json!({
+            "name": value.name, "field": heading(value.field as i32), "aggregate": value.function,
+        })).collect();
+        json!({
+            "name": pivot.name, "range": range_text(&pivot.location), "source": source,
+            "rows": pivot.row_fields.iter().filter_map(|&i| heading(i)).collect::<Vec<_>>(),
+            "columns": pivot.col_fields.iter().filter_map(|&i| heading(i)).collect::<Vec<_>>(),
+            "filters": pivot.page_fields.iter().filter_map(|field| heading(field.field as i32)).collect::<Vec<_>>(),
+            "values": values,
+        })
+    }).collect();
+    let count = sheet.pivots.len();
+    let next = offset.saturating_add(pivots.len());
+    let mut result = json!({"sheet":name,"count":count,"pivots":pivots});
+    if next < count {
+        result["next_offset"] = json!(next);
+    }
+    Ok(result)
+}
+
+fn check_output_size(
+    data: &PivotData,
+    rows: &[usize],
+    columns: &[usize],
+    values: usize,
+    data_on_rows: bool,
+) -> Result<(), ToolError> {
+    let (row_values, col_values) = if data_on_rows {
+        (values.max(1), 1)
+    } else {
+        (1, values.max(1))
+    };
+    let rows_bound = axis_size(data, rows).saturating_mul(row_values) + columns.len() + 4;
+    let cols_bound = axis_size(data, columns).saturating_mul(col_values) + rows.len() + 2;
+    if rows_bound.saturating_mul(cols_bound) > MAX_CELLS {
+        return Err(ToolError::new(
+            "out_of_range",
+            "The pivot output would be too large.",
+        ));
+    }
+    Ok(())
+}
+
+fn refresh_pivot(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let name = args.str_arg("pivot")?;
+    let active = service.workbook_tool_context().active_sheet;
+    let open = workbook_document(service, id)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (slide_index, sheet_name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
+    let slide = workbook.slides[*slide_index].id;
+    let (index, pivot) = sheet
+        .pivots
+        .iter()
+        .enumerate()
+        .find(|(_, pivot)| pivot.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| ToolError::new("no_such_pivot", format!("No pivot named {name}")))?;
+    let (source_slide, source_range) = ibis_formats::pivot_source_location(workbook, pivot)
+        .ok_or_else(|| ToolError::invalid("The pivot source is unavailable."))?;
+    let height = (source_range.last_row - source_range.first_row + 1) as usize;
+    let width = (source_range.last_column - source_range.first_column + 1) as usize;
+    if height.saturating_mul(width) > MAX_CELLS {
+        return Err(ToolError::new(
+            "out_of_range",
+            "The pivot source exceeds 100000 cells.",
+        ));
+    }
+    let data = ibis_formats::pivot_data(workbook, slide, index)
+        .ok_or_else(|| ToolError::invalid("The pivot source is unavailable."))?;
+    let axis = |fields: &[i32]| -> Vec<usize> {
+        fields
+            .iter()
+            .filter_map(|&i| usize::try_from(i).ok())
+            .filter(|&i| i < width)
+            .collect()
+    };
+    check_output_size(
+        &data,
+        &axis(&pivot.row_fields),
+        &axis(&pivot.col_fields),
+        pivot.data_fields.len(),
+        pivot.data_on_rows,
+    )?;
+    let replacement = ibis_formats::refreshed_pivot(workbook, slide, index)
+        .ok_or_else(|| ToolError::invalid("Could not refresh the pivot."))?;
+    let refreshed = &replacement.pivots[index];
+    for area in pivot_areas(refreshed) {
+        let size = ((area.last_row - area.first_row + 1) as usize)
+            .saturating_mul((area.last_column - area.first_column + 1) as usize);
+        if area.last_row >= 1_048_576 || area.last_column >= 16_384 || size > MAX_CELLS {
+            return Err(ToolError::new(
+                "out_of_range",
+                "The refreshed pivot does not fit the output limits.",
+            ));
+        }
+        if source_slide.unwrap_or(slide) == slide && overlaps(&source_range, &area) {
+            return Err(ToolError::new(
+                "destination_occupied",
+                "The refreshed pivot overlaps its source.",
+            ));
+        }
+        available_destination(sheet, &area, Some(index))?;
+    }
+    let chart_commands =
+        ibis_formats::pivot_chart_commands(workbook, slide, &replacement, refreshed);
+    let summary = json!({
+        "sheet": sheet_name, "pivot": refreshed.name, "range": range_text(&refreshed.location),
+        "updated_charts": chart_commands.len(),
+    });
+    let mut commands = vec![ibis_doc_model::Command::Sheet(SheetCommand::ReplaceSheet {
+        sheet: slide,
+        replacement: Box::new(replacement),
+    })];
+    commands.extend(chart_commands);
+    crate::edit::execute(open, commands)?;
+    Ok(crate::edit::edited(id, open, summary, Vec::new()))
 }

@@ -34,6 +34,7 @@ pub(crate) fn workbook_document<'a>(service: &'a mut Service, id: &str) -> Resul
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
         GET_CELLS,
+        crate::tools_pivot::LIST_PIVOTS,
         Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook: name, used range and whether it is shown.", access: Access::Read, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: list_sheets },
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
         Tool {
@@ -464,7 +465,7 @@ use crate::tools_docx::{color_schema, font_schema};
 
 pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
-        SET_CELLS, CLEAR_CELLS, SET_FORMAT, crate::tools_chart::tool(), crate::tools_pivot::CREATE_PIVOT,
+        SET_CELLS, CLEAR_CELLS, SET_FORMAT, crate::tools_chart::tool(), crate::tools_pivot::CREATE_PIVOT, crate::tools_pivot::REFRESH_PIVOT,
         Tool {
             name: "xlsx_set_validation",
             description: "Set an input validation rule for an A1 range, replacing existing validation only in that range.",
