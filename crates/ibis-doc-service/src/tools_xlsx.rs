@@ -37,6 +37,20 @@ pub(crate) fn tools() -> Vec<Tool> {
         Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook: name, used range and whether it is shown.", access: Access::Read, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: list_sheets },
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
         Tool {
+            name: "xlsx_trace_formula",
+            description: "Trace direct, statically resolvable formula precedents or dependents of one cell across visible worksheets in this workbook.",
+            access: Access::Read,
+            returns_content: true,
+            schema: || object(&[
+                document_id(), ("sheet", string("The worksheet containing the target cell.")),
+                ("cell", string("One A1 cell address.")),
+                ("direction", json!({"enum": ["precedents", "dependents"]})),
+                ("offset", integer("First reference on this page (0-based).")),
+                ("limit", integer("Maximum references per page (default 100, maximum 200).")),
+            ], &["document_id", "sheet", "cell", "direction"]),
+            run: trace_formula,
+        },
+        Tool {
             name: "xlsx_check_machine_readability",
             description: "Find structural review candidates such as merged cells, hidden rows or columns, formulas, and platform-dependent or private-use characters.",
             access: Access::Read,
@@ -195,6 +209,88 @@ fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let mut result = json!({ "sheet": name, "range": range_text(&range), "kind": kind, "first_row": range.first_row + 1 + offset as u32, "first_column": column_name(range.first_column), "rows": rows });
     if end < height {
         result["next_offset"] = json!(end);
+    }
+    Ok(result)
+}
+
+fn trace_formula(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    use ibis_calc::recalc::formula_dependencies;
+    use ibis_doc_model::sheet_calc::BookView;
+
+    let address = args.str_arg("cell")?;
+    let (row, column) = ibis_calc::formula::parser::parse_cell(address.trim())
+        .filter(|cell| cell.row < 1_048_576 && cell.column < 16_384)
+        .map(|cell| (cell.row, cell.column))
+        .ok_or_else(|| ToolError::invalid("cell must be a single A1 cell address"))?;
+    let direction = args.str_arg("direction")?;
+    if !matches!(direction, "precedents" | "dependents") {
+        return Err(ToolError::invalid("direction is precedents or dependents"));
+    }
+    let offset = args.opt_usize("offset")?.unwrap_or(0);
+    let limit = args.opt_usize("limit")?.unwrap_or(100).clamp(1, 200);
+    let active = service.workbook_tool_context().active_sheet;
+    let open = workbook_document(service, args.str_arg("document_id")?)?;
+    let workbook = open.document.presentation();
+    let sheets = workbook_sheets(workbook);
+    let (slide, name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
+    let book = BookView::new(workbook);
+    let target = book.index_of_slide(workbook.slides[*slide].id)
+        .ok_or_else(|| ToolError::invalid("the target sheet is unavailable"))?;
+    let visible: Vec<_> = sheets.iter().filter_map(|(slide, name, sheet)| {
+        Some((book.index_of_slide(workbook.slides[*slide].id)?, name, sheet))
+    }).collect();
+    let mut references = Vec::new();
+    let mut count = 0;
+    let mut push = |sheet: &str, range: CellRange| {
+        if count >= offset && references.len() < limit {
+            references.push(json!({"sheet": sheet, "range": range_text(&range)}));
+        }
+        count += 1;
+    };
+    let mut volatile = false;
+    let mut unresolved = false;
+    if direction == "precedents" {
+        let mut seen = std::collections::HashSet::new();
+        if let Some(formula) = sheet.cell(row, column).and_then(|cell| sheet.visible_formula(cell)) {
+            if let Some(found) = formula_dependencies(&book, (target, row, column), formula) {
+                volatile = found.volatile;
+                for (first, last, r0, c0, r1, c1) in found.areas {
+                    for &(index, name, _) in &visible {
+                        if (first..=last).contains(&index) && seen.insert((index, r0, c0, r1, c1)) {
+                            push(name, CellRange { first_row: r0.min(r1), last_row: r0.max(r1), first_column: c0.min(c1), last_column: c0.max(c1) });
+                        }
+                    }
+                }
+            } else {
+                unresolved = true;
+            }
+        }
+    } else {
+        for (index, name, sheet) in visible {
+            for cell in &sheet.cells {
+                let Some(formula) = sheet.visible_formula(cell) else { continue };
+                let Some(found) = formula_dependencies(&book, (index, cell.row, cell.column), formula) else { continue };
+                if found.areas.iter().any(|&(first, last, r0, c0, r1, c1)| {
+                    (first..=last).contains(&target)
+                        && (r0.min(r1)..=r0.max(r1)).contains(&row)
+                        && (c0.min(c1)..=c0.max(c1)).contains(&column)
+                }) {
+                    push(name, CellRange { first_row: cell.row, last_row: cell.row, first_column: cell.column, last_column: cell.column });
+                }
+            }
+        }
+    }
+    let next = offset.saturating_add(references.len());
+    let mut result = json!({
+        "sheet": name, "cell": ibis_doc_model::sheet::cell_name(column, row),
+        "direction": direction, "count": count, "references": references,
+    });
+    if direction == "precedents" {
+        result["volatile"] = json!(volatile);
+        result["unresolved"] = json!(unresolved);
+    }
+    if next < count {
+        result["next_offset"] = json!(next);
     }
     Ok(result)
 }
