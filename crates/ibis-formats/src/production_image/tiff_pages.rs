@@ -3,9 +3,9 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
 use base64::Engine as _;
-use image::{DynamicImage, ImageFormat};
+use image::{DynamicImage, ImageFormat, metadata::Orientation};
 use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
-use tiff::decoder::Decoder;
+use tiff::{decoder::Decoder, tags::Tag};
 
 const MAX_PAGES: usize = 32;
 const MAX_PAGE_EDGE: u32 = 2_048;
@@ -15,11 +15,13 @@ pub(super) fn open(bytes: &[u8]) -> Result<crate::Opened, String> {
     let mut pages = Decoder::new(Cursor::new(bytes)).map_err(|error| error.to_string())?;
     let first = || super::decode_raster_with_limits(bytes, ImageFormat::Tiff, 4);
     if !pages.more_images() {
-        let image = match first() {
+        let orientation = orientation(&mut pages);
+        let mut image = match first() {
             Ok(image) => image,
             Err(image::ImageError::Limits(_)) => super::large_tiff::preview(bytes, pages)?,
             Err(error) => return Err(error.to_string()),
         };
+        image.apply_orientation(orientation);
         return super::open_preview_png(&super::encode_png(image)?);
     }
 
@@ -76,7 +78,7 @@ fn page_image(bytes: &[u8], pages: &mut Decoder<Cursor<&[u8]>>) -> Result<Dynami
         .ok_or("TIFF page directory is missing")?
         .0;
     let reader = || HeaderOverlay::new(bytes, offset).map(BufReader::new);
-    let image = match super::decode_raster_reader(reader()?, ImageFormat::Tiff, 4) {
+    let mut image = match super::decode_raster_reader(reader()?, ImageFormat::Tiff, 4) {
         Ok(image) => image,
         Err(image::ImageError::Limits(_)) => {
             let decoder = Decoder::new(reader()?).map_err(|error| error.to_string())?;
@@ -84,11 +86,21 @@ fn page_image(bytes: &[u8], pages: &mut Decoder<Cursor<&[u8]>>) -> Result<Dynami
         }
         Err(error) => return Err(error.to_string()),
     };
+    image.apply_orientation(orientation(pages));
     Ok(if image.width().max(image.height()) > MAX_PAGE_EDGE {
         image.thumbnail(MAX_PAGE_EDGE, MAX_PAGE_EDGE)
     } else {
         image
     })
+}
+
+fn orientation(decoder: &mut Decoder<Cursor<&[u8]>>) -> Orientation {
+    decoder
+        .find_tag_unsigned::<u8>(Tag::Orientation)
+        .ok()
+        .flatten()
+        .and_then(Orientation::from_exif)
+        .unwrap_or(Orientation::NoTransforms)
 }
 
 /// Present the selected IFD as the first image while keeping all absolute
@@ -210,6 +222,57 @@ mod tests {
             .save(&opened.presentation, Default::default())
             .unwrap();
         verify(&crate::open(docx).unwrap());
+    }
+
+    #[test]
+    fn applies_each_pages_orientation_to_the_preview_and_docx() {
+        let mut file = Cursor::new(Vec::new());
+        let mut encoder = TiffEncoder::new(&mut file).unwrap();
+        for orientation in [6_u16, 2] {
+            let mut page = encoder.new_image::<colortype::Gray8>(2, 3).unwrap();
+            page.encoder()
+                .write_tag(Tag::Orientation, orientation)
+                .unwrap();
+            page.write_data(&[1, 2, 3, 4, 5, 6]).unwrap();
+        }
+        let opened = open(&file.into_inner()).unwrap();
+        let verify = |opened: &crate::Opened| {
+            let pages: Vec<_> = opened
+                .presentation
+                .media
+                .iter()
+                .map(|media| {
+                    let image = image::load_from_memory(&media.data).unwrap().into_luma8();
+                    (image.dimensions(), image.into_raw())
+                })
+                .collect();
+            assert_eq!(
+                pages,
+                [
+                    ((3, 2), vec![5, 3, 1, 6, 4, 2]),
+                    ((2, 3), vec![2, 1, 4, 3, 6, 5]),
+                ]
+            );
+        };
+        verify(&opened);
+        let docx = opened
+            .source
+            .save(&opened.presentation, Default::default())
+            .unwrap();
+        verify(&crate::open(docx).unwrap());
+    }
+
+    #[test]
+    fn rotates_a_single_oversized_tiff() {
+        let mut file = Cursor::new(Vec::new());
+        let mut encoder = TiffEncoder::new(&mut file).unwrap();
+        let mut page = encoder.new_image::<colortype::Gray8>(8_200, 80).unwrap();
+        page.encoder().write_tag(Tag::Orientation, 6_u16).unwrap();
+        page.write_data(&vec![17; 8_200 * 80]).unwrap();
+        let opened = open(&file.into_inner()).unwrap();
+        let preview =
+            image::load_from_memory(&opened.presentation.media.last().unwrap().data).unwrap();
+        assert_eq!((preview.width(), preview.height()), (20, 2_048));
     }
 
     #[test]
