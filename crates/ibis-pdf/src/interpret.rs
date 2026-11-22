@@ -261,8 +261,6 @@ impl<'a> Device<'a> for SceneDevice {
         self.op_counter += 1;
         let combined = transform * glyph_transform;
         let coeffs = combined.as_coeffs();
-        let origin = (coeffs[4] as f32, coeffs[5] as f32);
-        let font_size = (coeffs[0].hypot(coeffs[1]) * 1000.0).max(1.0) as f32;
 
         // Always index text (including invisible OCR text layers) for search and selection.
         if let Some(unicode) = glyph.as_unicode() {
@@ -277,17 +275,16 @@ impl<'a> Device<'a> for SceneDevice {
                 Glyph::Type3(_) => None,
             }
             .unwrap_or_else(|| text.chars().map(crate::scene::estimated_advance_em).sum());
-            let rect_pt = PdfRect {
-                x0: origin.0,
-                y0: origin.1 - font_size,
-                x1: origin.0 + font_size * advance,
-                y1: origin.1,
-            };
+            // The glyph's cell (its advance by one em, in the thousandths of glyph space) as the page draws it. A
+            // glyph turned a quarter (a Latin word set sideways in vertical text) gets the box it takes on the page,
+            // and its advance runs down the page: it reads as vertical text.
+            let rect_pt = glyph_cell(combined, advance);
+            let vertical = coeffs[1].abs() > coeffs[0].abs();
             for ch in text.chars() {
                 self.text_index.chars.push(CharBox {
                     ch,
                     rect_pt,
-                    vertical: false,
+                    vertical,
                     stream_op_index: self.op_counter,
                 });
             }
@@ -367,6 +364,21 @@ impl<'a> Device<'a> for SceneDevice {
             self.display_list.push(DisplayCmd::PopTransparencyGroup);
         }
     }
+}
+
+/// The box on the page of a glyph cell `advance` ems wide and one em high, drawn by `combined` (glyph space, a
+/// thousand units to the em, to page points).
+fn glyph_cell(combined: Affine, advance: f32) -> PdfRect {
+    let width = f64::from(advance) * 1000.0;
+    let corners = [(0.0, 0.0), (width, 0.0), (0.0, 1000.0), (width, 1000.0)].map(|(x, y)| combined * kurbo::Point::new(x, y));
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in corners {
+        x0 = x0.min(p.x);
+        y0 = y0.min(p.y);
+        x1 = x1.max(p.x);
+        y1 = y1.max(p.y);
+    }
+    PdfRect { x0: x0 as f32, y0: y0 as f32, x1: x1 as f32, y1: y1 as f32 }
 }
 
 fn image_to_rgba(img: ImageData, alpha: Option<LumaData>) -> (u32, u32, Vec<u8>) {
