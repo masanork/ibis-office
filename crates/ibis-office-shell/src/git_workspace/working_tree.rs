@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use std::ffi::OsStr;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -10,7 +11,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_fl
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{GitWorkspace, Result, filename};
+use super::{GitWorkspace, MAX_TEXT_DIFF_BYTES, Result, filename, markdown_block};
 use crate::{editor::SlideEditor, i18n::text};
 
 struct Change {
@@ -49,7 +50,7 @@ enum Operation {
     Commit(String),
 }
 
-pub(super) fn git(root: &Path, args: &[&OsStr]) -> Result<Vec<u8>> {
+fn git_command(root: &Path, args: &[&OsStr]) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-C")
@@ -69,12 +70,93 @@ pub(super) fn git(root: &Path, args: &[&OsStr]) -> Result<Vec<u8>> {
     ] {
         command.env_remove(name);
     }
-    let output = command.output().map_err(|error| format!("git: {error}"))?;
+    command
+}
+
+pub(super) fn git(root: &Path, args: &[&OsStr]) -> Result<Vec<u8>> {
+    let output = git_command(root, args)
+        .output()
+        .map_err(|error| format!("git: {error}"))?;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
         return Err(format!("git: {}", error.trim()).into());
     }
     Ok(output.stdout)
+}
+
+#[derive(Clone, Copy)]
+enum ChangeDiff {
+    Staged,
+    Unstaged,
+    Untracked,
+}
+
+impl ChangeDiff {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Staged => "git.staged",
+            Self::Unstaged | Self::Untracked => "git.unstaged",
+        }
+    }
+}
+
+fn change_diff(root: &Path, path: &Path, kind: ChangeDiff) -> Result<ibis_formats::Opened> {
+    let mut args = vec![
+        "--no-optional-locks",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--patch",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--submodule=short",
+    ];
+    match kind {
+        ChangeDiff::Staged => args.extend(["--cached", "--"]),
+        ChangeDiff::Unstaged => args.push("--"),
+        ChangeDiff::Untracked => {
+            let file_type = root.join(path).symlink_metadata()?.file_type();
+            if !file_type.is_file() && !file_type.is_symlink() {
+                return Err(text("git.diff-file-only").to_string().into());
+            }
+            args.extend(["--no-index", "--", "/dev/null"]);
+        }
+    }
+    let mut args: Vec<_> = args.into_iter().map(OsStr::new).collect();
+    args.push(path.as_os_str());
+    let mut child = git_command(root, &args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut bytes = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .expect("piped Git diff output")
+        .take((MAX_TEXT_DIFF_BYTES + 1) as u64)
+        .read_to_end(&mut bytes);
+    if read.is_err() || bytes.len() > MAX_TEXT_DIFF_BYTES {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    read?;
+    if bytes.len() > MAX_TEXT_DIFF_BYTES {
+        return Err(text("git.diff-too-large").to_string().into());
+    }
+    // Git's no-index diff uses exit code 1 to report differing inputs.
+    if !(status.success()
+        || matches!(kind, ChangeDiff::Untracked) && status.code() == Some(1) && !bytes.is_empty())
+    {
+        return Err(text("git.diff-failed").to_string().into());
+    }
+    let markdown = if bytes.is_empty() {
+        text("git.no-changes").to_string().into_bytes()
+    } else {
+        markdown_block(&String::from_utf8_lossy(&bytes), "diff")
+    };
+    Ok(ibis_formats::markdown::open_markdown(markdown)?)
 }
 
 fn status(root: &Path) -> Result<Vec<Change>> {
@@ -249,6 +331,41 @@ impl SlideEditor {
         .detach();
     }
 
+    fn git_show_change_diff(
+        &mut self,
+        path: PathBuf,
+        kind: ChangeDiff,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.git_workspace.as_mut().filter(|s| !s.busy) else {
+            return;
+        };
+        let Some(root) = state.worktree.clone() else {
+            return;
+        };
+        let name = format!("{} · {}", path.display(), text(kind.label()));
+        state.busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result =
+                cx.background_executor()
+                    .spawn(async move {
+                        change_diff(&root, &path, kind).map_err(|error| error.to_string())
+                    })
+                    .await;
+            let _ = this.update_in(cx, |editor, window, cx| {
+                let Some(state) = editor.git_workspace.as_mut() else {
+                    return;
+                };
+                state.busy = false;
+                editor.present_git_preview(result, name, window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn render_git_changes(
         &self,
         state: &GitWorkspace,
@@ -297,6 +414,14 @@ impl SlideEditor {
                 } else {
                     change.worktree
                 };
+                let kind = if staged_group {
+                    ChangeDiff::Staged
+                } else if status_code == b'?' {
+                    ChangeDiff::Untracked
+                } else {
+                    ChangeDiff::Unstaged
+                };
+                let diff_path = path.clone();
                 let row = h_flex()
                     .gap_1()
                     .px_2()
@@ -314,6 +439,24 @@ impl SlideEditor {
                             .min_w_0()
                             .truncate()
                             .child(path.to_string_lossy().into_owned()),
+                    )
+                    .child(
+                        Button::new((
+                            if staged_group {
+                                "git-staged-diff"
+                            } else {
+                                "git-unstaged-diff"
+                            },
+                            index,
+                        ))
+                        .xsmall()
+                        .disabled(state.busy)
+                        .label(text("git.diff"))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.git_show_change_diff(diff_path.clone(), kind, window, cx);
+                            },
+                        )),
                     )
                     .child(
                         Button::new((

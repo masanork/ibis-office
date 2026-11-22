@@ -1592,3 +1592,7 @@ git.commit-refresh-failed	コミット済みです。表示を更新できませ
 git.graph	履歴
 git.snapshot	コミット
 git.back-to-head	HEADに戻る
+git.diff	差分
+git.diff-file-only	Gitの差分はファイル単位で表示できます。
+git.diff-too-large	Gitの差分が512 KiBを超えています。
+git.diff-failed	Gitの差分を取得できませんでした。変更一覧を更新して再試行してください。

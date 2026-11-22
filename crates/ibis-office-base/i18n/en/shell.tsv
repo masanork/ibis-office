@@ -1594,3 +1594,7 @@ git.commit-refresh-failed	Committed. The view could not be refreshed.
 git.graph	History
 git.snapshot	Commit
 git.back-to-head	Back to HEAD
+git.diff	Diff
+git.diff-file-only	Git diff preview supports files only.
+git.diff-too-large	Git diff exceeds 512 KiB.
+git.diff-failed	Could not read the Git diff. Refresh the changes list and try again.

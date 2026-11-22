@@ -456,19 +456,29 @@ impl SlideEditor {
                     return;
                 };
                 state.busy = false;
-                match result {
-                    Ok(opened) if editor.has_document && !editor.standard_read_only => {
-                        crate::app::open_window_with(cx, move |editor, window, cx| {
-                            editor.load_git_preview(opened, name, window, cx)
-                        });
-                    }
-                    Ok(opened) => editor.load_git_preview(opened, name, window, cx),
-                    Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
-                }
+                editor.present_git_preview(result, name, window, cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn present_git_preview(
+        &mut self,
+        result: std::result::Result<ibis_formats::Opened, String>,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(opened) if self.has_document && !self.standard_read_only => {
+                crate::app::open_window_with(cx, move |editor, window, cx| {
+                    editor.load_git_preview(opened, name, window, cx)
+                });
+            }
+            Ok(opened) => self.load_git_preview(opened, name, window, cx),
+            Err(error) => self.show_alert(text("git.failed"), error.into(), cx),
+        }
     }
 
     fn load_git_preview(
