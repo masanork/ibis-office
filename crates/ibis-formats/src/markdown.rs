@@ -31,6 +31,8 @@
 //!   - CriticMarkup Tracked Changes & Comments: `{++insert++}`, `{--delete--}`, `{~~old~>new~~}`, `{>>author: comment<<}`
 //!   - Inline Data URI images `![alt](data:image/png;base64,...){width=... height=...}`
 
+mod picture_anchor;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -42,7 +44,7 @@ use ibis_doc_model::{
     FlowStyle, FlowStyles, FlowTable, Grouping, LineHeight, LineNumberRestart, LineNumbers, Link,
     LabelPosition, LegendPosition, ListRef, Media, MediaFormat, MediaId, Note, Number, PageSetup, ParaFormat, ParagraphSpacingPreset,
     PictureLook, Presentation, Revision, RevisionKind, Rgb, RowHeight, RubyAlign, RunFormat,
-    Series, ShapeId, ShapeKind, Side, StyleKind, StyleSetPreset, TableLook, TableStyleRef,
+    Series, Shape, ShapeId, ShapeKind, Side, StyleKind, StyleSetPreset, TableLook, TableStyleRef,
     VerticalMerge, VerticalPosition, Watermark,
 };
 
@@ -4643,6 +4645,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     let mut total_consumed = 2 + alt_end + 2 + url_end + 1;
                     let mut explicit_w: Option<Emu> = None;
                     let mut explicit_h: Option<Emu> = None;
+                    let mut anchor = None;
                     let after_paren = &after_open_paren[url_end + 1..];
                     if let Some(attr_open) = after_paren.strip_prefix('{') {
                         if let Some(attr_close) = attr_open.find('}') {
@@ -4652,6 +4655,8 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                                     explicit_w = Some(w);
                                 } else if let Some(h) = part.strip_prefix("height=").and_then(parse_length_emu).filter(|h| *h > 0) {
                                     explicit_h = Some(h);
+                                } else if let Some(encoded) = part.strip_prefix(picture_anchor::ATTRIBUTE) {
+                                    anchor = picture_anchor::decode(encoded);
                                 }
                             }
                             total_consumed += 1 + attr_close + 1;
@@ -4670,12 +4675,21 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                         if !alt.is_empty() {
                             look.alt_text.description = alt.to_string();
                         }
+                        let kind = if let Some(anchor) = anchor {
+                            let mut picture = ibis_doc_model::Picture::new(media_id);
+                            picture.alt_text = look.alt_text;
+                            let mut shape = Shape::new(
+                                ctx.fresh_shape_id(),
+                                EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
+                                ShapeKind::Picture(picture),
+                            );
+                            shape.floating = Some(anchor);
+                            FlowRunKind::Shape(Box::new(shape))
+                        } else {
+                            FlowRunKind::Picture { media: media_id, size: img_size, look }
+                        };
                         out.push(FlowRun {
-                            kind: FlowRunKind::Picture {
-                                media: media_id,
-                                size: img_size,
-                                look,
-                            },
+                            kind,
                             style: FlowRunStyle::default(),
                             format: base_fmt.clone(),
                             char_style: None,
@@ -6974,12 +6988,24 @@ fn serialize_runs(
                 serialize_picture(media, *mid, *size, &look.alt_text)
             }
             FlowRunKind::Shape(shape) => match &shape.kind {
-                ShapeKind::Picture(picture) => serialize_picture(
-                    media,
-                    picture.media,
-                    EmuSize::new(shape.frame.width, shape.frame.height),
-                    &picture.alt_text,
-                ),
+                ShapeKind::Picture(picture) => {
+                    let mut image = serialize_picture(
+                        media,
+                        picture.media,
+                        EmuSize::new(shape.frame.width, shape.frame.height),
+                        &picture.alt_text,
+                    );
+                    if let Some(anchor) = &shape.floating
+                        && image.ends_with('}')
+                    {
+                        image.pop();
+                        image.push(' ');
+                        image.push_str(picture_anchor::ATTRIBUTE);
+                        image.push_str(&picture_anchor::encode(anchor));
+                        image.push('}');
+                    }
+                    image
+                }
                 ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
                     .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text))
                     .filter(|image| !image.is_empty())
@@ -7207,7 +7233,7 @@ pub fn open_markdown_presentation_with_base_dir(
     enum SlideBlock<'a> {
         Text(Vec<ibis_doc_model::Paragraph>),
         Table(&'a FlowTable),
-        Picture(MediaId, EmuSize, &'a PictureLook),
+        Picture(MediaId, EmuSize, &'a ibis_doc_model::AltText),
         Chart(&'a Chart),
     }
 
@@ -7286,12 +7312,19 @@ pub fn open_markdown_presentation_with_base_dir(
                         match &r.kind {
                             FlowRunKind::Picture { media, size, look } => {
                                 if let Some(&new_mid) = media_remap.get(media) {
-                                    visuals.push(SlideBlock::Picture(new_mid, *size, look));
+                                    visuals.push(SlideBlock::Picture(new_mid, *size, &look.alt_text));
                                 }
                             }
                             FlowRunKind::Shape(shape) => {
-                                if let ShapeKind::Chart(chart) = &shape.kind {
-                                    visuals.push(SlideBlock::Chart(chart));
+                                match &shape.kind {
+                                    ShapeKind::Chart(chart) => visuals.push(SlideBlock::Chart(chart)),
+                                    ShapeKind::Picture(picture) => {
+                                        if let Some(&media) = media_remap.get(&picture.media) {
+                                            let size = EmuSize::new(shape.frame.width, shape.frame.height);
+                                            visuals.push(SlideBlock::Picture(media, size, &picture.alt_text));
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                             _ => {}
@@ -7407,13 +7440,13 @@ pub fn open_markdown_presentation_with_base_dir(
                         floating: None,
                     });
                 }
-                SlideBlock::Picture(mid, size, look) => {
+                SlideBlock::Picture(mid, size, alt_text) => {
                     let sid = fresh_shape_id();
                     let frame = fit_size_in_rect(size, visual_frame);
-                    if !look.alt_text.title.is_empty() || !look.alt_text.description.is_empty() {
+                    if !alt_text.title.is_empty() || !alt_text.description.is_empty() {
                         opened.presentation.slides[idx]
                             .shape_alt_texts
-                            .insert(sid, look.alt_text.clone());
+                            .insert(sid, alt_text.clone());
                     }
                     opened.presentation.slides[idx].shapes.push(ibis_doc_model::Shape {
                         id: sid,
@@ -7433,7 +7466,7 @@ pub fn open_markdown_presentation_with_base_dir(
                             shadow: None,
                             reflection: None,
                             soft_edge: None,
-                            alt_text: look.alt_text.clone(),
+                            alt_text: alt_text.clone(),
                             decorative: false,
                             name: format!("Picture {}", sid.0),
                             geometry: None,
@@ -7996,29 +8029,51 @@ mod tests {
         let part = "word/document.xml";
         let xml = String::from_utf8(package.read(part).unwrap()).unwrap();
         let anchored = xml
-            .replacen("<wp:inline", "<wp:anchor", 1)
+            .replacen("<wp:inline", r#"<wp:anchor behindDoc="0" relativeHeight="17" allowOverlap="0""#, 1)
+            .replacen("<wp:extent", r#"<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>36000</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>-72000</wp:posOffset></wp:positionV><wp:extent"#, 1)
             .replacen("</wp:inline>", "</wp:anchor>", 1)
-            .replacen("<wp:docPr", "<wp:wrapTopAndBottom/><wp:docPr", 1);
+            .replacen("<wp:docPr", r#"<wp:wrapTopAndBottom distT="12700" distB="25400"/><wp:docPr"#, 1);
         assert_ne!(xml, anchored);
         package.set_bytes(part, anchored.into_bytes());
         let docx = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
         let presentation = crate::read(&docx).unwrap();
         let source_flow = presentation.flow.as_ref().unwrap();
-        assert!(ibis_doc_model::flow_command::all_paragraphs(source_flow).iter().any(|p| {
-            p.runs.iter().any(|r| matches!(&r.kind, FlowRunKind::Shape(shape) if shape.floating.as_ref().is_some_and(|anchor| anchor.wrap == "topAndBottom")))
-        }));
+        let anchor = ibis_doc_model::flow_command::all_paragraphs(source_flow).into_iter()
+            .flat_map(|p| &p.runs)
+            .find_map(|run| match &run.kind {
+                FlowRunKind::Shape(shape) => shape.floating.clone(),
+                _ => None,
+            }).unwrap();
+        assert_eq!(anchor.wrap, "topAndBottom");
+        assert_eq!(anchor.offset_x, 36_000);
+        assert_eq!(anchor.offset_y, -72_000);
         let markdown = export_docx_to_markdown(&docx).unwrap();
-        assert_eq!(markdown.trim(), source);
+        assert_eq!(markdown.matches(picture_anchor::ATTRIBUTE).count(), 1);
+        let slide = crate::read(&import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap()).unwrap();
+        assert_eq!(
+            slide.slides.iter().flat_map(|s| &s.shapes)
+                .filter(|shape| matches!(shape.kind, ShapeKind::Picture(_))).count(),
+            2
+        );
         let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
         let presentation = crate::read(&rebuilt).unwrap();
         let flow = presentation.flow.as_ref().unwrap();
+        let mut floating_count = 0;
         let pictures = ibis_doc_model::flow_command::all_paragraphs(flow).into_iter()
             .flat_map(|p| &p.runs)
             .filter_map(|run| match &run.kind {
                 FlowRunKind::Picture { media, size, .. } => Some((presentation.media(*media).unwrap(), *size)),
+                FlowRunKind::Shape(shape) => {
+                    let ShapeKind::Picture(picture) = &shape.kind else { return None };
+                    assert_eq!(shape.floating.as_ref(), Some(&anchor));
+                    floating_count += 1;
+                    Some((presentation.media(picture.media).unwrap(),
+                        EmuSize::new(shape.frame.width, shape.frame.height)))
+                }
                 _ => None,
             }).collect::<Vec<_>>();
         assert_eq!(pictures.len(), 2);
+        assert_eq!(floating_count, 1);
         for ((media, size), (format, original, width, height)) in pictures.into_iter().zip([
             (MediaFormat::Emf, emf.as_slice(), 1_444_500, 1_089_000),
             (MediaFormat::Wmf, wmf.as_slice(), 90_000, 72_000),
