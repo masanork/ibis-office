@@ -334,6 +334,7 @@ pub(super) const DOC: &[MenuSpec] = &[
         LayoutItem::Sep,
         LayoutItem::Cmd("review.accessibility-check"),
         LayoutItem::CmdAs { id: "docx.inspect-document", label_key: "menu.as.doc.docx.inspect-document" },
+        LayoutItem::Cmd("docx.student-record.review"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: Some("file.language"), label_key: "file.language", items: &[
             LayoutItem::CmdOrPlanned { id: "docx.language.set-default", key: "menu.planned.doc.review.3" },
