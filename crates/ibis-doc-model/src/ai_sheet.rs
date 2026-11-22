@@ -45,21 +45,11 @@ pub struct CellSnapshot {
     pub formula: Option<String>,
 }
 
-/// Input value for `set_cells`.
-#[derive(Clone, Debug, PartialEq)]
-pub enum AiCellValue {
-    Empty,
-    Number(f64),
-    Text(String),
-    Bool(bool),
-    Formula(String),
-}
-
 /// Single cell edit requested by an AI tool.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiCellEdit {
     pub cell: String,
-    pub value: AiCellValue,
+    pub value: serde_json::Value,
 }
 
 /// Border preset requested by `set_format`.
@@ -242,6 +232,24 @@ pub fn read_sheet_range(
     Ok(out)
 }
 
+/// Convert an Assistant or MCP JSON value into a worksheet cell input.
+pub fn parse_cell_input(value: &serde_json::Value) -> Result<CellInput, &'static str> {
+    use serde_json::Value;
+
+    match value {
+        Value::Null => Ok(CellInput::Clear),
+        Value::Bool(value) => Ok(CellInput::Value(CellValue::Bool(*value))),
+        Value::Number(value) => value.as_f64()
+            .map(|number| CellInput::Value(CellValue::Number(number)))
+            .ok_or("number is out of range"),
+        Value::String(text) => match text.strip_prefix('=').map(str::trim) {
+            Some(formula) if !formula.is_empty() => Ok(CellInput::Formula(formula.to_owned())),
+            _ => Ok(CellInput::Value(CellValue::Text(text.clone()))),
+        },
+        _ => Err("expected a number, a string, a boolean or null"),
+    }
+}
+
 /// Convert a batch of [`AiCellEdit`]s into a [`Command`].
 pub fn build_set_cells_command(slide: SlideId, edits: Vec<AiCellEdit>) -> Result<Command, String> {
     if edits.is_empty() {
@@ -251,19 +259,8 @@ pub fn build_set_cells_command(slide: SlideId, edits: Vec<AiCellEdit>) -> Result
     for edit in edits {
         let (row, column) = parse_cell_ref(&edit.cell)
             .ok_or_else(|| format!("invalid cell reference '{}'", edit.cell))?;
-        let input = match edit.value {
-            AiCellValue::Empty => CellInput::Clear,
-            AiCellValue::Number(n) => CellInput::Value(CellValue::Number(n)),
-            AiCellValue::Text(s) => CellInput::Value(CellValue::Text(s)),
-            AiCellValue::Bool(b) => CellInput::Value(CellValue::Bool(b)),
-            AiCellValue::Formula(f) => {
-                let stripped = f.trim().strip_prefix('=').unwrap_or(f.trim()).to_string();
-                if stripped.is_empty() {
-                    return Err(format!("empty formula for cell '{}'", edit.cell));
-                }
-                CellInput::Formula(stripped)
-            }
-        };
+        let input = parse_cell_input(&edit.value)
+            .map_err(|error| format!("{}: {error}", edit.cell))?;
         cell_edits.push(CellEdit { row, column, input });
     }
     Ok(Command::Sheet(SheetCommand::SetCells {
@@ -732,6 +729,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_json_cell_inputs() {
+        use serde_json::json;
+
+        for (value, expected) in [
+            (json!(null), CellInput::Clear),
+            (json!(true), CellInput::Value(CellValue::Bool(true))),
+            (json!(2.5), CellInput::Value(CellValue::Number(2.5))),
+            (json!("  text  "), CellInput::Value(CellValue::Text("  text  ".into()))),
+            (json!("="), CellInput::Value(CellValue::Text("=".into()))),
+            (json!("=  A1*2  "), CellInput::Formula("A1*2".into())),
+        ] {
+            assert_eq!(parse_cell_input(&value), Ok(expected));
+        }
+        assert!(parse_cell_input(&json!({})).is_err());
+        assert!(parse_cell_input(&json!([])).is_err());
+    }
+
+    #[test]
     fn builds_set_cells_and_format_commands() {
         let slide = SlideId(1);
         let cmd = build_set_cells_command(
@@ -739,11 +754,11 @@ mod tests {
             vec![
                 AiCellEdit {
                     cell: "A1".to_string(),
-                    value: AiCellValue::Number(42.0),
+                    value: serde_json::json!(42.0),
                 },
                 AiCellEdit {
                     cell: "B1".to_string(),
-                    value: AiCellValue::Formula("=A1*2".to_string()),
+                    value: serde_json::json!("=A1*2"),
                 },
             ],
         )
