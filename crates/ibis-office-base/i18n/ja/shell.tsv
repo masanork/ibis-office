@@ -1596,3 +1596,7 @@ git.diff	差分
 git.diff-file-only	Gitの差分はファイル単位で表示できます。
 git.diff-too-large	Gitの差分が512 KiBを超えています。
 git.diff-failed	Gitの差分を取得できませんでした。変更一覧を更新して再試行してください。
+git.fetch	フェッチ
+git.fetch-complete	フェッチ完了
+git.fetch-failed	Gitのフェッチに失敗しました
+git.no-remotes	このリポジトリにはリモートが設定されていません。

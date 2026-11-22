@@ -1598,3 +1598,7 @@ git.diff	Diff
 git.diff-file-only	Git diff preview supports files only.
 git.diff-too-large	Git diff exceeds 512 KiB.
 git.diff-failed	Could not read the Git diff. Refresh the changes list and try again.
+git.fetch	Fetch
+git.fetch-complete	Fetch complete
+git.fetch-failed	Git fetch failed
+git.no-remotes	This repository has no configured remotes.

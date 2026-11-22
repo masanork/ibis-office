@@ -33,6 +33,7 @@ pub(super) struct CommitGraph {
     rows: Vec<Row>,
     limit: usize,
     more: bool,
+    fetched: bool,
 }
 
 impl CommitGraph {
@@ -87,38 +88,71 @@ fn read_graph(root: &Path, head: gix::ObjectId, limit: usize) -> Result<(Vec<Row
     Ok((rows, false))
 }
 
+fn fetch_remotes(root: &Path) -> Result<()> {
+    if gix::discover(root)?.remote_names().is_empty() {
+        return Err(text("git.no-remotes").to_string().into());
+    }
+    let args = [
+        "fetch",
+        "--all",
+        "--no-recurse-submodules",
+        "--no-prune",
+        "--no-prune-tags",
+    ];
+    git(root, &args.map(OsStr::new))?;
+    Ok(())
+}
+
 impl SlideEditor {
-    fn git_load_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn git_load_graph(&mut self, fetch: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(state) = self.git_workspace.as_mut().filter(|s| !s.busy) else {
             return;
         };
-        let limit = state.graph.limit + PAGE;
+        let limit = if fetch {
+            state.graph.fetched = false;
+            state.graph.limit.max(PAGE)
+        } else {
+            state.graph.limit + PAGE
+        };
         let root = state.worktree.clone().unwrap_or_else(|| state.repo.clone());
         let head = state.head;
         state.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result =
-                cx.background_executor()
-                    .spawn(async move {
-                        read_graph(&root, head, limit).map_err(|error| error.to_string())
-                    })
-                    .await;
+            let (result, fetch_error) = cx
+                .background_executor()
+                .spawn(async move {
+                    let fetch_error = if fetch {
+                        fetch_remotes(&root).err().map(|error| error.to_string())
+                    } else {
+                        None
+                    };
+                    let result = read_graph(&root, head, limit).map_err(|error| error.to_string());
+                    (result, fetch_error)
+                })
+                .await;
             let _ = this.update(cx, |editor, cx| {
                 let Some(state) = editor.git_workspace.as_mut() else {
                     return;
                 };
                 state.busy = false;
-                match result {
+                let graph_error = match result {
                     Ok((rows, more)) => {
                         state.graph.rows = rows;
                         state.graph.more = more;
                         state.graph.limit = limit;
+                        state.graph.fetched |= fetch && fetch_error.is_none();
+                        None
                     }
                     Err(error) => {
-                        state.graph.open = false;
-                        editor.show_alert(text("git.failed"), error.into(), cx);
+                        state.graph.open = state.graph.limit != 0;
+                        Some(error)
                     }
+                };
+                if let Some(error) = fetch_error {
+                    editor.show_alert(text("git.fetch-failed"), error.into(), cx);
+                } else if let Some(error) = graph_error {
+                    editor.show_alert(text("git.failed"), error.into(), cx);
                 }
                 cx.notify();
             });
@@ -184,7 +218,7 @@ impl SlideEditor {
                 if let Some(state) = this.git_workspace.as_mut().filter(|s| !s.busy) {
                     state.graph.open = !state.graph.open;
                     if state.graph.open && state.graph.limit == 0 {
-                        this.git_load_graph(window, cx);
+                        this.git_load_graph(false, window, cx);
                     }
                     cx.notify();
                 }
@@ -228,6 +262,7 @@ impl SlideEditor {
         let font = Theme::global(cx).mono_font_family.clone();
         let primary = theme.primary;
         let accent = theme.accent;
+        let muted = theme.muted_foreground;
         let mut body = div().id("git-graph").flex_1().min_h_0().overflow_y_scroll();
         for (index, row) in state.graph.rows.iter().enumerate() {
             let line = h_flex().h(px(22.)).px_2().min_w_0().child(
@@ -264,19 +299,42 @@ impl SlideEditor {
                 None => line.into_any_element(),
             });
         }
+        let toolbar = h_flex()
+            .px_2()
+            .pb_1()
+            .gap_2()
+            .child(
+                Button::new("git-fetch")
+                    .xsmall()
+                    .disabled(state.busy)
+                    .label(text("git.fetch"))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.git_load_graph(true, window, cx)),
+                    ),
+            )
+            .when(state.graph.fetched, |bar| {
+                bar.child(div().text_color(muted).child(text("git.fetch-complete")))
+            });
+        let body = body.when(state.graph.more, |body| {
+            body.child(
+                Button::new("git-graph-more")
+                    .xsmall()
+                    .disabled(state.busy)
+                    .label(text("git.older"))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.git_load_graph(false, window, cx)),
+                    ),
+            )
+        });
         Some(
-            body.when(state.graph.more, |body| {
-                body.child(
-                    Button::new("git-graph-more")
-                        .xsmall()
-                        .disabled(state.busy)
-                        .label(text("git.older"))
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.git_load_graph(window, cx)),
-                        ),
-                )
-            })
-            .into_any_element(),
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(toolbar)
+                .child(body)
+                .into_any_element(),
         )
     }
 }
