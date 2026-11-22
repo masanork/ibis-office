@@ -13,8 +13,21 @@ use image::ImageEncoder as _;
 
 use crate::{PdfViewerState, ViewerSource};
 
+/// How the text of each page is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExportOptions {
+    /// [`TextLayout::Physical`] keeps each character at its column (the cells of a table stay aligned) in a ```` ```text ````
+    /// block, the characters as the page has them; [`TextLayout::Reading`] writes Markdown lines.
+    pub layout: TextLayout,
+}
+
 /// None means the input is outside the fixed-layout Markdown export formats.
 pub fn export(bytes: &[u8]) -> Result<Option<String>> {
+    export_with(bytes, ExportOptions::default())
+}
+
+/// [`export`] with the page text written as `options` say.
+pub fn export_with(bytes: &[u8], options: ExportOptions) -> Result<Option<String>> {
     if !bytes.starts_with(b"%PDF-") && !ibis_ofd::is_ofd(bytes) && !ibis_xps::is_xps(bytes) {
         return Ok(None);
     }
@@ -22,7 +35,7 @@ pub fn export(bytes: &[u8]) -> Result<Option<String>> {
     if bytes.starts_with(b"%PDF-") {
         let mut container = ibis_pdf::PdfContainer::from_bytes(bytes.to_vec())?;
         ibis_pdf::interpret::visit_export_scenes(&mut container, |scene| {
-            write_page(&scene, scene.info.index + 1, &mut markdown)
+            write_page(&scene, scene.info.index + 1, options, &mut markdown)
         })?;
         return Ok(Some(markdown));
     }
@@ -34,21 +47,25 @@ pub fn export(bytes: &[u8]) -> Result<Option<String>> {
         let scene = viewer
             .page_scene(index)
             .map_err(|error| Error::new(format!("Page {}: {error}", index + 1)))?;
-        write_page(&scene, index + 1, &mut markdown)?;
+        write_page(&scene, index + 1, options, &mut markdown)?;
         // The exporter consumes each page once.
         viewer.scene_cache.remove(&index);
     }
     Ok(Some(markdown))
 }
 
-fn write_page(scene: &PageScene, number: usize, markdown: &mut String) -> Result<()> {
+fn write_page(scene: &PageScene, number: usize, options: ExportOptions, markdown: &mut String) -> Result<()> {
     if number > 1 {
         markdown.push_str("\\newpage\n\n");
     }
     let _ = writeln!(markdown, "<!-- fixed-layout-page: {number} -->\n");
-    let text = page_text(&scene.text_index, TextLayout::Reading);
+    let text = page_text(&scene.text_index, options.layout);
     if text.trim().is_empty() {
         let _ = writeln!(markdown, "<!-- fixed-layout-diagnostic: Page {number}: no extractable text -->\n");
+    } else if options.layout == TextLayout::Physical {
+        // The columns are spaces: a code block keeps them, and the characters, as they are.
+        let fence = "`".repeat(longest_backtick_run(&text).max(2) + 1);
+        let _ = write!(markdown, "{fence}text\n{text}{fence}\n\n");
     } else {
         // Keep the original lines visible without interpreting them as Markdown.
         for line in text.lines() {
@@ -86,6 +103,16 @@ fn write_page(scene: &PageScene, number: usize, markdown: &mut String) -> Result
         );
     }
     Ok(())
+}
+
+/// The longest run of backticks in `text` (a fence around it must be longer).
+fn longest_backtick_run(text: &str) -> usize {
+    let (mut longest, mut run) = (0, 0);
+    for ch in text.chars() {
+        run = if ch == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    longest
 }
 
 fn rect_attrs(rect: PdfRect) -> String {
@@ -325,7 +352,7 @@ mod tests {
             ],
         };
         let mut markdown = String::new();
-        write_page(&scene, 2, &mut markdown).unwrap();
+        write_page(&scene, 2, ExportOptions::default(), &mut markdown).unwrap();
         assert!(markdown.starts_with("\\newpage\n"));
         assert!(markdown.contains(r"\#"));
         let svg = markdown
@@ -351,5 +378,50 @@ mod tests {
             image::load_from_memory(&png).unwrap().to_rgba8().as_raw(),
             &[255, 0, 0, 255]
         );
+    }
+
+    fn text_scene(chars: Vec<CharBox>) -> PageScene {
+        let rect = PdfRect { x0: 0.0, y0: 0.0, x1: 200.0, y1: 100.0 };
+        PageScene {
+            info: PageInfo { index: 0, object_id: ibis_pdf::ObjectId::new(1, 0), media_box: rect, crop_box: rect, rotate: 0 },
+            text_index: PageTextIndex { chars },
+            display_list: Vec::new(),
+        }
+    }
+
+    fn row(chars: &mut Vec<CharBox>, text: &str, x: f32, top: f32) {
+        let mut x = x;
+        for ch in text.chars() {
+            let w = 10.0 * ibis_pdf::scene::estimated_advance_em(ch);
+            let op = chars.len();
+            chars.push(CharBox { ch, rect_pt: PdfRect { x0: x, y0: top, x1: x + w, y1: top + 10.0 }, vertical: false, stream_op_index: op });
+            x += w;
+        }
+    }
+
+    #[test]
+    fn the_physical_layout_writes_aligned_columns_in_a_text_block() {
+        let mut chars = Vec::new();
+        row(&mut chars, "ID", 0.0, 0.0);
+        row(&mut chars, "1.1.", 80.0, 0.0);
+        row(&mut chars, "0190001", 0.0, 12.0);
+        row(&mut chars, "住民`", 80.0, 12.0);
+        let mut markdown = String::new();
+        write_page(&text_scene(chars), 1, ExportOptions { layout: TextLayout::Physical }, &mut markdown).unwrap();
+        let block = markdown.split_once("```text\n").unwrap().1.split_once("\n```\n").unwrap().0;
+        let lines: Vec<&str> = block.lines().collect();
+        // No escapes, and the second column starts at the same column of both lines.
+        assert_eq!(lines[0].trim_start_matches("ID").trim_start().chars().next(), Some('1'));
+        assert_eq!(lines[0].find("1.1."), lines[1].find("住民`"));
+        assert!(!markdown.contains('\\'));
+    }
+
+    #[test]
+    fn a_text_block_fence_is_longer_than_any_backtick_run_in_it() {
+        let mut chars = Vec::new();
+        row(&mut chars, "a```b", 0.0, 0.0);
+        let mut markdown = String::new();
+        write_page(&text_scene(chars), 1, ExportOptions { layout: TextLayout::Physical }, &mut markdown).unwrap();
+        assert!(markdown.contains("````text\na```b\n````\n"));
     }
 }

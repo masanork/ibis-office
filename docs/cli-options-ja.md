@@ -257,6 +257,12 @@ ibisOffice --export md --out-dir ./out input.pdf
 
 PDF・XPS（OXPS を含む）・OFD の抽出可能な本文をページ順に書き出します。行の順序は文字の位置から推定します。ビューアで復号できた図形・画像は、ページ上の配置を持つ SVG として本文に添えます。画像だけのページは OCR を行いません。段落や表の意味構造、署名、原本と同じ組版の復元には別の処理が必要です。DOCX・PPTX の EMF/WMF は Markdown 内に元の画像データを保持します。一般のブラウザーでの EMF/WMF 表示は閲覧環境に依存します。
 
+表の列位置を保つには `--text-layout physical` を付けます。各ページの本文を ```` ```text ```` ブロックに入れ、文字を紙面上の位置に応じた桁に置きます（半角 1 桁・全角 2 桁、`pdftotext -layout` 相当）。Markdown のエスケープはしません。既定の `--text-layout reading` は、各行を語の間を空白 1 つで区切った Markdown として書き出します。
+
+```sh
+ibisOffice --export md --text-layout physical --out-dir ./out input.pdf
+```
+
 DOCX の浮動画像は、画像データと表示寸法に加え、位置の基準・オフセット・回り込みを Markdown の `docx-anchor` 属性に保持します。この属性を残して DOCX に戻すと浮動画像になります。属性なしの画像はインラインとして読み込みます。
 
 DOCX の画像のトリミングは `docx-crop` に左・上・右・下の順で 10 万分率を、回転と反転は `docx-transform` に角度（度の 60,000 分の 1）・左右反転・上下反転の順で保持します。
