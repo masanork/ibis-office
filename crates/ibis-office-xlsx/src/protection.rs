@@ -162,8 +162,8 @@ impl SlideEditor {
     /// Whether the selected cell's formula is hidden (数式を表示しない on a
     /// protected sheet).
     pub(crate) fn formula_hidden_here(&self) -> bool {
-        let (Some(_), Some((_, sheet)), Some((column, row))) = (self.sheet_protection(), self.current_sheet(), self.current_cell()) else { return false };
-        sheet.cell(row, column).is_some_and(|c| sheet.styles.get(c.style as usize).is_some_and(|s| s.formula_hidden))
+        let (Some((_, sheet)), Some((column, row))) = (self.current_sheet(), self.current_cell()) else { return false };
+        sheet.cell(row, column).is_some_and(|cell| sheet.formula_is_hidden(cell))
     }
 
     pub fn open_protect_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -217,9 +217,8 @@ pub fn read_sheet_range(
         if matches!(cell.value, CellValue::Empty) && cell.formula.is_none() && cell.text.is_empty() {
             continue;
         }
-        let formula = cell
-            .formula
-            .as_deref()
+        let formula = sheet
+            .visible_formula(cell)
             .map(|f| format!("={}", sheet.formula_shown(cell.row, cell.column, f)));
         out.push(CellSnapshot {
             cell: cell_name(cell.column, cell.row),
@@ -563,18 +562,16 @@ pub fn find_sheet_cells(
     let mut out = Vec::new();
     for cell in sheet.cells.iter() {
         let text_match = cell.text.to_ascii_lowercase().contains(&q);
+        let formula = sheet.visible_formula(cell);
         let formula_match = search_formulas
-            && cell
-                .formula
-                .as_deref()
-                .is_some_and(|f| f.to_ascii_lowercase().contains(&q));
+            && formula.is_some_and(|f| f.to_ascii_lowercase().contains(&q));
         if text_match || formula_match {
             out.push(CellSnapshot {
                 cell: cell_name(cell.row, cell.column),
                 row: cell.row,
                 column: cell.column,
                 text: cell.text.clone(),
-                formula: cell.formula.clone(),
+                formula: formula.map(str::to_owned),
             });
             if out.len() >= max_results {
                 break;
@@ -596,7 +593,7 @@ pub fn audit_sheet_errors(sheet: &Sheet, max_results: usize) -> Vec<CellSnapshot
                 row: cell.row,
                 column: cell.column,
                 text: cell.text.clone(),
-                formula: cell.formula.clone(),
+                formula: sheet.visible_formula(cell).map(str::to_owned),
             });
             if out.len() >= max_results {
                 break;
@@ -723,6 +720,19 @@ mod tests {
         assert_eq!(snap[0].formula, None);
         assert_eq!(snap[1].cell, "B1");
         assert_eq!(snap[1].formula.as_deref(), Some("=A1*2"));
+
+        sheet.styles.push(crate::sheet::CellStyle { formula_hidden: true, ..Default::default() });
+        assert_eq!(read_sheet_range(&sheet, range, 100).unwrap()[1].formula.as_deref(), Some("=A1*2"));
+        sheet.protection = Some(crate::sheet::SheetProtection::default());
+        let hidden = read_sheet_range(&sheet, range, 100).unwrap();
+        assert_eq!(hidden[1].text, "20");
+        assert_eq!(hidden[1].formula, None);
+        assert!(find_sheet_cells(&sheet, "A1*2", true, 10).is_empty());
+        assert_eq!(find_sheet_cells(&sheet, "20", false, 10)[0].formula, None);
+        sheet.cells[1].text = "#REF!".into();
+        assert_eq!(audit_sheet_errors(&sheet, 10)[0].formula, None);
+        sheet.protection = None;
+        assert_eq!(find_sheet_cells(&sheet, "A1*2", true, 10)[0].formula.as_deref(), Some("A1*2"));
 
         let err = read_sheet_range(&sheet, parse_cell_range("A1:Z100").unwrap(), 200).unwrap_err();
         assert!(err.contains("exceeding limit"));

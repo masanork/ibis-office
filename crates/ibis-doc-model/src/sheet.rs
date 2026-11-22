@@ -2106,6 +2106,21 @@ impl Sheet {
         (id < Self::FRESH_LINE_ID && (id as usize) > ids.len()).then(|| id - 1)
     }
 
+    /// Whether worksheet protection hides this cell's formula in the formula bar.
+    pub fn formula_is_hidden(&self, cell: &SheetCell) -> bool {
+        self.protection.is_some()
+            && self.styles.get(cell.style as usize).is_some_and(|style| style.formula_hidden)
+    }
+
+    /// The stored formula, if the worksheet permits displaying it.
+    pub fn visible_formula<'a>(&self, cell: &'a SheetCell) -> Option<&'a str> {
+        if self.formula_is_hidden(cell) {
+            None
+        } else {
+            cell.formula.as_deref()
+        }
+    }
+
     /// The formula of the cell at (`row`, `column`) as Excel's bar and an edit
     /// show it: a this-row reference of the table the cell is in is `[@Qty]`.
     pub fn formula_shown(&self, row: u32, column: u32, formula: &str) -> String {

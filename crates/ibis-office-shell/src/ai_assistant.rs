@@ -205,14 +205,14 @@ fn workbook_preview(turn: &WorkbookTurn, edits: &[String]) -> String {
     let mut lines = edits.to_vec();
     let mut cell_changes = 0;
     for slide in &turn.draft.presentation().slides {
-        let Some(after) = sheet_of_slide(slide) else { continue };
-        let before = turn.base.slide(slide.id).and_then(sheet_of_slide);
-        if before.is_some_and(|before| before.cells.content_id() == after.cells.content_id()) {
+        let Some(after_sheet) = sheet_of_slide(slide) else { continue };
+        let before_sheet = turn.base.slide(slide.id).and_then(sheet_of_slide);
+        if before_sheet.is_some_and(|before| before.cells.content_id() == after_sheet.cells.content_id()) {
             continue;
         }
         let name = slide.name.as_deref().unwrap_or("");
-        let mut old = before.into_iter().flat_map(|sheet| sheet.cells.iter()).peekable();
-        let mut new = after.cells.iter().peekable();
+        let mut old = before_sheet.into_iter().flat_map(|sheet| sheet.cells.iter()).peekable();
+        let mut new = after_sheet.cells.iter().peekable();
         while old.peek().is_some() || new.peek().is_some() {
             let old_address = old.peek().map(|cell| (cell.row, cell.column));
             let new_address = new.peek().map(|cell| (cell.row, cell.column));
@@ -223,29 +223,30 @@ fn workbook_preview(turn: &WorkbookTurn, edits: &[String]) -> String {
                 (Some(a), None) => (a, old.next(), None),
                 (None, None) => break,
             };
-            let before_display = before.filter(|cell| !cell.text.is_empty() || cell.formula.is_some());
-            let after_display = after.filter(|cell| !cell.text.is_empty() || cell.formula.is_some());
-            if before_display.map(|cell| (&cell.text, &cell.formula))
-                == after_display.map(|cell| (&cell.text, &cell.formula))
-            {
+            let before = before.map_or(("", None), |cell| {
+                (cell.text.as_str(), before_sheet.and_then(|sheet| sheet.visible_formula(cell)))
+            });
+            let after = after.map_or(("", None), |cell| {
+                (cell.text.as_str(), after_sheet.visible_formula(cell))
+            });
+            if before == after {
                 continue;
             }
             if cell_changes == MAX_CELL_CHANGES {
                 lines.push("ほかのセルにも変更があります。".to_string());
                 return lines.join("\n");
             }
-            let describe = |cell: Option<&ibis_doc_model::sheet::SheetCell>| {
-                let Some(cell) = cell else { return "（空欄）".to_string() };
+            let describe = |(text, formula): (&str, Option<&str>)| {
                 let excerpt = |text: &str| {
                     let mut chars = text.chars();
                     let mut result: String = chars.by_ref().take(80).collect();
                     if chars.next().is_some() { result.push('…'); }
                     result
                 };
-                match &cell.formula {
-                    Some(formula) => format!("={} [{}]", excerpt(formula), excerpt(&cell.text)),
-                    None if cell.text.is_empty() => "（空欄）".to_string(),
-                    None => excerpt(&cell.text),
+                match formula {
+                    Some(formula) => format!("={} [{}]", excerpt(formula), excerpt(text)),
+                    None if text.is_empty() => "（空欄）".to_string(),
+                    None => excerpt(text),
                 }
             };
             let (row, column) = address;

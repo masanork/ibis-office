@@ -21,7 +21,7 @@ pub(crate) fn tools() -> Vec<Tool> {
         Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
         Tool {
             name: "xlsx_get_cells",
-            description: "The cells of a range, row by row: value (calculated), formula, or text (as shown). Paged by rows.",
+            description: "The cells of a range, row by row: value (calculated), formula, or text (as shown). Formula mode returns the calculated value when sheet protection hides the formula. Paged by rows.",
             access: Access::Read,
             returns_content: true,
             schema: || {
@@ -137,7 +137,8 @@ fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             continue;
         }
         rows[row - offset][(c - range.first_column) as usize] = match kind {
-            "formula" => cell.formula.as_ref().map_or_else(|| value_json(&cell.value), |f| Value::String(format!("={f}"))),
+            "formula" => sheet.visible_formula(cell)
+                .map_or_else(|| value_json(&cell.value), |f| Value::String(format!("={f}"))),
             "text" => Value::String(cell.text.clone()),
             "format" => {
                 let style = sheet.styles.get(cell.style as usize).cloned().unwrap_or_default();
