@@ -148,6 +148,25 @@ fn same_form(definition: &Value, data: &Value) -> bool {
         && *form == data["form"]
 }
 
+fn collect_values<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    prefix: &str,
+    values: &mut BTreeMap<String, &'a Value>,
+) -> Result<(), Error> {
+    for (key, value) in object {
+        let id = format!("{prefix}{key}");
+        if let Some(children) = value.as_object() {
+            if children.is_empty() {
+                return Err(Error::new(format!("Empty field group: {id}")));
+            }
+            collect_values(children, &format!("{id}."), values)?;
+        } else if values.insert(id.clone(), value).is_some() {
+            return Err(Error::new(format!("Duplicate record field: {id}")));
+        }
+    }
+    Ok(())
+}
+
 /// Merge a text form definition and versioned record into DOCX.
 pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, Error> {
     if !same_form(definition, data) {
@@ -167,9 +186,11 @@ pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, E
     let declared = definition["fields"]
         .as_object()
         .ok_or_else(|| Error::new("Missing field definitions"))?;
-    let values = data["data"]
+    let object = data["data"]
         .as_object()
         .ok_or_else(|| Error::new("Missing record data"))?;
+    let mut values = BTreeMap::new();
+    collect_values(object, "", &mut values)?;
     let ids: BTreeSet<&str> = fields.iter().map(|field| field.id).collect();
     if ids != declared.keys().map(String::as_str).collect()
         || ids != values.keys().map(String::as_str).collect()
@@ -188,8 +209,13 @@ pub fn fill(bytes: &[u8], definition: &Value, data: &Value) -> Result<Vec<u8>, E
     {
         let replacement = declared[id]
             .as_str()
-            .zip(values[id].as_str())
-            .and_then(|(kind, value)| display(kind, value))
+            .and_then(|kind| {
+                if kind == "nonnegative-integer" {
+                    values[id].as_u64().map(|value| value.to_string())
+                } else {
+                    display(kind, values[id].as_str()?)
+                }
+            })
             .filter(|s| {
                 s.chars().all(|c| {
                     matches!(c, '\t' | '\n') || c >= ' ' && !matches!(c, '\u{fffe}' | '\u{ffff}')

@@ -1,0 +1,562 @@
+{
+  "form": {
+    "id": "elementary-school-record-full",
+    "version": 1
+  },
+  "data": {
+    "grades": {
+      "1": {
+        "class": 1,
+        "rollNumber": 12,
+        "year": 2025,
+        "principal": "青葉 司",
+        "teacher": "春野 芽衣",
+        "subjects": {
+          "japanese": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "math": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "life": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "music": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "art": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "physical": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          }
+        },
+        "ethics": "友達の話をよく聞き、相手の気持ちを考えて発言した。",
+        "remarks": "通学の約束をよく覚え、当番の仕事にも進んで取り組んだ。",
+        "attendance": {
+          "schoolDays": 200,
+          "excused": 0,
+          "required": 200,
+          "absent": 1,
+          "present": 199,
+          "note": ""
+        },
+        "activities": {
+          "class": "○",
+          "event": "○"
+        },
+        "behavior": {
+          "habits": "○",
+          "health": "○",
+          "independence": "",
+          "responsibility": "○",
+          "ingenuity": "○",
+          "cooperation": "",
+          "careForNature": "○",
+          "service": "○",
+          "fairness": "",
+          "citizenship": "○"
+        }
+      },
+      "2": {
+        "class": 1,
+        "rollNumber": 12,
+        "year": 2026,
+        "principal": "青葉 司",
+        "teacher": "春野 芽衣",
+        "subjects": {
+          "japanese": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "math": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "life": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "music": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "art": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "physical": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          }
+        },
+        "ethics": "身近なきまりを守る理由を、自分の経験に結びつけて考えた。",
+        "remarks": "図書の紹介では、好きな場面を選び、その理由を友達に伝えた。",
+        "attendance": {
+          "schoolDays": 202,
+          "excused": 2,
+          "required": 200,
+          "absent": 1,
+          "present": 199,
+          "note": ""
+        },
+        "activities": {
+          "class": "○",
+          "event": "○"
+        },
+        "behavior": {
+          "habits": "○",
+          "health": "",
+          "independence": "○",
+          "responsibility": "○",
+          "ingenuity": "",
+          "cooperation": "○",
+          "careForNature": "○",
+          "service": "",
+          "fairness": "○",
+          "citizenship": "○"
+        }
+      },
+      "3": {
+        "class": 2,
+        "rollNumber": 12,
+        "year": 2027,
+        "principal": "青葉 司",
+        "teacher": "夏丘 渚",
+        "subjects": {
+          "japanese": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "social": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "math": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "science": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "music": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "art": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "physical": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          }
+        },
+        "ethics": "自然を守るためにできることを、友達と意見を出し合って考えた。",
+        "remarks": "観察したことを表に記録し、前の日の結果との違いを確かめた。",
+        "attendance": {
+          "schoolDays": 203,
+          "excused": 0,
+          "required": 203,
+          "absent": 2,
+          "present": 201,
+          "note": ""
+        },
+        "foreignActivity": {
+          "knowledge": "身近な物の言い方に親しんだ。",
+          "thinking": "好きな物を身振りを交えて伝えた。",
+          "engagement": "相手の発話を聞き、進んで応じた。"
+        },
+        "integratedStudy": {
+          "activity": "地域の公園を調べる",
+          "criterion": "課題の設定",
+          "evaluation": "遊具と利用者の動線を観察し、気付きを地図にまとめた。"
+        },
+        "activities": {
+          "class": "○",
+          "event": "○"
+        },
+        "behavior": {
+          "habits": "",
+          "health": "○",
+          "independence": "○",
+          "responsibility": "",
+          "ingenuity": "○",
+          "cooperation": "○",
+          "careForNature": "",
+          "service": "○",
+          "fairness": "○",
+          "citizenship": ""
+        }
+      },
+      "4": {
+        "class": 2,
+        "rollNumber": 12,
+        "year": 2028,
+        "principal": "朝霧 丘",
+        "teacher": "夏丘 渚",
+        "subjects": {
+          "japanese": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "social": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "math": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "science": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "music": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "art": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "physical": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          }
+        },
+        "ethics": "立場が違うと感じ方も変わることに気付き、意見を聞き直した。",
+        "remarks": "係の活動では、手順を短い言葉で書き出し、学級に共有した。",
+        "attendance": {
+          "schoolDays": 201,
+          "excused": 1,
+          "required": 200,
+          "absent": 0,
+          "present": 200,
+          "note": ""
+        },
+        "foreignActivity": {
+          "knowledge": "時刻や曜日の表現を聞き取った。",
+          "thinking": "一日の過ごし方を短く紹介した。",
+          "engagement": "伝わるよう言い直しを工夫した。"
+        },
+        "integratedStudy": {
+          "activity": "学校の水の使い方を調べる",
+          "criterion": "情報の収集",
+          "evaluation": "使用場所を記録し、節水の工夫を提案した。"
+        },
+        "activities": {
+          "class": "○",
+          "council": "○",
+          "club": "○",
+          "event": "○"
+        },
+        "behavior": {
+          "habits": "○",
+          "health": "○",
+          "independence": "",
+          "responsibility": "○",
+          "ingenuity": "○",
+          "cooperation": "",
+          "careForNature": "○",
+          "service": "○",
+          "fairness": "",
+          "citizenship": "○"
+        }
+      },
+      "5": {
+        "class": 1,
+        "rollNumber": 12,
+        "year": 2029,
+        "principal": "朝霧 丘",
+        "teacher": "秋庭 実",
+        "subjects": {
+          "japanese": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "social": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "math": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "science": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "music": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "art": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "home": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "physical": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "foreign": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          }
+        },
+        "ethics": "限られた時間で全員が参加できるよう、役割の決め方を工夫した。",
+        "remarks": "発表後の質問を持ち帰り、資料を見直して説明を補った。",
+        "attendance": {
+          "schoolDays": 202,
+          "excused": 0,
+          "required": 202,
+          "absent": 1,
+          "present": 201,
+          "note": ""
+        },
+        "integratedStudy": {
+          "activity": "地域の防災マップをつくる",
+          "criterion": "整理・分析",
+          "evaluation": "資料を比べて避難経路の違いを説明した。"
+        },
+        "activities": {
+          "class": "○",
+          "council": "○",
+          "club": "○",
+          "event": "○"
+        },
+        "behavior": {
+          "habits": "○",
+          "health": "",
+          "independence": "○",
+          "responsibility": "○",
+          "ingenuity": "",
+          "cooperation": "○",
+          "careForNature": "○",
+          "service": "",
+          "fairness": "○",
+          "citizenship": "○"
+        }
+      },
+      "6": {
+        "class": 1,
+        "rollNumber": 12,
+        "year": 2030,
+        "principal": "朝霧 丘",
+        "teacher": "冬木 澪",
+        "subjects": {
+          "japanese": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "social": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "math": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "science": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "music": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "art": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          },
+          "home": {
+            "knowledge": "B",
+            "thinking": "B",
+            "engagement": "A",
+            "grade": 2
+          },
+          "physical": {
+            "knowledge": "B",
+            "thinking": "A",
+            "engagement": "B",
+            "grade": 2
+          },
+          "foreign": {
+            "knowledge": "A",
+            "thinking": "B",
+            "engagement": "B",
+            "grade": 3
+          }
+        },
+        "ethics": "自分と異なる考えを受け止め、互いが納得できる案を提案した。",
+        "remarks": "班の意見を整理して提案をまとめた。進学後も調べたことを言葉にする経験を重ねたい。",
+        "attendance": {
+          "schoolDays": 200,
+          "excused": 0,
+          "required": 200,
+          "absent": 0,
+          "present": 200,
+          "note": ""
+        },
+        "integratedStudy": {
+          "activity": "地域の魅力を伝える",
+          "criterion": "まとめ・表現",
+          "evaluation": "聞き取った情報を根拠に、見学案内を作成した。"
+        },
+        "activities": {
+          "class": "○",
+          "council": "○",
+          "club": "○",
+          "event": "○"
+        },
+        "behavior": {
+          "habits": "",
+          "health": "○",
+          "independence": "○",
+          "responsibility": "",
+          "ingenuity": "○",
+          "cooperation": "○",
+          "careForNature": "",
+          "service": "○",
+          "fairness": "○",
+          "citizenship": ""
+        }
+      }
+    },
+    "pupil": {
+      "kana": "もみじ あおい",
+      "name": "紅葉 葵",
+      "sex": "女",
+      "address": "架空市ひなた町１丁目",
+      "birthDate": "2019-04-02"
+    },
+    "guardian": {
+      "kana": "もみじ かえで",
+      "name": "紅葉 楓",
+      "address": "架空市ひなた町１丁目"
+    },
+    "enrollment": {
+      "before": "架空市ひなたこども園 修了",
+      "admission": "2025年4月7日 第1学年入学",
+      "transferIn": "該当なし",
+      "transferOut": "該当なし",
+      "graduation": "2031年3月20日"
+    },
+    "nextSchool": {
+      "name": "架空市立そよかぜ中学校",
+      "address": "架空市ひなた町１丁目"
+    },
+    "school": {
+      "name": "架空市立ひなた小学校",
+      "address": "架空市ひなた町２丁目",
+      "branch": "分校なし"
+    },
+    "activities": {
+      "class": {
+        "criterion": "話合いへの参加"
+      },
+      "council": {
+        "criterion": "協力して役割を果たす"
+      },
+      "club": {
+        "criterion": "計画や活動への参加"
+      },
+      "event": {
+        "criterion": "分担した役割への取組"
+      }
+    }
+  }
+}
