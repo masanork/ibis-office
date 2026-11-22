@@ -526,7 +526,9 @@ fn delete_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError>
     if sheets.len() <= 1 {
         return Err(ToolError::new("unsupported_operation", "the last sheet cannot be deleted"));
     }
-    sheet_edit(service, id, vec![SheetCommand::DeleteSheet { sheet }], json!({ "deleted": name }))
+    let result = json!({ "deleted": name });
+    execute(open, vec![Command::Sheet(SheetCommand::DeleteSheet { sheet })])?;
+    Ok(edited(id, open, result, Vec::new()))
 }
 
 fn rename_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
