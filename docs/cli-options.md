@@ -87,6 +87,19 @@ ibisOffice --export pdf presentation.pptx
 ibisOffice --export png --out-dir dist/ --width 2560 --range 1-3 document.docx
 ```
 
+### Compare SBOMs and vulnerability scans (`sbom-review`)
+
+```bash
+ibisOffice --export sbom-review \
+  --old-sbom old.cdx.json --new-sbom new.cdx.json \
+  --old-scan old.osv.json --new-scan new.osv.json \
+  --out-file remediation.md
+```
+
+Supply CycloneDX JSON and OSV-Scanner `--format json` output for each release. The Markdown includes old and new package versions from each scan and SBOM, advisory links, and the SHA-256 of each input. Omit `--out-file` to write to stdout. Each input may be up to 32 MiB.
+
+Findings are compared by package identity and exact OSV ID. SBOM matching uses Package URLs for crates.io, npm, PyPI and Go. When a detection disappears and the new SBOM lists a single package version matching a `fixed` event in the old scan's advisory, the report shows both observations. Use scans collected under comparable conditions and verify scan coverage and deployment separately.
+
 ---
 
 ## Print & Export Options
