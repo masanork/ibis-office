@@ -64,6 +64,10 @@ For `xlsx_create_chart`, give the source `sheet` and the placement `destination_
 
 `sqlite_query` accepts one `SELECT` or `WITH … SELECT` and optional positional `params`. The result includes SQL, parameters, column names, rows and a `truncated` flag. The preview defaults to 50 rows and allows up to 1,000, subject to the response size limit. Queries have a three-second execution budget.
 
+To query CSV, Parquet or selected SQLite tables together, pass `datasets` to `sqlite_query` or `sqlite_query_to_table`. Each entry supplies a `source` file path and a SQL table `alias`. An SQLite entry also supplies its original `table` name. Use these aliases in SQL and omit `path`. For example, register a SQLite table as `facts` and a CSV as `labels`, then use `SELECT * FROM facts JOIN labels USING (code)`. Use `SELECT * FROM labels LIMIT 0` to discover CSV headers. In the desktop assistant, select the files together and use the file numbers shown to the assistant as `source`.
+
+CSV uses a comma delimiter, a header row, and text fields, so leading zeros and empty strings are preserved. Parquet and SQLite reads preserve NULL. Sources that exceed the readers' exact numeric range are rejected. Up to eight dataset entries and 100,000 input cells total can be loaded. Every query loads its selected tables into a fresh in-memory database.
+
 Use the same SQL and parameters with `sqlite_query_to_table`, providing a workbook `document_id`, `destination_sheet` and single-cell `anchor`. It creates a named Excel table only when the complete result fits the export budget (10,000 rows, 100,000 cells and 4 MiB). Alias duplicate or blank column headings in SQL. Large integers can be cast to text to retain their digits. Choose a blank destination.
 
 Pass the returned table name to `xlsx_create_pivot` with its source `sheet`, or supply a source `range` with headers. Provide a `destination_sheet`, `anchor`, optional `rows` and `columns` arrays of header names, and `values` entries such as `{"field":"operation_id","aggregate":"count"}`. Use a nonblank ID to count records. The desktop assistant stages both workbook edits for review. A table is a snapshot of the SQL result.

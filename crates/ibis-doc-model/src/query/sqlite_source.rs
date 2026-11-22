@@ -233,7 +233,7 @@ pub fn sqlite_count(
         }
         None => format!("SELECT COUNT(*) FROM main.{table}{where_clause}"),
     };
-    let mut result = execute_query(path, &connection, &sql, parameters, limit, 256 * 1024)?;
+    let mut result = execute_query(Some(path), &connection, &sql, parameters, limit, 256 * 1024)?;
     if group_by.is_none() {
         let count = result
             .rows
@@ -267,6 +267,15 @@ pub fn sqlite_count(
 }
 
 pub fn read_sqlite_table(path: &Path, table: &str) -> Result<QTable, String> {
+    read_sqlite_table_bounded(path, table, MAX_CELLS, MAX_TEXT_BYTES)
+}
+
+pub fn read_sqlite_table_bounded(
+    path: &Path,
+    table: &str,
+    max_cells: usize,
+    max_text: usize,
+) -> Result<QTable, String> {
     let (_database, connection) = open(path)?;
     let identifier = checked_table(&connection, table)?;
     let mut stmt = connection
@@ -287,13 +296,13 @@ pub fn read_sqlite_table(path: &Path, table: &str) -> Result<QTable, String> {
         rows: Vec::new(),
     };
     let mut types = vec![None; width];
-    let mut text_budget = MAX_TEXT_BYTES;
+    let mut text_budget = max_text;
     while let Some(row) = stmt
         .run_one_step_blocking(|| Ok(()), || Ok(()))
         .map_err(|error| error.to_string())?
     {
         let height = result.rows.len() + 1;
-        if height > MAX_ROWS || height.saturating_mul(width) > MAX_CELLS {
+        if height > MAX_ROWS || height.saturating_mul(width) > max_cells {
             return Err("SQLite table exceeds the query editor's table size limit".into());
         }
         let mut values = Vec::with_capacity(width);
@@ -349,7 +358,7 @@ fn cell(
             }
             *budget = budget
                 .checked_sub(text.len())
-                .ok_or("SQLite text exceeds the 128 MiB limit")?;
+                .ok_or("SQLite text exceeds the import limit")?;
             (CellValue::Text(text.to_owned()), QType::Text)
         }
         ValueRef::Blob(_) => {
@@ -373,6 +382,23 @@ pub fn sqlite_query(
     max_rows: usize,
     max_bytes: usize,
 ) -> Result<SqliteRows, String> {
+    validate_select(sql)?;
+    let (_database, connection) = open(path)?;
+    let parameters = params
+        .iter()
+        .map(|value| value.as_ref().map_or(Value::Null, SqliteScalar::to_sql))
+        .collect();
+    execute_query(
+        Some(path),
+        &connection,
+        sql,
+        parameters,
+        max_rows,
+        max_bytes,
+    )
+}
+
+fn validate_select(sql: &str) -> Result<(), String> {
     use turso_parser::{
         ast::{Cmd, Stmt},
         parser::Parser,
@@ -391,16 +417,80 @@ pub fn sqlite_query(
     {
         return Err("Supply a single read-only SELECT or WITH … SELECT query".into());
     }
-    let (_database, connection) = open(path)?;
+    Ok(())
+}
+
+/// Query bounded tabular snapshots without writing any source file.
+pub fn sqlite_query_datasets(
+    tables: &[(String, QTable)],
+    sql: &str,
+    params: &[Option<SqliteScalar<'_>>],
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<SqliteRows, String> {
+    validate_select(sql)?;
+    let database = Database::open_file(
+        Arc::new(turso_core::MemoryIO::new()),
+        ":memory:",
+        Arc::new(SqliteDialect),
+    )
+    .map_err(|error| error.to_string())?;
+    let connection = database.connect().map_err(|error| error.to_string())?;
+    let execute = |sql: &str| {
+        connection
+            .prepare(sql)
+            .and_then(|mut stmt| stmt.run_ignore_rows())
+            .map_err(|error| error.to_string())
+    };
+    execute("BEGIN")?;
+    for (name, table) in tables {
+        let name = sql_identifier(name);
+        let columns = table
+            .columns
+            .iter()
+            .map(|column| sql_identifier(&column.name))
+            .collect::<Vec<_>>();
+        execute(&format!("CREATE TABLE {name} ({})", columns.join(", ")))?;
+        let placeholders = vec!["?"; columns.len()].join(", ");
+        let mut stmt = connection
+            .prepare(format!("INSERT INTO {name} VALUES ({placeholders})"))
+            .map_err(|error| error.to_string())?;
+        for row in &table.rows {
+            for (index, value) in row.iter().enumerate() {
+                let value = match value {
+                    CellValue::Empty => Value::Null,
+                    CellValue::Text(text) => Value::from_text(text.clone()),
+                    CellValue::Number(value)
+                        if matches!(table.columns[index].ty, QType::Whole | QType::Int32)
+                            && value.is_finite()
+                            && value.fract() == 0.0
+                            && value.abs() < (1u64 << 53) as f64 =>
+                    {
+                        Value::Numeric(Numeric::Integer(*value as i64))
+                    }
+                    CellValue::Number(value) if value.is_finite() => Value::from_f64(*value),
+                    CellValue::Bool(value) => Value::Numeric(Numeric::Integer(i64::from(*value))),
+                    _ => return Err("Unsupported dataset value".into()),
+                };
+                stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value)
+                    .map_err(|error| error.to_string())?;
+            }
+            stmt.run_ignore_rows()
+                .and_then(|_| stmt.reset())
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    execute("COMMIT")?;
+    connection.set_query_only(true);
     let parameters = params
         .iter()
         .map(|value| value.as_ref().map_or(Value::Null, SqliteScalar::to_sql))
         .collect();
-    execute_query(path, &connection, sql, parameters, max_rows, max_bytes)
+    execute_query(None, &connection, sql, parameters, max_rows, max_bytes)
 }
 
 fn execute_query(
-    path: &Path,
+    path: Option<&Path>,
     connection: &Arc<Connection>,
     sql: &str,
     parameters: Vec<Value>,
@@ -494,7 +584,9 @@ fn execute_query(
         remaining -= size;
         result.rows.push(values);
     }
-    check_sidecars(path)?;
+    if let Some(path) = path {
+        check_sidecars(path)?;
+    }
     Ok(result)
 }
 

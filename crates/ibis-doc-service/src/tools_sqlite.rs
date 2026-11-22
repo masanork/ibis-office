@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
-    SqlitePredicate, SqliteRows, SqliteScalar, sqlite_columns, sqlite_count, sqlite_query,
+    QColumn, QTable, QType, SqlitePredicate, SqliteRows, SqliteScalar, read_parquet_bounded,
+    read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_query, sqlite_query_datasets,
     sqlite_tables,
 };
 use serde_json::{Value, json};
@@ -14,6 +15,7 @@ use crate::catalog::{Access, Tool, document_id, integer, object, string};
 use crate::service::{Args, Limits, Service};
 use crate::{ToolError, paths};
 
+pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "sqlite", "sqlite3", "db"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
@@ -46,7 +48,7 @@ const TOOLS: &[Tool] = &[
                 "limit",
                 integer("Maximum preview rows (default 50, maximum 1000)."),
             ));
-            object(&props, &[PATH, "sql"])
+            object(&props, &["sql"])
         },
         run: query,
     },
@@ -64,7 +66,7 @@ const TOOLS: &[Tool] = &[
             ]);
             object(
                 &props,
-                &[PATH, "sql", "document_id", "destination_sheet", "anchor"],
+                &["sql", "document_id", "destination_sheet", "anchor"],
             )
         },
         run: query_to_table,
@@ -115,12 +117,16 @@ pub fn sqlite_tools() -> &'static [Tool] {
 }
 
 /// Run against the file selected by the desktop user. A model-supplied path cannot select a source.
-pub fn run_selected_sqlite_tool(
-    path: &Path,
+pub fn run_selected_sqlite_tool(path: &Path, name: &str, args: Value) -> Result<Value, ToolError> {
+    run_selected_datasets_tool(std::slice::from_ref(&path.to_path_buf()), name, args)
+}
+
+pub fn run_selected_datasets_tool(
+    paths: &[PathBuf],
     name: &str,
     mut args: Value,
 ) -> Result<Value, ToolError> {
-    let mut service = selected_source(path, &mut args)?;
+    let mut service = selected_sources(paths, &mut args)?;
     let tool = TOOLS
         .iter()
         .find(|tool| tool.name == name && tool.access == Access::Read)
@@ -130,27 +136,53 @@ pub fn run_selected_sqlite_tool(
     (tool.run)(&mut service, &args)
 }
 
-fn selected_source(path: &Path, args: &mut Value) -> Result<Service, ToolError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| ToolError::invalid("SQLite file has no parent directory"))?;
-    let path = path
-        .to_str()
-        .ok_or_else(|| ToolError::invalid("SQLite path is not valid UTF-8"))?;
+fn selected_sources(paths: &[PathBuf], args: &mut Value) -> Result<Service, ToolError> {
     let object = args
         .as_object_mut()
         .ok_or_else(|| ToolError::invalid("the arguments are not an object"))?;
     if object.contains_key(PATH) {
         return Err(ToolError::invalid(
-            "the SQLite database is selected in the assistant panel",
+            "files are selected in the assistant panel",
         ));
     }
-    object.insert(PATH.into(), json!(path));
-    Ok(Service::new(
-        &[parent.to_path_buf()],
-        true,
-        Limits::default(),
-    ))
+    if let Some(datasets) = object.get_mut("datasets") {
+        let entries = datasets
+            .as_array_mut()
+            .ok_or_else(|| ToolError::invalid("datasets must be an array"))?;
+        for entry in entries {
+            let source = entry
+                .str_arg("source")?
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| paths.get(index))
+                .ok_or_else(|| ToolError::invalid("source must be a selected file number"))?;
+            entry["source"] = json!(
+                source
+                    .to_str()
+                    .ok_or_else(|| ToolError::invalid("path is not valid UTF-8"))?
+            );
+        }
+    } else if let Some(path) = paths.iter().find(|path| is_sqlite(path)) {
+        object.insert(
+            PATH.into(),
+            json!(
+                path.to_str()
+                    .ok_or_else(|| ToolError::invalid("path is not valid UTF-8"))?
+            ),
+        );
+    }
+    let directories = paths
+        .iter()
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect::<Vec<_>>();
+    Ok(Service::new(&directories, true, Limits::default()))
+}
+
+pub fn is_sqlite(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
 fn source_path() -> (&'static str, Value) {
@@ -282,6 +314,18 @@ fn query_properties() -> Vec<(&'static str, Value)> {
             string("One SQLite SELECT or WITH query. Use positional ? parameters."),
         ),
         (
+            "datasets",
+            json!({
+                "type":"array","minItems":1,"maxItems":8,
+                "description":"Use an in-memory database containing only these CSV, Parquet and/or SQLite tables.",
+                "items":object(&[
+                    ("source", string("Path to a CSV, Parquet or SQLite file in an allowed folder.")),
+                    ("alias", string("SQL table name to register for this dataset.")),
+                    ("table", string("Source table name, required for SQLite files.")),
+                ], &["source","alias"]),
+            }),
+        ),
+        (
             "params",
             json!({"type":"array","maxItems":100,"items":{"type":["string","number","null"]}}),
         ),
@@ -313,7 +357,18 @@ fn run_query(
             ));
         }
     };
-    sqlite_query(&database(service, args)?, sql, &params, max_rows, max_bytes).map_err(sqlite_error)
+    if let Some(specs) = args.get("datasets") {
+        if args.opt_str(PATH)?.is_some() {
+            return Err(ToolError::invalid(
+                "use path for a SQLite database or datasets for registered tables",
+            ));
+        }
+        let tables = load_datasets(service, specs)?;
+        sqlite_query_datasets(&tables, sql, &params, max_rows, max_bytes).map_err(sqlite_error)
+    } else {
+        sqlite_query(&database(service, args)?, sql, &params, max_rows, max_bytes)
+            .map_err(sqlite_error)
+    }
 }
 
 fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -365,12 +420,109 @@ impl SqliteTableExport {
 
 pub fn prepare_selected_sqlite_export(
     path: &Path,
+    args: Value,
+) -> Result<SqliteTableExport, ToolError> {
+    prepare_selected_datasets_export(std::slice::from_ref(&path.to_path_buf()), args)
+}
+
+pub fn prepare_selected_datasets_export(
+    paths: &[PathBuf],
     mut args: Value,
 ) -> Result<SqliteTableExport, ToolError> {
-    let service = selected_source(path, &mut args)?;
+    let service = selected_sources(paths, &mut args)?;
     let rows = complete_query(&service, &args)?;
     Ok(SqliteTableExport {
         arguments: args,
         rows,
     })
+}
+
+fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable)>, ToolError> {
+    use ibis_doc_model::CellValue;
+    let specs = specs
+        .as_array()
+        .filter(|items| (1..=8).contains(&items.len()))
+        .ok_or_else(|| ToolError::invalid("datasets must have 1 to 8 entries"))?;
+    let mut aliases = std::collections::HashSet::new();
+    let mut cells = 100_000usize;
+    let mut text = 8 * 1024 * 1024usize;
+    specs.iter().map(|spec| {
+        crate::edit::only_known(spec, &["source", "alias", "table"])?;
+        let alias = spec.str_arg("alias")?;
+        if alias.is_empty() || alias.len() > 128 || !alias.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || alias.as_bytes()[0].is_ascii_digit() || !aliases.insert(alias.to_ascii_lowercase()) {
+            return Err(ToolError::invalid("dataset aliases must be distinct SQL identifiers using letters, digits or underscores"));
+        }
+        let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
+        let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+        if !metadata.is_file() || metadata.len() > service.limits.max_file_size.min(32 * 1024 * 1024) {
+            return Err(ToolError::invalid("dataset must be a regular file within the input size limit"));
+        }
+        let table_name = spec.opt_str("table")?;
+        let table = if is_sqlite(&path) {
+            let name = table_name.ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?;
+            read_sqlite_table_bounded(&path, name, cells, text).map_err(sqlite_error)?
+        } else {
+            if table_name.is_some() {
+                return Err(ToolError::invalid("table is only used for SQLite datasets"));
+            }
+            if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("parquet")) {
+                read_parquet_bounded(&path, cells, text).map_err(sqlite_error)?
+            } else {
+                read_csv_dataset(&path, cells, text)?
+            }
+        };
+        if table.columns.is_empty() || table.columns.len() > 256 {
+            return Err(ToolError::invalid("datasets require 1 to 256 columns"));
+        }
+        cells = cells.checked_sub(table.rows.len() * table.columns.len())
+            .ok_or_else(|| ToolError::invalid("datasets exceed 100000 cells"))?;
+        for value in table.rows.iter().flatten() {
+            if let CellValue::Text(value) = value {
+                text = text.checked_sub(value.len()).ok_or_else(|| ToolError::invalid("datasets exceed the text size limit"))?;
+            }
+        }
+        Ok((alias.to_owned(), table))
+    }).collect()
+}
+
+fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize) -> Result<QTable, ToolError> {
+    use ibis_doc_model::CellValue;
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(max_text as u64 + 1).read_to_end(&mut bytes))
+        .map_err(sqlite_error)?;
+    if bytes.len() > max_text {
+        return Err(ToolError::invalid("CSV exceeds the import size limit"));
+    }
+    let decoded = ibis_formats::csv::decode(&bytes).map_err(sqlite_error)?;
+    if decoded.len() > max_text {
+        return Err(ToolError::invalid("CSV exceeds the decoded size limit"));
+    }
+    let mut records = ibis_formats::csv::CsvRecordIter::new(&decoded, ',');
+    let headers = records
+        .next()
+        .ok_or_else(|| ToolError::invalid("CSV must have headers"))?;
+    if headers.len() > 256 || headers.iter().any(|header| header.trim().is_empty()) {
+        return Err(ToolError::invalid("CSV needs 1 to 256 nonblank headers"));
+    }
+    let width = headers.len();
+    let mut rows = Vec::new();
+    for record in records {
+        if record.len() != width || (rows.len() + 1) * width > max_cells {
+            return Err(ToolError::invalid(
+                "CSV rows must match their header width and fit the cell limit",
+            ));
+        }
+        rows.push(record.into_iter().map(CellValue::Text).collect());
+    }
+    let columns = headers
+        .into_iter()
+        .map(|name| QColumn {
+            name,
+            ty: QType::Text,
+        })
+        .collect();
+    Ok(QTable { columns, rows })
 }

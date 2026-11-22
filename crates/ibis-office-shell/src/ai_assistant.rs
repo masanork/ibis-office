@@ -134,7 +134,7 @@ pub struct AiAssistantState {
     pub pending_old_lawtext: Option<(String, String)>,
     pub _prompt_subscription: Subscription,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    sqlite_source: Option<(u64, std::path::PathBuf)>,
+    analysis_sources: Option<(u64, Vec<std::path::PathBuf>)>,
     /// Allowlist from `GET /api/ai/models`. Desktop leaves this empty.
     #[allow(dead_code)]
     pub browser_models: Vec<BrowserModel>,
@@ -635,7 +635,7 @@ impl SlideEditor {
                 pending_old_lawtext: None,
                 _prompt_subscription,
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-                sqlite_source: None,
+                analysis_sources: None,
                 browser_models: Vec::new(),
                 browser_status: String::new(),
                 browser_pending: None,
@@ -681,26 +681,26 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    fn pick_sqlite_for_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn pick_analysis_sources(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(panel) = self.ai_assistant.as_ref() else { return };
         let panel_id = panel.prompt_input.entity_id();
         let file_id = self.file_id;
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
-            extensions: ["sqlite", "sqlite3", "db"].map(String::from).to_vec(),
-            multiple: false,
-            prompt: Some("分析する SQLite データベースを選択".into()),
+            extensions: ibis_doc_service::DATASET_EXTENSIONS.iter().map(|ext| ext.to_string()).collect(),
+            multiple: true,
+            prompt: Some("分析する CSV・Parquet・SQLite ファイルを選択".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
+            if paths.is_empty() { return; }
             let _ = this.update(cx, |editor, cx| {
                 if editor.file_id == file_id
                     && let Some(panel) = editor.ai_assistant.as_mut()
                     && panel.prompt_input.entity_id() == panel_id && !panel.streaming
                 {
-                    panel.sqlite_source = Some((file_id, path));
+                    panel.analysis_sources = Some((file_id, paths));
                     cx.notify();
                 }
             });
@@ -967,19 +967,25 @@ impl SlideEditor {
         };
 
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        let (tools, sqlite_source) = {
+        let (tools, analysis_sources) = {
             let source = self.ai_assistant.as_ref()
-                .and_then(|panel| panel.sqlite_source.as_ref())
+                .and_then(|panel| panel.analysis_sources.as_ref())
                 .filter(|(file_id, _)| !formula_only && kind == AiDocKind::Xlsx && *file_id == self.file_id)
                 .map(|(_, path)| path.clone());
             let mut tools = tools;
-            if let Some(path) = &source {
-                tools.extend(crate::ai_tools::sqlite_tool_definitions());
+            if let Some(paths) = &source {
+                let has_sqlite = paths.iter().any(|path| ibis_doc_service::is_sqlite(path));
+                tools.extend(crate::ai_tools::sqlite_tool_definitions().filter(|tool| {
+                    has_sqlite || matches!(tool.function.name, "sqlite_query" | "sqlite_query_to_table")
+                }));
                 if let Some(last) = messages_to_send.last_mut()
                     && let Some(content) = &mut last.content
                 {
-                    let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                    content.push_str(&format!("\n\nSelected SQLite filename (data): {}", json!(filename)));
+                    let files: Vec<_> = paths.iter().enumerate().map(|(index, path)| json!({
+                        "source": (index + 1).to_string(),
+                        "filename": path.file_name().unwrap_or_default().to_string_lossy(),
+                    })).collect();
+                    content.push_str(&format!("\n\nSelected analysis files (data): {}. Without datasets, SQLite tools use the first selected SQLite file.", json!(files)));
                 }
             }
             (tools, source)
@@ -1060,7 +1066,7 @@ impl SlideEditor {
                         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                         let mut sqlite_results = std::collections::HashMap::new();
                         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-                        if let Some(path) = &sqlite_source {
+                        if let Some(paths) = &analysis_sources {
                             for (index, call) in out.tool_calls.iter().enumerate() {
                                 if let Some(tool) = ibis_doc_service::sqlite_tools().iter().find(|tool| tool.name == call.function.name) {
                                     let name = tool.name;
@@ -1069,16 +1075,16 @@ impl SlideEditor {
                                     if !active {
                                         return;
                                     }
-                                    let (path, arguments) = (path.clone(), call.function.arguments.clone());
+                                    let (paths, arguments) = (paths.clone(), call.function.arguments.clone());
                                     let access = tool.access;
                                     let result = cx.background_executor().spawn(async move {
                                         let args = serde_json::from_str(&arguments)
                                             .map_err(|error| ibis_doc_service::ToolError::invalid(error.to_string()))?;
                                         if access == ibis_doc_service::Access::Edit {
-                                            ibis_doc_service::prepare_selected_sqlite_export(&path, args)
+                                            ibis_doc_service::prepare_selected_datasets_export(&paths, args)
                                                 .map(SqliteToolResult::Export)
                                         } else {
-                                            ibis_doc_service::run_selected_sqlite_tool(&path, name, args)
+                                            ibis_doc_service::run_selected_datasets_tool(&paths, name, args)
                                                 .map(SqliteToolResult::Read)
                                         }
                                     }).await;
@@ -3343,22 +3349,22 @@ impl SlideEditor {
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         let sqlite_controls = (kind == AiDocKind::Xlsx).then(|| {
             use gpui_kit::component::Disableable as _;
-            let selected = panel.sqlite_source.as_ref()
+            let selected = panel.analysis_sources.as_ref()
                 .filter(|(file_id, _)| *file_id == self.file_id)
-                .and_then(|(_, path)| path.file_name())
-                .map(|name| format!("SQLite: {}", name.to_string_lossy()));
+                .map(|(_, files)| files.iter().filter_map(|path| path.file_name())
+                    .map(|name| name.to_string_lossy()).collect::<Vec<_>>().join("、"));
             h_flex().gap_2().items_center()
                 .child(Button::new("ai-sqlite-select").outline().xsmall()
-                    .label("SQLite を選択")
+                    .label("分析ファイルを選択")
                     .disabled(streaming)
-                    .on_click(cx.listener(|this, _, window, cx| this.pick_sqlite_for_assistant(window, cx))))
+                    .on_click(cx.listener(|this, _, window, cx| this.pick_analysis_sources(window, cx))))
                 .when_some(selected, |row, name| row
                     .child(div().text_xs().truncate().child(name))
                     .child(Button::new("ai-sqlite-clear").ghost().xsmall().label("解除")
                         .disabled(streaming)
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(panel) = this.ai_assistant.as_mut() {
-                                panel.sqlite_source = None;
+                                panel.analysis_sources = None;
                             }
                             cx.notify();
                         }))))

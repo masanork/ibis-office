@@ -64,6 +64,10 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 
 `sqlite_query` は単一の `SELECT` または `WITH … SELECT` と、任意の位置パラメータ `params` を受け付けます。SQL、パラメータ、列名、行、打ち切りフラグ `truncated` を返します。プレビューは既定50行、最大1,000行で、応答サイズにも上限があります。クエリ実行の上限は3秒です。
 
+CSV・Parquet・SQLiteのテーブルを一緒に調べるには、`sqlite_query` または `sqlite_query_to_table` に `datasets` を渡します。各要素にファイルの `source` とSQLで使うテーブル名 `alias` を指定し、SQLiteの場合は元の `table` 名も渡します。この形式では `path` を省略します。例えばSQLiteの表を `facts`、CSVを `labels` として登録し、`SELECT * FROM facts JOIN labels USING (code)` と書けます。列名は `SELECT * FROM labels LIMIT 0` でも確認できます。内蔵アシスタントでは複数ファイルをまとめて選び、`source` に選択順のファイル番号を使います。
+
+CSVはカンマ区切り、先頭行が見出しで、値を文字列として扱うため先頭ゼロと空文字が残ります。ParquetとSQLiteのNULLは保持します。既存リーダーの精度を超える整数はエラーになります。最大8件、合計10万セルまでを、呼び出しごとにメモリ上のデータベースに取り込みます。
+
 同じSQLとパラメータを `sqlite_query_to_table` に渡し、出力先の `document_id`、`destination_sheet`、左上セル `anchor` を指定すると、空いている場所に名前付きのExcelテーブルができます。出力上限は10,000行、100,000セル、4 MiBです。結果全体が収まる場合に表を作ります。空欄や重複する列名にはSQLで別名を付け、大きな整数は必要に応じて文字列に変換してください。
 
 `xlsx_create_pivot` では元の `sheet` と返された `table` 名、または見出し付きの `range` を指定できます。配置先は `destination_sheet` と `anchor`、行・列フィールドは `rows` と `columns` で指定します。`values` には `{"field":"業務ID","aggregate":"count"}` のようにフィールド名と集計方法を渡します。レコード件数を数えるには空欄のないID列を使います。内蔵アシスタントでは表出力とピボット作成を確認用の下書きに積みます。出力した表には実行時点の結果が入ります。

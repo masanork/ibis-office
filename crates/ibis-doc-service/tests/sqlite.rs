@@ -415,3 +415,72 @@ fn sqlite_query_exports_complete_results_and_builds_a_pivot() {
     assert_eq!(std::fs::read(&database).unwrap(), bytes);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn sqlite_queries_join_registered_csv_and_sqlite_datasets() {
+    use ibis_doc_service::run_selected_datasets_tool;
+    let dir = std::env::temp_dir().join(format!("ibis-datasets-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let database = dir.join("source.sqlite3");
+    let csv = dir.join("labels.csv");
+    let original = include_bytes!("../../ibis-doc-model/src/query/fixtures/external.sqlite3");
+    std::fs::write(&database, original).unwrap();
+    std::fs::write(&csv, "code,label\n001,\n002,窓口\n").unwrap();
+    let mut service = Service::new(&[dir.clone()], true, Limits::default());
+    let sql = "SELECT a.code, b.label, a.remark FROM facts a JOIN labels b ON a.code=b.code ORDER BY a.code";
+    let args = json!({"sql":sql,"datasets":[
+        {"source":database,"table":"sales \"2026\"","alias":"facts"},
+        {"source":csv,"alias":"labels"},
+    ]});
+    let mcp = service.call("sqlite_query", &args).unwrap();
+    assert_eq!(
+        mcp["rows"],
+        json!([["001", "", null], ["002", "窓口", "ok"]])
+    );
+    let selected = [database.clone(), csv.clone()];
+    let assistant_args = json!({"sql":sql,"datasets":[
+        {"source":"1","table":"sales \"2026\"","alias":"facts"},
+        {"source":"2","alias":"labels"},
+    ]});
+    assert_eq!(
+        run_selected_datasets_tool(&selected, "sqlite_query", assistant_args).unwrap(),
+        mcp
+    );
+    assert!(run_selected_datasets_tool(&selected, "sqlite_query", args.clone()).is_err());
+    let mut invalid = args.clone();
+    invalid["datasets"][1]["alias"] = json!("FACTS");
+    assert!(service.call("sqlite_query", &invalid).is_err());
+    assert!(
+        Service::new(&[], true, Limits::default())
+            .call("sqlite_query", &args)
+            .is_err()
+    );
+    let workbook = dir.join("analysis.xlsx");
+    std::fs::write(
+        &workbook,
+        ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap(),
+    )
+    .unwrap();
+    let mut writer = Service::new(&[dir.clone()], false, Limits::default());
+    let id = writer
+        .call("app_open_document", &json!({"path":workbook}))
+        .unwrap()["document_id"]
+        .clone();
+    let sheet = writer
+        .call("xlsx_list_sheets", &json!({"document_id":id}))
+        .unwrap()["sheets"][0]["name"]
+        .clone();
+    let mut output = args;
+    output["document_id"] = id.clone();
+    output["destination_sheet"] = sheet.clone();
+    output["anchor"] = json!("A1");
+    let table = writer.call("sqlite_query_to_table", &output).unwrap();
+    assert_eq!(table["range"], "A1:C3");
+    let pivot = writer.call("xlsx_create_pivot", &json!({
+        "document_id": id, "sheet":sheet, "destination_sheet":sheet, "anchor":"E1",
+        "table":table["table"], "rows":["label"],"values":[{"field":"code","aggregate":"count"}],
+    })).unwrap();
+    assert_eq!(pivot["pivot"], "PivotTable1");
+    assert_eq!(std::fs::read(&database).unwrap(), original);
+    std::fs::remove_dir_all(dir).unwrap();
+}

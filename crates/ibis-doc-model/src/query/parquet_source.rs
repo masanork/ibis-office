@@ -304,6 +304,25 @@ fn read_columns(
     rows_loaded: usize,
     expected: Option<&[QColumn]>,
 ) -> Result<QTable, String> {
+    read_columns_bounded(path, selected, rows_loaded, expected, 5_000_000, usize::MAX)
+}
+
+pub fn read_parquet_bounded(
+    path: &Path,
+    max_cells: usize,
+    max_text: usize,
+) -> Result<QTable, String> {
+    read_columns_bounded(path, &[], 0, None, max_cells, max_text)
+}
+
+fn read_columns_bounded(
+    path: &Path,
+    selected: &[String],
+    rows_loaded: usize,
+    expected: Option<&[QColumn]>,
+    max_cells: usize,
+    mut max_text: usize,
+) -> Result<QTable, String> {
     let reader = open(path)?;
     let meta = reader.metadata().file_metadata();
     let schema = meta.schema();
@@ -341,7 +360,8 @@ fn read_columns(
     }
     let width = columns.len();
     let rows = (rows_loaded as u64).saturating_add(meta.num_rows() as u64);
-    if width > 16_384 || rows >= 1_048_576 || (width as u64).saturating_mul(rows) > 5_000_000 {
+    if width > 16_384 || rows >= 1_048_576 || (width as u64).saturating_mul(rows) > max_cells as u64
+    {
         return Err("Parquet source exceeds the query editor's size limit".into());
     }
     let mut table = QTable {
@@ -359,6 +379,11 @@ fn read_columns(
         let mut values = Vec::with_capacity(width);
         for (name, field) in row.map_err(|e| e.to_string())?.into_columns() {
             let (value, _) = cell(field).map_err(|e| format!("{name}: {e}"))?;
+            if let CellValue::Text(text) = &value {
+                max_text = max_text
+                    .checked_sub(text.len())
+                    .ok_or("Parquet text exceeds the import limit")?;
+            }
             values.push(value);
         }
         table.rows.push(values);
@@ -387,6 +412,37 @@ mod tests {
     #[test]
     fn projects_scalar_columns_around_nested_data() {
         assert_reads_compressed_table(parquet::basic::Compression::SNAPPY, "nested", true);
+    }
+
+    #[test]
+    fn queries_a_parquet_snapshot_with_nulls_and_scalar_types() {
+        let fixture = write_table(parquet::basic::Compression::SNAPPY, "sql-dataset", false);
+        let table = read_parquet_bounded(&fixture, 100, 1024).unwrap();
+        assert!(read_parquet_bounded(&fixture, 1, 1024).is_err());
+        let result = crate::query::sqlite_query_datasets(
+            &[("source".into(), table)],
+            "SELECT typeof(code), typeof(amount), count(*) FROM source GROUP BY 1,2 ORDER BY 2",
+            &[],
+            10,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(
+            result.rows,
+            [
+                vec![
+                    serde_json::json!("text"),
+                    serde_json::json!("integer"),
+                    serde_json::json!(1)
+                ],
+                vec![
+                    serde_json::json!("text"),
+                    serde_json::json!("null"),
+                    serde_json::json!(1)
+                ],
+            ]
+        );
+        std::fs::remove_file(fixture).unwrap();
     }
 
     fn write_table(
