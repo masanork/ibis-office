@@ -21,6 +21,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     let mut all: Vec<(&'static str, fn())> = vec![
         ("docx::screenshot_docx_comments_panel", screenshot_docx_comments_panel),
         ("docx::spelling_check", spelling_check),
+        ("docx::form_preflight_pane", crate::student_record::scenario_form_preflight_pane),
         ("docx::review018_grammar_and_spelling_check", review018_grammar_and_spelling_check),
         ("docx::insert_chart", insert_chart),
         ("docx::edit_existing_chart", edit_existing_chart),

@@ -311,3 +311,59 @@ impl SlideEditor {
         })
     }
 }
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn scenario_form_preflight_pane() {
+    use crate::shell::scenario::{Scenario, button_probe};
+
+    const FIXTURE: &str = "test/fixtures/docx-form/full-school-record";
+    let _probe = button_probe::Probe::new();
+    let mut scenario = Scenario::open(&format!("{FIXTURE}/template.docx"));
+    let record = scenario
+        .screenshot_path("long-record")
+        .with_extension("json");
+    let definition = scenario.screenshot_path("form").with_extension("yaml");
+    std::fs::write(
+        &definition,
+        include_str!("../../../test/fixtures/docx-form/full-school-record/form.yaml"),
+    )
+    .unwrap();
+    let mut data = form_template::parse_input(
+        include_str!("../../../test/fixtures/docx-form/full-school-record/record-b.json"),
+        false,
+    )
+    .unwrap();
+    data["data"]["grades"]["6"]["remarks"] = "図書委員会の活動を振り返った。".repeat(15).into();
+    std::fs::write(&record, data.to_string()).unwrap();
+
+    scenario.menu("docx.student-record.review");
+    assert!(button_probe::bounds("student-form-input-0").is_some());
+    assert!(button_probe::bounds("student-form-input-1").is_some());
+    scenario.update(|editor, _, cx| {
+        let check = &mut editor.doc_state_mut().unwrap().student_form_check;
+        check.definition = Some(definition);
+        check.record = Some(record);
+        cx.notify();
+    });
+    button_probe::click(&mut scenario, "student-form-check");
+    let position = scenario.with(|editor, _| {
+        let state = &editor.doc_state().unwrap().student_form_check;
+        let (_, result) = state.result.as_ref().expect("preflight result");
+        assert_eq!(
+            result.as_ref().unwrap(),
+            &[Truncation {
+                field_id: "grades.6.remarks".into(),
+                actual_chars: 225,
+                max_chars: 160,
+            }]
+        );
+        form_template::field_positions(editor.flow().unwrap())["grades.6.remarks"]
+    });
+    button_probe::click(&mut scenario, "student-form-warning-0");
+    assert_eq!(
+        scenario.with(|editor, _| editor.doc_state().unwrap().caret),
+        Some(position)
+    );
+    assert!(!scenario.with(|editor, _| editor.is_dirty()));
+    scenario.screenshot("form-preflight-sixth-grade");
+}
