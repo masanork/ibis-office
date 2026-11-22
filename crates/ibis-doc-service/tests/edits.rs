@@ -104,6 +104,30 @@ fn mcp_docx_edits_are_one_undo_step_each_and_survive_saving() {
 }
 
 #[test]
+fn mcp_xlsx_shared_format_and_clear_keep_separate_undo_steps() {
+    let mut t = T::new("xlsx_shared_format_clear", &[]);
+    let bytes = ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap();
+    std::fs::write(t.dir.join("blank.xlsx"), bytes).unwrap();
+    let x = t.open("blank.xlsx");
+    let sheet = t.call("xlsx_list_sheets", json!({ "document_id": x }))["sheets"][0]["name"].as_str().unwrap().to_string();
+    t.call("xlsx_set_cells", json!({ "document_id": x, "sheet": sheet, "range": "B2", "values": 12 }));
+    let format = t.call("xlsx_set_format", json!({ "document_id": x, "sheet": sheet, "range": "B2", "bold": true, "number_format": "0.00", "border": "outline" }));
+    assert_eq!(format["document_id"], x);
+    assert_eq!(format["warnings"], json!([]));
+    let text = t.call("xlsx_get_cells", json!({ "document_id": x, "sheet": sheet, "range": "B2", "kind": "text" }));
+    assert_eq!(text["rows"], json!([["12.00"]]));
+    t.call("xlsx_clear_cells", json!({ "document_id": x, "sheet": sheet, "range": "B2", "what": "all" }));
+    let cleared = t.call("xlsx_get_cells", json!({ "document_id": x, "sheet": sheet, "range": "B2" }));
+    assert_eq!(cleared["rows"], json!([[null]]));
+    assert_eq!(t.call("app_undo_document", json!({ "document_id": x }))["undone"], 1);
+    let restored = t.call("xlsx_get_cells", json!({ "document_id": x, "sheet": sheet, "range": "B2", "kind": "text" }));
+    assert_eq!(restored["rows"], text["rows"]);
+    assert_eq!(t.call("app_undo_document", json!({ "document_id": x }))["undone"], 1);
+    let unformatted = t.call("xlsx_get_cells", json!({ "document_id": x, "sheet": sheet, "range": "B2", "kind": "text" }));
+    assert_eq!(unformatted["rows"], json!([["12"]]));
+}
+
+#[test]
 fn mcp_xlsx_formula_reads_respect_sheet_protection() {
     use ibis_doc_model::sheet::{CellRange, SheetProtection};
     use ibis_doc_model::sheet_command::{CellEdit, CellInput, SheetCommand, StyleChange};

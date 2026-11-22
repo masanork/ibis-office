@@ -15,10 +15,18 @@ use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string
 use crate::error::ToolError;
 use crate::service::{Args, Open, Service};
 
+/// Defaults and per-call limits supplied by the workbook tool's caller.
+#[derive(Clone, Copy, Default)]
+pub struct WorkbookToolContext {
+    pub active_sheet: Option<SlideId>,
+    pub max_read_cells: Option<usize>,
+    pub max_clear_contents_cells: Option<usize>,
+}
+
 /// A workbook operation that can target a file-backed document or an editor draft.
 pub struct WorkbookTool {
     pub descriptor: Tool,
-    plan: fn(&Presentation, &Value, Option<SlideId>, Option<usize>) -> Result<(Value, Option<Command>), ToolError>,
+    plan: fn(&Presentation, &Value, WorkbookToolContext) -> Result<(Value, Option<Command>), ToolError>,
 }
 
 impl WorkbookTool {
@@ -28,18 +36,17 @@ impl WorkbookTool {
         &self,
         workbook: &Presentation,
         args: &Value,
-        active_sheet: Option<SlideId>,
-        read_cell_limit: Option<usize>,
+        context: WorkbookToolContext,
     ) -> Result<(Value, Option<Command>), ToolError> {
         if !args.is_object() {
             return Err(ToolError::invalid("the arguments are not an object"));
         }
-        (self.plan)(workbook, args, active_sheet, read_cell_limit)
+        (self.plan)(workbook, args, context)
     }
 }
 
 pub fn workbook_tools() -> &'static [WorkbookTool] {
-    static TOOLS: [WorkbookTool; 2] = [GET_CELLS, SET_CELLS];
+    static TOOLS: [WorkbookTool; 4] = [GET_CELLS, SET_CELLS, CLEAR_CELLS, SET_FORMAT];
     &TOOLS
 }
 
@@ -49,10 +56,19 @@ fn run_workbook_tool(service: &mut Service, args: &Value, tool: &WorkbookTool) -
     if open.kind != Kind::Workbook {
         return Err(ToolError::new("unsupported_operation", "this tool is for an xlsx workbook"));
     }
-    let (result, command) = tool.plan(open.document.presentation(), args, None, None)?;
+    let (result, command) = tool.plan(open.document.presentation(), args, WorkbookToolContext::default())?;
     if let Some(command) = command {
-        execute(open, vec![command])?;
-        Ok(edited(id, open, result, Vec::new()))
+        let commands = match command {
+            Command::Batch(commands) => commands,
+            command => vec![command],
+        };
+        execute(open, commands)?;
+    }
+    if tool.descriptor.access == Access::Edit {
+        let mut result = result;
+        let warnings = result.as_object_mut().and_then(|result| result.remove("warnings"))
+            .and_then(|warnings| warnings.as_array().cloned()).unwrap_or_default();
+        Ok(edited(id, open, result, warnings))
     } else {
         Ok(result)
     }
@@ -148,7 +164,7 @@ fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 }
 
 fn plan_get_cells(
-    workbook: &Presentation, args: &Value, active: Option<SlideId>, read_cell_limit: Option<usize>,
+    workbook: &Presentation, args: &Value, context: WorkbookToolContext,
 ) -> Result<(Value, Option<Command>), ToolError> {
     let range = parse_range(args.str_arg("range")?)?;
     let kind = args.opt_str("kind")?.unwrap_or("value");
@@ -156,7 +172,7 @@ fn plan_get_cells(
         return Err(ToolError::invalid(format!("kind {kind} is not value, formula, text or format")));
     }
     let sheets = workbook_sheets(workbook);
-    let (_, name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
+    let (_, name, sheet) = workbook_sheet(workbook, &sheets, args, context.active_sheet)?;
     let width = (range.last_column - range.first_column + 1) as usize;
     let height = (range.last_row - range.first_row + 1) as usize;
     let offset = args.opt_usize("offset")?.unwrap_or(0);
@@ -164,7 +180,7 @@ fn plan_get_cells(
         return Err(ToolError::new("out_of_range", format!("offset {offset} is past the {height} rows")));
     }
     let limit = args.opt_usize("limit")?.unwrap_or((10_000 / width).max(1)).max(1);
-    let limit = if let Some(max_cells) = read_cell_limit {
+    let limit = if let Some(max_cells) = context.max_read_cells {
         if width > max_cells {
             return Err(ToolError::new("out_of_range", format!("range is wider than {max_cells} cells")));
         }
@@ -253,42 +269,6 @@ use crate::tools_docx::{color_schema, font_schema};
 pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
         Tool {
-            name: "xlsx_clear_cells",
-            description: "Clear what is in a range: contents, formats, or all.",
-            access: Access::Edit,
-            returns_content: false,
-            schema: || object(&[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range.")), ("what", json!({ "enum": ["contents", "formats", "all"] }))], &["document_id", "sheet", "range", "what"]),
-            run: clear_cells,
-        },
-        Tool {
-            name: "xlsx_set_format",
-            description: "Set the format of a range: bold, italic, underline, size (pt), color, font, fill, number_format (Excel's format code), horizontal_alignment, vertical_alignment, wrap_text. What is not given is not changed.",
-            access: Access::Edit,
-            returns_content: false,
-            schema: || {
-                object(
-                    &[
-                        document_id(),
-                        ("sheet", string("The sheet's name.")),
-                        ("range", string("A1 range.")),
-                        ("bold", boolean("Bold.")),
-                        ("italic", boolean("Italic.")),
-                        ("underline", boolean("Underline.")),
-                        ("size", json!({ "type": "number", "description": "Points, 1 to 409.5 in steps of 0.5." })),
-                        ("color", color_schema()),
-                        ("font", font_schema()),
-                        ("fill", color_schema()),
-                        ("number_format", string("Excel's number format code, e.g. 0.00 or yyyy/m/d.")),
-                        ("horizontal_alignment", json!({ "enum": ["general", "left", "center", "right", "justify"] })),
-                        ("vertical_alignment", json!({ "enum": ["top", "center", "bottom", "justify"] })),
-                        ("wrap_text", boolean("Wrap the text in the cell.")),
-                    ],
-                    &["document_id", "sheet", "range"],
-                )
-            },
-            run: set_format,
-        },
-        Tool {
             name: "xlsx_add_sheet",
             description: "Add a sheet (at the end, or at index, 0-based).",
             access: Access::Edit,
@@ -319,7 +299,7 @@ fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 }
 
 fn plan_set_cells(
-    workbook: &Presentation, args: &Value, active: Option<SlideId>, _: Option<usize>,
+    workbook: &Presentation, args: &Value, context: WorkbookToolContext,
 ) -> Result<(Value, Option<Command>), ToolError> {
     let range_arg = args.str_arg("range")?;
     let range = parse_range(range_arg)?;
@@ -331,7 +311,7 @@ fn plan_set_cells(
     }
     let values = args.get("values").ok_or_else(|| ToolError::invalid("values is required"))?;
     let sheets = workbook_sheets(workbook);
-    let (index, _, _) = workbook_sheet(workbook, &sheets, args, active)?;
+    let (index, _, _) = workbook_sheet(workbook, &sheets, args, context.active_sheet)?;
     let sheet = workbook.slides[*index].id;
     let mut edits = Vec::with_capacity(count);
     match values {
@@ -363,19 +343,34 @@ fn plan_set_cells(
 }
 
 fn clear_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let id = args.str_arg("document_id")?;
+    run_workbook_tool(service, args, &CLEAR_CELLS)
+}
+
+fn plan_clear_cells(
+    workbook: &Presentation, args: &Value, context: WorkbookToolContext,
+) -> Result<(Value, Option<Command>), ToolError> {
     let range = parse_range(args.str_arg("range")?)?;
     let what = args.str_arg("what")?;
     if !matches!(what, "contents" | "formats" | "all") {
         return Err(ToolError::invalid("what is contents, formats or all"));
     }
-    let open = service.open_document(id)?;
-    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
+    if what != "formats"
+        && let Some(max_cells) = context.max_clear_contents_cells
+    {
+        let rows = (range.last_row - range.first_row + 1) as usize;
+        let columns = (range.last_column - range.first_column + 1) as usize;
+        if rows.saturating_mul(columns) > max_cells {
+            return Err(ToolError::new("out_of_range", format!("cannot clear contents of more than {max_cells} cells at once")));
+        }
+    }
+    let sheets = workbook_sheets(workbook);
+    let (index, _, current_sheet) = workbook_sheet(workbook, &sheets, args, context.active_sheet)?;
+    let sheet = workbook.slides[*index].id;
     let mut commands = Vec::new();
     if what != "formats" {
         let mut edits = Vec::new();
-        for cell in sheets_of(open)?.iter().find(|(i, _, _)| open.document.presentation().slides[*i].id == sheet).map(|(_, _, s)| s.cells.iter().cloned().collect::<Vec<_>>()).unwrap_or_default() {
-            if cell.row >= range.first_row && cell.row <= range.last_row && cell.column >= range.first_column && cell.column <= range.last_column {
+        for cell in current_sheet.cells_in_rows(range.first_row, range.last_row) {
+            if (range.first_column..=range.last_column).contains(&cell.column) {
                 edits.push(CellEdit { row: cell.row, column: cell.column, input: CellInput::Clear });
             }
         }
@@ -387,9 +382,9 @@ fn clear_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> 
         commands.push(SheetCommand::ClearFormats { sheet, ranges: vec![range] });
     }
     if commands.is_empty() {
-        return Ok(edited(id, open, json!({ "cleared": 0 }), Vec::new()));
+        return Ok((json!({ "cleared": 0 }), None));
     }
-    sheet_edit(service, id, commands, json!({}))
+    Ok((json!({}), Some(Command::Batch(commands.into_iter().map(Command::Sheet).collect()))))
 }
 
 fn theme_of(name: &str) -> Result<u8, ToolError> {
@@ -410,11 +405,11 @@ fn theme_of(name: &str) -> Result<u8, ToolError> {
 }
 
 /// The workbook's Normal style: what a cell goes back to when a format is taken away (`null`, design 6.6).
-fn normal_style(open: &Open) -> ibis_doc_model::CellStyle {
-    open.document.presentation().workbook.as_ref().and_then(|w| w.default_style.clone()).unwrap_or_default()
+fn normal_style(workbook: &Presentation) -> ibis_doc_model::CellStyle {
+    workbook.workbook.as_ref().and_then(|w| w.default_style.clone()).unwrap_or_default()
 }
 
-fn color_change(open: &Open, arg: ColorArg, fill: bool) -> Result<StyleChange, ToolError> {
+fn color_change(workbook: &Presentation, arg: ColorArg, fill: bool) -> Result<StyleChange, ToolError> {
     Ok(match arg {
         ColorArg::Rgb(rgb) => {
             if fill {
@@ -428,13 +423,13 @@ fn color_change(open: &Open, arg: ColorArg, fill: bool) -> Result<StyleChange, T
             if fill {
                 StyleChange::Fill(None)
             } else {
-                StyleChange::Color(normal_style(open).color)
+                StyleChange::Color(normal_style(workbook).color)
             }
         }
         ColorArg::Theme { name, brightness } => {
             // The tint is in millionths (800000: 80 % lighter, -250000: 25 % darker).
             let theme = ThemeColor { index: theme_of(&name)?, tint: (brightness * 1_000_000.0).round() as i32 };
-            let rgb = theme.resolve(&open.document.presentation().theme_colors).unwrap_or(ibis_doc_model::Rgb::BLACK);
+            let rgb = theme.resolve(&workbook.theme_colors).unwrap_or(ibis_doc_model::Rgb::BLACK);
             if fill {
                 StyleChange::FillTheme(rgb, theme)
             } else {
@@ -445,13 +440,19 @@ fn color_change(open: &Open, arg: ColorArg, fill: bool) -> Result<StyleChange, T
 }
 
 fn set_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    only_known(args, &["document_id", "sheet", "range", "bold", "italic", "underline", "size", "color", "font", "fill", "number_format", "horizontal_alignment", "vertical_alignment", "wrap_text"])?;
-    let id = args.str_arg("document_id")?;
+    run_workbook_tool(service, args, &SET_FORMAT)
+}
+
+fn plan_set_format(
+    workbook: &Presentation, args: &Value, context: WorkbookToolContext,
+) -> Result<(Value, Option<Command>), ToolError> {
+    only_known(args, &["document_id", "sheet", "range", "bold", "italic", "underline", "size", "color", "font", "fill", "number_format", "horizontal_alignment", "vertical_alignment", "wrap_text", "border"])?;
     let range = parse_range(args.str_arg("range")?)?;
-    let open = service.open_document(id)?;
-    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
-    let normal = normal_style(open);
-    let theme_fonts = open.document.presentation().workbook.as_ref().and_then(|w| w.theme_fonts.clone());
+    let sheets = workbook_sheets(workbook);
+    let (index, _, _) = workbook_sheet(workbook, &sheets, args, context.active_sheet)?;
+    let sheet = workbook.slides[*index].id;
+    let normal = normal_style(workbook);
+    let theme_fonts = workbook.workbook.as_ref().and_then(|w| w.theme_fonts.clone());
     let mut changes = Vec::new();
     let mut warnings = Vec::new();
     // `null` takes a format back to the Normal style's.
@@ -470,10 +471,10 @@ fn set_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
         });
     }
     if let Some(v) = args.get("color") {
-        changes.push(color_change(open, parse_color("color", v)?, false)?);
+        changes.push(color_change(workbook, parse_color("color", v)?, false)?);
     }
     if let Some(v) = args.get("fill") {
-        changes.push(color_change(open, parse_color("fill", v)?, true)?);
+        changes.push(color_change(workbook, parse_color("fill", v)?, true)?);
     }
     if let Some(v) = args.get("font") {
         match parse_font("font", v)? {
@@ -515,12 +516,24 @@ fn set_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             _ => return Err(ToolError::invalid("vertical_alignment is top, center, bottom or justify")),
         }));
     }
-    if changes.is_empty() {
+    let mut commands: Vec<Command> = changes.into_iter().map(|change| Command::Sheet(SheetCommand::SetFormat {
+        sheet, ranges: vec![range], change,
+    })).collect();
+    if let Some(border) = args.get("border") {
+        use ibis_doc_model::ai_sheet::{AiBorderStyle, build_border_commands};
+        let border = match border.as_str() {
+            Some("all") => AiBorderStyle::All,
+            Some("outline") => AiBorderStyle::Outline,
+            Some("bottom") => AiBorderStyle::Bottom,
+            Some("none") => AiBorderStyle::None,
+            _ => return Err(ToolError::invalid("border is all, outline, bottom or none")),
+        };
+        commands.extend(build_border_commands(sheet, range, border));
+    }
+    if commands.is_empty() {
         return Err(ToolError::invalid("no format is given"));
     }
-    let commands: Vec<SheetCommand> = changes.into_iter().map(|change| SheetCommand::SetFormat { sheet, ranges: vec![range], change }).collect();
-    execute(open, commands.into_iter().map(Command::Sheet).collect())?;
-    Ok(edited(id, open, json!({}), warnings))
+    Ok((json!({ "warnings": warnings }), Some(Command::Batch(commands))))
 }
 
 fn add_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -615,4 +628,53 @@ const SET_CELLS: WorkbookTool = WorkbookTool {
         run: set_cells,
     },
     plan: plan_set_cells,
+};
+
+const CLEAR_CELLS: WorkbookTool = WorkbookTool {
+    descriptor: Tool {
+        name: "xlsx_clear_cells",
+        description: "Clear what is in a range: contents, formats, or all.",
+        access: Access::Edit,
+        returns_content: false,
+        schema: || object(&[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range.")), ("what", json!({ "enum": ["contents", "formats", "all"] }))], &["document_id", "sheet", "range", "what"]),
+        run: clear_cells,
+    },
+    plan: plan_clear_cells,
+};
+
+fn resettable(schema: Value) -> Value {
+    json!({ "anyOf": [schema, { "type": "null" }] })
+}
+
+const SET_FORMAT: WorkbookTool = WorkbookTool {
+    descriptor: Tool {
+        name: "xlsx_set_format",
+        description: "Set the format of a range: bold, italic, underline, size (pt), color, font, fill, number_format (Excel's format code), horizontal_alignment, vertical_alignment, wrap_text, border. What is not given is not changed.",
+        access: Access::Edit,
+        returns_content: false,
+        schema: || {
+            object(
+                &[
+                    document_id(),
+                    ("sheet", string("The sheet's name.")),
+                    ("range", string("A1 range.")),
+                    ("bold", resettable(boolean("Bold."))),
+                    ("italic", resettable(boolean("Italic."))),
+                    ("underline", resettable(boolean("Underline."))),
+                    ("size", resettable(json!({ "type": "number", "description": "Points, 1 to 409.5 in steps of 0.5." }))),
+                    ("color", resettable(color_schema())),
+                    ("font", resettable(font_schema())),
+                    ("fill", resettable(color_schema())),
+                    ("number_format", string("Excel's number format code, e.g. 0.00 or yyyy/m/d.")),
+                    ("horizontal_alignment", json!({ "enum": ["general", "left", "center", "right", "justify"] })),
+                    ("vertical_alignment", json!({ "enum": ["top", "center", "bottom", "justify"] })),
+                    ("wrap_text", resettable(boolean("Wrap the text in the cell."))),
+                    ("border", json!({ "enum": ["all", "outline", "bottom", "none"] })),
+                ],
+                &["document_id", "sheet", "range"],
+            )
+        },
+        run: set_format,
+    },
+    plan: plan_set_format,
 };
