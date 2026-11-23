@@ -3,6 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Bounded preview of oversized TIFF images.
 
+use super::tiff_pages::{straight_color, straighten_rgba8, straighten_rgba16};
 use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
 use std::io::{Read, Seek};
 use tiff::{
@@ -240,24 +241,13 @@ pub(super) fn preview(
             {
                 DecodingResult::U8(mut data) => {
                     if associated_alpha {
-                        for pixel in data.chunks_exact_mut(4) {
-                            let alpha = u32::from(pixel[3]);
-                            for channel in &mut pixel[..3] {
-                                *channel = straight_color(u32::from(*channel), alpha, 255) as u8;
-                            }
-                        }
+                        straighten_rgba8(&mut data);
                     }
                     data
                 }
                 DecodingResult::U16(mut data) => {
                     if associated_alpha {
-                        for pixel in data.chunks_exact_mut(4) {
-                            let alpha = u32::from(pixel[3]);
-                            for channel in &mut pixel[..3] {
-                                *channel =
-                                    straight_color(u32::from(*channel), alpha, 65_535) as u16;
-                            }
-                        }
+                        straighten_rgba16(&mut data);
                     }
                     data.into_iter().map(to_u8).collect()
                 }
@@ -287,10 +277,7 @@ pub(super) fn preview(
                 } else if raw_sample_bytes == 1 {
                     destination.copy_from_slice(&row[source_x..source_x + channels]);
                     if borrow_strips && associated_alpha {
-                        let alpha = u32::from(destination[3]);
-                        for channel in &mut destination[..3] {
-                            *channel = straight_color(u32::from(*channel), alpha, 255) as u8;
-                        }
+                        straighten_rgba8(destination);
                     }
                 } else {
                     let raw_color = &row[source_x..source_x + channels * 2];
@@ -330,14 +317,6 @@ pub(super) fn preview(
         _ => None,
     }
     .ok_or_else(|| BAD_CHUNKS.into())
-}
-
-fn straight_color(sample: u32, alpha: u32, max: u32) -> u32 {
-    if alpha == 0 {
-        0
-    } else {
-        ((sample * max + alpha / 2) / alpha).min(max)
-    }
 }
 
 #[cfg(test)]
