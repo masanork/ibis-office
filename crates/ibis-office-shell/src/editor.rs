@@ -524,6 +524,8 @@ pub struct SlideEditor {
     pub(crate) folder_pane: Option<crate::folder_context::FolderPane>,
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     pub(crate) git_workspace: Option<crate::git_workspace::GitWorkspace>,
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) git_preview: Option<crate::git_workspace::PreviewLocation>,
     /// The right sidebar is requested by the title-row toggle or by opening a panel.
     pub sidebar_open: bool,
     /// The last text typed into the find panel (kept after the panel closes: ⌘G / Shift+⌘G find with it).
@@ -921,6 +923,8 @@ impl SlideEditor {
             folder_pane: None,
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             git_workspace: None,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            git_preview: None,
             sidebar_open: true,
             last_find_query: String::new(),
             sidebar_layout:Default::default(),
@@ -1335,6 +1339,8 @@ impl SlideEditor {
 
     /// Replace the open presentation, dropping undo history and selection.
     pub fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        { self.git_preview = None; }
         self.standard_read_only = false;
         self.structured_preview = false;
         #[cfg(not(target_family = "wasm"))]
@@ -5059,6 +5065,8 @@ impl SlideEditor {
                 folder_pane: _,
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 git_workspace: _,
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                git_preview: _,
                 sidebar_open: _,
                 last_find_query: _,
                 sidebar_layout: _,

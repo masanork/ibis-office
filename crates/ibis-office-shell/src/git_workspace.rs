@@ -273,6 +273,62 @@ fn preview(repo: &Path, path: &Path, id: gix::ObjectId) -> Result<ibis_formats::
     Ok(ibis_odf::open(bytes)?)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PreviewLocation {
+    repo: PathBuf,
+    path: PathBuf,
+    commit: gix::ObjectId,
+}
+
+impl PreviewLocation {
+    fn markdown(&self) -> bool {
+        matches!(crate::folder_context::extension(&self.path).as_str(), "md" | "markdown")
+    }
+}
+
+fn preview_link(location: &PreviewLocation, url: &str) -> Result<(PreviewLocation, ibis_formats::Opened, Option<String>)> {
+    let from = location.path.to_str().ok_or("Invalid source path")?.replace(std::path::MAIN_SEPARATOR, "/");
+    let repo = gix::open(&location.repo)?;
+    let (target, fragment) = if let Some(wiki) = url.strip_prefix("[[").and_then(|wiki| wiki.strip_suffix("]]")) {
+        let (path, fragment) = wiki.split_once('#').map_or((wiki, None), |(path, fragment)| (path, Some(fragment)));
+        let matches = |candidate: &str| candidate == path || candidate.strip_suffix(".md") == Some(path);
+        let mut pending = vec![PathBuf::new()];
+        let mut result = None;
+        let mut remaining = 10_000usize;
+        if path.contains('/') {
+            let direct = assistant::allowed_path(path)?;
+            let with_suffix = PathBuf::from(format!("{path}.md"));
+            let tree = repo.find_commit(location.commit)?.tree()?;
+            for candidate in [direct, with_suffix] {
+                if tree.lookup_entry_by_path(&candidate)?.is_some_and(|entry| entry.mode().is_blob()) {
+                    result = Some(candidate);
+                    break;
+                }
+            }
+        } else {
+            while let Some(dir) = pending.pop() {
+                for entry in entries(&repo, location.commit, &dir)? {
+                    remaining = remaining.checked_sub(1).ok_or("Use a repository-relative Wiki link for large trees.")?;
+                    let Some(name) = entry.path.file_name().and_then(|name| name.to_str()) else { continue };
+                    if !crate::folder_context::visible(name) { continue; }
+                    if entry.directory {
+                        pending.push(entry.path);
+                    } else if matches(name) && result.replace(entry.path).is_some() {
+                        return Err("Wiki link is ambiguous. Use a repository-relative path.".into());
+                    }
+                }
+            }
+        }
+        (result.ok_or("Wiki link target is absent from this commit.")?, fragment)
+    } else {
+        let (path, fragment) = ibis_formats::okf::resolve(&from, url)
+            .ok_or("The link does not identify a file inside the repository.")?;
+        (PathBuf::from(path), fragment)
+    };
+    let opened = preview(&location.repo, &target, location.commit)?;
+    Ok((PreviewLocation { path: target, ..location.clone() }, opened, fragment.map(str::to_owned)))
+}
+
 enum RevisionPreview {
     ReadOnly(ibis_formats::Opened),
     LawComparison(ibis_formats::Opened),
@@ -565,6 +621,7 @@ impl SlideEditor {
             return;
         };
         let repo = state.repo.clone();
+        let location = old.is_none().then(|| PreviewLocation { repo: repo.clone(), path: path.clone(), commit: new });
         let old_path = state.base_path.clone();
         let filename = path
             .file_name()
@@ -615,7 +672,7 @@ impl SlideEditor {
                         });
                     }
                     Ok(RevisionPreview::ReadOnly(opened)) => {
-                        editor.present_git_preview(Ok(opened), name, window, cx);
+                        editor.present_git_preview_at(opened, name, location, None, window, cx);
                     }
                     Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
                 }
@@ -623,6 +680,35 @@ impl SlideEditor {
             });
         })
         .detach();
+    }
+
+    pub fn is_git_markdown_preview(&self) -> bool {
+        self.git_preview.as_ref().is_some_and(PreviewLocation::markdown)
+    }
+
+    pub fn follow_git_preview_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(location) = self.git_preview.clone().filter(PreviewLocation::markdown) else { return false };
+        if url.starts_with("//") || url.split(['/', '?', '#']).next().is_some_and(|head| head.contains(':')) {
+            return false;
+        }
+        let url = url.to_owned();
+        let source = location.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                preview_link(&location, &url).map_err(|error| error.to_string())
+            }).await;
+            let _ = this.update_in(cx, |editor, window, cx| {
+                if !editor.has_document || editor.git_preview.as_ref() != Some(&source) { return; }
+                match result {
+                    Ok((location, opened, fragment)) => {
+                        let name = format!("{} · {}", location.path.display(), short(location.commit));
+                        editor.present_git_preview_at(opened, name, Some(location), fragment, window, cx);
+                    }
+                    Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
+                }
+            });
+        }).detach();
+        true
     }
 
     fn present_git_preview(
@@ -633,28 +719,38 @@ impl SlideEditor {
         cx: &mut Context<Self>,
     ) {
         match result {
-            Ok(opened) if self.has_document && !self.standard_read_only => {
-                crate::app::open_window_with(cx, move |editor, window, cx| {
-                    editor.load_git_preview(opened, name, window, cx)
-                });
-            }
-            Ok(opened) => self.load_git_preview(opened, name, window, cx),
+            Ok(opened) => self.present_git_preview_at(opened, name, None, None, window, cx),
             Err(error) => self.show_alert(text("git.failed"), error.into(), cx),
         }
     }
 
-    fn load_git_preview(
+    fn present_git_preview_at(
         &mut self,
         opened: ibis_formats::Opened,
         name: String,
+        location: Option<PreviewLocation>,
+        fragment: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.load(opened.presentation, name.into(), window, cx);
-        self.standard_read_only = true;
-        self.document.set_read_only(true);
-        self.sidebar_open = false;
-        self.set_loaded_source(std::sync::Arc::new(opened.source));
+        let show = move |editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>| {
+            editor.load(opened.presentation, name.into(), window, cx);
+            editor.git_preview = location;
+            editor.standard_read_only = true;
+            editor.document.set_read_only(true);
+            editor.sidebar_open = false;
+            editor.set_loaded_source(std::sync::Arc::new(opened.source));
+            if let Some(id) = fragment.as_deref().and_then(|fragment| {
+                ibis_formats::markdown::heading_fragment(editor.presentation().flow.as_deref()?, fragment)
+            }) {
+                crate::with_format!(editor, reveal_ai_paragraph(editor, id, cx));
+            }
+        };
+        if self.has_document && !self.standard_read_only {
+            crate::app::open_window_with(cx, show);
+        } else {
+            show(self, window, cx);
+        }
     }
 
     fn git_open_working_file(&mut self, cx: &mut Context<Self>) {

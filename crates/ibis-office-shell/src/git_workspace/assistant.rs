@@ -130,7 +130,7 @@ fn read_at_commit(
     }))
 }
 
-fn allowed_path(path: &str) -> Result<PathBuf> {
+pub(super) fn allowed_path(path: &str) -> Result<PathBuf> {
     if path.contains(['\\', ':'])
         || path
             .split('/')
@@ -231,6 +231,43 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn markdown_preview_links_keep_the_commit_and_reject_ambiguous_wikis() {
+        use super::super::{PreviewLocation, preview_link};
+
+        let repo = TempRepo::new();
+        repo.write("docs/source.md", "# Source");
+        repo.write("docs/target.md", "# Details\nEarlier text.");
+        repo.write("target.md", "# Other target");
+        repo.commit("Initial documents");
+        let git = gix::discover(&repo.0).unwrap();
+        let location = PreviewLocation {
+            repo: git.path().to_owned(),
+            path: "docs/source.md".into(),
+            commit: git.head_id().unwrap().detach(),
+        };
+        repo.write("docs/target.md", "# Details\nLater text.");
+        repo.commit("Change link target");
+        for url in [
+            "target.md#details",
+            "/docs/target.md#details",
+            "[[docs/target#Details]]",
+        ] {
+            let (target, opened, fragment) = preview_link(&location, url).unwrap();
+            assert_eq!(target.commit, location.commit);
+            assert_eq!(target.path, PathBuf::from("docs/target.md"));
+            let doc = opened.presentation.flow.unwrap();
+            let markdown = ibis_formats::markdown::export_markdown(&doc, &[]);
+            assert!(markdown.contains("Earlier text."));
+            assert!(
+                ibis_formats::markdown::heading_fragment(&doc, fragment.as_deref().unwrap())
+                    .is_some()
+            );
+        }
+        assert!(preview_link(&location, "[[target]]").is_err());
+        assert!(preview_link(&location, "../../outside.md").is_err());
     }
 
     #[test]

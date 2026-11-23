@@ -7777,13 +7777,28 @@ impl SlideEditor {
             at += len;
         }
         if let Some(ibis_doc_model::Link::Url(url)) = &link {
-            if !window.is_some_and(|window| self.follow_folder_link(url, window, cx)) {
+            if !window.is_some_and(|window| {
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                {
+                    self.follow_git_preview_link(url, window, cx)
+                        || self.follow_folder_link(url, window, cx)
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+                {
+                    let _ = window;
+                    false
+                }
+            }) {
                 crate::shell::links::open_external_url(url, cx);
             }
             return true;
         }
         let Some(ibis_doc_model::Link::Anchor(name)) = link else { return false };
         let target = find_bookmark(doc, &name).or_else(|| {
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            if self.is_git_markdown_preview() {
+                return ibis_formats::markdown::heading_fragment(doc, &name);
+            }
             let path = self.file_path()?;
             let extension = path.extension()?.to_str()?;
             if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
