@@ -1692,6 +1692,15 @@ xlsx.sbom-actions	Show findings requiring action…
 xlsx.sbom-actions-failed	Could not open the vulnerability action queue: {error}
 file.open-folder	Open Folder…
 folder.filter	File name, path, type:Metric, or tag:finance
+folder.okf.unverified	Unverified
+folder.okf.machine-confirmed	Machine-confirmed
+folder.okf.human-reviewed	Human-reviewed
+folder.okf.unspecified	No review deadline
+folder.okf.fresh	Fresh
+folder.okf.stale	Stale
+folder.okf.malformed	Invalid review deadline
+folder.okf.malformed-generation	Invalid generation timestamp
+folder.okf.deadline	Review deadline
 folder.more	Show more
 folder.refresh	Refresh
 folder.close	Close Folder

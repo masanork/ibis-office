@@ -13,7 +13,7 @@ ibisOfficeが受け付ける構文、通常の入出力での挙動、制限と�
 | [Marpit](https://marpit.marp.app/markdown) と [Marp Core](https://github.com/marp-team/marp-core/blob/main/docs/markdown.md) | スライド分割（ATX見出しの `headingDivider` を含む）、標準サイズ、発表者ノートのPPTX変換 | CSSテーマ、背景、ページ番号、元原稿への編集差分反映は未対応。 |
 | [Mermaid](https://mermaid.js.org/) と [ZenUML](https://zenuml.com/docs/) | 図種別の描画、対応するグラフのOffice変換、対応する図ソースの再出力 | 図種と個別構文の対応は[構文リファレンス](markdown-reference-ja.md#mermaid)を参照。 |
 | [Lawtext](https://github.com/yamachig/Lawtext) と [法令標準XML](https://laws.e-gov.go.jp/file/XMLSchemaForJapaneseLaw_v3.xsd) | 法令構造の変換と、元XMLへの限定的な編集反映 | 法令XMLを原本とし、対応を確認できない編集は診断で知らせる。 |
-| [OKF v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md) と [YAML 1.2.2](https://yaml.org/spec/1.2.2/) | ローカルのフォルダーで知識項目の認識、種類・タグによる絞り込み、参照元を指定した相対・ルート基準パスの解決 | 検証状態・鮮度表示、複数行のYAML値の編集は対象外。 |
+| [OKF v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md) と [YAML 1.2.2](https://yaml.org/spec/1.2.2/) | ローカルのフォルダーで知識項目の認識、種類・タグによる絞り込み、信頼状態・鮮度の表示、参照元を指定した相対・ルート基準パスの解決 | 複数行のYAML値の編集は対象外。 |
 | [Office Open XML ECMA-376](https://ecma-international.org/publications-and-standards/standards/ecma-376/) | DOCX、PPTX、XLSXの各変換経路 | アプリ間の見た目、文書モデルの往復、Markdownの元構文の復元は別々に検証する。 |
 
 新旧構文の互換性は、入力時に優先する構文と、変換後に書き出す構文の両方で決まります。OOMarkdownの目次と参考文献は `::: toc` と `::: bibliography` を使用し、Obsidianの二重角括弧にフィールドの意味を割り当てません。同一文書内のWikiリンクは通常のMarkdownアンカーになります。別ファイルへのWikiリンクはMarkdownへの再出力でもWiki記法を使います。

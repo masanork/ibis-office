@@ -308,10 +308,10 @@ impl SlideEditor {
             .find(|path| *path == "index.md")
             .filter(|_| query.is_empty())
         {
-            rows = rows.child(folder_row(index, cx));
+            rows = rows.child(folder_row(index, None, cx));
         }
         for path in matches.by_ref().take(pane.limit) {
-            rows = rows.child(folder_row(path, cx));
+            rows = rows.child(folder_row(path, pane.folder.concepts.get(path).map(|item| &item.review), cx));
         }
         if matches.next().is_some() {
             rows = rows.child(
@@ -372,7 +372,13 @@ impl SlideEditor {
     }
 }
 
-fn folder_row(path: &str, cx: &mut Context<SlideEditor>) -> impl IntoElement {
+fn folder_row(
+    path: &str,
+    review: Option<&ibis_formats::okf::Review>,
+    cx: &mut Context<SlideEditor>,
+) -> impl IntoElement {
+    use ibis_formats::okf::{Freshness, Trust};
+
     let path = path.to_owned();
     div()
         .id(SharedString::from(path.clone()))
@@ -382,6 +388,36 @@ fn folder_row(path: &str, cx: &mut Context<SlideEditor>) -> impl IntoElement {
         .text_sm()
         .hover(|row| row.bg(cx.theme().accent))
         .child(div().truncate().child(path.clone()))
+        .when_some(review, |row, review| {
+            let trust = text(match review.trust {
+                Trust::Unverified => "folder.okf.unverified",
+                Trust::MachineConfirmed => "folder.okf.machine-confirmed",
+                Trust::HumanReviewed => "folder.okf.human-reviewed",
+            });
+            let freshness = text(match review.freshness() {
+                Freshness::Unspecified => "folder.okf.unspecified",
+                Freshness::Fresh => "folder.okf.fresh",
+                Freshness::Stale => "folder.okf.stale",
+                Freshness::Malformed => "folder.okf.malformed",
+            });
+            let mut details = format!("{trust} · {freshness}");
+            if let Some((by, at)) = &review.verifier {
+                details.push_str(&format!("\n{by} · {at}"));
+            }
+            if let Some(deadline) = review.stale_after.as_ref().and_then(|value| value.as_str()) {
+                details.push_str(&format!("\n{} {deadline}", text("folder.okf.deadline")));
+            }
+            row.tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(details.clone()).build(window, cx)
+            })
+                .child(div().text_xs().child(format!("{trust} · {freshness}")))
+                .when(review.malformed_generation, |row| {
+                    row.child(div().text_xs().child(text("folder.okf.malformed-generation")))
+                })
+                .when_some(review.verifier.as_ref(), |row, (by, at)| {
+                    row.child(div().text_xs().truncate().child(format!("{by} · {at}")))
+                })
+        })
         .on_click(
             cx.listener(move |editor, _, window, cx| editor.open_folder_file(&path, window, cx)),
         )

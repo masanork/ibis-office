@@ -1690,6 +1690,15 @@ xlsx.sbom-actions	脆弱性レビューの要対応を表示…
 xlsx.sbom-actions-failed	脆弱性レビューの要対応を開けませんでした（{error}）
 file.open-folder	フォルダーを開く…
 folder.filter	ファイル名、パス、type:Metric、tag:finance
+folder.okf.unverified	未検証
+folder.okf.machine-confirmed	機械確認済み
+folder.okf.human-reviewed	人による確認済み
+folder.okf.unspecified	再確認期限なし
+folder.okf.fresh	期限内
+folder.okf.stale	要再確認
+folder.okf.malformed	期限の形式が不正
+folder.okf.malformed-generation	生成日時の形式が不正
+folder.okf.deadline	再確認期限
 folder.more	さらに表示
 folder.refresh	更新
 folder.close	フォルダーを閉じる

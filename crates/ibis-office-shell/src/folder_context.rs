@@ -43,6 +43,7 @@ pub(crate) fn visible(name: &str) -> bool {
 struct ConceptFilter {
     kind: String,
     tags: Vec<String>,
+    review: ibis_formats::okf::Review,
 }
 
 #[derive(Clone)]
@@ -135,7 +136,8 @@ impl Folder {
                     .into_iter()
                     .map(str::to_lowercase)
                     .collect();
-                Some((path.clone(), ConceptFilter { kind, tags }))
+                let review = ibis_formats::okf::Review::from_metadata(&metadata);
+                Some((path.clone(), ConceptFilter { kind, tags, review }))
             })
             .collect();
         folder.markdown_index = markdown_index::MarkdownIndex::build(&folder);
@@ -290,7 +292,7 @@ pub(crate) fn tools() -> [ToolDefinition; 7] {
         ),
         tool(
             "folder_read",
-            "Read a folder reference. Markdown (including OKF index.md), text, CSV, JSON and YAML use offset (0-based line) and limit. With from, resolve path as an OKF URI reference or a Wiki link in the folder. For Office files use an operation and its arguments; examples: docx_list_paragraphs with offset and limit, xlsx_get_cells with sheet and range, pptx_get_slide with slide. Omit operation for the outline, sheets or slides.",
+            "Read a folder reference. Markdown (including OKF index.md), text, CSV, JSON and YAML use offset (0-based line) and limit. OKF concepts also return okf_review with trust, freshness and evidence. With from, resolve path as an OKF URI reference or a Wiki link in the folder. For Office files use an operation and its arguments; examples: docx_list_paragraphs with offset and limit, xlsx_get_cells with sheet and range, pptx_get_slide with slide. Omit operation for the outline, sheets or slides.",
             json!({"path":{"type":"string"},"from":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},
                 "operation":{"type":"string","enum":OFFICE_READS},"arguments":{"type":"object"}}),
             json!(["path"]),
@@ -414,9 +416,15 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
                 folder.resolve(relative)?
             };
             let ext = extension(&path);
+            let mut review = None;
             let result = if TEXT.contains(&ext.as_str()) {
                 let limit = number(&args["limit"], 35)?.clamp(1, 50);
                 let (content, partial) = read_text(&path)?;
+                review = (ext == "md")
+                    .then(|| bounded_frontmatter(content.as_bytes()))
+                    .flatten()
+                    .and_then(|frontmatter| ibis_formats::okf::concept(relative, &frontmatter).ok().flatten())
+                    .map(|metadata| ibis_formats::okf::Review::from_metadata(&metadata));
                 let mut lines = content.lines().enumerate().skip(offset);
                 let page: Vec<_> = lines
                     .by_ref()
@@ -454,7 +462,11 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
             } else {
                 vec![FolderReference::new(relative, location)]
             };
-            (json!({"path":relative,"content":result}), references)
+            let mut value = json!({"path":relative,"content":result});
+            if let Some(review) = review {
+                value["okf_review"] = review.report();
+            }
+            (value, references)
         }
         name @ ("git_status" | "git_log" | "git_diff" | "git_read") => (
             crate::git_workspace::assistant::run(&folder.root, name, &args, offset)
@@ -495,7 +507,11 @@ fn excerpt(line: &str, limit: usize) -> String {
 
 fn read_frontmatter(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
-    let mut reader = BufReader::new(file.take(64 * 1024 + 1));
+    bounded_frontmatter(file)
+}
+
+fn bounded_frontmatter(source: impl Read) -> Option<String> {
+    let mut reader = BufReader::new(source.take(64 * 1024 + 1));
     let mut frontmatter = String::new();
     reader.read_line(&mut frontmatter).ok()?;
     if !matches!(frontmatter.as_str(), "---\n" | "---\r\n") {
@@ -857,6 +873,19 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn folder_read_reports_current_okf_verification_from_the_file() {
+        let fixture = Fixture::new();
+        fixture.write("metric.md", "---\ntype: Metric\n---\n");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        fixture.write("metric.md", "---\ntype: Metric\nverified: {by: 'human:reviewer', at: 2026-11-24}\nstale_after: invalid\n---\n");
+        let result = call(&folder, "folder_read", json!({"path":"metric.md"})).unwrap();
+        let review = &result.value["okf_review"];
+        assert_eq!(review["trust"], "human-reviewed");
+        assert_eq!(review["verified"]["by"], "human:reviewer");
+        assert_eq!(review["freshness"], "malformed");
     }
 
     #[test]

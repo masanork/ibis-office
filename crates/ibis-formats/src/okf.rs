@@ -6,6 +6,9 @@
 
 use serde_json::{Map, Value};
 
+mod review;
+pub use review::{Freshness, Review, Trust};
+
 /// Structured frontmatter for a concept. The original source belongs to the caller.
 pub fn concept(path: &str, text: &str) -> Result<Option<Value>, crate::Error> {
     if !path.ends_with(".md")

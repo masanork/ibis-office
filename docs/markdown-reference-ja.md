@@ -441,6 +441,18 @@ tags: [finance, 月次]
 
 DOCX の文書プロパティからは `title`、`description`、`tags` に反映できます。既存タグの中にカンマがある場合や複数行の値など、安全に反映できない編集は診断され、元の YAML 値が残ります。これらの値は Markdown 原稿の YAML で直接編集できます。
 
+知識項目に検証者と再確認期限を記録する例です。フォルダーペインと Assistant の `folder_read` で信頼状態と鮮度を確認できます。判定規則は [信頼状態と鮮度](markdown-yaml-spec-ja.md#信頼状態と鮮度) を参照してください。
+
+```yaml
+generated:
+  by: "process:monthly-import"
+  at: "2026-11-23T09:00:00+09:00"
+verified:
+  - by: "human:reviewer"
+    at: "2026-11-24T09:00:00+09:00"
+stale_after: "2026-12-01"
+```
+
 ### MyST・Obsidian の取り込み（試験対応）
 
 同じ Markdown 原稿に、通常の記法と以下の構文を混在させられます。
