@@ -14,7 +14,7 @@ use super::syntax::{
     to_fullwidth_digits,
 };
 use super::xml::{
-    parse_title_attributes_fragment, read_encoded_appdx_fragment_positions, read_encoded_appdx_fragments, read_encoded_toc, write_title_attributes_fragment,
+    parse_title_attributes_fragment, read_encoded_appdx_fragment_positions, read_encoded_appdx_fragments, read_encoded_suppl_appendices, read_encoded_toc, write_title_attributes_fragment,
 };
 use super::markup::{
     lawtext_paragraph_text, lawtext_sentence_text, parse_lawtext_paragraph,
@@ -28,6 +28,15 @@ const LEGACY_LAWTEXT_STYLES: &str = ":law-appdx-styles: ";
 const LEGACY_LAWTEXT_STYLE_POSITIONS: &str = ":law-appdx-style-positions: ";
 const LAWTEXT_FRAGMENT_POSITIONS: &str = ":law-appdx-fragment-positions: ";
 const LAWTEXT_FRAGMENTS: &str = ":law-appdx-fragments: ";
+pub(super) const LAWTEXT_SUPPL_APPENDICES: &str = ":law-suppl-appendices: ";
+
+pub(super) fn encode_suppl_appendices(suppl: &SupplProvision) -> Option<String> {
+    if suppl.appendix_xml.is_empty() {
+        return None;
+    }
+    serde_json::to_string(&suppl.appendix_xml).ok()
+}
+
 const LAWTEXT_TABLES: &str = ":law-appdx-tables: ";
 const LAWTEXT_ENACT_STATEMENT: &str = ":law-enact-statement: ";
 const LAWTEXT_TOC: &str = ":law-toc: ";
@@ -156,6 +165,9 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
             out.push_str("（抄）");
         }
         out.push_str("\n\n");
+        if let Some(encoded) = encode_suppl_appendices(suppl) {
+            out.push_str(&format!("{LAWTEXT_SUPPL_APPENDICES}{encoded}\n\n"));
+        }
         for node in &suppl.nodes {
             write_lawtext_node(&mut out, node, true);
         }
@@ -345,7 +357,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
         lines = header;
     }
 
-    for raw_line in lines {
+    while let Some(raw_line) = lines.next() {
         let trimmed = raw_line.trim();
         if doc.law_title.is_empty() && cur_article.is_none() && div_stack.is_empty() {
             if let Some((title, law_num)) = split_title_and_parens(trimmed) {
@@ -399,6 +411,10 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 extract,
                 label,
                 nodes: Vec::new(),
+                appendix_xml: lines.next_if(|line| line.trim().starts_with(LAWTEXT_SUPPL_APPENDICES))
+                    .and_then(|line| line.trim().strip_prefix(LAWTEXT_SUPPL_APPENDICES))
+                    .map(read_encoded_suppl_appendices)
+                    .unwrap_or_default(),
             });
             continue;
         }

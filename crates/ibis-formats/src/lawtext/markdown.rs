@@ -22,7 +22,7 @@ use super::markup::{
     lawtext_paragraph_text, lawtext_sentence_text, parse_lawtext_paragraph_labels,
     parse_lawtext_sentence_elements,
 };
-use super::text::{is_lawtext, parse_lawtext};
+use super::text::{LAWTEXT_SUPPL_APPENDICES, encode_suppl_appendices, is_lawtext, parse_lawtext};
 
 /// Export a [`LawDoc`] to Markdown with YAML frontmatter so it can be edited
 /// in ibisOffice (DOCX / PPTX) and converted back to Lawtext or e-Gov 法令標準XML.
@@ -114,6 +114,11 @@ fn to_markdown_with_articles(
             out.push_str("（抄）");
         }
         out.push_str("\n\n");
+        if preserve_editing_metadata && let Some(encoded) = encode_suppl_appendices(suppl) {
+            // Escape hyphens so fragment text cannot end the Markdown comment.
+            let encoded = encoded.replace('-', "\\u002d");
+            out.push_str(&format!("<!-- {LAWTEXT_SUPPL_APPENDICES}{encoded} -->\n\n"));
+        }
         for node in &suppl.nodes {
             write_markdown_node(&mut out, node, 3, preserve_editing_metadata, &mut |article, start, end| record(Some(index), article, start, end));
         }
@@ -363,6 +368,12 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     for raw in body.lines() {
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed.starts_with("> 法令番号:") {
+            continue;
+        }
+        if let Some(metadata) = trimmed.strip_prefix("<!-- ").and_then(|line| line.strip_suffix(" -->"))
+            && metadata.starts_with(LAWTEXT_SUPPL_APPENDICES)
+        {
+            lawtext_lines.push(metadata.to_owned());
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix('#') {

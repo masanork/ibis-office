@@ -68,6 +68,11 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             extract: suppl.attribute("Extract").is_some_and(|v| v == "true"),
             label,
             nodes: parse_xml_nodes(suppl),
+            appendix_xml: suppl.children()
+                .filter(|node| node.is_element() && node.tag_name().namespace().is_none())
+                .filter(|node| SUPPL_APPDX_NAMES.contains(&node.tag_name().name()))
+                .filter_map(|node| read_xml_fragment(&xml[node.range()], SUPPL_APPDX_NAMES))
+                .collect(),
         });
     }
     for appendix in body.children().filter(roxmltree::Node::is_element) {
@@ -95,6 +100,16 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
 
 const APPDX_FRAGMENT_NAMES: &[&str] = &["Appdx", "AppdxFig", "AppdxFormat", "AppdxNote", "AppdxStyle"];
 
+const SUPPL_APPDX_NAMES: &[&str] = &[
+    "SupplProvisionAppdxTable",
+    "SupplProvisionAppdxStyle",
+    "SupplProvisionAppdx",
+];
+
+pub(super) fn read_encoded_suppl_appendices(encoded: &str) -> Vec<String> {
+    read_encoded_fragments(encoded, SUPPL_APPDX_NAMES)
+}
+
 fn read_xml_fragment(xml: &str, names: &[&str]) -> Option<String> {
     let doc = roxmltree::Document::parse(xml).ok()?;
     let node = doc.root_element();
@@ -110,10 +125,14 @@ pub(super) fn read_encoded_toc(encoded: &str) -> Option<String> {
 }
 
 pub(super) fn read_encoded_appdx_fragments(encoded: &str) -> Vec<String> {
+    read_encoded_fragments(encoded, APPDX_FRAGMENT_NAMES)
+}
+
+fn read_encoded_fragments(encoded: &str, names: &[&str]) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(encoded)
         .unwrap_or_default()
         .iter()
-        .filter_map(|fragment| read_xml_fragment(fragment, APPDX_FRAGMENT_NAMES))
+        .filter_map(|fragment| read_xml_fragment(fragment, names))
         .collect()
 }
 
@@ -454,6 +473,11 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         out.push_str("</SupplProvisionLabel>\n");
         for node in &suppl.nodes {
             write_xml_node(&mut out, node, 3);
+        }
+        for fragment in &suppl.appendix_xml {
+            out.push_str("      ");
+            out.push_str(fragment);
+            out.push('\n');
         }
         out.push_str("    </SupplProvision>\n");
     }

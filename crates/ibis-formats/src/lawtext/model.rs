@@ -214,6 +214,7 @@ pub struct SupplProvision {
     pub extract: bool,
     pub label: String,
     pub nodes: Vec<LawNode>,
+    pub(super) appendix_xml: Vec<String>,
 }
 
 /// An appended table (`AppdxTable`: 別表).

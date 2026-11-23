@@ -390,6 +390,58 @@ fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
 }
 
 #[test]
+fn supplementary_appendices_roundtrip_under_their_own_headings_in_order() {
+    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+
+    let table = concat!(
+        "<SupplProvisionAppdxTable Num=\"1\"><SupplProvisionAppdxTableTitle>附則別表</SupplProvisionAppdxTableTitle>",
+        "<TableStruct><Table><TableRow><TableColumn rowspan=\"2\"><Sentence>甲</Sentence></TableColumn>",
+        "<TableColumn><Sentence>乙</Sentence></TableColumn></TableRow>",
+        "<TableRow><TableColumn><Sentence>丙</Sentence></TableColumn></TableRow></Table></TableStruct>",
+        "</SupplProvisionAppdxTable>",
+    );
+    let style = concat!(
+        "<SupplProvisionAppdxStyle><SupplProvisionAppdxStyleTitle>附則様式</SupplProvisionAppdxStyleTitle>",
+        "<StyleStruct><Style><Fig src=\"./pict/sample--form.pdf\"/></Style></StyleStruct></SupplProvisionAppdxStyle>",
+    );
+    let formula = "<SupplProvisionAppdx><ArithFormulaNum>附則算式</ArithFormulaNum><ArithFormula/></SupplProvisionAppdx>";
+    let supplement = |number: &str, appendices: &str| format!(
+        "<SupplProvision AmendLawNum=\"{number}\"><SupplProvisionLabel>附　則</SupplProvisionLabel>\n",
+    ) + "<Paragraph Num=\"1\"><ParagraphNum/><ParagraphSentence><Sentence>公布の日から施行する。</Sentence></ParagraphSentence></Paragraph>" + appendices + "</SupplProvision>";
+    let first = "令和七年法律第二号";
+    let second = "令和七年法律第三号";
+    let third = "令和七年法律第四号";
+    let source = include_str!("lawtext/supplementary-amendment.xml");
+    let (before, _) = source.split_once("<SupplProvision AmendLawNum=").unwrap();
+    let input = format!(
+        "{before}{}{}{}\n</LawBody>\n</Law>",
+        supplement(first, &format!("{style}{table}{formula}")),
+        supplement(second, ""),
+        supplement(third, &format!("{formula}{style}")),
+    );
+    let document = parse_law_xml(&input).unwrap();
+    let lawtext = to_lawtext(&document);
+    let markdown = to_markdown(&document);
+    assert!(markdown.contains("sample\\u002d\\u002dform.pdf"));
+    for restored in [parse_lawtext(&lawtext).unwrap(), parse_markdown_law(&markdown).unwrap()] {
+        let output = to_law_xml(&restored);
+        let xml = roxmltree::Document::parse(&output).unwrap();
+        let body = xml.root_element().children().find(|node| node.has_tag_name("LawBody")).unwrap();
+        let actual: Vec<_> = body.children()
+            .filter(|node| node.has_tag_name("SupplProvision"))
+            .map(|node| {
+                let fragments: Vec<_> = node.children()
+                    .filter(|child| child.is_element() && child.tag_name().name().starts_with("SupplProvisionAppdx"))
+                    .map(|child| &output[child.range()])
+                    .collect();
+                (node.attribute("AmendLawNum").unwrap(), fragments)
+            })
+            .collect();
+        assert_eq!(actual, [(first, vec![style, table, formula]), (second, vec![]), (third, vec![formula, style])]);
+    }
+}
+
+#[test]
 fn audit_reports_reordered_siblings_without_counting_removals_as_reordering() {
     let fixture = include_str!("lawtext/supplementary-amendment.xml");
     let title_start = fixture.find("<LawTitle ").unwrap();
