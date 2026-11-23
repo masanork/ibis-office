@@ -20,6 +20,7 @@ pub(crate) struct LiveAssistant {
 }
 
 const TOOLS: &[(&str, &str, &str, bool)] = &[
+    ("assistant_chart_drill_down", "chart_drill_down", "Read the selected chart bar’s value, its workbook drill-down destination, and directly linked evidence. Requires selecting a bar in the shared live workbook.", true),
     ("assistant_analysis_context", "analysis_context", "Read the live workbook's selected chart bar, applied parameters, and current report preview status.", true),
     ("assistant_preview_analysis", "preview_analysis", "Preview report parameter changes in the live workbook using its open SQL Report Refresh panel and files assigned by the user. Does not apply; the user reviews and applies in the GUI.", false),
     (
@@ -233,7 +234,10 @@ mod tests {
             read_only: true,
         };
         let names: Vec<_> = assistant.schemas().map(|schema| schema["name"].clone()).collect();
-        assert_eq!(names, [json!("assistant_analysis_context"), json!("assistant_status"), json!("assistant_result")]);
+        assert_eq!(names, [
+            json!("assistant_chart_drill_down"), json!("assistant_analysis_context"),
+            json!("assistant_status"), json!("assistant_result"),
+        ]);
         assert!(assistant.call("assistant_preview_analysis", None).is_none());
         assert!(assistant.call("assistant_reset", None).is_none());
         assert!(

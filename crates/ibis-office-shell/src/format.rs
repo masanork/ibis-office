@@ -366,6 +366,9 @@ pub trait FormatEditor {
         editor.document.undo_len() > before
     }
 
+    fn live_chart_drill_down(_editor: &SlideEditor) -> serde_json::Value {
+        serde_json::json!({"error":"Chart drill-down is only available for spreadsheets"})
+    }
     fn live_analysis(_editor: &mut SlideEditor, _values: Option<&serde_json::Value>, _cx: &mut Context<SlideEditor>) -> serde_json::Value {
         serde_json::json!({"error":"Live analysis requires a worksheet"})
     }
@@ -1394,6 +1397,7 @@ pub trait FormatDriver: Sync {
     fn ai_editable_source(&self, editor: &SlideEditor, kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String>;
     fn apply_ai_source(&self, editor: &mut SlideEditor, kind: crate::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String>;
     fn apply_ai_commands(&self, editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool;
+    fn live_chart_drill_down(&self, editor: &SlideEditor) -> serde_json::Value;
     fn live_analysis(&self, editor: &mut SlideEditor, values: Option<&serde_json::Value>, cx: &mut Context<SlideEditor>) -> serde_json::Value;
     fn preview_assistant_report_refresh(&self, editor: &mut SlideEditor, table: &str, files: std::collections::BTreeMap<String, std::path::PathBuf>, cx: &mut Context<SlideEditor>);
     fn ai_replacement_target(&self, editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget>;
@@ -1675,6 +1679,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn preview_assistant_report_refresh(&self, editor: &mut SlideEditor, table: &str, files: std::collections::BTreeMap<String, std::path::PathBuf>, cx: &mut Context<SlideEditor>) {
         F::preview_assistant_report_refresh(editor, table, files, cx);
+    }
+    fn live_chart_drill_down(&self, editor: &SlideEditor) -> serde_json::Value {
+        F::live_chart_drill_down(editor)
     }
     fn live_analysis(&self, editor: &mut SlideEditor, values: Option<&serde_json::Value>, cx: &mut Context<SlideEditor>) -> serde_json::Value {
         F::live_analysis(editor, values, cx)

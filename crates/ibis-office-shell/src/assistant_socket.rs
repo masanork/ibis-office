@@ -34,6 +34,9 @@ pub fn start(
                     if request["op"] == "analysis_context" {
                         return crate::format::with_format!(editor, live_analysis(editor, None, cx));
                     }
+                    if request["op"] == "chart_drill_down" {
+                        return crate::format::with_format!(editor, live_chart_drill_down(editor));
+                    }
                     if request["op"] == "preview_analysis" {
                         let Some(values) = request.get("parameter_values") else {
                             return json!({"error":"parameter_values is required"});
