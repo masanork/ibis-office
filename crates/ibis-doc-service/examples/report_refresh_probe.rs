@@ -4,6 +4,8 @@
 //! Generate matching Arrow IPC, JSON Lines and Avro inputs with `generate <directory> <rows>`.
 //! Measure with `shared|separate <seed> <input> [reports]`. Use different directories for
 //! the seed and each input size. Generate fixtures in a separate process from the measurement.
+//! Build with `--features report-profiling` for the JSON Lines schema pass, remaining
+//! staging work, and SQL execution timings.
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn main() {}

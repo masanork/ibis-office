@@ -55,18 +55,17 @@ def measure(probe, mode, seed, source, reports, scratch):
 
 
 def summarize(runs):
-    return {
-        "preview_ms": [
-            statistics.median(run["timings"][index]["preview_ms"] for run in runs)
+    timing_fields = runs[0]["timings"][0].keys()
+    summary = {
+        field: [
+            statistics.median(run["timings"][index][field] for run in runs)
             for index in range(2)
-        ],
-        "apply_ms": [
-            statistics.median(run["timings"][index]["apply_ms"] for run in runs)
-            for index in range(2)
-        ],
-        "peak_rss_bytes": statistics.median(run["peak_rss_bytes"] for run in runs),
-        "sampled_peak_db_bytes": max(run["sampled_peak_db_bytes"] for run in runs),
+        ]
+        for field in timing_fields
     }
+    summary["peak_rss_bytes"] = statistics.median(run["peak_rss_bytes"] for run in runs)
+    summary["sampled_peak_db_bytes"] = max(run["sampled_peak_db_bytes"] for run in runs)
+    return summary
 
 
 def main():

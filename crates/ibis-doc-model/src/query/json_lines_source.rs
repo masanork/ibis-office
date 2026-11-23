@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::{QColumn, QTable, QType};
 use crate::CellValue;
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeSeed, MapAccess, Visitor},
+};
 use serde_json::{Value, value::RawValue};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap},
+    fmt,
     fs::File,
     io::{BufRead, BufReader, Read, Seek},
     path::Path,
@@ -33,15 +39,30 @@ pub fn read_json_lines(path: &Path) -> Result<QTable, String> {
 fn read_records(reader: impl BufRead) -> Result<QTable, String> {
     let mut output = Records::default();
     visit_lines(reader, MAX_SOURCE_BYTES, |fields, location| {
-        output.push(fields, location)
+        output.push(fields, &format!("Line {location}"))
     })?;
     output.finish()
 }
 
 fn visit_lines(
+    reader: impl BufRead,
+    max_bytes: usize,
+    mut visit: impl FnMut(BTreeMap<String, &RawValue>, usize) -> Result<(), String>,
+) -> Result<(), String> {
+    visit_raw_lines(reader, max_bytes, |line, number| {
+        let fields = serde_json::from_slice(line).map_err(|error| record_error(number, error))?;
+        visit(fields, number)
+    })
+}
+
+fn record_error(number: usize, error: serde_json::Error) -> String {
+    format!("Line {number}: expected one JSON object ({error})")
+}
+
+fn visit_raw_lines(
     mut reader: impl BufRead,
     max_bytes: usize,
-    mut visit: impl FnMut(BTreeMap<String, &RawValue>, &str) -> Result<(), String>,
+    mut visit: impl FnMut(&[u8], usize) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut line = Vec::new();
     let mut bytes = 0usize;
@@ -61,9 +82,7 @@ fn visit_lines(
                 "Line {line_number}: JSON Lines source exceeds the byte limit"
             ));
         }
-        let fields = serde_json::from_slice::<BTreeMap<String, &RawValue>>(&line)
-            .map_err(|error| format!("Line {line_number}: expected one JSON object ({error})"))?;
-        visit(fields, &format!("Line {line_number}"))?;
+        visit(&line, line_number)?;
     }
     Ok(())
 }
@@ -100,20 +119,27 @@ pub(super) fn visit_json_lines(
     // The first pass retains only the schema, including fields first seen late.
     #[cfg(feature = "report-profiling")]
     let schema_timer = super::report_profile::Timer::start(super::report_profile::Phase::Schema);
-    visit_lines(&mut input, max_bytes, |fields, location| {
-        for (name, raw) in fields {
-            let index = match indices.get(&name) {
-                Some(&index) => index,
-                None if !selected.is_empty() => continue,
-                None => add_sql_column(&name, &mut indices, &mut columns, &mut types)?,
-            };
-            let (_, ty) = cell(raw).map_err(|error| format!("{location}, {name}: {error}"))?;
-            if let Some(ty) = ty {
-                types[index] = Some(merge_type(types[index], ty));
+    if selected.is_empty() {
+        visit_lines(&mut input, max_bytes, |fields, line| {
+            for (name, raw) in fields {
+                let index = match indices.get(&name) {
+                    Some(&index) => index,
+                    None => add_sql_column(&name, &mut indices, &mut columns, &mut types)?,
+                };
+                infer_type(&mut types[index], raw, line, &name)?;
             }
-        }
-        Ok(())
-    })?;
+            Ok(())
+        })?;
+    } else {
+        visit_projected_lines(&mut input, max_bytes, &indices, |fields, line| {
+            for (index, raw) in fields.into_iter().enumerate() {
+                if let Some(raw) = raw {
+                    infer_type(&mut types[index], raw, line, &columns[index].name)?;
+                }
+            }
+            Ok(())
+        })?;
+    }
     if columns.is_empty() {
         return Err("JSON source contains no fields".into());
     }
@@ -125,24 +151,27 @@ pub(super) fn visit_json_lines(
     visit(&columns, None)?;
     if !schema_only {
         input.rewind().map_err(|error| error.to_string())?;
-        visit_lines(&mut input, max_bytes, |mut fields, location| {
-            let values = columns
-                .iter()
-                .map(|column| {
-                    fields
-                        .remove(&column.name)
-                        .map_or(Ok(CellValue::Empty), |raw| {
-                            cell(raw)
-                                .map(|(value, _)| value)
-                                .map_err(|error| format!("{location}, {}: {error}", column.name))
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            if selected.is_empty() && !fields.is_empty() {
-                return Err("JSON Lines schema changed during import".into());
-            }
-            visit(&columns, Some(values))
-        })?;
+        if selected.is_empty() {
+            visit_lines(&mut input, max_bytes, |mut fields, line| {
+                let values = columns
+                    .iter()
+                    .map(|column| sql_cell(fields.remove(&column.name), line, &column.name))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !fields.is_empty() {
+                    return Err("JSON Lines schema changed during import".into());
+                }
+                visit(&columns, Some(values))
+            })?;
+        } else {
+            visit_projected_lines(&mut input, max_bytes, &indices, |fields, line| {
+                let values = fields
+                    .into_iter()
+                    .zip(&columns)
+                    .map(|(raw, column)| sql_cell(raw, line, &column.name))
+                    .collect::<Result<Vec<_>, _>>()?;
+                visit(&columns, Some(values))
+            })?;
+        }
     }
     let after = input
         .get_ref()
@@ -152,6 +181,97 @@ pub(super) fn visit_json_lines(
         return Err("JSON Lines file changed during import".into());
     }
     Ok(())
+}
+
+fn infer_type(
+    previous: &mut Option<QType>,
+    raw: &RawValue,
+    line: usize,
+    name: &str,
+) -> Result<(), String> {
+    let ty = inferred_cell_type(raw).map_err(|error| format!("Line {line}, {name}: {error}"))?;
+    if let Some(ty) = ty {
+        *previous = Some(merge_type(*previous, ty));
+    }
+    Ok(())
+}
+
+fn inferred_cell_type(raw: &RawValue) -> Result<Option<QType>, String> {
+    let text = raw.get();
+    let borrowed = if text.starts_with(['[', '{']) {
+        Some(text)
+    } else if text.starts_with('"') {
+        // Unescaped strings can be validated without allocating their decoded value.
+        serde_json::from_str::<&str>(text).ok()
+    } else {
+        None
+    };
+    if let Some(text) = borrowed {
+        check_text_limit(text)?;
+        return Ok(Some(QType::Text));
+    }
+    cell(raw).map(|(_, ty)| ty)
+}
+
+fn sql_cell(raw: Option<&RawValue>, line: usize, name: &str) -> Result<CellValue, String> {
+    raw.map_or(Ok(CellValue::Empty), |raw| {
+        cell(raw)
+            .map(|(value, _)| value)
+            .map_err(|error| format!("Line {line}, {name}: {error}"))
+    })
+}
+
+fn visit_projected_lines(
+    reader: impl BufRead,
+    max_bytes: usize,
+    indices: &HashMap<String, usize>,
+    mut visit: impl FnMut(Vec<Option<&RawValue>>, usize) -> Result<(), String>,
+) -> Result<(), String> {
+    visit_raw_lines(reader, max_bytes, |line, number| {
+        let mut parser = serde_json::Deserializer::from_slice(line);
+        let fields = Projection(indices)
+            .deserialize(&mut parser)
+            .and_then(|fields| {
+                parser.end()?;
+                Ok(fields)
+            })
+            .map_err(|error| record_error(number, error))?;
+        visit(fields, number)
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct FieldName<'a>(#[serde(borrow)] Cow<'a, str>);
+
+struct Projection<'a>(&'a HashMap<String, usize>);
+
+impl<'de> DeserializeSeed<'de> for Projection<'_> {
+    type Value = Vec<Option<&'de RawValue>>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Projection<'_> {
+    type Value = Vec<Option<&'de RawValue>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut fields = vec![None; self.0.len()];
+        while let Some(FieldName(name)) = map.next_key()? {
+            let value = map.next_value()?;
+            if let Some(&index) = self.0.get(name.as_ref()) {
+                // Match BTreeMap deserialization: the last duplicate key wins.
+                fields[index] = Some(value);
+            }
+        }
+        Ok(fields)
+    }
 }
 
 fn add_sql_column(
@@ -320,9 +440,7 @@ fn records_from_array(bytes: &[u8], key: Option<&str>) -> Result<QTable, String>
 fn cell(raw: &RawValue) -> Result<(CellValue, Option<QType>), String> {
     let text = raw.get();
     if text.starts_with(['[', '{']) {
-        if exceeds_text_limit(text) {
-            return Err("Text exceeds the spreadsheet cell limit".into());
-        }
+        check_text_limit(text)?;
         return Ok((CellValue::Text(text.into()), Some(QType::Text)));
     }
     let value = serde_json::from_str::<Value>(text).map_err(|error| error.to_string())?;
@@ -347,11 +465,16 @@ fn cell(raw: &RawValue) -> Result<(CellValue, Option<QType>), String> {
         Value::Array(_) | Value::Object(_) => return Err("Expected a scalar JSON value".into()),
     };
     if let CellValue::Text(text) = &cell {
-        if exceeds_text_limit(text) {
-            return Err("Text exceeds the spreadsheet cell limit".into());
-        }
+        check_text_limit(text)?;
     }
     Ok((cell, Some(ty)))
+}
+
+fn check_text_limit(text: &str) -> Result<(), String> {
+    if exceeds_text_limit(text) {
+        return Err("Text exceeds the spreadsheet cell limit".into());
+    }
+    Ok(())
 }
 
 fn exceeds_text_limit(text: &str) -> bool {
@@ -392,6 +515,48 @@ mod tests {
             table.rows[2][2],
             CellValue::Text("{\"a\":18446744073709551617}".into())
         );
+    }
+
+    #[test]
+    fn projected_stream_preserves_keys_values_and_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("projection.jsonl");
+        let selected = ["code", "n", "nested"].map(String::from);
+        let source = super::super::DiskDataset::JsonLines(path.clone(), selected.to_vec());
+        let valid = r#"{"code":"discarded","c\u006fde":"001","n":2,"nested":{"x": 1},"ignored":[0]}
+{"code":"002","n":2.5}
+"#;
+        std::fs::write(&path, valid).unwrap();
+        let table = source.collect_bounded(20, 1024).unwrap();
+        assert_eq!(table.names(), ["code", "n", "nested"]);
+        assert_eq!(table.columns[1].ty, QType::Decimal);
+        assert_eq!(
+            table.rows,
+            [
+                [
+                    CellValue::Text("001".into()),
+                    CellValue::Number(2.0),
+                    CellValue::Text(r#"{"x": 1}"#.into())
+                ],
+                [
+                    CellValue::Text("002".into()),
+                    CellValue::Number(2.5),
+                    CellValue::Empty
+                ],
+            ]
+        );
+        for invalid in [
+            r#"{"ignored":[,]}"#,
+            r#"{"n":9007199254740993}"#,
+            r#"{"code":"003"} {}"#,
+        ] {
+            std::fs::write(&path, format!("{valid}{invalid}\n")).unwrap();
+            let error = source.columns().unwrap_err();
+            assert!(
+                error.starts_with("Line 3:") || error.starts_with("Line 3,"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

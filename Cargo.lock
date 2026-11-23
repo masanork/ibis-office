@@ -5597,6 +5597,7 @@ dependencies = [
  "parquet",
  "regex",
  "ruzstd",
+ "serde",
  "serde_json",
  "tempfile",
  "turso_core",
