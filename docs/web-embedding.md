@@ -168,7 +168,7 @@ The editor reads no other option. The playground's address parameters (`view`, `
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `name` | string | required | The file name with its extension (docx, xlsx, pptx). |
+| `name` | string | required | The file name with its extension (docx, xlsx, pptx; pdf, xps, oxps, ofd or xdw open read-only in the viewer). |
 | `bytes` | ArrayBuffer | required | The file's contents. |
 | `version` | string | required | The version of these contents. ibisOffice does not look inside; it hands it back as the next `baseVersion`. |
 | `readOnly` | boolean | `false` | Open read-only. |
@@ -213,7 +213,7 @@ The shapes of folders and files in `listFolder` (`HostFolder`, `HostFileEntry`, 
 | `type` | When | Fields |
 |---|---|---|
 | `ready` | The editor started; `load` is accepted. | |
-| `loaded` | A document was opened. | `name`, `kind` (`'docx'`, `'xlsx'` or `'pptx'`) |
+| `loaded` | A document was opened. | `name`, `kind` (`'docx'`, `'xlsx'`, `'pptx'` or `'pdf'`, the last for PDF, XPS, OFD and XDW) |
 | `dirty` | Whether there are unsaved changes changed. | `dirty` (boolean) |
 | `documentChanged` | The document was replaced. | `source` (`'local'`, `'host'` or `'new'`) |
 | `saved` | A save finished (your `saveFile` returned `ok`). | `trigger` (`'user'`, `'auto'` or `'close'`) |

@@ -277,7 +277,7 @@ export interface IbisOfficeHost {
 
 export type IbisOfficeEvent =
   | { type: 'ready' } // started (load is accepted)
-  | { type: 'loaded'; name: string; kind: 'docx' | 'xlsx' | 'pptx' }
+  | { type: 'loaded'; name: string; kind: 'docx' | 'xlsx' | 'pptx' | 'pdf' }
   | { type: 'dirty'; dirty: boolean } // whether there are unsaved changes changed
   | { type: 'documentChanged'; source: 'local' | 'host' | 'new' } // the document was replaced (opened from local, a new one)
   | { type: 'saved'; trigger: 'user' | 'auto' | 'close' } // saved (the host's saveFile returned ok)
