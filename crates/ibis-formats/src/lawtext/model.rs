@@ -310,6 +310,32 @@ impl Default for LawDoc {
 }
 
 impl LawDoc {
+    /// Edit the supplementary provision at its current index and retain its appendices.
+    ///
+    /// Prefer this method to editing the public vector directly when provisions
+    /// share a heading. The index is resolved before the body or heading changes.
+    /// Returns `None` if the index is out of bounds.
+    pub fn edit_suppl_provision<R>(
+        &mut self,
+        index: usize,
+        edit: impl FnOnce(&mut SupplProvision) -> R,
+    ) -> Option<R> {
+        let mut edited = self.suppl_provisions.get(index)?.clone();
+        let result = edit(&mut edited);
+
+        // Resolve current owners before changing the values used to recognize them.
+        let owners: Vec<_> = (0..self.suppl_provisions.len())
+            .filter_map(|index| self.suppl_appendix_key(index).map(|key| (index, key)))
+            .collect();
+        let mut previous = std::mem::take(&mut self.suppl_appendices);
+        self.suppl_appendices = owners.into_iter()
+            .filter_map(|(index, key)| previous.remove(&key).map(|saved| (index, saved)))
+            .collect();
+        self.suppl_provisions[index] = edited;
+        self.bind_suppl_appendices();
+        Some(result)
+    }
+
     pub(super) fn push_suppl_provision(&mut self, suppl: SupplProvision, fragments: Vec<String>) {
         if !fragments.is_empty() {
             self.suppl_appendices.insert(self.suppl_provisions.len(), SupplAppendices {

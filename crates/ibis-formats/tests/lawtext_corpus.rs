@@ -480,10 +480,17 @@ fn supplementary_appendices_roundtrip_under_their_own_headings_in_order() {
     );
     let mut repeated = parse_law_xml(&repeated_input).unwrap();
     repeated.suppl_provisions.swap(0, 2);
+    let mut edited = repeated.clone();
+    assert!(edited.edit_suppl_provision(0, |suppl| {
+        suppl.nodes = document.suppl_provisions[0].nodes.clone();
+    }).is_some());
+    // The edit makes both provisions identical. Each keeps its own appendix bundle.
+    assert_eq!(edited.suppl_provisions[0], edited.suppl_provisions[2]);
     for (document, expected) in [
         (document, [(first, vec![style, table, formula]), (second, vec![]), (third, vec![formula, style])]),
         (reversed, [(third, vec![formula, style]), (second, vec![]), (first, vec![style, table, formula])]),
         (repeated, [(first, vec![formula, style]), (second, vec![]), (first, vec![style, table, formula])]),
+        (edited, [(first, vec![formula, style]), (second, vec![]), (first, vec![style, table, formula])]),
     ] {
         let lawtext = to_lawtext(&document);
         let markdown = to_markdown(&document);
