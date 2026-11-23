@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import json
 from pathlib import Path
+import tempfile
 import unittest
 
 from jsonschema import Draft202012Validator
 
 from pilot import extract, schema
+from review import load_approved, reviewed_mapping
 
 COMMON = {"Z4": "架空事業所", "I19": "架空従業員", "AA3": 2026, "AF3": 11, "AI3": 23}
 FIXED = {**COMMON, "I23": "☑", "W25": 180, "AA25": 0, "AG25": 1200, "Q27": 20, "AC27": 5}
@@ -16,6 +18,34 @@ VARIABLE = {
 
 
 class EmploymentSchemaTest(unittest.TestCase):
+    def test_human_review_and_approved_mapping(self):
+        draft = json.loads(Path(__file__).with_name("candidate.example.json").read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "approval pending"):
+            reviewed_mapping(draft, "Test reviewer")
+        for check in draft["checks"].values():
+            check.update(decision="accepted", review_note="Test decision")
+        with self.assertRaisesRegex(ValueError, "already assigned"):
+            reviewed_mapping(draft, "Test reviewer")
+        draft["mapping"]["schedules"]["variable"]["days"]["unit"]["choice"] = {"month": "M32", "week": "P32"}
+        draft["mapping"]["common"]["employee_name"]["text"] = "I52"
+        with self.assertRaisesRegex(ValueError, "Outside the company section"):
+            reviewed_mapping(draft, "Test reviewer")
+        draft["mapping"]["common"]["employee_name"]["text"] = "I19"
+        approved = reviewed_mapping(draft, "Test reviewer")
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / "mapping.json"
+            file.write_text(json.dumps(draft), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "An approved mapping is required"):
+                load_approved(file)
+            file.write_text(json.dumps(approved), encoding="utf-8")
+            mapping = load_approved(file)
+            self.assertEqual(schema(mapping), schema())
+            self.assertEqual(extract(VARIABLE, mapping), extract(VARIABLE))
+            approved["mapping"]["common"]["employee_name"]["text"] = "I18"
+            file.write_text(json.dumps(approved), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "changed after approval"):
+                load_approved(file)
+
     def test_schema_is_reproducible(self):
         checked_in = Path(__file__).with_name("employment.schema.json").read_text(encoding="utf-8")
         self.assertEqual(json.dumps(schema(), ensure_ascii=False, indent=2) + "\n", checked_in)

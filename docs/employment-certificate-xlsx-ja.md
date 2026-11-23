@@ -62,3 +62,24 @@ python3 scripts/employment-schema/test_pilot.py
 - 保護者記載欄を会社の証明対象から除き、根拠が足りない必須条件を確認事項にしたか。
 
 候補のセル番地は実際のXLSXと機械的に照合し、意味と必須条件は担当者が承認する。対応表を見ていないモデルでの再現率測定は今後の評価とする。
+
+## 候補をレビューして対応表を確定する
+
+[候補サンプル](../scripts/employment-schema/candidate.example.json)は、LLM出力を受け取る形式を試すために作成した。変則勤務の日数に合計時間のチェック欄を割り当てる誤りを入れてある。実際の推論精度を示すサンプルではない。
+
+```sh
+tools=scripts/employment-schema
+review_dir="$(mktemp -d)"
+cp "$tools/candidate.example.json" "$review_dir/review.json"
+python3 "$tools/review.py" show "$review_dir/review.json"
+```
+
+担当者は候補と根拠を公式様式で照合し、`review.json` の `mapping` を修正する。各項目群の `review_note` に判断や修正理由を書き、確認が済んだ群の `decision` を `accepted` にする。別のモデルで試す場合は、空の様式と記載要領に加え、項目と根拠の出力形式を指示する。正解のセル番地を含む候補サンプルはレビュー側で使う。
+
+```sh
+python3 "$tools/review.py" approve "$review_dir/review.json" \
+  --reviewer '確認担当者名' > "$review_dir/approved.json" &&
+python3 "$tools/pilot.py" schema --approved-mapping "$review_dir/approved.json"
+```
+
+承認済み対応表を抽出にも使う場合は、`pilot.py extract cells.json --approved-mapping "$review_dir/approved.json"` を実行する。承認待ちの項目群、重複するセル、会社記載範囲外のセル、承認後に変更された対応表を検出すると処理を止める。承認ファイルは担当者名と判断の記録であり、本人確認や電子署名は別の仕組みで扱う。
