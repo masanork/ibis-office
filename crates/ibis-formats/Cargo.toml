@@ -69,3 +69,7 @@ path = "src/bin/lawtext_5set.rs"
 [[bin]]
 name = "ibis-lawtext-audit"
 path = "src/bin/lawtext_audit.rs"
+
+[[bin]]
+name = "ibis-lawtext-apply"
+path = "src/bin/lawtext_apply.rs"

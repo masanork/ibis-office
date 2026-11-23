@@ -159,6 +159,21 @@ cargo run --locked -p ibis-formats --bin ibis-lawtext-audit -- \
 差分の位置には条・項・号の `Num`、附則の `AmendLawNum` と、同じ位置キーの出現順を用います。診断は要素・属性・テキストの差を示します。対応付けた要素の相対順が変わった場合は、親要素の位置に `child_order_changed` を表示します。同じ識別子の要素や識別子を持たない同種の要素は出現順で対応付けます。属性順と整形用の空白は比較対象外です。要素を失った場合は、その配下をまとめて親要素の位置に表示します。
 
 
+### 法令XMLの原本へ編集を反映する
+
+`ibis-lawtext-apply` は編集中のファイルとは別に、編集開始時に使った法令XMLの原本を入力に取ります。編集用ファイルを生成し、編集後に別の出力先へ候補XMLを書き出します。
+
+```sh
+ibis-lawtext-apply original.xml --prepare --format markdown > draft.md
+ibis-lawtext-apply original.xml draft.md > candidate.xml
+```
+
+Lawtextを使うときは生成時に `--format lawtext` を指定し、拡張子を `.law.txt` にします。編集開始から反映まで、同じ版の `original.xml` を保管します。リダイレクト先には原本と異なるパスを指定してください。
+
+原本で対応を確定できる平文の `Sentence` の変更を反映します。別表の単一平文セルにも適用できます。変更箇所のテキストだけを差し替え、元の属性、コメント、整形、未対応要素を保持します。行や条の追加・削除、ルビなどの混在する文、曖昧な並べ替え、元XMLの対応を確定できない編集があれば、全件を保留して診断を標準エラーにJSONで返します。保留時にXMLは出力せず、終了コードは `2` です。変換後のXSD検証は `ibis-lawtext-audit` で行えます。
+
+生成するLawtextはibisOfficeの既存の読み書き規則に従います。書き戻しには編集開始時に生成した形式とメタデータを維持してください。本家CLIによる別レイアウトへの再整形も、再現性を確認できなければ保留します。
+
 XMLから直接読み込んだ項・号・号の細分は、本文が同じ間、複数の `Sentence` の境界と `Num`、`Function`、`Indent`、`WritingMode` をXML書き出し時に保持します。改め文の生成・検算には従来どおり連結した本文を用います。ibisOfficeのLawtextは項・号・号の細分の本文に `<Sentence Function="main">…</Sentence><Sentence Function="proviso">…</Sentence>` と、文ごとのXML要素を記録できます。この記法はibisOfficeの拡張です。編集用Markdownは各項・号・号の細分の平文末尾にHTMLコメントで文構造を記録します。コメント中の文をつないだ内容が表示用の平文と一致する場合に復元し、本文が編集された場合やコメントを取り除いた場合は、本文を一つのXMLの文として書き出します。この保持は、コメントが残る一行の本文に適用されます。
 
 

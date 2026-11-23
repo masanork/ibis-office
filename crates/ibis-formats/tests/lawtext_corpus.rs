@@ -2,6 +2,68 @@
 use ibis_formats::lawtext::{input_to_markdown, parse_law_xml, parse_lawtext, to_lawtext};
 
 #[test]
+fn original_xml_patch_preserves_uneditable_content_and_withholds_structural_edits() {
+    use ibis_formats::lawtext::{
+        LawEditFormat, apply_law_source_edits, to_markdown,
+    };
+
+    let original = r#"<?xml version='1.0'?>
+<Law Era='Reiwa' Year='7' Num='1' LawType='Act' Lang='ja'>
+  <LawNum>令和七年法律第一号</LawNum>
+  <LawBody Subject='原本にのみある件名'>
+    <LawTitle>試験法</LawTitle>
+    <!-- 原本のコメント -->
+    <MainProvision><Article Num='1'><ArticleTitle>第一条</ArticleTitle>
+      <Paragraph Num='1'><ParagraphNum/><ParagraphSentence>
+        <Sentence Num='1' WritingMode='vertical'>旧文を適用する。</Sentence>
+      </ParagraphSentence></Paragraph>
+    </Article></MainProvision>
+  </LawBody>
+</Law>"#;
+    let doc = parse_law_xml(original).unwrap();
+    for (format, baseline) in [
+        (LawEditFormat::Lawtext, to_lawtext(&doc)),
+        (LawEditFormat::Markdown, to_markdown(&doc)),
+    ] {
+        let unchanged = apply_law_source_edits(original, &baseline, format).unwrap();
+        assert_eq!(unchanged.xml.as_deref(), Some(original));
+        assert_eq!(unchanged.applied_edits, 0);
+
+        // Markdown still carries the generated comment for the old sentence.
+        let changed = baseline.replacen("旧文を適用する。", "新文を適用する。", 1);
+        let patch = apply_law_source_edits(original, &changed, format).unwrap();
+        assert!(patch.diagnostics.is_empty(), "{:?}", patch.diagnostics);
+        assert_eq!(patch.applied_edits, 1);
+        assert_eq!(patch.xml.unwrap(), original.replace("旧文を適用する。", "新文を適用する。"));
+
+        let extra = format!("{changed}\n{}第二条 追加する。\n",
+            if format == LawEditFormat::Markdown { "## " } else { "" });
+        let patch = apply_law_source_edits(original, &extra, format).unwrap();
+        assert!(patch.xml.is_none());
+        assert_eq!(patch.applied_edits, 0);
+        assert!(!patch.diagnostics.is_empty());
+    }
+}
+
+#[test]
+fn original_xml_patch_applies_an_appendix_cell_without_reserializing_the_table() {
+    use ibis_formats::lawtext::{LawEditFormat, apply_law_source_edits, to_markdown};
+
+    let original = include_str!("lawtext/food-labeling-table.xml");
+    let doc = parse_law_xml(original).unwrap();
+    for (format, baseline) in [
+        (LawEditFormat::Lawtext, to_lawtext(&doc)),
+        (LawEditFormat::Markdown, to_markdown(&doc)),
+    ] {
+        let edited = baseline.replace("| 形質 |", "| 形質区分 |");
+        let output = apply_law_source_edits(original, &edited, format).unwrap();
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert_eq!(output.applied_edits, 1);
+        assert_eq!(output.xml.unwrap(), original.replace(">形質</Sentence>", ">形質区分</Sentence>"));
+    }
+}
+
+#[test]
 fn explicit_law_markdown_uses_the_document_type_in_frontmatter() {
     use ibis_formats::lawtext::{parse_law_input, to_markdown};
 

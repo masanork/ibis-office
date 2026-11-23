@@ -41,6 +41,8 @@ mod markup;
 mod markdown;
 mod syntax;
 mod table_markup;
+mod source_patch;
+pub use source_patch::{LawEditFormat, LawPatchDiagnostic, LawSourcePatch, apply_law_source_edits};
 pub use model::{
     DivisionKind, LawAppdxTable, LawArticle, LawDoc, LawItem, LawNode, LawParagraph,
     LawParagraphLabels, LawSentence, LawSentenceColumn, LawSentenceContent, LawSubitem,
