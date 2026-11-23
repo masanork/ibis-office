@@ -15,7 +15,7 @@ Two public food-labeling snapshots were retrieved from the e-Gov Law API on 2026
 - `food-labeling-table.xml` is an excerpt of [食品表示基準](https://laws.e-gov.go.jp/api/1/lawdata/427M60000002010), retaining the title, enactment statement, first article, and 別表第十八. The table includes a row span.
 - `food-inspection-form.xml` is the extracted `Law` element from the [inspection ordinance](https://laws.e-gov.go.jp/api/1/lawdata/427M60000042001). It includes three supplementary blocks and a prescribed form linked by a `Fig` element.
 
-The corpus test verifies that the merged-cell table survives a round trip and records the remaining loss of the prescribed form.
+The corpus test verifies that the merged-cell table survives a round trip and preserves the prescribed form reference.
 
 
 `food-labeling-2024-before.xml` and `food-labeling-2024-after.xml` are excerpts from the e-Gov revisions of 食品表示基準 for [2024-04-01](https://laws.e-gov.go.jp/law/427M60000002010/20240401_506M60000002050) and [2024-09-01](https://laws.e-gov.go.jp/law/427M60000002010/20240901_506M60000002071). They retain the title, first article, and existing 別表第二十五 plus the two newly added tables in the later revision. This isolates table insertion from the other changes in the published amendment.
@@ -24,3 +24,5 @@ The corpus test verifies that the merged-cell table survives a round trip and re
 `table-twenty-before.xml` and `table-twenty-after.xml` retain the first article plus the amended row of 別表第二十 from the same dated e-Gov revisions. The after excerpt includes an inner Japanese quotation in the cell text. The test verifies the resulting replacement as a whole cell change.
 
 `food-subitems-2024-before.xml` and `food-subitems-2024-after.xml` isolate Article 2(1)(10) and Article 22(1)(4) from the same two e-Gov revisions. The later Article 2 has three new subdivisions, the last of which contains five nested entries. Article 22 adds its third subdivision.
+
+`roundtrip-baseline.json` pins two full e-Gov revisions (予防接種法 and 食品表示基準) and the bundled inspection ordinance. In CI, `scripts/check-law-roundtrips.py` checks the XML and XSD hashes, validates both exported XML documents, and compares the sorted multiset of difference kinds and paths at each conversion stage. A change to an expected difference, including a fix, requires a reviewed baseline update. The workflow retains the audit JSON when it fails.

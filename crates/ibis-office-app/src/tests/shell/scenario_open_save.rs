@@ -12,6 +12,7 @@ use crate::shell::scenario::Scenario;
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
     vec![
         ("shell::open_and_save_without_an_edit_keeps_every_part", open_and_save_without_an_edit_keeps_every_part),
+        ("shell::save_reports_markdown_source_loss", save_reports_markdown_source_loss),
         ("shell::save_image_preview_keeps_transparent_pixels", save_image_preview_keeps_transparent_pixels),
     ]
 }
@@ -135,4 +136,37 @@ fn save_image_preview_keeps_transparent_pixels() {
     assert_eq!(pixel.dimensions(), (1, 1));
     assert_eq!(pixel.get_pixel(0, 0).0, [10, 20, 30, 128]);
     assert_eq!(std::fs::read(path).unwrap(), tga);
+}
+
+fn save_reports_markdown_source_loss() {
+    use crate::shell::actions::Save;
+    use ibis_formats::lawtext::{parse_law_xml, to_markdown};
+
+    let xml = include_str!("../../../../ibis-formats/tests/lawtext/food-labeling-table.xml");
+    let markdown = to_markdown(&parse_law_xml(xml).unwrap())
+        .replace(" {#ibis_law_table_0}", "")
+        .replace("| 形質 |", "| 形質区分 |");
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("law.md");
+    std::fs::write(&input, markdown).unwrap();
+    let mut scenario = Scenario::open(input.to_str().unwrap());
+    let target = directory.path().join("law.xml");
+    scenario.update(|editor, window, cx| {
+        editor.set_file_path(Some(target.clone()));
+        editor.save(&Save, window, cx);
+    });
+    scenario.settle();
+
+    let expected = crate::shell::i18n::format(
+        "file.markdown-source-unrestored",
+        &[("count", &1), ("locations", &"別表第十八")],
+    );
+    let status = scenario.status_texts();
+    assert!(status.contains(&expected), "save status: {status:?}");
+    let output = std::fs::read_to_string(target).unwrap();
+    assert!(output.contains("形質区分"));
+    assert!(!output.contains("rowspan="));
+    if std::env::var_os("IBIS_SAVE_DIAGNOSTIC_SCREENSHOT").is_some() {
+        scenario.screenshot("law-source-loss-status");
+    }
 }

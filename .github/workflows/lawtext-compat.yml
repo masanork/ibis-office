@@ -2,9 +2,9 @@ name: Lawtext compatibility
 on:
   push:
     branches: [masanork]
-    paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', '.github/workflows/lawtext-compat.yml']
+    paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', 'scripts/check-law-roundtrips.py', '.github/workflows/lawtext-compat.yml']
   pull_request:
-    paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', '.github/workflows/lawtext-compat.yml']
+    paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', 'scripts/check-law-roundtrips.py', '.github/workflows/lawtext-compat.yml']
 permissions:
   contents: read
 jobs:
@@ -23,3 +23,16 @@ jobs:
       - run: cargo test --locked -p ibis-formats --lib lawtext
       - run: cargo test --locked -p ibis-formats --test lawtext_corpus
       - run: cargo test --locked -p ibis-formats --test ai_document_export
+      - name: Install the XSD validator
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+      - name: Check pinned e-Gov revisions
+        run: |
+          cargo build --locked -p ibis-formats --bin ibis-lawtext-audit
+          python3 scripts/check-law-roundtrips.py target/debug/ibis-lawtext-audit target/law-audit
+      - name: Upload audit reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: law-roundtrip-reports
+          path: target/law-audit/*.json
+          if-no-files-found: ignore

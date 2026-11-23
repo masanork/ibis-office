@@ -1,0 +1,56 @@
+{
+  "vaccination-act": {
+    "revision": "323AC0000000068_20261001_507AC0000000087",
+    "input_sha256": "34896f749e5dfc389448f7ccff43712978a9370dc27b08d20d5c8ba65253d16f",
+    "differences": {
+      "xml_model_changes": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "lawtext_roundtrip_changes": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "markdown_roundtrip_changes": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    }
+  },
+  "food-labeling-standard": {
+    "revision": "427M60000002010_20240901_506M60000002071",
+    "input_sha256": "b2afab26a1828e894ffd2bdec3a2649754f2d4e24c2000790a32b11e7d17c950",
+    "differences": {
+      "xml_model_changes": {
+        "count": 165,
+        "sha256": "1551168c441369fecd68279eacf2998aff5a46925261b8adeb02ddca02a0367d"
+      },
+      "lawtext_roundtrip_changes": {
+        "count": 90,
+        "sha256": "d0f5df30de8b3dd554fd709b52c98609a6e40b714c107cf529829454c3c564c2"
+      },
+      "markdown_roundtrip_changes": {
+        "count": 90,
+        "sha256": "d0f5df30de8b3dd554fd709b52c98609a6e40b714c107cf529829454c3c564c2"
+      }
+    }
+  },
+  "food-inspection-form": {
+    "fixture": "food-inspection-form.xml",
+    "input_sha256": "1c1269e9127cde6702fe746eff0d23b4a83be90c6f414cbb3da19a1a0a49a8f2",
+    "differences": {
+      "xml_model_changes": {
+        "count": 52,
+        "sha256": "15c7df8eaaa622a86c6f1cf7fb9999a5615c482953a0bb41bd48ceeb5822bfff"
+      },
+      "lawtext_roundtrip_changes": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "markdown_roundtrip_changes": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    }
+  }
+}
