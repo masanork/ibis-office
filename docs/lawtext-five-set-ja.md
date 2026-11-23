@@ -167,3 +167,6 @@ XMLから直接読み込んだ項・号・号の細分は、本文が同じ間�
 
 
 法令名の読み `Kana`、略称 `Abbrev`、略称の読み `AbbrevKana` を保持します。ibisOfficeのLawtextでは題名の前に `:law-title-attrs: <LawTitle Kana="しけんほう" Abbrev=""/>` を置き、編集用Markdownではフロントマターの `law_title_attributes` に記録します。属性の空欄と省略は区別します。
+
+
+項・号・号の細分の文に含まれるルビは、単純な `Ruby` と `Rt` の形をXMLへ書き戻します。Lawtextの文要素と編集用Markdownのコメントにも同じ形を記録し、参照・比較・改め文の平文にはルビの親文字を用います。

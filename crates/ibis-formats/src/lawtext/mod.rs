@@ -133,6 +133,8 @@ pub struct LawSentence {
     pub function: Option<String>,
     pub indent: Option<String>,
     pub writing_mode: Option<String>,
+    // Escaped XML containing text and validated Ruby/Rt elements only.
+    ruby_markup: Option<String>,
 }
 
 /// Column as used in an XML item or sub-item sentence container.
@@ -178,6 +180,7 @@ impl LawSentenceContent {
             Self::Sentences(sentences) => sentences.len() > 1 || sentences.iter().any(|sentence| {
                 sentence.num.is_some() || sentence.function.is_some()
                     || sentence.indent.is_some() || sentence.writing_mode.is_some()
+                    || sentence.ruby_markup.is_some()
             }),
         }
     }
@@ -643,9 +646,43 @@ fn parse_xml_article(node: roxmltree::Node<'_, '_>) -> LawArticle {
     }
 }
 
+fn is_sentence_inline(node: roxmltree::Node<'_, '_>) -> bool {
+    node.is_text() || (node.has_tag_name("Ruby")
+        && node.attributes().len() == 0
+        && node.children().all(|child| child.is_text() || (child.has_tag_name("Rt")
+            && child.attributes().len() == 0
+            && child.children().all(|text| text.is_text()))))
+}
+
+fn write_ruby_inline(out: &mut String, node: roxmltree::Node<'_, '_>) {
+    if node.is_text() {
+        push_xml_escaped(out, node.text().unwrap_or_default());
+        return;
+    }
+    let tag = node.tag_name().name();
+    out.push('<');
+    out.push_str(tag);
+    out.push('>');
+    for child in node.children() {
+        write_ruby_inline(out, child);
+    }
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
+}
+
 fn parse_xml_sentence(node: roxmltree::Node<'_, '_>) -> LawSentence {
+    let ruby_markup = (node.children().any(|child| child.has_tag_name("Ruby"))
+        && node.children().all(is_sentence_inline)).then(|| {
+            let mut xml = String::new();
+            for child in node.children() {
+                write_ruby_inline(&mut xml, child);
+            }
+            xml
+        });
     LawSentence {
         text: collect_text(node),
+        ruby_markup,
         num: node.attribute("Num").map(str::to_string),
         function: node.attribute("Function").map(str::to_string),
         indent: node.attribute("Indent").map(str::to_string),
@@ -929,7 +966,11 @@ fn write_xml_sentence(out: &mut String, sentence: &LawSentence) {
     push_opt_attr(out, "Indent", sentence.indent.as_deref());
     push_opt_attr(out, "WritingMode", sentence.writing_mode.as_deref());
     out.push('>');
-    push_xml_escaped(out, &sentence.text);
+    if let Some(xml) = &sentence.ruby_markup {
+        out.push_str(xml);
+    } else {
+        push_xml_escaped(out, &sentence.text);
+    }
     out.push_str("</Sentence>");
 }
 
@@ -1243,7 +1284,7 @@ fn parse_lawtext_sentence_elements(text: &str, allow_columns: bool) -> Option<(S
     let is_spacing = |node: roxmltree::Node<'_, '_>| node.text().is_some_and(|text| node.is_text() && text.trim().is_empty());
     let is_sentence = |node: roxmltree::Node<'_, '_>| {
         node.has_tag_name("Sentence")
-            && node.children().all(|child| child.is_text())
+            && node.children().all(is_sentence_inline)
             && node.attributes().all(|attr| attr.namespace().is_none()
                 && matches!(attr.name(), "Num" | "Function" | "Indent" | "WritingMode"))
     };
