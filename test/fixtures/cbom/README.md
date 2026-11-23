@@ -26,7 +26,7 @@ ibisOffice --export cbom-compare \
   --out-file payment-crypto-changes.xlsx
 ```
 
-Open the XLSX in ibisOffice. **Asset changes** shows RSA-2048 and its related key record removed, and ML-DSA-65 added. **Changed asset fields** shows the certificate declaration before and after. **Relationship changes** shows the certificate dependency and provider implementation changing from RSA-2048 to ML-DSA-65. The payment service dependencies on TLS and the certificate are unchanged.
+Open the XLSX in ibisOffice. Start with **System impact summary** to see the changes grouped by dependent application or service. If there are no system rows, the workbook opens on the asset or relationship changes. If the comparison finds no differences, it opens with that result in **Comparison notes**. **Asset changes** shows RSA-2048 and its related key record removed, and ML-DSA-65 added. **Changed asset fields** shows the certificate declaration before and after. **Relationship changes** shows the certificate dependency and provider implementation changing from RSA-2048 to ML-DSA-65. The payment service dependencies on TLS and the certificate are unchanged.
 
 Keep `bom-ref` values stable for the same asset or endpoint across releases. An asset with a missing reference is listed as unmatched. Changes to edge targets appear as removal and addition. **Input artifacts** records the two filenames and SHA-256 values. This fixture describes fictional BOM declarations for an inventory comparison.
 

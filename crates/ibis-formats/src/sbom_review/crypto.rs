@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use super::{Row, Table, array, component_tree, inventory, parse, workbook};
+use super::{Row, Table, array, component_tree, inventory, parse, write_workbook};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -330,22 +330,43 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
         "Material algorithm reference",
         "Material expiry",
     ];
-    workbook([
+    let first_sheet = if !systems.is_empty() {
+        "System impact summary"
+    } else if !asset_changes.is_empty() {
+        "Asset changes"
+    } else if !relationship_changes.is_empty() {
+        "Relationship changes"
+    } else {
+        "Comparison notes"
+    };
+    let overview = if first_sheet == "Comparison notes" {
+        "No differences in the compared asset fields or declared relationships."
+    } else {
+        "System impact summary groups changes by application or service. Asset changes lists the underlying asset differences."
+    };
+    let mut tables: Vec<Table> = vec![
+        ("System impact summary", impact::SYSTEM_COLUMNS, systems),
         ("Asset changes", ASSET_DIFF_COLUMNS, asset_changes),
+        ("Dependency impact", impact::DEPENDENCY_COLUMNS, dependents),
+        ("Asset providers", impact::PROVIDER_COLUMNS, providers),
         ("Changed asset fields", &["BOM reference", "Name", "Field", "Old", "New"], field_changes),
         ("Relationship changes", &["Change", "Source reference", "Source", "Relationship", "Target reference", "Target"], relationship_changes),
         ("Input artifacts", &["Role", "File", "SHA-256"], evidence),
-        ("Dependency impact", impact::DEPENDENCY_COLUMNS, dependents),
-        ("Asset providers", impact::PROVIDER_COLUMNS, providers),
-        ("System impact summary", impact::SYSTEM_COLUMNS, systems),
-        ("Comparison notes", &["Scope"], vec![
-            vec!["Assets are matched by exact BOM reference. Use stable references across releases. Assets without a reference appear as unmatched.".into()],
-            vec!["Relationships are matched by source reference, kind and target reference. A changed target appears as a removed edge and an added edge.".into()],
-            vec!["The tables compare selected metadata and declarations. Confirm actual runtime use and PQC migration separately.".into()],
-            vec!["Dependency impact traces one shortest dependsOn path per dependent and snapshot. Asset providers lists direct provides declarations separately.".into()],
-            vec!["System impact summary groups changed dependency targets by application or service BOM reference. Blank asset cells indicate no path to a changed asset in that snapshot.".into()],
+        ("Comparison notes", &["Topic", "Details"], vec![
+            vec!["Start here".into(), overview.into()],
+            vec!["Dependency and provision".into(), "Dependency impact shows one shortest declared path per dependent and snapshot. Asset providers shows direct provides declarations.".into()],
+            vec!["Matching".into(), "The comparison matches exact BOM references. Assets without a reference appear as unmatched. Changing an edge target appears as a removal and an addition.".into()],
+            vec!["Blank asset cell".into(), "No declared path connects the system to a changed asset in that snapshot.".into()],
+            vec!["Scope".into(), "These sheets compare metadata and relationships declared in the CBOMs. Confirm actual runtime use separately.".into()],
         ]),
-    ])
+    ];
+    let first = tables
+        .iter()
+        .position(|table| table.0 == first_sheet)
+        .unwrap();
+    // Preserve the reading order of the other sheets.
+    tables[..=first].rotate_right(1);
+    write_workbook(tables)
 }
 
 #[cfg(test)]
@@ -361,71 +382,70 @@ mod tests {
         let report = compare_cbom_xlsx([("before.json", before), ("after.json", after)]).unwrap();
         let reopened = crate::open(report).unwrap();
         let book = &reopened.presentation;
-        let sheet = |index: usize| sheet_of_slide(&book.slides[index]).unwrap();
+        let workbook = book.workbook.as_ref().unwrap();
         assert_eq!(
-            book.workbook.as_ref().unwrap().sheets[2].name,
-            "Relationship changes"
+            workbook.sheets[workbook.active_tab].name,
+            "System impact summary"
         );
-        let values = |index, row, columns: &[u32]| -> Vec<&str> {
+        let sheet = |name: &str| {
+            let tab = workbook.sheets.iter().find(|tab| tab.name == name).unwrap();
+            sheet_of_slide(book.slide(tab.slide.unwrap()).unwrap()).unwrap()
+        };
+        let values = |name, row, columns: &[u32]| -> Vec<&str> {
             columns
                 .iter()
-                .map(|column| sheet(index).cell(row, *column).unwrap().text.as_str())
+                .map(|column| sheet(name).cell(row, *column).unwrap().text.as_str())
                 .collect()
         };
         assert_eq!(
-            values(0, 1, &[0, 1]),
+            values("Asset changes", 1, &[0, 1]),
             ["Changed", "Demo payment certificate"]
         );
-        assert_eq!(values(0, 2, &[0, 1]), ["Removed", "Demo key entry"]);
-        assert_eq!(values(0, 3, &[0, 1]), ["Removed", "RSA-2048"]);
-        assert_eq!(values(0, 4, &[0, 1]), ["Added", "ML-DSA-65"]);
         assert_eq!(
-            values(1, 2, &[2, 3, 4]),
+            values("Asset changes", 2, &[0, 1]),
+            ["Removed", "Demo key entry"]
+        );
+        assert_eq!(values("Asset changes", 3, &[0, 1]), ["Removed", "RSA-2048"]);
+        assert_eq!(values("Asset changes", 4, &[0, 1]), ["Added", "ML-DSA-65"]);
+        assert_eq!(
+            values("Changed asset fields", 2, &[2, 3, 4]),
             ["Signature algorithm reference", "rsa", "ml-dsa"]
         );
         assert_eq!(
-            values(2, 1, &[0, 1, 3, 4]),
+            values("Relationship changes", 1, &[0, 1, 3, 4]),
             ["Removed", "cert", "dependsOn", "rsa"]
         );
         assert_eq!(
-            values(2, 2, &[0, 1, 3, 4]),
+            values("Relationship changes", 2, &[0, 1, 3, 4]),
             ["Removed", "provider", "provides", "rsa"]
         );
         assert_eq!(
-            values(2, 3, &[0, 1, 3, 4]),
+            values("Relationship changes", 3, &[0, 1, 3, 4]),
             ["Added", "cert", "dependsOn", "ml-dsa"]
         );
         assert_eq!(
-            values(2, 4, &[0, 1, 3, 4]),
+            values("Relationship changes", 4, &[0, 1, 3, 4]),
             ["Added", "provider", "provides", "ml-dsa"]
         );
-        assert!(sheet(2).cell(5, 0).is_none());
+        assert!(sheet("Relationship changes").cell(5, 0).is_none());
         assert_eq!(
-            book.workbook.as_ref().unwrap().sheets[4].name,
-            "Dependency impact"
-        );
-        assert_eq!(
-            values(4, 1, &[0, 1, 3, 7]),
+            values("Dependency impact", 1, &[0, 1, 3, 7]),
             ["Old CBOM", "rsa", "payments", "payments → cert → rsa"]
         );
         assert_eq!(
-            values(4, 2, &[0, 1, 3, 7]),
+            values("Dependency impact", 2, &[0, 1, 3, 7]),
             ["Old CBOM", "cert", "payments", "payments → cert"]
         );
         assert_eq!(
-            values(4, 3, &[0, 1, 3, 7]),
+            values("Dependency impact", 3, &[0, 1, 3, 7]),
             ["New CBOM", "ml-dsa", "payments", "payments → cert → ml-dsa"]
         );
         assert_eq!(
-            values(4, 4, &[0, 1, 3, 7]),
+            values("Dependency impact", 4, &[0, 1, 3, 7]),
             ["New CBOM", "cert", "payments", "payments → cert"]
         );
         assert_eq!(
-            book.workbook.as_ref().unwrap().sheets[6].name,
-            "System impact summary"
-        );
-        assert_eq!(
-            values(6, 1, &[0, 1, 2, 3, 4]),
+            values("System impact summary", 1, &[0, 1, 2, 3, 4]),
             [
                 "payments",
                 "Demo payment service",
@@ -435,28 +455,28 @@ mod tests {
             ]
         );
         assert_eq!(
-            values(6, 1, &[5, 6]),
+            values("System impact summary", 1, &[5, 6]),
             [
                 "Demo payment certificate [cert] · RSA-2048 [rsa]",
                 "Demo payment certificate [cert] · ML-DSA-65 [ml-dsa]"
             ]
         );
-        assert!(sheet(6).cell(2, 0).is_none());
-        assert!(sheet(4).cell(5, 0).is_none());
+        assert!(sheet("System impact summary").cell(2, 0).is_none());
+        assert!(sheet("Dependency impact").cell(5, 0).is_none());
         assert_eq!(
-            values(5, 1, &[0, 1, 3, 6]),
+            values("Asset providers", 1, &[0, 1, 3, 6]),
             ["Old CBOM", "rsa", "provider", "provides"]
         );
         assert_eq!(
-            values(5, 2, &[0, 1, 3, 6]),
+            values("Asset providers", 2, &[0, 1, 3, 6]),
             ["New CBOM", "ml-dsa", "provider", "provides"]
         );
         assert_eq!(
-            sheet(3).cell(1, 2).unwrap().text,
+            sheet("Input artifacts").cell(1, 2).unwrap().text,
             format!("{:x}", Sha256::digest(before))
         );
         assert_eq!(
-            sheet(3).cell(2, 2).unwrap().text,
+            sheet("Input artifacts").cell(2, 2).unwrap().text,
             format!("{:x}", Sha256::digest(after))
         );
         assert!(
@@ -465,6 +485,25 @@ mod tests {
                 .filter_map(sheet_of_slide)
                 .flat_map(|sheet| sheet.cells.iter())
                 .all(|cell| !cell.text.contains("SYNTHETIC-MATERIAL-VALUE"))
+        );
+    }
+
+    #[test]
+    fn opens_unchanged_comparisons_with_an_explanation() {
+        let input = include_bytes!("../../../../test/fixtures/cbom/payment-before.cdx.json");
+        let saved = compare_cbom_xlsx([("old.json", input), ("new.json", input)]).unwrap();
+        let opened = crate::open(saved).unwrap();
+        let book = opened.presentation.workbook.as_ref().unwrap();
+        let tab = &book.sheets[book.active_tab];
+        assert_eq!(tab.name, "Comparison notes");
+        let slide = opened.presentation.slide(tab.slide.unwrap()).unwrap();
+        assert!(
+            sheet_of_slide(slide)
+                .unwrap()
+                .cell(1, 1)
+                .unwrap()
+                .text
+                .starts_with("No differences")
         );
     }
 
@@ -480,6 +519,8 @@ mod tests {
         let report =
             compare_cbom_xlsx([("old", input.as_bytes()), ("new", input.as_bytes())]).unwrap();
         let opened = crate::open(report).unwrap();
+        let book = opened.presentation.workbook.as_ref().unwrap();
+        assert_eq!(book.sheets[book.active_tab].name, "Asset changes");
         let sheet = sheet_of_slide(&opened.presentation.slides[0]).unwrap();
         assert_eq!(sheet.cell(1, 0).unwrap().text, "Unmatched in new BOM");
         assert_eq!(sheet.cell(2, 0).unwrap().text, "Unmatched in old BOM");
