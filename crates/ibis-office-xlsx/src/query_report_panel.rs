@@ -24,6 +24,7 @@ struct ReportChoice {
     columns: Vec<String>,
     selected: bool,
     metrics: BTreeSet<String>,
+    check_details_open: bool,
 }
 
 struct ReviewedRefresh {
@@ -156,6 +157,7 @@ impl SlideEditor {
                     columns,
                     selected: false,
                     metrics: BTreeSet::new(),
+                    check_details_open: false,
                 });
             }
         }
@@ -348,7 +350,8 @@ impl SlideEditor {
 
     pub(crate) fn query_report_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let read_only = self.is_read_only();
-        let panel = self.query_reports_mut()?;
+        let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
+        let workbook = self.presentation().workbook.as_ref()?;
         let generation = panel.generation;
         let busy = panel.busy;
         let can_preview = panel.request().is_some() && !busy;
@@ -385,6 +388,86 @@ impl SlideEditor {
                         }
                     })),
             );
+            if let Some(checks) = workbook
+                .query_reports
+                .get(&report.name)
+                .and_then(|definition| definition["checks"].as_array())
+                .filter(|checks| !checks.is_empty())
+            {
+                let id = SharedString::from(format!("query-report-check-details-{index}"));
+                let mut list = v_flex()
+                    .gap_1()
+                    .pl_4()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::BOLD)
+                            .child(text("query.report-saved-checks")),
+                    )
+                    .child(
+                        action_button(id)
+                            .small()
+                            .label(text(if report.check_details_open {
+                                "query.report-hide-check-sql"
+                            } else {
+                                "query.report-show-check-sql"
+                            }))
+                            .on_click(cx.listener(move |editor, _, _, cx| {
+                                if let Some(panel) = editor
+                                    .query_reports_mut()
+                                    .filter(|panel| panel.generation == generation)
+                                    && let Some(report) = panel.reports.get_mut(index)
+                                {
+                                    report.check_details_open = !report.check_details_open;
+                                    cx.notify();
+                                }
+                            })),
+                    );
+                for check in checks {
+                    let Some(name) = check["name"].as_str() else {
+                        continue;
+                    };
+                    let diagnostic = check["diagnostic"]["sql"].as_str();
+                    let diagnostic_label = text(if diagnostic.is_some() {
+                        "query.report-has-diagnostic"
+                    } else {
+                        "query.report-no-diagnostic"
+                    });
+                    let limit = check["max"].as_i64().map_or_else(
+                        || text("query.report-check-informational").to_string(),
+                        |max| format("query.report-check-limit", &[("max", &max)]),
+                    );
+                    list = list.child(div().text_sm().child(format(
+                        "query.report-saved-check",
+                        &[
+                            ("name", &name),
+                            ("limit", &limit),
+                            ("diagnostic", &diagnostic_label)
+                        ],
+                    )));
+                    if report.check_details_open {
+                        for (label, sql) in [
+                            ("query.report-count-sql", check["sql"].as_str()),
+                            ("query.report-diagnostic-sql", diagnostic),
+                        ] {
+                            if let Some(sql) = sql {
+                                list = list.child(
+                                    v_flex()
+                                        .pl_4()
+                                        .text_sm()
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(text(label)),
+                                        )
+                                        .child(div().whitespace_normal().child(sql.to_owned())),
+                                );
+                            }
+                        }
+                    }
+                }
+                body = body.child(list);
+            }
             if report.selected && !report.columns.is_empty() {
                 let mut metrics = h_flex()
                     .gap_2()
@@ -654,6 +737,27 @@ pub(crate) fn refresh_report_scenario() {
     let _probe = button_probe::Probe::new();
     scene.update(|_, _, cx| cx.notify());
     button_probe::click(&mut scene, "queries-report-refresh");
+
+    let details_open = |scene: &mut Scenario| {
+        scene.with(|editor, _| {
+            editor
+                .wb()
+                .panels
+                .queries
+                .as_ref()
+                .unwrap()
+                .reports
+                .as_ref()
+                .unwrap()
+                .reports[0]
+                .check_details_open
+        })
+    };
+    assert!(!details_open(&mut scene));
+    button_probe::click(&mut scene, "query-report-check-details-0");
+    assert!(details_open(&mut scene));
+    button_probe::click(&mut scene, "query-report-check-details-0");
+    assert!(!details_open(&mut scene));
 
     button_probe::click(&mut scene, "query-report-source-0");
     scene.answer_path_prompt(|options| {

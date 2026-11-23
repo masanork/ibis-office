@@ -3163,6 +3163,16 @@ query.report-schema-more	ほかに入力スキーマの変更が {count} 件あ�
 query.report-schema-unavailable	入力スキーマが保存上限を超えています。比較基準は更新されません。
 query.report-metric	{column} · {previous} → {current}（差 {delta}）
 query.report-metric-rate	{column} · {previous} → {current}（差 {delta}、{rate}%）
+query.report-saved-checks	登録済みチェック
+query.report-show-check-sql	チェックのSQLを表示
+query.report-hide-check-sql	チェックのSQLを閉じる
+query.report-has-diagnostic	診断あり
+query.report-no-diagnostic	診断なし
+query.report-check-informational	件数表示のみ
+query.report-check-limit	許容上限 {max} 件
+query.report-saved-check	{name} · {limit} · {diagnostic}
+query.report-count-sql	件数チェックのSQL
+query.report-diagnostic-sql	診断のSQL
 query.report-check	{name} · {count} 件
 query.report-check-max	{name} · {count} 件（上限 {max}）
 query.report-diagnostic-error	診断クエリに失敗しました（{message}）

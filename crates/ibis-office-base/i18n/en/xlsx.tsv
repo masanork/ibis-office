@@ -3166,6 +3166,16 @@ query.report-schema-more	{count} more input schema changes
 query.report-schema-unavailable	The new input schema exceeds the storage limit. The saved schema will not be updated.
 query.report-metric	{column} · {previous} → {current} (change {delta})
 query.report-metric-rate	{column} · {previous} → {current} (change {delta}, {rate}%)
+query.report-saved-checks	Saved checks
+query.report-show-check-sql	Show check SQL
+query.report-hide-check-sql	Hide check SQL
+query.report-has-diagnostic	Diagnostic available
+query.report-no-diagnostic	No diagnostic
+query.report-check-informational	Count only
+query.report-check-limit	Maximum {max}
+query.report-saved-check	{name} · {limit} · {diagnostic}
+query.report-count-sql	Count SQL
+query.report-diagnostic-sql	Diagnostic SQL
 query.report-check	{name} · {count}
 query.report-check-max	{name} · {count} (maximum {max})
 query.report-diagnostic-error	Diagnostic query failed ({message})

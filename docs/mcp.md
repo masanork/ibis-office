@@ -127,7 +127,7 @@ To show examples inline, save the same SQL under the check’s `diagnostic: {"sq
 
 Compare the results with the master keys. For example, an unmatched integer `1` and a master text key `001` point to a type or representation mismatch. The separate diagnostic reads the sources again. Run it before replacing or editing those files to reproduce the failed check.
 
-On desktop, use **Data → Queries & Connections → Refresh SQL reports** to select reports, bind files, optionally compare numeric columns and review checks. Applying uses exactly the results shown in the preview.
+On desktop, use **Data → Queries & Connections → Refresh SQL reports** to select reports, bind files, optionally compare numeric columns and review checks. Each report lists its saved checks, maximums and diagnostic availability before preview. Use **Show check SQL** to inspect the count and diagnostic queries. Applying uses exactly the results shown in the preview.
 
 The tools do not correspond one to one to the menu commands: they cover reading and the common edits, with the same tool names whatever the format. With `--read-only`, only the read tools are available.
 
