@@ -92,6 +92,8 @@ Add `metrics` entries such as `{"table":"QueryResult1","column":"cases"}` to com
 
 Use `xlsx_set_query_report_checks` with a saved report's `table` to register up to four checks. Each check has a `name`, one read-only `sql` query, and optional positional `params` and `max`. The SQL must return one nonnegative integer. For example, count unmatched keys with a left join, or count groups with duplicate keys. Checks and report queries share the same bound inputs. Batch preview reports each count and sets `blocked` when a count exceeds its maximum. Applying a single report or a batch fails atomically on that condition. Omit `max` to report a count only. An empty list removes the checks.
 
+On desktop, use **Data → Queries & Connections → Refresh SQL reports** to select reports, bind files, optionally compare numeric columns and review checks. Applying uses exactly the results shown in the preview.
+
 The tools do not correspond one to one to the menu commands: they cover reading and the common edits, with the same tool names whatever the format. With `--read-only`, only the read tools are available.
 
 ## Connecting Claude Desktop

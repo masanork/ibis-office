@@ -3146,3 +3146,22 @@ xlsx.prefill.saved	Saved the filled copy to {path}
 xlsx.prefill.long-value	This value is too long to select in this preview.
 xlsx.ai-explain-formula	Explain selected cell formula
 xlsx.ai-explain-formula-incomplete	Could not get an explanation for this formula. Try again.
+query.report-refresh-title	Refresh SQL reports
+query.report-tables	Reports to refresh
+query.report-empty	There are no saved SQL reports.
+query.report-metrics	Compare totals
+query.report-files	Source file bindings
+query.report-choose-file	Choose file
+query.report-pick-file	Choose the file for {file}
+query.report-preview	Preview
+query.report-reading	Reading source files…
+query.report-blocked	Refresh is blocked because a check exceeded its limit.
+query.report-changed	The workbook changed. Run the preview again.
+query.report-applied	Refreshed {count} report(s).
+query.report-rows	{table} · {previous} → {current} rows
+query.report-metric	{column} · {previous} → {current} (change {delta})
+query.report-metric-rate	{column} · {previous} → {current} (change {delta}, {rate}%)
+query.report-check	{name} · {count}
+query.report-check-max	{name} · {count} (maximum {max})
+query.report-back	Back
+query.report-limit	Select up to 12 reports at a time.

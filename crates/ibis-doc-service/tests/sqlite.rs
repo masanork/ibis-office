@@ -717,6 +717,14 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
         blocked["reports"][1]["checks"],
         json!([{"name":"重複コード","count":1,"max":0,"passed":false}])
     );
+    let view = ibis_formats::read(&std::fs::read(&original).unwrap()).unwrap();
+    let request = json!({"bindings":{"monthly.csv":"1"}});
+    let definitions = batch_query_report_definitions(&view, &request).unwrap();
+    let review =
+        prepare_selected_report_batch(std::slice::from_ref(&next), request, definitions).unwrap();
+    let (summary, commands) = review.review(&view).unwrap();
+    assert_eq!(summary["blocked"], true);
+    assert!(commands.is_empty());
     refresh["preview"] = json!(false);
     let failed = service
         .call("sqlite_refresh_query_reports", &refresh)
@@ -858,8 +866,18 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
     std::fs::write(&next, "code,category\n003,new\n").unwrap();
     let args = json!({"bindings":{"monthly.csv":"1"},"metrics":[{"table":"QueryResult1","column":"cases"}]});
     let definitions = batch_query_report_definitions(draft.presentation(), &args).unwrap();
-    let prepared = prepare_selected_report_batch(&[next], args, definitions).unwrap();
-    let (result, edits) = prepared.stage(&mut draft, Default::default()).unwrap();
+    let prepared =
+        prepare_selected_report_batch(std::slice::from_ref(&next), args, definitions).unwrap();
+    let (result, edits) = prepared.review(draft.presentation()).unwrap();
+    std::fs::write(&next, "code,category\n004,changed after review\n").unwrap();
+    draft.execute(edits.clone()).unwrap();
+    let sheet =
+        ibis_doc_model::sheet_calc::sheet_of_slide(&draft.presentation().slides[0]).unwrap();
+    assert_eq!(
+        sheet.cell(1, 0).unwrap().value,
+        ibis_doc_model::CellValue::Text("003".into())
+    );
+    assert!(draft.undo());
     assert_eq!(result["reports"][0]["previous_rows"], 0);
     assert_eq!(result["reports"][0]["rows"], 1);
     assert_eq!(result["reports"][1]["rows"], 1);

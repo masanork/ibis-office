@@ -1120,9 +1120,23 @@ fn apply_batch_refresh(
 ) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
     let preview = args.opt_bool("preview")?.unwrap_or(false);
-    let metrics = batch_metrics(args, &results)?;
     let open = crate::tools_xlsx::workbook_document(service, id)?;
-    let mut scratch = ibis_doc_model::Document::new(open.document.presentation().clone());
+    let (summary, commands) =
+        plan_batch_refresh(open.document.presentation(), args, results, preview)?;
+    if !preview {
+        crate::edit::execute(open, commands)?;
+    }
+    Ok(crate::edit::edited(id, open, summary, Vec::new()))
+}
+
+fn plan_batch_refresh(
+    workbook: &ibis_doc_model::Presentation,
+    args: &Value,
+    results: Vec<QueryReportResult>,
+    preview: bool,
+) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
+    let metrics = batch_metrics(args, &results)?;
+    let mut scratch = ibis_doc_model::Document::new(workbook.clone());
     let mut reports = Vec::with_capacity(results.len());
     let mut commands = Vec::new();
     let mut blocked = false;
@@ -1149,14 +1163,9 @@ fn apply_batch_refresh(
         reports.push(summary);
         commands.extend(update);
     }
-    if !preview {
-        crate::edit::execute(open, commands)?;
-    }
-    Ok(crate::edit::edited(
-        id,
-        open,
+    Ok((
         json!({"preview":preview,"blocked":blocked,"reports":reports}),
-        Vec::new(),
+        commands,
     ))
 }
 
@@ -1173,6 +1182,21 @@ pub struct SqliteReportBatch {
 }
 
 impl SqliteReportBatch {
+    /// Review the exact prepared changes. A blocked review never returns commands.
+    pub fn review(
+        self,
+        workbook: &ibis_doc_model::Presentation,
+    ) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
+        let (summary, commands) =
+            plan_batch_refresh(workbook, &self.arguments, self.results, true)?;
+        let commands = if summary["blocked"] == true {
+            Vec::new()
+        } else {
+            commands
+        };
+        Ok((summary, commands))
+    }
+
     pub fn stage(
         self,
         document: &mut ibis_doc_model::Document,

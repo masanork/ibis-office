@@ -148,6 +148,8 @@ pub(crate) mod slicer_settings;
 pub(crate) mod forecast_sheet;
 pub(crate) mod query_ops;
 pub(crate) mod query_editor;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod query_report_panel;
 pub(crate) mod cells_dialog;
 pub(crate) mod consolidate;
 pub(crate) mod context_menu;

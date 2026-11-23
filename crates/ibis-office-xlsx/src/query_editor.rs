@@ -21,6 +21,8 @@ use crate::shell::palette::rgb;
 use ibis_doc_model::query::{self, BookResolver, Parameter, QTable, Query, Source, Step};
 use ibis_doc_model::{CellValue, Command, SheetCommand, SlideId};
 use crate::ext::*;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use crate::query_report_panel::QueryReportPanelExtCrate as _;
 
 /// The form of an operation being asked.
 pub(crate) struct Form {
@@ -66,6 +68,8 @@ pub(crate) struct QueryEditor {
 }
 
 pub(crate) struct QueriesPanel {
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) reports: Option<crate::query_report_panel::QueryReportPanel>,
     pub(crate) message: String,
     pub(crate) ui: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<String, Bounds<Pixels>>>>,
 }
@@ -837,7 +841,11 @@ impl SlideEditor {
         self.commit_cell_edit(cx);
         let state = self.wb_mut();
         state.close_settings();
-        state.panels.queries = Some(QueriesPanel { message: String::new(), ui: Default::default() });
+        state.panels.queries = Some(QueriesPanel {
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            reports: None,
+            message: String::new(), ui: Default::default(),
+        });
         self.sidebar_open = true;
         cx.notify();
     }
@@ -985,6 +993,10 @@ impl SlideEditor {
     }
 
     pub fn queries_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if self.sheet_state()?.panels.queries.as_ref()?.reports.is_some() {
+            return self.query_report_panel(cx);
+        }
         let queries = self.presentation().workbook.as_ref().map(|w| w.queries.clone()).unwrap_or_default();
         let p = self.sheet_state()?.panels.queries.as_ref()?;
         let mark = |id: String, child: AnyElement| {
@@ -1004,6 +1016,12 @@ impl SlideEditor {
                 })
         };
         let mut body = v_flex().gap_2().px(px(18.)).py(px(8.)).p_0();
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if self.presentation().workbook.as_ref().is_some_and(|book| !book.query_reports.is_empty()) {
+            body = body.child(crate::shell::chrome::action_button("queries-report-refresh")
+                .small().label(crate::shell::i18n::text("query.report-refresh-title"))
+                .on_click(cx.listener(|this, _, _, cx| this.open_query_report_panel(cx))));
+        }
         if queries.is_empty() {
             body = body.child(crate::shell::i18n::text("query.none"));
         }

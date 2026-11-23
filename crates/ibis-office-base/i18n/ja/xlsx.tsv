@@ -3143,3 +3143,22 @@ xlsx.prefill.saved	入力済みのコピーを {path} に保存しました
 xlsx.prefill.long-value	この画面で選択するには値が長すぎます。
 xlsx.ai-explain-formula	選択セルの数式を説明
 xlsx.ai-explain-formula-incomplete	数式の説明を取得できませんでした。もう一度お試しください。
+query.report-refresh-title	SQLレポートの更新
+query.report-tables	更新するレポート
+query.report-empty	保存済みのSQLレポートはありません。
+query.report-metrics	合計を比較
+query.report-files	元ファイルの割り当て
+query.report-choose-file	ファイルを選択
+query.report-pick-file	{file} に対応するファイルを選択
+query.report-preview	プレビュー
+query.report-reading	元ファイルを読み込んでいます…
+query.report-blocked	検証の上限を超えたため、更新できません。
+query.report-changed	ブックが変更されました。もう一度プレビューしてください。
+query.report-applied	{count} 件のレポートを更新しました。
+query.report-rows	{table} · {previous} → {current} 行
+query.report-metric	{column} · {previous} → {current}（差 {delta}）
+query.report-metric-rate	{column} · {previous} → {current}（差 {delta}、{rate}%）
+query.report-check	{name} · {count} 件
+query.report-check-max	{name} · {count} 件（上限 {max}）
+query.report-back	戻る
+query.report-limit	一度に選べるレポートは12件までです。
