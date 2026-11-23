@@ -23,6 +23,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::bundled_icons_of_the_review_menu", bundled_review_icons),
         ("shell::host_without_a_start_window_has_no_start_window_menu_item", no_start_window_menu_item),
         ("shell::host_recent_files_are_added_on_load_and_listed", recent_files_added_and_listed),
+        ("shell::host_load_opens_a_pdf_in_the_viewer", load_pdf),
     ];
     all.extend(file_window());
     all.extend(rename_and_bars());
@@ -44,6 +45,20 @@ fn start() -> (Scenario, MemoryHost, String) {
     s.update(|e, w, cx| e.host_load("report.docx".into(), bytes, version, Some(folder_id), false, None, true, w, cx).expect("the host's document opens"));
     s.quit_with_last_window();
     (s, host, file)
+}
+
+/// A PDF the host gives opens in the fixed-layout viewer (as a PDF the user opens in the browser does), not as a CSV; the host is
+/// told it opened a 'pdf'. (The fixture is an AES-256 encrypted PDF that opens without a password.)
+fn load_pdf() {
+    let host = MemoryHost::new();
+    host::install(Rc::new(host.clone()), HostCapabilities::all(), HostOptions::default());
+    let bytes = include_bytes!("../../../../ibis-pdf/tests/fixtures/encrypted/aes-256.pdf").to_vec();
+    let mut s = Scenario::start_view();
+    s.update(|e, w, cx| e.host_load("notice.pdf".into(), bytes, "v1".into(), None, true, None, false, w, cx).expect("the host's PDF opens"));
+    assert!(s.with(|e, _| e.presentation().pdf_bytes.is_some()), "the PDF is in the viewer");
+    assert!(matches!(host.events().last(), Some(HostEvent::Loaded { name, kind: "pdf" }) if name == "notice.pdf"), "{:?}", host.events());
+    s.quit_with_last_window();
+    host::uninstall();
 }
 
 /// B-4: the browser version has no table of open documents (`sync_open_documents` is desktop only), but it has hosts: `host_sync_dirty` is

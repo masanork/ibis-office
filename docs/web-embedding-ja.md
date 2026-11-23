@@ -168,7 +168,7 @@ Windows の PowerShell では、`(Get-FileHash ibisOffice-$V-Web.zip -Algorithm 
 
 | 項目 | 型 | 既定値 | 意味 |
 |---|---|---|---|
-| `name` | string | 必須 | 拡張子つきのファイル名（docx・xlsx・pptx）。 |
+| `name` | string | 必須 | 拡張子つきのファイル名（docx・xlsx・pptx。pdf・xps・oxps・ofd・xdw はビューアで読み取り専用で開く）。 |
 | `bytes` | ArrayBuffer | 必須 | ファイルの中身。 |
 | `version` | string | 必須 | この中身の版。ibisOffice は中を見ず、次の `baseVersion` としてそのまま返します。 |
 | `readOnly` | boolean | `false` | 読み取り専用で開く。 |
@@ -213,7 +213,7 @@ Windows の PowerShell では、`(Get-FileHash ibisOffice-$V-Web.zip -Algorithm 
 | `type` | いつ | 項目 |
 |---|---|---|
 | `ready` | エディターが起動した（`load` を受け付ける）。 | |
-| `loaded` | 文書を開いた。 | `name`、`kind`（`'docx'`・`'xlsx'`・`'pptx'`） |
+| `loaded` | 文書を開いた。 | `name`、`kind`（`'docx'`・`'xlsx'`・`'pptx'`・`'pdf'`。`'pdf'` は PDF・XPS・OFD・XDW） |
 | `dirty` | 未保存の変更があるかどうかが変わった。 | `dirty`（boolean） |
 | `documentChanged` | 文書が入れ替わった。 | `source`（`'local'`・`'host'`・`'new'`） |
 | `saved` | 保存が終わった（`saveFile` が `ok` を返した）。 | `trigger`（`'user'`・`'auto'`・`'close'`） |

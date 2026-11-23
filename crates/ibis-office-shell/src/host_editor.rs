@@ -98,8 +98,15 @@ impl SlideEditor {
     #[allow(clippy::too_many_arguments)]
     pub fn host_load(&mut self, name: String, bytes: Vec<u8>, version: String, folder_id: Option<String>, read_only: bool, message: Option<String>, bound: bool, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
         self.commit_edit(window, cx);
-        let opened = ibis_odf::open(bytes).map_err(|e| format("file.open-failed", &[("name", &name), ("error", &e.to_string())]))?;
-        self.apply_opened(name.clone().into(), opened, window, cx);
+        // PDF・XPS・OFD・XDW (fixed layout) open in the viewer, as a file the user opens in the browser does.
+        let extension = name.rsplit_once('.').map(|(_, ext)| ext);
+        if let Some(layout) = crate::read_file::FixedLayoutFormat::detect(extension, &bytes) {
+            let presentation = layout.read(bytes.into()).map_err(|e| format("file.open-failed", &[("name", &name), ("error", &e)]))?;
+            self.load(presentation, name.clone().into(), window, cx);
+        } else {
+            let opened = ibis_odf::open(bytes).map_err(|e| format("file.open-failed", &[("name", &name), ("error", &e.to_string())]))?;
+            self.apply_opened(name.clone().into(), opened, window, cx);
+        }
         self.host.binding = bound.then_some(HostBinding { folder_id, version });
         self.host.read_only = read_only.then_some(message);
         self.host.last_dirty = false;
