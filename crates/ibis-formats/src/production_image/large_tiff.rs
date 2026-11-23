@@ -25,83 +25,145 @@ pub(super) fn preview(
     bytes: &[u8],
     mut decoder: Decoder<impl Read + Seek>,
 ) -> Result<DynamicImage, String> {
-    let (width, height) = decoder.dimensions().map_err(|error| error.to_string())?;
-    let longest = width.max(height);
-    if width == 0 || height == 0 || longest > MAX_SOURCE_EDGE {
-        return Err("TIFF image dimensions exceed the large-preview limit".into());
-    }
-    let tiled = decoder.get_chunk_type() == ChunkType::Tile;
-    let mut tag = |tag, default| -> Result<u16, String> {
-        decoder
-            .find_tag_unsigned(tag)
-            .map(|value| value.unwrap_or(default))
-            .map_err(|error| error.to_string())
-    };
-    let compression = CompressionMethod::from_u16_exhaustive(tag(Tag::Compression, 1)?);
-    let uncompressed = compression == CompressionMethod::None;
-    let planar = tag(Tag::PlanarConfiguration, 1)?;
-    let predictor = tag(Tag::Predictor, 1)?;
-    let sample_format = decoder
-        .find_tag_unsigned_vec::<u16>(Tag::SampleFormat)
-        .map_err(|error| error.to_string())?;
-    if !matches!(
-        compression,
-        CompressionMethod::None
-            | CompressionMethod::LZW
-            | CompressionMethod::Deflate
-            | CompressionMethod::OldDeflate
-            | CompressionMethod::PackBits
-            | CompressionMethod::Fax4
-    ) || planar != 1
-        || !(predictor == 1 || !uncompressed && predictor == 2)
-        || sample_format.is_some_and(|formats| formats.iter().any(|&format| format != 1))
-    {
-        return Err(UNSUPPORTED.into());
-    }
-    let photometric = decoder
-        .get_tag_unsigned::<u16>(Tag::PhotometricInterpretation)
-        .map_err(|error| error.to_string())?;
-    let (channels, sample_bits) = match (
-        decoder.colortype().map_err(|error| error.to_string())?,
-        photometric,
-    ) {
-        (ColorType::Gray(1), 0 | 1) if predictor == 1 => (1_usize, 1_usize),
-        (ColorType::Gray(8), 0 | 1) => (1, 8),
-        (ColorType::Gray(16), 0 | 1) => (1, 16),
-        (ColorType::RGB(8), 2) => (3, 8),
-        (ColorType::RGB(16), 2) => (3, 16),
-        (ColorType::RGBA(8), 2) => (4, 8),
-        (ColorType::RGBA(16), 2) => (4, 16),
-        _ => return Err(UNSUPPORTED.into()),
-    };
-    let associated_alpha = if channels == 4 {
-        match decoder
-            .find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)
-            .map_err(|error| error.to_string())?
-            .as_deref()
-        {
-            Some([1]) => true,
-            Some([2]) => false,
-            _ => return Err("Large RGBA TIFF preview requires a declared alpha channel".into()),
+    let format = PreviewFormat::read(&mut decoder)?;
+    let chunks = validated_chunks(bytes, &mut decoder, &format)?;
+    render_preview(bytes, decoder, &format, chunks)
+}
+
+struct PreviewFormat {
+    width: u32,
+    height: u32,
+    tiled: bool,
+    uncompressed: bool,
+    channels: usize,
+    sample_bits: usize,
+    associated_alpha: bool,
+    white_is_zero: bool,
+}
+
+impl PreviewFormat {
+    fn read(decoder: &mut Decoder<impl Read + Seek>) -> Result<Self, String> {
+        let (width, height) = decoder.dimensions().map_err(|error| error.to_string())?;
+        let longest = width.max(height);
+        if width == 0 || height == 0 || longest > MAX_SOURCE_EDGE {
+            return Err("TIFF image dimensions exceed the large-preview limit".into());
         }
-    } else {
-        false
-    };
-    let borrow_strips = uncompressed && !tiled;
-    let bilevel = sample_bits == 1;
-    if bilevel
-        && decoder
-            .find_tag_unsigned::<u16>(Tag::FillOrder)
-            .map_err(|error| error.to_string())?
-            .unwrap_or(1)
-            != 1
-    {
-        return Err("Large bilevel TIFF preview requires MSB-first bit order".into());
+        let tiled = decoder.get_chunk_type() == ChunkType::Tile;
+        let mut tag = |tag, default| -> Result<u16, String> {
+            decoder
+                .find_tag_unsigned(tag)
+                .map(|value| value.unwrap_or(default))
+                .map_err(|error| error.to_string())
+        };
+        let compression = CompressionMethod::from_u16_exhaustive(tag(Tag::Compression, 1)?);
+        let uncompressed = compression == CompressionMethod::None;
+        let planar = tag(Tag::PlanarConfiguration, 1)?;
+        let predictor = tag(Tag::Predictor, 1)?;
+        let sample_format = decoder
+            .find_tag_unsigned_vec::<u16>(Tag::SampleFormat)
+            .map_err(|error| error.to_string())?;
+        if !matches!(
+            compression,
+            CompressionMethod::None
+                | CompressionMethod::LZW
+                | CompressionMethod::Deflate
+                | CompressionMethod::OldDeflate
+                | CompressionMethod::PackBits
+                | CompressionMethod::Fax4
+        ) || planar != 1
+            || !(predictor == 1 || !uncompressed && predictor == 2)
+            || sample_format.is_some_and(|formats| formats.iter().any(|&format| format != 1))
+        {
+            return Err(UNSUPPORTED.into());
+        }
+        let photometric = decoder
+            .get_tag_unsigned::<u16>(Tag::PhotometricInterpretation)
+            .map_err(|error| error.to_string())?;
+        let (channels, sample_bits) = match (
+            decoder.colortype().map_err(|error| error.to_string())?,
+            photometric,
+        ) {
+            (ColorType::Gray(1), 0 | 1) if predictor == 1 => (1_usize, 1_usize),
+            (ColorType::Gray(8), 0 | 1) => (1, 8),
+            (ColorType::Gray(16), 0 | 1) => (1, 16),
+            (ColorType::RGB(8), 2) => (3, 8),
+            (ColorType::RGB(16), 2) => (3, 16),
+            (ColorType::RGBA(8), 2) => (4, 8),
+            (ColorType::RGBA(16), 2) => (4, 16),
+            _ => return Err(UNSUPPORTED.into()),
+        };
+        let associated_alpha = if channels == 4 {
+            match decoder
+                .find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)
+                .map_err(|error| error.to_string())?
+                .as_deref()
+            {
+                Some([1]) => true,
+                Some([2]) => false,
+                _ => return Err("Large RGBA TIFF preview requires a declared alpha channel".into()),
+            }
+        } else {
+            false
+        };
+        let bilevel = sample_bits == 1;
+        if bilevel
+            && decoder
+                .find_tag_unsigned::<u16>(Tag::FillOrder)
+                .map_err(|error| error.to_string())?
+                .unwrap_or(1)
+                != 1
+        {
+            return Err("Large bilevel TIFF preview requires MSB-first bit order".into());
+        }
+        if compression == CompressionMethod::Fax4 && !bilevel {
+            return Err(UNSUPPORTED.into());
+        }
+        Ok(Self {
+            width,
+            height,
+            tiled,
+            uncompressed,
+            channels,
+            sample_bits,
+            associated_alpha,
+            white_is_zero: photometric == 0,
+        })
     }
-    if compression == CompressionMethod::Fax4 && !bilevel {
-        return Err(UNSUPPORTED.into());
+
+    fn borrow_strips(&self) -> bool {
+        self.uncompressed && !self.tiled
     }
-    let stored_row_bytes = |width: u32| (width as usize * channels * sample_bits).div_ceil(8);
+
+    fn bilevel(&self) -> bool {
+        self.sample_bits == 1
+    }
+
+    fn stored_row_bytes(&self, width: u32) -> usize {
+        (width as usize * self.channels * self.sample_bits).div_ceil(8)
+    }
+}
+
+struct ValidatedChunk<'a> {
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    raw: &'a [u8],
+}
+
+fn validated_chunks<'a>(
+    bytes: &'a [u8],
+    decoder: &mut Decoder<impl Read + Seek>,
+    format: &PreviewFormat,
+) -> Result<Vec<ValidatedChunk<'a>>, String> {
+    let PreviewFormat {
+        width,
+        height,
+        tiled,
+        uncompressed,
+        ..
+    } = *format;
+    let borrow_strips = format.borrow_strips();
     let (chunk_width, chunk_height, offsets_tag, lengths_tag) = if tiled {
         (
             decoder
@@ -128,17 +190,17 @@ pub(super) fn preview(
     let columns = width.div_ceil(chunk_width);
     let rows = height.div_ceil(chunk_height);
     let chunk_count = (columns * rows) as usize;
-    let nominal_bytes = stored_row_bytes(chunk_width) as u64 * u64::from(chunk_height);
+    let nominal_bytes = format.stored_row_bytes(chunk_width) as u64 * u64::from(chunk_height);
     if !borrow_strips {
         if nominal_bytes > MAX_CHUNK_BYTES as u64 {
             return Err(CHUNK_LIMIT.into());
         }
         // The fax decoder visits individual pixels even though its output is packed.
         let work_row_bytes = |width: u32| {
-            if bilevel {
+            if format.bilevel() {
                 u64::from(width)
             } else {
-                stored_row_bytes(width) as u64
+                format.stored_row_bytes(width) as u64
             }
         };
         let raster_bytes = if tiled {
@@ -173,7 +235,7 @@ pub(super) fn preview(
         let origin_y = (index as u32 / columns) * chunk_height;
         let data_width = chunk_width.min(width - origin_x);
         let data_height = chunk_height.min(height - origin_y);
-        let row_bytes = stored_row_bytes(data_width);
+        let row_bytes = format.stored_row_bytes(data_width);
         let offset = usize::try_from(offset).map_err(|_| BAD_CHUNKS)?;
         let length = usize::try_from(length).map_err(|_| BAD_CHUNKS)?;
         if !borrow_strips && length > MAX_CHUNK_BYTES {
@@ -193,8 +255,36 @@ pub(super) fn preview(
             .get(offset..end)
             .filter(|chunk| chunk.len() >= required)
             .ok_or(BAD_CHUNKS)?;
-        chunks.push((origin_x, origin_y, data_width, data_height, raw));
+        chunks.push(ValidatedChunk {
+            left: origin_x,
+            top: origin_y,
+            width: data_width,
+            height: data_height,
+            raw,
+        });
     }
+
+    Ok(chunks)
+}
+
+fn render_preview(
+    bytes: &[u8],
+    decoder: Decoder<impl Read + Seek>,
+    format: &PreviewFormat,
+    chunks: Vec<ValidatedChunk<'_>>,
+) -> Result<DynamicImage, String> {
+    let PreviewFormat {
+        width,
+        height,
+        channels,
+        sample_bits,
+        associated_alpha,
+        white_is_zero,
+        ..
+    } = *format;
+    let borrow_strips = format.borrow_strips();
+    let bilevel = format.bilevel();
+    let longest = width.max(height);
 
     let mut limits = Limits::default();
     limits.decoding_buffer_size = MAX_CHUNK_BYTES;
@@ -230,7 +320,14 @@ pub(super) fn preview(
         u16::from_be_bytes
     };
     let to_u8 = |sample: u16| ((u32::from(sample) + 128) / 257) as u8;
-    for (index, (left, top, data_width, data_height, raw)) in chunks.into_iter().enumerate() {
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let ValidatedChunk {
+            left,
+            top,
+            width: data_width,
+            height: data_height,
+            raw,
+        } = chunk;
         let decoded;
         let data = if borrow_strips {
             raw
@@ -260,7 +357,7 @@ pub(super) fn preview(
         let y_start = ys.partition_point(|&y| y < top);
         let y_end = ys.partition_point(|&y| y < top + data_height);
         let row_bytes = if bilevel {
-            stored_row_bytes(data_width)
+            format.stored_row_bytes(data_width)
         } else {
             data_width as usize * channels * raw_sample_bytes
         };
@@ -303,7 +400,7 @@ pub(super) fn preview(
         }
     }
     // The decoder already normalizes WhiteIsZero when it reads a chunk.
-    if borrow_strips && photometric == 0 {
+    if borrow_strips && white_is_zero {
         pixels.iter_mut().for_each(|value| *value = 255 - *value);
     }
     match channels {
