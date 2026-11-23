@@ -848,12 +848,13 @@ impl SqliteQuerySession {
                     execute(&format!("CREATE TABLE {identifier} ({})", names.join(", ")))?;
                     staged_schema.insert(alias.clone(), staged_column_types(columns));
                     width = names.len();
-                    insert = Some(StagedInsert::new(
-                        &connection,
-                        &identifier,
-                        width,
-                        matches!(source, DiskDataset::JsonLines(..)),
-                    )?);
+                    let batch = matches!(
+                        source,
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::Avro(..)
+                    );
+                    #[cfg(feature = "report-profiling")]
+                    let batch = batch && !super::report_profile::single_row_inserts_forced();
+                    insert = Some(StagedInsert::new(&connection, &identifier, width, batch)?);
                 }
                 Ok(())
             })?;

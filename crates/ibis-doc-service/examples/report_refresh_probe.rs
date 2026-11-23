@@ -5,7 +5,8 @@
 //! Measure with `shared|separate <seed> <input> [reports]`. Use different directories for
 //! the seed and each input size. Generate fixtures in a separate process from the measurement.
 //! Build with `--features report-profiling` for the JSON Lines schema pass, remaining
-//! staging work, and SQL execution timings.
+//! staging work, and SQL execution timings. Set `IBIS_REPORT_PROBE_SINGLE_ROW=1`
+//! with this feature to compare temporary database inserts one row at a time.
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn main() {}
@@ -37,6 +38,10 @@ mod desktop {
             return;
         }
         assert!(mode == "shared" || mode == "separate");
+        #[cfg(feature = "report-profiling")]
+        if std::env::var_os("IBIS_REPORT_PROBE_SINGLE_ROW").is_some_and(|value| value == "1") {
+            ibis_doc_model::query::report_profile::force_single_row_inserts();
+        }
         let seed = PathBuf::from(args.next().expect("Expected seed dataset"))
             .canonicalize()
             .unwrap();

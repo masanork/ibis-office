@@ -17,12 +17,22 @@ pub struct Timings {
 }
 
 thread_local! {
+    static SINGLE_ROW_INSERTS: Cell<bool> = const { Cell::new(false) };
     static TIMINGS: Cell<Timings> = const { Cell::new(Timings {
         schema: Duration::ZERO,
         stage: Duration::ZERO,
         sql: Duration::ZERO,
         write: Duration::ZERO,
     }) };
+}
+
+/// Select the comparison path for a report staging benchmark on this thread.
+pub fn force_single_row_inserts() {
+    SINGLE_ROW_INSERTS.set(true);
+}
+
+pub(super) fn single_row_inserts_forced() -> bool {
+    SINGLE_ROW_INSERTS.get()
 }
 
 pub fn take() -> Timings {
