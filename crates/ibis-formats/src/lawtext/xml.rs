@@ -94,6 +94,7 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
     if out.appdx_fragment_positions.first() == Some(&out.appdx_tables.len()) {
         out.appdx_fragment_positions.clear();
     }
+    out.bind_suppl_appendices();
     Ok(out)
 }
 
