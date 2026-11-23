@@ -219,6 +219,7 @@ struct AssistantReview {
     commands: Vec<Command>,
     preview: String,
     history_start: usize,
+    check_sql_open: bool,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -299,6 +300,132 @@ fn document_edit_preview(turn: &AssistantTurn, edits: &[String]) -> String {
         lines.push(format!("{label}  {} → {}", excerpt(&before), excerpt(&after)));
     }
     lines.join("\n")
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct ReportCheckChange<'a> {
+    table: &'a str,
+    name: &'a str,
+    before: Option<&'a serde_json::Value>,
+    after: Option<&'a serde_json::Value>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn report_check_changes(turn: &AssistantTurn) -> Vec<ReportCheckChange<'_>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn checks(definition: Option<&serde_json::Value>) -> BTreeMap<&str, &serde_json::Value> {
+        definition
+            .and_then(|definition| definition["checks"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|check| Some((check["name"].as_str()?, check)))
+            .collect()
+    }
+
+    let (Some(before), Some(after)) = (&turn.base.workbook, &turn.draft.presentation().workbook)
+    else {
+        return Vec::new();
+    };
+    let tables: BTreeSet<_> = before
+        .query_reports
+        .keys()
+        .chain(after.query_reports.keys())
+        .collect();
+    let mut changes = Vec::new();
+    for table in tables {
+        let before = checks(before.query_reports.get(table));
+        let after = checks(after.query_reports.get(table));
+        let names: BTreeSet<_> = before.keys().chain(after.keys()).copied().collect();
+        for name in names {
+            let before = before.get(name).copied();
+            let after = after.get(name).copied();
+            if before != after {
+                changes.push(ReportCheckChange {
+                    table,
+                    name,
+                    before,
+                    after,
+                });
+            }
+        }
+    }
+    changes
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl ReportCheckChange<'_> {
+    fn summary(&self) -> String {
+        let describe = |check: &serde_json::Value| {
+            let limit = check["max"].as_i64().map_or_else(
+                || "件数表示のみ".to_owned(),
+                |max| format!("許容上限 {max} 件"),
+            );
+            let diagnostic = if check["diagnostic"]["sql"].is_string() {
+                "診断あり"
+            } else {
+                "診断なし"
+            };
+            format!("{limit}・{diagnostic}")
+        };
+        let change = match (self.before, self.after) {
+            (Some(before), Some(after)) => {
+                format!("変更　{} → {}", describe(before), describe(after))
+            }
+            (None, Some(after)) => format!("追加　{}", describe(after)),
+            (Some(before), None) => format!("削除　{}", describe(before)),
+            (None, None) => unreachable!("a change has at least one side"),
+        };
+        format!("{} · {}　{change}", self.table, self.name)
+    }
+
+    fn sql_details(&self) -> String {
+        let mut lines = Vec::new();
+        for (side, check) in [("変更前", self.before), ("変更後", self.after)] {
+            let Some(check) = check else { continue };
+            lines.push(side.to_owned());
+            for (label, query) in [
+                ("件数チェックのSQL", check),
+                ("診断のSQL", &check["diagnostic"]),
+            ] {
+                let Some(sql) = query["sql"].as_str() else {
+                    continue;
+                };
+                lines.push(label.to_owned());
+                lines.push(sql.to_owned());
+                if let Some(params) = query
+                    .get("params")
+                    .filter(|params| params.as_array().is_some_and(|params| !params.is_empty()))
+                {
+                    lines.push(format!("パラメーター {params}"));
+                }
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn report_check_review_text(value: String) -> AnyElement {
+    #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+    {
+        let id = SharedString::from(format!("assistant-report-check:{value}"));
+        return crate::scenario::button_probe::observe_control(
+            div()
+                .id(id.clone())
+                .text_xs()
+                .whitespace_normal()
+                .child(value),
+            id.into(),
+        )
+        .into_any_element();
+    }
+    #[cfg(not(all(feature = "scenarios", any(target_os = "macos", target_os = "linux"))))]
+    div()
+        .text_xs()
+        .whitespace_normal()
+        .child(value)
+        .into_any_element()
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -1255,7 +1382,7 @@ impl SlideEditor {
                                     }
                                     p.assistant_review = Some(AssistantReview {
                                         turn, commands: std::mem::take(&mut turn_commands),
-                                        preview, history_start,
+                                        preview, history_start, check_sql_open: false,
                                     });
                                 } else {
                                     editor.finish_assistant_navigation(&turn, cx);
@@ -2005,7 +2132,7 @@ impl SlideEditor {
         let preview = workbook_preview(&turn, &[label]);
         let panel = self.ai_assistant.as_mut().unwrap();
         panel.assistant_review = Some(AssistantReview {
-            turn, commands, preview, history_start: panel.history.len(),
+            turn, commands, preview, history_start: panel.history.len(), check_sql_open: false,
         });
         cx.notify();
     }
@@ -3785,6 +3912,32 @@ impl SlideEditor {
                 .on_click(cx.listener(|this, _, _, cx| this.finish_assistant_review(true, cx)));
             #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
             let apply = crate::scenario::button_probe::observe(apply, "ai-workbook-apply".into());
+            let discard = Button::new("ai-workbook-discard").ghost().small().label("破棄")
+                .on_click(cx.listener(|this, _, _, cx| this.finish_assistant_review(false, cx)));
+            #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+            let discard = crate::scenario::button_probe::observe(discard, "ai-workbook-discard".into());
+            let changes = report_check_changes(&review.turn);
+            let check_review = (!changes.is_empty()).then(|| {
+                let toggle = Button::new("assistant-report-check-sql").small()
+                    .label(if review.check_sql_open { "チェックのSQLを閉じる" } else { "チェックのSQLを比較" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(review) = this.ai_assistant.as_mut().and_then(|panel| panel.assistant_review.as_mut()) {
+                            review.check_sql_open = !review.check_sql_open;
+                            cx.notify();
+                        }
+                    }));
+                #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+                let toggle = crate::scenario::button_probe::observe(toggle, "assistant-report-check-sql".into());
+
+                v_flex().gap_1()
+                    .child(div().text_sm().child("帳票チェック"))
+                    .child(toggle)
+                    .child(div().id("assistant-report-check-changes").max_h(px(200.0)).overflow_y_scroll()
+                        .child(v_flex().gap_2().children(changes.iter().map(|change| {
+                            v_flex().gap_1().child(report_check_review_text(change.summary()))
+                                .when(review.check_sql_open, |row| row.child(report_check_review_text(change.sql_details())))
+                        }))))
+            });
             v_flex()
                 .gap_2()
                 .p_2()
@@ -3794,10 +3947,8 @@ impl SlideEditor {
                 .when(kind == AiDocKind::Xlsx, |card| card.child(div().text_xs().child("数式の表示値は、適用時の再計算で変わる場合があります。")))
                 .child(div().id("ai-workbook-preview").max_h(px(180.0)).overflow_y_scroll()
                     .text_xs().child(review.preview.clone()))
-                .child(h_flex().gap_2()
-                    .child(apply)
-                    .child(Button::new("ai-workbook-discard").ghost().small().label("破棄")
-                        .on_click(cx.listener(|this, _, _, cx| this.finish_assistant_review(false, cx)))))
+                .children(check_review)
+                .child(h_flex().gap_2().child(apply).child(discard))
                 .into_any_element()
         });
         #[cfg(not(target_family = "wasm"))]

@@ -741,7 +741,10 @@ pub(crate) fn refresh_report_scenario() {
     let saved_checks = |scene: &mut Scenario| scene.with(|editor, _| {
         ibis_doc_service::query_report_definition(editor.presentation(), &report).unwrap()["checks"].clone()
     });
-    let informational = json!([{"name":"行数","sql":"SELECT count(*) FROM monthly"}]);
+    let informational = json!([
+        {"name":"行数","sql":"SELECT count(*) FROM monthly"},
+        {"name":"重複コード","sql":"SELECT 0","max":1},
+    ]);
     let blocking = json!([{
         "name":"重複コード",
         "sql":"SELECT count(*) FROM (SELECT code FROM monthly GROUP BY code HAVING count(*) > 1)",
@@ -775,8 +778,14 @@ pub(crate) fn refresh_report_scenario() {
         ("limit", &text("query.report-check-informational")),
         ("diagnostic", &text("query.report-no-diagnostic")),
     ]);
+    let review_text = |fragment: &str| {
+        button_probe::all().iter().any(|id| {
+            id.starts_with("assistant-report-check:") && id.contains(fragment)
+        })
+    };
     stage(&mut scene, &informational);
     assert!(saved_checks(&mut scene).is_null());
+    assert!(review_text("行数　追加"));
     button_probe::click(&mut scene, "ai-workbook-apply");
     assert_eq!(saved_checks(&mut scene), informational);
     open_report(&mut scene);
@@ -790,6 +799,19 @@ pub(crate) fn refresh_report_scenario() {
 
     stage(&mut scene, &blocking);
     assert_eq!(saved_checks(&mut scene), informational);
+    assert!(review_text("行数　削除"));
+    assert!(review_text("重複コード　変更　許容上限 1 件・診断なし → 許容上限 0 件・診断あり"));
+    let before_sql = "変更前\n件数チェックのSQL\nSELECT 0";
+    assert!(!review_text(before_sql));
+    button_probe::click(&mut scene, "assistant-report-check-sql");
+    assert!(review_text(before_sql));
+    assert!(review_text(blocking[0]["sql"].as_str().unwrap()));
+    assert!(review_text(blocking[0]["diagnostic"]["sql"].as_str().unwrap()));
+    button_probe::click(&mut scene, "assistant-report-check-sql");
+    button_probe::click(&mut scene, "ai-workbook-discard");
+    assert_eq!(saved_checks(&mut scene), informational);
+
+    stage(&mut scene, &blocking);
     button_probe::click(&mut scene, "ai-workbook-apply");
     assert_eq!(saved_checks(&mut scene), blocking);
     button_probe::clear();
