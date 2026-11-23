@@ -520,6 +520,16 @@ fn parse_xml_article(node: roxmltree::Node<'_, '_>) -> LawArticle {
     }
 }
 
+fn parse_xml_sentence(node: roxmltree::Node<'_, '_>) -> LawSentence {
+    LawSentence {
+        text: collect_text(node),
+        num: node.attribute("Num").map(str::to_string),
+        function: node.attribute("Function").map(str::to_string),
+        indent: node.attribute("Indent").map(str::to_string),
+        writing_mode: node.attribute("WritingMode").map(str::to_string),
+    }
+}
+
 fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
     let num = node.attribute("Num").unwrap_or("1").to_string();
     let container = child_elem(node, "ParagraphSentence");
@@ -527,13 +537,7 @@ fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
         .into_iter()
         .flat_map(|node| node.children())
         .filter(|node| node.is_element() && node.tag_name().name() == "Sentence")
-        .map(|node| LawSentence {
-            text: collect_text(node),
-            num: node.attribute("Num").map(str::to_string),
-            function: node.attribute("Function").map(str::to_string),
-            indent: node.attribute("Indent").map(str::to_string),
-            writing_mode: node.attribute("WritingMode").map(str::to_string),
-        })
+        .map(parse_xml_sentence)
         .collect();
     let mut sentence: String = xml_sentences.iter().map(|sentence| sentence.text.as_str()).collect();
     if sentence.is_empty() {
@@ -758,6 +762,26 @@ fn write_xml_node(out: &mut String, node: &LawNode, depth: usize) {
     }
 }
 
+fn current_xml_sentences(para: &LawParagraph) -> Option<&[LawSentence]> {
+    let remaining = para.xml_sentences.iter().try_fold(
+        para.sentence.as_str(),
+        |text, sentence| text.strip_prefix(sentence.text.as_str()),
+    );
+    (!para.xml_sentences.is_empty() && remaining == Some(""))
+        .then_some(para.xml_sentences.as_slice())
+}
+
+fn write_xml_sentence(out: &mut String, sentence: &LawSentence) {
+    out.push_str("<Sentence");
+    push_opt_attr(out, "Num", sentence.num.as_deref());
+    push_opt_attr(out, "Function", sentence.function.as_deref());
+    push_opt_attr(out, "Indent", sentence.indent.as_deref());
+    push_opt_attr(out, "WritingMode", sentence.writing_mode.as_deref());
+    out.push('>');
+    push_xml_escaped(out, &sentence.text);
+    out.push_str("</Sentence>");
+}
+
 fn write_xml_paragraph(out: &mut String, para: &LawParagraph, depth: usize) {
     push_indent(out, depth);
     out.push_str("<Paragraph");
@@ -771,20 +795,9 @@ fn write_xml_paragraph(out: &mut String, para: &LawParagraph, depth: usize) {
     out.push_str("</ParagraphNum>\n");
     push_indent(out, depth + 1);
     out.push_str("<ParagraphSentence>");
-    let remaining = para.xml_sentences.iter().try_fold(
-        para.sentence.as_str(),
-        |text, sentence| text.strip_prefix(sentence.text.as_str()),
-    );
-    if !para.xml_sentences.is_empty() && remaining == Some("") {
-        for sentence in &para.xml_sentences {
-            out.push_str("<Sentence");
-            push_opt_attr(out, "Num", sentence.num.as_deref());
-            push_opt_attr(out, "Function", sentence.function.as_deref());
-            push_opt_attr(out, "Indent", sentence.indent.as_deref());
-            push_opt_attr(out, "WritingMode", sentence.writing_mode.as_deref());
-            out.push('>');
-            push_xml_escaped(out, &sentence.text);
-            out.push_str("</Sentence>");
+    if let Some(sentences) = current_xml_sentences(para) {
+        for sentence in sentences {
+            write_xml_sentence(out, sentence);
         }
     } else {
         out.push_str("<Sentence>");
@@ -879,7 +892,7 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
         out.push_str("\n\n");
     }
     for node in &doc.main_provision {
-        write_lawtext_node(&mut out, node);
+        write_lawtext_node(&mut out, node, true);
     }
     for suppl in &doc.suppl_provisions {
         out.push_str(&suppl.label);
@@ -893,7 +906,7 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
         }
         out.push_str("\n\n");
         for node in &suppl.nodes {
-            write_lawtext_node(&mut out, node);
+            write_lawtext_node(&mut out, node, true);
         }
     }
     for appdx in &doc.appdx_tables {
@@ -914,7 +927,7 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
     out.trim_end().to_string() + "\n"
 }
 
-fn write_lawtext_node(out: &mut String, node: &LawNode) {
+fn write_lawtext_node(out: &mut String, node: &LawNode, structured_sentences: bool) {
     match node {
         LawNode::Division { title, children, .. } => {
             if !title.is_empty() {
@@ -922,7 +935,7 @@ fn write_lawtext_node(out: &mut String, node: &LawNode) {
                 out.push_str("\n\n");
             }
             for child in children {
-                write_lawtext_node(out, child);
+                write_lawtext_node(out, child, structured_sentences);
             }
         }
         LawNode::Article(art) => {
@@ -931,7 +944,8 @@ fn write_lawtext_node(out: &mut String, node: &LawNode) {
                 out.push('\n');
             }
             for (idx, para) in art.paragraphs.iter().enumerate() {
-                let inline = idx == 0 && para.num == "1" && !para.sentence.is_empty();
+                let sentence = lawtext_paragraph_text(para, structured_sentences);
+                let inline = idx == 0 && para.num == "1" && !sentence.is_empty();
                 if idx == 0 {
                     out.push_str(&art.title);
                     if !inline {
@@ -941,9 +955,9 @@ fn write_lawtext_node(out: &mut String, node: &LawNode) {
                 if !inline {
                     out.push_str(&to_fullwidth_digits(&para.num));
                 }
-                if !para.sentence.is_empty() {
+                if !sentence.is_empty() {
                     out.push(' ');
-                    out.push_str(&para.sentence);
+                    out.push_str(&sentence);
                 }
                 out.push('\n');
                 write_lawtext_items(out, &para.items);
@@ -955,12 +969,59 @@ fn write_lawtext_node(out: &mut String, node: &LawNode) {
                 out.push_str(&to_fullwidth_digits(&para.num));
                 out.push(' ');
             }
-            out.push_str(&para.sentence);
+            out.push_str(&lawtext_paragraph_text(para, structured_sentences));
             out.push('\n');
             write_lawtext_items(out, &para.items);
             out.push('\n');
         }
     }
+}
+
+fn lawtext_paragraph_text(para: &LawParagraph, structured: bool) -> std::borrow::Cow<'_, str> {
+    if structured
+        && let Some(sentences) = current_xml_sentences(para)
+        && (sentences.len() > 1 || sentences.iter().any(|sentence| {
+            sentence.num.is_some()
+                || sentence.function.is_some()
+                || sentence.indent.is_some()
+                || sentence.writing_mode.is_some()
+        }))
+    {
+        let mut xml = String::new();
+        for sentence in sentences {
+            write_xml_sentence(&mut xml, sentence);
+        }
+        return xml.replace('\r', "&#13;").replace('\n', "&#10;").into();
+    }
+    para.sentence.as_str().into()
+}
+
+fn parse_lawtext_paragraph(num: String, text: &str) -> LawParagraph {
+    let xml_sentences = parse_lawtext_sentence_elements(text).unwrap_or_default();
+    let sentence = if xml_sentences.is_empty() {
+        text.to_string()
+    } else {
+        xml_sentences.iter().map(|sentence| sentence.text.as_str()).collect()
+    };
+    LawParagraph { num, sentence, xml_sentences, items: Vec::new() }
+}
+
+fn parse_lawtext_sentence_elements(text: &str) -> Option<Vec<LawSentence>> {
+    if !text.starts_with("<Sentence") {
+        return None;
+    }
+    let xml = format!("<ParagraphSentence>{text}</ParagraphSentence>");
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    doc.root_element().children()
+        .filter(|node| !node.is_text() || node.text().is_some_and(|text| !text.trim().is_empty()))
+        .map(|node| {
+            (node.has_tag_name("Sentence")
+                && node.children().all(|child| child.is_text())
+                && node.attributes().all(|attr| attr.namespace().is_none()
+                    && matches!(attr.name(), "Num" | "Function" | "Indent" | "WritingMode")))
+                .then(|| parse_xml_sentence(node))
+        })
+        .collect()
 }
 
 fn write_lawtext_items(out: &mut String, items: &[LawItem]) {
@@ -1128,12 +1189,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
             flush_article(&mut cur_article, &mut div_stack, &mut doc, in_suppl);
             let mut paragraphs = Vec::new();
             if !rest.is_empty() {
-                paragraphs.push(LawParagraph {
-                    num: "1".to_string(),
-                    sentence: rest.to_string(),
-                    xml_sentences: Vec::new(),
-                    items: Vec::new(),
-                });
+                paragraphs.push(parse_lawtext_paragraph("1".to_string(), rest));
             }
             cur_article = Some(LawArticle {
                 num: art_num,
@@ -1145,12 +1201,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
         }
         if let Some(art) = cur_article.as_mut() {
             if let Some((p_num, rest)) = parse_numbered_paragraph(trimmed) {
-                art.paragraphs.push(LawParagraph {
-                    num: p_num,
-                    sentence: rest.to_string(),
-                    xml_sentences: Vec::new(),
-                    items: Vec::new(),
-                });
+                art.paragraphs.push(parse_lawtext_paragraph(p_num, rest));
                 continue;
             }
             let indent = raw_line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
@@ -1193,23 +1244,13 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                     para.sentence = trimmed.to_string();
                 }
             } else {
-                art.paragraphs.push(LawParagraph {
-                    num: "1".to_string(),
-                    sentence: trimmed.to_string(),
-                    xml_sentences: Vec::new(),
-                    items: Vec::new(),
-                });
+                art.paragraphs.push(parse_lawtext_paragraph("1".to_string(), trimmed));
             }
         } else if in_suppl {
             let (p_num, rest) = parse_numbered_paragraph(trimmed)
                 .unwrap_or_else(|| ("1".to_string(), trimmed));
             push_node_to_target(
-                LawNode::Paragraph(LawParagraph {
-                    num: p_num,
-                    sentence: rest.to_string(),
-                    xml_sentences: Vec::new(),
-                    items: Vec::new(),
-                }),
+                LawNode::Paragraph(parse_lawtext_paragraph(p_num, rest)),
                 &mut div_stack,
                 &mut doc,
                 true,
@@ -1812,6 +1853,14 @@ mod tests {
             "<Sentence Num=\"1\" Function=\"main\" WritingMode=\"horizontal\">本則を定める。</Sentence>",
             "<Sentence Num=\"2\" Function=\"proviso\">ただし、例外を設ける。</Sentence>",
         )));
+
+        let lawtext = to_lawtext(&doc);
+        let reparsed = parse_lawtext(&lawtext).unwrap();
+        assert_eq!(to_law_xml(&reparsed), to_law_xml(&doc));
+
+        let draft = generate_aratame_draft(&LawDoc::default(), &reparsed);
+        assert!(draft.full_text.contains("本則を定める。ただし、例外を設ける。"));
+        assert!(!draft.full_text.contains("<Sentence"));
 
         let LawNode::Division { children, .. } = &mut doc.main_provision[0] else {
             panic!("expected a chapter");

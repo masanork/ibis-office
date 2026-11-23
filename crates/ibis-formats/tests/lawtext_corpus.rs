@@ -58,6 +58,11 @@ fn verifies_amendment_after_xml_and_lawtext_round_trips() {
         let lawtext = to_lawtext(&original);
         let roundtrip = parse_law_xml(&to_law_xml(&parse_lawtext(&lawtext).unwrap())).unwrap();
         assert_eq!(roundtrip, original, "{name} round trip");
+        assert_eq!(
+            to_law_xml(&roundtrip),
+            to_law_xml(&original),
+            "{name} XML structure"
+        );
         fs::write(fixture.path().join(format!("{name}.lawtext")), lawtext).unwrap();
         fs::write(fixture.path().join(format!("{name}.xml")), xml).unwrap();
     }

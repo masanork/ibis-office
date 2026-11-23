@@ -11,7 +11,7 @@ use super::diff::{
 };
 use super::{
     LawArticle, LawDoc, LawItem, LawNode, LawParagraph, parse_article_header,
-    parse_numbered_paragraph, to_fullwidth_digits, to_lawtext,
+    parse_numbered_paragraph, to_fullwidth_digits, write_lawtext_node,
 };
 use crate::Error;
 
@@ -1019,9 +1019,9 @@ fn insert_article_after(nodes: &mut Vec<LawNode>, prev_title: &str, new_art: Law
 }
 
 fn format_article_for_aratame(art: &LawArticle) -> String {
-    let mut doc = LawDoc::default();
-    doc.main_provision.push(LawNode::Article(art.clone()));
-    to_lawtext(&doc).trim().to_string()
+    let mut out = String::new();
+    write_lawtext_node(&mut out, &LawNode::Article(art.clone()), false);
+    out.trim().to_string()
 }
 
 fn format_paragraph_for_aratame(para: &LawParagraph) -> String {

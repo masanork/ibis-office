@@ -8,7 +8,10 @@
         <ArticleTitle>第一条</ArticleTitle>
         <Paragraph Num="1">
           <ParagraphNum/>
-          <ParagraphSentence><Sentence>旧基準を適用する。</Sentence></ParagraphSentence>
+          <ParagraphSentence>
+            <Sentence Num="1" Function="main">旧基準を適用する。</Sentence>
+            <Sentence Num="2" Function="proviso" WritingMode="horizontal">ただし、例外を認める。</Sentence>
+          </ParagraphSentence>
         </Paragraph>
       </Article>
     </MainProvision>
