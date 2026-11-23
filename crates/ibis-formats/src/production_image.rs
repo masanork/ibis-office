@@ -247,15 +247,8 @@ fn decode_raster(
     format: ImageFormat,
     bytes_per_pixel: u64,
 ) -> Result<DynamicImage, String> {
-    decode_raster_with_limits(bytes, format, bytes_per_pixel).map_err(|error| error.to_string())
-}
-
-fn decode_raster_with_limits(
-    bytes: &[u8],
-    format: ImageFormat,
-    bytes_per_pixel: u64,
-) -> Result<DynamicImage, image::ImageError> {
     decode_raster_reader(Cursor::new(bytes), format, bytes_per_pixel)
+        .map_err(|error| error.to_string())
 }
 
 fn decode_raster_reader(

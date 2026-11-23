@@ -13,18 +13,8 @@ const MAX_PREVIEW_PNG_BYTES: usize = 32 * 1024 * 1024;
 
 pub(super) fn open(bytes: &[u8]) -> Result<crate::Opened, String> {
     let mut pages = Decoder::new(Cursor::new(bytes)).map_err(|error| error.to_string())?;
-    let first = || super::decode_raster_with_limits(bytes, ImageFormat::Tiff, 4);
     if !pages.more_images() {
-        let orientation = orientation(&mut pages);
-        let mut image = match first() {
-            Ok(mut image) => {
-                straighten_decoded_alpha(&mut image, &mut pages)?;
-                image
-            }
-            Err(image::ImageError::Limits(_)) => super::large_tiff::preview(bytes, pages)?,
-            Err(error) => return Err(error.to_string()),
-        };
-        image.apply_orientation(orientation);
+        let image = page_image(bytes, &mut pages)?;
         return super::open_preview_png(&super::encode_png(image)?);
     }
 
@@ -32,8 +22,11 @@ pub(super) fn open(bytes: &[u8]) -> Result<crate::Opened, String> {
     let mut png_bytes = 0;
     let mut pixels = 0;
     for page in 1..=MAX_PAGES {
-        let image =
+        let mut image =
             page_image(bytes, &mut pages).map_err(|error| format!("TIFF page {page}: {error}"))?;
+        if image.width().max(image.height()) > MAX_PAGE_EDGE {
+            image = image.thumbnail(MAX_PAGE_EDGE, MAX_PAGE_EDGE);
+        }
         let (width, height) = (image.width(), image.height());
         pixels += u64::from(width) * u64::from(height);
         if pixels > super::MAX_PIXELS {
@@ -93,11 +86,7 @@ fn page_image(bytes: &[u8], pages: &mut Decoder<Cursor<&[u8]>>) -> Result<Dynami
         Err(error) => return Err(error.to_string()),
     };
     image.apply_orientation(orientation(pages));
-    Ok(if image.width().max(image.height()) > MAX_PAGE_EDGE {
-        image.thumbnail(MAX_PAGE_EDGE, MAX_PAGE_EDGE)
-    } else {
-        image
-    })
+    Ok(image)
 }
 
 fn straighten_decoded_alpha(
@@ -228,6 +217,28 @@ mod tests {
     use super::*;
     use ibis_doc_model::{FlowRunKind, flow::Block};
     use tiff::encoder::{Compression, TiffEncoder, colortype};
+
+    #[test]
+    fn keeps_single_page_resolution_and_caps_only_multipage_previews() {
+        fn preview_width(page_count: usize) -> u32 {
+            let mut file = Cursor::new(Vec::new());
+            let mut encoder = TiffEncoder::new(&mut file).unwrap();
+            let row = vec![34; 4_096];
+            for _ in 0..page_count {
+                encoder
+                    .write_image::<colortype::Gray8>(4_096, 1, &row)
+                    .unwrap();
+            }
+            let opened = open(&file.into_inner()).unwrap();
+            assert_eq!(opened.presentation.media.len(), page_count);
+            image::load_from_memory(&opened.presentation.media[0].data)
+                .unwrap()
+                .width()
+        }
+
+        assert_eq!(preview_width(1), 4_096);
+        assert_eq!(preview_width(2), 2_048);
+    }
 
     #[test]
     fn imports_all_pages_in_order_and_saves_page_breaks() {
