@@ -103,13 +103,35 @@ pub struct LawItem {
     pub subitems: Vec<LawSubitem>,
 }
 
-/// A paragraph (`Paragraph`: 項) inside a [`LawArticle`] or [`SupplProvision`].
+/// A sentence as recorded inside a law XML paragraph.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LawSentence {
+    pub text: String,
+    pub num: Option<String>,
+    pub function: Option<String>,
+    pub indent: Option<String>,
+    pub writing_mode: Option<String>,
+}
+
+/// A paragraph (`Paragraph`: 項) inside a [`LawArticle`] or [`SupplProvision`].
+#[derive(Debug, Clone)]
 pub struct LawParagraph {
     pub num: String,
     pub sentence: String,
+    /// Original XML sentence boundaries and attributes, used when the text still matches.
+    pub xml_sentences: Vec<LawSentence>,
     pub items: Vec<LawItem>,
 }
+
+// Amendment comparisons operate on the text. XML serialization details do not
+// make a paragraph differ from an equivalent plain-text paragraph.
+impl PartialEq for LawParagraph {
+    fn eq(&self, other: &Self) -> bool {
+        self.num == other.num && self.sentence == other.sentence && self.items == other.items
+    }
+}
+
+impl Eq for LawParagraph {}
 
 /// An article (`Article`: 条).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -500,9 +522,23 @@ fn parse_xml_article(node: roxmltree::Node<'_, '_>) -> LawArticle {
 
 fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
     let num = node.attribute("Num").unwrap_or("1").to_string();
-    let sentence = child_elem(node, "ParagraphSentence")
-        .map(collect_sentences)
-        .unwrap_or_default();
+    let container = child_elem(node, "ParagraphSentence");
+    let xml_sentences: Vec<_> = container
+        .into_iter()
+        .flat_map(|node| node.children())
+        .filter(|node| node.is_element() && node.tag_name().name() == "Sentence")
+        .map(|node| LawSentence {
+            text: collect_text(node),
+            num: node.attribute("Num").map(str::to_string),
+            function: node.attribute("Function").map(str::to_string),
+            indent: node.attribute("Indent").map(str::to_string),
+            writing_mode: node.attribute("WritingMode").map(str::to_string),
+        })
+        .collect();
+    let mut sentence: String = xml_sentences.iter().map(|sentence| sentence.text.as_str()).collect();
+    if sentence.is_empty() {
+        sentence = container.map(collect_text).unwrap_or_default();
+    }
     let items = node
         .children()
         .filter(|n| n.is_element() && n.tag_name().name() == "Item")
@@ -511,6 +547,7 @@ fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
     LawParagraph {
         num,
         sentence,
+        xml_sentences,
         items,
     }
 }
@@ -733,9 +770,28 @@ fn write_xml_paragraph(out: &mut String, para: &LawParagraph, depth: usize) {
     }
     out.push_str("</ParagraphNum>\n");
     push_indent(out, depth + 1);
-    out.push_str("<ParagraphSentence><Sentence>");
-    push_xml_escaped(out, &para.sentence);
-    out.push_str("</Sentence></ParagraphSentence>\n");
+    out.push_str("<ParagraphSentence>");
+    let remaining = para.xml_sentences.iter().try_fold(
+        para.sentence.as_str(),
+        |text, sentence| text.strip_prefix(sentence.text.as_str()),
+    );
+    if !para.xml_sentences.is_empty() && remaining == Some("") {
+        for sentence in &para.xml_sentences {
+            out.push_str("<Sentence");
+            push_opt_attr(out, "Num", sentence.num.as_deref());
+            push_opt_attr(out, "Function", sentence.function.as_deref());
+            push_opt_attr(out, "Indent", sentence.indent.as_deref());
+            push_opt_attr(out, "WritingMode", sentence.writing_mode.as_deref());
+            out.push('>');
+            push_xml_escaped(out, &sentence.text);
+            out.push_str("</Sentence>");
+        }
+    } else {
+        out.push_str("<Sentence>");
+        push_xml_escaped(out, &para.sentence);
+        out.push_str("</Sentence>");
+    }
+    out.push_str("</ParagraphSentence>\n");
     for item in &para.items {
         push_indent(out, depth + 1);
         out.push_str("<Item");
@@ -1075,6 +1131,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 paragraphs.push(LawParagraph {
                     num: "1".to_string(),
                     sentence: rest.to_string(),
+                    xml_sentences: Vec::new(),
                     items: Vec::new(),
                 });
             }
@@ -1091,6 +1148,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 art.paragraphs.push(LawParagraph {
                     num: p_num,
                     sentence: rest.to_string(),
+                    xml_sentences: Vec::new(),
                     items: Vec::new(),
                 });
                 continue;
@@ -1138,6 +1196,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 art.paragraphs.push(LawParagraph {
                     num: "1".to_string(),
                     sentence: trimmed.to_string(),
+                    xml_sentences: Vec::new(),
                     items: Vec::new(),
                 });
             }
@@ -1148,6 +1207,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 LawNode::Paragraph(LawParagraph {
                     num: p_num,
                     sentence: rest.to_string(),
+                    xml_sentences: Vec::new(),
                     items: Vec::new(),
                 }),
                 &mut div_stack,
@@ -1739,6 +1799,35 @@ mod tests {
     }
 
     #[test]
+    fn preserves_xml_paragraph_sentence_boundaries_and_attributes() {
+        let original = SAMPLE_LAW_XML.replace(
+            "<Sentence>この法律は、処分、行政指導及び届出に関する手続を定める。</Sentence>",
+            concat!(
+                "<Sentence Num=\"1\" Function=\"main\" WritingMode=\"horizontal\">本則を定める。</Sentence>",
+                "<Sentence Num=\"2\" Function=\"proviso\">ただし、例外を設ける。</Sentence>",
+            ),
+        );
+        let mut doc = parse_law_xml(&original).unwrap();
+        assert!(to_law_xml(&doc).contains(concat!(
+            "<Sentence Num=\"1\" Function=\"main\" WritingMode=\"horizontal\">本則を定める。</Sentence>",
+            "<Sentence Num=\"2\" Function=\"proviso\">ただし、例外を設ける。</Sentence>",
+        )));
+
+        let LawNode::Division { children, .. } = &mut doc.main_provision[0] else {
+            panic!("expected a chapter");
+        };
+        let LawNode::Article(article) = &mut children[0] else {
+            panic!("expected an article");
+        };
+        let paragraph = &mut article.paragraphs[0];
+        assert_eq!(paragraph.sentence, "本則を定める。ただし、例外を設ける。");
+        paragraph.sentence = "本文を変更した。".into();
+        let edited = to_law_xml(&doc);
+        assert!(edited.contains("<ParagraphSentence><Sentence>本文を変更した。</Sentence>"));
+        assert!(!edited.contains("Function=\"proviso\""));
+    }
+
+    #[test]
     fn roundtrips_law_xml_to_lawtext_and_back() {
         assert!(is_law_xml(SAMPLE_LAW_XML.as_bytes()));
         let parsed = parse_law_xml(SAMPLE_LAW_XML).expect("parse_law_xml");
@@ -1833,6 +1922,7 @@ mod tests {
                 paragraphs: vec![LawParagraph {
                     num: "1".to_string(),
                     sentence: "この法律において用語の意義を定める。".to_string(),
+                    xml_sentences: Vec::new(),
                     items: Vec::new(),
                 }],
             }));

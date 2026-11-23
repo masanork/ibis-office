@@ -885,6 +885,7 @@ fn parse_inserted_article_block(lines: &[&str]) -> Option<LawArticle> {
         paragraphs.push(LawParagraph {
             num: "1".to_string(),
             sentence: rest.to_string(),
+            xml_sentences: Vec::new(),
             items: Vec::new(),
         });
     }
@@ -893,6 +894,7 @@ fn parse_inserted_article_block(lines: &[&str]) -> Option<LawArticle> {
             paragraphs.push(LawParagraph {
                 num: p_num,
                 sentence: p_rest.to_string(),
+                xml_sentences: Vec::new(),
                 items: Vec::new(),
             });
         }
@@ -911,6 +913,7 @@ fn parse_inserted_paragraph_block(lines: &[&str]) -> Option<LawParagraph> {
     Some(LawParagraph {
         num: p_num,
         sentence: rest.to_string(),
+        xml_sentences: Vec::new(),
         items: Vec::new(),
     })
 }
