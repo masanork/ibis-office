@@ -1288,6 +1288,8 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
 }
 
 fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<SqliteQuerySession, ToolError> {
+    #[cfg(test)]
+    boundary_tests::SESSION_PREPARATIONS.with(|opens| opens.set(opens.get() + 1));
     const MEMORY_FILE_BYTES: u64 = 8 * 1024 * 1024;
     let Some(specs) = query["datasets"].as_array() else {
         if arrow_disk {
@@ -1779,3 +1781,7 @@ fn enforce_checks(checks: &[Value]) -> Result<(), ToolError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tools_sqlite_boundary_tests.rs"]
+mod boundary_tests;

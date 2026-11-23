@@ -5610,6 +5610,9 @@ dependencies = [
 name = "ibis-doc-service"
 version = "0.8.0"
 dependencies = [
+ "apache-avro",
+ "arrow-array",
+ "arrow-ipc",
  "ibis-calc",
  "ibis-doc-model",
  "ibis-formats",
@@ -5617,6 +5620,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
